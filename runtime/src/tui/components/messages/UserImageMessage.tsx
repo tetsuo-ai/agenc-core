@@ -4,7 +4,7 @@ import { pathToFileURL } from 'url';
 import Link from '../../ink/components/Link.js';
 import { supportsHyperlinks } from '../../ink/supports-hyperlinks.js';
 import { Box, Text } from '../../ink.js';
-import { getStoredImagePath } from '../../../agenc/upstream/utils/imageStore'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getStoredImagePath } from '../../../utils/imageStore.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 type Props = {
   imageId?: number;

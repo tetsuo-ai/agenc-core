@@ -3,7 +3,7 @@ import partition from 'lodash-es/partition.js';
 import React, { useCallback } from 'react';
 import { logEvent } from '../../services/analytics/index.js';
 import { Box, Text } from '../ink.js';
-import { getSettings_DEPRECATED, updateSettingsForSource } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettings_DEPRECATED, updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { SelectMulti } from './CustomSelect/SelectMulti';
 import { Byline } from './design-system/Byline';

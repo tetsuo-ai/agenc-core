@@ -4,12 +4,12 @@ import { isFeedbackSurveyDisabled } from '../../../services/analytics/config.js'
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { isPolicyAllowed } from '../../../services/policyLimits/index';
 import type { Message } from '../../../types/message';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from '../../../utils/envUtils';
-import { getLastAssistantMessage } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMainLoopModel } from '../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logOTelEvent } from '../../../agenc/upstream/utils/telemetry/events'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getLastAssistantMessage } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getMainLoopModel } from '../../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logOTelEvent } from '../../../utils/telemetry/events.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { submitTranscriptShare, type TranscriptShareTrigger } from './submitTranscriptShare';
 import type { TranscriptShareResponse } from './TranscriptSharePrompt';
 import { useSurveyState } from './useSurveyState';

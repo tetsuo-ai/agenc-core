@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'

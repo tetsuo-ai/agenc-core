@@ -4,8 +4,8 @@ import * as React from 'react';
 import { useContext } from 'react';
 import { useQueuedMessage } from '../../context/QueuedMessageContext';
 import { Box, Text } from '../../ink.js';
-import { formatBriefTimestamp } from '../../../agenc/upstream/utils/formatBriefTimestamp'; // upstream-import: keep target is owned by another Z-PURGE item
-import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../agenc/upstream/utils/thinking'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatBriefTimestamp } from '../../../utils/formatBriefTimestamp.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../utils/thinking.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageActionsSelectedContext } from '../messageActions';
 type Props = {
   text: string;

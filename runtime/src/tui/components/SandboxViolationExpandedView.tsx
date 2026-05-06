@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Box, Text } from '../ink.js';
-import type { SandboxViolationEvent } from '../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SandboxViolationEvent } from '../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Format a timestamp as "h:mm:ssa" (e.g., "1:30:45pm").
@@ -16,7 +16,7 @@ function formatTime(date: Date): string {
   const ampm = date.getHours() < 12 ? 'am' : 'pm';
   return `${h}:${m}:${s}${ampm}`;
 }
-import { getPlatform } from '../../agenc/upstream/utils/platform.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlatform } from '../../utils/platform.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export function SandboxViolationExpandedView() {
   const $ = _c(15);
   let t0;

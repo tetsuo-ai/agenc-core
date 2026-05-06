@@ -18,8 +18,8 @@ import { findToolByName } from '../../tools/Tool'
 import type { Message as MessageType } from '../../types/message'
 import type { PermissionAskDecision } from '../../types/permissions'
 import { logForDebugging } from 'src/utils/debug.js'
-import { gracefulShutdown } from '../../agenc/upstream/utils/gracefulShutdown' // upstream-import: keep target is owned by another Z-PURGE item
-import type { RemoteMessageContent } from '../../agenc/upstream/utils/teleport/api' // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdown } from '../../utils/gracefulShutdown.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { RemoteMessageContent } from '../../utils/teleport/api.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type UseDirectConnectResult = {
   isRemoteMode: boolean

@@ -3,7 +3,7 @@ import React from 'react';
 import { type ExitState, useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from './Byline';
 import FullWidthRow from './FullWidthRow';

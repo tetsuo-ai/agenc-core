@@ -19,7 +19,7 @@ import {
   AGENC_AI_INFERENCE_SCOPE,
   getOauthConfig,
   OAUTH_BETA_HEADER,
-} from '../../constants/oauth.js'
+} from '../../../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,

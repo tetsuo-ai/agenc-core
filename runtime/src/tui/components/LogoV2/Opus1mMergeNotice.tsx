@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import { useEffect, useState } from 'react';
-import { UP_ARROW } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { UP_ARROW } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isOpus1mMergeEnabled } from '../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isOpus1mMergeEnabled } from '../../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AnimatedAsterisk } from './AnimatedAsterisk';
 const MAX_SHOW_COUNT = 6;
 export function shouldShowOpus1mMergeNotice(): boolean {

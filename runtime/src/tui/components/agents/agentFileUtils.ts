@@ -1,17 +1,17 @@
 import { mkdir, open, unlink } from 'fs/promises'
 import { join } from 'path'
-import type { SettingSource } from '../../../agenc/upstream/utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getManagedFilePath } from '../../../agenc/upstream/utils/settings/managedPath.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getManagedFilePath } from '../../../utils/settings/managedPath.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { AgentMemoryScope } from '../../../tools/AgentTool/agentMemory'
 import {
   type AgentDefinition,
   isBuiltInAgent,
   isPluginAgent,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { getCwd } from '../../../agenc/upstream/utils/cwd' // upstream-import: keep target is owned by another Z-PURGE item
-import type { EffortValue } from '../../../agenc/upstream/utils/effort' // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { EffortValue } from '../../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getAgenCConfigHomeDir } from '../../../utils/envUtils'
-import { getErrnoCode } from '../../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
+import { getErrnoCode } from '../../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { AGENT_PATHS } from './types'
 
 /**

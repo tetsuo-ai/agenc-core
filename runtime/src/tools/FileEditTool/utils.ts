@@ -6,13 +6,13 @@ import {
   DIFF_TIMEOUT_MS,
   getPatchForDisplay,
   getPatchFromContents,
-} from '../../utils/diff.js'
-import { errorMessage, isENOENT } from '../../utils/errors.js'
+} from '../../../../utils/diff.js'
+import { errorMessage, isENOENT } from '../../../../utils/errors.js'
 import {
   addLineNumbers,
   convertLeadingTabsToSpaces,
   readFileSyncCached,
-} from '../../utils/file.js'
+} from '../../../../utils/file.js'
 import type { EditInput, FileEdit } from './types.js'
 
 // AgenC can't output curly quotes, so we define them as constants here for AgenC to use

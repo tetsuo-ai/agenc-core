@@ -5,8 +5,8 @@ import { Box, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { getAllBaseTools } from '../../tools';
 import type { LogOption } from '../../types/logs';
-import { formatRelativeTimeAgo } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSessionIdFromLog, isLiteLog, loadFullLog } from '../../agenc/upstream/utils/sessionStorage'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatRelativeTimeAgo } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSessionIdFromLog, isLiteLog, loadFullLog } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Byline } from './design-system/Byline';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';

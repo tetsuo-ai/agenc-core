@@ -1,4 +1,4 @@
-import { performHeapDump } from '../../utils/heapDumpService.js'
+import { performHeapDump } from '../../../../utils/heapDumpService.js'
 
 export async function call(): Promise<{ type: 'text'; value: string }> {
   const result = await performHeapDump()

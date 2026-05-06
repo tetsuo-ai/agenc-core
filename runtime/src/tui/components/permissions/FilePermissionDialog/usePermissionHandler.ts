@@ -15,7 +15,7 @@ import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissi
 import {
   type CompletionType,
   logUnaryEvent,
-} from '../../../../agenc/upstream/utils/unaryLogging' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ToolUseConfirm } from '../PermissionRequest.js'
 import type {
   FileOperationType,

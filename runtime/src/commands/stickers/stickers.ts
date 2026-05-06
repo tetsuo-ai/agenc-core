@@ -1,5 +1,5 @@
 import type { LocalCommandResult } from '../../types/command.js'
-import { openBrowser } from '../../utils/browser.js'
+import { openBrowser } from '../../../../utils/browser.js'
 
 export async function call(): Promise<LocalCommandResult> {
   const url = 'https://www.stickermule.com/agenccode'

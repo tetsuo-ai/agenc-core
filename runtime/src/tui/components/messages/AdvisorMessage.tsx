@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import React from 'react';
 import { Box, Text } from '../../ink.js';
-import type { AdvisorBlock } from '../../../agenc/upstream/utils/advisor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { renderModelName } from '../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { AdvisorBlock } from '../../../utils/advisor.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { renderModelName } from '../../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CtrlOToExpand } from '../CtrlOToExpand';
 import { MessageResponse } from '../MessageResponse';
 import { ToolUseLoader } from '../ToolUseLoader';

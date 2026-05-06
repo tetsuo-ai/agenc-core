@@ -5,8 +5,8 @@ import { useTerminalSize } from '../hooks/useTerminalSize';
 import { setClipboard } from '../ink/termio/osc.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
-import { getCwd } from '../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { writeFileSync_DEPRECATED } from '../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { writeFileSync_DEPRECATED } from '../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';

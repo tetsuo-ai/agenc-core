@@ -11,7 +11,7 @@ import type {
   SerializedMessage,
   TranscriptMessage,
 } from '../../types/logs.js'
-import { parseJSONL } from '../../utils/json.js'
+import { parseJSONL } from '../../../../utils/json.js'
 import {
   getProjectDir,
   getTranscriptPath,
@@ -19,9 +19,9 @@ import {
   isTranscriptMessage,
   saveCustomTitle,
   searchSessionsByCustomTitle,
-} from '../../utils/sessionStorage.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import { escapeRegExp } from '../../utils/stringUtils.js'
+} from '../../../../utils/sessionStorage.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { escapeRegExp } from '../../../../utils/stringUtils.js'
 
 type TranscriptEntry = TranscriptMessage & {
   forkedFrom?: {

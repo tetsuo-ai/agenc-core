@@ -6,7 +6,7 @@ import { useNotifications } from '../../context/notifications';
 import { Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export function usePluginInstallationStatus() {
   const $ = _c(20);
   const {

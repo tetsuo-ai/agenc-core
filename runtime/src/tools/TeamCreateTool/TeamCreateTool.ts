@@ -11,25 +11,25 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import {
   getDefaultMainLoopModel,
   parseUserSpecifiedModel,
-} from '../../utils/model/model.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import { getResolvedTeammateMode } from '../../utils/swarm/backends/registry.js'
-import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'
-import type { TeamFile } from '../../utils/swarm/teamHelpers.js'
+} from '../../../../utils/model/model.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { getResolvedTeammateMode } from '../../../../utils/swarm/backends/registry.js'
+import { TEAM_LEAD_NAME } from '../../../../utils/swarm/constants.js'
+import type { TeamFile } from '../../../../utils/swarm/teamHelpers.js'
 import {
   getTeamFilePath,
   readTeamFile,
   registerTeamForSessionCleanup,
   sanitizeName,
   writeTeamFileAsync,
-} from '../../utils/swarm/teamHelpers.js'
-import { assignTeammateColor } from '../../utils/swarm/teammateLayoutManager.js'
+} from '../../../../utils/swarm/teamHelpers.js'
+import { assignTeammateColor } from '../../../../utils/swarm/teammateLayoutManager.js'
 import {
   ensureTasksDir,
   resetTaskList,
   setLeaderTeamName,
-} from '../../utils/tasks.js'
-import { generateWordSlug } from '../../utils/words.js'
+} from '../../../../utils/tasks.js'
+import { generateWordSlug } from '../../../../utils/words.js'
 import { TEAM_CREATE_TOOL_NAME } from './constants.js'
 import { getPrompt } from './prompt.js'
 import { renderToolUseMessage } from './UI.js'

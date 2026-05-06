@@ -2,12 +2,12 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { Box, Text } from '../ink.js';
-import type { ContextData } from '../../agenc/upstream/utils/analyzeContext'; // upstream-import: keep target is owned by another Z-PURGE item
-import { generateContextSuggestions } from '../../agenc/upstream/utils/contextSuggestions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDisplayPath } from '../../agenc/upstream/utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatTokens } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSourceDisplayName, type SettingSource } from '../../agenc/upstream/utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ContextData } from '../../utils/analyzeContext.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { generateContextSuggestions } from '../../utils/contextSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayPath } from '../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatTokens } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSourceDisplayName, type SettingSource } from '../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ContextSuggestions } from './ContextSuggestions';
 const RESERVED_CATEGORY_NAME = 'Autocompact buffer';
 

@@ -12,17 +12,17 @@ import instances from '../../tui/ink/instances.js';
 import { Box, Text } from '../../tui/ink.js';
 import { enablePluginOp } from '../../services/plugins/pluginOperations.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { isENOENT, toError } from '../../utils/errors.js';
-import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
-import { pathExists } from '../../utils/file.js';
-import { logError } from '../../utils/log.js';
-import { getPlatform } from '../../utils/platform.js';
-import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
-import { isPluginInstalled } from '../../utils/plugins/installedPluginsManager.js';
-import { addMarketplaceSource, clearMarketplacesCache, loadKnownMarketplacesConfig, refreshMarketplace } from '../../utils/plugins/marketplaceManager.js';
-import { OFFICIAL_MARKETPLACE_NAME } from '../../utils/plugins/officialMarketplace.js';
-import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js';
-import { installSelectedPlugins } from '../../utils/plugins/pluginStartupCheck.js';
+import { isENOENT, toError } from '../../../../utils/errors.js';
+import { execFileNoThrow } from '../../../../utils/execFileNoThrow.js';
+import { pathExists } from '../../../../utils/file.js';
+import { logError } from '../../../../utils/log.js';
+import { getPlatform } from '../../../../utils/platform.js';
+import { clearAllCaches } from '../../../../utils/plugins/cacheUtils.js';
+import { isPluginInstalled } from '../../../../utils/plugins/installedPluginsManager.js';
+import { addMarketplaceSource, clearMarketplacesCache, loadKnownMarketplacesConfig, refreshMarketplace } from '../../../../utils/plugins/marketplaceManager.js';
+import { OFFICIAL_MARKETPLACE_NAME } from '../../../../utils/plugins/officialMarketplace.js';
+import { loadAllPlugins } from '../../../../utils/plugins/pluginLoader.js';
+import { installSelectedPlugins } from '../../../../utils/plugins/pluginStartupCheck.js';
 
 // Marketplace and plugin identifiers - varies by user type
 const INTERNAL_MARKETPLACE_NAME = 'agenc-code-marketplace';

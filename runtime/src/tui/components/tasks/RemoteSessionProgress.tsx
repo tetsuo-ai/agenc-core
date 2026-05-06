@@ -5,8 +5,8 @@ import type { DeepImmutable } from '../../../types/utils.js';
 import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSettings } from '../../hooks/useSettings';
 import { Text, useAnimationFrame } from '../../ink.js';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getRainbowColor } from '../../../agenc/upstream/utils/thinking'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getRainbowColor } from '../../../utils/thinking.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const TICK_MS = 80;
 type ReviewStage = NonNullable<NonNullable<RemoteAgentTaskState['reviewProgress']>['stage']>;
 

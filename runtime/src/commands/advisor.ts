@@ -4,14 +4,14 @@ import {
   canUserConfigureAdvisor,
   isValidAdvisorModel,
   modelSupportsAdvisor,
-} from '../utils/advisor.js'
+} from '../../../utils/advisor.js'
 import {
   getDefaultMainLoopModelSetting,
   normalizeModelStringForAPI,
   parseUserSpecifiedModel,
-} from '../utils/model/model.js'
-import { validateModel } from '../utils/model/validateModel.js'
-import { updateSettingsForSource } from '../utils/settings/settings.js'
+} from '../../../utils/model/model.js'
+import { validateModel } from '../../../utils/model/validateModel.js'
+import { updateSettingsForSource } from '../../../utils/settings/settings.js'
 
 const call: LocalCommandCall = async (args, context) => {
   const arg = args.trim().toLowerCase()

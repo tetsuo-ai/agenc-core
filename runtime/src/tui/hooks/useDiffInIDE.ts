@@ -24,10 +24,10 @@ import {
   getConnectedIdeClient,
   getConnectedIdeName,
   hasAccessToIDEExtensionDiffFeature,
-} from '../../agenc/upstream/utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
-import { WindowsToWSLConverter } from '../../agenc/upstream/utils/idePathConversion' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPlatform } from '../../agenc/upstream/utils/platform' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/ide.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { WindowsToWSLConverter } from '../../utils/idePathConversion.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlatform } from '../../utils/platform.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type Props = {
   onChange(

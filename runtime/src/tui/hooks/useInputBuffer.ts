@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import type { PastedContent } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PastedContent } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export type BufferEntry = {
   text: string

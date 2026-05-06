@@ -15,37 +15,37 @@ import { dirname, join } from 'path'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
 import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
-import { isENOENT, toError } from '../../utils/errors.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
-import { logError } from '../../utils/log.js'
+import { isENOENT, toError } from '../../../../utils/errors.js'
+import { getFsImplementation } from '../../../../utils/fsOperations.js'
+import { logError } from '../../../../utils/log.js'
 import {
   clearAllCaches,
   markPluginVersionOrphaned,
-} from '../../utils/plugins/cacheUtils.js'
+} from '../../../../utils/plugins/cacheUtils.js'
 import {
   findReverseDependents,
   formatReverseDependentsSuffix,
-} from '../../utils/plugins/dependencyResolver.js'
+} from '../../../../utils/plugins/dependencyResolver.js'
 import {
   loadInstalledPluginsFromDisk,
   loadInstalledPluginsV2,
   removePluginInstallation,
   updateInstallationPathOnDisk,
-} from '../../utils/plugins/installedPluginsManager.js'
+} from '../../../../utils/plugins/installedPluginsManager.js'
 import {
   getMarketplace,
   getPluginById,
   loadKnownMarketplacesConfig,
-} from '../../utils/plugins/marketplaceManager.js'
-import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
+} from '../../../../utils/plugins/marketplaceManager.js'
+import { deletePluginDataDir } from '../../../../utils/plugins/pluginDirectories.js'
 import {
   parsePluginIdentifier,
   scopeToSettingSource,
-} from '../../utils/plugins/pluginIdentifier.js'
+} from '../../../../utils/plugins/pluginIdentifier.js'
 import {
   formatResolutionError,
   installResolvedPlugin,
-} from '../../utils/plugins/pluginInstallationHelpers.js'
+} from '../../../../utils/plugins/pluginInstallationHelpers.js'
 import {
   cachePlugin,
   copyPluginToVersionedCache,
@@ -53,20 +53,20 @@ import {
   getVersionedZipCachePath,
   loadAllPlugins,
   loadPluginManifest,
-} from '../../utils/plugins/pluginLoader.js'
-import { deletePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
-import { isPluginBlockedByPolicy } from '../../utils/plugins/pluginPolicy.js'
-import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js'
-import { calculatePluginVersion } from '../../utils/plugins/pluginVersioning.js'
+} from '../../../../utils/plugins/pluginLoader.js'
+import { deletePluginOptions } from '../../../../utils/plugins/pluginOptionsStorage.js'
+import { isPluginBlockedByPolicy } from '../../../../utils/plugins/pluginPolicy.js'
+import { getPluginEditableScopes } from '../../../../utils/plugins/pluginStartupCheck.js'
+import { calculatePluginVersion } from '../../../../utils/plugins/pluginVersioning.js'
 import type {
   PluginMarketplaceEntry,
   PluginScope,
-} from '../../utils/plugins/schemas.js'
+} from '../../../../utils/plugins/schemas.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
-} from '../../utils/settings/settings.js'
-import { plural } from '../../utils/stringUtils.js'
+} from '../../../../utils/settings/settings.js'
+import { plural } from '../../../../utils/stringUtils.js'
 
 /** Valid installable scopes (excludes 'managed' which can only be installed from managed-settings.json) */
 export const VALID_INSTALLABLE_SCOPES = ['user', 'project', 'local'] as const

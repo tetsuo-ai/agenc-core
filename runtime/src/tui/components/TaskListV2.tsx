@@ -7,12 +7,12 @@ import { Box, Text } from '../ink.js';
 import { useAppState } from '../state/AppState.js';
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types';
 import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
-import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
-import { count } from '../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { summarizeRecentActivities } from '../../agenc/upstream/utils/collapseReadSearch'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncateToWidth } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isTodoV2Enabled, type Task } from '../../agenc/upstream/utils/tasks'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { summarizeRecentActivities } from '../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isTodoV2Enabled, type Task } from '../../utils/tasks.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import FullWidthRow from './design-system/FullWidthRow';
 import ThemedText from './design-system/ThemedText';
 type Props = {

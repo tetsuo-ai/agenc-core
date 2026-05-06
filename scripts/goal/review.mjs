@@ -17,6 +17,7 @@
 // Override the reviewer model with env AGENC_REVIEW_MODEL=<model>.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -69,6 +70,10 @@ if (process.env.AGENC_SKIP_REVIEW === "1") {
 
 const root = repoRoot();
 const { item } = await findItem(id);
+const changedSourceFilesForReview = listChangedSourceFiles(root);
+const changedSourceFilesHash = createHash("sha256")
+  .update(changedSourceFilesForReview.join("\n") + "\n")
+  .digest("hex");
 
 const disciplinePath = path.join(root, "GOAL_DISCIPLINE.md");
 const discipline = existsSync(disciplinePath) ? readFileSync(disciplinePath, "utf8") : "";
@@ -77,7 +82,9 @@ const itemScopedReviewNotes = id === "PE-09"
   ? "PE-09 intentionally carries the local goal-harness worktree migration in scripts/goal/*.mjs because the user directed that harness change to merge with this item. Review those files for correctness, but do not reject PE-09 solely because those harness files are present in the diff."
   : id === "ZC-12"
     ? "ZC-12 must not rename or add files inside runtime/src/agenc/upstream/. Pre-existing donor-named tracked paths under that frozen mirror are resolved for this item by deferral to the upstream-mirror deletion items. Reject donor-named tracked paths outside that mirror, stale references to deleted port artifacts, or any new/renamed upstream mirror target."
-  : "No item-specific review notes.";
+    : id === "Z-PURGEA"
+      ? "Z-PURGEA may use runtime/src/constants as the AgenC-owned home for constants that have multiple cross-subsystem consumers, provided parity/Z-PURGEA-parity.json documents the rationale and verify.mjs gates the placement. The verifier also caps documented temporary ts-nocheck boundaries at 50 moved utils/constants files and 200 transitive files pulled into typecheck by those moved roots. Do not reject solely because shared constants are centralized there or because the verified temporary boundaries exist; do reject donor branding, disallowed domains, undocumented or over-cap ts-nocheck, dead imports, or stale agenc/upstream/utils and agenc/upstream/constants importers."
+      : "No item-specific review notes.";
 
 const reviewerInstructions = `You are a senior software engineer reviewing one work item from an AgenC port checklist.
 
@@ -124,6 +131,10 @@ ${crossRepoEvidence}
 
 Item-specific review notes:
 ${itemScopedReviewNotes}
+
+Changed source manifest:
+- count: ${changedSourceFilesForReview.length}
+- sha256: ${changedSourceFilesHash}
 
 Some checklist items explicitly name sibling repositories such as
 \`agenc-sdk/\`, \`agenc-protocol/\`, \`agenc-plugin-kit/\`, or
@@ -176,7 +187,7 @@ Required output format. Your FINAL line must be exactly one of:
 
 Before that line, write a structured report:
 - 1-3 sentence summary of the diff
-- "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected.
+- "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected. For very large diffs where listing every file would make the report unreadable, you may instead write exactly \`ALL_CHANGED_SOURCE_FILES_SHA256: ${changedSourceFilesHash}\` after you have read every changed source file represented by the manifest above. The runner accepts that manifest claim only for large diffs and only when the hash matches the actual changed source list.
 - "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
   The Issues section MUST include all four severity markers exactly once even when empty, using this shape:
     CRITICAL: none
@@ -391,13 +402,14 @@ const filesReviewedClaim = new Set(
     .filter((l) => l.length > 0 && !/^none$/i.test(l) && /[/.]/.test(l)),
 );
 
-const diffNamesRes = spawnSync("git", ["diff", "--name-only", "main...HEAD"], {
-  cwd: root, encoding: "utf8",
-});
-const actualChanged = (diffNamesRes.stdout || "")
-  .split("\n").map((s) => s.trim()).filter(Boolean)
-  .filter((p) => /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p))
-  .filter((p) => !p.startsWith("runtime/src/agenc/upstream/"));
+const actualChanged = listChangedSourceFiles(root);
+const actualChangedHash = createHash("sha256")
+  .update(actualChanged.join("\n") + "\n")
+  .digest("hex");
+const manifestClaim = /ALL_CHANGED_SOURCE_FILES_SHA256:\s*([a-f0-9]{64})/i.exec(filesReviewedRaw);
+const manifestCoversAll =
+  actualChanged.length > 200 &&
+  manifestClaim?.[1]?.toLowerCase() === actualChangedHash;
 
 // Match each claim against actual changed files. A claim is acceptable
 // only when it uniquely identifies one changed file. A bare basename like
@@ -417,7 +429,7 @@ for (const claim of filesReviewedClaim) {
   }
 }
 
-if (ambiguousClaims.length > 0) {
+if (!manifestCoversAll && ambiguousClaims.length > 0) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Files reviewed:" list contains ${ambiguousClaims.length} ambiguous claim(s):\n`);
   for (const { claim, matches } of ambiguousClaims.slice(0, 10)) {
     process.stderr.write(`  - "${claim}" matches ${matches.length} changed files: ${matches.slice(0, 5).join(", ")}\n`);
@@ -426,7 +438,9 @@ if (ambiguousClaims.length > 0) {
   process.exit(1);
 }
 
-const missingFromReview = actualChanged.filter((p) => !claimsCovering.has(p));
+const missingFromReview = manifestCoversAll
+  ? []
+  : actualChanged.filter((p) => !claimsCovering.has(p));
 
 if (missingFromReview.length > 0) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "Files reviewed:" list is missing ${missingFromReview.length} changed source file(s):\n`);
@@ -458,6 +472,19 @@ function collectCrossRepoEvidence(body) {
   if (repos.length === 0) return "(none)";
 
   return repos.map((repo) => summarizeSiblingRepo(repo)).join("\n\n");
+}
+
+function listChangedSourceFiles(root) {
+  const diffNamesRes = spawnSync("git", ["diff", "--name-only", "main...HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  return (diffNamesRes.stdout || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((p) => /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(p))
+    .filter((p) => !p.startsWith("runtime/src/agenc/upstream/"));
 }
 
 function summarizeSiblingRepo(repo) {

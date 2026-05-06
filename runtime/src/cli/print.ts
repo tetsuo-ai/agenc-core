@@ -309,7 +309,7 @@ import {
   restoreAgentFromSession,
   restoreSessionStateFromLog,
 } from 'src/utils/sessionRestore.js'
-import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
+import { SandboxManager } from 'src/utils/sandbox/sandbox-runtime.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
@@ -327,30 +327,30 @@ import {
   isBareMode,
   isEnvTruthy,
   isEnvDefinedFalsy,
-} from '../utils/envUtils.js'
-import { installPluginsForHeadless } from '../utils/plugins/headlessPluginInstall.js'
-import { refreshActivePlugins } from '../utils/plugins/refresh.js'
-import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
+} from '../../../utils/envUtils.js'
+import { installPluginsForHeadless } from '../../../utils/plugins/headlessPluginInstall.js'
+import { refreshActivePlugins } from '../../../utils/plugins/refresh.js'
+import { loadAllPluginsCacheOnly } from '../../../utils/plugins/pluginLoader.js'
 import {
   isTeamLead,
   hasActiveInProcessTeammates,
   hasWorkingInProcessTeammates,
   waitForTeammatesToBecomeIdle,
-} from '../utils/teammate.js'
+} from '../../../utils/teammate.js'
 import {
   readUnreadMessages,
   markMessagesAsRead,
   isShutdownApproved,
-} from '../utils/teammateMailbox.js'
-import { removeTeammateFromTeamFile } from '../utils/swarm/teamHelpers.js'
-import { unassignTeammateTasks } from '../utils/tasks.js'
-import { getRunningTasks } from '../utils/task/framework.js'
+} from '../../../utils/teammateMailbox.js'
+import { removeTeammateFromTeamFile } from '../../../utils/swarm/teamHelpers.js'
+import { unassignTeammateTasks } from '../../../utils/tasks.js'
+import { getRunningTasks } from '../../../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { stopTask } from '../tasks/stopTask.js'
-import { drainSdkEvents } from '../utils/sdkEventQueue.js'
+import { drainSdkEvents } from '../../../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
-import { errorMessage, toError } from '../utils/errors.js'
-import { sleep } from '../utils/sleep.js'
+import { errorMessage, toError } from '../../../utils/errors.js'
+import { sleep } from '../../../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 
 // Dead code elimination: conditional imports
@@ -362,8 +362,8 @@ const proactiveModule =
   feature('PROACTIVE') || feature('KAIROS')
     ? (require('../proactive/index.js') as typeof import('../proactive/index.js'))
     : null
-const cronSchedulerModule = require('../utils/cronScheduler.js') as typeof import('../utils/cronScheduler.js')
-const cronJitterConfigModule = require('../utils/cronJitterConfig.js') as typeof import('../utils/cronJitterConfig.js')
+const cronSchedulerModule = require('../../../utils/cronScheduler.js') as typeof import('../../../utils/cronScheduler.js')
+const cronJitterConfigModule = require('../../../utils/cronJitterConfig.js') as typeof import('../../../utils/cronJitterConfig.js')
 const cronGate = require('../tools/ScheduleCronTool/prompt.js') as typeof import('../tools/ScheduleCronTool/prompt.js')
 const extractMemoriesModule = feature('EXTRACT_MEMORIES')
   ? (require('../services/extractMemories/extractMemories.js') as typeof import('../services/extractMemories/extractMemories.js'))
@@ -1906,7 +1906,7 @@ function runHeadlessStreaming(
       // Set up hot-reload for plugin hooks now that the initial install is done.
       // In sync-install mode, setup.ts skips this to avoid racing with the install.
       const { setupPluginHookHotReload } = await import(
-        '../utils/plugins/loadPluginHooks.js'
+        '../../../utils/plugins/loadPluginHooks.js'
       )
       setupPluginHookHotReload()
     }
@@ -2678,7 +2678,7 @@ function runHeadlessStreaming(
   // when a message arrives via the UDS socket in headless mode.
   if (feature('UDS_INBOX')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
-    const { setOnEnqueue } = require('../utils/udsMessaging.js')
+    const { setOnEnqueue } = require('../../../utils/udsMessaging.js')
     /* eslint-enable @typescript-eslint/no-require-imports */
     setOnEnqueue(() => {
       if (!inputClosed) {
@@ -2693,7 +2693,7 @@ function runHeadlessStreaming(
   // that drains on enqueue while idle. The run() mutex makes this safe
   // during an active turn: the call no-ops and the post-run recheck at
   // the end of run() picks up the queued command.
-  let cronScheduler: import('../utils/cronScheduler.js').CronScheduler | null =
+  let cronScheduler: import('../../../utils/cronScheduler.js').CronScheduler | null =
     null
   if (cronGate.isKairosCronEnabled()) {
     cronScheduler = cronSchedulerModule.createCronScheduler({
@@ -3714,7 +3714,7 @@ function runHeadlessStreaming(
           // now that the reset is centralized in fanOut, a direct call here
           // would read stale cached settings and silently drop the update.
           // Bonus: going through notifyChange also tells the other subscribers
-          // (loadPluginHooks, sandbox-adapter) about the change, which the
+          // (loadPluginHooks, sandbox-runtime) about the change, which the
           // previous direct call skipped.
           settingsChangeDetector.notifyChange('flagSettings')
 

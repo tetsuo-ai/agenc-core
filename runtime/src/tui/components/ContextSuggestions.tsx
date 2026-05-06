@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import { Box, Text } from '../ink.js';
-import type { ContextSuggestion } from '../../agenc/upstream/utils/contextSuggestions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatTokens } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ContextSuggestion } from '../../utils/contextSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatTokens } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { StatusIcon } from './design-system/StatusIcon';
 type Props = {
   suggestions: ContextSuggestion[];

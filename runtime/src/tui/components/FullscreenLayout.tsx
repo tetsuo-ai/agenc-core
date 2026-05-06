@@ -9,9 +9,9 @@ import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import instances from '../ink/instances.js';
 import { Box, Text } from '../ink.js';
 import type { Message } from '../../types/message';
-import { openBrowser, openPath } from '../../agenc/upstream/utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser, openPath } from '../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
 import type { StickyPrompt } from './VirtualMessageList';

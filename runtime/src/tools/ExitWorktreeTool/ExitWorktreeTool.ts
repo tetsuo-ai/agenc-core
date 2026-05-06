@@ -5,7 +5,7 @@ import {
   setOriginalCwd,
   setProjectRoot,
 } from '../../bootstrap/state.js'
-import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
+import { clearSystemPromptSections } from '../../../../constants/systemPromptSections.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
@@ -22,7 +22,7 @@ import {
   getCurrentWorktreeSession,
   keepWorktree,
   killTmuxSession,
-} from '../../utils/worktree.js'
+} from '../../../../utils/worktree.js'
 import { EXIT_WORKTREE_TOOL_NAME } from './constants.js'
 import { getExitWorktreeToolPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'

@@ -4,15 +4,15 @@ import * as React from 'react';
 import { Box, Text, color } from '../../ink.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { stringWidth } from '../../ink/stringWidth.js';
-import { getLayoutMode, calculateLayoutDimensions, calculateOptimalLeftWidth, formatWelcomeMessage, truncatePath, getRecentActivitySync, getRecentReleaseNotesSync, getLogoDisplayData } from '../../../agenc/upstream/utils/logoV2Utils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncate } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDisplayPath } from '../../../agenc/upstream/utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getLayoutMode, calculateLayoutDimensions, calculateOptimalLeftWidth, formatWelcomeMessage, truncatePath, getRecentActivitySync, getRecentReleaseNotesSync, getLogoDisplayData } from '../../../utils/logoV2Utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Clawd } from './Clawd';
 import { FeedColumn } from './FeedColumn';
 import { createRecentActivityFeed, createWhatsNewFeed, createProjectOnboardingFeed, createGuestPassesFeed } from './feedConfigs';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { resolveThemeSetting } from '../../../agenc/upstream/utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../../agenc/upstream/utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { resolveThemeSetting } from '../../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isDebugMode, isDebugToStdErr, getDebugLogPath } from 'src/utils/debug.js';
 import { useEffect, useState } from 'react';
 import { getSteps, shouldShowProjectOnboarding, incrementProjectOnboardingSeenCount } from '../../../onboarding/projectOnboardingState';
@@ -21,7 +21,7 @@ import { OffscreenFreeze } from '../OffscreenFreeze';
 import { checkForReleaseNotesSync } from '../../../agenc/upstream/utils/releaseNotes'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getDumpPromptsPath } from '../../../services/api/dumpPrompts.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
-import { getStartupPerfLogPath, isDetailedProfilingEnabled } from '../../../agenc/upstream/utils/startupProfiler.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getStartupPerfLogPath, isDetailedProfilingEnabled } from '../../../utils/startupProfiler.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { EmergencyTip } from './EmergencyTip';
 import { VoiceModeNotice } from './VoiceModeNotice';
 import { Opus1mMergeNotice } from './Opus1mMergeNotice';
@@ -35,15 +35,15 @@ import { feature } from 'bun:bundle';
 /* eslint-disable @typescript-eslint/no-require-imports */
 const ChannelsNoticeModule = feature('KAIROS') || feature('KAIROS_CHANNELS') ? require('./ChannelsNotice') as typeof import('./ChannelsNotice') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { SandboxManager } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useShowGuestPassesUpsell, incrementGuestPassesSeenCount } from './GuestPassesUpsell';
 import { useShowOverageCreditUpsell, incrementOverageCreditUpsellSeenCount, createOverageCreditFeed } from './OverageCreditUpsell';
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useAppState } from '../../state/AppState.js';
-import { getEffortSuffix } from '../../../agenc/upstream/utils/effort'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getEffortSuffix } from '../../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../../utils/model/providers.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useMainLoopModel } from '../../hooks/useMainLoopModel';
-import { renderModelSetting } from '../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
+import { renderModelSetting } from '../../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const LEFT_PANEL_MAX_WIDTH = 50;
 export function LogoV2() {
   const $ = _c(94);

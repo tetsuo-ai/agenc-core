@@ -7,13 +7,13 @@ import {
 } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask'
 import { isKairosCronEnabled } from '../../tools/ScheduleCronTool/prompt'
 import type { Message } from '../../types/message'
-import { getCronJitterConfig } from '../../agenc/upstream/utils/cronJitterConfig' // upstream-import: keep target is owned by another Z-PURGE item
-import { createCronScheduler } from '../../agenc/upstream/utils/cronScheduler' // upstream-import: keep target is owned by another Z-PURGE item
-import { removeCronTasks } from '../../agenc/upstream/utils/cronTasks' // upstream-import: keep target is owned by another Z-PURGE item
+import { getCronJitterConfig } from '../../utils/cronJitterConfig.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { createCronScheduler } from '../../utils/cronScheduler.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { removeCronTasks } from '../../utils/cronTasks.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { enqueuePendingNotification } from '../../agenc/upstream/utils/messageQueueManager' // upstream-import: keep target is owned by another Z-PURGE item
-import { createScheduledTaskFireMessage } from '../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
-import { WORKLOAD_CRON } from '../../agenc/upstream/utils/workloadContext' // upstream-import: keep target is owned by another Z-PURGE item
+import { enqueuePendingNotification } from '../../utils/messageQueueManager.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { createScheduledTaskFireMessage } from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { WORKLOAD_CRON } from '../../utils/workloadContext.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type Props = {
   isLoading: boolean

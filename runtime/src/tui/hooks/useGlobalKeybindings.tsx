@@ -12,8 +12,8 @@ import type { Screen } from '../screens/REPL';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { count } from '../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTerminalPanel } from '../../agenc/upstream/utils/terminalPanel'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTerminalPanel } from '../../utils/terminalPanel.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   screen: Screen;
   setScreen: React.Dispatch<React.SetStateAction<Screen>>;

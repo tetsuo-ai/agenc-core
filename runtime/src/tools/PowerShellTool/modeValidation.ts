@@ -13,7 +13,7 @@ import {
   deriveSecurityFlags,
   getPipelineSegments,
   PS_TOKENIZER_DASH_CHARS,
-} from '../../utils/powershell/parser.js'
+} from '../../../../utils/powershell/parser.js'
 import {
   argLeaksValue,
   isAllowlistedPipelineTail,

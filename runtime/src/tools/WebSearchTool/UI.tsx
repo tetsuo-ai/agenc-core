@@ -3,7 +3,7 @@ import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { Box, Text } from '../../tui/ink.js';
 import type { ProgressMessage } from '../../types/message.js';
-import { truncate } from '../../utils/format.js';
+import { truncate } from '../../../../utils/format.js';
 import type { Output, SearchResult, WebSearchProgress } from './WebSearchTool.js';
 function getSearchSummary(results: (SearchResult | string | null | undefined)[]): {
   searchCount: number;

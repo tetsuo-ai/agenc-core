@@ -3,7 +3,7 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { extraUsage as extraUsageCommand } from '../../../commands/extra-usage/index.js';
 import { formatCost } from 'src/cost/tracker.js';
-import { getSubscriptionType } from '../../../agenc/upstream/utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSubscriptionType } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';

@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import type { Tools, ToolPermissionContext } from '../../tools/Tool'
 import { assembleToolPool } from '../../tools'
 import { useAppState } from '../state/AppState.js'
-import { mergeAndFilterTools } from '../../agenc/upstream/utils/toolPool' // upstream-import: keep target is owned by another Z-PURGE item
+import { mergeAndFilterTools } from '../../utils/toolPool.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * React hook that assembles the full tool pool for the REPL.

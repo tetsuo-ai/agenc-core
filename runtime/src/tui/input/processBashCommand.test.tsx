@@ -29,7 +29,7 @@ vi.mock("../../tools/BashTool/BashTool.js", () => ({
   },
 }));
 
-vi.mock("../../agenc/upstream/utils/errors.js", () => ({
+vi.mock("../../utils/errors.js", () => ({
   errorMessage: vi.fn((error: unknown) =>
     error instanceof Error ? error.message : String(error),
   ),
@@ -40,7 +40,7 @@ vi.mock("../../agenc/upstream/utils/errors.js", () => ({
   },
 }));
 
-vi.mock("../../agenc/upstream/utils/messages.js", () => ({
+vi.mock("../../utils/messages.js", () => ({
   createSyntheticUserCaveatMessage: vi.fn(() => ({
     type: "system",
     message: { content: "synthetic caveat" },
@@ -59,20 +59,20 @@ vi.mock("../../agenc/upstream/utils/messages.js", () => ({
   ),
 }));
 
-vi.mock("../../agenc/upstream/utils/shell/resolveDefaultShell.js", () => ({
+vi.mock("../../utils/shell/resolveDefaultShell.js", () => ({
   resolveDefaultShell: vi.fn(() => "bash"),
 }));
 
-vi.mock("../../agenc/upstream/utils/shell/shellToolUtils.js", () => ({
+vi.mock("../../utils/shell/shellToolUtils.js", () => ({
   getPowerShellTool: vi.fn(() => null),
   isPowerShellToolEnabled: vi.fn(() => false),
 }));
 
-vi.mock("../../agenc/upstream/utils/toolResultStorage.js", () => ({
+vi.mock("../../utils/toolResultStorage.js", () => ({
   processToolResultBlock: mocks.processToolResultBlock,
 }));
 
-vi.mock("../../agenc/upstream/utils/xml.js", () => ({
+vi.mock("../../utils/xml.js", () => ({
   escapeXml: vi.fn((value: string) => value),
 }));
 

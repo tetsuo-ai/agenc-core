@@ -6,11 +6,11 @@ import type {
   SDKControlResponse,
 } from '../entrypoints/sdk/controlTypes.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logError } from '../utils/log.js'
+import { logError } from '../../../utils/log.js'
 import {
   type RemoteMessageContent,
   sendEventToRemoteSession,
-} from '../utils/teleport/api.js'
+} from '../../../utils/teleport/api.js'
 import {
   SessionsWebSocket,
   type SessionsWebSocketCallbacks,

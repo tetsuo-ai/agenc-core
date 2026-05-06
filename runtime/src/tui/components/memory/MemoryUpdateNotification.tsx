@@ -3,7 +3,7 @@ import { homedir } from 'os';
 import { relative } from 'path';
 import React from 'react';
 import { Box, Text } from '../../ink.js';
-import { getCwd } from '../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export function getRelativeMemoryPath(path: string): string {
   const homeDir = homedir();
   const cwd = getCwd();

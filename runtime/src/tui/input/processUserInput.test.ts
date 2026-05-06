@@ -31,7 +31,7 @@ vi.mock("../../services/analytics/index.js", () => ({
   logEvent: mocks.logEvent,
 }));
 
-vi.mock("../../agenc/upstream/utils/attachments.js", () => ({
+vi.mock("../../utils/attachments.js", () => ({
   createAttachmentMessage: vi.fn((attachment) => ({
     type: "attachment",
     attachment,
@@ -39,11 +39,11 @@ vi.mock("../../agenc/upstream/utils/attachments.js", () => ({
   getAttachmentMessages: mocks.getAttachmentMessages,
 }));
 
-vi.mock("../../agenc/upstream/utils/imageStore.js", () => ({
+vi.mock("../../utils/imageStore.js", () => ({
   storeImages: mocks.storeImages,
 }));
 
-vi.mock("../../agenc/upstream/utils/messages.js", () => ({
+vi.mock("../../utils/messages.js", () => ({
   createCommandInputMessage: vi.fn((content: string) => ({
     type: "system",
     message: { content },
@@ -70,20 +70,20 @@ vi.mock("../../agenc/upstream/utils/messages.js", () => ({
   ),
 }));
 
-vi.mock("../../agenc/upstream/utils/queryProfiler.js", () => ({
+vi.mock("../../utils/queryProfiler.js", () => ({
   queryCheckpoint: mocks.queryCheckpoint,
 }));
 
-vi.mock("../../agenc/upstream/utils/telemetry/events.js", () => ({
+vi.mock("../../utils/telemetry/events.js", () => ({
   logOTelEvent: mocks.logOTelEvent,
   redactIfDisabled: vi.fn((value: string) => value),
 }));
 
-vi.mock("../../agenc/upstream/utils/telemetry/sessionTracing.js", () => ({
+vi.mock("../../utils/telemetry/sessionTracing.js", () => ({
   startInteractionSpan: mocks.startInteractionSpan,
 }));
 
-vi.mock("../../agenc/upstream/utils/ultraplan/keyword.js", () => ({
+vi.mock("../../utils/ultraplan/keyword.js", () => ({
   hasUltraplanKeyword: vi.fn(() => false),
   replaceUltraplanKeyword: vi.fn((value: string) => value),
 }));

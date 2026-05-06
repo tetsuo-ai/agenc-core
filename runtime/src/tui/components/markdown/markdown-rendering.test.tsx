@@ -40,7 +40,7 @@ vi.mock('../../hooks/useSettings.js', () => ({
   }),
 }))
 
-vi.mock('../../../agenc/upstream/utils/messages.js', () => ({
+vi.mock('../../../utils/messages.js', () => ({
   stripPromptXMLTags: (input: string) =>
     input.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ''),
 }))

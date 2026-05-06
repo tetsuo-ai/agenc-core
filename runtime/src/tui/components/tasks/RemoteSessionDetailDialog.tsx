@@ -5,7 +5,7 @@ import type { SDKMessage } from '../../../entrypoints/agentSdkTypes.js';
 import type { ToolUseContext } from '../../../tools/Tool.js';
 import type { DeepImmutable } from '../../../types/utils.js';
 import type { CommandResultDisplay } from '../../../commands.js';
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useElapsedTime } from '../../hooks/useElapsedTime';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Link, Text } from '../../ink.js';

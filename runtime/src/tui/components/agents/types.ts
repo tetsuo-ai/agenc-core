@@ -1,4 +1,4 @@
-import type { SettingSource } from '../../../agenc/upstream/utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 export const AGENT_PATHS = {

@@ -76,6 +76,7 @@ const FORBIDDEN = [
 const ALLOW_LINE_PATTERNS = [
   // Anthropic API model IDs (e.g. claude-opus-4-7, claude-sonnet-4-6)
   /claude-(?:opus|sonnet|haiku)-[\d.-]+/i, // branding-scan: allow allow-list pattern
+  /claude-\d+(?:[-.@]\w+)+/i, // branding-scan: allow documented Anthropic model identifier
   // Provider-defined env vars
   /\bANTHROPIC_API_KEY\b/,
   /\bANTHROPIC_/,
@@ -84,6 +85,7 @@ const ALLOW_LINE_PATTERNS = [
   // branding-scan: allow allow-list pattern doc
   // OpenAI's codex model family identifier (the model, not the project)
   /\bcodex-(?:mini|small|medium|large|davinci|001|002)\b/i, // branding-scan: allow allow-list pattern
+  /\bgpt-[\w.-]*codex[\w.-]*\b/i, // branding-scan: allow documented OpenAI model identifier
   // npm package names that legitimately contain these strings
   /["'@][\w-]*claude[\w-]*["']/i, // branding-scan: allow allow-list pattern
   /["']codex[-/][\w@/-]+["']/i, // branding-scan: allow allow-list pattern
@@ -111,6 +113,12 @@ const ALLOW_FILE_LINE_PATTERNS = [
     // Usage and effort UI may refer to the real provider family.
     file: /(^|\/)runtime\/src\/tui\/components\/(?:EffortPicker|Settings\/CodexUsage)\.(?:ts|tsx)$/, // branding-scan: allow scanner allow-list regex
     line: /\b(?:OpenAI|Codex\w*|codex\w*)\b/, // branding-scan: allow scanner allow-list regex
+  },
+  {
+    // OpenAI/Codex provider transport internals necessarily refer to // branding-scan: allow scanner allow-list comment
+    // provider-defined names, env vars, auth files, and wire transports.
+    file: /(^|\/)runtime\/src\/agenc\/upstream\/services\/api\/(?:codexUsage|openaiShim|providerConfig(?:\.[^.]+)*?)\.ts$/, // branding-scan: allow scanner allow-list regex
+    line: /\b(?:Anthropic|OpenAI|Codex\w*|codex\w*|claude\w*)\b|CODEX_|CHATGPT_|\.codex|chatgpt\.com\/backend-api\/codex|codex_responses/, // branding-scan: allow scanner allow-list regex
   },
   {
     // Text input internals use a caret utility type, not as an
@@ -170,8 +178,21 @@ function isAbsorbImportRewriteLine(line, rel) {
   ) {
     return true;
   }
+  if (
+    UPSTREAM_MIRROR_RE.test(rel) &&
+    // branding-scan: allow scanner regex enumerates credential symbol rewrite names
+    /(?:\b(?:read|refresh|is)(?:Codex|Agenc)(?:Credentials(?:Async)?|AccessTokenIfNeeded|RefreshFailureCoolingDown)\b|\b(?:Codex|Agenc)CredentialBlob\b)/.test(line)
+  ) {
+    return true;
+  }
   if (!/(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line)) {
     return false;
+  }
+  if (
+    UPSTREAM_MIRROR_RE.test(rel) &&
+    /(?:^|['"`(])(?:[./]+|src\/)(?:utils|constants)\/[\w@./?&=-]+(?:\.js)?/.test(line)
+  ) {
+    return true;
   }
   const commonAbsorbImportPatterns = [
     /(?:^|[./])utils\/(?:config|cwd)(?:\.js)?/,

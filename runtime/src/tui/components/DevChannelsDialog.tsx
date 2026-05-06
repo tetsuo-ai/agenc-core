@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ChannelEntry } from '../../bootstrap/state';
 import { Box, Text } from '../ink.js';
-import { gracefulShutdownSync } from '../../agenc/upstream/utils/gracefulShutdown'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 type Props = {

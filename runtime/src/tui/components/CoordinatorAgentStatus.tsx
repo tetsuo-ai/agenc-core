@@ -9,7 +9,7 @@ import { c as _c } from "react-compiler-runtime";
 
 import figures from 'figures';
 import * as React from 'react';
-import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text, wrapText } from '../ink.js';

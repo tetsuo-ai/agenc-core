@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../../ink.js';
-import { formatDuration } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   elapsedTimeSeconds?: number;
   timeoutMs?: number;

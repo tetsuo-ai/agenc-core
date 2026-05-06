@@ -3,10 +3,10 @@ import type { CommandResultDisplay } from 'src/commands.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { Box, Text } from '../ink.js';
-import { execFileNoThrow } from '../../agenc/upstream/utils/execFileNoThrow'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPlansDirectory } from '../../agenc/upstream/utils/plans'; // upstream-import: keep target is owned by another Z-PURGE item
-import { setCwd } from '../../agenc/upstream/utils/Shell'; // upstream-import: keep target is owned by another Z-PURGE item
-import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../../agenc/upstream/utils/worktree'; // upstream-import: keep target is owned by another Z-PURGE item
+import { execFileNoThrow } from '../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlansDirectory } from '../../utils/plans.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { setCwd } from '../../utils/Shell.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../../utils/worktree.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 import { Spinner } from './spinner/Spinner.js';

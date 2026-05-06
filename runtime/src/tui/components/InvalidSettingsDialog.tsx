@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../ink.js';
-import type { ValidationError } from '../../agenc/upstream/utils/settings/validation'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ValidationError } from '../../utils/settings/validation.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 import { ValidationErrorsList } from './ValidationErrorsList.js';

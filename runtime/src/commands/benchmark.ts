@@ -5,8 +5,8 @@ import {
   benchmarkMultipleModels,
   formatBenchmarkResults,
   isBenchmarkSupported,
-} from '../utils/model/benchmark.js'
-import { getOllamaModelOptions } from '../utils/model/ollamaModels.js'
+} from '../../../utils/model/benchmark.js'
+import { getOllamaModelOptions } from '../../../utils/model/ollamaModels.js'
 
 async function runBenchmark(
   model?: string,

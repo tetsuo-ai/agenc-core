@@ -1,7 +1,7 @@
 import React from 'react';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text } from '../ink.js';
-import { truncateToWidth } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 // Constants for width calculations - derived from actual rendered strings
 const ALL_TAB_LABEL = 'All';

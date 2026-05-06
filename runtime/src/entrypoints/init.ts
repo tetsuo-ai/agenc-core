@@ -1,6 +1,6 @@
-import { profileCheckpoint } from '../utils/startupProfiler.js'
+import { profileCheckpoint } from '../../../utils/startupProfiler.js'
 import '../bootstrap/state.js'
-import '../utils/config.js'
+import '../../../utils/config.js'
 import type { Attributes, MetricOptions } from '@opentelemetry/api'
 import memoize from 'lodash-es/memoize.js'
 import { getIsNonInteractiveSession } from 'src/bootstrap/state.js'
@@ -22,32 +22,32 @@ import { applyExtraCACertsFromConfig } from '../utils/caCertsConfig.js'
 import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { enableConfigs, recordFirstStartTime } from '../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { detectCurrentRepository } from '../utils/detectRepository.js'
-import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
-import { initJetBrainsDetection } from '../utils/envDynamic.js'
-import { isEnvTruthy } from '../utils/envUtils.js'
-import { ConfigParseError, errorMessage } from '../utils/errors.js'
+import { detectCurrentRepository } from '../../../utils/detectRepository.js'
+import { logForDiagnosticsNoPII } from '../../../utils/diagLogs.js'
+import { initJetBrainsDetection } from '../../../utils/envDynamic.js'
+import { isEnvTruthy } from '../../../utils/envUtils.js'
+import { ConfigParseError, errorMessage } from '../../../utils/errors.js'
 // showInvalidConfigDialog is dynamically imported in the error path to avoid loading React at init
 import {
   gracefulShutdownSync,
   setupGracefulShutdown,
-} from '../utils/gracefulShutdown.js'
+} from '../../../utils/gracefulShutdown.js'
 import {
   applyConfigEnvironmentVariables,
   applySafeConfigEnvironmentVariables,
-} from '../utils/managedEnv.js'
-import { configureGlobalMTLS } from '../utils/mtls.js'
+} from '../../../utils/managedEnv.js'
+import { configureGlobalMTLS } from '../../../utils/mtls.js'
 import {
   ensureScratchpadDir,
   isScratchpadEnabled,
-} from '../utils/permissions/filesystem.js'
+} from '../../../utils/permissions/filesystem.js'
 // initializeTelemetry is loaded lazily via import() in setMeterState() to defer
 // ~400KB of OpenTelemetry + protobuf modules until telemetry is actually initialized.
 // gRPC exporters (~700KB via @grpc/grpc-js) are further lazy-loaded within instrumentation.ts.
-import { configureGlobalAgents } from '../utils/proxy.js'
-import { isBetaTracingEnabled } from '../utils/telemetry/betaSessionTracing.js'
-import { getTelemetryAttributes } from '../utils/telemetryAttributes.js'
-import { setShellIfWindows } from '../utils/windowsPaths.js'
+import { configureGlobalAgents } from '../../../utils/proxy.js'
+import { isBetaTracingEnabled } from '../../../utils/telemetry/betaSessionTracing.js'
+import { getTelemetryAttributes } from '../../../utils/telemetryAttributes.js'
+import { setShellIfWindows } from '../../../utils/windowsPaths.js'
 
 // initialize1PEventLogging is dynamically imported to defer OpenTelemetry sdk-logs/resources
 
@@ -170,7 +170,7 @@ export const init = memoize(async (): Promise<void> => {
           '../relay-proxy/upstreamproxy.js'
         )
         const { registerUpstreamProxyEnvFn } = await import(
-          '../utils/subprocessEnv.js'
+          '../../../utils/subprocessEnv.js'
         )
         registerUpstreamProxyEnvFn(getUpstreamProxyEnv)
         await initUpstreamProxy()
@@ -194,7 +194,7 @@ export const init = memoize(async (): Promise<void> => {
     // behind feature gate and most sessions never create teams.
     registerCleanup(async () => {
       const { cleanupSessionTeams } = await import(
-        '../utils/swarm/teamHelpers.js'
+        '../../../utils/swarm/teamHelpers.js'
       )
       await cleanupSessionTeams()
     })
@@ -305,7 +305,7 @@ async function doInitializeTelemetry(): Promise<void> {
 async function setMeterState(): Promise<void> {
   // Lazy-load instrumentation to defer ~400KB of OpenTelemetry + protobuf
   const { initializeTelemetry } = await import(
-    '../utils/telemetry/instrumentation.js'
+    '../../../utils/telemetry/instrumentation.js'
   )
   // Initialize customer OTLP telemetry (metrics, logs, traces)
   const meter = await initializeTelemetry()

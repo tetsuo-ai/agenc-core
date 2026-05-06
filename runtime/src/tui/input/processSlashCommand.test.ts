@@ -61,38 +61,38 @@ vi.mock("../../tools/AgentTool/UI.js", () => ({
   renderToolUseProgressMessage: vi.fn(() => null),
 }));
 
-vi.mock("../../agenc/upstream/utils/abortController.js", () => ({
+vi.mock("../../utils/abortController.js", () => ({
   createAbortController: vi.fn(() => new AbortController()),
 }));
 
-vi.mock("../../agenc/upstream/utils/agentContext.js", () => ({
+vi.mock("../../utils/agentContext.js", () => ({
   getAgentContext: vi.fn(() => null),
 }));
 
-vi.mock("../../agenc/upstream/utils/attachments.js", () => ({
+vi.mock("../../utils/attachments.js", () => ({
   createAttachmentMessage: vi.fn((attachment) => ({ type: "attachment", attachment })),
   getAttachmentMessages: vi.fn(async function* () {}),
 }));
 
-vi.mock("../../agenc/upstream/utils/envUtils.js", () => ({
+vi.mock("../../utils/envUtils.js", () => ({
   isEnvTruthy: vi.fn(() => false),
 }));
 
-vi.mock("../../agenc/upstream/utils/errors.js", () => ({
+vi.mock("../../utils/errors.js", () => ({
   AbortError: class AbortError extends Error {},
   MalformedCommandError: class MalformedCommandError extends Error {},
 }));
 
-vi.mock("../../agenc/upstream/utils/file.js", () => ({
+vi.mock("../../utils/file.js", () => ({
   getDisplayPath: vi.fn((value: string) => value),
 }));
 
-vi.mock("../../agenc/upstream/utils/forkedAgent.js", () => ({
+vi.mock("../../utils/forkedAgent.js", () => ({
   extractResultText: vi.fn(() => "done"),
   prepareForkedCommandContext: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/utils/fsOperations.js", () => ({
+vi.mock("../../utils/fsOperations.js", () => ({
   getFsImplementation: vi.fn(() => ({
     stat: vi.fn(async () => {
       throw new Error("not found");
@@ -100,23 +100,23 @@ vi.mock("../../agenc/upstream/utils/fsOperations.js", () => ({
   })),
 }));
 
-vi.mock("../../agenc/upstream/utils/fullscreen.js", () => ({
+vi.mock("../../utils/fullscreen.js", () => ({
   isFullscreenEnvEnabled: vi.fn(() => false),
 }));
 
-vi.mock("../../agenc/upstream/utils/hooks/registerSkillHooks.js", () => ({
+vi.mock("../../utils/hooks/registerSkillHooks.js", () => ({
   registerSkillHooks: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/utils/log.js", () => ({
+vi.mock("../../utils/log.js", () => ({
   logError: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/utils/messageQueueManager.js", () => ({
+vi.mock("../../utils/messageQueueManager.js", () => ({
   enqueuePendingNotification: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/utils/messages.js", () => ({
+vi.mock("../../utils/messages.js", () => ({
   createCommandInputMessage: vi.fn((content: string) => ({
     type: "system",
     message: { content },
@@ -153,50 +153,50 @@ vi.mock("../../agenc/upstream/utils/messages.js", () => ({
   ),
 }));
 
-vi.mock("../../agenc/upstream/utils/permissions/permissionSetup.js", () => ({
+vi.mock("../../utils/permissions/permissionSetup.js", () => ({
   parseToolListFromCLI: vi.fn(() => []),
 }));
 
-vi.mock("../../agenc/upstream/utils/permissions/permissions.js", () => ({
+vi.mock("../../utils/permissions/permissions.js", () => ({
   hasPermissionsToUseTool: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/utils/plugins/pluginIdentifier.js", () => ({
+vi.mock("../../utils/plugins/pluginIdentifier.js", () => ({
   isOfficialMarketplaceName: vi.fn(() => false),
   parsePluginIdentifier: vi.fn(() => ({ marketplace: undefined })),
 }));
 
-vi.mock("../../agenc/upstream/utils/settings/pluginOnlyPolicy.js", () => ({
+vi.mock("../../utils/settings/pluginOnlyPolicy.js", () => ({
   isRestrictedToPluginOnly: vi.fn(() => false),
   isSourceAdminTrusted: vi.fn(() => true),
 }));
 
-vi.mock("../../agenc/upstream/utils/sleep.js", () => ({
+vi.mock("../../utils/sleep.js", () => ({
   sleep: vi.fn(),
 }));
 
-vi.mock("../../agenc/upstream/utils/suggestions/skillUsageTracking.js", () => ({
+vi.mock("../../utils/suggestions/skillUsageTracking.js", () => ({
   recordSkillUsage: mocks.recordSkillUsage,
 }));
 
-vi.mock("../../agenc/upstream/utils/telemetry/events.js", () => ({
+vi.mock("../../utils/telemetry/events.js", () => ({
   logOTelEvent: vi.fn(),
   redactIfDisabled: vi.fn((value: string) => value),
 }));
 
-vi.mock("../../agenc/upstream/utils/telemetry/pluginTelemetry.js", () => ({
+vi.mock("../../utils/telemetry/pluginTelemetry.js", () => ({
   buildPluginCommandTelemetryFields: vi.fn(() => ({})),
 }));
 
-vi.mock("../../agenc/upstream/utils/tokens.js", () => ({
+vi.mock("../../utils/tokens.js", () => ({
   getAssistantMessageContentLength: vi.fn(() => 0),
 }));
 
-vi.mock("../../agenc/upstream/utils/uuid.js", () => ({
+vi.mock("../../utils/uuid.js", () => ({
   createAgentId: vi.fn(() => "agent-test"),
 }));
 
-vi.mock("../../agenc/upstream/utils/workloadContext.js", () => ({
+vi.mock("../../utils/workloadContext.js", () => ({
   getWorkload: vi.fn(() => undefined),
 }));
 

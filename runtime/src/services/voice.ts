@@ -7,9 +7,9 @@
 import { type ChildProcess, spawn, spawnSync } from 'child_process'
 import { readFile } from 'fs/promises'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy, isRunningOnHomespace } from '../utils/envUtils.js'
-import { logError } from '../utils/log.js'
-import { getPlatform } from '../utils/platform.js'
+import { isEnvTruthy, isRunningOnHomespace } from '../../../utils/envUtils.js'
+import { logError } from '../../../utils/log.js'
+import { getPlatform } from '../../../utils/platform.js'
 
 // Lazy-loaded native audio module. audio-capture.node links against
 // CoreAudio.framework + AudioUnit.framework; dlopen is synchronous and

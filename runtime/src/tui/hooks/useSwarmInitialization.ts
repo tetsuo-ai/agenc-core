@@ -11,11 +11,11 @@ import { useEffect } from 'react'
 import { getSessionId } from '../../bootstrap/state'
 import type { AppState } from '../state/AppState.js'
 import type { Message } from '../../types/message'
-import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled' // upstream-import: keep target is owned by another Z-PURGE item
-import { initializeTeammateContextFromSession } from '../../agenc/upstream/utils/swarm/reconnection' // upstream-import: keep target is owned by another Z-PURGE item
-import { readTeamFile } from '../../agenc/upstream/utils/swarm/teamHelpers' // upstream-import: keep target is owned by another Z-PURGE item
-import { initializeTeammateHooks } from '../../agenc/upstream/utils/swarm/teammateInit' // upstream-import: keep target is owned by another Z-PURGE item
-import { getDynamicTeamContext } from '../../agenc/upstream/utils/teammate' // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { initializeTeammateContextFromSession } from '../../utils/swarm/reconnection.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { readTeamFile } from '../../utils/swarm/teamHelpers.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { initializeTeammateHooks } from '../../utils/swarm/teammateInit.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getDynamicTeamContext } from '../../utils/teammate.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type SetAppState = (f: (prevState: AppState) => AppState) => void
 

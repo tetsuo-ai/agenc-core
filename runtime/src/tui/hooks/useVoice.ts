@@ -21,11 +21,11 @@ import {
   type VoiceStreamConnection,
 } from '../../services/voiceStreamSTT'
 import { logForDebugging } from 'src/utils/debug.js'
-import { toError } from '../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
-import { getSystemLocaleLanguage } from '../../agenc/upstream/utils/intl' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings' // upstream-import: keep target is owned by another Z-PURGE item
-import { sleep } from '../../agenc/upstream/utils/sleep' // upstream-import: keep target is owned by another Z-PURGE item
+import { toError } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getSystemLocaleLanguage } from '../../utils/intl.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { sleep } from '../../utils/sleep.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 // ─── Language normalization ─────────────────────────────────────────────
 

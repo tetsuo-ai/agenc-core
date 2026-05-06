@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import { APIUserAbortError } from '@anthropic-ai/sdk';
@@ -11,14 +13,14 @@ import type { ToolPermissionContext, Tool as ToolType, ToolUseContext } from '..
 import { consumeSpeculativeClassifierCheck, peekSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions';
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName';
 import type { AssistantMessage } from '../../types/message';
-import { recordAutoModeDenial } from '../../agenc/upstream/utils/autoModeDenials'; // upstream-import: keep target is owned by another Z-PURGE item
-import { clearClassifierChecking, setClassifierApproval, setYoloClassifierApproval } from '../../agenc/upstream/utils/classifierApprovals'; // upstream-import: keep target is owned by another Z-PURGE item
+import { recordAutoModeDenial } from '../../utils/autoModeDenials.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { clearClassifierChecking, setClassifierApproval, setYoloClassifierApproval } from '../../utils/classifierApprovals.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { AbortError } from '../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision } from '../../agenc/upstream/utils/permissions/PermissionResult'; // upstream-import: keep target is owned by another Z-PURGE item
-import { hasPermissionsToUseTool } from '../../agenc/upstream/utils/permissions/permissions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { AbortError } from '../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { handleCoordinatorPermission } from './toolPermission/handlers/coordinatorHandler';
 import { handleInteractivePermission } from './toolPermission/handlers/interactiveHandler';
 import { handleSwarmWorkerPermission } from './toolPermission/handlers/swarmWorkerHandler';

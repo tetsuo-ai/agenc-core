@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { env } from '../../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export type ClawdPose = 'default' | 'arms-up' // both arms raised (used during jump)
 | 'look-left' // both pupils shifted left
 | 'look-right'; // both pupils shifted right

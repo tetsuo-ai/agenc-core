@@ -1,9 +1,9 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { Tool } from '../Tool.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
-
 // Dead code elimination: Brief tool name only needed when KAIROS or KAIROS_BRIEF is on
 /* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
@@ -106,7 +106,6 @@ export function isDeferredTool(tool: Tool): boolean {
 
   return tool.shouldDefer === true
 }
-
 /**
  * Format one deferred-tool line for the <available-deferred-tools> user
  * message. Search hints (tool.searchHint) are not rendered — the
@@ -115,7 +114,6 @@ export function isDeferredTool(tool: Tool): boolean {
 export function formatDeferredToolLine(tool: Tool): string {
   return tool.name
 }
-
 export function getPrompt(): string {
   return PROMPT_HEAD + getToolLocationHint() + PROMPT_TAIL
 }

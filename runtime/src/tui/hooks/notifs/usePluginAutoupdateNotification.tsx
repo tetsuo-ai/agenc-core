@@ -5,7 +5,7 @@ import { getIsRemoteMode } from '../../../bootstrap/state';
 import { useNotifications } from '../../context/notifications';
 import { Text } from '../../ink.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { onPluginsAutoUpdated } from '../../../agenc/upstream/utils/plugins/pluginAutoupdate'; // upstream-import: keep target is owned by another Z-PURGE item
+import { onPluginsAutoUpdated } from '../../../utils/plugins/pluginAutoupdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Hook that displays a notification when plugins have been auto-updated.

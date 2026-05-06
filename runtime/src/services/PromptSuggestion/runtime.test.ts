@@ -7,7 +7,7 @@ import {
 
 const runAgenCForkedAgent = vi.hoisted(() => vi.fn());
 
-vi.mock("../../agenc/upstream/utils/forkedAgent.js", () => ({
+vi.mock("../../utils/forkedAgent.js", () => ({
   runForkedAgent: runAgenCForkedAgent,
 }));
 

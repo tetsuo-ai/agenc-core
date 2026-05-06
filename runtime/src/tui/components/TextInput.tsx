@@ -8,7 +8,7 @@ import { useTextInput } from '../hooks/useTextInput';
 import { Box, color, useAnimationFrame, useTerminalFocus, useTheme } from '../ink.js';
 import type { BaseTextInputProps } from '../../types/textInputTypes';
 import { isEnvTruthy } from '../../utils/envUtils';
-import type { TextHighlight } from '../../agenc/upstream/utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TextHighlight } from '../../utils/textHighlighting.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { BaseTextInput } from './BaseTextInput';
 import { hueToRgb } from './spinner/utils.js';
 

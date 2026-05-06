@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useState } from 'react';
 import { Box, Text } from '../ink.js';
-import { getDisplayPath } from '../../agenc/upstream/utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
-import { removePathFromRepo, validateRepoAtPath } from '../../agenc/upstream/utils/githubRepoPathMapping'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayPath } from '../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { removePathFromRepo, validateRepoAtPath } from '../../utils/githubRepoPathMapping.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 import { Spinner } from './spinner/Spinner.js';

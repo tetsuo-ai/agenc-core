@@ -9,9 +9,9 @@ import { join } from 'path'
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { getAutoMemPath } from '../../memdir/paths.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isProcessRunning } from '../../utils/genericProcessUtils.js'
-import { listCandidates } from '../../utils/listSessionsImpl.js'
-import { getProjectDir } from '../../utils/sessionStorage.js'
+import { isProcessRunning } from '../../../../utils/genericProcessUtils.js'
+import { listCandidates } from '../../../../utils/listSessionsImpl.js'
+import { getProjectDir } from '../../../../utils/sessionStorage.js'
 
 const LOCK_FILE = '.consolidate-lock'
 

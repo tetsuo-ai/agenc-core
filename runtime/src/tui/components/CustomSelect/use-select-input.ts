@@ -6,7 +6,7 @@ import { useKeybindings } from '../../keybindings/useKeybinding.js'
 import {
   normalizeFullWidthDigits,
   normalizeFullWidthSpace,
-} from '../../../agenc/upstream/utils/stringUtils' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/stringUtils.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from './select'
 import type { SelectState } from './use-select-state'
 

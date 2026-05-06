@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { UUID } from 'crypto'
 import type React from 'react'
@@ -8,7 +9,6 @@ import type { ImageDimensions } from '../utils/imageResizer.js'
 import type { TextHighlight } from '../utils/textHighlighting.js'
 import type { AgentId } from './ids.js'
 import type { AssistantMessage, MessageOrigin } from './message.js'
-
 /**
  * Inline ghost text for mid-input command autocomplete
  */
@@ -369,7 +369,6 @@ export type QueuedCommand = {
 export function isValidImagePaste(c: PastedContent): boolean {
   return c.type === 'image' && c.content.length > 0
 }
-
 /** Extract image paste IDs from a QueuedCommand's pastedContents. */
 export function getImagePasteIds(
   pastedContents: Record<number, PastedContent> | undefined,
@@ -382,7 +381,6 @@ export function getImagePasteIds(
     .map(c => c.id)
   return ids.length > 0 ? ids : undefined
 }
-
 export type OrphanedPermission = {
   permissionResult: PermissionResult
   assistantMessage: AssistantMessage

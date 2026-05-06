@@ -10,7 +10,7 @@ import {
   createPermissionRequest,
   isSwarmWorker,
   sendPermissionRequestViaMailbox,
-} from '../../../../agenc/upstream/utils/swarm/permissionSync' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../utils/swarm/permissionSync.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { registerPermissionCallback } from '../../useSwarmPermissionPoller'
 import type { PermissionContext } from '../PermissionContext'
 import { createResolveOnce } from '../PermissionContext'

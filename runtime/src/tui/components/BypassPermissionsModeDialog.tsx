@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { logEvent } from '../../services/analytics/index.js';
 import { Box, Link, Newline, Text } from '../ink.js';
-import { gracefulShutdownSync } from '../../agenc/upstream/utils/gracefulShutdown'; // upstream-import: keep target is owned by another Z-PURGE item
-import { updateSettingsForSource } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 type Props = {

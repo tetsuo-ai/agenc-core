@@ -30,7 +30,7 @@ type CodexOAuthFlowDependencies = {
     'startOAuthFlow' | 'cleanup'
   >
   openBrowser?: typeof openBrowser
-  saveCodexCredentials?: typeof saveCodexCredentials
+  saveAgencCredentials?: typeof saveAgencCredentials
   isBareMode?: typeof isBareMode
 }
 
@@ -53,7 +53,7 @@ export function useCodexOAuthFlow(options: {
     options.deps?.createOAuthService ?? createDefaultOAuthService
   const openBrowserFn = options.deps?.openBrowser ?? openBrowser
   const saveCredentials =
-    options.deps?.saveCodexCredentials ?? saveCodexCredentials
+    options.deps?.saveAgencCredentials ?? saveAgencCredentials
   const isBareModeFn = options.deps?.isBareMode ?? isBareMode
   const [status, setStatus] = React.useState<CodexOAuthFlowStatus>({
     state: 'starting',

@@ -2,17 +2,17 @@ import { c as _c } from "react-compiler-runtime";
 import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useMemo } from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import type { ThemeName } from '../../../agenc/upstream/utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Command } from '../../../commands.js';
-import { BLACK_CIRCLE } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useAppStateMaybeOutsideOfProvider } from '../../state/AppState.js';
 import { findToolByName, type Tool, type ToolProgressData, type Tools } from '../../../tools/Tool';
 import type { ProgressMessage } from '../../../types/message';
-import { useIsClassifierChecking } from '../../../agenc/upstream/utils/classifierApprovalsHook'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { buildMessageLookups } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { useIsClassifierChecking } from '../../../utils/classifierApprovalsHook.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { buildMessageLookups } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 import { useSelectedMessageBg } from '../messageActions';
 import { SentryErrorBoundary } from '../SentryErrorBoundary';

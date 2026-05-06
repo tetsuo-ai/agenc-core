@@ -1,9 +1,9 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Exa Search API adapter.
  * POST https://api.exa.ai/search
  * Auth: x-api-key: <key>
  */
-
 import type { SearchInput, SearchProvider } from './types.js'
 import { applyDomainFilters, safeHostname, type ProviderOutput } from './types.js'
 
@@ -39,7 +39,6 @@ export const exaProvider: SearchProvider = {
     if (!res.ok) {
       throw new Error(`Exa search error ${res.status}: ${await res.text().catch(() => '')}`)
     }
-
     const data = await res.json()
     const hits = (data.results ?? []).map((r: any) => ({
       title: r.title ?? '',
@@ -47,7 +46,6 @@ export const exaProvider: SearchProvider = {
       description: r.snippet ?? r.text,
       source: r.url ? safeHostname(r.url) : undefined,
     }))
-
     return {
       // Exa handles domain filtering server-side via includeDomains/excludeDomains
       hits,

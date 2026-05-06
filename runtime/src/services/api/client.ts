@@ -21,14 +21,13 @@ import {
   getIsNonInteractiveSession,
   getSessionId,
 } from '../../bootstrap/state.js'
-import { getOauthConfig } from '../../constants/oauth.js'
+import { getOauthConfig } from '../../../../constants/oauth.js'
 import { isDebugToStdErr, logForDebugging } from 'src/utils/debug.js'
 import {
   getAWSRegion,
   getVertexRegionForModel,
   isEnvTruthy,
-} from '../../utils/envUtils.js'
-
+} from '../../../../utils/envUtils.js'
 const importRuntimeModule = new Function(
   'specifier',
   'return import(specifier)',
@@ -415,9 +414,7 @@ function getCustomHeaders(): Record<string, string> {
 
   return customHeaders
 }
-
 export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
-
 function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,

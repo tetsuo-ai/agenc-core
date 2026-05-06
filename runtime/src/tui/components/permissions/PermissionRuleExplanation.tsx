@@ -4,9 +4,9 @@ import chalk from 'chalk';
 import React from 'react';
 import { Ansi, Box, Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
-import type { PermissionDecision, PermissionDecisionReason } from '../../../agenc/upstream/utils/permissions/PermissionResult'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueToString } from '../../../agenc/upstream/utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision, PermissionDecisionReason } from '../../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import ThemedText from '../design-system/ThemedText';
 export type PermissionRuleExplanationProps = {
   permissionResult: PermissionDecision;

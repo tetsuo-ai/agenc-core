@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { normalizeFullWidthDigits } from '../../../agenc/upstream/utils/stringUtils' // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeFullWidthDigits } from '../../../utils/stringUtils.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 // Delay before accepting a digit as a response, to prevent accidental
 // submissions when users start messages with numbers (e.g., numbered lists).

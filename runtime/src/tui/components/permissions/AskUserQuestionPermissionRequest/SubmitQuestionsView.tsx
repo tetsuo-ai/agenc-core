@@ -3,7 +3,7 @@ import figures from 'figures';
 import React from 'react';
 import { Box, Text } from '../../../ink.js';
 import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
-import type { PermissionDecision } from '../../../../agenc/upstream/utils/permissions/PermissionResult'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { Divider } from '../../design-system/Divider';
 import { PermissionRequestTitle } from '../PermissionRequestTitle';

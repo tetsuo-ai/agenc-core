@@ -96,7 +96,7 @@ afterEach(() => {
 })
 
 test('does not persist credentials when downstream setup rejects', async () => {
-  const saveCodexCredentials = mock(() => ({ success: true }))
+  const saveAgencCredentials = mock(() => ({ success: true }))
   const cleanup = mock(() => {})
   const onAuthenticated = mock(async () => {
     throw new Error('profile save failed')
@@ -112,7 +112,7 @@ test('does not persist credentials when downstream setup rejects', async () => {
       cleanup,
     }),
     openBrowser: async () => true,
-    saveCodexCredentials,
+    saveAgencCredentials,
     isBareMode: () => false,
   }
 
@@ -143,7 +143,7 @@ test('does not persist credentials when downstream setup rejects', async () => {
     await Bun.sleep(0)
     await Bun.sleep(0)
     expect(onAuthenticated).toHaveBeenCalled()
-    expect(saveCodexCredentials).not.toHaveBeenCalled()
+    expect(saveAgencCredentials).not.toHaveBeenCalled()
   } finally {
     root.unmount()
     streams.stdin.end()
@@ -153,7 +153,7 @@ test('does not persist credentials when downstream setup rejects', async () => {
 })
 
 test('persists credentials with profile linkage after downstream setup succeeds', async () => {
-  const saveCodexCredentials = mock(() => ({ success: true }))
+  const saveAgencCredentials = mock(() => ({ success: true }))
   const onAuthenticated = mock(
     async (
       _tokens: typeof TOKENS,
@@ -174,7 +174,7 @@ test('persists credentials with profile linkage after downstream setup succeeds'
       cleanup,
     }),
     openBrowser: async () => true,
-    saveCodexCredentials,
+    saveAgencCredentials,
     isBareMode: () => false,
   }
 
@@ -201,9 +201,9 @@ test('persists credentials with profile linkage after downstream setup succeeds'
 
   try {
     await waitForCondition(() => onAuthenticated.mock.calls.length === 1)
-    await waitForCondition(() => saveCodexCredentials.mock.calls.length === 1)
+    await waitForCondition(() => saveAgencCredentials.mock.calls.length === 1)
     expect(onAuthenticated).toHaveBeenCalled()
-    expect(saveCodexCredentials).toHaveBeenCalledWith({
+    expect(saveAgencCredentials).toHaveBeenCalledWith({
       apiKey: TOKENS.apiKey,
       accessToken: TOKENS.accessToken,
       refreshToken: TOKENS.refreshToken,

@@ -3,7 +3,7 @@ import sample from 'lodash-es/sample.js';
 import * as React from 'react';
 import { useMemo } from 'react';
 import { Box, Text } from '../../ink.js';
-import { extractTag } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 function getSavingMessage(): string {
   return sample(['Got it.', 'Good to know.', 'Noted.']);

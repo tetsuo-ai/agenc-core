@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
-import { NO_CONTENT_MESSAGE } from '../../../agenc/upstream/constants/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { NO_CONTENT_MESSAGE } from '../../../constants/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
-import { extractTag } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Markdown } from '../markdown/Markdown.js';
 import FullWidthRow from '../design-system/FullWidthRow';
 import { MessageResponse } from '../MessageResponse';

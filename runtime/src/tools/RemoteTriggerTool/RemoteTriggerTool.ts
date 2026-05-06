@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { z } from 'zod/v4'
-import { getOauthConfig } from '../../constants/oauth.js'
+import { getOauthConfig } from '../../../../constants/oauth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getOrganizationUUID } from '../../services/oauth/client.js'
 import { isPolicyAllowed } from '../../services/policyLimits/index.js'
@@ -9,9 +9,9 @@ import { buildTool, type ToolDef } from '../Tool.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
-} from '../../utils/auth.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+} from '../../../../utils/auth.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 import { DESCRIPTION, PROMPT, REMOTE_TRIGGER_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 

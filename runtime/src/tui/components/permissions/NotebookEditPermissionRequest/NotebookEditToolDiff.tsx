@@ -4,12 +4,12 @@ import * as React from 'react';
 import { Suspense, use, useMemo } from 'react';
 import { Box, NoSelect, Text } from '../../../ink.js';
 import type { NotebookCellType, NotebookContent } from '../../../../types/notebook';
-import { intersperse } from '../../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPatchForDisplay } from '../../../../agenc/upstream/utils/diff'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation } from '../../../../agenc/upstream/utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { safeParseJSON } from '../../../../agenc/upstream/utils/json'; // upstream-import: keep target is owned by another Z-PURGE item
-import { parseCellId } from '../../../../agenc/upstream/utils/notebook'; // upstream-import: keep target is owned by another Z-PURGE item
+import { intersperse } from '../../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchForDisplay } from '../../../../utils/diff.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { safeParseJSON } from '../../../../utils/json.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { parseCellId } from '../../../../utils/notebook.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { HighlightedCode } from '../../markdown/HighlightedCode.js';
 import { StructuredDiff } from '../../StructuredDiff';
 type Props = {

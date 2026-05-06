@@ -1,7 +1,7 @@
 import * as React from 'react'
 
 import type { LocalJSXCommandCall, LocalJSXCommandOnDone } from '../../types/command.js'
-import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js'
+import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../../../constants/xml.js'
 import {
   ProviderManager,
   type ProviderManagerResult,
@@ -49,29 +49,29 @@ import {
   type ProfileEnv,
   type ProfileFile,
   type ProviderProfile,
-} from '../../utils/providerProfile.js'
+} from '../../../../utils/providerProfile.js'
 import {
   getGeminiProjectIdHint,
   mayHaveGeminiAdcCredentials,
-} from '../../utils/geminiAuth.js'
+} from '../../../../utils/geminiAuth.js'
 import {
   readGeminiAccessToken,
   saveGeminiAccessToken,
-} from '../../utils/geminiCredentials.js'
-import { isBareMode } from '../../utils/envUtils.js'
+} from '../../../../utils/geminiCredentials.js'
+import { isBareMode } from '../../../../utils/envUtils.js'
 import {
   getGoalDefaultOpenAiModel,
   normalizeRecommendationGoal,
   rankOllamaModels,
   recommendOllamaModel,
   type RecommendationGoal,
-} from '../../utils/providerRecommendation.js'
+} from '../../../../utils/providerRecommendation.js'
 import {
   getOllamaChatBaseUrl,
   getLocalOpenAiCompatibleProviderLabel,
   probeOllamaGenerationReadiness,
   type OllamaGenerationReadiness,
-} from '../../utils/providerDiscovery.js'
+} from '../../../../utils/providerDiscovery.js'
 
 export function buildProviderManagerCompletion(result?: ProviderManagerResult): {
   message: string

@@ -2285,8 +2285,8 @@ function PromptInput({
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
   // localCol/localRow are relative to the onClick Box's top-left; the Box
   // tightly wraps the text input so they map directly to (column, line)
-  // branding-scan: allow Cursor is the text-caret utility name.
-  // in the Cursor wrap model. MeasuredText.getOffsetFromPosition handles
+  // branding-scan: allow TextCursor is the text-caret utility name.
+  // in the TextCursor wrap model. MeasuredText.getOffsetFromPosition handles
   // wide chars, wrapped lines, and clamps past-end clicks to line end.
   const maxVisibleLines = isFullscreenEnvEnabled() ? Math.max(MIN_INPUT_VIEWPORT_LINES, Math.floor(rows / 2) - PROMPT_FOOTER_LINES) : undefined;
   const handleInputClick = useCallback((e: ClickEvent) => {
@@ -2294,8 +2294,8 @@ function PromptInput({
     // input, and showCursor is false anyway — skip rather than
     // compute an offset against the wrong string.
     if (!input || isSearchingHistory) return;
-    // branding-scan: allow Cursor is the text-caret utility name.
-    const c = Cursor.fromText(input, textInputColumns, cursorOffset);
+    // branding-scan: allow TextCursor is the text-caret utility name.
+    const c = TextCursor.fromText(input, textInputColumns, cursorOffset);
     const viewportStart = c.getViewportStartLine(maxVisibleLines);
     const offset = c.measuredText.getOffsetFromPosition({
       line: e.localRow + viewportStart,

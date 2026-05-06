@@ -10,7 +10,7 @@ import type {
   TextInputState,
 } from '../../types/textInputTypes'
 import {
-  Cursor,
+  TextCursor,
   getLastKill,
   pushToKillRing,
   recordYank,
@@ -18,14 +18,14 @@ import {
   resetYankState,
   updateYankLength,
   yankPop,
-} from '../../agenc/upstream/utils/Cursor' // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../agenc/upstream/utils/env' // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../agenc/upstream/utils/fullscreen' // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../agenc/upstream/utils/imageResizer' // upstream-import: keep target is owned by another Z-PURGE item
-import { isModifierPressed, prewarmModifiers } from '../../agenc/upstream/utils/modifiers' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/TextCursor.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../utils/imageResizer.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isModifierPressed, prewarmModifiers } from '../../utils/modifiers.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { useDoublePress } from './useDoublePress'
 
-type MaybeCursor = void | Cursor
+type MaybeCursor = void | TextCursor
 type InputHandler = (input: string) => MaybeCursor
 type InputMapper = (input: string) => MaybeCursor
 const NOOP_HANDLER: InputHandler = () => {}
@@ -140,8 +140,8 @@ export function useTextInput({
   const value = renderState.value
   const offset = renderState.offset
   const getLiveValue = (): string => liveValueRef.current
-  const getLiveCursor = (): Cursor =>
-    Cursor.fromText(liveValueRef.current, columns, liveOffsetRef.current)
+  const getLiveCursor = (): TextCursor =>
+    TextCursor.fromText(liveValueRef.current, columns, liveOffsetRef.current)
   const setValue = (nextValue: string, nextOffset = liveOffsetRef.current): void => {
     const previousValue = liveValueRef.current
     const previousOffset = liveOffsetRef.current
@@ -168,7 +168,7 @@ export function useTextInput({
     updateRenderedInput(liveValueRef.current, nextOffset)
     onOffsetChange(nextOffset)
   }
-  const cursor = Cursor.fromText(value, columns, offset)
+  const cursor = TextCursor.fromText(value, columns, offset)
   const { addNotification, removeNotification } = useNotifications()
 
   const handleCtrlC = useDoublePress(
@@ -249,28 +249,28 @@ export function useTextInput({
     return cursor.del()
   }
 
-  function killToLineEnd(): Cursor {
+  function killToLineEnd(): TextCursor {
     const cursor = getLiveCursor()
     const { cursor: newCursor, killed } = cursor.deleteToLineEnd()
     pushToKillRing(killed, 'append')
     return newCursor
   }
 
-  function killToLineStart(): Cursor {
+  function killToLineStart(): TextCursor {
     const cursor = getLiveCursor()
     const { cursor: newCursor, killed } = cursor.deleteToLineStart()
     pushToKillRing(killed, 'prepend')
     return newCursor
   }
 
-  function killWordBefore(): Cursor {
+  function killWordBefore(): TextCursor {
     const cursor = getLiveCursor()
     const { cursor: newCursor, killed } = cursor.deleteWordBefore()
     pushToKillRing(killed, 'prepend')
     return newCursor
   }
 
-  function yank(): Cursor {
+  function yank(): TextCursor {
     const cursor = getLiveCursor()
     const text = getLastKill()
     if (text.length > 0) {
@@ -282,7 +282,7 @@ export function useTextInput({
     return cursor
   }
 
-  function handleYankPop(): Cursor {
+  function handleYankPop(): TextCursor {
     const cursor = getLiveCursor()
     const popResult = yankPop()
     if (!popResult) {
@@ -295,7 +295,7 @@ export function useTextInput({
     const newText = before + text + after
     const newOffset = start + text.length
     updateYankLength(text.length)
-    return Cursor.fromText(newText, columns, newOffset)
+    return TextCursor.fromText(newText, columns, newOffset)
   }
 
   const handleCtrl = mapInput([
@@ -399,7 +399,7 @@ export function useTextInput({
     return cursor
   }
 
-  function mapKey(key: Key, cursor: Cursor): InputMapper {
+  function mapKey(key: Key, cursor: TextCursor): InputMapper {
     switch (true) {
       case key.escape:
         return () => {

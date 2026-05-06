@@ -1,8 +1,8 @@
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { TEARDROP_ASTERISK } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { TEARDROP_ASTERISK } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text, useAnimationFrame } from '../../ink.js';
-import { getInitialSettings } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { hueToRgb, toRGBColor } from '../spinner/utils.js';
 const SWEEP_DURATION_MS = 1500;
 const SWEEP_COUNT = 2;

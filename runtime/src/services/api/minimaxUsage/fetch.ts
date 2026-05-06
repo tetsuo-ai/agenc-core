@@ -1,5 +1,5 @@
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCCodeUserAgent } from '../../../utils/userAgent.js'
+import { getAgenCCodeUserAgent } from '../../../../../utils/userAgent.js'
 import {
   DEFAULT_MINIMAX_BASE_URL,
   DEFAULT_MINIMAX_UNAVAILABLE_MESSAGE,

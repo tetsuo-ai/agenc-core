@@ -2,10 +2,10 @@ import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
 import React, { Suspense, use, useMemo } from 'react';
 import { FileEditToolDiff } from '../../FileEditToolDiff.js';
-import { getCwd } from '../../../../agenc/upstream/utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isENOENT } from '../../../../agenc/upstream/utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { detectEncodingForResolvedPath } from '../../../../agenc/upstream/utils/fileRead.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation } from '../../../../agenc/upstream/utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isENOENT } from '../../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { detectEncodingForResolvedPath } from '../../../../utils/fileRead.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../../../ink.js';
 import { BashTool } from '../../../../tools/BashTool/BashTool';
 import { applySedSubstitution, type SedEditInfo } from '../../../../tools/BashTool/sedEditParser';

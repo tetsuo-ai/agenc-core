@@ -5,7 +5,7 @@ import {
   fetchGitDiffHunks,
   type GitDiffResult,
   type GitDiffStats,
-} from '../../agenc/upstream/utils/gitDiff' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/gitDiff.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const MAX_LINES_PER_FILE = 400
 

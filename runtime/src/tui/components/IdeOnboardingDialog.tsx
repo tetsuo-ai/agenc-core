@@ -1,11 +1,11 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { envDynamic } from '../../agenc/upstream/utils/envDynamic.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { envDynamic } from '../../utils/envDynamic.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../agenc/upstream/utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTerminalIdeType, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from '../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTerminalIdeType, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from '../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from './design-system/Dialog';
 interface Props {
   onDone: () => void;

@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, Text } from '../../ink.js';
-import { getPlatform } from '../../../agenc/upstream/utils/platform'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { SandboxDependencyCheck } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlatform } from '../../../utils/platform.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SandboxDependencyCheck } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   depCheck: SandboxDependencyCheck;
 };

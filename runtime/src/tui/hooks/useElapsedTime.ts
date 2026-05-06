@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react'
-import { formatDuration } from '../../agenc/upstream/utils/format' // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration } from '../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Hook that returns formatted elapsed time since startTime.

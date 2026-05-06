@@ -29,25 +29,25 @@ import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
   handleOAuth401Error,
-} from '../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+} from '../../../utils/auth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { stripDisplayTagsAllowEmpty } from '../utils/displayTags.js'
-import { errorMessage } from '../utils/errors.js'
-import { getBranch, getRemoteUrl } from '../utils/git.js'
-import { toSDKMessages } from '../utils/messages/mappers.js'
+import { stripDisplayTagsAllowEmpty } from '../../../utils/displayTags.js'
+import { errorMessage } from '../../../utils/errors.js'
+import { getBranch, getRemoteUrl } from '../../../utils/git.js'
+import { toSDKMessages } from '../../../utils/messages/mappers.js'
 import {
   getContentText,
   getMessagesAfterCompactBoundary,
   isSyntheticMessage,
-} from '../utils/messages.js'
-import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
-import { getCurrentSessionTitle } from '../utils/sessionStorage.js'
+} from '../../../utils/messages.js'
+import type { PermissionMode } from '../../../utils/permissions/PermissionMode.js'
+import { getCurrentSessionTitle } from '../../../utils/sessionStorage.js'
 import {
   extractConversationText,
   generateSessionTitle,
-} from '../utils/sessionTitle.js'
-import { generateShortWordSlug } from '../utils/words.js'
+} from '../../../utils/sessionTitle.js'
+import { generateShortWordSlug } from '../../../utils/words.js'
 import {
   getBridgeAccessToken,
   getBridgeBaseUrl,

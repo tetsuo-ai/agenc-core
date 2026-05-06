@@ -10,18 +10,18 @@ import { splitCommand_DEPRECATED } from '../../../agenc/upstream/utils/bash/comm
 import type {
   PermissionDecisionReason,
   PermissionResult,
-} from '../../../agenc/upstream/utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   extractRules,
   hasRules,
-} from '../../../agenc/upstream/utils/permissions/PermissionUpdate.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueToString } from '../../../agenc/upstream/utils/permissions/permissionRuleParser.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/PermissionUpdate.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ToolUseConfirm } from './PermissionRequest.js'
 import { useSetAppState } from '../../state/AppState.js'
-import { env } from '../../../agenc/upstream/utils/env' // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
-import { type CompletionType, logUnaryEvent } from '../../../agenc/upstream/utils/unaryLogging' // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { type CompletionType, logUnaryEvent } from '../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export type UnaryEvent = {
   completion_type: CompletionType

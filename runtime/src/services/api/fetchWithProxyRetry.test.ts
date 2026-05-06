@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { _resetKeepAliveForTesting } from '../../utils/proxy.js'
+import { _resetKeepAliveForTesting } from '../../../../utils/proxy.js'
 import {
   fetchWithProxyRetry,
   isRetryableFetchError,

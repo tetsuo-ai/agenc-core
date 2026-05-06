@@ -3,8 +3,8 @@ import React, { type ReactNode, useCallback, useRef, useState } from 'react';
 import { useMainLoopModel } from '../../../../hooks/useMainLoopModel';
 import { Box, Text } from '../../../../ink.js';
 import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
-import { createAbortController } from '../../../../../agenc/upstream/utils/abortController'; // upstream-import: keep target is owned by another Z-PURGE item
-import { editPromptInEditor } from '../../../../../agenc/upstream/utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createAbortController } from '../../../../../utils/abortController.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editPromptInEditor } from '../../../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
 import { Spinner } from '../../../spinner/Spinner.js';

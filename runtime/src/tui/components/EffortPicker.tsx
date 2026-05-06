@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Box, Text } from '../ink.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel'
 import { useAppState, useSetAppState } from '../state/AppState.js'
-import type { EffortLevel } from '../../agenc/upstream/utils/effort' // upstream-import: keep target is owned by another Z-PURGE item
+import type { EffortLevel } from '../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   getAvailableEffortLevels,
   getDisplayedEffortLevel,

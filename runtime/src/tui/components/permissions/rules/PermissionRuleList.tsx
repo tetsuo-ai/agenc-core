@@ -4,8 +4,8 @@ import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppState, useSetAppState } from '../../../state/AppState.js';
-import { applyPermissionUpdate, persistPermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdateDestination } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { applyPermissionUpdate, persistPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdateDestination } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CommandResultDisplay } from '../../../../commands.js';
 import { Select } from '../../CustomSelect/select';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
@@ -13,12 +13,12 @@ import { useSearchInput } from '../../../hooks/useSearchInput';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text, useTerminalFocus } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import { type AutoModeDenial, getAutoModeDenials } from '../../../../agenc/upstream/utils/autoModeDenials'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../../agenc/upstream/utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueToString } from '../../../../agenc/upstream/utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { deletePermissionRule, getAllowRules, getAskRules, getDenyRules, permissionRuleSourceDisplayString } from '../../../../agenc/upstream/utils/permissions/permissions'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { UnreachableRule } from '../../../../agenc/upstream/utils/permissions/shadowedRuleDetection'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AutoModeDenial, getAutoModeDenials } from '../../../../utils/autoModeDenials.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../../utils/permissions/PermissionRule.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueToString } from '../../../../utils/permissions/permissionRuleParser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { deletePermissionRule, getAllowRules, getAskRules, getDenyRules, permissionRuleSourceDisplayString } from '../../../../utils/permissions/permissions.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { UnreachableRule } from '../../../../utils/permissions/shadowedRuleDetection.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Pane } from '../../design-system/Pane';
 import { Tab, Tabs, useTabHeaderFocus, useTabsWidth } from '../../design-system/Tabs';
 import { SearchBox } from '../../SearchBox';

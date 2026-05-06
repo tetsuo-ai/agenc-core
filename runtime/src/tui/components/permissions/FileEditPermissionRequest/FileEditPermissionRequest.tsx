@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
 import React from 'react';
 import { FileEditToolDiff } from '../../FileEditToolDiff.js';
-import { getCwd } from '../../../../agenc/upstream/utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { FileEditTool } from '../../../../tools/FileEditTool/FileEditTool';

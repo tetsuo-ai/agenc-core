@@ -3,7 +3,7 @@ import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs
 import * as React from 'react';
 import type { Tools } from '../../../../tools/Tool';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../../types/message';
-import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { UserToolCanceledMessage } from './UserToolCanceledMessage';
 import { UserToolErrorMessage } from './UserToolErrorMessage';
 import { UserToolRejectMessage } from './UserToolRejectMessage';

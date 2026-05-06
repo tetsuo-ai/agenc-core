@@ -9,7 +9,7 @@ import {
   type ProviderCodeCredentialBlob,
 } from '../../utils/providerCodeCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
 import {
   asTrimmedString,
   parseChatgptAccountId,

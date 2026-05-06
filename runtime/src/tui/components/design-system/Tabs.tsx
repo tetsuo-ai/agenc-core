@@ -7,7 +7,7 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
-import type { Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type TabsProps = {
   children: Array<React.ReactElement<TabProps>>;
   title?: string;

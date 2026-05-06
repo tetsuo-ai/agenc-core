@@ -2,11 +2,11 @@ import { feature } from 'bun:bundle';
 import {
   applyProfileEnvToProcessEnv,
   buildStartupEnvFromProfile,
-} from '../utils/providerProfile.js'
+} from '../../../utils/providerProfile.js'
 import {
   getProviderValidationError,
   validateProviderEnvForStartupOrExit,
-} from '../utils/providerValidation.js'
+} from '../../../utils/providerValidation.js'
 
 // AgenC: polyfill globalThis.File for Node < 20.
 // undici v7 references `File` at module evaluation time (webidl type
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
   // --provider: set provider env vars early so saved-profile resolution,
   // validation, and the startup banner all see the intended provider/model.
   if (args.includes('--provider')) {
-    const { applyProviderFlagFromArgs } = await import('../utils/providerFlag.js');
+    const { applyProviderFlagFromArgs } = await import('../../../utils/providerFlag.js');
     const result = applyProviderFlagFromArgs(args);
     if (result?.error) {
       // biome-ignore lint/suspicious/noConsole:: intentional error output
@@ -98,13 +98,13 @@ async function main(): Promise<void> {
 
   // Enable configs first so we can read settings
   {
-    const { enableConfigs } = await import('../utils/config.js')
+    const { enableConfigs } = await import('../../../utils/config.js')
     enableConfigs()
   }
 
   // Apply settings.env from user settings (includes GitHub provider settings from /onboard-github)
   {
-    const { applySafeConfigEnvironmentVariables } = await import('../utils/managedEnv.js')
+    const { applySafeConfigEnvironmentVariables } = await import('../../../utils/managedEnv.js')
     applySafeConfigEnvironmentVariables()
   }
 
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     const {
       hydrateGithubModelsTokenFromSecureStorage,
       refreshGithubModelsTokenIfNeeded,
-    } = await import('../utils/githubModelsCredentials.js')
+    } = await import('../../../utils/githubModelsCredentials.js')
     await refreshGithubModelsTokenIfNeeded()
     hydrateGithubModelsTokenFromSecureStorage()
   }
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   await validateProviderEnvForStartupOrExit()
 
   // Parse --model early so the startup screen can display the override
-  const { eagerParseCliFlag } = await import('../utils/cliArgs.js')
+  const { eagerParseCliFlag } = await import('../../../utils/cliArgs.js')
   const earlyModelFlag = eagerParseCliFlag('--model')
 
   // Print the gradient startup screen before the Ink UI loads
@@ -145,7 +145,7 @@ async function main(): Promise<void> {
   // For all other paths, load the startup profiler
   const {
     profileCheckpoint
-  } = await import('../utils/startupProfiler.js');
+  } = await import('../../../utils/startupProfiler.js');
   profileCheckpoint('cli_entry');
 
   // Fast-path for --dump-system-prompt: output the rendered system prompt and exit.
@@ -155,16 +155,16 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_dump_system_prompt_path');
     const {
       enableConfigs
-    } = await import('../utils/config.js');
+    } = await import('../../../utils/config.js');
     enableConfigs();
     const {
       getMainLoopModel
-    } = await import('../utils/model/model.js');
+    } = await import('../../../utils/model/model.js');
     const modelIdx = args.indexOf('--model');
     const model = modelIdx !== -1 && args[modelIdx + 1] || getMainLoopModel();
     const {
       getSystemPrompt
-    } = await import('../constants/prompts.js');
+    } = await import('../../../constants/prompts.js');
     const prompt = await getSystemPrompt([], model);
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(prompt.join('\n'));
@@ -188,7 +188,7 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_computer_use_mcp_path');
     const {
       runComputerUseMcpServer
-    } = await import('../utils/computerUse/mcpServer.js');
+    } = await import('../../../utils/computerUse/mcpServer.js');
     await runComputerUseMcpServer();
     return;
   }
@@ -214,7 +214,7 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_bridge_path');
     const {
       enableConfigs
-    } = await import('../utils/config.js');
+    } = await import('../../../utils/config.js');
     enableConfigs();
     const {
       getBridgeDisabledReason,
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
     } = await import('../bridge/bridgeMain.js');
     const {
       exitWithError
-    } = await import('../utils/process.js');
+    } = await import('../../../utils/process.js');
 
     // Auth check must come before the GrowthBook gate check — without auth,
     // GrowthBook has no user context and would return a stale/default false.
@@ -236,7 +236,7 @@ async function main(): Promise<void> {
     // (not the stale disk cache), but init still needs auth headers to work.
     const {
       getAgenCAIOAuthTokens
-    } = await import('../utils/auth.js');
+    } = await import('../../../utils/auth.js');
     if (!getAgenCAIOAuthTokens()?.accessToken) {
       exitWithError(BRIDGE_LOGIN_ERROR);
     }
@@ -267,11 +267,11 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_daemon_path');
     const {
       enableConfigs
-    } = await import('../utils/config.js');
+    } = await import('../../../utils/config.js');
     enableConfigs();
     const {
       initSinks
-    } = await import('../utils/sinks.js');
+    } = await import('../../../utils/sinks.js');
     initSinks();
     const {
       daemonMain
@@ -287,7 +287,7 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_bg_path');
     const {
       enableConfigs
-    } = await import('../utils/config.js');
+    } = await import('../../../utils/config.js');
     enableConfigs();
     const bg = await import('../cli/bg.js');
     switch (args[0]) {
@@ -351,15 +351,15 @@ async function main(): Promise<void> {
     profileCheckpoint('cli_tmux_worktree_fast_path');
     const {
       enableConfigs
-    } = await import('../utils/config.js');
+    } = await import('../../../utils/config.js');
     enableConfigs();
     const {
       isWorktreeModeEnabled
-    } = await import('../utils/worktreeModeEnabled.js');
+    } = await import('../../../utils/worktreeModeEnabled.js');
     if (isWorktreeModeEnabled()) {
       const {
         execIntoTmuxWorktree
-      } = await import('../utils/worktree.js');
+      } = await import('../../../utils/worktree.js');
       const result = await execIntoTmuxWorktree(args);
       if (result.handled) {
         return;
@@ -368,7 +368,7 @@ async function main(): Promise<void> {
       if (result.error) {
         const {
           exitWithError
-        } = await import('../utils/process.js');
+        } = await import('../../../utils/process.js');
         exitWithError(result.error);
       }
     }
@@ -389,7 +389,7 @@ async function main(): Promise<void> {
   if (process.env.AGENC_DISABLE_EARLY_INPUT !== '1') {
     const {
       startCapturingEarlyInput
-    } = await import('../utils/earlyInput.js');
+    } = await import('../../../utils/earlyInput.js');
     startCapturingEarlyInput();
   }
   profileCheckpoint('cli_before_main_import');

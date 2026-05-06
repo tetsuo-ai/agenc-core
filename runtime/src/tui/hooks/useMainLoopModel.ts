@@ -5,7 +5,7 @@ import {
   getDefaultMainLoopModelSetting,
   type ModelName,
   parseUserSpecifiedModel,
-} from '../../agenc/upstream/utils/model/model' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/model/model.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 // The value of the selector is a full model name that can be used directly in
 // API calls. Use this over getMainLoopModel() when the component needs to

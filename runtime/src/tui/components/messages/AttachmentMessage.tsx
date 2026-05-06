@@ -2,27 +2,27 @@ import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import React, { useMemo } from 'react';
 import { Ansi, Box, Text } from '../../ink.js';
-import type { Attachment } from '../../../agenc/upstream/utils/attachments.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Attachment } from '../../../utils/attachments.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { NullRenderingAttachmentType } from './nullRenderingAttachments';
 import { useAppState } from '../../state/AppState.js';
-import { getDisplayPath } from '../../../agenc/upstream/utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatFileSize } from '../../../agenc/upstream/utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatFileSize } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 import { basename, sep } from 'path';
 import { UserTextMessage } from './UserTextMessage';
 import { DiagnosticsDisplay } from '../DiagnosticsDisplay';
-import { getContentText } from '../../../agenc/upstream/utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../../agenc/upstream/utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getContentText } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { UserImageMessage } from './UserImageMessage';
-import { toInkColor } from '../../../agenc/upstream/utils/ink'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonParse } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonParse } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from '../../../utils/envUtils';
-import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { tryRenderPlanApprovalMessage, formatTeammateMessageContent } from './PlanApprovalMessage';
-import { BLACK_CIRCLE } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { TeammateMessageContent } from './UserTeammateMessage';
-import { isShutdownApproved } from '../../../agenc/upstream/utils/teammateMailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isShutdownApproved } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CtrlOToExpand } from '../CtrlOToExpand';
 import FullWidthRow from '../design-system/FullWidthRow';
 import { FilePathLink } from '../FilePathLink';

@@ -7,9 +7,9 @@ import * as React from 'react';
 import { useState, useCallback } from 'react';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import figures from 'figures';
-import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type OutputStyle } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { normalizeApiKeyForConfig } from '../../../agenc/upstream/utils/authPortable'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type OutputStyle } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { normalizeApiKeyForConfig } from '../../../utils/authPortable.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import chalk from 'chalk';
 import { permissionModeTitle, permissionModeFromString, toExternalPermissionMode, isExternalPermissionMode, EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type ExternalPermissionMode, type PermissionMode } from '../../../agenc/upstream/utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getAutoModeEnabledState, hasAutoModeOptInAnySource, transitionPlanAutoMode } from '../../../agenc/upstream/utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -19,15 +19,15 @@ import { isBridgeEnabled } from '../../../bridge/bridgeEnabled';
 import { ThemePicker } from '../ThemePicker';
 import { useAppState, useSetAppState, useAppStateStore } from '../../state/AppState.js';
 import { ModelPicker } from '../ModelPicker';
-import { modelDisplayString, isOpus1mMergeEnabled } from '../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isBilledAsExtraUsage } from '../../../agenc/upstream/utils/extraUsage'; // upstream-import: keep target is owned by another Z-PURGE item
+import { modelDisplayString, isOpus1mMergeEnabled } from '../../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isBilledAsExtraUsage } from '../../../utils/extraUsage.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { AgenCMdExternalIncludesDialog } from '../AgenCMdExternalIncludesDialog';
 import { ChannelDowngradeDialog, type ChannelDowngradeChoice } from '../ChannelDowngradeDialog';
 import { Dialog } from '../design-system/Dialog';
 import { Select } from '../CustomSelect/select';
 import { OutputStylePicker } from '../OutputStylePicker';
 import { LanguagePicker } from '../LanguagePicker';
-import { getExternalAgenCMdIncludes, getMemoryFiles, hasExternalAgenCMdIncludes } from '../../../agenc/upstream/utils/claudemd.js'; // branding-scan: allow pending service/module rename // upstream-import: keep target is owned by another Z-PURGE item
+import { getExternalAgenCMdIncludes, getMemoryFiles, hasExternalAgenCMdIncludes } from '../../../utils/agencmd.js'; // branding-scan: allow pending service/module rename // upstream-import: keep target is owned by another Z-PURGE item
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';
@@ -46,8 +46,8 @@ import { getCliTeammateModeOverride, clearCliTeammateModeOverride } from '../../
 import { getHardcodedTeammateModelFallback } from '../../../agenc/upstream/utils/swarm/teammateModel'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSearchInput } from '../../hooks/useSearchInput';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
-import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../../agenc/upstream/utils/fastMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen'; // upstream-import: keep target is owned by another Z-PURGE item
+import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;

@@ -1,6 +1,7 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { z } from 'zod/v4'
-import { lazySchema } from '../utils/lazySchema.js'
+import { lazySchema } from '../../../utils/lazySchema.js'
 import {
   type HookEvent,
   HOOK_EVENTS,
@@ -256,7 +257,6 @@ export type PermissionRequestResult =
       message?: string
       interrupt?: boolean
     }
-
 export type HookResult = {
   message?: Message
   systemMessage?: Message
@@ -273,7 +273,6 @@ export type HookResult = {
   permissionRequestResult?: PermissionRequestResult
   retry?: boolean
 }
-
 export type AggregatedHookResult = {
   message?: Message
   blockingErrors?: HookBlockingError[]

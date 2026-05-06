@@ -3,7 +3,7 @@ import React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { SettingsJson } from '../../../agenc/upstream/utils/settings/types'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingsJson } from '../../../utils/settings/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { PermissionDialog } from '../permissions/PermissionDialog';
 import { extractDangerousSettings, formatDangerousSettingsList } from './utils';

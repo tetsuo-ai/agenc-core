@@ -5,8 +5,8 @@ import { dirname, isAbsolute, join, normalize, sep as pathSep } from 'path'
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { Command } from '../types/command.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getBundledSkillsRoot } from '../utils/permissions/filesystem.js'
-import type { HooksSettings } from '../utils/settings/types.js'
+import { getBundledSkillsRoot } from '../../../utils/permissions/filesystem.js'
+import type { HooksSettings } from '../../../utils/settings/types.js'
 
 /**
  * Definition for a bundled skill that ships with the CLI.

@@ -4,7 +4,7 @@ import { handlePlanModeTransition } from '../../../../bootstrap/state';
 import { Box, Text } from '../../../ink.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index';
 import { useAppState } from '../../../state/AppState.js';
-import { isPlanModeInterviewPhaseEnabled } from '../../../../agenc/upstream/utils/planModeV2'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isPlanModeInterviewPhaseEnabled } from '../../../../utils/planModeV2.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { PermissionDialog } from '../PermissionDialog';
 import type { PermissionRequestProps } from '../PermissionRequest.js';

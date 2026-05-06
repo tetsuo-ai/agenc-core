@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import { useEffect, useRef } from 'react';
-import { logError } from '../../agenc/upstream/utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { z } from 'zod/v4';
 import { callIdeRpc } from '../../services/mcp/client';
 import type { ConnectedMCPServer, MCPServerConnection } from '../../services/mcp/types';

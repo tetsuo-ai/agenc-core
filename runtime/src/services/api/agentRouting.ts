@@ -1,4 +1,4 @@
-import type { SettingsJson } from '../../utils/settings/types.js'
+import type { SettingsJson } from '../../../../utils/settings/types.js'
 
 /**
  * Provider override resolved from agent routing config.

@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { isTaskAssignment, type TaskAssignmentMessage } from '../../../agenc/upstream/utils/teammateMailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isTaskAssignment, type TaskAssignmentMessage } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   assignment: TaskAssignmentMessage;
 };

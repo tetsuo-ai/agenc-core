@@ -2,7 +2,7 @@ import { type FSWatcher, watch } from 'fs'
 import { useEffect, useSyncExternalStore } from 'react'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import { createSignal } from '../../utils/signal'
-import type { Task } from '../../agenc/upstream/utils/tasks' // upstream-import: keep target is owned by another Z-PURGE item
+import type { Task } from '../../utils/tasks.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   getTaskListId,
   getTasksDir,
@@ -10,8 +10,8 @@ import {
   listTasks,
   onTasksUpdated,
   resetTaskList,
-} from '../../agenc/upstream/utils/tasks' // upstream-import: keep target is owned by another Z-PURGE item
-import { isTeamLead } from '../../agenc/upstream/utils/teammate' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/tasks.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isTeamLead } from '../../utils/teammate.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const HIDE_DELAY_MS = 5000
 const DEBOUNCE_MS = 50

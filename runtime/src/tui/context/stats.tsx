@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useCallback, useContext, useEffect, useMemo } from 'react';
-import { saveCurrentProjectConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveCurrentProjectConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export type StatsStore = {
   increment(name: string, value?: number): void;
   set(name: string, value: number): void;

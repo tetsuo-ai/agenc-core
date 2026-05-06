@@ -1,4 +1,4 @@
-import { checkInstall } from '../../../agenc/upstream/utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { checkInstall } from '../../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useStartupNotification } from './useStartupNotification';
 export function useInstallMessages() {
   useStartupNotification(_temp2);

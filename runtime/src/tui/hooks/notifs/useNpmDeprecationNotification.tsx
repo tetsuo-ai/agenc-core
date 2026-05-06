@@ -1,5 +1,5 @@
-import { isInBundledMode } from '../../../agenc/upstream/utils/bundledMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCurrentInstallationType } from '../../../agenc/upstream/utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isInBundledMode } from '../../../utils/bundledMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCurrentInstallationType } from '../../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { useStartupNotification } from './useStartupNotification';
 const NPM_DEPRECATION_MESSAGE = 'AgenC has switched from npm to the native installer. Run `agenc install` or see https://github.com/Gitlawb/agenc#quick-start for more options.';

@@ -10,15 +10,15 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { useAppState } from '../../../state/AppState.js';
 import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
 import { AskUserQuestionTool } from 'src/tools/ask-user-question/tui-tool.js';
-import { type CliHighlight, getCliHighlightPromise } from '../../../../agenc/upstream/utils/cliHighlight'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PastedContent } from '../../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { maybeResizeAndDownsampleImageBlock } from '../../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { cacheImagePath, storeImage } from '../../../../agenc/upstream/utils/imageStore'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applyMarkdown } from '../../../../agenc/upstream/utils/markdown'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isPlanModeInterviewPhaseEnabled } from '../../../../agenc/upstream/utils/planModeV2'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPlanFilePath } from '../../../../agenc/upstream/utils/plans'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type CliHighlight, getCliHighlightPromise } from '../../../../utils/cliHighlight.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PastedContent } from '../../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { maybeResizeAndDownsampleImageBlock } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { cacheImagePath, storeImage } from '../../../../utils/imageStore.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { applyMarkdown } from '../../../../utils/markdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isPlanModeInterviewPhaseEnabled } from '../../../../utils/planModeV2.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlanFilePath } from '../../../../utils/plans.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { QuestionView } from './QuestionView';
 import { SubmitQuestionsView } from './SubmitQuestionsView';

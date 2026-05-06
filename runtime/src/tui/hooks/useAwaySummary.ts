@@ -7,7 +7,7 @@ import {
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook'
 import { generateAwaySummary } from '../../services/awaySummary'
 import type { Message } from '../../types/message'
-import { createAwaySummaryMessage } from '../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
+import { createAwaySummaryMessage } from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const BLUR_DELAY_MS = 5 * 60_000
 

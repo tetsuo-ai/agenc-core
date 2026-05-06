@@ -31,6 +31,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
@@ -64,6 +65,17 @@ const MAX_ALLOWED_BASELINE = 22;
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
 //   runStrict: boolean — if true, typecheck gate enforces zero errors.
 const ITEM_EVIDENCE = {
+  "Z-PURGEA": {
+    files: [
+      "runtime/src/utils",
+      "runtime/src/constants",
+      "parity/Z-PURGEA-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "constantsPlacementRationale", scope: "parity/Z-PURGEA-parity.json" },
+      { pattern: "runtime/src/constants is therefore the AgenC-owned consuming subsystem", scope: "parity/Z-PURGEA-parity.json" },
+    ],
+  },
   "IDE-03": {
     files: [
       "scripts/goal/verify.mjs",
@@ -7217,6 +7229,143 @@ function writeBaseline(p, count) {
   );
 }
 
+async function assertZPurgeATsupAliasBoundaries() {
+  const root = repoRoot();
+  const configPath = path.join(root, "runtime/tsup.config.ts");
+  const configText = readFileSync(configPath, "utf8");
+  if (configText.includes("relocatedSourcePathAliases")) {
+    failGate(
+      "Z-PURGEA: tsup relocatedSourcePathAliases survived after their upstream tui/components and tui/buddy roots were purged",
+    );
+  }
+
+  const configModule = await import(pathToFileURL(configPath).href);
+  const helper = configModule.__agencTsupAliasTest;
+  if (!helper) {
+    failGate("Z-PURGEA: tsup config does not export __agencTsupAliasTest for alias drift checks");
+  }
+
+  const toRepoRel = (file) => path.relative(root, file).split(path.sep).join("/");
+  const expectResolution = (label, importerRel, source, expectedRel) => {
+    const resolved = helper.resolveRelativeAgenCSource(path.join(root, importerRel), source);
+    const actualRel = resolved ? toRepoRel(resolved) : null;
+    if (actualRel !== expectedRel) {
+      failGate(
+        `Z-PURGEA: tsup alias resolution failed for ${label}; expected ${expectedRel}, got ${actualRel ?? "null"}`,
+      );
+    }
+  };
+
+  const movedBoundaryPrefixes = [
+    "// @ts-nocheck\n" +
+      "// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.\n",
+    "// @ts-nocheck\n" +
+      "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+    "// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+  ];
+  const expectedRelocatedRoots = new Map([
+    ["runtime/src/utils", "runtime/src/agenc/upstream/utils"],
+    ["runtime/src/constants", "runtime/src/agenc/upstream/constants"],
+    ["runtime/src/memdir", "runtime/src/agenc/upstream/memdir"],
+  ]);
+  for (const alias of helper.relocatedUpstreamRoots) {
+    const runtimeRel = toRepoRel(alias.runtimeRoot);
+    const upstreamRel = toRepoRel(alias.upstreamRoot);
+    if (expectedRelocatedRoots.get(runtimeRel) !== upstreamRel) {
+      failGate(`Z-PURGEA: unexpected relocated upstream root alias ${runtimeRel} -> ${upstreamRel}`);
+    }
+    const boundaryFiles = walkFiles(alias.runtimeRoot).filter((f) => {
+      if (!/\.(ts|tsx|mts|cts)$/.test(f)) return false;
+      const source = readFileSync(f, "utf8");
+      return movedBoundaryPrefixes.some((prefix) => source.startsWith(prefix));
+    });
+    if (boundaryFiles.length === 0) {
+      failGate(
+        `Z-PURGEA: relocated upstream root alias ${runtimeRel} has no documented temporary boundary files`,
+      );
+    }
+  }
+  if (helper.relocatedUpstreamRoots.length !== expectedRelocatedRoots.size) {
+    failGate("Z-PURGEA: relocated upstream root alias count changed without updating the gate");
+  }
+
+  const expectedFileBaseAliases = new Map([
+    ["runtime/src/tools/Tool", "runtime/src/agenc/upstream/Tool"],
+    ["runtime/src/agenc/upstream/tools/Tool", "runtime/src/agenc/upstream/Tool"],
+    ["runtime/src/agenc/upstream/tasks/Task", "runtime/src/agenc/upstream/Task"],
+  ]);
+  for (const alias of helper.sourceFileBaseAliases) {
+    const runtimeRel = toRepoRel(alias.runtimeBase);
+    const upstreamRel = toRepoRel(alias.upstreamBase);
+    if (expectedFileBaseAliases.get(runtimeRel) !== upstreamRel) {
+      failGate(`Z-PURGEA: unexpected source file-base alias ${runtimeRel} -> ${upstreamRel}`);
+    }
+    for (const ext of [".ts", ".tsx", ".js", ".jsx"]) {
+      if (existsSync(`${alias.runtimeBase}${ext}`)) {
+        failGate(
+          `Z-PURGEA: source file-base alias ${runtimeRel} is stale because ${runtimeRel}${ext} now exists`,
+        );
+      }
+    }
+  }
+  if (helper.sourceFileBaseAliases.length !== expectedFileBaseAliases.size) {
+    failGate("Z-PURGEA: source file-base alias count changed without updating the gate");
+  }
+
+  const expectedTuiRoots = new Set([
+    "runtime/src/tui/components",
+    "runtime/src/tui/context",
+    "runtime/src/tui/hooks",
+  ]);
+  for (const rootAlias of helper.relocatedTuiSourceRoots) {
+    const rootRel = toRepoRel(rootAlias);
+    if (!expectedTuiRoots.has(rootRel)) {
+      failGate(`Z-PURGEA: unexpected relocated TUI source root alias ${rootRel}`);
+    }
+  }
+  if (helper.relocatedTuiSourceRoots.length !== expectedTuiRoots.size) {
+    failGate("Z-PURGEA: relocated TUI source root alias count changed without updating the gate");
+  }
+
+  expectResolution(
+    "moved utility to upstream bootstrap",
+    "runtime/src/utils/attribution.ts",
+    "../bootstrap/state.js",
+    "runtime/src/agenc/upstream/bootstrap/state.ts",
+  );
+  expectResolution(
+    "moved constants to upstream Tool file-base",
+    "runtime/src/constants/prompts.ts",
+    "../tools/Tool.js",
+    "runtime/src/agenc/upstream/Tool.ts",
+  );
+  expectResolution(
+    "moved utility to upstream Task file-base",
+    "runtime/src/utils/attachments.ts",
+    "../tasks/Task.js",
+    "runtime/src/agenc/upstream/Task.ts",
+  );
+
+  const tuiImporter = path.join(root, "runtime/src/tui/components/PromptInput/PromptInput.tsx");
+  const tuiSourceRoot = helper.sourceRootForImporter(tuiImporter);
+  if (!tuiSourceRoot || toRepoRel(tuiSourceRoot) !== "runtime/src/tui/components") {
+    failGate(
+      `Z-PURGEA: tsup did not classify moved TUI importer; got ${tuiSourceRoot ? toRepoRel(tuiSourceRoot) : "null"}`,
+    );
+  }
+  const bareSrcResolved = helper.resolveAgenCBareSrc(
+    "src/components/FeedbackSurvey/FeedbackSurvey.js",
+  );
+  const bareSrcRel = bareSrcResolved ? toRepoRel(bareSrcResolved) : null;
+  if (bareSrcRel !== "runtime/src/tui/components/FeedbackSurvey/FeedbackSurvey.tsx") {
+    failGate(
+      `Z-PURGEA: tsup bare src TUI alias failed; expected runtime/src/tui/components/FeedbackSurvey/FeedbackSurvey.tsx, got ${bareSrcRel ?? "null"}`,
+    );
+  }
+
+  pass("Z-PURGEA: tsup temporary alias boundaries and direct resolver cases verified");
+}
+
 async function cleanupGates(item) {
   // Recognized cleanup IDs. Anything outside this set must fail rather than
   // silently no-op through the function with no checks fired.
@@ -7265,6 +7414,128 @@ async function cleanupGates(item) {
 
   if (id === "Z-PURGEA") {
     assertSubtreesPurged(["utils", "constants"], "utils + constants");
+    const movedRoots = [
+      path.join(root, "runtime/src/utils"),
+      path.join(root, "runtime/src/constants"),
+    ];
+    const movedFiles = movedRoots.flatMap((dir) =>
+      existsSync(dir)
+        ? walkFiles(dir).filter((f) => /\.(ts|tsx|mts|cts)$/.test(f))
+        : [],
+    );
+    const movedBoundaryPrefix =
+      "// @ts-nocheck\n" +
+      "// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.\n";
+    const unchecked = movedFiles.filter((f) =>
+      readFileSync(f, "utf8").startsWith("// @ts-nocheck"),
+    );
+    const undocumentedUnchecked = unchecked.filter((f) =>
+      !readFileSync(f, "utf8").startsWith(movedBoundaryPrefix),
+    );
+    if (undocumentedUnchecked.length > 0) {
+      failGate(
+        `Z-PURGEA: ${undocumentedUnchecked.length} moved file(s) keep undocumented ts-nocheck:\n  ${undocumentedUnchecked.slice(0, 10).map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+    if (unchecked.length > 50) {
+      failGate(`Z-PURGEA: ${unchecked.length} moved file(s) keep ts-nocheck; expected <= 50 boundary files`);
+    }
+    pass(`Z-PURGEA: moved utils/constants ts-nocheck narrowed to ${unchecked.length} documented boundary file(s)`);
+
+    const transitiveBoundaryRoots = [
+      "runtime/src/agenc/upstream",
+      "runtime/src/tui",
+      "runtime/src/memdir",
+    ];
+    const transitiveBoundaryPrefixes = [
+      "// @ts-nocheck\n" +
+        "// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+      "// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.\n",
+    ];
+    const transitiveUnchecked = transitiveBoundaryRoots.flatMap((dir) => {
+      const abs = path.join(root, dir);
+      return existsSync(abs)
+        ? walkFiles(abs).filter((f) => {
+          if (!/\.(ts|tsx|mts|cts)$/.test(f)) return false;
+          return readFileSync(f, "utf8").startsWith("// @ts-nocheck");
+        })
+        : [];
+    });
+    const undocumentedTransitiveUnchecked = transitiveUnchecked.filter((f) =>
+      !transitiveBoundaryPrefixes.some((prefix) =>
+        readFileSync(f, "utf8").startsWith(prefix),
+      ),
+    );
+    if (undocumentedTransitiveUnchecked.length > 0) {
+      failGate(
+        `Z-PURGEA: ${undocumentedTransitiveUnchecked.length} transitive file(s) keep undocumented ts-nocheck:\n  ${undocumentedTransitiveUnchecked.slice(0, 10).map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+    if (transitiveUnchecked.length > 200) {
+      failGate(`Z-PURGEA: ${transitiveUnchecked.length} transitive file(s) keep ts-nocheck; expected <= 200 boundary files`);
+    }
+    pass(`Z-PURGEA: transitive ts-nocheck documented for ${transitiveUnchecked.length} boundary file(s)`);
+
+    const bannedMovedPatterns = [
+      /github\.com\/anthropics\/agenc-code/i,
+      /github\.com\/Gitlawb\/agenc/i,
+      /raw\.githubusercontent\.com\/anthropics\/agenc-code/i,
+      /raw\.githubusercontent\.com\/anthropics\/agenc-plugins-official/i,
+      /anthropics\/agenc-code/i,
+      /anthropics\/agenc-plugins-official/i,
+      /@anthropic-ai\/agenc-code/i,
+      /support\.anthropic\.com/i,
+      /noreply@anthropic\.com/i,
+      /agencusercontent\.com/i,
+      /anthropic\.agenc-code(?:-internal)?/i,
+      /https:\/\/(?:code|platform|downloads)\.agenc\./i,
+      /agenc\.dev\b/i,
+      /https:\/\/agenc\.(?:ai|com|dev)\b/i,
+      /mcp__claude-in-chrome__/i,
+      /claude-in-chrome/i, // branding-scan: allow verifier rejects stale donor MCP prefix
+      /com\.anthropic\.agenc/i,
+    ];
+    const bannedFindings = [];
+    for (const file of movedFiles) {
+      const rel = path.relative(root, file);
+      const lines = readFileSync(file, "utf8").split("\n");
+      lines.forEach((line, index) => {
+        if (bannedMovedPatterns.some((re) => re.test(line))) {
+          bannedFindings.push(`${rel}:${index + 1}: ${line.trim().slice(0, 180)}`);
+        }
+      });
+    }
+    if (bannedFindings.length > 0) {
+      failGate(
+        `Z-PURGEA: moved utils/constants contain banned donor/domain strings:\n  ${bannedFindings.slice(0, 20).join("\n  ")}${bannedFindings.length > 20 ? `\n  ... +${bannedFindings.length - 20} more` : ""}`,
+      );
+    }
+    pass("Z-PURGEA: moved utils/constants donor/domain sweep clean");
+    await assertZPurgeATsupAliasBoundaries();
+    const movedDonorTests = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) =>
+        /runtime\/src\/(?:utils|constants)\/.*\.test\.(ts|tsx)$/.test(file.split(path.sep).join("/"))
+      );
+    const vitestConfigSource = readFileSync(path.join(root, "runtime/vitest.config.ts"), "utf8");
+    if (
+      movedDonorTests.length > 0 &&
+      !vitestConfigSource.includes("movedDonorTestFiles")
+    ) {
+      failGate("Z-PURGEA: moved donor-origin tests are not explicitly quarantined from Vitest");
+    }
+    pass(`Z-PURGEA: moved donor-origin test quarantine documented for ${movedDonorTests.length} file(s)`);
+    const movedRuntimeProbe = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "tests/zpurgea-importability.test.ts",
+    ]);
+    if (movedRuntimeProbe.status !== 0) {
+      failGate("Z-PURGEA: moved utility Vitest/importability probe failed");
+    }
+    pass("Z-PURGEA: moved utility Vitest/importability probe passed");
     return;
   }
   if (id === "Z-PURGEB") {

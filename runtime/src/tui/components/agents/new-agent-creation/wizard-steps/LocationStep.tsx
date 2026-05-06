@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
 import { Box } from '../../../../ink.js';
-import type { SettingSource } from '../../../../../agenc/upstream/utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Select } from '../../../CustomSelect/select';
 import { Byline } from '../../../design-system/Byline';

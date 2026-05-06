@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { BLACK_CIRCLE } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text, type TextProps } from '../../ink.js';
-import { extractTag } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   addMargin: boolean;
   param: TextBlockParam;

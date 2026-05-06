@@ -3,10 +3,10 @@ import React from 'react';
 import { Box, render, Text } from '../ink.js';
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js';
 import { AppStateProvider } from '../state/AppState.js';
-import type { ConfigParseError } from '../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getBaseRenderOptions } from '../../agenc/upstream/utils/renderOptions'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify, writeFileSync_DEPRECATED } from '../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ThemeName } from '../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ConfigParseError } from '../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getBaseRenderOptions } from '../../utils/renderOptions.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify, writeFileSync_DEPRECATED } from '../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeName } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 interface InvalidConfigHandlerProps {

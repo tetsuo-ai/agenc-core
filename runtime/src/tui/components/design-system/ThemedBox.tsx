@@ -6,7 +6,7 @@ import type { ClickEvent } from '../../ink/events/click-event.js';
 import type { FocusEvent } from '../../ink/events/focus-event.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import type { Color, Styles } from '../../ink/styles.js';
-import { getTheme, type Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTheme, type Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTheme } from './ThemeProvider';
 
 // Color props that accept theme keys

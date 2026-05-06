@@ -3,12 +3,12 @@ import { getUserContext } from '../../../context.js'
 import { queryModelWithoutStreaming } from '../../../services/api/anthropic.js' // branding-scan: allow existing provider API module path pending service purge
 import { getEmptyToolPermissionContext } from '../../../tools/Tool.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
-import { prependUserContext } from '../../../agenc/upstream/utils/api.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { prependUserContext } from '../../../utils/api.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   createUserMessage,
   normalizeMessagesForAPI,
-} from '../../../agenc/upstream/utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { ModelName } from '../../../agenc/upstream/utils/model/model.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { ModelName } from '../../../utils/model/model.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoMemoryEnabled } from '../../../memdir/paths'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

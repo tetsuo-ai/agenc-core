@@ -1,12 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useEffect, useRef } from 'react';
 import { Box, Text } from '../ink.js';
-import { isMaxSubscriber, isProSubscriber, isTeamSubscriber } from '../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { EffortLevel } from '../../agenc/upstream/utils/effort'; // upstream-import: keep target is owned by another Z-PURGE item
-import { convertEffortValueToLevel, getDefaultEffortForModel, getOpusDefaultEffortConfig, toPersistableEffort } from '../../agenc/upstream/utils/effort'; // upstream-import: keep target is owned by another Z-PURGE item
-import { parseUserSpecifiedModel } from '../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
-import { updateSettingsForSource } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isMaxSubscriber, isProSubscriber, isTeamSubscriber } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { EffortLevel } from '../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { convertEffortValueToLevel, getDefaultEffortForModel, getOpusDefaultEffortConfig, toPersistableEffort } from '../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { parseUserSpecifiedModel } from '../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from './CustomSelect/select';
 import { Select } from './CustomSelect/select';
 import { effortLevelToSymbol } from './EffortIndicator';

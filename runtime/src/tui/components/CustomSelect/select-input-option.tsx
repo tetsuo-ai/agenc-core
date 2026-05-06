@@ -3,9 +3,9 @@ import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- UP arrow exit not in Attachments bindings
 import { Box, Text, useInput } from '../../ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
-import type { PastedContent } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getImageFromClipboard } from '../../../agenc/upstream/utils/imagePaste'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PastedContent } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getImageFromClipboard } from '../../../utils/imagePaste.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ClickableImageRef } from '../ClickableImageRef';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';

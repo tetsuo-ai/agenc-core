@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { useTheme } from '../components/design-system/ThemeProvider'
 import type { useSelection } from '../ink/hooks/use-selection.js'
-import { getGlobalConfig } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
-import { getTheme } from '../../agenc/upstream/utils/theme' // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getTheme } from '../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type Selection = ReturnType<typeof useSelection>
 

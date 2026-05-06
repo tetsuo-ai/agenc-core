@@ -22,21 +22,21 @@ import type {
 } from '../../../types/permissions'
 import { setClassifierApproval } from '../../../agenc/upstream/utils/classifierApprovals' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
-import { executePermissionRequestHooks } from '../../../agenc/upstream/utils/hooks' // upstream-import: keep target is owned by another Z-PURGE item
+import { executePermissionRequestHooks } from '../../../utils/hooks.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   REJECT_MESSAGE,
   REJECT_MESSAGE_WITH_REASON_PREFIX,
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
   withMemoryCorrectionHint,
-} from '../../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision } from '../../../agenc/upstream/utils/permissions/PermissionResult' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
   supportsPersistence,
-} from '../../../agenc/upstream/utils/permissions/PermissionUpdate' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/PermissionUpdate.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   logPermissionDecision,
   type PermissionDecisionArgs,

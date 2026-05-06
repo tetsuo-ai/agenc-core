@@ -4,19 +4,19 @@ import { DEFAULT_CODEX_BASE_URL } from '../../services/api/providerConfig'
 import { Box, Text } from '../ink.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { useSetAppState } from '../state/AppState.js'
-import type { ProviderProfile } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import type { ProviderProfile } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
-  clearCodexCredentials,
-  readCodexCredentialsAsync,
-} from '../../agenc/upstream/utils/codexCredentials' // upstream-import: keep target is owned by another Z-PURGE item
+  clearAgencCredentials,
+  readAgencCredentialsAsync,
+} from '../../utils/agencCredentials.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils'
-import { getPrimaryModel, hasMultipleModels, parseModelList } from '../../agenc/upstream/utils/providerModels' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPrimaryModel, hasMultipleModels, parseModelList } from '../../utils/providerModels.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   applySavedProfileToCurrentSession,
   buildCodexOAuthProfileEnv,
   clearPersistedCodexOAuthProfile,
   createProfileFile,
-} from '../../agenc/upstream/utils/providerProfile' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/providerProfile.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   addProviderProfile,
   applyActiveProviderProfileFromConfig,
@@ -28,27 +28,27 @@ import {
   type ProviderPreset,
   type ProviderProfileInput,
   updateProviderProfile,
-} from '../../agenc/upstream/utils/providerProfiles' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/providerProfiles.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   clearGithubModelsToken,
   GITHUB_MODELS_HYDRATED_ENV_MARKER,
   hydrateGithubModelsTokenFromSecureStorage,
   readGithubModelsToken,
   readGithubModelsTokenAsync,
-} from '../../agenc/upstream/utils/githubModelsCredentials' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/githubModelsCredentials.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   probeAtomicChatReadiness,
   probeOllamaGenerationReadiness,
   type AtomicChatReadiness,
   type OllamaGenerationReadiness,
-} from '../../agenc/upstream/utils/providerDiscovery' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/providerDiscovery.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   rankOllamaModels,
   recommendOllamaModel,
-} from '../../agenc/upstream/utils/providerRecommendation' // upstream-import: keep target is owned by another Z-PURGE item
-import { clearStartupProviderOverrides } from '../../agenc/upstream/utils/providerStartupOverrides' // upstream-import: keep target is owned by another Z-PURGE item
-import { redactUrlForDisplay } from '../../agenc/upstream/utils/urlRedaction' // upstream-import: keep target is owned by another Z-PURGE item
-import { updateSettingsForSource } from '../../agenc/upstream/utils/settings/settings' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/providerRecommendation.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { clearStartupProviderOverrides } from '../../utils/providerStartupOverrides.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { redactUrlForDisplay } from '../../utils/urlRedaction.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { updateSettingsForSource } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   type OptionWithDescription,
   Select,
@@ -463,7 +463,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
   const [menuFocusValue, setMenuFocusValue] = React.useState<string | undefined>()
   const [hasStoredCodexOAuthCredentials, setHasStoredCodexOAuthCredentials] =
     React.useState(false)
-  const [storedCodexOAuthProfileId, setStoredCodexOAuthProfileId] =
+  const [storedAgencOAuthProfileId, setStoredCodexOAuthProfileId] =
     React.useState<string | undefined>()
   const [ollamaSelection, setOllamaSelection] = React.useState<OllamaSelectionState>({
     state: 'idle',
@@ -600,7 +600,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
 
     const refreshEpoch = ++codexRefreshEpochRef.current
     void (async () => {
-      const credentials = await readCodexCredentialsAsync()
+      const credentials = await readAgencCredentialsAsync()
       if (refreshEpoch !== codexRefreshEpochRef.current) {
         return
       }
@@ -764,7 +764,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
       })
     }
 
-    const storedCredentials = await readCodexCredentialsAsync()
+    const storedCredentials = await readAgencCredentialsAsync()
     if (!storedCredentials) {
       return 'stored Codex OAuth credentials could not be loaded'
     }
@@ -849,7 +849,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
         clearStartupProviderOverrideFromUserSettings()
       const isActiveCodexOAuth = isCodexOAuthProfile(
         active,
-        storedCodexOAuthProfileId,
+        storedAgencOAuthProfileId,
       )
       const activationWarning = isActiveCodexOAuth
         ? await activateCodexOAuthSession()
@@ -1626,7 +1626,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                 }
                 break
               case 'logout-codex-oauth': {
-                const cleared = clearCodexCredentials()
+                const cleared = clearAgencCredentials()
                 if (!cleared.success) {
                   setErrorMessage(
                     cleared.warning ??
@@ -1639,7 +1639,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                 setStoredCodexOAuthProfileId(undefined)
                 const codexProfile = findCodexOAuthProfile(
                   getProviderProfiles(),
-                  storedCodexOAuthProfileId,
+                  storedAgencOAuthProfileId,
                 )
                 let settingsOverrideError: string | null = null
                 if (codexProfile) {
@@ -1770,7 +1770,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
 
             const existing = findCodexOAuthProfile(
               getProviderProfiles(),
-              storedCodexOAuthProfileId,
+              storedAgencOAuthProfileId,
             )
             const saved = existing
               ? updateProviderProfile(existing.id, payload)
@@ -1873,14 +1873,14 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
           const deletedCodexOAuthProfile =
             findCodexOAuthProfile(
               profiles,
-              storedCodexOAuthProfileId,
+              storedAgencOAuthProfileId,
             )?.id === profileId
           const result = deleteProviderProfile(profileId)
           if (!result.removed) {
             setErrorMessage('Could not delete provider.')
           } else {
             if (deletedCodexOAuthProfile) {
-              const cleared = clearCodexCredentials()
+              const cleared = clearAgencCredentials()
               if (!cleared.success) {
                 setErrorMessage(
                   cleared.warning ??

@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useEffect, useState } from 'react';
-import { gracefulShutdown } from '../../agenc/upstream/utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { gracefulShutdown } from '../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { writeToStdout } from 'src/utils/process.js';
 import { Box, color, Text, useTheme } from '../ink.js';
 import { addMcpConfig, getAllMcpConfigs } from '../../services/mcp/config';

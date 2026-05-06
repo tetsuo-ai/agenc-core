@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { isShutdownApproved, isShutdownRejected, isShutdownRequest, type ShutdownRejectedMessage, type ShutdownRequestMessage } from '../../../agenc/upstream/utils/teammateMailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isShutdownApproved, isShutdownRejected, isShutdownRequest, type ShutdownRejectedMessage, type ShutdownRequestMessage } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type ShutdownRequestProps = {
   request: ShutdownRequestMessage;
 };

@@ -6,14 +6,14 @@ import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState } from '../state/AppState.js';
-import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../agenc/upstream/utils/fileHistory.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../agenc/upstream/utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../../types/message';
-import { stripDisplayTags } from '../../agenc/upstream/utils/displayTags'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { stripDisplayTags } from '../../utils/displayTags.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type OptionWithDescription, Select } from './CustomSelect/select';
 import { Spinner } from './spinner/Spinner.js';
 function isTextBlock(block: ContentBlockParam): block is TextBlockParam {

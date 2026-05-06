@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useStdin } from '../../ink/components/StdinContext.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSystemThemeName, type SystemTheme } from '../../../agenc/upstream/utils/systemTheme'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ThemeName, ThemeSetting } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSystemThemeName, type SystemTheme } from '../../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeName, ThemeSetting } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
   themeSetting: ThemeSetting;

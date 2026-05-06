@@ -4,7 +4,7 @@ import {
   type FileHistoryState,
   fileHistoryEnabled,
   fileHistoryRestoreStateFromLog,
-} from '../../agenc/upstream/utils/fileHistory' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/fileHistory.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export function useFileHistorySnapshotInit(
   initialFileHistorySnapshots: FileHistorySnapshot[] | undefined,

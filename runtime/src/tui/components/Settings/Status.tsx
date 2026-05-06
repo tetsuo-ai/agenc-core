@@ -7,10 +7,10 @@ import type { LocalJSXCommandContext } from '../../../commands.js';
 import { useIsInsideModal } from '../../context/modalContext';
 import { Box, Text, useTheme } from '../../ink.js';
 import { type AppState, useAppState } from '../../state/AppState.js';
-import { getCwd } from '../../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCurrentSessionTitle } from '../../../agenc/upstream/utils/sessionStorage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../../agenc/upstream/utils/status'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ThemeName } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCurrentSessionTitle } from '../../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../../utils/status.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 type Props = {
   context: LocalJSXCommandContext;

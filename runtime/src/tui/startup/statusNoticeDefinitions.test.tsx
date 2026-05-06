@@ -33,15 +33,15 @@ vi.mock("../ink.js", async () => {
   };
 });
 
-vi.mock("../../agenc/upstream/utils/cwd.js", () => ({
+vi.mock("../../utils/cwd.js", () => ({
   getCwd: () => "/repo",
 }));
 
-vi.mock("../../agenc/upstream/utils/format.js", () => ({
+vi.mock("../../utils/format.js", () => ({
   formatNumber: (value: number) => String(value),
 }));
 
-vi.mock("../../agenc/upstream/utils/auth.js", () => ({
+vi.mock("../../utils/auth.js", () => ({
   getAnthropicApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
   getApiKeyFromConfigOrMacOSKeychain: () =>
     mocks.apiKeyConfigured ? "configured-key" : null,
@@ -49,18 +49,18 @@ vi.mock("../../agenc/upstream/utils/auth.js", () => ({
   isAgenCAISubscriber: () => mocks.subscriber,
 }));
 
-vi.mock("../../agenc/upstream/utils/statusNoticeHelpers.js", () => ({
+vi.mock("../../utils/statusNoticeHelpers.js", () => ({
   AGENT_DESCRIPTIONS_THRESHOLD: 100,
   getAgentDescriptionsTotalTokens: () => mocks.agentTokens,
 }));
 
-vi.mock("../../agenc/upstream/utils/ide.js", () => ({
+vi.mock("../../utils/ide.js", () => ({
   getTerminalIdeType: () => mocks.terminalIdeType,
   isSupportedJetBrainsTerminal: () => mocks.supportedIde,
   toIDEDisplayName: (ideType: string | null) => ideType ?? "JetBrains IDE",
 }));
 
-vi.mock("../../agenc/upstream/utils/jetbrains.js", () => ({
+vi.mock("../../utils/jetbrains.js", () => ({
   isJetBrainsPluginInstalledCachedSync: () => mocks.pluginInstalled,
 }));
 

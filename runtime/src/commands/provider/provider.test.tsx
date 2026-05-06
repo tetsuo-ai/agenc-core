@@ -16,7 +16,7 @@ import {
   ProviderWizard,
   TextEntryDialog,
 } from './provider.js'
-import { createProfileFile } from '../../utils/providerProfile.js'
+import { createProfileFile } from '../../../../utils/providerProfile.js'
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'

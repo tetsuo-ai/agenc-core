@@ -25,8 +25,8 @@ import { WebSearchTool } from '../../../tools/WebSearchTool/WebSearchTool.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from '../design-system/Divider';
 type Props = {
   tools: Tools;

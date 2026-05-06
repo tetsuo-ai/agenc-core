@@ -3,9 +3,9 @@ import type { QueuedCommand } from '../../types/textInputTypes'
 import {
   getCommandQueueSnapshot,
   subscribeToCommandQueue,
-} from '../../agenc/upstream/utils/messageQueueManager' // upstream-import: keep target is owned by another Z-PURGE item
-import type { QueryGuard } from '../../agenc/upstream/utils/QueryGuard' // upstream-import: keep target is owned by another Z-PURGE item
-import { processQueueIfReady } from '../../agenc/upstream/utils/queueProcessor' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/messageQueueManager.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { QueryGuard } from '../../utils/QueryGuard.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { processQueueIfReady } from '../../utils/queueProcessor.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 type UseQueueProcessorParams = {
   executeQueuedInput: (commands: QueuedCommand[]) => Promise<void>

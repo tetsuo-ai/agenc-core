@@ -6,8 +6,8 @@ import { Box, Text, useTheme } from '../../../ink.js';
 import { useAppState } from '../../../state/AppState.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../../tools/Tool';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../../types/message';
-import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../../agenc/upstream/utils/classifierApprovals'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractTag, type buildMessageLookups } from '../../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../../utils/classifierApprovals.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag, type buildMessageLookups } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../../MessageResponse';
 import { HookProgressMessage } from '../HookProgressMessage';
 type Props = {

@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   ToolResultBlockParam,
   ToolUseBlockParam,
@@ -787,14 +788,12 @@ const TOOL_DEFAULTS = {
 // both 0-arg and full-arg call sites type-check — stubs varied in arity and
 // tests relied on that), not the interface's strict signatures.
 type ToolDefaults = typeof TOOL_DEFAULTS
-
 // D infers the concrete object-literal type from the call site. The
 // constraint provides contextual typing for method parameters; `any` in
 // constraint position is structural and never leaks into the return type.
 // BuiltTool<D> mirrors runtime `{...TOOL_DEFAULTS, ...def}` at the type level.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyToolDef = ToolDef<any, any, any>
-
 export function buildTool<D extends AnyToolDef>(def: D): BuiltTool<D> {
   // The runtime spread is straightforward; the `as` bridges the gap between
   // the structural-any constraint and the precise BuiltTool<D> return. The

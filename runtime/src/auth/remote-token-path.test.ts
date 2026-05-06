@@ -89,8 +89,8 @@ async function loadSpawnUtils(): Promise<typeof import("../utils/swarm/spawnUtil
     getMainLoopModelOverride: () => undefined,
     getSessionBypassPermissionsMode: () => false,
   }));
-  vi.doMock("../agenc/upstream/utils/bundledMode.js", () => ({ isInBundledMode: () => false }));
-  vi.doMock("../agenc/upstream/utils/swarm/backends/teammateModeSnapshot.js", () => ({
+  vi.doMock("../utils/bundledMode.js", () => ({ isInBundledMode: () => false }));
+  vi.doMock("../utils/swarm/backends/teammateModeSnapshot.js", () => ({
     getTeammateModeFromSnapshot: () => "default",
   }));
   return import("../utils/swarm/spawnUtils.js");

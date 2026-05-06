@@ -16,12 +16,12 @@ import * as React from 'react';
 import { hasShownLspRecommendationThisSession, setLspRecommendationShownThisSession } from '../../bootstrap/state';
 import { useNotifications } from '../context/notifications';
 import { useAppState } from '../state/AppState.js';
-import { saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { logError } from '../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { addToNeverSuggest, getMatchingLspPlugins, incrementIgnoredCount } from '../../agenc/upstream/utils/plugins/lspRecommendation'; // upstream-import: keep target is owned by another Z-PURGE item
-import { cacheAndRegisterPlugin } from '../../agenc/upstream/utils/plugins/pluginInstallationHelpers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingsForSource, updateSettingsForSource } from '../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { addToNeverSuggest, getMatchingLspPlugins, incrementIgnoredCount } from '../../utils/plugins/lspRecommendation.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { cacheAndRegisterPlugin } from '../../utils/plugins/pluginInstallationHelpers.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { installPluginAndNotify, usePluginRecommendationBase } from './usePluginRecommendationBase';
 
 // Threshold for detecting timeout vs explicit dismiss (ms)

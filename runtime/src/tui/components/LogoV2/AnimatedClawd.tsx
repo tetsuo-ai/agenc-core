@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { useEffect, useRef, useState } from 'react';
 import { Box } from '../../ink.js';
-import { getInitialSettings } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Clawd, type ClawdPose } from './Clawd';
 type Frame = {
   pose: ClawdPose;

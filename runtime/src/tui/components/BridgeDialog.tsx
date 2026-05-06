@@ -11,7 +11,7 @@ import { useRegisterOverlay } from '../context/overlayContext';
 import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getBranch } from '../../utils/git';
 import { Dialog } from './design-system/Dialog';
 type Props = {

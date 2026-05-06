@@ -11,7 +11,6 @@ import {
   STAT_NAMES,
   type StatName,
 } from './types.js'
-
 // Mulberry32 — tiny seeded PRNG, good enough for picking ducks
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0
@@ -115,12 +114,10 @@ export function roll(userId: string): Roll {
 export function rollWithSeed(seed: string): Roll {
   return rollFrom(mulberry32(hashString(seed)))
 }
-
 export function companionUserId(): string {
   const config = getGlobalConfig()
   return config.oauthAccount?.accountUuid ?? config.userID ?? 'anon'
 }
-
 // Regenerate bones from userId, merge with stored soul. Bones never persist
 // so species renames and SPECIES-array edits can't break stored companions,
 // and editing config.companion can't fake a rarity.

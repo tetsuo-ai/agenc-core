@@ -9,10 +9,10 @@ import { enterTeammateView, exitTeammateView } from '../../state/teammateViewHel
 import { isPanelAgentTask } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { getPillLabel, pillNeedsCta } from 'src/tasks/pillLabel.js';
 import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
-import { calculateHorizontalScrollWindow } from '../../../agenc/upstream/utils/horizontalScroll.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { calculateHorizontalScrollWindow } from '../../../utils/horizontalScroll.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
-import type { Theme } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { shouldHideTasksFooter } from './taskStatusUtils';
 type Props = {

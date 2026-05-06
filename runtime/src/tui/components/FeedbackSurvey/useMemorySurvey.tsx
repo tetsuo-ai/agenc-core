@@ -6,11 +6,11 @@ import { isAutoMemoryEnabled } from '../../../memdir/paths';
 import { isPolicyAllowed } from '../../../services/policyLimits/index';
 import { FILE_READ_TOOL_NAME } from '../../../tools/FileReadTool/prompt';
 import type { Message } from '../../../types/message';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from '../../../utils/envUtils';
 import { isAutoManagedMemoryFile } from '../../../utils/memoryFileDetection';
-import { extractTextContent, getLastAssistantMessage } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logOTelEvent } from '../../../agenc/upstream/utils/telemetry/events'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTextContent, getLastAssistantMessage } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logOTelEvent } from '../../../utils/telemetry/events.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { submitTranscriptShare } from './submitTranscriptShare';
 import type { TranscriptShareResponse } from './TranscriptSharePrompt';
 import { useSurveyState } from './useSurveyState';

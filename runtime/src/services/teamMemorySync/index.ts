@@ -33,20 +33,20 @@ import {
   AGENC_AI_PROFILE_SCOPE,
   getOauthConfig,
   OAUTH_BETA_HEADER,
-} from '../../constants/oauth.js'
+} from '../../../../constants/oauth.js'
 import {
   getTeamMemPath,
   PathTraversalError,
   validateTeamMemKey,
 } from '../../memdir/teamMemPaths.js'
-import { count } from '../../utils/array.js'
+import { count } from '../../../../utils/array.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
-} from '../../utils/auth.js'
+} from '../../../../utils/auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { classifyAxiosError } from '../../utils/errors.js'
-import { getGithubRepo } from '../../utils/git.js'
+import { classifyAxiosError } from '../../../../utils/errors.js'
+import { getGithubRepo } from '../../../../utils/git.js'
 import {
   getAPIProvider,
   isFirstPartyproviderBaseUrl,

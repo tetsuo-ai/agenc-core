@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { logEvent } from '../../services/analytics/index.js';
 import { Box, Link, Text } from '../ink.js';
-import type { ExternalAgenCMdInclude } from '../../agenc/upstream/utils/claudemd'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { saveCurrentProjectConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ExternalAgenCMdInclude } from '../../utils/agencmd.js'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { saveCurrentProjectConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 type Props = {

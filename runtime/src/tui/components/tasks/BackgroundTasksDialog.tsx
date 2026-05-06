@@ -31,7 +31,7 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

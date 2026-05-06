@@ -4,9 +4,9 @@ import { useSettings } from '../../../hooks/useSettings';
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { stringWidth } from '../../../ink/stringWidth.js';
 import { Ansi, Box, Text, useTheme } from '../../../ink.js';
-import { type CliHighlight, getCliHighlightPromise } from '../../../../agenc/upstream/utils/cliHighlight'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applyMarkdown } from '../../../../agenc/upstream/utils/markdown'; // upstream-import: keep target is owned by another Z-PURGE item
-import sliceAnsi from '../../../../agenc/upstream/utils/sliceAnsi'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type CliHighlight, getCliHighlightPromise } from '../../../../utils/cliHighlight.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { applyMarkdown } from '../../../../utils/markdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import sliceAnsi from '../../../../utils/sliceAnsi.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type PreviewBoxProps = {
   /** The preview content to display. Markdown is rendered with syntax highlighting
    * for code blocks (```ts, ```py, etc.). Also supports plain multi-line text. */

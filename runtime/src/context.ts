@@ -4,7 +4,7 @@ import {
   getAdditionalDirectoriesForAgenCMd,
   setCachedAgenCMdContent,
 } from './bootstrap/state.js'
-import { getLocalISODate } from './constants/common.js'
+import { getLocalISODate } from '../../constants/common.js'
 import {
   filterInjectedMemoryFiles,
   getAgenCMds,

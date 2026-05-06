@@ -1,6 +1,6 @@
 import { z } from 'zod/v4'
 import { getSessionId, setOriginalCwd } from '../../bootstrap/state.js'
-import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
+import { clearSystemPromptSections } from '../../../../constants/systemPromptSections.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
@@ -15,7 +15,7 @@ import {
   createWorktreeForSession,
   getCurrentWorktreeSession,
   validateWorktreeSlug,
-} from '../../utils/worktree.js'
+} from '../../../../utils/worktree.js'
 import { ENTER_WORKTREE_TOOL_NAME } from './constants.js'
 import { getEnterWorktreeToolPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'

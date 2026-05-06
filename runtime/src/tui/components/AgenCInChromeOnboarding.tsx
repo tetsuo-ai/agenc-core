@@ -3,8 +3,8 @@ import React from 'react';
 import { logEvent } from '../../services/analytics/index.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- enter to continue
 import { Box, Link, Newline, Text, useInput } from '../ink.js';
-import { isChromeExtensionInstalled } from '../../agenc/upstream/utils/claudeInChrome/setup'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isChromeExtensionInstalled } from '../../utils/agencInChrome/setup.js'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from './design-system/Dialog';
 const CHROME_EXTENSION_URL = 'https://agenc.ai/chrome';
 const CHROME_PERMISSIONS_URL = 'https://clau.de/chrome/permissions';

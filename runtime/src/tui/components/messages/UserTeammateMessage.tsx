@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import figures from 'figures';
 import * as React from 'react';
-import { TEAMMATE_MESSAGE_TAG } from '../../../agenc/upstream/constants/xml'; // upstream-import: keep target is owned by another Z-PURGE item
+import { TEAMMATE_MESSAGE_TAG } from '../../../constants/xml.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Ansi, Box, Text, type TextProps } from '../../ink.js';
-import { toInkColor } from '../../../agenc/upstream/utils/ink'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonParse } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isShutdownApproved } from '../../../agenc/upstream/utils/teammateMailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonParse } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isShutdownApproved } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from '../MessageResponse';
 import { tryRenderPlanApprovalMessage } from './PlanApprovalMessage';
 import { tryRenderShutdownMessage } from './ShutdownMessage';

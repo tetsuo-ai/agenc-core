@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text } from '../../ink.js';
-import { truncate } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 export type FeedLine = {
   text: string;
   timestamp?: string;

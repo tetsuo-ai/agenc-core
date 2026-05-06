@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
-import { TEARDROP_ASTERISK } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { TEARDROP_ASTERISK } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- enter to copy link
@@ -10,8 +10,8 @@ import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { logEvent } from '../../../services/analytics/index';
 import { fetchReferralRedemptions, formatCreditAmount, getCachedOrFetchPassesEligibility } from '../../../services/api/referral';
 import type { ReferralRedemptionsResponse, ReferrerRewardInfo } from '../../../services/oauth/types';
-import { count } from '../../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Pane } from '../design-system/Pane';
 type PassStatus = {
   passNumber: number;

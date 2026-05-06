@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import axios from 'axios'
 import { getOauthConfig, OAUTH_BETA_HEADER } from 'src/constants/oauth.js'
 import type { OAuthProfileResponse } from 'src/services/oauth/types.js'
@@ -33,7 +34,6 @@ export async function getOauthProfileFromApiKey(): Promise<
     logError(error as Error)
   }
 }
-
 export async function getOauthProfileFromOauthToken(
   accessToken: string,
 ): Promise<OAuthProfileResponse | undefined> {

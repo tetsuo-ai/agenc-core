@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
-import { getAgentModelOptions } from '../../../agenc/upstream/utils/model/agent'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAgentModelOptions } from '../../../utils/model/agent.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 interface ModelSelectorProps {
   initialModel?: string;

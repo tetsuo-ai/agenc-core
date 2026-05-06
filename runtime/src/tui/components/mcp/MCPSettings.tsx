@@ -5,7 +5,7 @@ import { AgenCAuthProvider } from '../../../services/mcp/auth';
 import type { McpAgenCAIProxyServerConfig, McpHTTPServerConfig, McpSSEServerConfig, McpStdioServerConfig } from '../../../services/mcp/types';
 import { extractAgentMcpServers, filterToolsByServer } from '../../../services/mcp/utils';
 import { useAppState } from '../../state/AppState.js';
-import { getSessionIngressAuthToken } from '../../../agenc/upstream/utils/sessionIngressAuth'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSessionIngressAuthToken } from '../../../utils/sessionIngressAuth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MCPAgentServerMenu } from './MCPAgentServerMenu';
 import { MCPListPanel } from './MCPListPanel';
 import { MCPRemoteServerMenu } from './MCPRemoteServerMenu';

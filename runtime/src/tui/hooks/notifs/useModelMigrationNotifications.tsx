@@ -1,5 +1,5 @@
 import type { Notification } from '../../context/notifications.js';
-import { type GlobalConfig, getGlobalConfig } from '../../../agenc/upstream/utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type GlobalConfig, getGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useStartupNotification } from './useStartupNotification';
 
 // Shows a one-time notification right after a model migration writes its

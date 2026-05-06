@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useContext, useMemo } from 'react';
-import { Mailbox } from '../../agenc/upstream/utils/mailbox'; // upstream-import: keep target is owned by another Z-PURGE item
+import { Mailbox } from '../../utils/mailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const MailboxContext = createContext<Mailbox | undefined>(undefined);
 type Props = {
   children: React.ReactNode;

@@ -10,7 +10,7 @@ import {
 /**
  * Tag extractor mirroring upstream `extractTag` semantics — pulls
  * `<tag>...</tag>` content out of a flat string. Inlined locally
- * instead of imported from `agenc/upstream/utils/messages.ts` because
+ * instead of imported from `utils/messages.ts` because
  * that module pulls a `bun:bundle` feature gate + provider chain in
  * at module-load time, which the vitest source resolver cannot follow.
  * The TUI renderer only needs the regex extraction; nothing else from that
@@ -33,7 +33,7 @@ function extractToolTag(content: string, tagName: string): string | null {
  * tags and renders them in distinct colors), but does not import
  * upstream component because the upstream chain drags `bun:bundle`
  * resolution through a feature-gated `require('../memdir/teamMemPaths.js')`
- * inside `agenc/upstream/utils/config.ts` that vitest cannot follow
+ * inside `utils/config.ts` that vitest cannot follow
  * from raw source (only the compiled dist resolves it). Production
  * runtime CAN later be flipped to dispatch to the real upstream
  * component once the dist is in scope; the wire shape

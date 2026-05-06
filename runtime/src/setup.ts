@@ -36,22 +36,22 @@ import { initializeFileChangedWatcher } from './utils/hooks/fileChangedWatcher.j
 import {
   captureHooksConfigSnapshot,
   updateHooksConfigSnapshot,
-} from './utils/hooks/hooksConfigSnapshot.js'
-import { hasWorktreeCreateHook } from './utils/hooks.js'
-import { checkAndRestoreITerm2Backup } from './utils/iTermBackup.js'
-import { logError } from './utils/log.js'
-import { getRecentActivity } from './utils/logoV2Utils.js'
-import { lockCurrentVersion } from './utils/nativeInstaller/installer.js'
-import type { PermissionMode } from './utils/permissions/PermissionMode.js'
-import { getPlanSlug } from './utils/plans.js'
-import { saveWorktreeState } from './utils/sessionStorage.js'
-import { profileCheckpoint } from './utils/startupProfiler.js'
+} from '../../utils/hooks/hooksConfigSnapshot.js'
+import { hasWorktreeCreateHook } from '../../utils/hooks.js'
+import { checkAndRestoreITerm2Backup } from '../../utils/iTermBackup.js'
+import { logError } from '../../utils/log.js'
+import { getRecentActivity } from '../../utils/logoV2Utils.js'
+import { lockCurrentVersion } from '../../utils/nativeInstaller/installer.js'
+import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
+import { getPlanSlug } from '../../utils/plans.js'
+import { saveWorktreeState } from '../../utils/sessionStorage.js'
+import { profileCheckpoint } from '../../utils/startupProfiler.js'
 import {
   createTmuxSessionForWorktree,
   createWorktreeForSession,
   generateTmuxSessionName,
   worktreeBranchName,
-} from './utils/worktree.js'
+} from '../../utils/worktree.js'
 
 export async function setup(
   cwd: string,
@@ -93,7 +93,7 @@ export async function setup(
     // and $AGENC_MESSAGING_SOCKET is exported before any hook
     // (SessionStart in particular) can spawn and snapshot process.env.
     if (feature('UDS_INBOX')) {
-      const m = await import('./utils/udsMessaging.js')
+      const m = await import('../../utils/udsMessaging.js')
       await m.startUdsMessaging(
         messagingSocketPath ?? m.getDefaultUdsSocketPath(),
         { isExplicit: messagingSocketPath !== undefined },
@@ -104,7 +104,7 @@ export async function setup(
   // Teammate snapshot — SIMPLE-only gate (no escape hatch, swarm not used in bare)
   if (!isBareMode() && isAgentSwarmsEnabled()) {
     const { captureTeammateModeSnapshot } = await import(
-      './utils/swarm/backends/teammateModeSnapshot.js'
+      '../../utils/swarm/backends/teammateModeSnapshot.js'
     )
     captureTeammateModeSnapshot()
   }
@@ -321,7 +321,7 @@ export async function setup(
   if (!skipPluginPrefetch) {
     void getCommands(getProjectRoot())
   }
-  void import('./utils/plugins/loadPluginHooks.js').then(m => {
+  void import('../../utils/plugins/loadPluginHooks.js').then(m => {
     if (!skipPluginPrefetch) {
       void m.loadPluginHooks() // Pre-load plugin hooks (consumed by processSessionStartHooks before render)
       m.setupPluginHookHotReload() // Set up hot reload for plugin hooks when settings change
@@ -339,14 +339,14 @@ export async function setup(
       // Defer to next tick so the git subprocess spawn runs after first render
       // rather than during the setup() microtask window.
       setImmediate(() => {
-        void import('./utils/attributionHooks.js').then(
+        void import('../../utils/attributionHooks.js').then(
           ({ registerAttributionHooks }) => {
             registerAttributionHooks() // Register attribution tracking hooks (internal-only feature)
           },
         )
       })
     }
-    void import('./utils/sessionFileAccessHooks.js').then(m =>
+    void import('../../utils/sessionFileAccessHooks.js').then(m =>
       m.registerSessionFileAccessHooks(),
     ) // Register session file access analytics hooks
     if (feature('TEAMMEM')) {

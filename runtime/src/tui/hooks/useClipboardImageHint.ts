@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useNotifications } from '../context/notifications'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
-import { hasImageInClipboard } from '../../agenc/upstream/utils/imagePaste' // upstream-import: keep target is owned by another Z-PURGE item
+import { hasImageInClipboard } from '../../utils/imagePaste.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const NOTIFICATION_KEY = 'clipboard-image-hint'
 // Small debounce to batch rapid focus changes

@@ -4,8 +4,8 @@ import React, { useMemo } from 'react';
 import type { DiffFile } from '../../hooks/useDiffData';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
-import { truncateStartToWidth } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncateStartToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const MAX_VISIBLE_FILES = 5;
 type Props = {
   files: DiffFile[];

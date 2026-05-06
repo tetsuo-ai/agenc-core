@@ -1,5 +1,5 @@
-import { getHostPlatformForAnalytics } from '../../../agenc/upstream/utils/env' // upstream-import: keep target is owned by another Z-PURGE item
-import { type CompletionType, logUnaryEvent } from '../../../agenc/upstream/utils/unaryLogging' // upstream-import: keep target is owned by another Z-PURGE item
+import { getHostPlatformForAnalytics } from '../../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { type CompletionType, logUnaryEvent } from '../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ToolUseConfirm } from './PermissionRequest.js'
 
 export function logUnaryPermissionEvent(

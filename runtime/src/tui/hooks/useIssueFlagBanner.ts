@@ -1,7 +1,7 @@
 import { useMemo, useRef } from 'react'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName'
 import type { Message } from '../../types/message'
-import { getUserMessageText } from '../../agenc/upstream/utils/messages' // upstream-import: keep target is owned by another Z-PURGE item
+import { getUserMessageText } from '../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 const EXTERNAL_COMMAND_PATTERNS = [
   /\bcurl\b/,

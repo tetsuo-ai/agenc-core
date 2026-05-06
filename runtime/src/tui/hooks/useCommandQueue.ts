@@ -3,7 +3,7 @@ import type { QueuedCommand } from '../../types/textInputTypes'
 import {
   getCommandQueueSnapshot,
   subscribeToCommandQueue,
-} from '../../agenc/upstream/utils/messageQueueManager' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/messageQueueManager.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * React hook to subscribe to the unified command queue.

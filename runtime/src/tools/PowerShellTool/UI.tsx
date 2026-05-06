@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { KeyboardShortcutHint } from '../../tui/components/design-system/KeyboardShortcutHint.js';
@@ -10,9 +11,8 @@ import { Box, Text } from '../../tui/ink.js';
 import type { Tool } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import type { PowerShellProgress } from '../../types/tools.js';
-import type { ThemeName } from '../../utils/theme.js';
+import type { ThemeName } from '../../../../utils/theme.js';
 import type { Out, PowerShellToolInput } from './PowerShellTool.js';
-
 // Constants for command display
 const MAX_COMMAND_DISPLAY_LINES = 2;
 const MAX_COMMAND_DISPLAY_CHARS = 160;

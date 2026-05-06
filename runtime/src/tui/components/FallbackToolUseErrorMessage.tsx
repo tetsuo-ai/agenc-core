@@ -2,11 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs';
 import * as React from 'react';
 import { stripUnderlineAnsi } from './shell/OutputLine.js';
-import { extractTag } from '../../agenc/upstream/utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { removeSandboxViolationTags } from '../../agenc/upstream/utils/sandbox/sandbox-ui-utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractTag } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { removeSandboxViolationTags } from '../../utils/sandbox/sandbox-ui-utils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import { countCharInString } from '../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { countCharInString } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from './MessageResponse';
 const MAX_RENDERED_LINES = 10;
 type Props = {

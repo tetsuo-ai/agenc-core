@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
 import React from 'react';
 import { Box, Text } from '../ink.js';
-import { getCwd } from '../../agenc/upstream/utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isSupportedVSCodeTerminal } from '../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isSupportedVSCodeTerminal } from '../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Pane } from './design-system/Pane';
 import type { PermissionOption, PermissionOptionWithLabel } from './permissions/FilePermissionDialog/permissionOptions';

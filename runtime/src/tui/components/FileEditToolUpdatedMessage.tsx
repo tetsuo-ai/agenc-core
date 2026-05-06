@@ -3,7 +3,7 @@ import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box, Text } from '../ink.js';
-import { count } from '../../agenc/upstream/utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from './MessageResponse';
 import { StructuredDiffList } from './StructuredDiffList';
 type Props = {

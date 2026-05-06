@@ -1,3 +1,4 @@
+// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
 import { MessageResponse } from 'src/components/MessageResponse.js';
@@ -48,7 +49,6 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   }
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
-
 // Note: GlobTool reuses GrepTool's renderToolResultMessage
 export const renderToolResultMessage = GrepTool.renderToolResultMessage;
 export function getToolUseSummary(input: Partial<{

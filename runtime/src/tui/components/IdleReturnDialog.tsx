@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, Text } from '../ink.js';
-import { formatTokens } from '../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatTokens } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 type IdleReturnAction = 'continue' | 'clear' | 'dismiss' | 'never';

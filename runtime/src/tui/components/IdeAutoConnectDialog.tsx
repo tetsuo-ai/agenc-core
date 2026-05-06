@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback } from 'react';
 import { Text } from '../ink.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isSupportedTerminal } from '../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isSupportedTerminal } from '../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 type IdeAutoConnectDialogProps = {

@@ -43,10 +43,10 @@ import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? require('../../../../utils/permissions/autoModeState') as typeof import('../../../../utils/permissions/autoModeState') : null;
 import type { Base64ImageSource, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 /* eslint-enable @typescript-eslint/no-require-imports */
-import type { PastedContent } from '../../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { maybeResizeAndDownsampleImageBlock } from '../../../../agenc/upstream/utils/imageResizer'; // upstream-import: keep target is owned by another Z-PURGE item
-import { cacheImagePath, storeImage } from '../../../../agenc/upstream/utils/imageStore'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PastedContent } from '../../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ImageDimensions } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { maybeResizeAndDownsampleImageBlock } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { cacheImagePath, storeImage } from '../../../../utils/imageStore.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type ResponseValue = 'yes-bypass-permissions' | 'yes-accept-edits' | 'yes-accept-edits-keep-context' | 'yes-default-keep-context' | 'yes-resume-auto-mode' | 'yes-auto-clear-context' | 'ultraplan' | 'no';
 
 /**

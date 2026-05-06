@@ -16,7 +16,7 @@ const mockState = {
   effectiveWindow: 100_000, // Copilot gpt-4o tier
 }
 
-mock.module('../../utils/config.js', () => ({
+mock.module('../../../../utils/config.js', () => ({
   getGlobalConfig: () => ({
     toolHistoryCompressionEnabled: mockState.enabled,
     autoCompactEnabled: false,

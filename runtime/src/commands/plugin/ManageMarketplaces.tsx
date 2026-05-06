@@ -10,17 +10,17 @@ import { KeyboardShortcutHint } from '../../tui/components/design-system/Keyboar
 import { Box, Text, useInput } from '../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../tui/keybindings/useKeybinding.js';
 import type { LoadedPlugin } from '../../types/plugin.js';
-import { count } from '../../utils/array.js';
-import { shouldSkipPluginAutoupdate } from '../../utils/config.js';
-import { errorMessage } from '../../utils/errors.js';
-import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
-import { createPluginId, formatMarketplaceLoadingErrors, getMarketplaceSourceDisplay, loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
-import { loadKnownMarketplacesConfig, refreshMarketplace, removeMarketplaceSource, setMarketplaceAutoUpdate } from '../../utils/plugins/marketplaceManager.js';
-import { updatePluginsForMarketplaces } from '../../utils/plugins/pluginAutoupdate.js';
-import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js';
-import { isMarketplaceAutoUpdate } from '../../utils/plugins/schemas.js';
-import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
-import { plural } from '../../utils/stringUtils.js';
+import { count } from '../../../../utils/array.js';
+import { shouldSkipPluginAutoupdate } from '../../../../utils/config.js';
+import { errorMessage } from '../../../../utils/errors.js';
+import { clearAllCaches } from '../../../../utils/plugins/cacheUtils.js';
+import { createPluginId, formatMarketplaceLoadingErrors, getMarketplaceSourceDisplay, loadMarketplacesWithGracefulDegradation } from '../../../../utils/plugins/marketplaceHelpers.js';
+import { loadKnownMarketplacesConfig, refreshMarketplace, removeMarketplaceSource, setMarketplaceAutoUpdate } from '../../../../utils/plugins/marketplaceManager.js';
+import { updatePluginsForMarketplaces } from '../../../../utils/plugins/pluginAutoupdate.js';
+import { loadAllPlugins } from '../../../../utils/plugins/pluginLoader.js';
+import { isMarketplaceAutoUpdate } from '../../../../utils/plugins/schemas.js';
+import { getSettingsForSource, updateSettingsForSource } from '../../../../utils/settings/settings.js';
+import { plural } from '../../../../utils/stringUtils.js';
 import type { ViewState } from './types.js';
 type Props = {
   setViewState: (state: ViewState) => void;
