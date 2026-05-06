@@ -10,7 +10,7 @@ import { djb2Hash } from 'src/utils/hash.js'
 import { logError } from 'src/utils/log.js'
 import { getAgenCTempDir } from 'src/utils/permissions/filesystem.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
-import type { QuerySource } from '../../constants/querySource.js'
+import type { QuerySource } from '../../../../constants/querySource.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

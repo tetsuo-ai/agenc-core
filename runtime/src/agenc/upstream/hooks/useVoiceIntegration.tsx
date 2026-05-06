@@ -10,7 +10,7 @@ import { useInput } from '../../../tui/ink.js';
 import { useOptionalKeybindingContext } from '../../../tui/keybindings/KeybindingContext.js';
 import { keystrokesEqual } from '../../../tui/keybindings/resolver.js';
 import type { ParsedKeystroke } from '../../../tui/keybindings/types.js';
-import { normalizeFullWidthSpace } from '../utils/stringUtils.js';
+import { normalizeFullWidthSpace } from '../../../utils/stringUtils.js';
 import { useVoiceEnabled } from './useVoiceEnabled.js';
 
 // Dead code elimination: conditional import for voice input hook.

@@ -7,9 +7,9 @@ import {
 } from '../services/analytics/index.js'
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
 import type { Message } from '../types/message.js'
-import type { SkillUpdate } from '../utils/hooks/skillImprovement.js'
-import { applySkillImprovement } from '../utils/hooks/skillImprovement.js'
-import { createSystemMessage } from '../utils/messages.js'
+import type { SkillUpdate } from '../../../utils/hooks/skillImprovement.js'
+import { applySkillImprovement } from '../../../utils/hooks/skillImprovement.js'
+import { createSystemMessage } from '../../../utils/messages.js'
 
 type SkillImprovementSuggestion = {
   skillName: string

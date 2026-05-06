@@ -21,25 +21,25 @@ import {
   AGENC_AI_INFERENCE_SCOPE,
   getOauthConfig,
   OAUTH_BETA_HEADER,
-} from '../../constants/oauth.js'
+} from '../../../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAnthropicApiKeyWithSource,
   getAgenCAIOAuthTokens,
-} from '../../utils/auth.js'
-import { registerCleanup } from '../../utils/cleanupRegistry.js'
+} from '../../../../utils/auth.js'
+import { registerCleanup } from '../../../../utils/cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
-import { classifyAxiosError } from '../../utils/errors.js'
-import { safeParseJSON } from '../../utils/json.js'
+import { getAgenCConfigHomeDir } from '../../../../utils/envUtils.js'
+import { classifyAxiosError } from '../../../../utils/errors.js'
+import { safeParseJSON } from '../../../../utils/json.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
-} from '../../utils/model/providers.js'
-import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
-import { sleep } from '../../utils/sleep.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
+} from '../../../../utils/model/providers.js'
+import { isEssentialTrafficOnly } from '../../../../utils/privacyLevel.js'
+import { sleep } from '../../../../utils/sleep.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
 import { getRetryDelay } from '../api/withRetry.js'
 import {
   type PolicyLimitsFetchResult,

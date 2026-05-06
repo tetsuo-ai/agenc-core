@@ -42,7 +42,7 @@ describe('MCP tool result sanitization', () => {
 // ---------------------------------------------------------------------------
 describe('Sandbox settings trust boundary', () => {
   test('getSandboxEnabledSetting does not use getSettings_DEPRECATED', async () => {
-    const content = await file('utils/sandbox/sandbox-adapter.ts').text()
+    const content = await file('utils/sandbox/sandbox-runtime.ts').text()
     // Extract the getSandboxEnabledSetting function body
     const fnMatch = content.match(
       /function getSandboxEnabledSetting\(\)[^{]*\{([\s\S]*?)\n\}/,

@@ -1,6 +1,6 @@
 import type { Message } from '../types/message.js'
-import type { Attachment } from '../utils/attachments.js'
-import { getGlobalConfig } from '../utils/config.js'
+import type { Attachment } from '../../../utils/attachments.js'
+import { getGlobalConfig } from '../../../utils/config.js'
 import { getCompanion } from './companion.js'
 import { isBuddyEnabled } from './feature.js'
 

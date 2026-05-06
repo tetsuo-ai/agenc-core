@@ -12,11 +12,11 @@ import { useAppStateStore, useSetAppState } from '../../../../tui/state/AppState
 import type { Tool } from '../../Tool.js';
 import { backgroundAll } from '../../tasks/LocalShellTask/LocalShellTask.js';
 import type { ProgressMessage } from '../../types/message.js';
-import { env } from '../../utils/env.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
-import { getDisplayPath } from '../../utils/file.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
-import type { ThemeName } from '../../utils/theme.js';
+import { env } from '../../../../utils/env.js';
+import { isEnvTruthy } from '../../../../utils/envUtils.js';
+import { getDisplayPath } from '../../../../utils/file.js';
+import { isFullscreenEnvEnabled } from '../../../../utils/fullscreen.js';
+import type { ThemeName } from '../../../../utils/theme.js';
 import type { BashProgress, BashToolInput, Out } from './BashTool.js';
 import BashToolResultMessage from './BashToolResultMessage.js';
 import { extractBashCommentLabel } from './commentLabel.js';

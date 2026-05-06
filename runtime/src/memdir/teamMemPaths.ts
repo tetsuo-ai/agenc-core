@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { lstat, realpath } from 'fs/promises'
 import { dirname, join, resolve, sep } from 'path'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'

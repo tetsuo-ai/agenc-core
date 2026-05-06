@@ -22,10 +22,10 @@
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
-import { registerCleanup } from '../utils/cleanupRegistry.js'
+import { registerCleanup } from '../../../utils/cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../utils/envUtils.js'
-import { isENOENT } from '../utils/errors.js'
+import { isEnvTruthy } from '../../../utils/envUtils.js'
+import { isENOENT } from '../../../utils/errors.js'
 import { startUpstreamProxyRelay } from './relay.js'
 
 export const SESSION_TOKEN_PATH = '/run/ccr/session_token'

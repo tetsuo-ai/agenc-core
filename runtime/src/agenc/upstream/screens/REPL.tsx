@@ -3,8 +3,8 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import { spawnSync } from 'child_process';
 import { snapshotOutputTokensForTurn, getCurrentTurnTokenBudget, getTurnOutputTokens, getBudgetContinuationCount, getTotalInputTokens } from '../bootstrap/state.js';
-import { parseTokenBudget } from '../utils/tokenBudget.js';
-import { count } from '../utils/array.js';
+import { parseTokenBudget } from '../../../utils/tokenBudget.js';
+import { count } from '../../../utils/array.js';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';
 import figures from 'figures';
@@ -14,8 +14,8 @@ import { useSearchInput } from '../hooks/useSearchInput.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useSearchHighlight } from '../../../tui/ink/hooks/use-search-highlight.js';
 import type { JumpHandle } from '../components/VirtualMessageList.js';
-import { renderMessagesToPlainText } from '../utils/exportRenderer.js';
-import { openFileInExternalEditor } from '../utils/editor.js';
+import { renderMessagesToPlainText } from '../../../utils/exportRenderer.js';
+import { openFileInExternalEditor } from '../../../utils/editor.js';
 import { writeFile } from 'fs/promises';
 import { Box, Text, useStdin, useTheme, useTerminalFocus, useTerminalTitle, useTabStatus } from '../../../tui/ink.js';
 import type { TabStatusKind } from '../../../tui/ink/hooks/use-tab-status.js';
@@ -28,23 +28,23 @@ import { sendNotification } from '../services/notifier.js';
 import { startPreventSleep, stopPreventSleep } from '../services/preventSleep.js';
 import { useTerminalNotification } from '../../../tui/ink/useTerminalNotification.js';
 import { hasCursorUpViewportYankBug } from '../../../tui/ink/terminal.js';
-import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js';
+import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../../../utils/fileStateCache.js';
 import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { QueryGuard } from '../utils/QueryGuard.js';
-import { isEnvTruthy } from '../utils/envUtils.js';
-import { formatTokens, truncateToWidth } from '../utils/format.js';
-import { consumeEarlyInput } from '../utils/earlyInput.js';
-import { setMemberActive } from '../utils/swarm/teamHelpers.js';
-import { isSwarmWorker, generateSandboxRequestId, sendSandboxPermissionRequestViaMailbox, sendSandboxPermissionResponseViaMailbox } from '../utils/swarm/permissionSync.js';
+import { QueryGuard } from '../../../utils/QueryGuard.js';
+import { isEnvTruthy } from '../../../utils/envUtils.js';
+import { formatTokens, truncateToWidth } from '../../../utils/format.js';
+import { consumeEarlyInput } from '../../../utils/earlyInput.js';
+import { setMemberActive } from '../../../utils/swarm/teamHelpers.js';
+import { isSwarmWorker, generateSandboxRequestId, sendSandboxPermissionRequestViaMailbox, sendSandboxPermissionResponseViaMailbox } from '../../../utils/swarm/permissionSync.js';
 import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPoller.js';
-import { getTeamName, getAgentName } from '../utils/teammate.js';
+import { getTeamName, getAgentName } from '../../../utils/teammate.js';
 import { WorkerPendingPermission } from '../components/permissions/WorkerPendingPermission.js';
 import { injectUserMessageToTeammate, getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { isLocalAgentTask, queuePendingMessage, appendMessageToLocalAgent, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
-import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../utils/swarm/leaderPermissionBridge.js';
-import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
+import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue, registerLeaderSetToolPermissionContext, unregisterLeaderSetToolPermissionContext } from '../../../utils/swarm/leaderPermissionBridge.js';
+import { endInteractionSpan } from '../../../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../../../commands.js';
@@ -67,11 +67,11 @@ import { SkillImprovementSurvey } from '../components/SkillImprovementSurvey.js'
 import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js';
 import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../../../tui/components/spinner/Spinner.js';
-import { getSystemPrompt } from '../constants/prompts.js';
-import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js';
+import { getSystemPrompt } from '../../../constants/prompts.js';
+import { buildEffectiveSystemPrompt } from '../../../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../context.js';
-import { getMemoryFiles } from '../utils/claudemd.js'; // branding-scan: allow upstream mirror import path
-import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js';
+import { getMemoryFiles } from '../../../utils/agencmd.js'; // branding-scan: allow upstream mirror import path
+import { startBackgroundHousekeeping } from '../../../utils/backgroundHousekeeping.js';
 import { getTotalCost, saveCurrentSessionCosts, resetCostState, restoreCostStateForSession, bindCacheStatsResetHook, setActiveCostSessionId } from '../../../cost/tracker.js';
 import { useCostSummary } from '../../../cost/hook.js';
 import { useFpsMetrics } from '../context/fpsMetrics.js';
@@ -79,7 +79,7 @@ import { useAfterFirstRender } from '../hooks/useAfterFirstRender.js';
 import { useDeferredHookMessages } from '../hooks/useDeferredHookMessages.js';
 import { addToHistory, removeLastFromHistory, expandPastedTextRefs, parseReferences } from '../../../tui/history/history.js';
 import { prependModeCharacterToInput } from '../../../tui/components/PromptInput/inputModes.js';
-import { prependToShellHistoryCache } from '../utils/suggestions/shellHistoryCompletion.js';
+import { prependToShellHistoryCache } from '../../../utils/suggestions/shellHistoryCompletion.js';
 import { useApiKeyVerification } from '../hooks/useApiKeyVerification.js';
 import { GlobalKeybindingHandlers } from '../hooks/useGlobalKeybindings.js';
 import { CommandKeybindingHandlers } from '../hooks/useCommandKeybindings.js';
@@ -90,9 +90,9 @@ import { CancelRequestHandler } from '../hooks/useCancelRequest.js';
 import { useBackgroundTaskNavigation } from '../hooks/useBackgroundTaskNavigation.js';
 import { useSwarmInitialization } from '../hooks/useSwarmInitialization.js';
 import { useTeammateViewAutoExit } from '../hooks/useTeammateViewAutoExit.js';
-import { errorMessage } from '../utils/errors.js';
-import { isHumanTurn } from '../utils/messagePredicates.js';
-import { logError } from '../utils/log.js';
+import { errorMessage } from '../../../utils/errors.js';
+import { isHumanTurn } from '../../../utils/messagePredicates.js';
+import { logError } from '../../../utils/log.js';
 // Dead code elimination: conditional imports
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 // Frustration detection is internal-only (dogfooding). Conditional require so external
@@ -114,37 +114,37 @@ const getCoordinatorUserContext: (mcpClients: ReadonlyArray<{
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import useCanUseTool from '../hooks/useCanUseTool.js';
 import type { ToolPermissionContext, Tool } from '../Tool.js';
-import { applyPermissionUpdate, applyPermissionUpdates, persistPermissionUpdate } from '../utils/permissions/PermissionUpdate.js';
+import { applyPermissionUpdate, applyPermissionUpdates, persistPermissionUpdate } from '../../../utils/permissions/PermissionUpdate.js';
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
-import { stripDangerousPermissionsForAutoMode } from '../utils/permissions/permissionSetup.js';
-import { getScratchpadDir, isScratchpadEnabled } from '../utils/permissions/filesystem.js';
+import { stripDangerousPermissionsForAutoMode } from '../../../utils/permissions/permissionSetup.js';
+import { getScratchpadDir, isScratchpadEnabled } from '../../../utils/permissions/filesystem.js';
 import { WEB_FETCH_TOOL_NAME } from '../tools/WebFetchTool/prompt.js';
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js';
 import { clearSpeculativeChecks } from '../tools/BashTool/bashPermissions.js';
-import type { AutoUpdaterResult } from '../utils/autoUpdater.js';
-import { checkHasTrustDialogAccepted, getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '../utils/config.js';
-import { hasConsoleBillingAccess } from '../utils/billing.js';
+import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
+import { checkHasTrustDialogAccepted, getGlobalConfig, saveGlobalConfig, getGlobalConfigWriteCount } from '../../../utils/config.js';
+import { hasConsoleBillingAccess } from '../../../utils/billing.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js';
 import type { StreamingToolUse } from '../../../llm/types.js';
-import { textForResubmit, handleMessageFromStream, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../utils/messages.js';
+import { textForResubmit, handleMessageFromStream, type StreamingThinking, isCompactBoundaryMessage, getMessagesAfterCompactBoundary, getContentText, createUserMessage, createAssistantMessage, createTurnDurationMessage, createAgentsKilledMessage, createApiMetricsMessage, createSystemMessage, createCommandInputMessage, formatCommandInputTags } from '../../../utils/messages.js';
 import { getCurrentTurnCacheMetrics, resetCurrentTurn, resetSessionCacheStats } from '../services/api/cacheStatsTracker.js';
 import { formatCacheMetricsCompact, formatCacheMetricsFull } from '../services/api/cacheMetrics.js';
-import { generateSessionTitle } from '../utils/sessionTitle.js';
-import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../constants/xml.js';
-import { escapeXml } from '../utils/xml.js';
-import type { ThinkingConfig } from '../utils/thinking.js';
-import { gracefulShutdownSync, isShuttingDown } from '../utils/gracefulShutdown.js';
-import { handlePromptSubmit, type PromptInputHelpers } from '../utils/handlePromptSubmit.js';
+import { generateSessionTitle } from '../../../utils/sessionTitle.js';
+import { BASH_INPUT_TAG, COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG, LOCAL_COMMAND_STDOUT_TAG } from '../../../constants/xml.js';
+import { escapeXml } from '../../../utils/xml.js';
+import type { ThinkingConfig } from '../../../utils/thinking.js';
+import { gracefulShutdownSync, isShuttingDown } from '../../../utils/gracefulShutdown.js';
+import { handlePromptSubmit, type PromptInputHelpers } from '../../../utils/handlePromptSubmit.js';
 import { useQueueProcessor } from '../hooks/useQueueProcessor.js';
 import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
-import { queryCheckpoint, logQueryProfileReport } from '../utils/queryProfiler.js';
+import { queryCheckpoint, logQueryProfileReport } from '../../../utils/queryProfiler.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
-import { getQuerySourceForREPL } from '../utils/promptCategory.js';
+import { getQuerySourceForREPL } from '../../../utils/promptCategory.js';
 import { useMergedTools } from '../hooks/useMergedTools.js';
-import { mergeAndFilterTools } from '../utils/toolPool.js';
+import { mergeAndFilterTools } from '../../../utils/toolPool.js';
 import { useMergedCommands } from '../hooks/useMergedCommands.js';
 import { useSkillsChange } from '../hooks/useSkillsChange.js';
 import { useManagePlugins } from '../hooks/useManagePlugins.js';
@@ -156,8 +156,8 @@ import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js
 import type { MCPServerConnection } from '../services/mcp/types.js';
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { randomUUID, type UUID } from 'crypto';
-import { processSessionStartHooks } from '../utils/sessionStart.js';
-import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../utils/hooks.js';
+import { processSessionStartHooks } from '../../../utils/sessionStart.js';
+import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../../../utils/hooks.js';
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js';
 import { getTools, assembleToolPool } from '../tools.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
@@ -167,22 +167,22 @@ import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { useAppState, useSetAppState, useAppStateStore } from '../../../tui/state/AppState.js';
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import type { ProcessUserInputContext } from '../../../tui/input/processUserInput.js';
-import type { PastedContent } from '../utils/config.js';
-import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../utils/plans.js';
-import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../utils/sessionStorage.js';
-import { deserializeMessages } from '../utils/conversationRecovery.js';
-import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../utils/queryHelpers.js';
+import type { PastedContent } from '../../../utils/config.js';
+import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../../../utils/plans.js';
+import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../../../utils/sessionStorage.js';
+import { deserializeMessages } from '../../../utils/conversationRecovery.js';
+import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../../../utils/queryHelpers.js';
 import { resetMicrocompactState } from '../services/compact/microCompact.js';
 import { runPostCompactCleanup } from '../services/compact/postCompactCleanup.js';
-import { applyToolResultReplacementsToMessages, provisionContentReplacementState, reconstructContentReplacementState, type ContentReplacementRecord } from '../utils/toolResultStorage.js';
+import { applyToolResultReplacementsToMessages, provisionContentReplacementState, reconstructContentReplacementState, type ContentReplacementRecord } from '../../../utils/toolResultStorage.js';
 import { partialCompactConversation } from '../services/compact/compact.js';
 import type { LogOption } from '../types/logs.js';
 import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
-import { fileHistoryMakeSnapshot, type FileHistoryState, fileHistoryRewind, type FileHistorySnapshot, copyFileHistoryForResume, fileHistoryEnabled, fileHistoryHasAnyChanges } from '../utils/fileHistory.js';
-import { type AttributionState, incrementPromptCount } from '../utils/commitAttribution.js';
-import { recordAttributionSnapshot } from '../utils/sessionStorage.js';
-import { computeStandaloneAgentContext, restoreAgentFromSession, restoreSessionStateFromLog, restoreWorktreeForResume, exitRestoredWorktree } from '../utils/sessionRestore.js';
-import { isBgSession, updateSessionName, updateSessionActivity } from '../utils/concurrentSessions.js';
+import { fileHistoryMakeSnapshot, type FileHistoryState, fileHistoryRewind, type FileHistorySnapshot, copyFileHistoryForResume, fileHistoryEnabled, fileHistoryHasAnyChanges } from '../../../utils/fileHistory.js';
+import { type AttributionState, incrementPromptCount } from '../../../utils/commitAttribution.js';
+import { recordAttributionSnapshot } from '../../../utils/sessionStorage.js';
+import { computeStandaloneAgentContext, restoreAgentFromSession, restoreSessionStateFromLog, restoreWorktreeForResume, exitRestoredWorktree } from '../../../utils/sessionRestore.js';
+import { isBgSession, updateSessionName, updateSessionActivity } from '../../../utils/concurrentSessions.js';
 import { isInProcessTeammateTask, type InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { useInboxPoller } from '../hooks/useInboxPoller.js';
@@ -195,15 +195,15 @@ const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
 const useScheduledTasks = require('../hooks/useScheduledTasks.js').useScheduledTasks;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
-import type { SandboxAskCallback, NetworkHostPattern } from '../utils/sandbox/sandbox-adapter.js';
-import { type IDEExtensionInstallationStatus, closeOpenDiffs, getConnectedIdeClient, type IdeType } from '../utils/ide.js';
+import type { SandboxAskCallback, NetworkHostPattern } from '../../../utils/sandbox/sandbox-runtime.js';
+import { type IDEExtensionInstallationStatus, closeOpenDiffs, getConnectedIdeClient, type IdeType } from '../../../utils/ide.js';
 import { useIDEIntegration } from '../hooks/useIDEIntegration.js';
 import exit from '../commands/exit/index.js';
 import { ExitFlow } from '../components/ExitFlow.js';
-import { getCurrentWorktreeSession } from '../utils/worktree.js';
-import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../utils/messageQueueManager.js';
+import { getCurrentWorktreeSession } from '../../../utils/worktree.js';
+import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../../../utils/messageQueueManager.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
@@ -212,16 +212,16 @@ import { diagnosticTracker } from '../services/diagnosticTracking.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../../../services/PromptSuggestion/speculation.js';
 import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
-import type { EffortValue } from '../utils/effort.js';
+import type { EffortValue } from '../../../utils/effort.js';
 import { RemoteCallout } from '../components/RemoteCallout.js';
-import { getAPIProvider } from '../utils/model/providers.js';
+import { getAPIProvider } from '../../../utils/model/providers.js';
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const AntModelSwitchCallout = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').AntModelSwitchCallout : null;
 const shouldShowAntModelSwitch = "external" === 'ant' ? require('../components/AntModelSwitchCallout.js').shouldShowModelSwitchCallout : (): boolean => false;
 const UndercoverAutoCallout = "external" === 'ant' ? require('../components/UndercoverAutoCallout.js').UndercoverAutoCallout : null;
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-import { activityManager } from '../utils/activityManager.js';
-import { createAbortController } from '../utils/abortController.js';
+import { activityManager } from '../../../utils/activityManager.js';
+import { createAbortController } from '../../../utils/abortController.js';
 import { MCPConnectionManager } from 'src/services/mcp/MCPConnectionManager.js';
 import { useFeedbackSurvey } from 'src/components/FeedbackSurvey/useFeedbackSurvey.js';
 import { useMemorySurvey } from 'src/components/FeedbackSurvey/useMemorySurvey.js';
@@ -237,7 +237,7 @@ import type { Theme } from 'src/utils/theme.js';
 import { isPromptTypingSuppressionActive } from './replInputSuppression.js';
 import { shouldRunStartupChecks } from './replStartupGates.js';
 import { checkAndDisableBypassPermissionsIfNeeded, checkAndDisableAutoModeIfNeeded, useKickOffCheckAndDisableBypassPermissionsIfNeeded, useKickOffCheckAndDisableAutoModeIfNeeded } from 'src/utils/permissions/bypassPermissionsKillswitch.js';
-import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js';
+import { SandboxManager } from 'src/utils/sandbox/sandbox-runtime.js';
 import { SANDBOX_NETWORK_ACCESS_TOOL_NAME } from 'src/cli/structuredIO.js';
 import { useFileHistorySnapshotInit } from 'src/hooks/useFileHistorySnapshotInit.js';
 import { SandboxPermissionRequest } from 'src/components/permissions/SandboxPermissionRequest.js';
@@ -265,7 +265,7 @@ import { useModelMigrationNotifications } from 'src/hooks/notifs/useModelMigrati
 import { useCanSwitchToExistingSubscription } from 'src/hooks/notifs/useCanSwitchToExistingSubscription.js';
 import { useTeammateLifecycleNotification } from 'src/hooks/notifs/useTeammateShutdownNotification.js';
 import { useFastModeNotification } from 'src/hooks/notifs/useFastModeNotification.js';
-import { AutoRunIssueNotification, shouldAutoRunIssue, getAutoRunIssueReasonText, getAutoRunCommand, type AutoRunIssueReason } from '../utils/autoRunIssue.js';
+import { AutoRunIssueNotification, shouldAutoRunIssue, getAutoRunIssueReasonText, getAutoRunCommand, type AutoRunIssueReason } from '../../../utils/autoRunIssue.js';
 import type { HookProgress } from '../types/hooks.js';
 import { TungstenLiveMonitor } from '../tools/TungstenTool/TungstenLiveMonitor.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -280,15 +280,15 @@ import { DevBar } from '../components/DevBar.js';
 // Session manager removed - using AppState now
 import type { RemoteSessionConfig } from '../remote/RemoteSessionManager.js';
 import { REMOTE_SAFE_COMMANDS } from '../../../commands.js';
-import type { RemoteMessageContent } from '../utils/teleport/api.js';
+import type { RemoteMessageContent } from '../../../utils/teleport/api.js';
 import { FullscreenLayout, useUnseenDivider, computeUnseenDivider } from '../components/FullscreenLayout.js';
-import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled } from '../utils/fullscreen.js';
+import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled } from '../../../utils/fullscreen.js';
 import { AlternateScreen } from '../../../tui/ink/components/AlternateScreen.js';
 import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.js';
 import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../components/messageActions.js';
 import { setClipboard } from '../../../tui/ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../../../tui/ink/components/ScrollBox.js';
-import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
+import { createAttachmentMessage, getQueuedCommandAttachments } from '../../../utils/attachments.js';
 
 // Stable empty array for hooks that accept MCPServerConnection[] — avoids
 // creating a new [] literal on every render in remote mode, which would
@@ -1016,11 +1016,11 @@ export function REPL({
         // Wait for repo classification to settle (memoized, no-op if primed).
         const {
           isInternalModelRepo
-        } = await import('../utils/commitAttribution.js');
+        } = await import('../../../utils/commitAttribution.js');
         await isInternalModelRepo();
         const {
           shouldShowUndercoverAutoNotice
-        } = await import('../utils/undercover.js');
+        } = await import('../../../utils/undercover.js');
         if (shouldShowUndercoverAutoNotice()) {
           setShowUndercoverCallout(true);
         }
@@ -1865,7 +1865,7 @@ export function REPL({
       // Rename asciicast recording to match the resumed session ID
       const {
         renameRecordingForSession
-      } = await import('../utils/asciicast.js');
+      } = await import('../../../utils/asciicast.js');
       await renameRecordingForSession();
       await resetSessionFilePointer();
 
@@ -1914,7 +1914,7 @@ export function REPL({
         /* eslint-disable @typescript-eslint/no-require-imports */
         const {
           saveMode
-        } = require('../utils/sessionStorage.js');
+        } = require('../../../utils/sessionStorage.js');
         const {
           isCoordinatorMode
         } = require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js');
@@ -2515,8 +2515,8 @@ export function REPL({
       onCompactProgress: event => {
         switch (event.type) {
           case 'hooks_start':
-            setSpinnerColor('claudeBlue_FOR_SYSTEM_SPINNER');
-            setSpinnerShimmerColor('claudeBlueShimmer_FOR_SYSTEM_SPINNER');
+            setSpinnerColor('agencBlue_FOR_SYSTEM_SPINNER');
+            setSpinnerShimmerColor('agencBlueShimmer_FOR_SYSTEM_SPINNER');
             setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
             break;
           case 'compact_start':

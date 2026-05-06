@@ -1,21 +1,21 @@
 import { readFileSync } from 'fs';
 import { REMOTE_CONTROL_DISCONNECTED_MSG } from '../bridge/types.js';
 import type { Command } from '../../../commands.js';
-import { DIAMOND_OPEN } from '../constants/figures.js';
-import { getRemoteSessionUrl } from '../constants/product.js';
+import { DIAMOND_OPEN } from '../../../constants/figures.js';
+import { getRemoteSessionUrl } from '../../../constants/product.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../services/analytics/index.js';
 import type { AppState } from '../../../tui/state/AppStateStore.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, RemoteAgentTask, type RemoteAgentTaskState, registerRemoteAgentTask } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import type { LocalJSXCommandCall } from '../types/command.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { errorMessage } from '../utils/errors.js';
-import { logError } from '../utils/log.js';
-import { enqueuePendingNotification } from '../utils/messageQueueManager.js';
-import { ALL_MODEL_CONFIGS } from '../utils/model/configs.js';
-import { updateTaskState } from '../utils/task/framework.js';
-import { archiveRemoteSession, teleportToRemote } from '../utils/teleport.js';
-import { pollForApprovedExitPlanMode, UltraplanPollError } from '../utils/ultraplan/ccrSession.js';
+import { errorMessage } from '../../../utils/errors.js';
+import { logError } from '../../../utils/log.js';
+import { enqueuePendingNotification } from '../../../utils/messageQueueManager.js';
+import { ALL_MODEL_CONFIGS } from '../../../utils/model/configs.js';
+import { updateTaskState } from '../../../utils/task/framework.js';
+import { archiveRemoteSession, teleportToRemote } from '../../../utils/teleport.js';
+import { pollForApprovedExitPlanMode, UltraplanPollError } from '../../../utils/ultraplan/ccrSession.js';
 
 // TODO(prod-hardening): OAuth token may go stale over the 30min poll;
 // consider refresh.
@@ -43,7 +43,7 @@ function getUltraplanModel(): string {
 //
 // Bundler inlines .txt as a string; the test runner wraps it as {default}.
 /* eslint-disable @typescript-eslint/no-require-imports */
-const _rawPrompt = require('../utils/ultraplan/prompt.txt');
+const _rawPrompt = require('../../../utils/ultraplan/prompt.txt');
 /* eslint-enable @typescript-eslint/no-require-imports */
 const DEFAULT_INSTRUCTIONS: string = (typeof _rawPrompt === 'string' ? _rawPrompt : _rawPrompt.default).trimEnd();
 

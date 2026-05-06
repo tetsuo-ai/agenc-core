@@ -1,10 +1,10 @@
 import {
   getAgenCAiBaseUrl,
   getRemoteSessionUrl,
-} from '../constants/product.js'
+} from '../../../constants/product.js'
 import { stringWidth } from '../../../tui/ink/stringWidth.js'
-import { formatDuration, truncateToWidth } from '../utils/format.js'
-import { getGraphemeSegmenter } from '../utils/intl.js'
+import { formatDuration, truncateToWidth } from '../../../utils/format.js'
+import { getGraphemeSegmenter } from '../../../utils/intl.js'
 
 /** Bridge status state machine states. */
 export type StatusState =

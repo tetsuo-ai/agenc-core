@@ -3,10 +3,10 @@ import React from 'react';
 import { getCwdState } from '../../bootstrap/state.js';
 import { SandboxSettings } from '../../components/sandbox/SandboxSettings.js';
 import { color } from '../../../../tui/ink.js';
-import { getPlatform } from '../../utils/platform.js';
-import { addToExcludedCommands, SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
-import { getSettings_DEPRECATED, getSettingsFilePathForSource } from '../../utils/settings/settings.js';
-import type { ThemeName } from '../../utils/theme.js';
+import { getPlatform } from '../../../../utils/platform.js';
+import { addToExcludedCommands, SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js';
+import { getSettings_DEPRECATED, getSettingsFilePathForSource } from '../../../../utils/settings/settings.js';
+import type { ThemeName } from '../../../../utils/theme.js';
 export async function call(onDone: (result?: string) => void, _context: unknown, args?: string): Promise<React.ReactNode | null> {
   const settings = getSettings_DEPRECATED();
   const themeName: ThemeName = settings.theme as ThemeName || 'light';

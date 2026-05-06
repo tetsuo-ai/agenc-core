@@ -1,12 +1,12 @@
 import { feature } from 'bun:bundle'
-import type { QuerySource } from '../../constants/querySource.js'
-import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
+import type { QuerySource } from '../../../../constants/querySource.js'
+import { clearSystemPromptSections } from '../../../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
-import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
-import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
-import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
-import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
+import { clearClassifierApprovals } from '../../../../utils/classifierApprovals.js'
+import { resetGetMemoryFilesCache } from '../../../../utils/agencmd.js'
+import { clearSessionMessagesCache } from '../../../../utils/sessionStorage.js'
+import { clearBetaTracingState } from '../../../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './microCompact.js'
 
 /**
@@ -69,7 +69,7 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
   // cacheUtils resets. See compactConversation() for full rationale.
   clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
-    void import('../../utils/attributionHooks.js').then(m =>
+    void import('../../../../utils/attributionHooks.js').then(m =>
       m.sweepFileContentCache(),
     )
   }

@@ -4,7 +4,7 @@ import {
   type Notification,
   useNotifications,
 } from '../../context/notifications.js'
-import { logError } from '../../utils/log.js'
+import { logError } from '../../../../utils/log.js'
 
 type Result = Notification | Notification[] | null
 

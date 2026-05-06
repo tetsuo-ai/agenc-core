@@ -3,7 +3,7 @@ import { homedir } from 'os';
 import { relative } from 'path';
 import React from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import { getCwd } from '../../utils/cwd.js';
+import { getCwd } from '../../../../utils/cwd.js';
 export function getRelativeMemoryPath(path: string): string {
   const homeDir = homedir();
   const cwd = getCwd();

@@ -13,22 +13,22 @@ import type {
   ProgressMessage,
 } from '../../types/message.js'
 import type { PermissionDecision } from '../../types/permissions.js'
-import { createAttachmentMessage } from '../../utils/attachments.js'
+import { createAttachmentMessage } from '../../../../utils/attachments.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   executePostToolHooks,
   executePostToolUseFailureHooks,
   executePreToolHooks,
   getPreToolHookBlockingMessage,
-} from '../../utils/hooks.js'
-import { logError } from '../../utils/log.js'
+} from '../../../../utils/hooks.js'
+import { logError } from '../../../../utils/log.js'
 import {
   getRuleBehaviorDescription,
   type PermissionDecisionReason,
   type PermissionResult,
-} from '../../utils/permissions/PermissionResult.js'
-import { checkRuleBasedPermissions } from '../../utils/permissions/permissions.js'
-import { formatError } from '../../utils/toolErrors.js'
+} from '../../../../utils/permissions/PermissionResult.js'
+import { checkRuleBasedPermissions } from '../../../../utils/permissions/permissions.js'
+import { formatError } from '../../../../utils/toolErrors.js'
 import { getAutoFixConfig } from '../autoFix/autoFixConfig.js'
 import { shouldRunAutoFix, buildAutoFixContext } from '../autoFix/autoFixHook.js'
 import { runAutoFixCheck } from '../autoFix/autoFixRunner.js'

@@ -4,7 +4,7 @@
 import type { AppState } from '../../../tui/state/AppState.js'
 import type { TaskStateBase } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
-import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
+import { emitTaskTerminatedSdk } from '../../../utils/sdkEventQueue.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
 
 export class StopTaskError extends Error {

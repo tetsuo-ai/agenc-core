@@ -16,18 +16,18 @@ import {
   getEditsForPatch,
   getPatchForEdits,
 } from '../tools/FileEditTool/utils.js'
-import { getGlobalConfig } from '../utils/config.js'
-import { getPatchFromContents } from '../utils/diff.js'
-import { isENOENT } from '../utils/errors.js'
+import { getGlobalConfig } from '../../../utils/config.js'
+import { getPatchFromContents } from '../../../utils/diff.js'
+import { isENOENT } from '../../../utils/errors.js'
 import {
   callIdeRpc,
   getConnectedIdeClient,
   getConnectedIdeName,
   hasAccessToIDEExtensionDiffFeature,
-} from '../utils/ide.js'
-import { WindowsToWSLConverter } from '../utils/idePathConversion.js'
-import { logError } from '../utils/log.js'
-import { getPlatform } from '../utils/platform.js'
+} from '../../../utils/ide.js'
+import { WindowsToWSLConverter } from '../../../utils/idePathConversion.js'
+import { logError } from '../../../utils/log.js'
+import { getPlatform } from '../../../utils/platform.js'
 
 type Props = {
   onChange(

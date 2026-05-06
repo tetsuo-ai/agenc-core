@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, color, Link, Text, useTheme } from '../../../../tui/ink.js';
 import type { CommandResultDisplay } from '../../types/command.js';
-import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
+import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js';
 import { Select } from '../CustomSelect/select.js';
 import { useTabHeaderFocus } from '../design-system/Tabs.js';
 type Props = {

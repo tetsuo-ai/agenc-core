@@ -2,13 +2,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ConfigParseError } from "../agenc/upstream/utils/errors.js";
+import { ConfigParseError } from "../utils/errors.js";
 import {
   getFsImplementation,
   setFsImplementation,
   setOriginalFsImplementation,
   type FsOperations,
-} from "../agenc/upstream/utils/fsOperations.js";
+} from "../utils/fsOperations.js";
 import {
   __resetEnableConfigsForTest,
   assertConfigReadsEnabled,

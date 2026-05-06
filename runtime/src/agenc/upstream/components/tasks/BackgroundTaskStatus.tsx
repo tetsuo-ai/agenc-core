@@ -12,7 +12,7 @@ import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/
 import { calculateHorizontalScrollWindow } from 'src/utils/horizontalScroll.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
-import type { Theme } from '../../utils/theme.js';
+import type { Theme } from '../../../../utils/theme.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { shouldHideTasksFooter } from './taskStatusUtils.js';
 type Props = {

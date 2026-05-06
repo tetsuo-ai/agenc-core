@@ -5,9 +5,9 @@ import { logForDebugging } from 'src/utils/debug.js'
 import {
   createUserMessage,
   getAssistantMessageText,
-} from '../utils/messages.js'
-import { getSmallFastModel } from '../utils/model/model.js'
-import { asSystemPrompt } from '../utils/systemPromptType.js'
+} from '../../../utils/messages.js'
+import { getSmallFastModel } from '../../../utils/model/model.js'
+import { asSystemPrompt } from '../../../utils/systemPromptType.js'
 import { queryModelWithoutStreaming } from './api/claude.js'
 import { getSessionMemoryContent } from './SessionMemory/sessionMemoryUtils.js'
 

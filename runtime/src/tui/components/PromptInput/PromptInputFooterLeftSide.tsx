@@ -10,16 +10,16 @@ import type { VimMode, PromptInputMode } from '../../../agenc/upstream/types/tex
 import type { ToolPermissionContext } from '../../../agenc/upstream/Tool.js';
 import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../agenc/upstream/utils/permissions/PermissionMode.js';
+import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../utils/permissions/PermissionMode.js';
 import { BackgroundTaskStatus } from '../../../agenc/upstream/components/tasks/BackgroundTaskStatus.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { isPanelAgentTask } from '../../../agenc/upstream/tasks/LocalAgentTask/LocalAgentTask.js';
 import { getVisibleAgentTasks } from '../../../agenc/upstream/components/CoordinatorAgentStatus.js';
-import { count } from '../../../agenc/upstream/utils/array.js';
+import { count } from '../../../utils/array.js';
 import { shouldHideTasksFooter } from '../../../agenc/upstream/components/tasks/taskStatusUtils.js';
-import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled.js';
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
 import { TeamStatus } from '../../../agenc/upstream/components/teams/TeamStatus.js';
-import { isInProcessEnabled } from '../../../agenc/upstream/utils/swarm/backends/registry.js';
+import { isInProcessEnabled } from '../../../utils/swarm/backends/registry.js';
 import { useAppState, useAppStateStore } from '../../state/AppState.js';
 import { getIsRemoteMode } from '../../../agenc/upstream/bootstrap/state.js';
 import HistorySearchInput from './HistorySearchInput.js';
@@ -28,12 +28,12 @@ import { KeyboardShortcutHint } from '../../../agenc/upstream/components/design-
 import { Byline } from '../../../agenc/upstream/components/design-system/Byline.js';
 import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.js';
 import { useTasksV2 } from '../../../agenc/upstream/hooks/useTasksV2.js';
-import { formatDuration } from '../../../agenc/upstream/utils/format.js';
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
+import { formatDuration } from '../../../utils/format.js';
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { isXtermJs } from '../../ink/terminal.js';
 import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
-import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js';
-import { getPlatform } from '../../../agenc/upstream/utils/platform.js';
+import { getGlobalConfig } from '../../../utils/config.js';
+import { getPlatform } from '../../../utils/platform.js';
 import { PrBadge } from '../../../agenc/upstream/components/PrBadge.js';
 import {
   getPromptInputProactiveNextTickAt,

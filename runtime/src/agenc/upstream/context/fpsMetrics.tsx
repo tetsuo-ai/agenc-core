@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, useContext } from 'react';
-import type { FpsMetrics } from '../utils/fpsTracker.js';
+import type { FpsMetrics } from '../../../utils/fpsTracker.js';
 type FpsMetricsGetter = () => FpsMetrics | undefined;
 const FpsMetricsContext = createContext<FpsMetricsGetter | undefined>(undefined);
 type Props = {

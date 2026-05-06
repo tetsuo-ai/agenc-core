@@ -15,13 +15,13 @@ import { isAutoDreamEnabled } from '../../services/autoDream/config.js';
 import { readLastConsolidatedAt } from '../../services/autoDream/consolidationLock.js';
 import { useAppState } from '../../../../tui/state/AppState.js';
 import { getAgentMemoryDir } from '../../tools/AgentTool/agentMemory.js';
-import { openPath } from '../../utils/browser.js';
-import { getMemoryFiles, type MemoryFileInfo } from '../../utils/claudemd.js'; // branding-scan: allow upstream memory filename pending absorb
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
-import { getDisplayPath } from '../../utils/file.js';
-import { formatRelativeTimeAgo } from '../../utils/format.js';
-import { projectIsInGitRepo } from '../../utils/memory/versions.js';
-import { updateSettingsForSource } from '../../utils/settings/settings.js';
+import { openPath } from '../../../../utils/browser.js';
+import { getMemoryFiles, type MemoryFileInfo } from '../../../../utils/agencmd.js'; // branding-scan: allow upstream memory filename pending absorb
+import { getAgenCConfigHomeDir } from '../../../../utils/envUtils.js';
+import { getDisplayPath } from '../../../../utils/file.js';
+import { formatRelativeTimeAgo } from '../../../../utils/format.js';
+import { projectIsInGitRepo } from '../../../../utils/memory/versions.js';
+import { updateSettingsForSource } from '../../../../utils/settings/settings.js';
 import { Select } from '../CustomSelect/select.js';
 import { ListItem } from '../design-system/ListItem.js';
 import { getProjectMemoryPathForSelector } from './memoryFileSelectorPaths.js';

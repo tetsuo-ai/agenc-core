@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
 import { Box, Link, Text } from '../../../tui/ink.js';
-import type { ExternalAgenCMdInclude } from '../utils/claudemd.js';
-import { saveCurrentProjectConfig } from '../utils/config.js';
+import type { ExternalAgenCMdInclude } from '../../../utils/agencmd.js';
+import { saveCurrentProjectConfig } from '../../../utils/config.js';
 import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
 type Props = {

@@ -1,6 +1,6 @@
 import type { Command } from '../../../../commands.js'
 import { isPolicyAllowed } from '../../services/policyLimits/index.js'
-import { isAgenCAISubscriber } from '../../utils/auth.js'
+import { isAgenCAISubscriber } from '../../../../utils/auth.js'
 
 export default {
   type: 'local-jsx',

@@ -2,8 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Box, Text } from '../../../tui/ink.js';
-import type { SandboxViolationEvent } from '../utils/sandbox/sandbox-adapter.js';
-import { SandboxManager } from '../utils/sandbox/sandbox-adapter.js';
+import type { SandboxViolationEvent } from '../../../utils/sandbox/sandbox-runtime.js';
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js';
 
 /**
  * Format a timestamp as "h:mm:ssa" (e.g., "1:30:45pm").

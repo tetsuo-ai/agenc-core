@@ -16,12 +16,12 @@ import {
   hasRules,
 } from 'src/utils/permissions/PermissionUpdate.js'
 import { permissionRuleValueToString } from 'src/utils/permissions/permissionRuleParser.js'
-import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
+import { SandboxManager } from 'src/utils/sandbox/sandbox-runtime.js'
 import type { ToolUseConfirm } from '../../../../tui/components/permissions/PermissionRequest.js'
 import { useSetAppState } from '../../../../tui/state/AppState.js'
-import { env } from '../../utils/env.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import { type CompletionType, logUnaryEvent } from '../../utils/unaryLogging.js'
+import { env } from '../../../../utils/env.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { type CompletionType, logUnaryEvent } from '../../../../utils/unaryLogging.js'
 
 export type UnaryEvent = {
   completion_type: CompletionType

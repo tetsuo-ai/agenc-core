@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { Box, Text } from '../../../tui/ink.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
-import type { EffortLevel } from '../utils/effort.js'
+import type { EffortLevel } from '../../../utils/effort.js'
 import {
   getAvailableEffortLevels,
   getDisplayedEffortLevel,
@@ -10,8 +10,8 @@ import {
   getEffortLevelLabel,
   modelSupportsEffort,
   modelUsesOpenAIEffort,
-} from '../utils/effort.js'
-import { getAPIProvider } from '../utils/model/providers.js'
+} from '../../../utils/effort.js'
+import { getAPIProvider } from '../../../utils/model/providers.js'
 import { getReasoningEffortForModel } from '../services/api/providerConfig.js'
 import { Select } from './CustomSelect/select.js'
 import { effortLevelToSymbol } from './EffortIndicator.js'

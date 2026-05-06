@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
-import type { AutoUpdaterResult } from '../utils/autoUpdater.js';
-import { isAutoUpdaterDisabled } from '../utils/config.js';
+import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
+import { isAutoUpdaterDisabled } from '../../../utils/config.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { getCurrentInstallationType } from '../utils/doctorDiagnostic.js';
+import { getCurrentInstallationType } from '../../../utils/doctorDiagnostic.js';
 import { AutoUpdater } from './AutoUpdater.js';
 import { NativeAutoUpdater } from './NativeAutoUpdater.js';
 import { PackageManagerAutoUpdater } from './PackageManagerAutoUpdater.js';

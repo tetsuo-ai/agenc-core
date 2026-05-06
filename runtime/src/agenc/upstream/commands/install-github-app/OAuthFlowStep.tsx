@@ -8,8 +8,8 @@ import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js
 import { setClipboard } from '../../../../tui/ink/termio/osc.js';
 import { Box, Link, Text } from '../../../../tui/ink.js';
 import { OAuthService } from '../../services/oauth/index.js';
-import { saveOAuthTokensIfNeeded } from '../../utils/auth.js';
-import { logError } from '../../utils/log.js';
+import { saveOAuthTokensIfNeeded } from '../../../../utils/auth.js';
+import { logError } from '../../../../utils/log.js';
 interface OAuthFlowStepProps {
   onSuccess: (token: string) => void;
   onCancel: () => void;

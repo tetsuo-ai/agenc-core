@@ -1,5 +1,5 @@
 import type { Command } from '../../../../commands.js'
-import { isConsumerSubscriber } from '../../utils/auth.js'
+import { isConsumerSubscriber } from '../../../../utils/auth.js'
 
 const privacySettings = {
   type: 'local-jsx',

@@ -6,9 +6,9 @@ import { z } from 'zod/v4';
 import { callIdeRpc } from '../services/mcp/client.js';
 import type { ConnectedMCPServer, MCPServerConnection } from '../services/mcp/types.js';
 import type { PermissionMode } from '../types/permissions.js';
-import { AGENC_IN_CHROME_MCP_SERVER_NAME, isTrackedAgenCInChromeTabId } from '../utils/claudeInChrome/common.js';
-import { lazySchema } from '../utils/lazySchema.js';
-import { enqueuePendingNotification } from '../utils/messageQueueManager.js';
+import { AGENC_IN_CHROME_MCP_SERVER_NAME, isTrackedAgenCInChromeTabId } from '../../../utils/agencInChrome/common.js';
+import { lazySchema } from '../../../utils/lazySchema.js';
+import { enqueuePendingNotification } from '../../../utils/messageQueueManager.js';
 
 // Schema for the prompt notification from Chrome extension (JSON-RPC 2.0 format)
 const AgenCInChromePromptNotificationSchema = lazySchema(() => z.object({

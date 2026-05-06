@@ -8,10 +8,10 @@ import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFas
 import { Box, Text } from '../../../tui/ink.js';
 import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
-import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
-import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
-import { getModelOptions } from '../utils/model/modelOptions.js';
-import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
+import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../../../utils/effort.js';
+import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../../../utils/model/model.js';
+import { getModelOptions } from '../../../utils/model/modelOptions.js';
+import { getSettingsForSource, updateSettingsForSource } from '../../../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/select.js';
 import { Byline } from './design-system/Byline.js';

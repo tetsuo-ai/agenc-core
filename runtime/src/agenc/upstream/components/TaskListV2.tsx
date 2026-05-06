@@ -7,12 +7,12 @@ import { Box, Text } from '../../../tui/ink.js';
 import { useAppState } from '../../../tui/state/AppState.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
 import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
-import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
-import { count } from '../utils/array.js';
-import { summarizeRecentActivities } from '../utils/collapseReadSearch.js';
-import { truncateToWidth } from '../utils/format.js';
-import { isTodoV2Enabled, type Task } from '../utils/tasks.js';
-import type { Theme } from '../utils/theme.js';
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
+import { count } from '../../../utils/array.js';
+import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js';
+import { truncateToWidth } from '../../../utils/format.js';
+import { isTodoV2Enabled, type Task } from '../../../utils/tasks.js';
+import type { Theme } from '../../../utils/theme.js';
 import FullWidthRow from './design-system/FullWidthRow.js';
 import ThemedText from './design-system/ThemedText.js';
 type Props = {

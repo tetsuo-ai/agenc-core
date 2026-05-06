@@ -14,32 +14,32 @@ import {
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { getCwd } from '../../utils/cwd.js'
+import { getCwd } from '../../../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { isENOENT } from '../../utils/errors.js'
-import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
+import { countLinesChanged, getPatchForDisplay } from '../../../../utils/diff.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { isENOENT } from '../../../../utils/errors.js'
+import { getFileModificationTime, writeTextContent } from '../../../../utils/file.js'
 import {
   fileHistoryEnabled,
   fileHistoryTrackEdit,
-} from '../../utils/fileHistory.js'
-import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+} from '../../../../utils/fileHistory.js'
+import { logFileOperation } from '../../../../utils/fileOperationAnalytics.js'
+import { readFileSyncWithMetadata } from '../../../../utils/fileRead.js'
+import { getFsImplementation } from '../../../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
   type ToolUseDiff,
-} from '../../utils/gitDiff.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { logError } from '../../utils/log.js'
-import { expandPath } from '../../utils/path.js'
+} from '../../../../utils/gitDiff.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { logError } from '../../../../utils/log.js'
+import { expandPath } from '../../../../utils/path.js'
 import {
   checkWritePermissionForTool,
   matchingRuleForInput,
-} from '../../utils/permissions/filesystem.js'
-import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
-import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+} from '../../../../utils/permissions/filesystem.js'
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js'
+import { matchWildcardPattern } from '../../../../utils/permissions/shellRuleMatching.js'
 import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js'
 import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'

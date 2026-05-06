@@ -75,12 +75,12 @@ describe("remote token path resolution", () => {
   });
 });
 
-async function loadAuthFileDescriptor(): Promise<typeof import("../agenc/upstream/utils/authFileDescriptor.js")> {
+async function loadAuthFileDescriptor(): Promise<typeof import("../utils/authFileDescriptor.js")> {
   vi.resetModules();
-  return import("../agenc/upstream/utils/authFileDescriptor.js");
+  return import("../utils/authFileDescriptor.js");
 }
 
-async function loadSpawnUtils(): Promise<typeof import("../agenc/upstream/utils/swarm/spawnUtils.js")> {
+async function loadSpawnUtils(): Promise<typeof import("../utils/swarm/spawnUtils.js")> {
   vi.resetModules();
   vi.doMock("../agenc/upstream/bootstrap/state.js", () => ({
     getChromeFlagOverride: () => undefined,
@@ -89,11 +89,11 @@ async function loadSpawnUtils(): Promise<typeof import("../agenc/upstream/utils/
     getMainLoopModelOverride: () => undefined,
     getSessionBypassPermissionsMode: () => false,
   }));
-  vi.doMock("../agenc/upstream/utils/bundledMode.js", () => ({ isInBundledMode: () => false }));
-  vi.doMock("../agenc/upstream/utils/swarm/backends/teammateModeSnapshot.js", () => ({
+  vi.doMock("../utils/bundledMode.js", () => ({ isInBundledMode: () => false }));
+  vi.doMock("../utils/swarm/backends/teammateModeSnapshot.js", () => ({
     getTeammateModeFromSnapshot: () => "default",
   }));
-  return import("../agenc/upstream/utils/swarm/spawnUtils.js");
+  return import("../utils/swarm/spawnUtils.js");
 }
 
 async function tempHomeWithToken(token: string): Promise<string> {

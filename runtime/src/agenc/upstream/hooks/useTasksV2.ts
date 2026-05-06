@@ -1,8 +1,8 @@
 import { type FSWatcher, watch } from 'fs'
 import { useEffect, useSyncExternalStore } from 'react'
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js'
-import { createSignal } from '../utils/signal.js'
-import type { Task } from '../utils/tasks.js'
+import { createSignal } from '../../../utils/signal.js'
+import type { Task } from '../../../utils/tasks.js'
 import {
   getTaskListId,
   getTasksDir,
@@ -10,8 +10,8 @@ import {
   listTasks,
   onTasksUpdated,
   resetTaskList,
-} from '../utils/tasks.js'
-import { isTeamLead } from '../utils/teammate.js'
+} from '../../../utils/tasks.js'
+import { isTeamLead } from '../../../utils/teammate.js'
 
 const HIDE_DELAY_MS = 5000
 const DEBOUNCE_MS = 50

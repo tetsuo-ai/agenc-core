@@ -4,7 +4,7 @@ import type { CommandResultDisplay } from '../../../../commands.js';
 import { Box, color, Link, Text, useTheme } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import { AuthenticationCancelledError, performMCPOAuthFlow } from '../../services/mcp/auth.js';
-import { capitalize } from '../../utils/stringUtils.js';
+import { capitalize } from '../../../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Select } from '../CustomSelect/select.js';
 import { Byline } from '../design-system/Byline.js';

@@ -7,8 +7,8 @@ import { stringWidth } from '../ink/stringWidth.js';
 import { wrapAnsi } from '../ink/wrapAnsi.js';
 import { Box, Text } from '../ink.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
-import type { HistoryEntry } from '../../agenc/upstream/utils/config.js';
-import { formatRelativeTimeAgo, truncateToWidth } from '../../agenc/upstream/utils/format.js';
+import type { HistoryEntry } from '../../utils/config.js';
+import { formatRelativeTimeAgo, truncateToWidth } from '../../utils/format.js';
 import { FuzzyPicker } from '../../agenc/upstream/components/design-system/FuzzyPicker.js';
 type Props = {
   initialQuery?: string;

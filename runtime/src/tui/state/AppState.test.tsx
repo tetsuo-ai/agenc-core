@@ -1,7 +1,7 @@
 import React from "react";
 import { describe, expect, test, vi } from "vitest";
 
-import { renderToString } from "../../agenc/upstream/utils/staticRender.js";
+import { renderToString } from "../../utils/staticRender.js";
 import { Text } from "../ink.js";
 import {
   AppStateProvider,
@@ -34,24 +34,24 @@ vi.mock("../../agenc/upstream/Tool.js", () => ({
     isBypassPermissionsModeAvailable: false,
   }),
 }));
-vi.mock("../../agenc/upstream/utils/commitAttribution.js", () => ({
+vi.mock("../../utils/commitAttribution.js", () => ({
   createEmptyAttributionState: () => ({}),
 }));
-vi.mock("../../agenc/upstream/utils/permissions/permissionSetup.js", () => ({
+vi.mock("../../utils/permissions/permissionSetup.js", () => ({
   createDisabledBypassPermissionsContext: (context: unknown) => context,
   isBypassPermissionsModeDisabled: () => false,
 }));
-vi.mock("../../agenc/upstream/utils/settings/applySettingsChange.js", () => ({
+vi.mock("../../utils/settings/applySettingsChange.js", () => ({
   applySettingsChange: () => {},
 }));
-vi.mock("../../agenc/upstream/utils/settings/settings.js", () => ({
+vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),
 }));
-vi.mock("../../agenc/upstream/utils/teammate.js", () => ({
+vi.mock("../../utils/teammate.js", () => ({
   isPlanModeRequired: () => false,
   isTeammate: () => false,
 }));
-vi.mock("../../agenc/upstream/utils/thinking.js", () => ({
+vi.mock("../../utils/thinking.js", () => ({
   shouldEnableThinkingByDefault: () => false,
 }));
 

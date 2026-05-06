@@ -4,19 +4,19 @@ import { DEFAULT_CODEX_BASE_URL } from '../services/api/providerConfig.js'
 import { Box, Text } from '../../../tui/ink.js'
 import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js'
 import { useSetAppState } from '../../../tui/state/AppState.js'
-import type { ProviderProfile } from '../utils/config.js'
+import type { ProviderProfile } from '../../../utils/config.js'
 import {
   clearCodexCredentials,
   readCodexCredentialsAsync,
-} from '../utils/codexCredentials.js'
-import { isBareMode, isEnvTruthy } from '../utils/envUtils.js'
-import { getPrimaryModel, hasMultipleModels, parseModelList } from '../utils/providerModels.js'
+} from '../../../utils/agencCredentials.js'
+import { isBareMode, isEnvTruthy } from '../../../utils/envUtils.js'
+import { getPrimaryModel, hasMultipleModels, parseModelList } from '../../../utils/providerModels.js'
 import {
   applySavedProfileToCurrentSession,
   buildCodexOAuthProfileEnv,
   clearPersistedCodexOAuthProfile,
   createProfileFile,
-} from '../utils/providerProfile.js'
+} from '../../../utils/providerProfile.js'
 import {
   addProviderProfile,
   applyActiveProviderProfileFromConfig,
@@ -28,27 +28,27 @@ import {
   type ProviderPreset,
   type ProviderProfileInput,
   updateProviderProfile,
-} from '../utils/providerProfiles.js'
+} from '../../../utils/providerProfiles.js'
 import {
   clearGithubModelsToken,
   GITHUB_MODELS_HYDRATED_ENV_MARKER,
   hydrateGithubModelsTokenFromSecureStorage,
   readGithubModelsToken,
   readGithubModelsTokenAsync,
-} from '../utils/githubModelsCredentials.js'
+} from '../../../utils/githubModelsCredentials.js'
 import {
   probeAtomicChatReadiness,
   probeOllamaGenerationReadiness,
   type AtomicChatReadiness,
   type OllamaGenerationReadiness,
-} from '../utils/providerDiscovery.js'
+} from '../../../utils/providerDiscovery.js'
 import {
   rankOllamaModels,
   recommendOllamaModel,
-} from '../utils/providerRecommendation.js'
-import { clearStartupProviderOverrides } from '../utils/providerStartupOverrides.js'
-import { redactUrlForDisplay } from '../utils/urlRedaction.js'
-import { updateSettingsForSource } from '../utils/settings/settings.js'
+} from '../../../utils/providerRecommendation.js'
+import { clearStartupProviderOverrides } from '../../../utils/providerStartupOverrides.js'
+import { redactUrlForDisplay } from '../../../utils/urlRedaction.js'
+import { updateSettingsForSource } from '../../../utils/settings/settings.js'
 import {
   type OptionWithDescription,
   Select,

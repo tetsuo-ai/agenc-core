@@ -3,13 +3,13 @@ import {
   EFFORT_LOW,
   EFFORT_MAX,
   EFFORT_MEDIUM,
-} from '../constants/figures.js'
+} from '../../../constants/figures.js'
 import {
   type EffortLevel,
   type EffortValue,
   getDisplayedEffortLevel,
   modelSupportsEffort,
-} from '../utils/effort.js'
+} from '../../../utils/effort.js'
 
 /**
  * Build the text for the effort-changed notification, e.g. "◐ medium · /effort".

@@ -9,7 +9,7 @@ import type { KeyboardEvent } from '../../../../../tui/ink/events/keyboard-event
 import { Box, Text } from '../../../../../tui/ink.js';
 import { useKeybinding } from '../../../../../tui/keybindings/useKeybinding.js';
 import type { ToolPermissionContext } from '../../../Tool.js';
-import { getDirectoryCompletions } from '../../../utils/suggestions/directoryCompletion.js';
+import { getDirectoryCompletions } from '../../../../../utils/suggestions/directoryCompletion.js';
 import { ConfigurableShortcutHint } from '../../ConfigurableShortcutHint.js';
 import { Select } from '../../CustomSelect/select.js';
 import { Byline } from '../../design-system/Byline.js';

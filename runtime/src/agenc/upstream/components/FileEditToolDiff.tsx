@@ -6,10 +6,10 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box, Text } from '../../../tui/ink.js';
 import type { FileEdit } from '../tools/FileEditTool/types.js';
 import { findActualString, preserveQuoteStyle } from '../tools/FileEditTool/utils.js';
-import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../utils/diff.js';
-import { logError } from '../utils/log.js';
-import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../utils/readEditContext.js';
-import { firstLineOf } from '../utils/stringUtils.js';
+import { adjustHunkLineNumbers, CONTEXT_LINES, getPatchForDisplay } from '../../../utils/diff.js';
+import { logError } from '../../../utils/log.js';
+import { CHUNK_SIZE, openForScan, readCapped, scanForContext } from '../../../utils/readEditContext.js';
+import { firstLineOf } from '../../../utils/stringUtils.js';
 import { StructuredDiffList } from './StructuredDiffList.js';
 type Props = {
   file_path: string;

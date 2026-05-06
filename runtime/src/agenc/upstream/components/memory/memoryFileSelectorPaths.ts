@@ -1,11 +1,11 @@
 import { basename, join } from 'path'
 
-import type { MemoryFileInfo } from '../../utils/claudemd.js'
+import type { MemoryFileInfo } from '../../../../utils/agencmd.js'
 import {
   findProjectInstructionFilePathInAncestors,
   isProjectInstructionFileName,
   PRIMARY_PROJECT_INSTRUCTION_FILE,
-} from '../../utils/projectInstructions.js'
+} from '../../../../utils/projectInstructions.js'
 
 function isLoadedProjectInstructionFile(file: MemoryFileInfo): boolean {
   return (

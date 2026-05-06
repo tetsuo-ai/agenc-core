@@ -13,11 +13,11 @@ import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../tools/BashT
 import { getDestructiveCommandWarning } from '../../../tools/BashTool/destructiveCommandWarning.js';
 import { parseSedEditCommand } from '../../../tools/BashTool/sedEditParser.js';
 import { shouldUseSandbox } from '../../../tools/BashTool/shouldUseSandbox.js';
-import { getCompoundCommandPrefixesStatic } from '../../../utils/bash/prefix.js';
-import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../utils/permissions/bashClassifier.js';
-import { extractRules } from '../../../utils/permissions/PermissionUpdate.js';
-import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
-import { SandboxManager } from '../../../utils/sandbox/sandbox-adapter.js';
+import { getCompoundCommandPrefixesStatic } from '../../../../../utils/bash/prefix.js';
+import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../../utils/permissions/bashClassifier.js';
+import { extractRules } from '../../../../../utils/permissions/PermissionUpdate.js';
+import type { PermissionUpdate } from '../../../../../utils/permissions/PermissionUpdateSchema.js';
+import { SandboxManager } from '../../../../../utils/sandbox/sandbox-runtime.js';
 import { Select } from '../../CustomSelect/select.js';
 import { ShimmerChar } from '../../../../../tui/components/spinner/ShimmerChar.js';
 import { useShimmerAnimation } from '../../../../../tui/components/spinner/useShimmerAnimation.js';

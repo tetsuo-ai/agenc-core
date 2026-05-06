@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useStdin } from '../../../../tui/ink/components/StdinContext.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
-import { getSystemThemeName, type SystemTheme } from '../../utils/systemTheme.js';
-import type { ThemeName, ThemeSetting } from '../../utils/theme.js';
+import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js';
+import { getSystemThemeName, type SystemTheme } from '../../../../utils/systemTheme.js';
+import type { ThemeName, ThemeSetting } from '../../../../utils/theme.js';
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
   themeSetting: ThemeSetting;
@@ -66,7 +66,7 @@ export function ThemeProvider({
       if (activeSetting !== 'auto' || !internal_querier) return;
       let cleanup: (() => void) | undefined;
       let cancelled = false;
-      void import('../../utils/systemThemeWatcher.js').then(({
+      void import('../../../../utils/systemThemeWatcher.js').then(({
         watchSystemTheme
       }) => {
         if (cancelled) return;

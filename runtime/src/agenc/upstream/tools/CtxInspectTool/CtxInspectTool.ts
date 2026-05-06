@@ -7,8 +7,8 @@ import {
   isContextCollapseEnabled,
 } from '../../services/contextCollapse/index.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({

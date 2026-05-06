@@ -13,12 +13,12 @@ import { Box, Text, useInput, useTerminalFocus, useTheme } from '../../../tui/in
 import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { logEvent } from '../services/analytics/index.js';
 import type { LogOption, SerializedMessage } from '../types/logs.js';
-import { formatLogMetadata, truncateToWidth } from '../utils/format.js';
-import { getWorktreePaths } from '../utils/getWorktreePaths.js';
-import { getBranch } from '../utils/git.js';
-import { getLogDisplayTitle } from '../utils/log.js';
-import { getFirstMeaningfulUserMessageTextContent, getSessionIdFromLog, isCustomTitleEnabled, saveCustomTitle } from '../utils/sessionStorage.js';
-import { getTheme } from '../utils/theme.js';
+import { formatLogMetadata, truncateToWidth } from '../../../utils/format.js';
+import { getWorktreePaths } from '../../../utils/getWorktreePaths.js';
+import { getBranch } from '../../../utils/git.js';
+import { getLogDisplayTitle } from '../../../utils/log.js';
+import { getFirstMeaningfulUserMessageTextContent, getSessionIdFromLog, isCustomTitleEnabled, saveCustomTitle } from '../../../utils/sessionStorage.js';
+import { getTheme } from '../../../utils/theme.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/select.js';
 import { Byline } from './design-system/Byline.js';

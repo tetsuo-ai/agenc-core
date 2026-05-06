@@ -7,9 +7,9 @@ import {
   isCodexRefreshFailureCoolingDown,
   readCodexCredentials,
   type CodexCredentialBlob,
-} from '../../utils/codexCredentials.js'
+} from '../../../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
 import {
   asTrimmedString,
   parseChatgptAccountId,

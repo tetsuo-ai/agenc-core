@@ -31,7 +31,7 @@ import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../../../tui/keybindings/useShortcutDisplay.js';
-import { count } from '../../utils/array.js';
+import { count } from '../../../../utils/array.js';
 import { Byline } from '../design-system/Byline.js';
 import { Dialog } from '../design-system/Dialog.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';

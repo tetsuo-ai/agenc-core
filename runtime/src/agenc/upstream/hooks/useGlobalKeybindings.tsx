@@ -12,8 +12,8 @@ import type { Screen } from '../screens/REPL.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
-import { count } from '../utils/array.js';
-import { getTerminalPanel } from '../utils/terminalPanel.js';
+import { count } from '../../../utils/array.js';
+import { getTerminalPanel } from '../../../utils/terminalPanel.js';
 type Props = {
   screen: Screen;
   setScreen: React.Dispatch<React.SetStateAction<Screen>>;

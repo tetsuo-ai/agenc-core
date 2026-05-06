@@ -70,7 +70,7 @@ async function loadRemoteSettingsSync(): Promise<RemoteSettingsSync | null> {
   const settingsSyncModulePath: string =
     "../agenc/upstream/services/settingsSync/index.js";
   const settingsChangeModulePath: string =
-    "../agenc/upstream/utils/settings/changeDetector.js";
+    "../utils/settings/changeDetector.js";
   try {
     const [settingsSync, changeDetector] = await Promise.all([
       import(settingsSyncModulePath) as Promise<{

@@ -6,8 +6,8 @@ import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for config dialog
 import { Box, Text, useInput } from '../../../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
-import type { PluginOptionSchema, PluginOptionValues } from '../../utils/plugins/pluginOptionsStorage.js';
+import { isEnvTruthy } from '../../../../utils/envUtils.js';
+import type { PluginOptionSchema, PluginOptionValues } from '../../../../utils/plugins/pluginOptionsStorage.js';
 
 /**
  * Build the onSave payload from collected string inputs.

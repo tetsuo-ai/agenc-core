@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import { getAgentName, getTeammateColor, getTeamName } from '../../utils/teammate.js';
+import { getAgentName, getTeammateColor, getTeamName } from '../../../../utils/teammate.js';
 import { Spinner } from '../../../../tui/components/spinner/Spinner.js';
 import { WorkerBadge } from './WorkerBadge.js';
 type Props = {

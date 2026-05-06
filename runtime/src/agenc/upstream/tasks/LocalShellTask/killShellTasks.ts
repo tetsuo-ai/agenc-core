@@ -5,10 +5,10 @@
 import type { AppState } from '../../../../tui/state/AppState.js'
 import type { AgentId } from '../../types/ids.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logError } from '../../utils/log.js'
-import { dequeueAllMatching } from '../../utils/messageQueueManager.js'
-import { evictTaskOutput } from '../../utils/task/diskOutput.js'
-import { updateTaskState } from '../../utils/task/framework.js'
+import { logError } from '../../../../utils/log.js'
+import { dequeueAllMatching } from '../../../../utils/messageQueueManager.js'
+import { evictTaskOutput } from '../../../../utils/task/diskOutput.js'
+import { updateTaskState } from '../../../../utils/task/framework.js'
 import { isLocalShellTask } from './guards.js'
 
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void

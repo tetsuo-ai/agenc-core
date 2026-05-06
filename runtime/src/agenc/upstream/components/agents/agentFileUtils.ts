@@ -8,10 +8,10 @@ import {
   isBuiltInAgent,
   isPluginAgent,
 } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { getCwd } from '../../utils/cwd.js'
-import type { EffortValue } from '../../utils/effort.js'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
-import { getErrnoCode } from '../../utils/errors.js'
+import { getCwd } from '../../../../utils/cwd.js'
+import type { EffortValue } from '../../../../utils/effort.js'
+import { getAgenCConfigHomeDir } from '../../../../utils/envUtils.js'
+import { getErrnoCode } from '../../../../utils/errors.js'
 import { AGENT_PATHS } from './types.js'
 
 /**

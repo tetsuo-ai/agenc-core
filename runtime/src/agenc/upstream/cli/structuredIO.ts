@@ -38,20 +38,20 @@ import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { z } from 'zod/v4'
-import { notifyCommandLifecycle } from '../utils/commandLifecycle.js'
-import { normalizeControlMessageKeys } from '../utils/controlMessageCompat.js'
-import { executePermissionRequestHooks } from '../utils/hooks.js'
+import { notifyCommandLifecycle } from '../../../utils/commandLifecycle.js'
+import { normalizeControlMessageKeys } from '../../../utils/controlMessageCompat.js'
+import { executePermissionRequestHooks } from '../../../utils/hooks.js'
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
-} from '../utils/permissions/PermissionUpdate.js'
+} from '../../../utils/permissions/PermissionUpdate.js'
 import {
   notifySessionStateChanged,
   type RequiresActionDetails,
   type SessionExternalMetadata,
-} from '../utils/sessionState.js'
-import { jsonParse } from '../utils/slowOperations.js'
-import { Stream } from '../utils/stream.js'
+} from '../../../utils/sessionState.js'
+import { jsonParse } from '../../../utils/slowOperations.js'
+import { Stream } from '../../../utils/stream.js'
 import { ndjsonSafeStringify } from './ndjsonSafeStringify.js'
 
 /**

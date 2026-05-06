@@ -20,9 +20,9 @@ import {
   handleOAuth401Error,
   isAgenCAISubscriber,
   isEnterpriseSubscriber,
-} from '../../utils/auth.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { errorMessage } from '../../utils/errors.js'
+} from '../../../../utils/auth.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { errorMessage } from '../../../../utils/errors.js'
 import {
   type CooldownReason,
   handleFastModeOverageRejection,
@@ -30,11 +30,11 @@ import {
   isFastModeCooldown,
   isFastModeEnabled,
   triggerFastModeCooldown,
-} from '../../utils/fastMode.js'
-import { isNonCustomOpusModel } from '../../utils/model/model.js'
-import { disableKeepAlive } from '../../utils/proxy.js'
-import { sleep } from '../../utils/sleep.js'
-import type { ThinkingConfig } from '../../utils/thinking.js'
+} from '../../../../utils/fastMode.js'
+import { isNonCustomOpusModel } from '../../../../utils/model/model.js'
+import { disableKeepAlive } from '../../../../utils/proxy.js'
+import { sleep } from '../../../../utils/sleep.js'
+import type { ThinkingConfig } from '../../../../utils/thinking.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

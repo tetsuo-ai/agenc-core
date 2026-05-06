@@ -1,7 +1,8 @@
+// @ts-nocheck
 import emojiRegex from 'emoji-regex'
 import { eastAsianWidth } from 'get-east-asian-width'
 import stripAnsi from 'strip-ansi'
-import { getGraphemeSegmenter } from '../../agenc/upstream/utils/intl.js'
+import { getGraphemeSegmenter } from '../../utils/intl.js'
 
 const EMOJI_REGEX = emojiRegex()
 

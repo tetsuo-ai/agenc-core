@@ -2,9 +2,9 @@ import { getSessionId } from '../../bootstrap/state.js'
 import { resolveProviderRequest } from '../../services/api/providerConfig.js'
 import type { LocalCommandCall } from '../../types/command.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { hydrateGithubModelsTokenFromSecureStorage } from '../../utils/githubModelsCredentials.js'
-import { getMainLoopModel } from '../../utils/model/model.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { hydrateGithubModelsTokenFromSecureStorage } from '../../../../utils/githubModelsCredentials.js'
+import { getMainLoopModel } from '../../../../utils/model/model.js'
 
 const COPILOT_HEADERS: Record<string, string> = {
   'User-Agent': 'GitHubCopilotChat/0.26.7',

@@ -78,7 +78,7 @@ describe('getAutoFixConfig', () => {
 
 describe('SettingsSchema autoFix integration', () => {
   test('SettingsSchema accepts autoFix field', async () => {
-    const { SettingsSchema } = await import('../../utils/settings/types.js')
+    const { SettingsSchema } = await import('../../../../utils/settings/types.js')
     const settings = {
       autoFix: {
         enabled: true,
@@ -93,7 +93,7 @@ describe('SettingsSchema autoFix integration', () => {
   })
 
   test('SettingsSchema rejects invalid autoFix', async () => {
-    const { SettingsSchema } = await import('../../utils/settings/types.js')
+    const { SettingsSchema } = await import('../../../../utils/settings/types.js')
     const settings = {
       autoFix: {
         enabled: true,

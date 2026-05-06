@@ -3,7 +3,7 @@ import type { StatsStore } from './context/stats.js';
 import type { Root } from '../../tui/ink.js';
 import type { Props as REPLProps } from './screens/REPL.js';
 import type { AppState } from '../../tui/state/AppStateStore.js';
-import type { FpsMetrics } from './utils/fpsTracker.js';
+import type { FpsMetrics } from '../../utils/fpsTracker.js';
 type AppWrapperProps = {
   getFpsMetrics: () => FpsMetrics | undefined;
   stats?: StatsStore;

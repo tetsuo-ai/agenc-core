@@ -5,7 +5,7 @@ import { useClipboardImageHint } from '../hooks/useClipboardImageHint.js';
 import { useVimInput } from '../hooks/useVimInput.js';
 import { Box, color, useTerminalFocus, useTheme } from '../../../tui/ink.js';
 import type { VimTextInputProps } from '../types/textInputTypes.js';
-import type { TextHighlight } from '../utils/textHighlighting.js';
+import type { TextHighlight } from '../../../utils/textHighlighting.js';
 import { BaseTextInput } from './BaseTextInput.js';
 export type Props = VimTextInputProps & {
   highlights?: TextHighlight[];

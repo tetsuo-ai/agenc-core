@@ -18,8 +18,8 @@ import {
   saveIdpClientSecret,
   saveIdpIdTokenFromJwt,
 } from '../../services/mcp/xaaIdpLogin.js'
-import { errorMessage } from '../../utils/errors.js'
-import { updateSettingsForSource } from '../../utils/settings/settings.js'
+import { errorMessage } from '../../../../utils/errors.js'
+import { updateSettingsForSource } from '../../../../utils/settings/settings.js'
 
 export function registerMcpXaaIdpCommand(mcp: Command): void {
   const xaaIdp = mcp

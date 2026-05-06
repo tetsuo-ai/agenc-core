@@ -2,13 +2,13 @@ import { normalizeLanguageForSTT } from '../../hooks/useVoice.js'
 import { getShortcutDisplay } from '../../../../tui/keybindings/shortcutFormat.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalCommandCall } from '../../types/command.js'
-import { isAnthropicAuthEnabled } from '../../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
-import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
+import { isAnthropicAuthEnabled } from '../../../../utils/auth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js'
+import { settingsChangeDetector } from '../../../../utils/settings/changeDetector.js'
 import {
   getInitialSettings,
   updateSettingsForSource,
-} from '../../utils/settings/settings.js'
+} from '../../../../utils/settings/settings.js'
 import { isVoiceModeEnabled } from '../../voice/voiceModeEnabled.js'
 
 const LANG_HINT_MAX_SHOWS = 2

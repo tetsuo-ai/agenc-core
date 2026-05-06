@@ -7,7 +7,7 @@ import {
   getSteps,
   isProjectOnboardingComplete,
 } from './projectOnboardingSteps.js'
-import { runWithCwdOverride } from './utils/cwd.js'
+import { runWithCwdOverride } from '../../utils/cwd.js'
 
 let tempDir: string | undefined
 

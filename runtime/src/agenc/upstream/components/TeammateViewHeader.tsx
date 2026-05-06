@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Box, Text } from '../../../tui/ink.js';
 import { useAppState } from '../../../tui/state/AppState.js';
 import { getViewedTeammateTask } from '../state/selectors.js';
-import { toInkColor } from '../utils/ink.js';
+import { toInkColor } from '../../../utils/ink.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 import { OffscreenFreeze } from './OffscreenFreeze.js';
 

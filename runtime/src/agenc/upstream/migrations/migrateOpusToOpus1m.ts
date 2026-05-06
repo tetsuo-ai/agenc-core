@@ -3,11 +3,11 @@ import {
   getDefaultMainLoopModelSetting,
   isOpus1mMergeEnabled,
   parseUserSpecifiedModel,
-} from '../utils/model/model.js'
+} from '../../../utils/model/model.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
-} from '../utils/settings/settings.js'
+} from '../../../utils/settings/settings.js'
 
 /**
  * Migrate users with 'opus' pinned in their settings to 'opus[1m]' when they

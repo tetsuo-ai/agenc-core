@@ -2,7 +2,7 @@ import React from 'react'
 import { marked, type Tokens } from 'marked'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
-import { renderToString } from '../../../agenc/upstream/utils/staticRender.js'
+import { renderToString } from '../../../utils/staticRender.js'
 import { HighlightedCode } from './HighlightedCode.js'
 import { HighlightedCodeFallback } from './HighlightedCodeFallback.js'
 import { Markdown } from './Markdown.js'
@@ -40,7 +40,7 @@ vi.mock('../../../agenc/upstream/hooks/useSettings.js', () => ({
   }),
 }))
 
-vi.mock('../../../agenc/upstream/utils/messages.js', () => ({
+vi.mock('../../../utils/messages.js', () => ({
   stripPromptXMLTags: (input: string) =>
     input.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ''),
 }))

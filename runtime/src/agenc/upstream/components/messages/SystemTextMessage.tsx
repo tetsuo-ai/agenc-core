@@ -5,21 +5,21 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { useState } from 'react';
 import sample from 'lodash-es/sample.js';
-import { BLACK_CIRCLE, REFERENCE_MARK, TEARDROP_ASTERISK } from '../../constants/figures.js';
+import { BLACK_CIRCLE, REFERENCE_MARK, TEARDROP_ASTERISK } from '../../../../constants/figures.js';
 import figures from 'figures';
 import { basename } from 'path';
 import { MessageResponse } from '../MessageResponse.js';
 import { FilePathLink } from '../FilePathLink.js';
-import { openPath } from '../../utils/browser.js';
+import { openPath } from '../../../../utils/browser.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemSaved = feature('TEAMMEM') ? require('./teamMemSaved.js') as typeof import('./teamMemSaved.js') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js';
+import { TURN_COMPLETION_VERBS } from '../../../../constants/turnCompletionVerbs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemThinkingMessage, SystemMemorySavedMessage } from '../../types/message.js';
 import { SystemAPIErrorMessage } from '../../../../tui/components/SystemAPIErrorMessage.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
-import { getGlobalConfig } from '../../utils/config.js';
+import { formatDuration, formatNumber, formatSecondsShort } from '../../../../utils/format.js';
+import { getGlobalConfig } from '../../../../utils/config.js';
 import Link from '../../../../tui/ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';

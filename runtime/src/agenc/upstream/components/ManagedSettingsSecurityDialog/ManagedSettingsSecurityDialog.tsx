@@ -3,7 +3,7 @@ import React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
-import type { SettingsJson } from '../../utils/settings/types.js';
+import type { SettingsJson } from '../../../../utils/settings/types.js';
 import { Select } from '../CustomSelect/select.js';
 import { PermissionDialog } from '../permissions/PermissionDialog.js';
 import { extractDangerousSettings, formatDangerousSettingsList } from './utils.js';

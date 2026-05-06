@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../../../../tui/ink.js';
-import type { Theme } from '../../utils/theme.js';
+import type { Theme } from '../../../../utils/theme.js';
 type Props = {
   /**
    * How much progress to display, between 0 and 1 inclusive

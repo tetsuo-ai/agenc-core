@@ -13,7 +13,7 @@ import { useMemo } from 'react';
 import { useIsModalOverlayActive } from '../context/overlayContext.js';
 import { useOptionalKeybindingContext } from '../../../tui/keybindings/KeybindingContext.js';
 import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
-import type { PromptInputHelpers } from '../utils/handlePromptSubmit.js';
+import type { PromptInputHelpers } from '../../../utils/handlePromptSubmit.js';
 type Props = {
   // onSubmit accepts additional parameters beyond what we pass here,
   // so we use a rest parameter to allow any additional args

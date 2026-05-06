@@ -7,15 +7,15 @@
  * mirror alongside the leaf's state.
  */
 
-import { AGENC_AI_INFERENCE_SCOPE } from '../../constants/oauth.js'
+import { AGENC_AI_INFERENCE_SCOPE } from '../../../../constants/oauth.js'
 import {
   getAnthropicApiKeyWithSource,
   getAgenCAIOAuthTokens,
-} from '../../utils/auth.js'
+} from '../../../../utils/auth.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
-} from '../../utils/model/providers.js'
+} from '../../../../utils/model/providers.js'
 
 import {
   resetSyncCache as resetLeafCache,

@@ -3,9 +3,9 @@ import * as React from 'react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useSettings } from '../../../agenc/upstream/hooks/useSettings.js';
 import { Ansi, Box, type DOMElement, measureElement, NoSelect, Text, useTheme } from '../../ink.js';
-import { isFullscreenEnvEnabled } from '../../../agenc/upstream/utils/fullscreen.js';
-import sliceAnsi from '../../../agenc/upstream/utils/sliceAnsi.js';
-import { countCharInString } from '../../../agenc/upstream/utils/stringUtils.js';
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
+import sliceAnsi from '../../../utils/sliceAnsi.js';
+import { countCharInString } from '../../../utils/stringUtils.js';
 import { HighlightedCodeFallback } from './HighlightedCodeFallback.js';
 import { expectColorFile } from '../../../agenc/upstream/components/StructuredDiff/colorDiff.js';
 type Props = {

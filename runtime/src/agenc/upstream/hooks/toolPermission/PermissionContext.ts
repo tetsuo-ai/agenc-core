@@ -20,23 +20,23 @@ import type {
   PermissionDecisionReason,
   PermissionDenyDecision,
 } from '../../types/permissions.js'
-import { setClassifierApproval } from '../../utils/classifierApprovals.js'
+import { setClassifierApproval } from '../../../../utils/classifierApprovals.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { executePermissionRequestHooks } from '../../utils/hooks.js'
+import { executePermissionRequestHooks } from '../../../../utils/hooks.js'
 import {
   REJECT_MESSAGE,
   REJECT_MESSAGE_WITH_REASON_PREFIX,
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
   withMemoryCorrectionHint,
-} from '../../utils/messages.js'
-import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+} from '../../../../utils/messages.js'
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js'
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
   supportsPersistence,
-} from '../../utils/permissions/PermissionUpdate.js'
-import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
+} from '../../../../utils/permissions/PermissionUpdate.js'
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'
 import {
   logPermissionDecision,
   type PermissionDecisionArgs,

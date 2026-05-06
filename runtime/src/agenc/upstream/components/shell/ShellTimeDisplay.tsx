@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Text } from '../../../../tui/ink.js';
-import { formatDuration } from '../../utils/format.js';
+import { formatDuration } from '../../../../utils/format.js';
 type Props = {
   elapsedTimeSeconds?: number;
   timeoutMs?: number;

@@ -4,8 +4,8 @@ import { setTeleportedSessionInfo } from 'src/bootstrap/state.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import type { TeleportRemoteResponse } from 'src/utils/conversationRecovery.js';
 import type { CodeSession } from 'src/utils/teleport/api.js';
-import { errorMessage, TeleportOperationError } from '../utils/errors.js';
-import { teleportResumeCodeSession } from '../utils/teleport.js';
+import { errorMessage, TeleportOperationError } from '../../../utils/errors.js';
+import { teleportResumeCodeSession } from '../../../utils/teleport.js';
 export type TeleportResumeError = {
   message: string;
   formattedMessage?: string;

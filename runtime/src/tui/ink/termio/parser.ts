@@ -11,7 +11,7 @@
  * - Style tracking: maintains current text style state
  */
 
-import { getGraphemeSegmenter } from '../../../agenc/upstream/utils/intl.js'
+import { getGraphemeSegmenter } from '../../../utils/intl.js'
 import { C0 } from './ansi.js'
 import { CSI, CURSOR_STYLES, ERASE_DISPLAY, ERASE_LINE_REGION } from './csi.js'
 import { DEC } from './dec.js'
@@ -115,7 +115,7 @@ function parseCSI(rawSequence: string): Action | null {
     return { type: 'sgr', params: paramStr }
   }
 
-  // Cursor movement
+  // cursor movement
   if (finalByte === CSI.CUU) {
     return {
       type: 'cursor',
@@ -183,7 +183,7 @@ function parseCSI(rawSequence: string): Action | null {
     }
   }
 
-  // Cursor save/restore
+  // cursor save/restore
   if (finalByte === CSI.SCOSC) {
     return { type: 'cursor', action: { type: 'save' } }
   }
@@ -191,7 +191,7 @@ function parseCSI(rawSequence: string): Action | null {
     return { type: 'cursor', action: { type: 'restore' } }
   }
 
-  // Cursor style
+  // cursor style
   if (finalByte === CSI.DECSCUSR && intermediate === ' ') {
     const styleInfo = CURSOR_STYLES[p0] ?? CURSOR_STYLES[0]!
     return { type: 'cursor', action: { type: 'style', ...styleInfo } }

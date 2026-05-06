@@ -9,7 +9,7 @@ import { onExit } from 'signal-exit';
 import { flushInteractionTime } from '../../agenc/upstream/bootstrap/state.js';
 import { getYogaCounters } from '../../agenc/upstream/native-ts/yoga-layout/index.js';
 import { logForDebugging } from '../../utils/debug.js';
-import { logError } from '../../agenc/upstream/utils/log.js';
+import { logError } from '../../utils/log.js';
 import { format } from 'util';
 import { colorize } from './colorize.js';
 import App from './components/App.js';

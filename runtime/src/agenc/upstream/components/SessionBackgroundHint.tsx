@@ -7,9 +7,9 @@ import { useKeybinding } from '../../../tui/keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../../tui/keybindings/useShortcutDisplay.js';
 import { useAppState, useAppStateStore, useSetAppState } from '../../../tui/state/AppState.js';
 import { backgroundAll, hasForegroundTasks } from '../tasks/LocalShellTask/LocalShellTask.js';
-import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js';
-import { env } from '../utils/env.js';
-import { isEnvTruthy } from '../utils/envUtils.js';
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js';
+import { env } from '../../../utils/env.js';
+import { isEnvTruthy } from '../../../utils/envUtils.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 type Props = {
   onBackgroundSession: () => void;

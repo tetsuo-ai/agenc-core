@@ -6,7 +6,7 @@ import { FOOTER_TEMPORARY_STATUS_TIMEOUT } from '../../../tui/components/PromptI
 import { getHistory } from '../../../tui/history/history.js';
 import { Text } from '../../../tui/ink.js';
 import type { PromptInputMode } from '../types/textInputTypes.js';
-import type { HistoryEntry, PastedContent } from '../utils/config.js';
+import type { HistoryEntry, PastedContent } from '../../../utils/config.js';
 export type HistoryMode = PromptInputMode;
 
 // Load history entries in chunks to reduce disk reads on rapid keypresses

@@ -43,7 +43,7 @@ function hljs(): HLJSApi {
 }
 
 import { stringWidth } from '../../../../tui/ink/stringWidth.js'
-import { logError } from '../../utils/log.js'
+import { logError } from '../../../../utils/log.js'
 
 // ---------------------------------------------------------------------------
 // Public API types (match vendor/color-diff-src/index.d.ts)

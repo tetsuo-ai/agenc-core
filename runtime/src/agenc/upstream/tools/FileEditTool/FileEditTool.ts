@@ -13,42 +13,42 @@ import {
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { getCwd } from '../../utils/cwd.js'
+import { getCwd } from '../../../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { countLinesChanged } from '../../utils/diff.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { isENOENT } from '../../utils/errors.js'
+import { countLinesChanged } from '../../../../utils/diff.js'
+import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { isENOENT } from '../../../../utils/errors.js'
 import {
   FILE_NOT_FOUND_CWD_NOTE,
   findSimilarFile,
   getFileModificationTime,
   suggestPathUnderCwd,
   writeTextContent,
-} from '../../utils/file.js'
+} from '../../../../utils/file.js'
 import {
   fileHistoryEnabled,
   fileHistoryTrackEdit,
-} from '../../utils/fileHistory.js'
-import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
+} from '../../../../utils/fileHistory.js'
+import { logFileOperation } from '../../../../utils/fileOperationAnalytics.js'
 import {
   type LineEndingType,
   readFileSyncWithMetadata,
-} from '../../utils/fileRead.js'
-import { formatFileSize } from '../../utils/format.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+} from '../../../../utils/fileRead.js'
+import { formatFileSize } from '../../../../utils/format.js'
+import { getFsImplementation } from '../../../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
   type ToolUseDiff,
-} from '../../utils/gitDiff.js'
-import { logError } from '../../utils/log.js'
-import { expandPath } from '../../utils/path.js'
+} from '../../../../utils/gitDiff.js'
+import { logError } from '../../../../utils/log.js'
+import { expandPath } from '../../../../utils/path.js'
 import {
   checkWritePermissionForTool,
   matchingRuleForInput,
-} from '../../utils/permissions/filesystem.js'
-import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
-import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
-import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
+} from '../../../../utils/permissions/filesystem.js'
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js'
+import { matchWildcardPattern } from '../../../../utils/permissions/shellRuleMatching.js'
+import { validateInputForSettingsFileEdit } from '../../../../utils/settings/validateEditTool.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import {
   FILE_EDIT_TOOL_NAME,

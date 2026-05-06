@@ -2,12 +2,12 @@ import chalk from 'chalk'
 import { stat } from 'fs/promises'
 import { dirname, resolve } from 'path'
 import type { ToolPermissionContext } from '../../Tool.js'
-import { getErrnoCode } from '../../utils/errors.js'
-import { expandPath } from '../../utils/path.js'
+import { getErrnoCode } from '../../../../utils/errors.js'
+import { expandPath } from '../../../../utils/path.js'
 import {
   allWorkingDirectories,
   pathInWorkingPath,
-} from '../../utils/permissions/filesystem.js'
+} from '../../../../utils/permissions/filesystem.js'
 
 export type AddDirectoryResult =
   | {

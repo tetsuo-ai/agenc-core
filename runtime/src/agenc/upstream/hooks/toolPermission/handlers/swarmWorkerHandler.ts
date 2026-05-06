@@ -1,16 +1,16 @@
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { PendingClassifierCheck } from '../../../types/permissions.js'
-import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js'
-import { toError } from '../../../utils/errors.js'
-import { logError } from '../../../utils/log.js'
-import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js'
-import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
+import { isAgentSwarmsEnabled } from '../../../../../utils/agentSwarmsEnabled.js'
+import { toError } from '../../../../../utils/errors.js'
+import { logError } from '../../../../../utils/log.js'
+import type { PermissionDecision } from '../../../../../utils/permissions/PermissionResult.js'
+import type { PermissionUpdate } from '../../../../../utils/permissions/PermissionUpdateSchema.js'
 import {
   createPermissionRequest,
   isSwarmWorker,
   sendPermissionRequestViaMailbox,
-} from '../../../utils/swarm/permissionSync.js'
+} from '../../../../../utils/swarm/permissionSync.js'
 import { registerPermissionCallback } from '../../useSwarmPermissionPoller.js'
 import type { PermissionContext } from '../PermissionContext.js'
 import { createResolveOnce } from '../PermissionContext.js'

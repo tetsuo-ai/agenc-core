@@ -11,10 +11,10 @@ import { Box, Text } from '../../../../tui/ink.js';
 import { clearServerCache } from '../../services/mcp/client.js';
 import type { ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { useAppState, useSetAppState } from '../../../../tui/state/AppState.js';
-import { getCwd } from '../../utils/cwd.js';
-import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
-import { type DetectedIDEInfo, detectIDEs, detectRunningIDEs, type IdeType, isJetBrainsIde, isSupportedJetBrainsTerminal, isSupportedTerminal, toIDEDisplayName } from '../../utils/ide.js';
-import { getCurrentWorktreeSession } from '../../utils/worktree.js';
+import { getCwd } from '../../../../utils/cwd.js';
+import { execFileNoThrow } from '../../../../utils/execFileNoThrow.js';
+import { type DetectedIDEInfo, detectIDEs, detectRunningIDEs, type IdeType, isJetBrainsIde, isSupportedJetBrainsTerminal, isSupportedTerminal, toIDEDisplayName } from '../../../../utils/ide.js';
+import { getCurrentWorktreeSession } from '../../../../utils/worktree.js';
 type IDEScreenProps = {
   availableIDEs: DetectedIDEInfo[];
   unavailableIDEs: DetectedIDEInfo[];

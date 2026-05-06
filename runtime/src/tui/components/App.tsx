@@ -3,7 +3,7 @@ import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useStat
 import { FpsMetricsProvider } from "../../agenc/upstream/context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../../agenc/upstream/context/stats.js";
 import { onChangeAppState } from "../../agenc/upstream/state/onChangeAppState.js";
-import type { FpsMetrics } from "../../agenc/upstream/utils/fpsTracker.js";
+import type { FpsMetrics } from "../../utils/fpsTracker.js";
 import { Messages } from "./Messages.js";
 import PromptInput from "./PromptInput/PromptInput.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";

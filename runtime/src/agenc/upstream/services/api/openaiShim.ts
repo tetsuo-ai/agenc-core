@@ -29,12 +29,12 @@ import { APIError } from '@anthropic-ai/sdk'
 import {
   readCodexCredentialsAsync,
   refreshCodexAccessTokenIfNeeded,
-} from '../../utils/codexCredentials.js'
+} from '../../../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
-import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
-import { hydrateGeminiAccessTokenFromSecureStorage } from '../../utils/geminiCredentials.js'
-import { hydrateGithubModelsTokenFromSecureStorage } from '../../utils/githubModelsCredentials.js'
+import { isBareMode, isEnvTruthy } from '../../../../utils/envUtils.js'
+import { resolveGeminiCredential } from '../../../../utils/geminiAuth.js'
+import { hydrateGeminiAccessTokenFromSecureStorage } from '../../../../utils/geminiCredentials.js'
+import { hydrateGithubModelsTokenFromSecureStorage } from '../../../../utils/githubModelsCredentials.js'
 import {
   createThinkTagFilter,
   stripThinkTags,
@@ -66,20 +66,20 @@ import {
   classifyOpenAIHttpFailure,
   classifyOpenAINetworkFailure,
 } from './openaiErrorClassification.js'
-import { sanitizeSchemaForOpenAICompat } from '../../utils/schemaSanitizer.js'
-import { redactSecretValueForDisplay } from '../../utils/providerProfile.js'
-import { isZaiBaseUrl } from '../../utils/zaiProvider.js'
+import { sanitizeSchemaForOpenAICompat } from '../../../../utils/schemaSanitizer.js'
+import { redactSecretValueForDisplay } from '../../../../utils/providerProfile.js'
+import { isZaiBaseUrl } from '../../../../utils/zaiProvider.js'
 import {
   normalizeToolArguments,
   hasToolFieldMapping,
 } from './toolArgumentNormalization.js'
-import { logApiCallStart, logApiCallEnd } from '../../utils/requestLogging.js'
+import { logApiCallStart, logApiCallEnd } from '../../../../utils/requestLogging.js'
 import {
   createStreamState,
   processStreamChunk,
   getStreamStats,
-} from '../../utils/streamingOptimizer.js'
-import { stableStringify } from '../../utils/stableStringify.js'
+} from '../../../../utils/streamingOptimizer.js'
+import { stableStringify } from '../../../../utils/stableStringify.js'
 
 type SecretValueSource = Partial<{
   OPENAI_API_KEY: string

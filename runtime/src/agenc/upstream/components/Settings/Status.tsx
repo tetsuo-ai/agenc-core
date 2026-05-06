@@ -7,10 +7,10 @@ import type { LocalJSXCommandContext } from '../../../../commands.js';
 import { useIsInsideModal } from '../../context/modalContext.js';
 import { Box, Text, useTheme } from '../../../../tui/ink.js';
 import { type AppState, useAppState } from '../../../../tui/state/AppState.js';
-import { getCwd } from '../../utils/cwd.js';
-import { getCurrentSessionTitle } from '../../utils/sessionStorage.js';
-import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../utils/status.js';
-import type { ThemeName } from '../../utils/theme.js';
+import { getCwd } from '../../../../utils/cwd.js';
+import { getCurrentSessionTitle } from '../../../../utils/sessionStorage.js';
+import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../../../utils/status.js';
+import type { ThemeName } from '../../../../utils/theme.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 type Props = {
   context: LocalJSXCommandContext;

@@ -6,15 +6,15 @@
 //    key) in parallel — isRemoteManagedSettingsEligible() otherwise reads them
 //    sequentially via sync spawn inside applySafeConfigEnvironmentVariables()
 //    (~65ms on every macOS startup)
-import { profileCheckpoint, profileReport } from './utils/startupProfiler.js';
+import { profileCheckpoint, profileReport } from '../../utils/startupProfiler.js';
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 profileCheckpoint('main_tsx_entry');
-import { startMdmRawRead } from './utils/settings/mdm/rawRead.js';
+import { startMdmRawRead } from '../../utils/settings/mdm/rawRead.js';
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 startMdmRawRead();
-import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from './utils/secureStorage/keychainPrefetch.js';
+import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from '../../utils/secureStorage/keychainPrefetch.js';
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 startKeychainPrefetch();
@@ -26,8 +26,8 @@ import mapValues from 'lodash-es/mapValues.js';
 import pickBy from 'lodash-es/pickBy.js';
 import uniqBy from 'lodash-es/uniqBy.js';
 import React from 'react';
-import { getOauthConfig } from './constants/oauth.js';
-import { getRemoteSessionUrl } from './constants/product.js';
+import { getOauthConfig } from '../../constants/oauth.js';
+import { getRemoteSessionUrl } from '../../constants/product.js';
 import { getSystemContext, getUserContext } from './context.js';
 import { init, initializeTelemetryAfterTrust } from './entrypoints/init.js';
 import { addToHistory } from '../../tui/history/history.js';
@@ -35,7 +35,7 @@ import type { Root } from '../../tui/ink.js';
 import { launchRepl } from './replLauncher.js';
 import { hasGrowthBookEnvOverride, initializeGrowthBook, refreshGrowthBookAfterAuthChange } from './services/analytics/growthbook.js';
 import { fetchBootstrapData } from './services/api/bootstrap.js';
-import { prefetchOllamaModels } from './utils/model/ollamaModels.js';
+import { prefetchOllamaModels } from '../../utils/model/ollamaModels.js';
 import { type DownloadResult, downloadSessionFiles, type FilesApiConfig, parseFileSpecs } from './services/api/filesApi.js';
 import { prefetchPassesEligibility } from './services/api/referral.js';
 import { prefetchOfficialMcpUrls } from './services/mcp/officialRegistry.js';
@@ -45,32 +45,32 @@ import { loadRemoteManagedSettings, refreshRemoteManagedSettings } from './servi
 import type { ToolInputJSONSchema } from './Tool.js';
 import { createSyntheticOutputTool, isSyntheticOutputToolEnabled } from './tools/SyntheticOutputTool/SyntheticOutputTool.js';
 import { getTools } from './tools.js';
-import { canUserConfigureAdvisor, getInitialAdvisorSetting, isAdvisorEnabled, isValidAdvisorModel, modelSupportsAdvisor } from './utils/advisor.js';
-import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js';
-import { count, uniq } from './utils/array.js';
-import { installAsciicastRecorder } from './utils/asciicast.js';
-import { getSubscriptionType, isAgenCAISubscriber, prefetchAwsCredentialsAndBedRockInfoIfSafe, prefetchGcpCredentialsIfSafe, validateForceLoginOrg } from './utils/auth.js';
-import { checkHasTrustDialogAccepted, getGlobalConfig, getRemoteControlAtStartup, isAutoUpdaterDisabled, saveGlobalConfig } from './utils/config.js';
-import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js';
-import { getInitialEffortSetting, parseEffortValue } from './utils/effort.js';
-import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from './utils/fastMode.js';
-import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
-import { createSystemMessage, createUserMessage } from './utils/messages.js';
-import { getPlatform } from './utils/platform.js';
-import { getBaseRenderOptions } from './utils/renderOptions.js';
-import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js';
-import { settingsChangeDetector } from './utils/settings/changeDetector.js';
-import { skillChangeDetector } from './utils/skills/skillChangeDetector.js';
-import { jsonParse, writeFileSync_DEPRECATED } from './utils/slowOperations.js';
-import { computeInitialTeamContext } from './utils/swarm/reconnection.js';
-import { initializeWarningHandler } from './utils/warningHandler.js';
-import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js';
+import { canUserConfigureAdvisor, getInitialAdvisorSetting, isAdvisorEnabled, isValidAdvisorModel, modelSupportsAdvisor } from '../../utils/advisor.js';
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
+import { count, uniq } from '../../utils/array.js';
+import { installAsciicastRecorder } from '../../utils/asciicast.js';
+import { getSubscriptionType, isAgenCAISubscriber, prefetchAwsCredentialsAndBedRockInfoIfSafe, prefetchGcpCredentialsIfSafe, validateForceLoginOrg } from '../../utils/auth.js';
+import { checkHasTrustDialogAccepted, getGlobalConfig, getRemoteControlAtStartup, isAutoUpdaterDisabled, saveGlobalConfig } from '../../utils/config.js';
+import { seedEarlyInput, stopCapturingEarlyInput } from '../../utils/earlyInput.js';
+import { getInitialEffortSetting, parseEffortValue } from '../../utils/effort.js';
+import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from '../../utils/fastMode.js';
+import { applyConfigEnvironmentVariables } from '../../utils/managedEnv.js';
+import { createSystemMessage, createUserMessage } from '../../utils/messages.js';
+import { getPlatform } from '../../utils/platform.js';
+import { getBaseRenderOptions } from '../../utils/renderOptions.js';
+import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js';
+import { settingsChangeDetector } from '../../utils/settings/changeDetector.js';
+import { skillChangeDetector } from '../../utils/skills/skillChangeDetector.js';
+import { jsonParse, writeFileSync_DEPRECATED } from '../../utils/slowOperations.js';
+import { computeInitialTeamContext } from '../../utils/swarm/reconnection.js';
+import { initializeWarningHandler } from '../../utils/warningHandler.js';
+import { isWorktreeModeEnabled } from '../../utils/worktreeModeEnabled.js';
 
 // Lazy require to avoid circular dependency: teammate.ts -> AppState.tsx -> ... -> main.tsx
 /* eslint-disable @typescript-eslint/no-require-imports */
-const getTeammateUtils = () => require('./utils/teammate.js') as typeof import('./utils/teammate.js');
-const getTeammatePromptAddendum = () => require('./utils/swarm/teammatePromptAddendum.js') as typeof import('./utils/swarm/teammatePromptAddendum.js');
-const getTeammateModeSnapshot = () => require('./utils/swarm/backends/teammateModeSnapshot.js') as typeof import('./utils/swarm/backends/teammateModeSnapshot.js');
+const getTeammateUtils = () => require('../../utils/teammate.js') as typeof import('../../utils/teammate.js');
+const getTeammatePromptAddendum = () => require('../../utils/swarm/teammatePromptAddendum.js') as typeof import('../../utils/swarm/teammatePromptAddendum.js');
+const getTeammateModeSnapshot = () => require('../../utils/swarm/backends/teammateModeSnapshot.js') as typeof import('../../utils/swarm/backends/teammateModeSnapshot.js');
 /* eslint-enable @typescript-eslint/no-require-imports */
 // Dead code elimination: conditional import for COORDINATOR_MODE
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -101,42 +101,42 @@ import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import { getActiveAgentsFromList, getAgentDefinitionsWithOverrides, isBuiltInAgent, isCustomAgent, parseAgentsFromJson } from 'src/tools/AgentTool/loadAgentsDir.js';
 import type { LogOption } from './types/logs.js';
 import type { Message as MessageType } from './types/message.js';
-import { assertMinVersion } from './utils/autoUpdater.js';
-import { AGENC_IN_CHROME_SKILL_HINT, AGENC_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER } from './utils/claudeInChrome/prompt.js';
-import { setupAgenCInChrome, shouldAutoEnableAgenCInChrome, shouldEnableAgenCInChrome } from './utils/claudeInChrome/setup.js';
-import { getContextWindowForModel } from './utils/context.js';
-import { loadConversationForResume } from './utils/conversationRecovery.js';
-import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
-import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace } from './utils/envUtils.js';
-import { refreshExampleCommands } from './utils/exampleCommands.js';
-import type { FpsMetrics } from './utils/fpsTracker.js';
-import { getWorktreePaths } from './utils/getWorktreePaths.js';
-import { findGitRoot, getBranch, getIsGit, getWorktreeCount } from './utils/git.js';
-import { getGhAuthStatus } from './utils/github/ghAuthStatus.js';
-import { safeParseJSON } from './utils/json.js';
-import { logError } from './utils/log.js';
-import { getModelDeprecationWarning } from './utils/model/deprecation.js';
-import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from './utils/model/model.js';
-import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
-import { PERMISSION_MODES } from './utils/permissions/PermissionMode.js';
-import { checkAndDisableBypassPermissions, getAutoModeEnabledStateIfCached, initializeToolPermissionContext, initialPermissionModeFromCLI, isDefaultPermissionModeAuto, parseToolListFromCLI, removeDangerousPermissions, stripDangerousPermissionsForAutoMode, verifyAutoModeGateAccess } from './utils/permissions/permissionSetup.js';
-import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js';
-import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js';
-import { getManagedPluginNames } from './utils/plugins/managedPlugins.js';
-import { getGlobExclusionsForPluginCache } from './utils/plugins/orphanedPluginFilter.js';
-import { getPluginSeedDirs } from './utils/plugins/pluginDirectories.js';
-import { countFilesRoundedRg } from './utils/ripgrep.js';
-import { processSessionStartHooks, processSetupHooks } from './utils/sessionStart.js';
-import { cacheSessionTitle, getSessionIdFromLog, loadTranscriptFromFile, saveAgentSetting, saveMode, searchSessionsByCustomTitle, sessionIdExists } from './utils/sessionStorage.js';
-import { ensureMdmSettingsLoaded } from './utils/settings/mdm/settings.js';
-import { getInitialSettings, getManagedSettingsKeysForLogging, getSettingsForSource, getSettingsWithErrors } from './utils/settings/settings.js';
-import { resetSettingsCache } from './utils/settings/settingsCache.js';
-import type { ValidationError } from './utils/settings/validation.js';
-import { DEFAULT_TASKS_MODE_TASK_LIST_ID, TASK_STATUSES } from './utils/tasks.js';
-import { logPluginLoadErrors, logPluginsEnabledForSession } from './utils/telemetry/pluginTelemetry.js';
-import { logSkillsLoaded } from './utils/telemetry/skillLoadedEvent.js';
-import { generateTempFilePath } from './utils/tempfile.js';
-import { validateUuid } from './utils/uuid.js';
+import { assertMinVersion } from '../../utils/autoUpdater.js';
+import { AGENC_IN_CHROME_SKILL_HINT, AGENC_IN_CHROME_SKILL_HINT_WITH_WEBBROWSER } from '../../utils/agencInChrome/prompt.js';
+import { setupAgenCInChrome, shouldAutoEnableAgenCInChrome, shouldEnableAgenCInChrome } from '../../utils/agencInChrome/setup.js';
+import { getContextWindowForModel } from '../../utils/context.js';
+import { loadConversationForResume } from '../../utils/conversationRecovery.js';
+import { buildDeepLinkBanner } from '../../utils/deepLink/banner.js';
+import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace } from '../../utils/envUtils.js';
+import { refreshExampleCommands } from '../../utils/exampleCommands.js';
+import type { FpsMetrics } from '../../utils/fpsTracker.js';
+import { getWorktreePaths } from '../../utils/getWorktreePaths.js';
+import { findGitRoot, getBranch, getIsGit, getWorktreeCount } from '../../utils/git.js';
+import { getGhAuthStatus } from '../../utils/github/ghAuthStatus.js';
+import { safeParseJSON } from '../../utils/json.js';
+import { logError } from '../../utils/log.js';
+import { getModelDeprecationWarning } from '../../utils/model/deprecation.js';
+import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from '../../utils/model/model.js';
+import { ensureModelStringsInitialized } from '../../utils/model/modelStrings.js';
+import { PERMISSION_MODES } from '../../utils/permissions/PermissionMode.js';
+import { checkAndDisableBypassPermissions, getAutoModeEnabledStateIfCached, initializeToolPermissionContext, initialPermissionModeFromCLI, isDefaultPermissionModeAuto, parseToolListFromCLI, removeDangerousPermissions, stripDangerousPermissionsForAutoMode, verifyAutoModeGateAccess } from '../../utils/permissions/permissionSetup.js';
+import { cleanupOrphanedPluginVersionsInBackground } from '../../utils/plugins/cacheUtils.js';
+import { initializeVersionedPlugins } from '../../utils/plugins/installedPluginsManager.js';
+import { getManagedPluginNames } from '../../utils/plugins/managedPlugins.js';
+import { getGlobExclusionsForPluginCache } from '../../utils/plugins/orphanedPluginFilter.js';
+import { getPluginSeedDirs } from '../../utils/plugins/pluginDirectories.js';
+import { countFilesRoundedRg } from '../../utils/ripgrep.js';
+import { processSessionStartHooks, processSetupHooks } from '../../utils/sessionStart.js';
+import { cacheSessionTitle, getSessionIdFromLog, loadTranscriptFromFile, saveAgentSetting, saveMode, searchSessionsByCustomTitle, sessionIdExists } from '../../utils/sessionStorage.js';
+import { ensureMdmSettingsLoaded } from '../../utils/settings/mdm/settings.js';
+import { getInitialSettings, getManagedSettingsKeysForLogging, getSettingsForSource, getSettingsWithErrors } from '../../utils/settings/settings.js';
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js';
+import type { ValidationError } from '../../utils/settings/validation.js';
+import { DEFAULT_TASKS_MODE_TASK_LIST_ID, TASK_STATUSES } from '../../utils/tasks.js';
+import { logPluginLoadErrors, logPluginsEnabledForSession } from '../../utils/telemetry/pluginTelemetry.js';
+import { logSkillsLoaded } from '../../utils/telemetry/skillLoadedEvent.js';
+import { generateTempFilePath } from '../../utils/tempfile.js';
+import { validateUuid } from '../../utils/uuid.js';
 // Plugin startup checks are now handled non-blockingly in REPL.tsx
 
 import { registerMcpAddCommand } from 'src/commands/mcp/addCommand.js';
@@ -149,7 +149,7 @@ import { excludeCommandsByServer, excludeResourcesByServer } from 'src/services/
 import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js';
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js';
 import { logContextMetrics } from 'src/utils/api.js';
-import { AGENC_IN_CHROME_MCP_SERVER_NAME, isAgenCInChromeMCPServer } from 'src/utils/claudeInChrome/common.js';
+import { AGENC_IN_CHROME_MCP_SERVER_NAME, isAgenCInChromeMCPServer } from 'src/utils/agencInChrome/common.js';
 import { registerCleanup } from 'src/utils/cleanupRegistry.js';
 import { eagerParseCliFlag } from 'src/utils/cliArgs.js';
 import { createEmptyAttributionState } from 'src/utils/commitAttribution.js';
@@ -169,7 +169,7 @@ import { plural } from 'src/utils/stringUtils.js';
 import { type ChannelEntry, getInitialMainLoopModel, getIsNonInteractiveSession, getSdkBetas, getSessionId, getUserMsgOptIn, setAllowedChannels, setAllowedSettingSources, setChromeFlagOverride, setClientType, setCwdState, setDirectConnectServerUrl, setFlagSettingsPath, setInitialMainLoopModel, setInlinePlugins, setIsInteractive, setKairosActive, setOriginalCwd, setQuestionPreviewFormat, setSdkBetas, setSessionBypassPermissionsMode, setSessionPersistenceDisabled, setSessionSource, setUserMsgOptIn, switchSession } from './bootstrap/state.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? require('./utils/permissions/autoModeState.js') as typeof import('./utils/permissions/autoModeState.js') : null;
+const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? require('../../utils/permissions/autoModeState.js') as typeof import('../../utils/permissions/autoModeState.js') : null;
 
 // TeleportRepoMismatchDialog, TeleportResumeWrapper dynamically imported at call sites
 import { migrateAutoUpdatesToSettings } from './migrations/migrateAutoUpdatesToSettings.js';
@@ -193,18 +193,18 @@ import { type AppState, getDefaultAppState, IDLE_SPECULATION_STATE } from '../..
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { createStore } from '../../tui/state/store.js';
 import { asSessionId } from './types/ids.js';
-import { filterAllowedSdkBetas } from './utils/betas.js';
-import { isInBundledMode, isRunningWithBun } from './utils/bundledMode.js';
-import { logForDiagnosticsNoPII } from './utils/diagLogs.js';
-import { filterExistingPaths, getKnownPathsForRepo } from './utils/githubRepoPathMapping.js';
-import { clearPluginCache, loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js';
-import { migrateChangelogFromConfig } from './utils/releaseNotes.js';
-import { SandboxManager } from './utils/sandbox/sandbox-adapter.js';
-import { fetchSession, prepareApiRequest } from './utils/teleport/api.js';
-import { checkOutTeleportedSessionBranch, processMessagesForTeleportResume, teleportToRemoteWithErrorHandling, validateGitState, validateSessionRepository } from './utils/teleport.js';
-import { shouldEnableThinkingByDefault, type ThinkingConfig } from './utils/thinking.js';
-import { initUser, resetUserCache } from './utils/user.js';
-import { getTmuxInstallInstructions, isTmuxAvailable, parsePRReference } from './utils/worktree.js';
+import { filterAllowedSdkBetas } from '../../utils/betas.js';
+import { isInBundledMode, isRunningWithBun } from '../../utils/bundledMode.js';
+import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js';
+import { filterExistingPaths, getKnownPathsForRepo } from '../../utils/githubRepoPathMapping.js';
+import { clearPluginCache, loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js';
+import { migrateChangelogFromConfig } from '../../utils/releaseNotes.js';
+import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js';
+import { fetchSession, prepareApiRequest } from '../../utils/teleport/api.js';
+import { checkOutTeleportedSessionBranch, processMessagesForTeleportResume, teleportToRemoteWithErrorHandling, validateGitState, validateSessionRepository } from '../../utils/teleport.js';
+import { shouldEnableThinkingByDefault, type ThinkingConfig } from '../../utils/thinking.js';
+import { initUser, resetUserCache } from '../../utils/user.js';
+import { getTmuxInstallInstructions, isTmuxAvailable, parsePRReference } from '../../utils/worktree.js';
 
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 profileCheckpoint('main_tsx_imports_loaded');
@@ -427,7 +427,7 @@ export function startDeferredPrefetches(): void {
 
   // Event loop stall detector — logs when the main thread is blocked >500ms
   if ("external" === 'ant') {
-    void import('./utils/eventLoopStallDetector.js').then(m => m.startEventLoopStallDetector());
+    void import('../../utils/eventLoopStallDetector.js').then(m => m.startEventLoopStallDetector());
   }
 }
 function loadSettingsFromFlag(settingsFile: string): void {
@@ -650,12 +650,12 @@ export async function main() {
     if (handleUriIdx !== -1 && process.argv[handleUriIdx + 1]) {
       const {
         enableConfigs
-      } = await import('./utils/config.js');
+      } = await import('../../utils/config.js');
       enableConfigs();
       const uri = process.argv[handleUriIdx + 1]!;
       const {
         handleDeepLinkUri
-      } = await import('./utils/deepLink/protocolHandler.js');
+      } = await import('../../utils/deepLink/protocolHandler.js');
       const exitCode = await handleDeepLinkUri(uri);
       process.exit(exitCode);
     }
@@ -667,11 +667,11 @@ export async function main() {
     if (process.platform === 'darwin' && process.env.__CFBundleIdentifier === 'com.anthropic.agenc-code-url-handler') {
       const {
         enableConfigs
-      } = await import('./utils/config.js');
+      } = await import('../../utils/config.js');
       enableConfigs();
       const {
         handleUrlSchemeLaunch
-      } = await import('./utils/deepLink/protocolHandler.js');
+      } = await import('../../utils/deepLink/protocolHandler.js');
       const urlSchemeResult = await handleUrlSchemeLaunch();
       process.exit(urlSchemeResult ?? 1);
     }
@@ -924,7 +924,7 @@ async function run(): Promise<CommanderCommand> {
     // silently drop events on process.exit(). Both inits are idempotent.
     const {
       initSinks
-    } = await import('./utils/sinks.js');
+    } = await import('../../utils/sinks.js');
     initSinks();
     profileCheckpoint('preAction_after_sinks');
 
@@ -1866,7 +1866,7 @@ async function run(): Promise<CommanderCommand> {
     if (feature('COORDINATOR_MODE') && isEnvTruthy(process.env.AGENC_COORDINATOR_MODE)) {
       const {
         applyCoordinatorToolFilter
-      } = await import('./utils/toolPool.js');
+      } = await import('../../utils/toolPool.js');
       tools = applyCoordinatorToolFilter(tools);
     }
     profileCheckpoint('action_tools_loaded');
@@ -2804,9 +2804,9 @@ async function run(): Promise<CommanderCommand> {
       // that scripted calls don't need — the next interactive session reconciles.
       if (!isBareMode()) {
         startDeferredPrefetches();
-        void import('./utils/backgroundHousekeeping.js').then(m => m.startBackgroundHousekeeping());
+        void import('../../utils/backgroundHousekeeping.js').then(m => m.startBackgroundHousekeeping());
         if ("external" === 'ant') {
-          void import('./utils/sdkHeapDumpMonitor.js').then(m => m.startSdkMemoryMonitor());
+          void import('../../utils/sdkHeapDumpMonitor.js').then(m => m.startSdkMemoryMonitor());
         }
       }
       logSessionTelemetry();
@@ -3049,7 +3049,7 @@ async function run(): Promise<CommanderCommand> {
     //   - Runtime: uploader checks github.com/anthropics/* remote + gcloud auth.
     //   - Safety: AGENC_DISABLE_SESSION_DATA_UPLOAD=1 bypasses (tests set this).
     // Import is dynamic + async to avoid adding startup latency.
-    const sessionUploaderPromise = "external" === 'ant' ? import('./utils/sessionDataUploader.js') : null;
+    const sessionUploaderPromise = "external" === 'ant' ? import('../../utils/sessionDataUploader.js') : null;
 
     // Defer session uploader resolution to the onTurnComplete callback to avoid
     // adding a new top-level await in main.tsx (performance-critical path).
@@ -3299,7 +3299,7 @@ async function run(): Promise<CommanderCommand> {
       const {
         checkAndRefreshOAuthTokenIfNeeded,
         getAgenCAIOAuthTokens
-      } = await import('./utils/auth.js');
+      } = await import('../../utils/auth.js');
       await checkAndRefreshOAuthTokenIfNeeded();
       let apiCreds;
       try {
@@ -3450,7 +3450,7 @@ async function run(): Promise<CommanderCommand> {
         // Create remote session config for the REPL
         const {
           getAgenCAIOAuthTokens: getTokensForRemote
-        } = await import('./utils/auth.js');
+        } = await import('../../utils/auth.js');
         const getAccessTokenForRemote = (): string => getTokensForRemote()?.accessToken ?? apiCreds.accessToken;
         const remoteSessionConfig = createRemoteSessionConfig(createdSession.id, getAccessTokenForRemote, apiCreds.orgUUID, hasInitialPrompt);
 
@@ -3572,7 +3572,7 @@ async function run(): Promise<CommanderCommand> {
           const {
             parseCcshareId,
             loadCcshare
-          } = await import('./utils/ccshareResume.js');
+          } = await import('../../utils/ccshareResume.js');
           const ccshareId = parseCcshareId(options.resume);
           if (ccshareId) {
             try {

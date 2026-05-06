@@ -13,22 +13,22 @@ import {
 } from '../native-ts/file-index/index.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { FileSuggestionCommandInput } from '../types/fileSuggestion.js'
-import { getGlobalConfig } from '../utils/config.js'
-import { getCwd } from '../utils/cwd.js'
+import { getGlobalConfig } from '../../../utils/config.js'
+import { getCwd } from '../../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../utils/errors.js'
-import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
-import { getFsImplementation } from '../utils/fsOperations.js'
-import { findGitRoot, gitExe } from '../utils/git.js'
+import { errorMessage } from '../../../utils/errors.js'
+import { execFileNoThrowWithCwd } from '../../../utils/execFileNoThrow.js'
+import { getFsImplementation } from '../../../utils/fsOperations.js'
+import { findGitRoot, gitExe } from '../../../utils/git.js'
 import {
   createBaseHookInput,
   executeFileSuggestionCommand,
-} from '../utils/hooks.js'
-import { logError } from '../utils/log.js'
-import { expandPath } from '../utils/path.js'
-import { ripGrep } from '../utils/ripgrep.js'
-import { getInitialSettings } from '../utils/settings/settings.js'
-import { createSignal } from '../utils/signal.js'
+} from '../../../utils/hooks.js'
+import { logError } from '../../../utils/log.js'
+import { expandPath } from '../../../utils/path.js'
+import { ripGrep } from '../../../utils/ripgrep.js'
+import { getInitialSettings } from '../../../utils/settings/settings.js'
+import { createSignal } from '../../../utils/signal.js'
 
 // Lazily constructed singleton
 let fileIndex: FileIndex | null = null

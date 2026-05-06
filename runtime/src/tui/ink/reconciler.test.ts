@@ -9,7 +9,7 @@ import { LayoutEdge } from './layout/node.ts'
 import type { ParsedKey } from './parse-keypress.ts'
 import { createRoot } from './root.ts'
 
-vi.mock('../../agenc/upstream/utils/fullscreen.js', () => ({
+vi.mock('../../utils/fullscreen.js', () => ({
   isMouseClicksDisabled: () => false,
 }))
 

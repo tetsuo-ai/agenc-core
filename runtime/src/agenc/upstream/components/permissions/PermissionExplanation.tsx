@@ -4,7 +4,7 @@ import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import { logEvent } from '../../services/analytics/index.js';
 import type { Message } from '../../types/message.js';
-import { generatePermissionExplanation, isPermissionExplainerEnabled, type PermissionExplanation as PermissionExplanationType, type RiskLevel } from '../../utils/permissions/permissionExplainer.js';
+import { generatePermissionExplanation, isPermissionExplainerEnabled, type PermissionExplanation as PermissionExplanationType, type RiskLevel } from '../../../../utils/permissions/permissionExplainer.js';
 import { ShimmerChar } from '../../../../tui/components/spinner/ShimmerChar.js';
 import { useShimmerAnimation } from '../../../../tui/components/spinner/useShimmerAnimation.js';
 const LOADING_MESSAGE = 'Loading explanation…';

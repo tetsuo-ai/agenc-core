@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../../../tui/ink.js';
-import { SandboxManager, shouldAllowManagedSandboxDomainsOnly } from '../../utils/sandbox/sandbox-adapter.js';
+import { SandboxManager, shouldAllowManagedSandboxDomainsOnly } from '../../../../utils/sandbox/sandbox-runtime.js';
 export function SandboxConfigTab() {
   const $ = _c(3);
   const isEnabled = SandboxManager.isSandboxingEnabled();

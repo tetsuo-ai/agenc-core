@@ -7,7 +7,7 @@ import { Box, Text } from '../../../../tui/ink.js';
 import type { ResolvedAgent } from '../../tools/AgentTool/agentDisplay.js';
 import { AGENT_SOURCE_GROUPS, compareAgentsByName, getOverrideSourceLabel, resolveAgentModelDisplay } from '../../tools/AgentTool/agentDisplay.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { count } from '../../utils/array.js';
+import { count } from '../../../../utils/array.js';
 import { Dialog } from '../design-system/Dialog.js';
 import { Divider } from '../design-system/Divider.js';
 import { getAgentSourceDisplayName } from './utils.js';

@@ -184,9 +184,9 @@ type SettingSourceWithLocal = SettingSource | 'localSettings'
 type SettingSourceEnabled = (source: SettingSourceWithLocal) => boolean
 
 const settingsConstantsModulePath =
-  '../../agenc/upstream/utils/settings/constants.js'
+  '../../utils/settings/constants.js'
 const sharedMarkdownLoaderModulePath =
-  '../../agenc/upstream/utils/markdownConfigLoader.js'
+  '../../utils/markdownConfigLoader.js'
 const VALID_MEMORY_SCOPES = ['user', 'project', 'local'] as const
 const MEMORY_TOOLS = [
   FILE_WRITE_TOOL_NAME,

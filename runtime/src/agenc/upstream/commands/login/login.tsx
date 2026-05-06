@@ -19,14 +19,14 @@ import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growt
 import { refreshPolicyLimits } from '../../services/policyLimits/index.js'
 import { refreshRemoteManagedSettings } from '../../services/remoteManagedSettings/index.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
-import { stripSignatureBlocks } from '../../utils/messages.js'
+import { stripSignatureBlocks } from '../../../../utils/messages.js'
 import {
   checkAndDisableAutoModeIfNeeded,
   checkAndDisableBypassPermissionsIfNeeded,
   resetAutoModeGateCheck,
   resetBypassPermissionsCheck,
-} from '../../utils/permissions/bypassPermissionsKillswitch.js'
-import { resetUserCache } from '../../utils/user.js'
+} from '../../../../utils/permissions/bypassPermissionsKillswitch.js'
+import { resetUserCache } from '../../../../utils/user.js'
 
 type LoginCompletion =
   | ConsoleOAuthFlowResult

@@ -3,10 +3,10 @@ import type { CommandResultDisplay } from 'src/commands.js';
 import { logEvent } from 'src/services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { execFileNoThrow } from '../utils/execFileNoThrow.js';
-import { getPlansDirectory } from '../utils/plans.js';
-import { setCwd } from '../utils/Shell.js';
-import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../utils/worktree.js';
+import { execFileNoThrow } from '../../../utils/execFileNoThrow.js';
+import { getPlansDirectory } from '../../../utils/plans.js';
+import { setCwd } from '../../../utils/Shell.js';
+import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../../../utils/worktree.js';
 import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
 import { Spinner } from '../../../tui/components/spinner/Spinner.js';
@@ -17,7 +17,7 @@ import { Spinner } from '../../../tui/components/spinner/Spinner.js';
 function recordWorktreeExit(): void {
   /* eslint-disable @typescript-eslint/no-require-imports */
   ;
-  (require('../utils/sessionStorage.js') as typeof import('../utils/sessionStorage.js')).saveWorktreeState(null);
+  (require('../../../utils/sessionStorage.js') as typeof import('../../../utils/sessionStorage.js')).saveWorktreeState(null);
   /* eslint-enable @typescript-eslint/no-require-imports */
 }
 type Props = {

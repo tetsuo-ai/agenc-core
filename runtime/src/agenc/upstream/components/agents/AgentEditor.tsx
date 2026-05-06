@@ -9,7 +9,7 @@ import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
 import type { Tools } from '../../Tool.js';
 import { type AgentColorName, setAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { type AgentDefinition, getActiveAgentsFromList, isCustomAgent, isPluginAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { editFileInEditor } from '../../utils/promptEditor.js';
+import { editFileInEditor } from '../../../../utils/promptEditor.js';
 import { getActualAgentFilePath, updateAgentFile } from './agentFileUtils.js';
 import { ColorPicker } from './ColorPicker.js';
 import { ModelSelector } from './ModelSelector.js';

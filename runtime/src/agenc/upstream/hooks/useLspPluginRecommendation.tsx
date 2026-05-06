@@ -16,12 +16,12 @@ import * as React from 'react';
 import { hasShownLspRecommendationThisSession, setLspRecommendationShownThisSession } from '../bootstrap/state.js';
 import { useNotifications } from '../context/notifications.js';
 import { useAppState } from '../../../tui/state/AppState.js';
-import { saveGlobalConfig } from '../utils/config.js';
+import { saveGlobalConfig } from '../../../utils/config.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { logError } from '../utils/log.js';
-import { addToNeverSuggest, getMatchingLspPlugins, incrementIgnoredCount } from '../utils/plugins/lspRecommendation.js';
-import { cacheAndRegisterPlugin } from '../utils/plugins/pluginInstallationHelpers.js';
-import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
+import { logError } from '../../../utils/log.js';
+import { addToNeverSuggest, getMatchingLspPlugins, incrementIgnoredCount } from '../../../utils/plugins/lspRecommendation.js';
+import { cacheAndRegisterPlugin } from '../../../utils/plugins/pluginInstallationHelpers.js';
+import { getSettingsForSource, updateSettingsForSource } from '../../../utils/settings/settings.js';
 import { installPluginAndNotify, usePluginRecommendationBase } from './usePluginRecommendationBase.js';
 
 // Threshold for detecting timeout vs explicit dismiss (ms)

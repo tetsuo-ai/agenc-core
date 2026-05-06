@@ -5,7 +5,7 @@ import { Box, Text } from '../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js';
 import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../../services/compact/autoCompact.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
-import { getUpgradeMessage } from '../../agenc/upstream/utils/model/contextWindowUpgradeCheck.js';
+import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js';
 import { isContextCollapseEnabled } from '../../services/contextCollapse/index.js';
 type Props = {
   tokenUsage: number;

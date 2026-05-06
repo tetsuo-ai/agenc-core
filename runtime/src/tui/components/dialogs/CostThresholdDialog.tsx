@@ -2,7 +2,7 @@ import React from 'react'
 import { Box, Link, Text } from '../../ink.js'
 import { Select } from '../../../agenc/upstream/components/CustomSelect/select.js'
 import { Dialog } from '../../../agenc/upstream/components/design-system/Dialog.js'
-import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers.js'
+import { getAPIProvider } from '../../../utils/model/providers.js'
 
 type Props = {
   onDone: () => void

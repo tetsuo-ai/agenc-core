@@ -23,15 +23,15 @@ import { findToolByName } from '../Tool.js'
 import type { Message as MessageType } from '../types/message.js'
 import type { PermissionAskDecision } from '../types/permissions.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { truncateToWidth } from '../utils/format.js'
+import { truncateToWidth } from '../../../utils/format.js'
 import {
   createSystemMessage,
   extractTextContent,
   handleMessageFromStream,
-} from '../utils/messages.js'
-import { generateSessionTitle } from '../utils/sessionTitle.js'
-import type { RemoteMessageContent } from '../utils/teleport/api.js'
-import { updateSessionTitle } from '../utils/teleport/api.js'
+} from '../../../utils/messages.js'
+import { generateSessionTitle } from '../../../utils/sessionTitle.js'
+import type { RemoteMessageContent } from '../../../utils/teleport/api.js'
+import { updateSessionTitle } from '../../../utils/teleport/api.js'
 
 // How long to wait for a response before showing a warning
 const RESPONSE_TIMEOUT_MS = 60000 // 60 seconds

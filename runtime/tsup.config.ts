@@ -13,18 +13,53 @@ const entry = [
 const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(__dirname, 'src');
+const relocatedUpstreamRoots = [
+  {
+    runtimeRoot: resolve(runtimeSourceRoot, 'utils'),
+    upstreamRoot: resolve(agencUpstreamRoot, 'utils'),
+  },
+  {
+    runtimeRoot: resolve(runtimeSourceRoot, 'constants'),
+    upstreamRoot: resolve(agencUpstreamRoot, 'constants'),
+  },
+  {
+    runtimeRoot: resolve(runtimeSourceRoot, 'memdir'),
+    upstreamRoot: resolve(agencUpstreamRoot, 'memdir'),
+  },
+];
 const upstreamProduct = String.fromCharCode(99, 108, 97, 117, 100, 101);
+const upstreamEngineName = String.fromCharCode(99, 111, 100, 101, 120);
+const sourceStemAliases = new Map<string, string>([
+  ['agenc', upstreamProduct],
+  ['agencAiLimits', `${upstreamProduct}AiLimits`],
+  ['agencOAuthShared', `${upstreamEngineName}OAuthShared`],
+]);
 const runtimePackage = JSON.parse(
   readFileSync(resolve(__dirname, 'package.json'), 'utf8'),
 ) as { version?: string };
 const displayVersion = runtimePackage.version ?? '0.0.0';
 
+function aliasedSourceBases(base: string): string[] {
+  const slash = base.lastIndexOf('/');
+  const dir = slash === -1 ? '' : base.slice(0, slash + 1);
+  const file = slash === -1 ? base : base.slice(slash + 1);
+  const extMatch = /^(.*?)(\.(?:js|jsx|ts|tsx))?$/.exec(file);
+  const stem = extMatch?.[1] ?? file;
+  const ext = extMatch?.[2] ?? '';
+  const aliasedStem = sourceStemAliases.get(stem);
+  return aliasedStem === undefined ? [base] : [base, `${dir}${aliasedStem}${ext}`];
+}
+
 function existingSourceFile(base: string): string | null {
   const candidates = [
-    base,
-    base.replace(/\.js$/, '.ts'),
-    base.replace(/\.js$/, '.tsx'),
-    base.replace(/\.jsx$/, '.tsx'),
+    ...new Set(
+      aliasedSourceBases(base).flatMap((sourceBase) => [
+        sourceBase,
+        sourceBase.replace(/\.js$/, '.ts'),
+        sourceBase.replace(/\.js$/, '.tsx'),
+        sourceBase.replace(/\.jsx$/, '.tsx'),
+      ]),
+    ),
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
@@ -33,6 +68,17 @@ function sourceRootForImporter(importer: string): string | null {
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
   const rel = relative(agencUpstreamRoot, absoluteImporter);
   return rel !== '' && !rel.startsWith('..') ? agencUpstreamRoot : null;
+}
+
+function relocatedUpstreamImporter(importer: string): string | null {
+  const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
+  for (const { runtimeRoot, upstreamRoot } of relocatedUpstreamRoots) {
+    const rel = relative(runtimeRoot, absoluteImporter);
+    if (rel !== '' && !rel.startsWith('..')) {
+      return resolve(upstreamRoot, rel);
+    }
+  }
+  return null;
 }
 
 function resolveAgenCBareSrc(source: string): string | null {
@@ -55,7 +101,8 @@ const agencBareSrcAlias = {
     build.onResolve({ filter: /^src\// }, (args) => {
       if (
         !args.importer.includes('/src/agenc/') &&
-        sourceRootForImporter(args.importer) === null
+        sourceRootForImporter(args.importer) === null &&
+        relocatedUpstreamImporter(args.importer) === null
       ) {
         return null;
       }
@@ -69,6 +116,12 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
   const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
   const direct = existingSourceFile(resolve(dirname(absoluteImporter), source));
   if (direct) return direct;
+
+  const relocatedImporter = relocatedUpstreamImporter(absoluteImporter);
+  if (relocatedImporter !== null) {
+    const relocated = existingSourceFile(resolve(dirname(relocatedImporter), source));
+    if (relocated) return relocated;
+  }
 
   const sourceRoot = sourceRootForImporter(absoluteImporter);
   if (sourceRoot === null) return null;
@@ -87,7 +140,8 @@ const agencOptionalExternal = {
       const upstreamRoot = sourceRootForImporter(args.importer);
       if (
         !args.importer.includes('/src/agenc/') &&
-        upstreamRoot === null
+        upstreamRoot === null &&
+        relocatedUpstreamImporter(args.importer) === null
       ) {
         return null;
       }

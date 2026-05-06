@@ -5,8 +5,8 @@ import { useTerminalSize } from '../../../agenc/upstream/hooks/useTerminalSize.j
 import { stringWidth } from '../../ink/stringWidth.js';
 import { wrapAnsi } from '../../ink/wrapAnsi.js';
 import { Ansi, useTheme } from '../../ink.js';
-import type { CliHighlight } from '../../../agenc/upstream/utils/cliHighlight.js';
-import { formatToken, padAligned } from '../../../agenc/upstream/utils/markdown.js';
+import type { CliHighlight } from '../../../utils/cliHighlight.js';
+import { formatToken, padAligned } from '../../../utils/markdown.js';
 
 /** Accounts for parent indentation (e.g. message dot prefix) and terminal
  *  resize races. Without enough margin the table overflows its layout box

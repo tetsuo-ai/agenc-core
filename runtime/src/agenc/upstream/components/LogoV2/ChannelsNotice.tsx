@@ -12,9 +12,9 @@ import { Box, Text } from '../../../../tui/ink.js';
 import { isChannelsEnabled } from '../../services/mcp/channelAllowlist.js';
 import { getEffectiveChannelAllowlist } from '../../services/mcp/channelNotification.js';
 import { getMcpConfigsByScope } from '../../services/mcp/config.js';
-import { getAgenCAIOAuthTokens, getSubscriptionType } from '../../utils/auth.js';
-import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsManager.js';
-import { getSettingsForSource } from '../../utils/settings/settings.js';
+import { getAgenCAIOAuthTokens, getSubscriptionType } from '../../../../utils/auth.js';
+import { loadInstalledPluginsV2 } from '../../../../utils/plugins/installedPluginsManager.js';
+import { getSettingsForSource } from '../../../../utils/settings/settings.js';
 export function ChannelsNotice() {
   const $ = _c(32);
   const [t0] = useState(_temp);

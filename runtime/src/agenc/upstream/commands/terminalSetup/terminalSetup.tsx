@@ -10,16 +10,16 @@ import { color } from '../../../../tui/ink.js';
 import { maybeMarkProjectOnboardingComplete } from '../../projectOnboardingState.js';
 import type { ToolUseContext } from '../../Tool.js';
 import type { LocalJSXCommandContext, LocalJSXCommandOnDone } from '../../types/command.js';
-import { backupTerminalPreferences, checkAndRestoreTerminalBackup, getTerminalPlistPath, markTerminalSetupComplete } from '../../utils/appleTerminalBackup.js';
-import { setupShellCompletion } from '../../utils/completionCache.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
-import { env } from '../../utils/env.js';
-import { isFsInaccessible } from '../../utils/errors.js';
-import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
-import { addItemToJSONCArray, safeParseJSONC } from '../../utils/json.js';
-import { logError } from '../../utils/log.js';
-import { getPlatform } from '../../utils/platform.js';
-import { jsonParse, jsonStringify } from '../../utils/slowOperations.js';
+import { backupTerminalPreferences, checkAndRestoreTerminalBackup, getTerminalPlistPath, markTerminalSetupComplete } from '../../../../utils/appleTerminalBackup.js';
+import { setupShellCompletion } from '../../../../utils/completionCache.js';
+import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js';
+import { env } from '../../../../utils/env.js';
+import { isFsInaccessible } from '../../../../utils/errors.js';
+import { execFileNoThrow } from '../../../../utils/execFileNoThrow.js';
+import { addItemToJSONCArray, safeParseJSONC } from '../../../../utils/json.js';
+import { logError } from '../../../../utils/log.js';
+import { getPlatform } from '../../../../utils/platform.js';
+import { jsonParse, jsonStringify } from '../../../../utils/slowOperations.js';
 const EOL = '\n';
 
 // Terminals that natively support CSI u / Kitty keyboard protocol

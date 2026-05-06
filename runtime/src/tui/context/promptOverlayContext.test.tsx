@@ -21,16 +21,16 @@ vi.mock("../../agenc/upstream/bootstrap/state.js", () => ({
   markScrollActivity: () => {},
   updateLastInteractionTime: () => {},
 }));
-vi.mock("../../agenc/upstream/utils/earlyInput.js", () => ({
+vi.mock("../../utils/earlyInput.js", () => ({
   stopCapturingEarlyInput: () => {},
 }));
-vi.mock("../../agenc/upstream/utils/envUtils.js", () => ({
+vi.mock("../../utils/envUtils.js", () => ({
   isEnvTruthy: () => false,
 }));
-vi.mock("../../agenc/upstream/utils/fullscreen.js", () => ({
+vi.mock("../../utils/fullscreen.js", () => ({
   isMouseClicksDisabled: () => true,
 }));
-vi.mock("../../agenc/upstream/utils/log.js", () => ({
+vi.mock("../../utils/log.js", () => ({
   logError: () => {},
 }));
 

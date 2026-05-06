@@ -5,7 +5,7 @@ import { usePasteHandler } from '../hooks/usePasteHandler.js';
 import { useDeclaredCursor } from '../../../tui/ink/hooks/use-declared-cursor.js';
 import { Ansi, Box, Text, useInput } from '../../../tui/ink.js';
 import type { BaseInputState, BaseTextInputProps } from '../types/textInputTypes.js';
-import type { TextHighlight } from '../utils/textHighlighting.js';
+import type { TextHighlight } from '../../../utils/textHighlighting.js';
 import { HighlightedInput } from '../../../tui/components/PromptInput/ShimmeredInput.js';
 type BaseTextInputComponentProps = BaseTextInputProps & {
   inputState: BaseInputState;

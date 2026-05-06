@@ -7,7 +7,7 @@ import { Text } from '../../../../tui/ink.js';
 import { getInitializationStatus, getLspServerManager } from '../../services/lsp/manager.js';
 import { useSetAppState } from '../../../../tui/state/AppState.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
+import { isEnvTruthy } from '../../../../utils/envUtils.js';
 const LSP_POLL_INTERVAL_MS = 5000;
 
 /**

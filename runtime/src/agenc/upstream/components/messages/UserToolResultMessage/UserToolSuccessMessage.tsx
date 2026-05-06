@@ -6,8 +6,8 @@ import { Box, Text, useTheme } from '../../../../../tui/ink.js';
 import { useAppState } from '../../../../../tui/state/AppState.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../Tool.js';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message.js';
-import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../utils/classifierApprovals.js';
-import { extractTag, type buildMessageLookups } from '../../../utils/messages.js';
+import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../../../utils/classifierApprovals.js';
+import { extractTag, type buildMessageLookups } from '../../../../../utils/messages.js';
 import { MessageResponse } from '../../MessageResponse.js';
 import { HookProgressMessage } from '../HookProgressMessage.js';
 type Props = {

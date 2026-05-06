@@ -4,7 +4,7 @@ import {
   type FileHistoryState,
   fileHistoryEnabled,
   fileHistoryRestoreStateFromLog,
-} from '../utils/fileHistory.js'
+} from '../../../utils/fileHistory.js'
 
 export function useFileHistorySnapshotInit(
   initialFileHistorySnapshots: FileHistorySnapshot[] | undefined,

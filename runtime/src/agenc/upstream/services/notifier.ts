@@ -1,9 +1,9 @@
 import type { TerminalNotification } from '../../../tui/ink/useTerminalNotification.js'
-import { getGlobalConfig } from '../utils/config.js'
-import { env } from '../utils/env.js'
-import { execFileNoThrow } from '../utils/execFileNoThrow.js'
-import { executeNotificationHooks } from '../utils/hooks.js'
-import { logError } from '../utils/log.js'
+import { getGlobalConfig } from '../../../utils/config.js'
+import { env } from '../../../utils/env.js'
+import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'
+import { executeNotificationHooks } from '../../../utils/hooks.js'
+import { logError } from '../../../utils/log.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

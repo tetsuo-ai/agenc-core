@@ -3,7 +3,7 @@ import React from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 import { Ansi, Text } from '../../../../tui/ink.js';
-import type { Theme } from '../../utils/theme.js';
+import type { Theme } from '../../../../utils/theme.js';
 type DividerProps = {
   /**
    * Width of the divider in characters.

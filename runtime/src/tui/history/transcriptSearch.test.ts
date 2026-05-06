@@ -6,7 +6,7 @@ import {
   toolUseSearchText,
 } from './transcriptSearch.js'
 
-vi.mock('../../agenc/upstream/utils/messages.js', () => ({
+vi.mock('../../utils/messages.js', () => ({
   INTERRUPT_MESSAGE: '[Request interrupted by user]',
   INTERRUPT_MESSAGE_FOR_TOOL_USE: '[Request interrupted by user for tool use]',
 }))

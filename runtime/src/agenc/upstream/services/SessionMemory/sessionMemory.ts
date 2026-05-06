@@ -7,7 +7,7 @@
 import { writeFile } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { getIsRemoteMode } from '../../bootstrap/state.js'
-import { getSystemPrompt } from '../../constants/prompts.js'
+import { getSystemPrompt } from '../../../../constants/prompts.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -17,28 +17,28 @@ import {
   type Output as FileReadToolOutput,
 } from '../../tools/FileReadTool/FileReadTool.js'
 import type { Message } from '../../types/message.js'
-import { count } from '../../utils/array.js'
+import { count } from '../../../../utils/array.js'
 import {
   createCacheSafeParams,
   createSubagentContext,
   runForkedAgent,
-} from '../../utils/forkedAgent.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+} from '../../../../utils/forkedAgent.js'
+import { getFsImplementation } from '../../../../utils/fsOperations.js'
 import {
   type REPLHookContext,
   registerPostSamplingHook,
-} from '../../utils/hooks/postSamplingHooks.js'
+} from '../../../../utils/hooks/postSamplingHooks.js'
 import {
   createUserMessage,
   hasToolCallsInLastAssistantTurn,
-} from '../../utils/messages.js'
+} from '../../../../utils/messages.js'
 import {
   getSessionMemoryDir,
   getSessionMemoryPath,
-} from '../../utils/permissions/filesystem.js'
-import { sequential } from '../../utils/sequential.js'
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
-import { getTokenUsage, tokenCountWithEstimation } from '../../utils/tokens.js'
+} from '../../../../utils/permissions/filesystem.js'
+import { sequential } from '../../../../utils/sequential.js'
+import { asSystemPrompt } from '../../../../utils/systemPromptType.js'
+import { getTokenUsage, tokenCountWithEstimation } from '../../../../utils/tokens.js'
 import { logEvent } from '../analytics/index.js'
 import { isAutoCompactEnabled } from '../compact/autoCompact.js'
 import {
@@ -67,7 +67,7 @@ import {
 // These functions return cached values from disk immediately without blocking
 // on GrowthBook initialization. Values may be stale but are updated in background.
 
-import { errorMessage, getErrnoCode } from '../../utils/errors.js'
+import { errorMessage, getErrnoCode } from '../../../../utils/errors.js'
 import {
   getDynamicConfig_CACHED_MAY_BE_STALE,
   getFeatureValue_CACHED_MAY_BE_STALE,

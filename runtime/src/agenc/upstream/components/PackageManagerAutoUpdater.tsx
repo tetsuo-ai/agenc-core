@@ -3,12 +3,12 @@ import * as React from 'react';
 import { useState } from 'react';
 import { useInterval } from 'usehooks-ts';
 import { Text } from '../../../tui/ink.js';
-import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../utils/autoUpdater.js';
-import { isAutoUpdaterDisabled } from '../utils/config.js';
+import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../../../utils/autoUpdater.js';
+import { isAutoUpdaterDisabled } from '../../../utils/config.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { getPackageManager, type PackageManager } from '../utils/nativeInstaller/packageManagers.js';
-import { gt, gte } from '../utils/semver.js';
-import { getInitialSettings } from '../utils/settings/settings.js';
+import { getPackageManager, type PackageManager } from '../../../utils/nativeInstaller/packageManagers.js';
+import { gt, gte } from '../../../utils/semver.js';
+import { getInitialSettings } from '../../../utils/settings/settings.js';
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;

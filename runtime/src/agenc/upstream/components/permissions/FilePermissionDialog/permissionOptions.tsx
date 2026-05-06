@@ -5,8 +5,8 @@ import { getOriginalCwd } from '../../../bootstrap/state.js';
 import { Text } from '../../../../../tui/ink.js';
 import { getShortcutDisplay } from '../../../../../tui/keybindings/shortcutFormat.js';
 import type { ToolPermissionContext } from '../../../Tool.js';
-import { expandPath, getDirectoryForPath } from '../../../utils/path.js';
-import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../utils/permissions/filesystem.js';
+import { expandPath, getDirectoryForPath } from '../../../../../utils/path.js';
+import { normalizeCaseForComparison, pathInAllowedWorkingPath } from '../../../../../utils/permissions/filesystem.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
 /**
  * Check if a path is within the project's .agenc/ folder.

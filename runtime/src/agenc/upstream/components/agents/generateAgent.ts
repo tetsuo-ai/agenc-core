@@ -14,8 +14,8 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
-import { jsonParse } from '../../utils/slowOperations.js'
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { jsonParse } from '../../../../utils/slowOperations.js'
+import { asSystemPrompt } from '../../../../utils/systemPromptType.js'
 
 type GeneratedAgent = {
   identifier: string

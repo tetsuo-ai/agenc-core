@@ -4,18 +4,18 @@ import {
   getAdditionalDirectoriesForAgenCMd,
   setCachedAgenCMdContent,
 } from './bootstrap/state.js'
-import { getLocalISODate } from './constants/common.js'
+import { getLocalISODate } from '../../constants/common.js'
 import {
   filterInjectedMemoryFiles,
   getAgenCMds,
   getMemoryFiles,
-} from './utils/claudemd.js'
-import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
-import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
-import { execFileNoThrow } from './utils/execFileNoThrow.js'
-import { getBranch, getDefaultBranch, getIsGit, gitExe } from './utils/git.js'
-import { shouldIncludeGitInstructions } from './utils/gitSettings.js'
-import { logError } from './utils/log.js'
+} from '../../utils/agencmd.js'
+import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
+import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
+import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
+import { getBranch, getDefaultBranch, getIsGit, gitExe } from '../../utils/git.js'
+import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
+import { logError } from '../../utils/log.js'
 
 const MAX_STATUS_CHARS = 2000
 

@@ -20,7 +20,7 @@ afterEach(() => {
 describe('checkDomainBlocklist', () => {
   test('returns allowed without API call in OpenAI mode', async () => {
     process.env.AGENC_USE_OPENAI = '1'
-    const actual = await import('../../utils/model/providers.js')
+    const actual = await import('../../../../utils/model/providers.js')
     mock.module('../../utils/model/providers.js', () => ({
       ...actual,
       getAPIProvider: () => 'openai',
@@ -40,7 +40,7 @@ describe('checkDomainBlocklist', () => {
 
   test('returns allowed without API call in Gemini mode', async () => {
     process.env.AGENC_USE_GEMINI = '1'
-    const actual = await import('../../utils/model/providers.js')
+    const actual = await import('../../../../utils/model/providers.js')
     mock.module('../../utils/model/providers.js', () => ({
       ...actual,
       getAPIProvider: () => 'gemini',
@@ -63,7 +63,7 @@ describe('checkDomainBlocklist', () => {
     delete process.env.AGENC_USE_GEMINI
     delete process.env.AGENC_USE_GITHUB
 
-    const actual = await import('../../utils/model/providers.js')
+    const actual = await import('../../../../utils/model/providers.js')
     mock.module('../../utils/model/providers.js', () => ({
       ...actual,
       getAPIProvider: () => 'firstParty',

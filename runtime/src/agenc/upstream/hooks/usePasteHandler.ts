@@ -8,9 +8,9 @@ import {
   isImageFilePath,
   PASTE_THRESHOLD,
   tryReadImageFromPath,
-} from '../utils/imagePaste.js'
-import type { ImageDimensions } from '../utils/imageResizer.js'
-import { getPlatform } from '../utils/platform.js'
+} from '../../../utils/imagePaste.js'
+import type { ImageDimensions } from '../../../utils/imageResizer.js'
+import { getPlatform } from '../../../utils/platform.js'
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100

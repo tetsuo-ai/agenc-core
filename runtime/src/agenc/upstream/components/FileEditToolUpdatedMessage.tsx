@@ -3,7 +3,7 @@ import type { StructuredPatchHunk } from 'diff';
 import * as React from 'react';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box, Text } from '../../../tui/ink.js';
-import { count } from '../utils/array.js';
+import { count } from '../../../utils/array.js';
 import { MessageResponse } from './MessageResponse.js';
 import { StructuredDiffList } from './StructuredDiffList.js';
 type Props = {

@@ -4,9 +4,9 @@ import {
   CodexOAuthService,
   type CodexOAuthTokens,
 } from '../services/api/codexOAuth.js'
-import { openBrowser } from '../utils/browser.js'
-import { saveCodexCredentials } from '../utils/codexCredentials.js'
-import { isBareMode } from '../utils/envUtils.js'
+import { openBrowser } from '../../../utils/browser.js'
+import { saveCodexCredentials } from '../../../utils/agencCredentials.js'
+import { isBareMode } from '../../../utils/envUtils.js'
 
 export type CodexOAuthFlowStatus =
   | { state: 'starting' }

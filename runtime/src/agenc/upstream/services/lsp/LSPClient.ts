@@ -12,9 +12,9 @@ import type {
   ServerCapabilities,
 } from 'vscode-languageserver-protocol'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../utils/errors.js'
-import { logError } from '../../utils/log.js'
-import { subprocessEnv } from '../../utils/subprocessEnv.js'
+import { errorMessage } from '../../../../utils/errors.js'
+import { logError } from '../../../../utils/log.js'
+import { subprocessEnv } from '../../../../utils/subprocessEnv.js'
 /**
  * LSP client interface.
  */

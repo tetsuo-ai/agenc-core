@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import type { QuerySource } from '../../constants/querySource.js'
+import type { QuerySource } from '../../../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
@@ -11,9 +11,9 @@ import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getMainLoopModel } from '../../utils/model/model.js'
-import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { getMainLoopModel } from '../../../../utils/model/model.js'
+import { SHELL_TOOL_NAMES } from '../../../../utils/shell/shellToolUtils.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

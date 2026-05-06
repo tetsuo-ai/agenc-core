@@ -5,14 +5,14 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { getOriginalCwd } from '../bootstrap/state.js';
 import { buildActiveFooterText, buildIdleFooterText, FAILED_FOOTER_TEXT, getBridgeStatus } from '../bridge/bridgeStatusUtil.js';
-import { BRIDGE_FAILED_INDICATOR, BRIDGE_READY_INDICATOR } from '../constants/figures.js';
+import { BRIDGE_FAILED_INDICATOR, BRIDGE_READY_INDICATOR } from '../../../constants/figures.js';
 import { useRegisterOverlay } from '../context/overlayContext.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw 'd' key for disconnect, not a configurable keybinding action
 import { Box, Text, useInput } from '../../../tui/ink.js';
 import { useKeybindings } from '../../../tui/keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../../tui/state/AppState.js';
-import { saveGlobalConfig } from '../utils/config.js';
-import { getBranch } from '../utils/git.js';
+import { saveGlobalConfig } from '../../../utils/config.js';
+import { getBranch } from '../../../utils/git.js';
 import { Dialog } from './design-system/Dialog.js';
 type Props = {
   onDone: () => void;

@@ -76,6 +76,7 @@ const FORBIDDEN = [
 const ALLOW_LINE_PATTERNS = [
   // Anthropic API model IDs (e.g. claude-opus-4-7, claude-sonnet-4-6)
   /claude-(?:opus|sonnet|haiku)-[\d.-]+/i, // branding-scan: allow allow-list pattern
+  /claude-\d+(?:[-.@]\w+)+/i, // branding-scan: allow documented Anthropic model identifier
   // Provider-defined env vars
   /\bANTHROPIC_API_KEY\b/,
   /\bANTHROPIC_/,
@@ -84,6 +85,7 @@ const ALLOW_LINE_PATTERNS = [
   // branding-scan: allow allow-list pattern doc
   // OpenAI's codex model family identifier (the model, not the project)
   /\bcodex-(?:mini|small|medium|large|davinci|001|002)\b/i, // branding-scan: allow allow-list pattern
+  /\bgpt-[\w.-]*codex[\w.-]*\b/i, // branding-scan: allow documented OpenAI model identifier
   // npm package names that legitimately contain these strings
   /["'@][\w-]*claude[\w-]*["']/i, // branding-scan: allow allow-list pattern
   /["']codex[-/][\w@/-]+["']/i, // branding-scan: allow allow-list pattern
@@ -150,6 +152,9 @@ function isAbsorbImportRewriteLine(line, rel) {
     /promptSuggestionEnabled:\s*shouldEnablePromptSuggestion\((?:getInitialSettings\(\)|\{.*getInitialSettings\(\).*\})?\),/.test(line) ||
     /void executePromptSuggestion\(stopHookContext(?:,|\))/.test(line)
   ) {
+    return true;
+  }
+  if (/(?:^|['"`(])(?:[./]+|src\/)(?:utils|constants)\/[\w@./?&=-]+(?:\.js)?/.test(line)) {
     return true;
   }
   if (!/(?:^import\b|^export\b|from\s+|import\s*\(|require\s*\()/.test(line)) {

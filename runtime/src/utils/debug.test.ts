@@ -88,7 +88,7 @@ describe('debug utilities', () => {
 
     const debug = await loadDebugModule('session-cleanup')
     const { runCleanupFunctions } = await import(
-      '../agenc/upstream/utils/cleanupRegistry.js'
+      './cleanupRegistry.js'
     )
 
     debug.logForDebugging('api: cleanup diagnostic')

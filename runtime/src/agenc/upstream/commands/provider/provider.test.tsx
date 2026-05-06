@@ -16,7 +16,7 @@ import {
   ProviderWizard,
   TextEntryDialog,
 } from './provider.js'
-import { createProfileFile } from '../../utils/providerProfile.js'
+import { createProfileFile } from '../../../../utils/providerProfile.js'
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'
@@ -412,7 +412,7 @@ test('buildCodexProfileEnv derives oauth source from secure storage when no expl
 
   // @ts-expect-error cache-busting query string for Bun module mocks
   const { buildCodexProfileEnv } = await import(
-    '../../utils/providerProfile.js?secure-storage-codex-source'
+    '../../../../utils/providerProfile.js?secure-storage-codex-source'
   )
 
   const env = buildCodexProfileEnv({
@@ -431,7 +431,7 @@ test('buildCodexProfileEnv derives oauth source from secure storage when no expl
 test('explicitly declared env takes precedence over applySavedProfileToCurrentSession', async () => {
   // @ts-expect-error cache-busting query string for Bun module mocks
   const { applySavedProfileToCurrentSession } = await import(
-    '../../utils/providerProfile.js?apply-saved-profile-codex'
+    '../../../../utils/providerProfile.js?apply-saved-profile-codex'
   )
   const processEnv: NodeJS.ProcessEnv = {
     AGENC_USE_OPENAI: '1',
@@ -471,7 +471,7 @@ test('explicitly declared env takes precedence over applySavedProfileToCurrentSe
 test('explicitly declared env takes precedence over applySavedProfileToCurrentSession', async () => {
   // @ts-expect-error cache-busting query string for Bun module mocks
   const { applySavedProfileToCurrentSession } = await import(
-    '../../utils/providerProfile.js?apply-saved-profile-codex-oauth'
+    '../../../../utils/providerProfile.js?apply-saved-profile-codex-oauth'
   )
   const processEnv: NodeJS.ProcessEnv = {
     AGENC_USE_OPENAI: '1',

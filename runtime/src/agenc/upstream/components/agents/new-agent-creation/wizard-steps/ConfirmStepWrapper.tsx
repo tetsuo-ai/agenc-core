@@ -5,7 +5,7 @@ import { useSetAppState } from '../../../../../../tui/state/AppState.js';
 import type { Tools } from '../../../../Tool.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import { getActiveAgentsFromList } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { editFileInEditor } from '../../../../utils/promptEditor.js';
+import { editFileInEditor } from '../../../../../../utils/promptEditor.js';
 import { useWizard } from '../../../wizard/index.js';
 import { getNewAgentFilePath, saveAgentToFile } from '../../agentFileUtils.js';
 import type { AgentWizardData } from '../types.js';

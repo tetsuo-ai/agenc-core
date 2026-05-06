@@ -1,0 +1,185 @@
+// @ts-nocheck
+/**
+ * --provider CLI flag support.
+ *
+ * Maps the user-friendly provider name to the environment variables
+ * that the rest of the codebase uses for provider detection.
+ *
+ * Usage:
+ *   agenc --provider openai --model gpt-4o
+ *   agenc --provider gemini --model gemini-2.0-flash
+ *   agenc --provider mistral --model ministral-3b-latest
+ *   agenc --provider ollama --model llama3.2
+ *   agenc --provider anthropic   (default, no-op)
+ */
+
+export const VALID_PROVIDERS = [
+  'anthropic',
+  'bankr',
+  'zai',
+  'xai',
+  'openai',
+  'gemini',
+  'mistral',
+  'github',
+  'bedrock',
+  'vertex',
+  'ollama',
+  'nvidia-nim',
+  'minimax',
+] as const
+
+export type ProviderFlagName = (typeof VALID_PROVIDERS)[number]
+
+/**
+ * Extract the value of --provider from argv.
+ * Returns null if the flag is absent or has no value.
+ */
+export function parseProviderFlag(args: string[]): string | null {
+  const idx = args.indexOf('--provider')
+  if (idx === -1) return null
+  const value = args[idx + 1]
+  if (!value || value.startsWith('--')) return null
+  return value
+}
+
+/**
+ * Parse and apply --provider from argv in one step.
+ * Returns undefined when the flag is absent.
+ */
+export function applyProviderFlagFromArgs(
+  args: string[],
+): { error?: string } | undefined {
+  const provider = parseProviderFlag(args)
+  if (!provider) return undefined
+  return applyProviderFlag(provider, args)
+}
+
+/**
+ * Extract the value of --model from argv.
+ * Returns null if absent.
+ */
+function parseModelFlag(args: string[]): string | null {
+  const idx = args.indexOf('--model')
+  if (idx === -1) return null
+  const value = args[idx + 1]
+  if (!value || value.startsWith('--')) return null
+  return value
+}
+
+/**
+ * Apply a provider name to process.env.
+ * Sets the required AGENC_USE_* flag and any provider-specific
+ * defaults (Ollama base URL, model routing). Does NOT overwrite values
+ * that are already set — explicit env vars always win.
+ *
+ * Returns { error } if the provider name is not recognized.
+ */
+export function applyProviderFlag(
+  provider: string,
+  args: string[],
+): { error?: string } {
+  if (!(VALID_PROVIDERS as readonly string[]).includes(provider)) {
+    return {
+      error: `Unknown provider "${provider}". Valid providers: ${VALID_PROVIDERS.join(', ')}`,
+    }
+  }
+
+  delete process.env.AGENC_USE_OPENAI
+  delete process.env.AGENC_USE_GEMINI
+  delete process.env.AGENC_USE_MISTRAL
+  delete process.env.AGENC_USE_GITHUB
+  delete process.env.AGENC_USE_BEDROCK
+  delete process.env.AGENC_USE_VERTEX
+
+  const model = parseModelFlag(args)
+
+  switch (provider as ProviderFlagName) {
+    case 'anthropic':
+      // Default — no env vars needed
+      break
+
+    case 'openai':
+      process.env.AGENC_USE_OPENAI = '1'
+      if (model) process.env.OPENAI_MODEL = model
+      break
+
+    case 'gemini':
+      process.env.AGENC_USE_GEMINI = '1'
+      if (model) process.env.GEMINI_MODEL = model
+      break
+
+    case 'mistral':
+      process.env.AGENC_USE_MISTRAL = '1'
+      if (model) process.env.MISTRAL_MODEL = model
+      break
+
+    case 'github':
+      process.env.AGENC_USE_GITHUB = '1'
+      if (model) process.env.OPENAI_MODEL = model
+      break
+
+    case 'bedrock':
+      process.env.AGENC_USE_BEDROCK = '1'
+      break
+
+    case 'vertex':
+      process.env.AGENC_USE_VERTEX = '1'
+      break
+
+    case 'ollama':
+      process.env.AGENC_USE_OPENAI = '1'
+      if (!process.env.OPENAI_BASE_URL) {
+        process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
+      }
+      if (!process.env.OPENAI_API_KEY) {
+        process.env.OPENAI_API_KEY = 'ollama'
+      }
+      if (model) process.env.OPENAI_MODEL = model
+      break
+
+    case 'nvidia-nim':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_BASE_URL ??= 'https://integrate.api.nvidia.com/v1'
+      process.env.NVIDIA_NIM = '1'
+      process.env.OPENAI_MODEL ??= 'nvidia/llama-3.1-nemotron-70b-instruct'
+      if (model) process.env.OPENAI_MODEL = model
+      break
+
+    case 'minimax':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_BASE_URL ??= 'https://api.minimax.io/v1'
+      process.env.OPENAI_MODEL ??= 'MiniMax-M2.5'
+      if (model) process.env.OPENAI_MODEL = model
+      break
+
+    case 'bankr':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_BASE_URL ??= 'https://llm.bankr.bot/v1'
+      process.env.OPENAI_MODEL ??= 'claude-opus-4.6'
+      if (model) process.env.OPENAI_MODEL = model
+      if (process.env.BNKR_API_KEY && !process.env.OPENAI_API_KEY) {
+        process.env.OPENAI_API_KEY = process.env.BNKR_API_KEY
+      }
+      break
+
+    case 'zai':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_BASE_URL ??= 'https://api.z.ai/api/coding/paas/v4'
+      process.env.OPENAI_MODEL ??= 'GLM-5.1'
+      if (model) process.env.OPENAI_MODEL = model
+      break
+
+    case 'xai':
+      process.env.AGENC_USE_OPENAI = '1'
+      process.env.OPENAI_BASE_URL ??= 'https://api.x.ai/v1'
+      process.env.OPENAI_MODEL ??= 'grok-4'
+      if (model) process.env.OPENAI_MODEL = model
+      if (process.env.XAI_API_KEY && !process.env.OPENAI_API_KEY) {
+        process.env.OPENAI_API_KEY = process.env.XAI_API_KEY
+      }
+      break
+  }
+
+  return {}
+}

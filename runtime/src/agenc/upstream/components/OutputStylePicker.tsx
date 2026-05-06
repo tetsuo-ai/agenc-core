@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { getAllOutputStyles, OUTPUT_STYLE_CONFIG, type OutputStyleConfig } from '../constants/outputStyles.js';
+import { getAllOutputStyles, OUTPUT_STYLE_CONFIG, type OutputStyleConfig } from '../../../constants/outputStyles.js';
 import { Box, Text } from '../../../tui/ink.js';
-import type { OutputStyle } from '../utils/config.js';
-import { getCwd } from '../utils/cwd.js';
+import type { OutputStyle } from '../../../utils/config.js';
+import { getCwd } from '../../../utils/cwd.js';
 import type { OptionWithDescription } from './CustomSelect/select.js';
 import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';

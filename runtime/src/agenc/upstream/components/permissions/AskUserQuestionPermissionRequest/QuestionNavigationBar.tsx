@@ -5,7 +5,7 @@ import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../../../tui/ink/stringWidth.js';
 import { Box, Text } from '../../../../../tui/ink.js';
 import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
-import { truncateToWidth } from '../../../utils/format.js';
+import { truncateToWidth } from '../../../../../utils/format.js';
 type Props = {
   questions: Question[];
   currentQuestionIndex: number;

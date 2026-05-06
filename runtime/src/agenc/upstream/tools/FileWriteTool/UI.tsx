@@ -16,12 +16,12 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { ToolProgressData } from '../../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
-import { getCwd } from '../../utils/cwd.js';
-import { getPatchForDisplay } from '../../utils/diff.js';
-import { getDisplayPath } from '../../utils/file.js';
-import { logError } from '../../utils/log.js';
-import { getPlansDirectory } from '../../utils/plans.js';
-import { openForScan, readCapped } from '../../utils/readEditContext.js';
+import { getCwd } from '../../../../utils/cwd.js';
+import { getPatchForDisplay } from '../../../../utils/diff.js';
+import { getDisplayPath } from '../../../../utils/file.js';
+import { logError } from '../../../../utils/log.js';
+import { getPlansDirectory } from '../../../../utils/plans.js';
+import { openForScan, readCapped } from '../../../../utils/readEditContext.js';
 import type { Output } from './FileWriteTool.js';
 const MAX_LINES_TO_RENDER = 10;
 // Model output uses \n regardless of platform, so always split on \n.

@@ -9,7 +9,7 @@ import {
   listTasks,
   type Task,
   updateTask,
-} from '../utils/tasks.js'
+} from '../../../utils/tasks.js'
 
 const DEBOUNCE_MS = 1000
 

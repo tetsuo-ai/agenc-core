@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react'
 import type { Key } from '../../../tui/ink.js'
 import type { VimInputState, VimMode } from '../types/textInputTypes.js'
-import { Cursor } from '../utils/Cursor.js'
-import { lastGrapheme } from '../utils/intl.js'
+import { TextCursor } from '../../../utils/TextCursor.js'
+import { lastGrapheme } from '../../../utils/intl.js'
 import {
   executeIndent,
   executeJoin,
@@ -80,7 +80,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   }, [onModeChange, textInput])
 
   function createOperatorContext(
-    cursor: Cursor,
+    cursor: TextCursor,
     isReplay: boolean = false,
   ): OperatorContext {
     return {
@@ -110,7 +110,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     const change = persistentRef.current.lastChange
     if (!change) return
 
-    const cursor = Cursor.fromText(
+    const cursor = TextCursor.fromText(
       textInput.value,
       props.columns,
       textInput.offset,
@@ -182,7 +182,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     // lookups expect single chars and a prepended space would break them.
     const filtered = inputFilter ? inputFilter(rawInput, key) : rawInput
     const input = state.mode === 'INSERT' ? filtered : rawInput
-    const cursor = Cursor.fromText(
+    const cursor = TextCursor.fromText(
       textInput.value,
       props.columns,
       textInput.offset,

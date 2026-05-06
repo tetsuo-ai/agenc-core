@@ -16,7 +16,7 @@ vi.mock("../agenc/upstream/services/analytics/index.js", () => ({
   logEvent: vi.fn(),
 }));
 
-vi.mock("../agenc/upstream/utils/config.js", () => ({
+vi.mock("../utils/config.js", () => ({
   getGlobalConfig: () => state.config,
   saveGlobalConfig: (
     updater: (current: Record<string, unknown>) => Record<string, unknown>,
@@ -29,17 +29,17 @@ vi.mock("src/utils/debug.js", () => ({
   logForDebugging: vi.fn(),
 }));
 
-vi.mock("../agenc/upstream/utils/plugins/installedPluginsManager.js", () => ({
+vi.mock("../utils/plugins/installedPluginsManager.js", () => ({
   isPluginInstalled: vi.fn(() => false),
 }));
 
-vi.mock("../agenc/upstream/utils/plugins/marketplaceManager.js", () => ({
+vi.mock("../utils/plugins/marketplaceManager.js", () => ({
   getPluginById: vi.fn(async (pluginId: string) => ({
     entry: { name: pluginId, description: "test plugin" },
   })),
 }));
 
-vi.mock("../agenc/upstream/utils/plugins/pluginIdentifier.js", () => ({
+vi.mock("../utils/plugins/pluginIdentifier.js", () => ({
   isOfficialMarketplaceName: vi.fn((marketplace: string | undefined) =>
     marketplace === "official",
   ),
@@ -49,7 +49,7 @@ vi.mock("../agenc/upstream/utils/plugins/pluginIdentifier.js", () => ({
   }),
 }));
 
-vi.mock("../agenc/upstream/utils/plugins/pluginPolicy.js", () => ({
+vi.mock("../utils/plugins/pluginPolicy.js", () => ({
   isPluginBlockedByPolicy: vi.fn(() => false),
 }));
 
@@ -58,7 +58,7 @@ import {
   disableHintRecommendations,
   markHintPluginShown,
   maybeRecordPluginHint,
-} from "../agenc/upstream/utils/plugins/hintRecommendation.js";
+} from "../utils/plugins/hintRecommendation.js";
 
 describe("hint recommendation config compatibility", () => {
   beforeEach(() => {

@@ -5,7 +5,7 @@ import {
   getDefaultMainLoopModelSetting,
   type ModelName,
   parseUserSpecifiedModel,
-} from '../utils/model/model.js'
+} from '../../../utils/model/model.js'
 
 // The value of the selector is a full model name that can be used directly in
 // API calls. Use this over getMainLoopModel() when the component needs to

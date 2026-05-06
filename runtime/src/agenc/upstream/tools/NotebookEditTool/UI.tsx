@@ -11,7 +11,7 @@ import { MessageResponse } from '../../components/MessageResponse.js';
 import { NotebookEditToolUseRejectedMessage } from '../../components/NotebookEditToolUseRejectedMessage.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import type { Tools } from '../../Tool.js';
-import { getDisplayPath } from '../../utils/file.js';
+import { getDisplayPath } from '../../../../utils/file.js';
 import type { inputSchema, Output } from './NotebookEditTool.js';
 export function getToolUseSummary(input: Partial<z.infer<ReturnType<typeof inputSchema>>> | undefined): string | null {
   if (!input?.notebook_path) {

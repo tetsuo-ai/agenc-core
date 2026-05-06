@@ -25,7 +25,7 @@
  * opens `/cache-stats` or the REPL renders — never in the hot path.
  */
 import { addCacheMetrics, extractCacheMetrics, resolveCacheProvider, type CacheMetrics } from './cacheMetrics.js'
-import { getAPIProvider, isGithubNativeAnthropicMode } from '../../utils/model/providers.js' // branding-scan: allow provider mode identifier
+import { getAPIProvider, isGithubNativeAnthropicMode } from '../../../../utils/model/providers.js' // branding-scan: allow provider mode identifier
 
 /** One request's cache footprint — what the tracker remembers per turn. */
 export type CacheStatsEntry = {

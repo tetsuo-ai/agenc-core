@@ -29,7 +29,7 @@ import {
   type Span,
 } from 'src/utils/telemetry/sessionTracing.js'
 import type { NonNullableUsage } from '../../entrypoints/sdk/sdkUtilityTypes.js'
-import { consumeInvokingRequestId } from '../../utils/agentContext.js'
+import { consumeInvokingRequestId } from '../../../../utils/agentContext.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

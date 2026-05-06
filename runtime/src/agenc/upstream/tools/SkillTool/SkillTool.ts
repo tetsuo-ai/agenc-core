@@ -39,26 +39,26 @@ import {
   clearInvokedSkillsForAgent,
   getSessionId,
 } from '../../bootstrap/state.js'
-import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js'
+import { COMMAND_MESSAGE_TAG } from '../../../../constants/xml.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
 } from '../../services/analytics/index.js'
-import { getAgentContext } from '../../utils/agentContext.js'
-import { errorMessage } from '../../utils/errors.js'
+import { getAgentContext } from '../../../../utils/agentContext.js'
+import { errorMessage } from '../../../../utils/errors.js'
 import {
   extractResultText,
   prepareForkedCommandContext,
-} from '../../utils/forkedAgent.js'
-import { parseFrontmatter } from '../../utils/frontmatterParser.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { createUserMessage, normalizeMessages } from '../../utils/messages.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
-import { resolveSkillModelOverride } from '../../utils/model/model.js'
-import { recordSkillUsage } from '../../utils/suggestions/skillUsageTracking.js'
-import { createAgentId } from '../../utils/uuid.js'
+} from '../../../../utils/forkedAgent.js'
+import { parseFrontmatter } from '../../../../utils/frontmatterParser.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { createUserMessage, normalizeMessages } from '../../../../utils/messages.js'
+import type { ModelAlias } from '../../../../utils/model/aliases.js'
+import { resolveSkillModelOverride } from '../../../../utils/model/model.js'
+import { recordSkillUsage } from '../../../../utils/suggestions/skillUsageTracking.js'
+import { createAgentId } from '../../../../utils/uuid.js'
 import { runAgent } from '../AgentTool/runAgent.js'
 import {
   getToolUseIDFromParentMessage,

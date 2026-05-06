@@ -5,9 +5,9 @@ import type {
   ImageBlockParam,
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
-import type { QuerySource } from '../../agenc/upstream/constants/querySource.js'
+import type { QuerySource } from '../../constants/querySource.js'
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js'
-import { getContentText } from '../../agenc/upstream/utils/messages.js'
+import { getContentText } from '../../utils/messages.js'
 import {
   findCommand,
   getCommandName,
@@ -34,10 +34,10 @@ import {
   type AgentMentionAttachment,
   createAttachmentMessage,
   getAttachmentMessages,
-} from '../../agenc/upstream/utils/attachments.js'
-import type { PastedContent } from '../../agenc/upstream/utils/config.js'
-import type { EffortValue } from '../../agenc/upstream/utils/effort.js'
-import { toArray } from '../../agenc/upstream/utils/generators.js'
+} from '../../utils/attachments.js'
+import type { PastedContent } from '../../utils/config.js'
+import type { EffortValue } from '../../utils/effort.js'
+import { toArray } from '../../utils/generators.js'
 import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
@@ -45,19 +45,19 @@ import {
 import {
   createImageMetadataText,
   maybeResizeAndDownsampleImageBlock,
-} from '../../agenc/upstream/utils/imageResizer.js'
-import { storeImages } from '../../agenc/upstream/utils/imageStore.js'
+} from '../../utils/imageResizer.js'
+import { storeImages } from '../../utils/imageStore.js'
 import {
   createCommandInputMessage,
   createSystemMessage,
   createUserMessage,
-} from '../../agenc/upstream/utils/messages.js'
-import { queryCheckpoint } from '../../agenc/upstream/utils/queryProfiler.js'
+} from '../../utils/messages.js'
+import { queryCheckpoint } from '../../utils/queryProfiler.js'
 import { parseSlashCommand } from '../slash/slash-command-parsing.js'
 import {
   hasUltraplanKeyword,
   replaceUltraplanKeyword,
-} from '../../agenc/upstream/utils/ultraplan/keyword.js'
+} from '../../utils/ultraplan/keyword.js'
 import { processTextPrompt } from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 

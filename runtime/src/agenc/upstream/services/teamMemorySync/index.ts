@@ -33,27 +33,27 @@ import {
   AGENC_AI_PROFILE_SCOPE,
   getOauthConfig,
   OAUTH_BETA_HEADER,
-} from '../../constants/oauth.js'
+} from '../../../../constants/oauth.js'
 import {
   getTeamMemPath,
   PathTraversalError,
   validateTeamMemKey,
 } from '../../memdir/teamMemPaths.js'
-import { count } from '../../utils/array.js'
+import { count } from '../../../../utils/array.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
-} from '../../utils/auth.js'
+} from '../../../../utils/auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { classifyAxiosError } from '../../utils/errors.js'
-import { getGithubRepo } from '../../utils/git.js'
+import { classifyAxiosError } from '../../../../utils/errors.js'
+import { getGithubRepo } from '../../../../utils/git.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
-} from '../../utils/model/providers.js'
-import { sleep } from '../../utils/sleep.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
+} from '../../../../utils/model/providers.js'
+import { sleep } from '../../../../utils/sleep.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
 import { logEvent } from '../analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../analytics/metadata.js'
 import { getRetryDelay } from '../api/withRetry.js'
@@ -850,7 +850,7 @@ export async function pullTeamMemory(
 
   const filesWritten = await writeRemoteEntriesToLocal(entries)
   if (filesWritten > 0) {
-    const { clearMemoryFileCaches } = await import('../../utils/claudemd.js')
+    const { clearMemoryFileCaches } = await import('../../../../utils/agencmd.js')
     clearMemoryFileCaches()
   }
   logForDebugging(`team-memory-sync: pulled ${filesWritten} files`, {

@@ -25,8 +25,8 @@ import { WebSearchTool } from 'src/tools/WebSearchTool/WebSearchTool.js';
 import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybinding } from '../../../../tui/keybindings/useKeybinding.js';
-import { count } from '../../utils/array.js';
-import { plural } from '../../utils/stringUtils.js';
+import { count } from '../../../../utils/array.js';
+import { plural } from '../../../../utils/stringUtils.js';
 import { Divider } from '../design-system/Divider.js';
 type Props = {
   tools: Tools;

@@ -7,7 +7,7 @@ import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
 import type { ConfigScope } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath } from '../../services/mcp/utils.js';
 import { isDebugMode } from 'src/utils/debug.js';
-import { plural } from '../../utils/stringUtils.js';
+import { plural } from '../../../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Byline } from '../design-system/Byline.js';
 import { Dialog } from '../design-system/Dialog.js';

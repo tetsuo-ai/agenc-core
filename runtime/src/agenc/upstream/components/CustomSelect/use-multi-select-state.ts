@@ -6,7 +6,7 @@ import { useInput } from '../../../../tui/ink.js'
 import {
   normalizeFullWidthDigits,
   normalizeFullWidthSpace,
-} from '../../utils/stringUtils.js'
+} from '../../../../utils/stringUtils.js'
 import type { OptionWithDescription } from './select.js'
 import { optionsNavigateEqual } from './use-select-navigation.js'
 import { useSelectNavigation } from './use-select-navigation.js'

@@ -2,9 +2,9 @@ import { feature } from 'bun:bundle'
 import { useMemo } from 'react'
 import { useCommandQueue } from '../../../agenc/upstream/hooks/useCommandQueue.js'
 import { useAppState } from '../../state/AppState.js'
-import { getGlobalConfig } from '../../../agenc/upstream/utils/config.js'
-import { getExampleCommandFromCache } from '../../../agenc/upstream/utils/exampleCommands.js'
-import { isQueuedCommandEditable } from '../../../agenc/upstream/utils/messageQueueManager.js'
+import { getGlobalConfig } from '../../../utils/config.js'
+import { getExampleCommandFromCache } from '../../../utils/exampleCommands.js'
+import { isQueuedCommandEditable } from '../../../utils/messageQueueManager.js'
 import { isPromptInputProactiveActive } from './proactiveAdapter.js'
 
 type Props = {

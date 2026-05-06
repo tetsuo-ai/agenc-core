@@ -9,9 +9,9 @@ import ScrollBox, { type ScrollBoxHandle } from '../../../tui/ink/components/Scr
 import instances from '../../../tui/ink/instances.js';
 import { Box, Text } from '../../../tui/ink.js';
 import type { Message } from '../types/message.js';
-import { openBrowser, openPath } from '../utils/browser.js';
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
-import { plural } from '../utils/stringUtils.js';
+import { openBrowser, openPath } from '../../../utils/browser.js';
+import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
+import { plural } from '../../../utils/stringUtils.js';
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments.js';
 import PromptInputFooterSuggestions from '../../../tui/components/PromptInput/PromptInputFooterSuggestions.js';
 import type { StickyPrompt } from './VirtualMessageList.js';

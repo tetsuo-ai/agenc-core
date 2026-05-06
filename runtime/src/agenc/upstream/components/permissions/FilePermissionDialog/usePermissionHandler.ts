@@ -9,13 +9,13 @@ import {
   FILE_EDIT_TOOL_NAME,
   GLOBAL_AGENC_FOLDER_PERMISSION_PATTERN,
 } from '../../../tools/FileEditTool/constants.js'
-import { env } from '../../../utils/env.js'
-import { generateSuggestions } from '../../../utils/permissions/filesystem.js'
-import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
+import { env } from '../../../../../utils/env.js'
+import { generateSuggestions } from '../../../../../utils/permissions/filesystem.js'
+import type { PermissionUpdate } from '../../../../../utils/permissions/PermissionUpdateSchema.js'
 import {
   type CompletionType,
   logUnaryEvent,
-} from '../../../utils/unaryLogging.js'
+} from '../../../../../utils/unaryLogging.js'
 import type { ToolUseConfirm } from '../../../../../tui/components/permissions/PermissionRequest.js'
 import type {
   FileOperationType,

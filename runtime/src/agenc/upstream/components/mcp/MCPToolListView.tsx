@@ -5,7 +5,7 @@ import { extractMcpToolDisplayName, getMcpDisplayName } from '../../services/mcp
 import { filterToolsByServer } from '../../services/mcp/utils.js';
 import { useAppState } from '../../../../tui/state/AppState.js';
 import type { Tool } from '../../Tool.js';
-import { plural } from '../../utils/stringUtils.js';
+import { plural } from '../../../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Select } from '../CustomSelect/select.js';
 import { Byline } from '../design-system/Byline.js';

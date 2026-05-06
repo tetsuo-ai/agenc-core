@@ -16,28 +16,28 @@ import {
   type ToolDef,
   toolMatchesName,
 } from '../../Tool.js'
-import { formatAgentId, generateRequestId } from '../../utils/agentId.js'
-import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
+import { formatAgentId, generateRequestId } from '../../../../utils/agentId.js'
+import { isAgentSwarmsEnabled } from '../../../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   findInProcessTeammateTaskId,
   setAwaitingPlanApproval,
-} from '../../utils/inProcessTeammateHelpers.js'
-import { lazySchema } from '../../utils/lazySchema.js'
-import { logError } from '../../utils/log.js'
+} from '../../../../utils/inProcessTeammateHelpers.js'
+import { lazySchema } from '../../../../utils/lazySchema.js'
+import { logError } from '../../../../utils/log.js'
 import {
   getPlan,
   getPlanFilePath,
   persistFileSnapshotIfRemote,
-} from '../../utils/plans.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+} from '../../../../utils/plans.js'
+import { jsonStringify } from '../../../../utils/slowOperations.js'
 import {
   getAgentName,
   getTeamName,
   isPlanModeRequired,
   isTeammate,
-} from '../../utils/teammate.js'
-import { writeToMailbox } from '../../utils/teammateMailbox.js'
+} from '../../../../utils/teammate.js'
+import { writeToMailbox } from '../../../../utils/teammateMailbox.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '../TeamCreateTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from './constants.js'
@@ -50,10 +50,10 @@ import {
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('../../utils/permissions/autoModeState.js') as typeof import('../../utils/permissions/autoModeState.js'))
+  ? (require('../../../../utils/permissions/autoModeState.js') as typeof import('../../../../utils/permissions/autoModeState.js'))
   : null
 const permissionSetupModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('../../utils/permissions/permissionSetup.js') as typeof import('../../utils/permissions/permissionSetup.js'))
+  ? (require('../../../../utils/permissions/permissionSetup.js') as typeof import('../../../../utils/permissions/permissionSetup.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 

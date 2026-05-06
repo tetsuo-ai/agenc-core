@@ -3,7 +3,7 @@ import { createWriteStream, type WriteStream } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { createInterface } from 'readline'
-import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
+import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'
 import { debugTruncate } from './debugUtils.js'
 import type {
   SessionActivity,

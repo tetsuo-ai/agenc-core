@@ -8,8 +8,8 @@ import {
   isVimPunctuation,
   isVimWhitespace,
   isVimWordChar,
-} from '../utils/Cursor.js'
-import { getGraphemeSegmenter } from '../utils/intl.js'
+} from '../../../utils/TextCursor.js'
+import { getGraphemeSegmenter } from '../../../utils/intl.js'
 
 export type TextObjectRange = { start: number; end: number } | null
 

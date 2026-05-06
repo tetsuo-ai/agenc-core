@@ -2,12 +2,12 @@ import { APIError } from '@anthropic-ai/sdk'
 import { buildAnthropicUsageFromRawUsage } from './cacheMetrics.js'
 import { compressToolHistory } from './compressToolHistory.js'
 import { fetchWithProxyRetry } from './fetchWithProxyRetry.js'
-import { stableStringify } from '../../utils/stableStringify.js'
+import { stableStringify } from '../../../../utils/stableStringify.js'
 import type {
   ResolvedCodexCredentials,
   ResolvedProviderRequest,
 } from './providerConfig.js'
-import { sanitizeSchemaForOpenAICompat } from '../../utils/schemaSanitizer.js'
+import { sanitizeSchemaForOpenAICompat } from '../../../../utils/schemaSanitizer.js'
 import {
   createThinkTagFilter,
   stripThinkTags,

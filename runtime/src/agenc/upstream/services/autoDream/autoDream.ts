@@ -10,15 +10,15 @@
 // State is closure-scoped inside initAutoDream() rather than module-level
 // (tests call initAutoDream() in beforeEach for a fresh closure).
 
-import type { REPLHookContext } from '../../utils/hooks/postSamplingHooks.js'
+import type { REPLHookContext } from '../../../../utils/hooks/postSamplingHooks.js'
 import {
   createCacheSafeParams,
   runForkedAgent,
-} from '../../utils/forkedAgent.js'
+} from '../../../../utils/forkedAgent.js'
 import {
   createUserMessage,
   createMemorySavedMessage,
-} from '../../utils/messages.js'
+} from '../../../../utils/messages.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { ToolUseContext } from '../../Tool.js'
@@ -26,7 +26,7 @@ import { logEvent } from '../analytics/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { isAutoMemoryEnabled, getAutoMemPath } from '../../memdir/paths.js'
 import { isAutoDreamEnabled } from './config.js'
-import { getProjectDir } from '../../utils/sessionStorage.js'
+import { getProjectDir } from '../../../../utils/sessionStorage.js'
 import {
   getOriginalCwd,
   getKairosActive,

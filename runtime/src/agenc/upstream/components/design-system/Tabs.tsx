@@ -7,7 +7,7 @@ import type { KeyboardEvent } from '../../../../tui/ink/events/keyboard-event.js
 import { stringWidth } from '../../../../tui/ink/stringWidth.js';
 import { Box, Text } from '../../../../tui/ink.js';
 import { useKeybindings } from '../../../../tui/keybindings/useKeybinding.js';
-import type { Theme } from '../../utils/theme.js';
+import type { Theme } from '../../../../utils/theme.js';
 type TabsProps = {
   children: Array<React.ReactElement<TabProps>>;
   title?: string;

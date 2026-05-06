@@ -3,8 +3,8 @@ import { pathToFileURL } from 'url';
 import Link from '../../../tui/ink/components/Link.js';
 import { supportsHyperlinks } from '../../../tui/ink/supports-hyperlinks.js';
 import { Text } from '../../../tui/ink.js';
-import { getStoredImagePath } from '../utils/imageStore.js';
-import type { Theme } from '../utils/theme.js';
+import { getStoredImagePath } from '../../../utils/imageStore.js';
+import type { Theme } from '../../../utils/theme.js';
 type Props = {
   imageId: number;
   backgroundColor?: keyof Theme;

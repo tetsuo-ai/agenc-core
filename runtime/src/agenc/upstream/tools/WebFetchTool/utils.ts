@@ -5,17 +5,17 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/claude.js'
-import { AbortError } from '../../utils/errors.js'
-import { getWebFetchUserAgent } from '../../utils/http.js'
-import { logError } from '../../utils/log.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
+import { AbortError } from '../../../../utils/errors.js'
+import { getWebFetchUserAgent } from '../../../../utils/http.js'
+import { logError } from '../../../../utils/log.js'
+import { getAPIProvider } from '../../../../utils/model/providers.js'
 import {
   isBinaryContentType,
   persistBinaryContent,
-} from '../../utils/mcpOutputStorage.js'
-import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
-import { ssrfGuardedLookup } from '../../utils/hooks/ssrfGuard.js'
+} from '../../../../utils/mcpOutputStorage.js'
+import { getSettings_DEPRECATED } from '../../../../utils/settings/settings.js'
+import { asSystemPrompt } from '../../../../utils/systemPromptType.js'
+import { ssrfGuardedLookup } from '../../../../utils/hooks/ssrfGuard.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 

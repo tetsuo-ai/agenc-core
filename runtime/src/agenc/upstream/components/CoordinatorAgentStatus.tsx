@@ -9,15 +9,15 @@ import { c as _c } from "react-compiler-runtime";
 
 import figures from 'figures';
 import * as React from 'react';
-import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../constants/figures.js';
+import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../../../constants/figures.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../tui/ink/stringWidth.js';
 import { Box, Text, wrapText } from '../../../tui/ink.js';
 import { type AppState, useAppState, useSetAppState } from '../../../tui/state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../state/teammateViewHelpers.js';
 import { isPanelAgentTask, type LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js';
-import { formatDuration, formatNumber } from '../utils/format.js';
-import { evictTerminalTask } from '../utils/task/framework.js';
+import { formatDuration, formatNumber } from '../../../utils/format.js';
+import { evictTerminalTask } from '../../../utils/task/framework.js';
 import { isTerminalStatus } from './tasks/taskStatusUtils.js';
 
 /**
