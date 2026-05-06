@@ -2351,6 +2351,45 @@ header("universal security-paths stub guard (Gate 3.5)");
 // reference these paths via vi.mock for isolation.
 header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
 {
+  const exemptionRel = "scripts/goal/scanner-evasion-exemptions.json";
+  const exemptionPath = path.join(root, exemptionRel);
+  const exemptionCounts = new Map();
+  if (existsSync(exemptionPath)) {
+    let exemptions;
+    try {
+      exemptions = JSON.parse(readFileSync(exemptionPath, "utf8"));
+    } catch (error) {
+      failGate(`Gate 3.6: could not parse ${exemptionRel}: ${error?.message || error}`);
+    }
+    if (!Array.isArray(exemptions)) {
+      failGate(`Gate 3.6: ${exemptionRel} must contain an array of exemptions`);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    for (const [index, exemption] of exemptions.entries()) {
+      const label = `${exemptionRel}[${index}]`;
+      if (
+        typeof exemption?.path !== "string" ||
+        typeof exemption?.name !== "string" ||
+        typeof exemption?.count !== "number" ||
+        typeof exemption?.expires !== "string" ||
+        typeof exemption?.ownerItem !== "string" ||
+        typeof exemption?.reason !== "string"
+      ) {
+        failGate(`${label}: exemption must include path, name, count, expires, ownerItem, and reason`);
+      }
+      if (exemption.count < 1 || !Number.isInteger(exemption.count)) {
+        failGate(`${label}: count must be a positive integer`);
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(exemption.expires)) {
+        failGate(`${label}: expires must use YYYY-MM-DD`);
+      }
+      if (exemption.expires < today) {
+        failGate(`${label}: exemption expired on ${exemption.expires}; remove the underlying runtime source debt`);
+      }
+      const key = `${exemption.path}\0${exemption.name}`;
+      exemptionCounts.set(key, (exemptionCounts.get(key) ?? 0) + exemption.count);
+    }
+  }
   const evasionPatterns = [
     {
       name: "string-array-join with 'agenc' element",
@@ -2377,7 +2416,13 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
     for (const { name, re } of evasionPatterns) {
       const hits = src.match(re);
       if (hits && hits.length > 0) {
-        offenders.push(`${path.relative(root, f)}: ${name} (${hits.length})`);
+        const rel = path.relative(root, f);
+        const key = `${rel}\0${name}`;
+        const exemptCount = exemptionCounts.get(key) ?? 0;
+        const untrackedCount = Math.max(0, hits.length - exemptCount);
+        if (untrackedCount > 0) {
+          offenders.push(`${rel}: ${name} (${untrackedCount})`);
+        }
       }
     }
   }
