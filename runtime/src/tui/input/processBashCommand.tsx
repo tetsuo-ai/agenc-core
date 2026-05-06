@@ -4,6 +4,7 @@ import * as React from 'react';
 import { BashModeProgress } from '../../agenc/upstream/components/BashModeProgress.js';
 import type { SetToolJSXFn } from '../../agenc/upstream/Tool.js';
 import { BashTool } from '../../agenc/upstream/tools/BashTool/BashTool.js';
+import { PowerShellTool } from '../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
 import type { AttachmentMessage, SystemMessage, UserMessage } from '../../agenc/upstream/types/message.js';
 import type { ShellProgress } from '../../agenc/upstream/types/tools.js';
 import { logEvent } from '../../agenc/upstream/services/analytics/index.js';
@@ -70,17 +71,8 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // cannot disable sandboxing by setting dangerouslyDisableSandbox directly.
     // PS sandbox is Linux/macOS/WSL2 only — on Windows native, shouldUseSandbox()
     // returns false regardless (unsupported platform).
-    // Lazy-require PowerShellTool so its ~300KB chunk only loads when the
-    // user has actually selected the powershell default shell.
-    type PSMod = typeof import('../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js');
-    let PowerShellTool: PSMod['PowerShellTool'] | null = null;
-    if (usePowerShell) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      PowerShellTool = (require('../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js') as PSMod).PowerShellTool;
-      /* eslint-enable @typescript-eslint/no-require-imports */
-    }
-    const shellTool = PowerShellTool ?? BashTool;
-    const response = PowerShellTool ? await PowerShellTool.call({
+    const shellTool = usePowerShell ? PowerShellTool : BashTool;
+    const response = usePowerShell ? await PowerShellTool.call({
       command: inputString,
       dangerouslyDisableSandbox: true,
       _dangerouslyDisableSandboxApproved: true

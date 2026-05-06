@@ -14,6 +14,8 @@ import {
   type Tool,
   type ToolPermissionContext,
 } from '../../agenc/upstream/Tool.js'
+import { getIsNonInteractiveSession } from '../../agenc/upstream/bootstrap/state.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../agenc/upstream/services/analytics/growthbook.js'
 import type { TaskState } from '../../tasks/types.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
@@ -35,7 +37,9 @@ import type { DenialTrackingState } from '../../agenc/upstream/utils/permissions
 import type { PermissionMode } from '../../agenc/upstream/utils/permissions/PermissionMode.js'
 import { getInitialSettings } from '../../agenc/upstream/utils/settings/settings.js'
 import type { SettingsJson } from '../../agenc/upstream/utils/settings/types.js'
+import { isAgentSwarmsEnabled } from '../../agenc/upstream/utils/agentSwarmsEnabled.js'
 import { shouldEnableThinkingByDefault } from '../../agenc/upstream/utils/thinking.js'
+import { isPlanModeRequired, isTeammate } from '../../agenc/upstream/utils/teammate.js'
 import type { Store } from './store.js'
 
 export type CompletionBoundary =
@@ -456,20 +460,8 @@ export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
   const initialSettings = getInitialSettings()
-  // Determine initial permission mode for teammates spawned with plan_mode_required
-  // Use lazy require to avoid circular dependency with teammate.ts
-  /* eslint-disable @typescript-eslint/no-require-imports */
-  const teammateUtils =
-    require('../../agenc/upstream/utils/teammate.js') as typeof import('../../agenc/upstream/utils/teammate.js')
-  const bootstrapState =
-    require('../../agenc/upstream/bootstrap/state.js') as typeof import('../../agenc/upstream/bootstrap/state.js')
-  const growthbook =
-    require('../../agenc/upstream/services/analytics/growthbook.js') as typeof import('../../agenc/upstream/services/analytics/growthbook.js')
-  const agentSwarms =
-    require('../../agenc/upstream/utils/agentSwarmsEnabled.js') as typeof import('../../agenc/upstream/utils/agentSwarmsEnabled.js')
-  /* eslint-enable @typescript-eslint/no-require-imports */
   const initialMode: PermissionMode =
-    teammateUtils.isTeammate() && teammateUtils.isPlanModeRequired()
+    isTeammate() && isPlanModeRequired()
       ? 'plan'
       : 'default'
 
@@ -547,13 +539,13 @@ export function getDefaultAppState(): AppState {
     thinkingEnabled: shouldEnableThinkingByDefault(),
     promptSuggestionEnabled: shouldEnablePromptSuggestion({
       ...initialSettings,
-      promptSuggestionFeatureEnabled: growthbook.getFeatureValue_CACHED_MAY_BE_STALE(
+      promptSuggestionFeatureEnabled: getFeatureValue_CACHED_MAY_BE_STALE(
         'tengu_chomp_inflection',
         false,
       ),
-      agentSwarmsEnabled: agentSwarms.isAgentSwarmsEnabled(),
-      isNonInteractiveSession: bootstrapState.getIsNonInteractiveSession(),
-      isTeammateSession: teammateUtils.isTeammate(),
+      agentSwarmsEnabled: isAgentSwarmsEnabled(),
+      isNonInteractiveSession: getIsNonInteractiveSession(),
+      isTeammateSession: isTeammate(),
     }),
     sessionHooks: new Map(),
     inbox: {

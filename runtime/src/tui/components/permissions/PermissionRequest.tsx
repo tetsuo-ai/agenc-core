@@ -17,6 +17,7 @@ import { NotebookEditTool } from '../../../agenc/upstream/tools/NotebookEditTool
 import { PowerShellTool } from '../../../agenc/upstream/tools/PowerShellTool/PowerShellTool.js';
 import { SkillTool } from '../../../agenc/upstream/tools/SkillTool/SkillTool.js';
 import { WebFetchTool } from '../../../agenc/upstream/tools/WebFetchTool/WebFetchTool.js';
+import { MonitorTool as MonitorToolImpl } from '../../../agenc/upstream/tools/MonitorTool/MonitorTool.js';
 import type { AssistantMessage } from '../../../agenc/upstream/types/message.js';
 import type { PermissionDecision } from '../../../agenc/upstream/types/permissions.js';
 import { AskUserQuestionPermissionRequest } from '../../../agenc/upstream/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.js';
@@ -31,8 +32,8 @@ import { NotebookEditPermissionRequest } from '../../../agenc/upstream/component
 import { PowerShellPermissionRequest } from '../../../agenc/upstream/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.js';
 import { SkillPermissionRequest } from '../../../agenc/upstream/components/permissions/SkillPermissionRequest/SkillPermissionRequest.js';
 import { WebFetchPermissionRequest } from '../../../agenc/upstream/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.js';
+import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from '../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 function unsupportedPermissionFeature<T>(featureName: string): T {
   throw new Error(
     `AgenC build enabled ${featureName}, but that permission UI is not present in this runtime snapshot.`,
@@ -50,10 +51,9 @@ const WorkflowTool: Tool | null = feature('WORKFLOW_SCRIPTS')
 const WorkflowPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('WORKFLOW_SCRIPTS')
   ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS permission UI')
   : null;
-const MonitorTool = feature('MONITOR_TOOL') ? (require('../../../agenc/upstream/tools/MonitorTool/MonitorTool.js') as typeof import('../../../agenc/upstream/tools/MonitorTool/MonitorTool.js')).MonitorTool : null;
-const MonitorPermissionRequest = feature('MONITOR_TOOL') ? (require('../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js') as typeof import('../../../agenc/upstream/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.js')).MonitorPermissionRequest : null;
+const MonitorTool = feature('MONITOR_TOOL') ? MonitorToolImpl : null;
+const MonitorPermissionRequest = feature('MONITOR_TOOL') ? MonitorPermissionRequestImpl : null;
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-/* eslint-enable @typescript-eslint/no-require-imports */
 import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../../agenc/upstream/utils/permissions/PermissionUpdateSchema.js';
 import type { WorkerBadgeProps } from '../../../agenc/upstream/components/permissions/WorkerBadge.js';
