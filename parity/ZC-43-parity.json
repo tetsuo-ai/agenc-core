@@ -21,6 +21,8 @@
     "runtime/src/session/session.ts",
     "runtime/src/tools/system/exec-command.ts",
     "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/tools/execution.ts",
+    "runtime/src/tools/execution.test.ts",
     "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/process-manager.ts",
     "runtime/src/unified-exec/process-manager.test.ts",
@@ -35,6 +37,7 @@
     "runtime/src/session/turn-context.test.ts",
     "runtime/src/session/session.test.ts",
     "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/tools/execution.test.ts",
     "runtime/src/unified-exec/process-manager.test.ts",
     "runtime/src/permissions/guardian/approval-request.test.ts",
     "runtime/src/tools/router.test.ts"
@@ -84,6 +87,8 @@
       "targetFiles": [
         "runtime/src/tools/router.ts",
         "runtime/src/tools/router.test.ts",
+        "runtime/src/tools/execution.ts",
+        "runtime/src/tools/execution.test.ts",
         "runtime/src/permissions/guardian/approval-request.ts",
         "runtime/src/permissions/guardian/approval-request.test.ts",
         "runtime/src/permissions/guardian/arbiter.ts"
@@ -160,6 +165,7 @@
         "SandboxTransformRequest.networkPolicyDecider",
         "ApprovalCtx.networkPolicyDecider",
         "ToolRouter.networkPolicyInterfacesFromTurn",
+        "executeToolDispatch.networkPolicyInterfacesFromInvocation",
         "GuardianApprovalRequestBase.networkPolicyInterfaces"
       ],
       "behavior": "Exec, spawn, and guardian target surfaces carry the optional interface presence without starting a managed proxy transport. Interface presence alone remains no-op for managed-network sandbox selection; only real proxy config or enforceManagedNetwork marks managed-network requirements.",
@@ -167,7 +173,8 @@
         "runtime/src/tools/system/exec-command.test.ts",
         "runtime/src/unified-exec/process-manager.test.ts",
         "runtime/src/permissions/guardian/approval-request.test.ts",
-        "runtime/src/tools/router.test.ts"
+        "runtime/src/tools/router.test.ts",
+        "runtime/src/tools/execution.test.ts"
       ]
     }
   ],

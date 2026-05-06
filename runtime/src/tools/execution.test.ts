@@ -19,6 +19,8 @@ import {
 } from "./execution.js";
 import type { Tool } from "./types.js";
 import type { ToolInvocation } from "./context.js";
+import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
+import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import type {
   PostToolUseFailureHook,
   PostToolUseHook,
@@ -1060,6 +1062,73 @@ describe("runToolUse — progress events", () => {
     expect(progressEvents[0]!.payload.chunk).toBe("chunk-a");
     expect(progressEvents[1]!.payload.chunk).toBe("chunk-b");
   });
+});
+
+test("legacy guardian approval fallback carries turn network policy interfaces", async () => {
+  const policyDecider = {
+    decide: vi.fn(async () => ({ decision: "allow" as const })),
+  };
+  const blockedRequestObserver = {
+    onBlockedRequest: vi.fn(async () => {}),
+  };
+  const baseInvocation = makeInvocation("fallback-network-interfaces", "Write");
+  const invocation: ToolInvocation = {
+    ...baseInvocation,
+    turn: {
+      ...baseInvocation.turn,
+      config: { approvalsReviewer: "auto_review" },
+      network: {
+        policyDecider,
+        blockedRequestObserver,
+      },
+    } as never,
+  };
+  let observedRequest:
+    | ReturnType<typeof buildGuardianApprovalRequest>
+    | undefined;
+  const reviewer = {
+    reviewApprovalRequest: vi.fn(
+      async ({ ctx, args }: GuardianApprovalReviewOptions) => {
+        observedRequest = buildGuardianApprovalRequest(ctx, args ?? {});
+        return {
+          decision: { kind: "denied" as const },
+          reason: "fallback inspected network policy interfaces",
+          reviewId: "fallback-network-interface-review",
+          countedDenial: true,
+        };
+      },
+    ),
+  };
+  const execute = vi.fn(async () => ({ content: "should-not-run" }));
+  const tool: Tool = {
+    name: "Write",
+    description: "",
+    inputSchema: {},
+    execute,
+  };
+
+  const out = await runToolUse('{"file_path":"README.md"}', {
+    currentTurnId: "t1",
+    tool,
+    invocation,
+    guardianApprovalReviewer: reviewer,
+  });
+
+  expect(out.isError).toBe(true);
+  expect(out.content).toContain("fallback inspected network policy interfaces");
+  expect(reviewer.reviewApprovalRequest).toHaveBeenCalledTimes(1);
+  expect(execute).not.toHaveBeenCalled();
+  expect(observedRequest).toEqual(
+    expect.objectContaining({
+      callId: "fallback-network-interfaces",
+      turnId: "t1",
+      toolName: "Write",
+      networkPolicyInterfaces: {
+        policyDecider: true,
+        blockedRequestObserver: true,
+      },
+    }),
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────

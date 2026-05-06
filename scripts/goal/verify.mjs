@@ -1579,6 +1579,8 @@ const ITEM_EVIDENCE = {
       "runtime/src/session/session.test.ts",
       "runtime/src/tools/system/exec-command.ts",
       "runtime/src/tools/system/exec-command.test.ts",
+      "runtime/src/tools/execution.ts",
+      "runtime/src/tools/execution.test.ts",
       "runtime/src/tools/router.ts",
       "runtime/src/tools/router.test.ts",
       "runtime/src/unified-exec/types.ts",
@@ -1601,6 +1603,8 @@ const ITEM_EVIDENCE = {
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.ts" },
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.test.ts" },
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/system/exec-command.ts" },
+      { pattern: "networkPolicyInterfacesFromInvocation", scope: "runtime/src/tools/execution.ts" },
+      { pattern: "legacy guardian approval fallback carries turn network policy interfaces", scope: "runtime/src/tools/execution.test.ts" },
       { pattern: "networkPolicyInterfacesFromTurn", scope: "runtime/src/tools/router.ts" },
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/router.test.ts" },
       { pattern: "networkPolicyDecider", scope: "runtime/src/unified-exec/process-manager.ts" },
@@ -1611,6 +1615,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/session/turn-context.test.ts",
       "runtime/src/session/session.test.ts",
       "runtime/src/tools/system/exec-command.test.ts",
+      "runtime/src/tools/execution.test.ts",
       "runtime/src/tools/router.test.ts",
       "runtime/src/unified-exec/process-manager.test.ts",
       "runtime/src/permissions/guardian/approval-request.test.ts",
@@ -5850,6 +5855,8 @@ function assertZc43NetworkPolicyInterfaces() {
     "runtime/src/session/session.ts",
     "runtime/src/tools/system/exec-command.ts",
     "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/tools/execution.ts",
+    "runtime/src/tools/execution.test.ts",
     "runtime/src/tools/router.ts",
     "runtime/src/tools/router.test.ts",
     "runtime/src/unified-exec/types.ts",
@@ -5945,6 +5952,26 @@ function assertZc43NetworkPolicyInterfaces() {
   if (!execTestSource.includes("threads network policy interfaces into runtime sandbox requests")) {
     failGate("ZC-43: exec-command tests must lock network policy interface threading.");
   }
+  const executionSource = readRequired("runtime/src/tools/execution.ts");
+  for (const marker of [
+    "networkPolicyInterfacesFromInvocation",
+    "networkPolicyDecider",
+    "blockedRequestObserver",
+  ]) {
+    if (!executionSource.includes(marker)) {
+      failGate(`ZC-43: execution approval fallback threading is missing ${marker}.`);
+    }
+  }
+  const executionTestSource = readRequired("runtime/src/tools/execution.test.ts");
+  if (
+    !executionTestSource.includes(
+      "legacy guardian approval fallback carries turn network policy interfaces",
+    )
+  ) {
+    failGate(
+      "ZC-43: execution fallback approval path must test network policy interface threading.",
+    );
+  }
   const processManagerSource = readRequired("runtime/src/unified-exec/process-manager.ts");
   for (const marker of [
     "networkPolicyDecider",
@@ -6014,6 +6041,7 @@ function assertZc43NetworkPolicyInterfaces() {
     "src/session/turn-context.test.ts",
     "src/session/session.test.ts",
     "src/tools/system/exec-command.test.ts",
+    "src/tools/execution.test.ts",
     "src/tools/router.test.ts",
     "src/unified-exec/process-manager.test.ts",
     "src/permissions/guardian/approval-request.test.ts",

@@ -1258,6 +1258,7 @@ function approvalRequestFromResolver(
       callId: invocation.callId,
       toolName: nameDisplay(invocation.toolName),
       turnId: currentTurnId,
+      ...networkPolicyInterfacesFromTurn(invocation.turn),
       signal,
     });
     return {
