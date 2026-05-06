@@ -1280,6 +1280,19 @@ const ITEM_EVIDENCE = {
   "MG-01": {
     files: ["runtime/src/bin/agenc.ts"],
   },
+  "MG-02": {
+    files: [
+      "runtime/src/bin/MIGRATION.md",
+      "scripts/check-bin-classification.mjs",
+    ],
+    grepPresent: [
+      { pattern: "client-only", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "daemon-only", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "shared", scope: "runtime/src/bin/MIGRATION.md" },
+      { pattern: "discoverBinSourceFiles", scope: "scripts/check-bin-classification.mjs" },
+    ],
+    tests: ["scripts/check-bin-classification.test.mjs"],
+  },
   "MG-04": {
     grepNotPresent: [{ pattern: "directRuntime|direct.*runtime|legacy.*direct", scope: "runtime/src/bin" }],
   },
@@ -3564,10 +3577,15 @@ async function migrationGates(item) {
     return;
   }
   if (id === "MG-02") {
-    // Daemon autostart wrapper.
-    const found = grepRepo("agenc daemon", "runtime/src/bin");
-    if (!found) failGate("MG-02: 'agenc daemon' wrapper not referenced in runtime/src/bin/");
-    pass("MG-02: agenc daemon wrapper present");
+    const test = run("node", ["scripts/check-bin-classification.test.mjs"]);
+    if (test.status !== 0) {
+      failGate("MG-02: bin classification checker tests failed");
+    }
+    const check = run("node", ["scripts/check-bin-classification.mjs"]);
+    if (check.status !== 0) {
+      failGate("MG-02: bin classification inventory is incomplete");
+    }
+    pass("MG-02: runtime/src/bin classification inventory complete");
     return;
   }
   if (id === "MG-03") {
