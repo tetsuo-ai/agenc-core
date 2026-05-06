@@ -185,13 +185,15 @@ async function waitForRecoveredToolStatus(
   expectedStatus: string,
 ): Promise<string> {
   const startedAt = Date.now();
+  let lastStatus: string | undefined;
   while (Date.now() - startedAt < 2_000) {
     const status = readRecoveredToolStatus(agencHome, cwd, toolCallId);
+    lastStatus = status;
     if (status === expectedStatus) return status;
     await delay(10);
   }
   throw new Error(
-    `timed out waiting for ${toolCallId} to reach ${expectedStatus}`,
+    `timed out waiting for ${toolCallId} to reach ${expectedStatus}; last status: ${lastStatus ?? "missing"}`,
   );
 }
 
@@ -714,6 +716,54 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("foreground daemon applies agent.retention config to startup pruning", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[agent.retention]
+completed_days = 10000
+failed_days = 10000
+snapshot_days = 10000
+snapshot_max_count = 10000
+snapshot_max_bytes = 67108864
+      `,
+    );
+    seedTerminalDaemonRun(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-retention-config",
+      sessionId: "session-retention-config",
+      status: "completed",
+      lastActiveAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      expect(
+        readAgentRunStatus(agencHome, process.cwd(), "run-retention-config"),
+      ).toBe("completed");
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("foreground daemon runs restart recovery before advertising readiness", async () => {
     const agencHome = await tempAgencHome();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-other-cwd-"));
@@ -959,7 +1009,8 @@ describe("AgenC daemon CLI", () => {
     });
 
     const live = restoredLiveAgent("run-replay", "/root/run-replay");
-    const dispatch = vi.fn(async () => ({ content: "file text" }));
+    const dispatch = vi.fn(async () => ({ content: "raw dispatch bypass" }));
+    const execute = vi.fn(async () => ({ content: "file text" }));
     const resumeAgentFromRollout = vi.fn(async () => ({
       resumedCount: 1,
       rootLive: live,
@@ -986,7 +1037,16 @@ describe("AgenC daemon CLI", () => {
             services: {},
           },
           registry: {
-            tools: [{ name: "FileRead", recoveryCategory: "idempotent" }],
+            tools: [
+              {
+                name: "FileRead",
+                description: "Read a file.",
+                inputSchema: { type: "object" },
+                recoveryCategory: "idempotent",
+                isReadOnly: true,
+                execute,
+              },
+            ],
             toLLMTools: () => [],
             dispatch,
           },
@@ -1024,11 +1084,10 @@ describe("AgenC daemon CLI", () => {
     expect(resumeAgentFromRollout).toHaveBeenCalledWith(
       expect.objectContaining({ rootThreadId: "run-replay" }),
     );
-    expect(dispatch).toHaveBeenCalledWith({
-      id: "tool-replay",
-      name: "FileRead",
-      arguments: JSON.stringify({ file_path: "README.md" }),
-    });
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ file_path: "README.md" }),
+    );
+    expect(dispatch).not.toHaveBeenCalled();
     expect(runParams?.initialMessages).toEqual([
       { role: "assistant", content: "state" },
       {
@@ -1056,7 +1115,6 @@ describe("AgenC daemon CLI", () => {
           "tool-replay": {
             status: "completed",
             result: "file text",
-            recoveryCategory: "idempotent",
           },
         },
       });
