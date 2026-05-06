@@ -11,7 +11,7 @@ import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upst
 import { safeParseJSON } from '../../../../utils/json.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { parseCellId } from '../../../../utils/notebook.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { HighlightedCode } from '../../markdown/HighlightedCode.js';
-import { StructuredDiff } from '../../StructuredDiff';
+import { StructuredDiff } from '../../diff/StructuredDiff';
 type Props = {
   notebook_path: string;
   cell_id: string | undefined;

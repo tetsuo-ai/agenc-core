@@ -7,7 +7,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Box, Text } from '../ink.js';
 import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { MessageResponse } from './MessageResponse';
-import { StructuredDiffList } from './StructuredDiffList';
+import { StructuredDiffList } from './diff/StructuredDiffList';
 type Props = {
   filePath: string;
   structuredPatch: StructuredPatchHunk[];
