@@ -4,34 +4,10 @@ import {
   getRawUtilization as getUpstreamRawUtilization,
   statusListeners,
 } from 'src/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
+import type { AgenCAILimits as UpstreamAgenCAILimits } from 'src/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
 
-type QuotaStatus = 'allowed' | 'allowed_warning' | 'rejected'
-type RateLimitType =
-  | 'five_hour'
-  | 'seven_day'
-  | 'seven_day_opus'
-  | 'seven_day_sonnet'
-  | 'overage'
-type RateLimitSnapshot = {
-  status: QuotaStatus
-  unifiedRateLimitFallbackAvailable: boolean
-  resetsAt?: number
-  rateLimitType?: RateLimitType
-  utilization?: number
-  overageStatus?: QuotaStatus
-  overageResetsAt?: number
-  overageDisabledReason?: string
-  isUsingOverage?: boolean
-  surpassedThreshold?: number
-}
-type RawWindowUtilization = {
-  utilization: number
-  resets_at: number
-}
-type RawUtilization = {
-  five_hour?: RawWindowUtilization
-  seven_day?: RawWindowUtilization
-}
+type RateLimitSnapshot = UpstreamAgenCAILimits
+type RawUtilization = ReturnType<typeof getUpstreamRawUtilization>
 type RateLimitService = {
   currentLimits: RateLimitSnapshot
   statusListeners: Set<(limits: RateLimitSnapshot) => void>

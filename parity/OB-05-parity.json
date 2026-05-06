@@ -2,8 +2,8 @@
   "item": "OB-05",
   "contractName": "ob-05-error-ux",
   "status": "implemented",
-  "scope": "Typed runtime/API error UX, \u004fpenAI-compatible error classification, validation-error rendering, system API retry rendering, and AgenC code-hint parsing for shell output.",
-  "sourceRoot": "/home/tetsuo/git/\u006fpenclaude",
+  "scope": "Typed runtime/API error UX, compatible-provider error classification, validation-error rendering, system API retry rendering, and AgenC code-hint parsing for shell output.",
+  "sourceRootLabel": "typescript UI reference checkout",
   "targetRoot": "..",
   "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
   "sourceFiles": [
@@ -13,7 +13,7 @@
     "src/services/api/openaiErrorClassification.ts",
     "src/components/messages/SystemAPIErrorMessage.tsx",
     "src/components/ValidationErrorsList.tsx",
-    "src/utils/\u0063laudeCodeHints.ts"
+    "src/utils/codeHints.ts"
   ],
   "targetFiles": [
     "runtime/src/errors/runtime.ts",
@@ -37,6 +37,7 @@
     "runtime/src/errors/api.test.ts",
     "runtime/src/errors/openai-compatible.test.ts",
     "runtime/src/errors/hints.test.ts",
+    "runtime/src/errors/hint-recommendation-compat.test.ts",
     "runtime/src/tui/components/SystemAPIErrorMessage.test.tsx",
     "runtime/src/tui/components/ValidationErrorsList.test.tsx",
     "runtime/src/llm/api/errors.test.ts",
@@ -51,7 +52,7 @@
     "src/services/api/openaiErrorClassification.ts": "runtime/src/errors/openai-compatible.ts",
     "src/components/messages/SystemAPIErrorMessage.tsx": "runtime/src/tui/components/SystemAPIErrorMessage.tsx",
     "src/components/ValidationErrorsList.tsx": "runtime/src/tui/components/ValidationErrorsList.tsx",
-    "src/utils/\u0063laudeCodeHints.ts": "runtime/src/errors/hints.ts"
+    "src/utils/codeHints.ts": "runtime/src/errors/hints.ts"
   },
   "rows": [
     {
@@ -94,9 +95,9 @@
         "runtime/src/llm/providers/openai/adapter.ts"
       ],
       "requiredBehaviors": [
-        "Classify local \u004fpenAI-compatible network failures by errno, localhost resolution, connection refusal, timeouts, DNS, TLS, and generic fetch failure.",
+        "Classify local compatible-provider network failures by errno, localhost resolution, connection refusal, timeouts, DNS, TLS, and generic fetch failure.",
         "Classify HTTP failures by model not found, endpoint not found, context overflow, unsupported tool calls, auth, rate limit, server overload, and malformed success bodies.",
-        "Embed and recover stable category markers in user-facing \u004fpenAI-compatible provider errors.",
+        "Embed and recover stable category markers in user-facing compatible-provider errors.",
         "Map live provider transport failures and malformed successful JSON responses through the classifier instead of leaving those paths as generic errors."
       ],
       "edgeCases": [
@@ -147,7 +148,7 @@
     {
       "id": "agenc-code-hints",
       "source": [
-        "src/utils/\u0063laudeCodeHints.ts"
+        "src/utils/codeHints.ts"
       ],
       "target": [
         "runtime/src/errors/hints.ts",
@@ -165,6 +166,7 @@
       ],
       "tests": [
         "runtime/src/errors/hints.test.ts",
+        "runtime/src/errors/hint-recommendation-compat.test.ts",
         "runtime/src/tools/system/bash.test.ts"
       ],
       "status": "required"
@@ -172,7 +174,7 @@
   ],
   "carriedBehavior": [
     "Runtime error primitives now live under runtime/src/errors and include abort, errno, SDK assistant-message, axios-shaped, API-formatting, SSL/TLS, prompt-too-long, media-size, and retryable-error helpers.",
-    "The \u004fpenAI-compatible provider imports the canonical runtime classifier and keeps stable category markers for actionable self-hosted provider failures, including live transport and malformed-success response paths.",
+    "The compatible provider imports the canonical runtime classifier and keeps stable category markers for actionable self-hosted provider failures, including live transport and malformed-success response paths.",
     "The system API retry message is typed through runtime/src/types/message.ts and the live upstream message alias, then rendered by the AgenC-owned TUI component from the live system-message path.",
     "Validation error rendering builds nested trees from dot paths, replaces invalid indexed leaves with readable invalid values, sorts files, de-duplicates suggestions, and is wired into the live settings/doctor callers.",
     "AgenC code hints use the AgenC tag name and debug prefix, strip from bash output before truncation, and are surfaced as structured metadata while preserving the single-slot pending store."
@@ -181,7 +183,7 @@
     "Plugin marketplace prompting, persisted show-once config, and install dialogs are not wired in this item because the cited hint source only owns parser/store behavior and the live AgenC plugin recommendation UI is still confined to the temporary upstream mirror.",
     "The React/Ink validation component is ported to a local AgenC tree renderer and local Ink exports instead of importing from the temporary upstream mirror.",
     "The system API error renderer keeps the small response prefix and expansion hint inline so the new component does not grow production dependencies on the temporary upstream mirror.",
-    "The stale compact \u004fpenAI-compatible classifier under runtime/src/llm/_deps was removed instead of kept as a forwarding module, because re-export shims are forbidden.",
+    "The stale compact compatible-provider classifier under runtime/src/llm/_deps was removed instead of kept as a forwarding module, because re-export shims are forbidden.",
     "The old mirror copies of SystemAPIErrorMessage, ValidationErrorsList, and the hint parser were deleted after their live callers were migrated to the AgenC-owned modules."
   ],
   "conflictResolutions": [
@@ -194,6 +196,7 @@
       "runtime/src/errors/api.test.ts",
       "runtime/src/errors/openai-compatible.test.ts",
       "runtime/src/errors/hints.test.ts",
+      "runtime/src/errors/hint-recommendation-compat.test.ts",
       "runtime/src/tui/components/SystemAPIErrorMessage.test.tsx",
       "runtime/src/tui/components/ValidationErrorsList.test.tsx",
       "runtime/src/llm/api/errors.test.ts",
@@ -202,8 +205,8 @@
       "runtime/src/tools/system/bash.test.ts"
     ],
     "commands": [
-      "npm --workspace=@tetsuo-ai/runtime exec vitest run src/errors/runtime.test.ts src/errors/api.test.ts src/errors/openai-compatible.test.ts src/errors/hints.test.ts src/tui/components/SystemAPIErrorMessage.test.tsx src/tui/components/ValidationErrorsList.test.tsx src/llm/api/errors.test.ts src/llm/client-session.test.ts src/llm/providers/openai/adapter.test.ts src/tools/system/bash.test.ts",
-      "npm --workspace=@tetsuo-ai/runtime exec vitest run src/llm/providers/openai/adapter.test.ts src/llm/client-session.test.ts src/llm/api/errors.test.ts src/errors/openai-compatible.test.ts src/errors/hints.test.ts src/tui/components/SystemAPIErrorMessage.test.tsx src/tui/components/ValidationErrorsList.test.tsx src/tools/system/bash.test.ts",
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run src/errors/runtime.test.ts src/errors/api.test.ts src/errors/openai-compatible.test.ts src/errors/hints.test.ts src/errors/hint-recommendation-compat.test.ts src/tui/components/SystemAPIErrorMessage.test.tsx src/tui/components/ValidationErrorsList.test.tsx src/llm/api/errors.test.ts src/llm/client-session.test.ts src/llm/providers/openai/adapter.test.ts src/tools/system/bash.test.ts",
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run src/llm/providers/openai/adapter.test.ts src/llm/client-session.test.ts src/llm/api/errors.test.ts src/errors/openai-compatible.test.ts src/errors/hints.test.ts src/errors/hint-recommendation-compat.test.ts src/tui/components/SystemAPIErrorMessage.test.tsx src/tui/components/ValidationErrorsList.test.tsx src/tools/system/bash.test.ts",
       "npm run typecheck --workspace=@tetsuo-ai/runtime",
       "agenc-upstream-port branding scan over changed AgenC-owned files",
       "agenc-tui-validate full gate for /tmp/agenc-core-wt/OB-05",
