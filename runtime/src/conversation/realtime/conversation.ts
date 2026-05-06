@@ -156,6 +156,8 @@ export interface RealtimeTransportRequest {
   readonly transport: RealtimeTransportSelection;
   readonly sessionConfig: RealtimeSessionConfig;
   readonly callerSdp?: string;
+  readonly providerCallId?: string;
+  readonly providerSdp?: string;
   readonly requestedSessionId: string;
   readonly headers?: Readonly<Record<string, string>>;
 }

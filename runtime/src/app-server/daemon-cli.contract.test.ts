@@ -1,5 +1,12 @@
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,9 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { AgenCShutdownSignal } from "../lifecycle/signal-handlers.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
-import {
-  createAgenCJsonLineDaemonRequestClient,
-} from "./agent-cli.js";
+import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import {
   AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
   AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
@@ -19,8 +24,10 @@ import {
   defaultAgenCDaemonPidPath,
   ensureAgenCDaemonCookie,
   formatAgenCDaemonCliHelpText,
+  createAgenCDaemonRealtimeHeaderResolver,
   parseAgenCDaemonCliArgs,
   readAgenCDaemonPid,
+  resolveAgenCDaemonRealtimeBaseUrl,
   resolveAgenCDaemonWebSocketListenOptions,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
@@ -44,8 +51,18 @@ import { AgentStatusTracker } from "../agents/status.js";
 import { Mailbox } from "../agents/mailbox.js";
 import { resolveAgentRole } from "../agents/role.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { AsyncQueue } from "../utils/async-queue.js";
+import {
+  buildRealtimeSessionConfig,
+  RealtimeConversationManager,
+  type RealtimeEvent,
+  type RealtimeTransportRequest,
+  type RealtimeWriter,
+} from "../conversation/realtime/conversation.js";
 import type { LiveAgent } from "../agents/control.js";
 import type { AgentMetadata } from "../agents/registry.js";
+import type { AuthBackend } from "../auth/backend.js";
+import type { AgenCRealtimeHeadersProvider } from "./realtime-transport.js";
 
 type ResumeAgentFromRolloutParams = {
   readonly rootThreadId: string;
@@ -173,6 +190,18 @@ async function waitForPid(pidPath: string): Promise<number> {
   throw new Error("timed out waiting for daemon pid");
 }
 
+async function waitForCondition(
+  condition: () => boolean,
+  description: string,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2_000) {
+    if (condition()) return;
+    await delay(10);
+  }
+  throw new Error(`timed out waiting for ${description}`);
+}
+
 async function waitForSnapshotCount(
   agencHome: string,
   cwd: string,
@@ -245,7 +274,9 @@ async function waitForSocketClose(socket: Socket): Promise<"closed" | "open"> {
   ]);
 }
 
-function readWebSocketMessage(socket: WebSocket): Promise<Record<string, unknown>> {
+function readWebSocketMessage(
+  socket: WebSocket,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
     socket.once("message", (data) => {
       resolve(JSON.parse(data.toString()) as Record<string, unknown>);
@@ -292,6 +323,13 @@ async function rejectedWebSocketUpgradeStatus(
   });
 }
 
+async function resolveRealtimeHeadersForTest(
+  provider: AgenCRealtimeHeadersProvider,
+  sessionConfig: ReturnType<typeof buildRealtimeSessionConfig>,
+): Promise<Readonly<Record<string, string>>> {
+  return typeof provider === "function" ? provider(sessionConfig) : provider;
+}
+
 describe("AgenC daemon CLI", () => {
   it("resolves the required pid file path", () => {
     expect(defaultAgenCDaemonPidPath("/home/test")).toBe(
@@ -306,20 +344,76 @@ describe("AgenC daemon CLI", () => {
     expect(resolveAgenCDaemonSocketPath({}, "/home/test")).toBe(
       "/home/test/.agenc/daemon.sock",
     );
-    expect(resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
-      "/tmp/agenc-home/daemon.sock",
-    );
+    expect(
+      resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" }),
+    ).toBe("/tmp/agenc-home/daemon.sock");
     expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
       "/home/test/.agenc/daemon.cookie",
     );
-    expect(resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
-      "/tmp/agenc-home/daemon.cookie",
-    );
+    expect(
+      resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" }),
+    ).toBe("/tmp/agenc-home/daemon.cookie");
     expect(resolveAgenCDaemonSnapshotPath({}, "/home/test")).toBe(
       "/home/test/.agenc/daemon-snapshot.json",
     );
-    expect(resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
-      "/tmp/agenc-home/daemon-snapshot.json",
+    expect(
+      resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" }),
+    ).toBe("/tmp/agenc-home/daemon-snapshot.json");
+  });
+
+  it("configures daemon realtime provider base URL and auth headers", async () => {
+    const authBackend: AuthBackend = {
+      login: vi.fn(() => ({ authenticated: true, provider: "local" })),
+      logout: vi.fn(() => ({ authenticated: false })),
+      whoami: vi.fn(() => ({ authenticated: true, provider: "local" })),
+      vendKey: vi.fn((provider, sessionId) => ({
+        provider: String(provider),
+        sessionId,
+        apiKey: `managed-${sessionId}`,
+      })),
+      inferAgencModel: vi.fn(() => ({
+        provider: "agenc",
+        model: "agenc:grok",
+      })),
+      getSubscriptionTier: vi.fn(() => "pro"),
+    };
+    const session = buildRealtimeSessionConfig({
+      conversationId: "thread-realtime",
+      outputModality: "audio",
+    });
+
+    expect(
+      resolveAgenCDaemonRealtimeBaseUrl({
+        OPENAI_BASE_URL: "  http://127.0.0.1:9000/v1  ",
+      }),
+    ).toBe("http://127.0.0.1:9000/v1");
+    expect(
+      resolveAgenCDaemonRealtimeBaseUrl(
+        {},
+        { providers: { openai: { base_url: "http://127.0.0.1:9001/v1" } } },
+      ),
+    ).toBe("http://127.0.0.1:9001/v1");
+    expect(resolveAgenCDaemonRealtimeBaseUrl({})).toBe(
+      "https://api.openai.com/v1",
+    );
+
+    await expect(
+      resolveRealtimeHeadersForTest(
+        createAgenCDaemonRealtimeHeaderResolver(authBackend, {
+          OPENAI_API_KEY: "sk-env",
+        }),
+        session,
+      ),
+    ).resolves.toEqual({ authorization: "Bearer sk-env" });
+    await expect(
+      resolveRealtimeHeadersForTest(
+        createAgenCDaemonRealtimeHeaderResolver(authBackend, {}),
+        session,
+      ),
+    ).resolves.toEqual({ authorization: "Bearer managed-thread-realtime" });
+    expect(authBackend.vendKey).toHaveBeenCalledWith(
+      "openai",
+      "thread-realtime",
     );
   });
 
@@ -335,15 +429,13 @@ describe("AgenC daemon CLI", () => {
       }).port,
     ).toBe(0);
     expect(validateAgenCDaemonWebSocketOrigin(undefined)).toBe(true);
-    expect(
-      validateAgenCDaemonWebSocketOrigin("http://127.0.0.1:4173"),
-    ).toBe(true);
-    expect(
-      validateAgenCDaemonWebSocketOrigin("http://localhost:4173"),
-    ).toBe(true);
-    expect(validateAgenCDaemonWebSocketOrigin("https://agenc.tech")).toBe(
+    expect(validateAgenCDaemonWebSocketOrigin("http://127.0.0.1:4173")).toBe(
       true,
     );
+    expect(validateAgenCDaemonWebSocketOrigin("http://localhost:4173")).toBe(
+      true,
+    );
+    expect(validateAgenCDaemonWebSocketOrigin("https://agenc.tech")).toBe(true);
     expect(validateAgenCDaemonWebSocketOrigin("http://192.0.2.1")).toBe(false);
   });
 
@@ -371,12 +463,12 @@ describe("AgenC daemon CLI", () => {
       kind: "command",
       action: "start",
     });
-    expect(parseAgenCDaemonCliArgs(["daemon", "start", "--foreground"])).toEqual(
-      {
-        kind: "command",
-        action: "run",
-      },
-    );
+    expect(
+      parseAgenCDaemonCliArgs(["daemon", "start", "--foreground"]),
+    ).toEqual({
+      kind: "command",
+      action: "run",
+    });
     expect(
       parseAgenCDaemonCliArgs(["daemon", "start", "--foreground", "--bogus"]),
     ).toEqual({
@@ -460,7 +552,10 @@ describe("AgenC daemon CLI", () => {
     const host = createHost(agencHome);
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
-    await writeFile(join(agencHome, "config.toml"), "[auth]\nbackend = \"remote\"\n");
+    await writeFile(
+      join(agencHome, "config.toml"),
+      '[auth]\nbackend = "remote"\n',
+    );
 
     await expect(
       runAgenCDaemonCli({ kind: "command", action: "start" }, { host, io }),
@@ -631,9 +726,9 @@ describe("AgenC daemon CLI", () => {
       authenticated: true,
       provider: "local",
     });
-    await expect(readFile(join(agencHome, "auth.json"), "utf8")).resolves.toContain(
-      '"token"',
-    );
+    await expect(
+      readFile(join(agencHome, "auth.json"), "utf8"),
+    ).resolves.toContain('"token"');
     await expect(client.request("auth.whoami")).resolves.toMatchObject({
       authenticated: true,
       provider: "local",
@@ -651,6 +746,125 @@ describe("AgenC daemon CLI", () => {
     await expect(running).resolves.toBe(0);
 
     await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon routes realtime start through runner-backed thread state", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    const events = new AsyncQueue<RealtimeEvent>();
+    const conversation = new RealtimeConversationManager();
+    const transportRequests: RealtimeTransportRequest[] = [];
+    const resolvedThreadIds: string[] = [];
+    const writer: RealtimeWriter = {
+      sendAudioFrame: () => {},
+      sendConversationItemCreate: () => {},
+      sendConversationFunctionCallOutput: () => {},
+      sendResponseCreate: () => {},
+      sendPayload: () => {},
+    };
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent-realtime",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      resolveRealtimeThread: async (threadId) => {
+        resolvedThreadIds.push(threadId);
+        return {
+          threadId,
+          conversation,
+          connectTransport: (request) => {
+            transportRequests.push(request);
+            return {
+              writer,
+              nextEvent: () => events.recv(),
+              close: () => events.close(),
+            };
+          },
+        };
+      },
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const socket = createConnection(socketPath);
+      await once(socket, "connect");
+      socket.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "initialize",
+          method: "initialize",
+          params: {
+            protocolVersion: "1.0.0",
+            protocol: { version: "1.0.0" },
+            clientName: "agenc-realtime-test",
+            authCookie,
+            capabilities: {},
+          },
+        })}\n`,
+      );
+      await expect(readSocketLine(socket)).resolves.toContain('"result"');
+      socket.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "create",
+          method: "agent.create",
+          params: { objective: "realtime thread state" },
+        })}\n`,
+      );
+      const created = JSON.parse(await readSocketLine(socket)) as {
+        readonly result?: { readonly agentId?: string };
+      };
+      expect(created.result?.agentId).toBe("agent-realtime");
+
+      socket.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "start",
+          method: "thread/realtime/start",
+          params: {
+            threadId: created.result?.agentId,
+            outputModality: "audio",
+          },
+        })}\n`,
+      );
+      await expect(readSocketLine(socket)).resolves.toContain('"result":{}');
+      await waitForCondition(
+        () => transportRequests.length === 1,
+        "runner realtime transport request",
+      );
+      expect(resolvedThreadIds).toEqual(["agent-realtime"]);
+      expect(transportRequests[0]).toMatchObject({
+        requestedSessionId: "agent-realtime",
+        transport: { type: "websocket" },
+      });
+      events.send({
+        type: "session_updated",
+        realtimeSessionId: "rt_agent_realtime",
+      });
+      await expect(readSocketLine(socket)).resolves.toContain(
+        '"method":"thread/realtime/started"',
+      );
+      events.close();
+      await expect(readSocketLine(socket)).resolves.toContain(
+        '"method":"thread/realtime/closed"',
+      );
+      socket.end();
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await expect(running).resolves.toBe(0);
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("foreground daemon exposes cookie-authenticated websocket JSON-RPC for the portal", async () => {
@@ -691,12 +905,11 @@ describe("AgenC daemon CLI", () => {
         },
       }),
     );
-    const missingCookieResponse = await readWebSocketMessage(
-      missingCookieSocket,
-    );
+    const missingCookieResponse =
+      await readWebSocketMessage(missingCookieSocket);
     expect(
-      ((missingCookieResponse.error as { data?: { code?: string } } | undefined)
-        ?.data?.code),
+      (missingCookieResponse.error as { data?: { code?: string } } | undefined)
+        ?.data?.code,
     ).toBe("CONNECTION_AUTHENTICATION_FAILED");
     await waitForWebSocketClose(missingCookieSocket);
 
@@ -792,7 +1005,8 @@ describe("AgenC daemon CLI", () => {
       const created = await writerClient.request("agent.create", {
         objective: "health state",
       });
-      if (created.sessionId === undefined) throw new Error("session id missing");
+      if (created.sessionId === undefined)
+        throw new Error("session id missing");
       const initialStats = await readerClientA.request("health.stats");
       expect(initialStats.sessions).toMatchObject({
         active: 1,
@@ -875,7 +1089,10 @@ describe("AgenC daemon CLI", () => {
     const io = createIo();
     const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
-    await writeFile(join(agencHome, "config.toml"), "[auth]\nbackend = \"remote\"\n");
+    await writeFile(
+      join(agencHome, "config.toml"),
+      '[auth]\nbackend = "remote"\n',
+    );
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
@@ -1011,10 +1228,7 @@ snapshot_max_bytes = 64
       ).toEqual(["2026-05-06T00:00:00.000Z"]);
       expect(
         readSnapshotTimes(agencHome, process.cwd(), "session-retention-count"),
-      ).toEqual([
-        "2026-05-06T00:00:01.000Z",
-        "2026-05-06T00:00:02.000Z",
-      ]);
+      ).toEqual(["2026-05-06T00:00:01.000Z", "2026-05-06T00:00:02.000Z"]);
       expect(
         readSnapshotTimes(agencHome, process.cwd(), "session-retention-bytes"),
       ).toEqual(["2026-05-06T00:00:01.000Z"]);
@@ -1079,14 +1293,14 @@ snapshot_max_bytes = 64
     };
     const sendInput = vi.fn(async () => {});
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       runParams = params;
       params.live.status.markRunning("turn-restart");
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
@@ -1124,11 +1338,12 @@ snapshot_max_bytes = 64
     await expect(
       waitForSnapshotCount(agencHome, otherCwd, "session-other", 2),
     ).resolves.toBeGreaterThanOrEqual(2);
-    expect(latestSnapshotToolState(agencHome, otherCwd, "session-other"))
-      .toMatchObject({
-        lastTrigger: "periodic",
-        pending: [],
-      });
+    expect(
+      latestSnapshotToolState(agencHome, otherCwd, "session-other"),
+    ).toMatchObject({
+      lastTrigger: "periodic",
+      pending: [],
+    });
 
     expect(io.stderrText()).toContain(
       "daemon recovery loaded 2 agent run(s) from state",
@@ -1254,13 +1469,15 @@ snapshot_max_bytes = 64
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
-    expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-restart")).toBe(
-      "poisoned",
-    );
+    expect(
+      readRecoveredToolStatus(agencHome, process.cwd(), "tool-restart"),
+    ).toBe("poisoned");
     expect(readRecoveredToolStatus(agencHome, otherCwd, "tool-other")).toBe(
       "poisoned",
     );
-    expect(readAgentRunStatus(agencHome, process.cwd(), "run-prune")).toBeUndefined();
+    expect(
+      readAgentRunStatus(agencHome, process.cwd(), "run-prune"),
+    ).toBeUndefined();
     expect(
       readAgentRunStatus(agencHome, process.cwd(), "run-prune-failed"),
     ).toBeUndefined();
@@ -1294,14 +1511,14 @@ snapshot_max_bytes = 64
       rootLive: live,
     }));
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       runParams = params;
       params.live.status.markRunning("turn-replay");
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
@@ -1386,22 +1603,23 @@ snapshot_max_bytes = 64
         toolName: "FileRead",
       },
     ]);
-    expect(latestSnapshotToolState(agencHome, process.cwd(), "session-replay"))
-      .toMatchObject({
-        pending: [],
-        completed: {
-          "tool-replay": {
-            status: "completed",
-            result: "file text",
-          },
+    expect(
+      latestSnapshotToolState(agencHome, process.cwd(), "session-replay"),
+    ).toMatchObject({
+      pending: [],
+      completed: {
+        "tool-replay": {
+          status: "completed",
+          result: "file text",
         },
-      });
+      },
+    });
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
-    expect(readRecoveredToolStatus(agencHome, process.cwd(), "tool-replay")).toBe(
-      "completed",
-    );
+    expect(
+      readRecoveredToolStatus(agencHome, process.cwd(), "tool-replay"),
+    ).toBe("completed");
 
     await rm(agencHome, { recursive: true, force: true });
   });
@@ -1422,21 +1640,24 @@ snapshot_max_bytes = 64
       recoveryCategory: "idempotent",
     });
 
-    const live = restoredLiveAgent("run-replay-poison", "/root/run-replay-poison");
+    const live = restoredLiveAgent(
+      "run-replay-poison",
+      "/root/run-replay-poison",
+    );
     const dispatch = vi.fn(async () => ({ content: "should not run" }));
     const resumeAgentFromRollout = vi.fn(async () => ({
       resumedCount: 1,
       rootLive: live,
     }));
     let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       runParams = params;
       params.live.status.markRunning("turn-replay-poison");
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
@@ -1693,7 +1914,9 @@ snapshot_max_bytes = 64
     expect(readAgentRunStatus(agencHome, process.cwd(), createdAgentId)).toBe(
       "running",
     );
-    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(0);
+    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(
+      0,
+    );
     await expect(
       firstClient.request("message.stream", {
         sessionId,
@@ -1703,7 +1926,9 @@ snapshot_max_bytes = 64
       messageId: expect.any(String),
       streamId: expect.any(String),
     });
-    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(1);
+    expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBeGreaterThan(
+      1,
+    );
 
     firstSignal.emit("SIGTERM");
     await expect(first).resolves.toBe(0);
@@ -1726,14 +1951,14 @@ snapshot_max_bytes = 64
     let restoreBootstrapOptions:
       | Parameters<AgenCBootstrapFunction>[0]
       | undefined;
-    const runAgentFn = (async function* (
+    const runAgentFn = async function* (
       params: Parameters<AgenCRunAgentFunction>[0],
     ) {
       runParams = params;
       params.live.status.markRunning("turn-created-restart");
       yield { kind: "status", text: "restored" };
       await new Promise(() => {});
-    }) as AgenCRunAgentFunction;
+    } as AgenCRunAgentFunction;
     const secondSignal = createSignalProcess();
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
@@ -1886,15 +2111,16 @@ snapshot_max_bytes = 64
     if (sessionId === undefined) throw new Error("session id missing");
     expect(binding?.sessionId).toBe(sessionId);
     expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBe(0);
-    expect(latestSnapshotToolState(agencHome, otherCwd, sessionId))
-      .toMatchObject({
-        inFlight: {
-          "tool-early-route": {
-            requestId: "tool-early-route",
-            toolName: "FileRead",
-          },
+    expect(
+      latestSnapshotToolState(agencHome, otherCwd, sessionId),
+    ).toMatchObject({
+      inFlight: {
+        "tool-early-route": {
+          requestId: "tool-early-route",
+          toolName: "FileRead",
         },
-      });
+      },
+    });
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
