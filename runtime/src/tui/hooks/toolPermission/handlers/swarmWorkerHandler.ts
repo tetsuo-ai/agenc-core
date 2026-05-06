@@ -1,11 +1,11 @@
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { PendingClassifierCheck } from '../../../../types/permissions'
-import { isAgentSwarmsEnabled } from '../../../../agenc/upstream/utils/agentSwarmsEnabled' // upstream-import: keep target is owned by another Z-PURGE item
-import { toError } from '../../../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision } from '../../../../agenc/upstream/utils/permissions/PermissionResult' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../../../utils/agentSwarmsEnabled' // upstream-import: keep target is owned by another Z-PURGE item
+import { toError } from '../../../../utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   createPermissionRequest,
   isSwarmWorker,

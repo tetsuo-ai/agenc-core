@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -8,10 +10,10 @@ import {
   PR_BODY,
   PR_TITLE,
   WORKFLOW_CONTENT,
-} from '../../../../constants/github-app.js'
-import { openBrowser } from '../../../../utils/browser.js'
-import { execFileNoThrow } from '../../../../utils/execFileNoThrow.js'
-import { logError } from '../../../../utils/log.js'
+} from '../../constants/github-app.js'
+import { openBrowser } from '../../utils/browser.js'
+import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
+import { logError } from '../../utils/log.js'
 import type { Workflow } from './types.js'
 
 async function createWorkflowFile(

@@ -5,8 +5,8 @@ import { useNotifications } from '../../context/notifications.js';
 import { Text } from '../../ink.js';
 import { getRateLimitWarning, getUsingOverageText } from 'src/services/agencAiLimits.js';
 import { useAgenCAiLimits } from 'src/services/agencAiLimitsHook.js';
-import { getSubscriptionType } from '../../../agenc/upstream/utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { hasAgenCAiBillingAccess } from '../../../agenc/upstream/utils/billing.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSubscriptionType } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { hasAgenCAiBillingAccess } from '../../../utils/billing.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getIsRemoteMode } from '../../../bootstrap/state';
 export function useRateLimitWarningNotification(model) {
   const $ = _c(17);

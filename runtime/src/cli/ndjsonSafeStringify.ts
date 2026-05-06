@@ -1,4 +1,4 @@
-import { jsonStringify } from '../../../utils/slowOperations.js'
+import { jsonStringify } from '../utils/slowOperations.js'
 
 // JSON.stringify emits U+2028/U+2029 raw (valid per ECMA-404). When the
 // output is a single NDJSON line, any receiver that uses JavaScript

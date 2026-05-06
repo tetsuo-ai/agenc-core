@@ -6,7 +6,7 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { DreamTaskState } from '../../../tasks/DreamTask/DreamTask';
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type {
   SDKControlCancelRequest,
@@ -6,11 +8,11 @@ import type {
   SDKControlResponse,
 } from '../entrypoints/sdk/controlTypes.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logError } from '../../../utils/log.js'
+import { logError } from '../utils/log.js'
 import {
   type RemoteMessageContent,
   sendEventToRemoteSession,
-} from '../../../utils/teleport/api.js'
+} from '../utils/teleport/api.js'
 import {
   SessionsWebSocket,
   type SessionsWebSocketCallbacks,

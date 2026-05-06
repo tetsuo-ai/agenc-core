@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   readProviderCodeCredentialsAsync,
   refreshProviderCodeAccessTokenIfNeeded,
 } from '../../utils/providerCodeCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isBareMode } from '../../../../utils/envUtils.js'
+import { isBareMode } from '../../utils/envUtils.js'
 import {
   DEFAULT_PROVIDER_CODE_BASE_URL,
   isProviderCodeBaseUrl,

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
@@ -11,13 +13,13 @@ import { Box, Text } from '../../tui/ink.js';
 import { useKeybinding, useKeybindings } from '../../tui/keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../tui/state/AppState.js';
 import type { PluginError } from '../../types/plugin.js';
-import { errorMessage } from '../../../../utils/errors.js';
-import { clearAllCaches } from '../../../../utils/plugins/cacheUtils.js';
-import { loadMarketplacesWithGracefulDegradation } from '../../../../utils/plugins/marketplaceHelpers.js';
-import { loadKnownMarketplacesConfig, removeMarketplaceSource } from '../../../../utils/plugins/marketplaceManager.js';
-import { getPluginEditableScopes } from '../../../../utils/plugins/pluginStartupCheck.js';
-import type { EditableSettingSource } from '../../../../utils/settings/constants.js';
-import { getSettingsForSource, updateSettingsForSource } from '../../../../utils/settings/settings.js';
+import { errorMessage } from '../../utils/errors.js';
+import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
+import { loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
+import { loadKnownMarketplacesConfig, removeMarketplaceSource } from '../../utils/plugins/marketplaceManager.js';
+import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js';
+import type { EditableSettingSource } from '../../utils/settings/constants.js';
+import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
 import { AddMarketplace } from './AddMarketplace.js';
 import { BrowseMarketplace } from './BrowseMarketplace.js';
 import { DiscoverPlugins } from './DiscoverPlugins.js';

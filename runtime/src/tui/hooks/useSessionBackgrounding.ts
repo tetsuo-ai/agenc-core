@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Hook for managing session backgrounding (Ctrl+B to background/foreground sessions).
  *

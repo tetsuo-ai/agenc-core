@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';

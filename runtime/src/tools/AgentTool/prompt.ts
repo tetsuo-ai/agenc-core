@@ -7,7 +7,7 @@ const SEND_MESSAGE_TOOL_NAME = 'SendMessage'
 const authModulePath = '../../utils/auth.js'
 const forkSubagentModulePath =
   './forkSubagent.js'
-const teammateModulePath = '../../agenc/upstream/utils/teammate.js'
+const teammateModulePath = '../../utils/teammate.js'
 const teammateContextModulePath =
   '../../utils/teammateContext.js'
 

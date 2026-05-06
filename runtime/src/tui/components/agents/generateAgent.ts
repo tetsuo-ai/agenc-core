@@ -14,8 +14,8 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../../services/analytics/index'
-import { jsonParse } from '../../../agenc/upstream/utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
-import { asSystemPrompt } from '../../../agenc/upstream/utils/systemPromptType' // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonParse } from '../../../utils/slowOperations' // upstream-import: keep target is owned by another Z-PURGE item
+import { asSystemPrompt } from '../../../utils/systemPromptType' // upstream-import: keep target is owned by another Z-PURGE item
 
 type GeneratedAgent = {
   identifier: string

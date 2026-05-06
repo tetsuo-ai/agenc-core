@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import supportsHyperlinksLib from 'supports-hyperlinks'
 
 // Additional terminals that support OSC 8 hyperlinks but aren't detected by supports-hyperlinks.

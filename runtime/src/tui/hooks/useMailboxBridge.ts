@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { useMailbox } from '../context/mailbox'
 

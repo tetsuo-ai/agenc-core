@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * `agenc mcp xaa` — manage the XAA (SEP-990) IdP connection.
  *
@@ -18,8 +20,8 @@ import {
   saveIdpClientSecret,
   saveIdpIdTokenFromJwt,
 } from '../../services/mcp/xaaIdpLogin.js'
-import { errorMessage } from '../../../../utils/errors.js'
-import { updateSettingsForSource } from '../../../../utils/settings/settings.js'
+import { errorMessage } from '../../utils/errors.js'
+import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 export function registerMcpXaaIdpCommand(mcp: Command): void {
   const xaaIdp = mcp

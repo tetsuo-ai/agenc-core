@@ -15,12 +15,12 @@ import type {
   SystemAPIErrorMessage,
   UserMessage,
 } from '../types/message.js'
-import { getCwd } from '../../../utils/cwd.js'
-import { env } from '../../../utils/env.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from '../../../utils/envUtils.js'
-import { getErrnoCode } from '../../../utils/errors.js'
-import { normalizeMessagesForAPI } from '../../../utils/messages.js'
-import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'
+import { getCwd } from '../utils/cwd.js'
+import { env } from '../utils/env.js'
+import { getAgenCConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
+import { getErrnoCode } from '../utils/errors.js'
+import { normalizeMessagesForAPI } from '../utils/messages.js'
+import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 function shouldUseVCR(): boolean {
   if (process.env.NODE_ENV === 'test') {
     return true

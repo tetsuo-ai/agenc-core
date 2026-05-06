@@ -2,8 +2,8 @@ import { randomUUID } from 'crypto'
 import { basename } from 'path'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { logEvent } from '../../services/analytics/index.js'
-import { readFileSync } from '../../agenc/upstream/utils/fileRead.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { expandPath } from '../../agenc/upstream/utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { readFileSync } from '../../utils/fileRead.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { expandPath } from '../../utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionOption } from '../components/permissions/FilePermissionDialog/permissionOptions'
 import type {
   MCPServerConnection,
@@ -16,9 +16,9 @@ import {
   getEditsForPatch,
   getPatchForEdits,
 } from '../../tools/FileEditTool/utils'
-import { getGlobalConfig } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPatchFromContents } from '../../agenc/upstream/utils/diff' // upstream-import: keep target is owned by another Z-PURGE item
-import { isENOENT } from '../../agenc/upstream/utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig } from '../../utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchFromContents } from '../../utils/diff' // upstream-import: keep target is owned by another Z-PURGE item
+import { isENOENT } from '../../utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   callIdeRpc,
   getConnectedIdeClient,

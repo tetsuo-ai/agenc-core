@@ -13,10 +13,10 @@ import { getAPIProvider } from '../../utils/model/providers.js'
 import {
   isBinaryContentType,
   persistBinaryContent,
-} from '../../../../utils/mcpOutputStorage.js'
-import { getSettings_DEPRECATED } from '../../../../utils/settings/settings.js'
-import { asSystemPrompt } from '../../../../utils/systemPromptType.js'
-import { ssrfGuardedLookup } from '../../../../utils/hooks/ssrfGuard.js'
+} from '../../utils/mcpOutputStorage.js'
+import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
+import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { ssrfGuardedLookup } from '../../utils/hooks/ssrfGuard.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 // Custom error classes for domain blocking

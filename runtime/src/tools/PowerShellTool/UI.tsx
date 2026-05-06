@@ -11,7 +11,7 @@ import { Box, Text } from '../../tui/ink.js';
 import type { Tool } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
 import type { PowerShellProgress } from '../../types/tools.js';
-import type { ThemeName } from '../../../../utils/theme.js';
+import type { ThemeName } from '../../utils/theme.js';
 import type { Out, PowerShellToolInput } from './PowerShellTool.js';
 // Constants for command display
 const MAX_COMMAND_DISPLAY_LINES = 2;

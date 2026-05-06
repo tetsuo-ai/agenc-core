@@ -9,8 +9,8 @@ import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
-} from '../../../../constants/prompts.js'
-import type { QuerySource } from '../../../../constants/querySource.js'
+} from '../../constants/prompts.js'
+import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import { query } from '../../query.js'
@@ -41,47 +41,47 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../../types/message.js'
-import { createAttachmentMessage } from '../../../../utils/attachments.js'
-import { AbortError } from '../../../../utils/errors.js'
-import { getDisplayPath } from '../../../../utils/file.js'
+import { createAttachmentMessage } from '../../utils/attachments.js'
+import { AbortError } from '../../utils/errors.js'
+import { getDisplayPath } from '../../utils/file.js'
 import {
   cloneFileStateCache,
   createFileStateCacheWithSizeLimit,
   READ_FILE_STATE_CACHE_SIZE,
-} from '../../../../utils/fileStateCache.js'
+} from '../../utils/fileStateCache.js'
 import {
   type CacheSafeParams,
   createSubagentContext,
-} from '../../../../utils/forkedAgent.js'
-import { registerFrontmatterHooks } from '../../../../utils/hooks/registerFrontmatterHooks.js'
-import { clearSessionHooks } from '../../../../utils/hooks/sessionHooks.js'
-import { executeSubagentStartHooks } from '../../../../utils/hooks.js'
-import { createUserMessage } from '../../../../utils/messages.js'
-import { getAgentModel } from '../../../../utils/model/agent.js'
+} from '../../utils/forkedAgent.js'
+import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
+import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
+import { executeSubagentStartHooks } from '../../utils/hooks.js'
+import { createUserMessage } from '../../utils/messages.js'
+import { getAgentModel } from '../../utils/model/agent.js'
 import { resolveAgentProvider } from '../../services/api/agentRouting.js'
-import { getInitialSettings } from '../../../../utils/settings/settings.js'
-import type { ModelAlias } from '../../../../utils/model/aliases.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
+import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
   setAgentTranscriptSubdir,
   writeAgentMetadata,
-} from '../../../../utils/sessionStorage.js'
+} from '../../utils/sessionStorage.js'
 import {
   isRestrictedToPluginOnly,
   isSourceAdminTrusted,
-} from '../../../../utils/settings/pluginOnlyPolicy.js'
+} from '../../utils/settings/pluginOnlyPolicy.js'
 import {
   asSystemPrompt,
   type SystemPrompt,
-} from '../../../../utils/systemPromptType.js'
+} from '../../utils/systemPromptType.js'
 import {
   isPerfettoTracingEnabled,
   registerAgent as registerPerfettoAgent,
   unregisterAgent as unregisterPerfettoAgent,
-} from '../../../../utils/telemetry/perfettoTracing.js'
-import type { ContentReplacementState } from '../../../../utils/toolResultStorage.js'
-import { createAgentId } from '../../../../utils/uuid.js'
+} from '../../utils/telemetry/perfettoTracing.js'
+import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
+import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
 /**

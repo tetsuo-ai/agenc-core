@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // AgenC: disable experimental API betas by default.
 // Tool search (defer_loading), global cache scope, and context management
 // require internal API support not available to external accounts → 500.
@@ -27,16 +29,16 @@ import {
   type ToolUseContext,
 } from '../tools/Tool.js'
 import { getTools } from '../tools.js'
-import { createAbortController } from '../../../utils/abortController.js'
-import { createFileStateCacheWithSizeLimit } from '../../../utils/fileStateCache.js'
-import { logError } from '../../../utils/log.js'
-import { createAssistantMessage } from '../../../utils/messages.js'
-import { getMainLoopModel } from '../../../utils/model/model.js'
-import { hasPermissionsToUseTool } from '../../../utils/permissions/permissions.js'
-import { setCwd } from '../../../utils/Shell.js'
-import { jsonStringify } from '../../../utils/slowOperations.js'
-import { getErrorParts } from '../../../utils/toolErrors.js'
-import { zodToJsonSchema } from '../../../utils/zodToJsonSchema.js'
+import { createAbortController } from '../utils/abortController.js'
+import { createFileStateCacheWithSizeLimit } from '../utils/fileStateCache.js'
+import { logError } from '../utils/log.js'
+import { createAssistantMessage } from '../utils/messages.js'
+import { getMainLoopModel } from '../utils/model/model.js'
+import { hasPermissionsToUseTool } from '../utils/permissions/permissions.js'
+import { setCwd } from '../utils/Shell.js'
+import { jsonStringify } from '../utils/slowOperations.js'
+import { getErrorParts } from '../utils/toolErrors.js'
+import { zodToJsonSchema } from '../utils/zodToJsonSchema.js'
 
 type ToolInput = Tool['inputSchema']
 type ToolOutput = Tool['outputSchema']

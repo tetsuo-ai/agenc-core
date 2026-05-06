@@ -9,8 +9,8 @@ import { Box, Newline, Text } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import { BashTool } from '../../../../tools/BashTool/BashTool';
 import { WebFetchTool } from '../../../../tools/WebFetchTool/WebFetchTool';
-import type { PermissionBehavior, PermissionRuleValue } from '../../../../agenc/upstream/utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueFromString, permissionRuleValueToString } from '../../../../agenc/upstream/utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionBehavior, PermissionRuleValue } from '../../../../utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueFromString, permissionRuleValueToString } from '../../../../utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
 export type PermissionRuleInputProps = {
   onCancel: () => void;
   onSubmit: (ruleValue: PermissionRuleValue, ruleBehavior: PermissionBehavior) => void;

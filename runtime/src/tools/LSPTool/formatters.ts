@@ -14,8 +14,8 @@ import type {
   SymbolKind,
 } from 'vscode-languageserver-types'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../../../utils/errors.js'
-import { plural } from '../../../../utils/stringUtils.js'
+import { errorMessage } from '../../utils/errors.js'
+import { plural } from '../../utils/stringUtils.js'
 /**
  * Formats a URI by converting it to a relative path if possible.
  * Handles URI decoding and gracefully falls back to un-decoded path if malformed.

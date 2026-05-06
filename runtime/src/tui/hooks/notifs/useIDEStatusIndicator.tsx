@@ -3,8 +3,8 @@ import React, { useEffect, useRef } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { Text } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { detectIDEs, type IDEExtensionInstallationStatus, isJetBrainsIde, isSupportedTerminal } from '../../../agenc/upstream/utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { detectIDEs, type IDEExtensionInstallationStatus, isJetBrainsIde, isSupportedTerminal } from '../../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getIsRemoteMode } from '../../../bootstrap/state';
 import { useIdeConnectionStatus } from '../useIdeConnectionStatus';
 import type { IDESelection } from '../useIdeSelection';

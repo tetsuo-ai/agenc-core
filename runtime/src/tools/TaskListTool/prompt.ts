@@ -1,4 +1,4 @@
-import { isAgentSwarmsEnabled } from '../../../../utils/agentSwarmsEnabled.js'
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 
 export const DESCRIPTION = 'List all tasks in the task list'
 

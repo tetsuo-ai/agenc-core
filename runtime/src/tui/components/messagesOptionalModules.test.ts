@@ -26,7 +26,7 @@ describe('Messages optional module adapter', () => {
 
   it('returns null for the exact missing optional module', async () => {
     const missing = new Error(
-      "Cannot find module '../../agenc/upstream/proactive/index.js'",
+      "Cannot find module '../../proactive/index.js'",
     ) as NodeJS.ErrnoException
     missing.code = 'MODULE_NOT_FOUND'
     vi.doMock('node:module', () => ({

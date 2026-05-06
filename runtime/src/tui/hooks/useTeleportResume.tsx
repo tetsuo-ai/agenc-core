@@ -2,10 +2,10 @@ import { c as _c } from "react-compiler-runtime";
 import { useCallback, useState } from 'react';
 import { setTeleportedSessionInfo } from '../../bootstrap/state.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
-import type { TeleportRemoteResponse } from '../../agenc/upstream/utils/conversationRecovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { CodeSession } from '../../agenc/upstream/utils/teleport/api.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { errorMessage, TeleportOperationError } from '../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { teleportResumeCodeSession } from '../../agenc/upstream/utils/teleport'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TeleportRemoteResponse } from '../../utils/conversationRecovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { CodeSession } from '../../utils/teleport/api.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage, TeleportOperationError } from '../../utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
+import { teleportResumeCodeSession } from '../../utils/teleport'; // upstream-import: keep target is owned by another Z-PURGE item
 export type TeleportResumeError = {
   message: string;
   formattedMessage?: string;

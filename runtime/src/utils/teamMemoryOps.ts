@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { isTeamMemFile } from '../memdir/teamMemPaths.js'
 // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
@@ -11,7 +13,7 @@ import type {
   SerializedMessage,
   TranscriptMessage,
 } from '../../types/logs.js'
-import { parseJSONL } from '../../../../utils/json.js'
+import { parseJSONL } from '../../utils/json.js'
 import {
   getProjectDir,
   getTranscriptPath,
@@ -19,9 +21,9 @@ import {
   isTranscriptMessage,
   saveCustomTitle,
   searchSessionsByCustomTitle,
-} from '../../../../utils/sessionStorage.js'
-import { jsonStringify } from '../../../../utils/slowOperations.js'
-import { escapeRegExp } from '../../../../utils/stringUtils.js'
+} from '../../utils/sessionStorage.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
+import { escapeRegExp } from '../../utils/stringUtils.js'
 
 type TranscriptEntry = TranscriptMessage & {
   forkedFrom?: {

@@ -3,15 +3,15 @@ import React from 'react'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { spawnShellTask } from '../../tasks/LocalShellTask/LocalShellTask.js'
-import { lazySchema } from '../../../../utils/lazySchema.js'
-import { exec } from '../../../../utils/Shell.js'
-import { getTaskOutputPath } from '../../../../utils/task/diskOutput.js'
+import { lazySchema } from '../../utils/lazySchema.js'
+import { exec } from '../../utils/Shell.js'
+import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import {
   bashToolHasPermission,
   matchWildcardPattern,
   permissionRuleExtractPrefix,
 } from '../BashTool/bashPermissions.js'
-import { parseForSecurity } from '../../../../utils/bash/ast.js'
+import { parseForSecurity } from '../../utils/bash/ast.js'
 
 export const MONITOR_TOOL_NAME = 'Monitor'
 

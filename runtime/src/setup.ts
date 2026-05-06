@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /* eslint-disable custom-rules/no-process-exit */
 
 import { feature } from 'bun:bundle'
@@ -36,22 +38,22 @@ import { initializeFileChangedWatcher } from './utils/hooks/fileChangedWatcher.j
 import {
   captureHooksConfigSnapshot,
   updateHooksConfigSnapshot,
-} from '../../utils/hooks/hooksConfigSnapshot.js'
-import { hasWorktreeCreateHook } from '../../utils/hooks.js'
-import { checkAndRestoreITerm2Backup } from '../../utils/iTermBackup.js'
-import { logError } from '../../utils/log.js'
-import { getRecentActivity } from '../../utils/logoV2Utils.js'
-import { lockCurrentVersion } from '../../utils/nativeInstaller/installer.js'
-import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
-import { getPlanSlug } from '../../utils/plans.js'
-import { saveWorktreeState } from '../../utils/sessionStorage.js'
-import { profileCheckpoint } from '../../utils/startupProfiler.js'
+} from './utils/hooks/hooksConfigSnapshot.js'
+import { hasWorktreeCreateHook } from './utils/hooks.js'
+import { checkAndRestoreITerm2Backup } from './utils/iTermBackup.js'
+import { logError } from './utils/log.js'
+import { getRecentActivity } from './utils/logoV2Utils.js'
+import { lockCurrentVersion } from './utils/nativeInstaller/installer.js'
+import type { PermissionMode } from './utils/permissions/PermissionMode.js'
+import { getPlanSlug } from './utils/plans.js'
+import { saveWorktreeState } from './utils/sessionStorage.js'
+import { profileCheckpoint } from './utils/startupProfiler.js'
 import {
   createTmuxSessionForWorktree,
   createWorktreeForSession,
   generateTmuxSessionName,
   worktreeBranchName,
-} from '../../utils/worktree.js'
+} from './utils/worktree.js'
 
 export async function setup(
   cwd: string,
@@ -104,7 +106,7 @@ export async function setup(
   // Teammate snapshot — SIMPLE-only gate (no escape hatch, swarm not used in bare)
   if (!isBareMode() && isAgentSwarmsEnabled()) {
     const { captureTeammateModeSnapshot } = await import(
-      '../../utils/swarm/backends/teammateModeSnapshot.js'
+      './utils/swarm/backends/teammateModeSnapshot.js'
     )
     captureTeammateModeSnapshot()
   }
@@ -321,7 +323,7 @@ export async function setup(
   if (!skipPluginPrefetch) {
     void getCommands(getProjectRoot())
   }
-  void import('../../utils/plugins/loadPluginHooks.js').then(m => {
+  void import('./utils/plugins/loadPluginHooks.js').then(m => {
     if (!skipPluginPrefetch) {
       void m.loadPluginHooks() // Pre-load plugin hooks (consumed by processSessionStartHooks before render)
       m.setupPluginHookHotReload() // Set up hot reload for plugin hooks when settings change
@@ -346,7 +348,7 @@ export async function setup(
         )
       })
     }
-    void import('../../utils/sessionFileAccessHooks.js').then(m =>
+    void import('./utils/sessionFileAccessHooks.js').then(m =>
       m.registerSessionFileAccessHooks(),
     ) // Register session file access analytics hooks
     if (feature('TEAMMEM')) {

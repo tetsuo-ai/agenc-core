@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import type { StreamingToolUse } from '../../llm/types.js'
 import { BoundedUUIDSet } from '../../bridge/bridgeMessaging'

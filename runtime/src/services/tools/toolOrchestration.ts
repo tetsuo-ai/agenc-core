@@ -3,7 +3,7 @@ import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import { findToolByName, type ToolUseContext } from '../../tools/Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
-import { all } from '../../../../utils/generators.js'
+import { all } from '../../utils/generators.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 function getMaxToolUseConcurrency(): number {
   return (

@@ -1,14 +1,14 @@
 // @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { logEvent } from 'src/services/analytics/index.js'
-import { extractHeredocs } from '../../../../utils/bash/heredoc.js'
-import { ParsedCommand } from '../../../../utils/bash/ParsedCommand.js'
+import { extractHeredocs } from '../../utils/bash/heredoc.js'
+import { ParsedCommand } from '../../utils/bash/ParsedCommand.js'
 import {
   hasMalformedTokens,
   hasShellQuoteSingleQuoteBug,
   tryParseShellCommand,
-} from '../../../../utils/bash/shellQuote.js'
-import type { TreeSitterAnalysis } from '../../../../utils/bash/treeSitterAnalysis.js'
-import type { PermissionResult } from '../../../../utils/permissions/PermissionResult.js'
+} from '../../utils/bash/shellQuote.js'
+import type { TreeSitterAnalysis } from '../../utils/bash/treeSitterAnalysis.js'
+import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 const HEREDOC_IN_SUBSTITUTION = /\$\(.*<</
 
 // Note: Backtick pattern is handled separately in validateDangerousPatterns

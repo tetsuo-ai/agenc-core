@@ -11,11 +11,11 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
-import { count } from '../../../../utils/array.js'
+import { count } from '../../utils/array.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { toError } from '../../../../utils/errors.js'
-import { truncate } from '../../../../utils/format.js'
-import { logError } from '../../../../utils/log.js'
+import { toError } from '../../utils/errors.js'
+import { truncate } from '../../utils/format.js'
+import { logError } from '../../utils/log.js'
 
 // Skill listing gets 1% of the context window (in characters)
 export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01

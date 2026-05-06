@@ -4,14 +4,14 @@ import { useCallback } from 'react';
 import { Select } from '../../CustomSelect/select';
 import { Box, Text } from '../../../ink.js';
 import type { ToolPermissionContext } from '../../../../tools/Tool';
-import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../../agenc/upstream/utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applyPermissionUpdate, persistPermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueToString } from '../../../../agenc/upstream/utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { detectUnreachableRules, type UnreachableRule } from '../../../../agenc/upstream/utils/permissions/shadowedRuleDetection'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../../agenc/upstream/utils/sandbox/sandbox-adapter'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type EditableSettingSource, SOURCES } from '../../../../agenc/upstream/utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getRelativeSettingsFilePathForSource } from '../../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionBehavior, PermissionRule, PermissionRuleValue } from '../../../../utils/permissions/PermissionRule'; // upstream-import: keep target is owned by another Z-PURGE item
+import { applyPermissionUpdate, persistPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionRuleValueToString } from '../../../../utils/permissions/permissionRuleParser'; // upstream-import: keep target is owned by another Z-PURGE item
+import { detectUnreachableRules, type UnreachableRule } from '../../../../utils/permissions/shadowedRuleDetection'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type EditableSettingSource, SOURCES } from '../../../../utils/settings/constants'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getRelativeSettingsFilePathForSource } from '../../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from '../../CustomSelect/select';
 import { Dialog } from '../../design-system/Dialog';
 import { PermissionRuleDescription } from './PermissionRuleDescription';

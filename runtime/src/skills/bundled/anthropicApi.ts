@@ -1,5 +1,5 @@
 import { readdir } from 'fs/promises'
-import { getCwd } from '../../../../utils/cwd.js'
+import { getCwd } from '../../utils/cwd.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 
 // agencApiContent.js bundles 247KB of .md strings. Lazy-load inside

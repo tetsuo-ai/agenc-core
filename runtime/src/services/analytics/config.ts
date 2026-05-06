@@ -5,8 +5,8 @@
  * Common logic for determining when analytics should be disabled
  * across all analytics systems (Datadog, 1P)
  */
-import { isEnvTruthy } from '../../../../utils/envUtils.js'
-import { isTelemetryDisabled } from '../../../../utils/privacyLevel.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isTelemetryDisabled } from '../../utils/privacyLevel.js'
 /**
  * Check if analytics operations should be disabled
  *

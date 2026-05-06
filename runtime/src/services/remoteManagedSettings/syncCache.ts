@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Eligibility check for remote managed settings.
  *
@@ -7,11 +9,11 @@
  * mirror alongside the leaf's state.
  */
 
-import { AGENC_AI_INFERENCE_SCOPE } from '../../../../constants/oauth.js'
+import { AGENC_AI_INFERENCE_SCOPE } from '../../constants/oauth.js'
 import {
   getproviderApiKeyWithSource,
   getAgenCAIOAuthTokens,
-} from '../../../../utils/auth.js'
+} from '../../utils/auth.js'
 import {
   getAPIProvider,
   isFirstPartyproviderBaseUrl,

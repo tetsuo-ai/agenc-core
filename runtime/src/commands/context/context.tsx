@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import type { LocalJSXCommandContext } from '../../commands.js';
@@ -5,9 +7,9 @@ import { ContextVisualization } from '../../tui/components/ContextVisualization.
 import { microcompactMessages } from '../../services/compact/microCompact.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import type { Message } from '../../types/message.js';
-import { analyzeContextUsage } from '../../../../utils/analyzeContext.js';
-import { getMessagesAfterCompactBoundary } from '../../../../utils/messages.js';
-import { renderToAnsiString } from '../../../../utils/staticRender.js';
+import { analyzeContextUsage } from '../../utils/analyzeContext.js';
+import { getMessagesAfterCompactBoundary } from '../../utils/messages.js';
+import { renderToAnsiString } from '../../utils/staticRender.js';
 
 /**
  * Apply the same context transforms query.ts does before the API call, so

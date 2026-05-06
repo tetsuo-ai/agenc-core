@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test'
 
 import { getEmptyToolPermissionContext } from '../Tool.js'
-import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
+import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'
 import { bashToolHasPermission } from './bashPermissions.js'
 
 const originalSandboxMethods = {

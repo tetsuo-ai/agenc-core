@@ -1,4 +1,6 @@
-import { disableKeepAlive, getProxyFetchOptions } from '../../../../utils/proxy.js'
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import { disableKeepAlive, getProxyFetchOptions } from '../../utils/proxy.js'
 
 const RETRYABLE_FETCH_ERROR_PATTERN =
   /socket connection was closed unexpectedly|ECONNRESET|EPIPE|socket hang up|Connection reset by peer|fetch failed/i

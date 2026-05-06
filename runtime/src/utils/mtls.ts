@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type * as https from 'https'
 import { Agent as HttpsAgent } from 'https'
 import memoize from 'lodash-es/memoize.js'

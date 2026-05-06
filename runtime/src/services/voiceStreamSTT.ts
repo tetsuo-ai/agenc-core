@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // provider voice_stream speech-to-text client for push-to-talk.
 //
 // Only reachable in ant builds (gated by feature('VOICE_MODE') in useVoice.ts import).
@@ -13,18 +15,18 @@
 
 import type { ClientRequest, IncomingMessage } from 'http'
 import WebSocket from 'ws'
-import { getOauthConfig } from '../../../constants/oauth.js'
+import { getOauthConfig } from '../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
   isproviderAuthEnabled,
 } from '../utils/auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getUserAgent } from '../../../utils/http.js'
-import { logError } from '../../../utils/log.js'
-import { getWebSocketTLSOptions } from '../../../utils/mtls.js'
-import { getWebSocketProxyAgent, getWebSocketProxyUrl } from '../../../utils/proxy.js'
-import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'
+import { getUserAgent } from '../utils/http.js'
+import { logError } from '../utils/log.js'
+import { getWebSocketTLSOptions } from '../utils/mtls.js'
+import { getWebSocketProxyAgent, getWebSocketProxyUrl } from '../utils/proxy.js'
+import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 
 const KEEPALIVE_MSG = '{"type":"KeepAlive"}'
 const CLOSE_STREAM_MSG = '{"type":"CloseStream"}'

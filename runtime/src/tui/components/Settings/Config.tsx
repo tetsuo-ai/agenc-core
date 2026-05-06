@@ -11,9 +11,9 @@ import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type Outp
 import { normalizeApiKeyForConfig } from '../../../utils/authPortable.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import chalk from 'chalk';
-import { permissionModeTitle, permissionModeFromString, toExternalPermissionMode, isExternalPermissionMode, EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type ExternalPermissionMode, type PermissionMode } from '../../../agenc/upstream/utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAutoModeEnabledState, hasAutoModeOptInAnySource, transitionPlanAutoMode } from '../../../agenc/upstream/utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { permissionModeTitle, permissionModeFromString, toExternalPermissionMode, isExternalPermissionMode, EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type ExternalPermissionMode, type PermissionMode } from '../../../utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAutoModeEnabledState, hasAutoModeOptInAnySource, transitionPlanAutoMode } from '../../../utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../../services/analytics/index.js';
 import { isBridgeEnabled } from '../../../bridge/bridgeEnabled';
 import { ThemePicker } from '../ThemePicker';
@@ -34,16 +34,16 @@ import { Byline } from '../design-system/Byline';
 import { useTabHeaderFocus } from '../design-system/Tabs';
 import { useIsInsideModal } from '../../context/modalContext';
 import { SearchBox } from '../SearchBox';
-import { isSupportedTerminal, hasAccessToIDEExtensionDiffFeature } from '../../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isSupportedTerminal, hasAccessToIDEExtensionDiffFeature } from '../../../utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getUserMsgOptIn, setUserMsgOptIn } from '../../../bootstrap/state';
-import { DEFAULT_OUTPUT_STYLE_NAME } from '../../../agenc/upstream/constants/outputStyles.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DEFAULT_OUTPUT_STYLE_NAME } from '../../../constants/outputStyles.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy, isRunningOnHomespace } from 'src/utils/envUtils.js';
 import type { LocalJSXCommandContext, CommandResultDisplay } from '../../../commands.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook';
-import { isAgentSwarmsEnabled } from '../../../agenc/upstream/utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCliTeammateModeOverride, clearCliTeammateModeOverride } from '../../../agenc/upstream/utils/swarm/backends/teammateModeSnapshot'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getHardcodedTeammateModelFallback } from '../../../agenc/upstream/utils/swarm/teammateModel'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCliTeammateModeOverride, clearCliTeammateModeOverride } from '../../../utils/swarm/backends/teammateModeSnapshot'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getHardcodedTeammateModelFallback } from '../../../utils/swarm/teammateModel'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSearchInput } from '../../hooks/useSearchInput';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item

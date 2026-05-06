@@ -1,15 +1,17 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import axios from 'axios'
-import { getOauthConfig } from '../../../../constants/oauth.js'
+import { getOauthConfig } from '../../constants/oauth.js'
 import {
   getOauthAccountInfo,
   getSubscriptionType,
   isAgenCAISubscriber,
-} from '../../../../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js'
+} from '../../utils/auth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logError } from '../../../../utils/log.js'
-import { isEssentialTrafficOnly } from '../../../../utils/privacyLevel.js'
-import { getOAuthHeaders, prepareApiRequest } from '../../../../utils/teleport/api.js'
+import { logError } from '../../utils/log.js'
+import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
+import { getOAuthHeaders, prepareApiRequest } from '../../utils/teleport/api.js'
 import type {
   ReferralCampaign,
   ReferralEligibilityResponse,

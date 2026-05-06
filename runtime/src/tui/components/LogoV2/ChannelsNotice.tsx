@@ -12,9 +12,9 @@ import { Box, Text } from '../../ink.js';
 import { isChannelsEnabled } from '../../../services/mcp/channelAllowlist';
 import { getEffectiveChannelAllowlist } from '../../../services/mcp/channelNotification';
 import { getMcpConfigsByScope } from '../../../services/mcp/config';
-import { getAgenCAIOAuthTokens, getSubscriptionType } from '../../../agenc/upstream/utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
-import { loadInstalledPluginsV2 } from '../../../agenc/upstream/utils/plugins/installedPluginsManager'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettingsForSource } from '../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAgenCAIOAuthTokens, getSubscriptionType } from '../../../utils/auth'; // upstream-import: keep target is owned by another Z-PURGE item
+import { loadInstalledPluginsV2 } from '../../../utils/plugins/installedPluginsManager'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettingsForSource } from '../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
 export function ChannelsNotice() {
   const $ = _c(32);
   const [t0] = useState(_temp);

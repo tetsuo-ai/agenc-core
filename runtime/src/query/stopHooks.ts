@@ -17,12 +17,12 @@ import type {
   TombstoneMessage,
   ToolUseSummaryMessage,
 } from '../types/message.js'
-import { createAttachmentMessage } from '../../../utils/attachments.js'
+import { createAttachmentMessage } from '../utils/attachments.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getGlobalConfig } from '../../../utils/config.js'
-import { getCwd } from '../../../utils/cwd.js'
-import { errorMessage } from '../../../utils/errors.js'
-import type { REPLHookContext } from '../../../utils/hooks/postSamplingHooks.js'
+import { getGlobalConfig } from '../utils/config.js'
+import { getCwd } from '../utils/cwd.js'
+import { errorMessage } from '../utils/errors.js'
+import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
 import {
   executeStopHooks,
   executeTaskCompletedHooks,
@@ -30,16 +30,16 @@ import {
   getStopHookMessage,
   getTaskCompletedHookMessage,
   getTeammateIdleHookMessage,
-} from '../../../utils/hooks.js'
+} from '../utils/hooks.js'
 import {
   createStopHookSummaryMessage,
   createSystemMessage,
   createUserInterruptionMessage,
   createUserMessage,
-} from '../../../utils/messages.js'
-import type { SystemPrompt } from '../../../utils/systemPromptType.js'
-import { getTaskListId, listTasks } from '../../../utils/tasks.js'
-import { getAgentName, getTeamName, isTeammate } from '../../../utils/teammate.js'
+} from '../utils/messages.js'
+import type { SystemPrompt } from '../utils/systemPromptType.js'
+import { getTaskListId, listTasks } from '../utils/tasks.js'
+import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const extractMemoriesModule = feature('EXTRACT_MEMORIES')
   ? (require('../services/extractMemories/extractMemories.js') as typeof import('../services/extractMemories/extractMemories.js'))
@@ -50,14 +50,14 @@ const jobClassifierModule = feature('TEMPLATES')
 
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-import type { QuerySource } from '../../../constants/querySource.js'
+import type { QuerySource } from '../constants/querySource.js'
 import { executeAutoDream } from '../services/autoDream/autoDream.js'
 import { executePromptSuggestion } from '../services/PromptSuggestion/promptSuggestion.js'
 import { isBareMode, isEnvDefinedFalsy } from '../utils/envUtils.js'
 import {
   createCacheSafeParams,
   saveCacheSafeParams,
-} from '../../../utils/forkedAgent.js'
+} from '../utils/forkedAgent.js'
 
 type StopHookResult = {
   blockingErrors: Message[]
@@ -164,7 +164,7 @@ export async function* handleStopHooks(
   if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
     try {
       const { cleanupComputerUseAfterTurn } = await import(
-        '../../../utils/computerUse/cleanup.js'
+        '../utils/computerUse/cleanup.js'
       )
       await cleanupComputerUseAfterTurn(toolUseContext)
     } catch {

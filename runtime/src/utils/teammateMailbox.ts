@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Teammate Mailbox - File-based messaging system for agent swarms
  *

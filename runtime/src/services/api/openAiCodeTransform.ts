@@ -3,7 +3,7 @@ import { APIError } from '@anthropic-ai/sdk'
 import { buildproviderUsageFromRawUsage } from './cacheMetrics.js'
 import { compressToolHistory } from './compressToolHistory.js'
 import { fetchWithProxyRetry } from './fetchWithProxyRetry.js'
-import { stableStringify } from '../../../../utils/stableStringify.js'
+import { stableStringify } from '../../utils/stableStringify.js'
 import type {
   ResolvedProviderCodeCredentials,
   ResolvedProviderRequest,

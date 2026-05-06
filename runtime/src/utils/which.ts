@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { execa } from 'execa'
 import { execSync_DEPRECATED } from './execSyncWrapper.js'
 

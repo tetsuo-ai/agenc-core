@@ -1,4 +1,4 @@
-import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
 
 /**
  * Serial ordered event uploader with batching, retry, and backpressure.

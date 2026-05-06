@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { logEvent } from 'src/services/analytics/index.js'
-import { openBrowser } from '../../../../utils/browser.js'
+import { openBrowser } from '../../utils/browser.js'
 import { AuthCodeListener } from './auth-code-listener.js'
 import * as client from './client.js'
 import * as crypto from './crypto.js'

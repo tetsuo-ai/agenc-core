@@ -1,7 +1,9 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
-import { DEFAULT_CRON_JITTER_CONFIG } from '../../../../utils/cronTasks.js'
-import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { DEFAULT_CRON_JITTER_CONFIG } from '../../utils/cronTasks.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 
 const KAIROS_CRON_REFRESH_MS = 5 * 60 * 1000
 

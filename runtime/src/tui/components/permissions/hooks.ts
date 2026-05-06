@@ -6,7 +6,7 @@ import {
 } from '../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
 import { BashTool } from '../../../tools/BashTool/BashTool.js'
-import { splitCommand_DEPRECATED } from '../../../agenc/upstream/utils/bash/commands.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { splitCommand_DEPRECATED } from '../../../utils/bash/commands.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type {
   PermissionDecisionReason,
   PermissionResult,

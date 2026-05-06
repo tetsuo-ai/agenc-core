@@ -81,11 +81,11 @@ describe("prompt suggestion service ownership", () => {
 
   it("resolves known live callers to AgenC-owned PromptSuggestion files", () => {
     const expected = new Map([
-      ["runtime/src/agenc/upstream/query/stopHooks.ts", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
+      ["runtime/src/query/stopHooks.ts", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
       ["runtime/src/tui/screens/REPL.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/tasks/LocalShellTask/LocalShellTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
-      ["runtime/src/agenc/upstream/main.tsx", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
+      ["runtime/src/tui/main.tsx", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
     ]);
 
     for (const [caller, target] of expected) {

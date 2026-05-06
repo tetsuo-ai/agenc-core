@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as fs from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'

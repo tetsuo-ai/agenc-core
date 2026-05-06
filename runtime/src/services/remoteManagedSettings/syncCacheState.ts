@@ -22,12 +22,12 @@
  */
 
 import { join } from 'path'
-import { getAgenCConfigHomeDir } from '../../../../utils/envUtils.js'
-import { readFileSync } from '../../../../utils/fileRead.js'
-import { stripBOM } from '../../../../utils/jsonRead.js'
-import { resetSettingsCache } from '../../../../utils/settings/settingsCache.js'
-import type { SettingsJson } from '../../../../utils/settings/types.js'
-import { jsonParse } from '../../../../utils/slowOperations.js'
+import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
+import { readFileSync } from '../../utils/fileRead.js'
+import { stripBOM } from '../../utils/jsonRead.js'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
+import { jsonParse } from '../../utils/slowOperations.js'
 
 const SETTINGS_FILENAME = 'remote-settings.json'
 

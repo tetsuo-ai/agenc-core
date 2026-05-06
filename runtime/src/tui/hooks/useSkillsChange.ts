@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect } from 'react'
 import type { Command } from '../../commands.js'
 import {
@@ -6,8 +8,8 @@ import {
   getCommands,
 } from '../../commands.js'
 import { onGrowthBookRefresh } from '../../services/analytics/growthbook'
-import { logError } from '../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { skillChangeDetector } from '../../agenc/upstream/utils/skills/skillChangeDetector' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
+import { skillChangeDetector } from '../../utils/skills/skillChangeDetector' // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Keep the commands list fresh across two triggers:

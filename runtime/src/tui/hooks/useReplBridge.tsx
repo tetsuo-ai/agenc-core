@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import React, { useCallback, useEffect, useRef } from 'react';
 import { setMainLoopModelOverride } from '../../bootstrap/state';

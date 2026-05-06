@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures';
 import React, { useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';

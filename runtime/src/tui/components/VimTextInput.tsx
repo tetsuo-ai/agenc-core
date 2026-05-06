@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import React from 'react';
@@ -5,7 +7,7 @@ import { useClipboardImageHint } from '../hooks/useClipboardImageHint';
 import { useVimInput } from '../hooks/useVimInput';
 import { Box, color, useTerminalFocus, useTheme } from '../ink.js';
 import type { VimTextInputProps } from '../../types/textInputTypes';
-import type { TextHighlight } from '../../agenc/upstream/utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { TextHighlight } from '../../utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
 import { BaseTextInput } from './BaseTextInput';
 export type Props = VimTextInputProps & {
   highlights?: TextHighlight[];

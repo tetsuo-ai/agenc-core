@@ -6,23 +6,23 @@ import type {
 } from 'src/entrypoints/sdk/controlTypes.js'
 import { decodeJwtExpiry } from '../../bridge/jwtUtils.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from '../../../../utils/diagLogs.js'
-import { errorMessage, getErrnoCode } from '../../../../utils/errors.js'
-import { createAxiosInstance } from '../../../../utils/proxy.js'
+import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
+import { errorMessage, getErrnoCode } from '../../utils/errors.js'
+import { createAxiosInstance } from '../../utils/proxy.js'
 import {
   registerSessionActivityCallback,
   unregisterSessionActivityCallback,
-} from '../../../../utils/sessionActivity.js'
+} from '../../utils/sessionActivity.js'
 import {
   getSessionIngressAuthHeaders,
   getSessionIngressAuthToken,
-} from '../../../../utils/sessionIngressAuth.js'
+} from '../../utils/sessionIngressAuth.js'
 import type {
   RequiresActionDetails,
   SessionState,
-} from '../../../../utils/sessionState.js'
-import { sleep } from '../../../../utils/sleep.js'
-import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
+} from '../../utils/sessionState.js'
+import { sleep } from '../../utils/sleep.js'
+import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
 import {
   RetryableError,
   SerialBatchEventUploader,

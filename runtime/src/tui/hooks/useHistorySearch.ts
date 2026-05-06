@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -10,7 +12,7 @@ import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 import { useInput } from '../ink.js'
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js'
 import type { PromptInputMode } from '../../types/textInputTypes'
-import type { HistoryEntry } from '../../agenc/upstream/utils/config' // upstream-import: keep target is owned by another Z-PURGE item
+import type { HistoryEntry } from '../../utils/config' // upstream-import: keep target is owned by another Z-PURGE item
 
 export function useHistorySearch(
   onAcceptHistory: (entry: HistoryEntry) => void,

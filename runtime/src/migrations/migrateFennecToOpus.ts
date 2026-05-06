@@ -1,7 +1,7 @@
 import {
   getSettingsForSource,
   updateSettingsForSource,
-} from '../../../utils/settings/settings.js'
+} from '../utils/settings/settings.js'
 
 /**
  * Migrate users on removed fennec model aliases to their new Opus 4.6 aliases.

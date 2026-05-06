@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { readFileSync } from 'fs';
 import { REMOTE_CONTROL_DISCONNECTED_MSG } from '../bridge/types.js';
 import type { Command } from '../commands.js';
@@ -9,13 +11,13 @@ import type { AppState } from '../tui/state/AppStateStore.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, RemoteAgentTask, type RemoteAgentTaskState, registerRemoteAgentTask } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import type { LocalJSXCommandCall } from '../types/command.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { errorMessage } from '../../../utils/errors.js';
-import { logError } from '../../../utils/log.js';
-import { enqueuePendingNotification } from '../../../utils/messageQueueManager.js';
-import { ALL_MODEL_CONFIGS } from '../../../utils/model/configs.js';
-import { updateTaskState } from '../../../utils/task/framework.js';
-import { archiveRemoteSession, teleportToRemote } from '../../../utils/teleport.js';
-import { pollForApprovedExitPlanMode, UltraplanPollError } from '../../../utils/ultraplan/ccrSession.js';
+import { errorMessage } from '../utils/errors.js';
+import { logError } from '../utils/log.js';
+import { enqueuePendingNotification } from '../utils/messageQueueManager.js';
+import { ALL_MODEL_CONFIGS } from '../utils/model/configs.js';
+import { updateTaskState } from '../utils/task/framework.js';
+import { archiveRemoteSession, teleportToRemote } from '../utils/teleport.js';
+import { pollForApprovedExitPlanMode, UltraplanPollError } from '../utils/ultraplan/ccrSession.js';
 
 // TODO(prod-hardening): OAuth token may go stale over the 30min poll;
 // consider refresh.

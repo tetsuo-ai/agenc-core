@@ -11,8 +11,8 @@
  * using IPC auth) use the Override getters directly.
  */
 
-import { getOauthConfig } from '../../../constants/oauth.js'
-import { getAgenCAIOAuthTokens } from '../../../utils/auth.js'
+import { getOauthConfig } from '../constants/oauth.js'
+import { getAgenCAIOAuthTokens } from '../utils/auth.js'
 
 /** Dev override: AGENC_BRIDGE_OAUTH_TOKEN, else undefined. */
 export function getBridgeTokenOverride(): string | undefined {

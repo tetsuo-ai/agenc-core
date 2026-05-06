@@ -8,8 +8,8 @@ import {
   PDF_AT_MENTION_INLINE_THRESHOLD,
   PDF_EXTRACT_SIZE_THRESHOLD,
   PDF_MAX_PAGES_PER_READ,
-} from '../../../../constants/apiLimits.js'
-import { hasBinaryExtension } from '../../../../constants/files.js'
+} from '../../constants/apiLimits.js'
+import { hasBinaryExtension } from '../../constants/files.js'
 import { memoryFreshnessNote } from '../../memdir/memoryAge.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logEvent } from '../../services/analytics/index.js'
@@ -37,10 +37,10 @@ import {
   findSimilarFile,
   getFileModificationTimeAsync,
   suggestPathUnderCwd,
-} from '../../../../utils/file.js'
-import { logFileOperation } from '../../../../utils/fileOperationAnalytics.js'
-import { formatFileSize } from '../../../../utils/format.js'
-import { getFsImplementation } from '../../../../utils/fsOperations.js'
+} from '../../utils/file.js'
+import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
+import { formatFileSize } from '../../utils/format.js'
+import { getFsImplementation } from '../../utils/fsOperations.js'
 import {
   compressImageBufferWithTokenLimit,
   createImageMetadataText,
@@ -48,32 +48,32 @@ import {
   type ImageDimensions,
   ImageResizeError,
   maybeResizeAndDownsampleImageBuffer,
-} from '../../../../utils/imageResizer.js'
-import { lazySchema } from '../../../../utils/lazySchema.js'
-import { logError } from '../../../../utils/log.js'
-import { isAutoMemFile } from '../../../../utils/memoryFileDetection.js'
-import { createUserMessage } from '../../../../utils/messages.js'
-import { getCanonicalName, getMainLoopModel } from '../../../../utils/model/model.js'
+} from '../../utils/imageResizer.js'
+import { lazySchema } from '../../utils/lazySchema.js'
+import { logError } from '../../utils/log.js'
+import { isAutoMemFile } from '../../utils/memoryFileDetection.js'
+import { createUserMessage } from '../../utils/messages.js'
+import { getCanonicalName, getMainLoopModel } from '../../utils/model/model.js'
 import {
   mapNotebookCellsToToolResult,
   readNotebook,
-} from '../../../../utils/notebook.js'
-import { expandPath } from '../../../../utils/path.js'
-import { extractPDFPages, getPDFPageCount, readPDF } from '../../../../utils/pdf.js'
+} from '../../utils/notebook.js'
+import { expandPath } from '../../utils/path.js'
+import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
 import {
   isPDFExtension,
   isPDFSupported,
   parsePDFPageRange,
-} from '../../../../utils/pdfUtils.js'
+} from '../../utils/pdfUtils.js'
 import {
   checkReadPermissionForTool,
   matchingRuleForInput,
-} from '../../../../utils/permissions/filesystem.js'
-import type { PermissionDecision } from '../../../../utils/permissions/PermissionResult.js'
-import { matchWildcardPattern } from '../../../../utils/permissions/shellRuleMatching.js'
-import { readFileInRange } from '../../../../utils/readFileInRange.js'
-import { semanticNumber } from '../../../../utils/semanticNumber.js'
-import { jsonStringify } from '../../../../utils/slowOperations.js'
+} from '../../utils/permissions/filesystem.js'
+import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import { readFileInRange } from '../../utils/readFileInRange.js'
+import { semanticNumber } from '../../utils/semanticNumber.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import {

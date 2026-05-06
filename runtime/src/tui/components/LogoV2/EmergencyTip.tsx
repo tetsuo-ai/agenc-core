@@ -2,7 +2,7 @@ import * as React from 'react';
 import { useEffect, useMemo } from 'react';
 import { Box, Text } from '../../ink.js';
 import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const CONFIG_NAME = 'tengu-top-of-feed-tip';
 export function EmergencyTip(): React.ReactNode {
   const tip = useMemo(getTipOfFeed, []);

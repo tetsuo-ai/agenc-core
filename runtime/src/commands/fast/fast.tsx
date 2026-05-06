@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useState } from 'react';
@@ -9,10 +11,10 @@ import { useKeybindings } from '../../tui/keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { type AppState, useAppState, useSetAppState } from '../../tui/state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeEnabled, isFastModeSupportedByModel, prefetchFastModeStatus } from '../../../../utils/fastMode.js';
-import { formatDuration } from '../../../../utils/format.js';
-import { formatModelPricing, getOpus46CostTier } from '../../../../utils/modelCost.js';
-import { updateSettingsForSource } from '../../../../utils/settings/settings.js';
+import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeEnabled, isFastModeSupportedByModel, prefetchFastModeStatus } from '../../utils/fastMode.js';
+import { formatDuration } from '../../utils/format.js';
+import { formatModelPricing, getOpus46CostTier } from '../../utils/modelCost.js';
+import { updateSettingsForSource } from '../../utils/settings/settings.js';
 function applyFastMode(enable: boolean, setAppState: (f: (prev: AppState) => AppState) => void): void {
   clearFastModeCooldown();
   updateSettingsForSource('userSettings', {

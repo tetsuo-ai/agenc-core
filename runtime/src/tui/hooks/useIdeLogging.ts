@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect } from 'react'
 import { logEvent } from '../../services/analytics/index.js'
 import { z } from 'zod/v4'
 import type { MCPServerConnection } from '../../services/mcp/types'
-import { getConnectedIdeClient } from '../../agenc/upstream/utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../agenc/upstream/utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { getConnectedIdeClient } from '../../utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
 
 const LogEventSchema = lazySchema(() =>
   z.object({

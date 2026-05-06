@@ -20,7 +20,7 @@ import type {
   PermissionDecisionReason,
   PermissionDenyDecision,
 } from '../../../types/permissions'
-import { setClassifierApproval } from '../../../agenc/upstream/utils/classifierApprovals' // upstream-import: keep target is owned by another Z-PURGE item
+import { setClassifierApproval } from '../../../utils/classifierApprovals' // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js'
 import { executePermissionRequestHooks } from '../../../utils/hooks.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {

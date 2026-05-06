@@ -7,8 +7,8 @@ import type {
   ConnectedMCPServer,
   MCPServerConnection,
 } from '../../services/mcp/types'
-import { getConnectedIdeClient } from '../../agenc/upstream/utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../agenc/upstream/utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
+import { getConnectedIdeClient } from '../../utils/ide' // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema' // upstream-import: keep target is owned by another Z-PURGE item
 export type SelectionPoint = {
   line: number
   character: number

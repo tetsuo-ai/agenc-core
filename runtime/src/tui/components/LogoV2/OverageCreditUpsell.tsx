@@ -4,8 +4,8 @@ import { useState } from 'react';
 import { Text } from '../../ink.js';
 import { logEvent } from '../../../services/analytics/index';
 import { formatGrantAmount, getCachedOverageCreditGrant, refreshOverageCreditGrantCache } from '../../../services/api/overageCreditGrant';
-import { getGlobalConfig, saveGlobalConfig } from '../../../agenc/upstream/utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncate } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { FeedConfig } from './Feed';
 const MAX_IMPRESSIONS = 3;
 

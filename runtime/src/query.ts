@@ -38,7 +38,7 @@ import type {
   UserMessage,
   TombstoneMessage,
 } from './types/message.js'
-import { logError } from '../../utils/log.js'
+import { logError } from './utils/log.js'
 import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   isPromptTooLongMessage,
@@ -53,15 +53,15 @@ import {
   getMessagesAfterCompactBoundary,
   createToolUseSummaryMessage,
   createMicrocompactBoundaryMessage,
-} from '../../utils/messages.js'
+} from './utils/messages.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
-import { prependUserContext, appendSystemContext } from '../../utils/api.js'
+import { prependUserContext, appendSystemContext } from './utils/api.js'
 import {
   createAttachmentMessage,
   filterDuplicateMemoryAttachments,
   getAttachmentMessages,
   startRelevantMemoryPrefetch,
-} from '../../utils/attachments.js'
+} from './utils/attachments.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
@@ -74,34 +74,34 @@ import {
   remove as removeFromQueue,
   getCommandsByMaxPriority,
   isSlashCommand,
-} from '../../utils/messageQueueManager.js'
-import { notifyCommandLifecycle } from '../../utils/commandLifecycle.js'
-import { headlessProfilerCheckpoint } from '../../utils/headlessProfiler.js'
+} from './utils/messageQueueManager.js'
+import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
+import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
   getDefaultMainLoopModelSetting,
   getRuntimeMainLoopModel,
   parseUserSpecifiedModel,
   renderModelName,
-} from '../../utils/model/model.js'
+} from './utils/model/model.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
   tokenCountWithEstimation,
-} from '../../utils/tokens.js'
-import { ESCALATED_MAX_TOKENS } from '../../utils/context.js'
+} from './utils/tokens.js'
+import { ESCALATED_MAX_TOKENS } from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
-import { executePostSamplingHooks } from '../../utils/hooks/postSamplingHooks.js'
-import { executeStopFailureHooks } from '../../utils/hooks.js'
-import type { QuerySource } from '../../constants/querySource.js'
+import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
+import { executeStopFailureHooks } from './utils/hooks.js'
+import type { QuerySource } from './constants/querySource.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
-import { queryCheckpoint } from '../../utils/queryProfiler.js'
+import { queryCheckpoint } from './utils/queryProfiler.js'
 import { runTools } from './services/tools/toolOrchestration.js'
-import { applyToolResultBudget } from '../../utils/toolResultStorage.js'
-import { recordContentReplacement } from '../../utils/sessionStorage.js'
+import { applyToolResultBudget } from './utils/toolResultStorage.js'
+import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
-import { getGlobalConfig } from '../../utils/config.js'
+import { getGlobalConfig } from './utils/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
 import { feature } from 'bun:bundle'
@@ -111,7 +111,7 @@ import {
   incrementBudgetContinuationCount,
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
-import { count } from '../../utils/array.js'
+import { count } from './utils/array.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
   ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
@@ -259,7 +259,7 @@ async function* queryLoop(
     feature('MULTI_TURN_CONTEXT') &&
     getGlobalConfig().knowledgeGraphEnabled
   ) {
-    const { startNewTurn } = await import('../../utils/multiTurnContext.js')
+    const { startNewTurn } = await import('./utils/multiTurnContext.js')
     startNewTurn()
   }
 
@@ -385,7 +385,7 @@ async function* queryLoop(
       getGlobalConfig().knowledgeGraphEnabled &&
       messagesForQuery.length > 0
     ) {
-      const { updateArcPhase } = await import('../../utils/conversationArc.js')
+      const { updateArcPhase } = await import('./utils/conversationArc.js')
       updateArcPhase([messagesForQuery[messagesForQuery.length - 1]])
     }
 
@@ -488,7 +488,7 @@ async function* queryLoop(
           typeof lastMessage.message.content === 'string'
             ? lastMessage.message.content
             : ''
-        const { getArcSummary } = await import('../../utils/conversationArc.js')
+        const { getArcSummary } = await import('./utils/conversationArc.js')
         const arcSummary = getArcSummary(userQueryText)
         if (arcSummary) {
           promptWithArc = [...systemPrompt, arcSummary]
@@ -1108,7 +1108,7 @@ async function* queryLoop(
       if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
         try {
           const { cleanupComputerUseAfterTurn } = await import(
-            '../../utils/computerUse/cleanup.js'
+            './utils/computerUse/cleanup.js'
           )
           await cleanupComputerUseAfterTurn(toolUseContext)
         } catch {
@@ -1566,7 +1566,7 @@ async function* queryLoop(
       getGlobalConfig().knowledgeGraphEnabled
     ) {
       const { addMessageToTurn, addToolCallToTurn } = await import(
-        '../../utils/multiTurnContext.js'
+        './utils/multiTurnContext.js'
       )
       addMessageToTurn(assistantMessage)
       for (const toolUse of toolUseBlocks) {
@@ -1584,7 +1584,7 @@ async function* queryLoop(
       feature('CONVERSATION_ARC') &&
       getGlobalConfig().knowledgeGraphEnabled
     ) {
-      const { updateArcPhase } = await import('../../utils/conversationArc.js')
+      const { updateArcPhase } = await import('./utils/conversationArc.js')
       updateArcPhase([assistantMessage])
     }
 
@@ -1669,7 +1669,7 @@ async function* queryLoop(
       if (feature('CHICAGO_MCP') && !toolUseContext.agentId) {
         try {
           const { cleanupComputerUseAfterTurn } = await import(
-            '../../utils/computerUse/cleanup.js'
+            './utils/computerUse/cleanup.js'
           )
           await cleanupComputerUseAfterTurn(toolUseContext)
         } catch {
@@ -1896,7 +1896,7 @@ async function* queryLoop(
       feature('CONVERSATION_ARC') &&
       getGlobalConfig().knowledgeGraphEnabled
     ) {
-      const { finalizeArcTurn } = await import('../../utils/conversationArc.js')
+      const { finalizeArcTurn } = await import('./utils/conversationArc.js')
       finalizeArcTurn()
     }
     const next: State = {

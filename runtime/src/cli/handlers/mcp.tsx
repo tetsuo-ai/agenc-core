@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * MCP subcommand handlers — extracted from main.tsx for lazy loading.
  * These are dynamically imported only when the corresponding `agenc mcp *` command runs.

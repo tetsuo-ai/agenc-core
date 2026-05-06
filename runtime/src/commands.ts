@@ -368,9 +368,9 @@ async function loadProductionCommandSources(
   cwd: string,
   config?: PluginConfigSurface,
 ): Promise<readonly Command[]> {
-  const skillsModulePath = "./agenc/upstream/skills/loadSkillsDir.js";
-  const bundledSkillsModulePath = "./agenc/upstream/skills/bundledSkills.js";
-  const builtinPluginsModulePath = "./agenc/upstream/plugins/builtinPlugins.js";
+  const skillsModulePath = "./skills/loadSkillsDir.js";
+  const bundledSkillsModulePath = "./skills/bundledSkills.js";
+  const builtinPluginsModulePath = "./plugins/builtinPlugins.js";
   const workflowCommandsModulePath =
     "./tools/WorkflowTool/createWorkflowCommand.js";
 
@@ -614,7 +614,7 @@ export function clearCommandMemoizationCaches(): void {
     services.skillsManager.clearSkillCaches?.();
   }
   localSkillServicesByRoot.clear();
-  const skillsModulePath: string = "./agenc/upstream/skills/loadSkillsDir.js";
+  const skillsModulePath: string = "./skills/loadSkillsDir.js";
   void import(skillsModulePath).then(module => {
     module.clearSkillCaches?.();
   }).catch(() => undefined);

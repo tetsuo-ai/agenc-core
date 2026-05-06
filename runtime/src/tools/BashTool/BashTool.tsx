@@ -7,7 +7,7 @@ import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js';
 import type { AppState } from '../../tui/state/AppState.js';
 import { z } from 'zod/v4';
 import { getKairosActive } from '../../bootstrap/state.js';
-import { TOOL_SUMMARY_MAX_LENGTH } from '../../../../constants/toolLimits.js';
+import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js';
 import type { SetToolJSXFn, ToolCallProgress, ToolUseContext, ValidationResult } from '../Tool.js';
@@ -31,7 +31,7 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
-import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
+import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
 import { EndTruncatingAccumulator } from '../../utils/stringUtils.js';

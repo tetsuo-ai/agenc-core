@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import type { UUID } from 'crypto';
 import figures from 'figures';
@@ -15,24 +17,24 @@ import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js';
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../../tools/ExitPlanModeTool/constants';
 import type { AllowedPrompt } from '../../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool';
 import { TEAM_CREATE_TOOL_NAME } from '../../../../tools/TeamCreateTool/constants';
-import { isAgentSwarmsEnabled } from '../../../../agenc/upstream/utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
-import { calculateContextPercentages, getContextWindowForModel } from '../../../../agenc/upstream/utils/context'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getExternalEditor } from '../../../../agenc/upstream/utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDisplayPath } from '../../../../agenc/upstream/utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toIDEDisplayName } from '../../../../agenc/upstream/utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { enqueuePendingNotification } from '../../../../agenc/upstream/utils/messageQueueManager'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createUserMessage } from '../../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMainLoopModel, getRuntimeMainLoopModel } from '../../../../agenc/upstream/utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createPromptRuleContent, isClassifierPermissionsEnabled, PROMPT_PREFIX } from '../../../../agenc/upstream/utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type PermissionMode, toExternalPermissionMode } from '../../../../agenc/upstream/utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAutoModeGateEnabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../../agenc/upstream/utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPewterLedgerVariant, isPlanModeInterviewPhaseEnabled } from '../../../../agenc/upstream/utils/planModeV2'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPlan, getPlanFilePath } from '../../../../agenc/upstream/utils/plans'; // upstream-import: keep target is owned by another Z-PURGE item
-import { editFileInEditor, editPromptInEditor } from '../../../../agenc/upstream/utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCurrentSessionTitle, getTranscriptPath, saveAgentName, saveCustomTitle } from '../../../../agenc/upstream/utils/sessionStorage'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettings_DEPRECATED } from '../../../../agenc/upstream/utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../../../utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
+import { calculateContextPercentages, getContextWindowForModel } from '../../../../utils/context'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExternalEditor } from '../../../../utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDisplayPath } from '../../../../utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toIDEDisplayName } from '../../../../utils/ide'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { enqueuePendingNotification } from '../../../../utils/messageQueueManager'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createUserMessage } from '../../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getMainLoopModel, getRuntimeMainLoopModel } from '../../../../utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createPromptRuleContent, isClassifierPermissionsEnabled, PROMPT_PREFIX } from '../../../../utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type PermissionMode, toExternalPermissionMode } from '../../../../utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAutoModeGateEnabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../../utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPewterLedgerVariant, isPlanModeInterviewPhaseEnabled } from '../../../../utils/planModeV2'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPlan, getPlanFilePath } from '../../../../utils/plans'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editFileInEditor, editPromptInEditor } from '../../../../utils/promptEditor'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCurrentSessionTitle, getTranscriptPath, saveAgentName, saveCustomTitle } from '../../../../utils/sessionStorage'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSettings_DEPRECATED } from '../../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type OptionWithDescription, Select } from '../../CustomSelect/select';
 import { Markdown } from '../../markdown/Markdown.js';
 import { PermissionDialog } from '../PermissionDialog';

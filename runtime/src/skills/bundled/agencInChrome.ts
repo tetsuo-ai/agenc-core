@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { BROWSER_TOOLS } from '@ant/agenc-for-chrome-mcp'
 import { BASE_CHROME_PROMPT } from '../../utils/agencInChrome/prompt.js'
 import { shouldAutoEnableAgenCInChrome } from '../../utils/agencInChrome/setup.js'

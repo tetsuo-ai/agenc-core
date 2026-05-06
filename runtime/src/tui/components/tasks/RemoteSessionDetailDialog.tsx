@@ -14,13 +14,13 @@ import { getRemoteTaskSessionUrl } from '../../../tasks/RemoteAgentTask/RemoteAg
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js';
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js';
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../tools/ExitPlanModeTool/constants';
-import { openBrowser } from '../../../agenc/upstream/utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { errorMessage } from '../../../agenc/upstream/utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatDuration, truncateToWidth } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toInternalMessages } from '../../../agenc/upstream/utils/messages/mappers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { EMPTY_LOOKUPS, normalizeMessages } from '../../../agenc/upstream/utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { teleportResumeCodeSession } from '../../../agenc/upstream/utils/teleport'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser } from '../../../utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../utils/errors'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInternalMessages } from '../../../utils/messages/mappers'; // upstream-import: keep target is owned by another Z-PURGE item
+import { EMPTY_LOOKUPS, normalizeMessages } from '../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
+import { teleportResumeCodeSession } from '../../../utils/teleport'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';

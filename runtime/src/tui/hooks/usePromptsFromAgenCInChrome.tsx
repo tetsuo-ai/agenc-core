@@ -6,9 +6,9 @@ import { z } from 'zod/v4';
 import { callIdeRpc } from '../../services/mcp/client';
 import type { ConnectedMCPServer, MCPServerConnection } from '../../services/mcp/types';
 import type { PermissionMode } from '../../types/permissions';
-import { AGENC_IN_CHROME_MCP_SERVER_NAME, isTrackedAgenCInChromeTabId } from '../../agenc/upstream/utils/claudeInChrome/common'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { lazySchema } from '../../agenc/upstream/utils/lazySchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { enqueuePendingNotification } from '../../agenc/upstream/utils/messageQueueManager'; // upstream-import: keep target is owned by another Z-PURGE item
+import { AGENC_IN_CHROME_MCP_SERVER_NAME, isTrackedAgenCInChromeTabId } from '../../utils/agencInChrome/common'; // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { lazySchema } from '../../utils/lazySchema'; // upstream-import: keep target is owned by another Z-PURGE item
+import { enqueuePendingNotification } from '../../utils/messageQueueManager'; // upstream-import: keep target is owned by another Z-PURGE item
 
 // Schema for the prompt notification from Chrome extension (JSON-RPC 2.0 format)
 const AgenCInChromePromptNotificationSchema = lazySchema(() => z.object({

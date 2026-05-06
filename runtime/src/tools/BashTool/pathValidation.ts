@@ -6,20 +6,20 @@ import type { Redirect, SimpleCommand } from '../../utils/bash/ast.js'
 import {
   extractOutputRedirections,
   splitCommand_DEPRECATED,
-} from '../../../../utils/bash/commands.js'
-import { tryParseShellCommand } from '../../../../utils/bash/shellQuote.js'
-import { getDirectoryForPath } from '../../../../utils/path.js'
-import { allWorkingDirectories } from '../../../../utils/permissions/filesystem.js'
-import type { PermissionResult } from '../../../../utils/permissions/PermissionResult.js'
-import { createReadRuleSuggestion } from '../../../../utils/permissions/PermissionUpdate.js'
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'
+} from '../../utils/bash/commands.js'
+import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
+import { getDirectoryForPath } from '../../utils/path.js'
+import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
+import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
+import { createReadRuleSuggestion } from '../../utils/permissions/PermissionUpdate.js'
+import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
 import {
   expandTilde,
   type FileOperationType,
   formatDirectoryList,
   isDangerousRemovalPath,
   validatePath,
-} from '../../../../utils/permissions/pathValidation.js'
+} from '../../utils/permissions/pathValidation.js'
 import type { BashTool } from './BashTool.js'
 import { stripSafeWrappers } from './bashPermissions.js'
 import { sedCommandIsAllowedByAllowlist } from './sedValidation.js'

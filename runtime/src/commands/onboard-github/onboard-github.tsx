@@ -14,8 +14,8 @@ import {
   hydrateGithubModelsTokenFromSecureStorage,
   readGithubModelsToken,
   saveGithubModelsToken,
-} from '../../../../utils/githubModelsCredentials.js'
-import { getSettingsForSource, updateSettingsForSource } from '../../../../utils/settings/settings.js'
+} from '../../utils/githubModelsCredentials.js'
+import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'
 
 const DEFAULT_MODEL = 'github:copilot'
 const FORCE_RELOGIN_ARGS = new Set([

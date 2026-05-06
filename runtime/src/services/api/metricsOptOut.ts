@@ -1,13 +1,13 @@
 import axios from 'axios'
-import { hasProfileScope, isAgenCAISubscriber } from '../../../../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js'
+import { hasProfileScope, isAgenCAISubscriber } from '../../utils/auth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../../../utils/errors.js'
-import { getAuthHeaders, withOAuth401Retry } from '../../../../utils/http.js'
-import { logError } from '../../../../utils/log.js'
-import { memoizeWithTTLAsync } from '../../../../utils/memoize.js'
-import { isEssentialTrafficOnly } from '../../../../utils/privacyLevel.js'
-import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
+import { errorMessage } from '../../utils/errors.js'
+import { getAuthHeaders, withOAuth401Retry } from '../../utils/http.js'
+import { logError } from '../../utils/log.js'
+import { memoizeWithTTLAsync } from '../../utils/memoize.js'
+import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
+import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
 
 type MetricsEnabledResponse = {
   metrics_logging_enabled: boolean

@@ -1,8 +1,8 @@
 import axios from 'axios'
-import { getOauthConfig } from '../../../../constants/oauth.js'
-import { isAgenCAISubscriber } from '../../../../utils/auth.js'
+import { getOauthConfig } from '../../constants/oauth.js'
+import { isAgenCAISubscriber } from '../../utils/auth.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getOAuthHeaders, prepareApiRequest } from '../../../../utils/teleport/api.js'
+import { getOAuthHeaders, prepareApiRequest } from '../../utils/teleport/api.js'
 
 export type UltrareviewQuotaResponse = {
   reviews_used: number

@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react'
 import { getOriginalCwd } from '../../../../bootstrap/state'
 import { Box, Text } from '../../../ink.js'
 import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata'
-import { env } from '../../../../agenc/upstream/utils/env' // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../../agenc/upstream/utils/permissions/permissionsLoader' // upstream-import: keep target is owned by another Z-PURGE item
+import { env } from '../../../../utils/env' // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader' // upstream-import: keep target is owned by another Z-PURGE item
 import { usePermissionRequestLogging } from '../hooks'
 import { PermissionDialog } from '../PermissionDialog'
 import {

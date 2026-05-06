@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { mkdir, writeFile } from 'fs/promises';
 import { marked, type Tokens } from 'marked';

@@ -6,8 +6,8 @@ import {
   logEvent,
 } from '../../../../services/analytics/index'
 import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata'
-import type { PermissionUpdate } from '../../../../agenc/upstream/utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
-import type { CompletionType } from '../../../../agenc/upstream/utils/unaryLogging' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+import type { CompletionType } from '../../../../utils/unaryLogging' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ToolUseConfirm } from '../PermissionRequest.js'
 import {
   type FileOperationType,

@@ -8,10 +8,10 @@ import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { type ExtraUsage, fetchUtilization, type RateLimit, type Utilization } from '../../../services/api/usage';
-import { formatResetText } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getAPIProvider } from '../../../agenc/upstream/utils/model/providers'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../agenc/upstream/utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatResetText } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAPIProvider } from '../../../utils/model/providers'; // upstream-import: keep target is owned by another Z-PURGE item
+import { jsonStringify } from '../../../utils/slowOperations'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';
 import { ProgressBar } from '../design-system/ProgressBar';

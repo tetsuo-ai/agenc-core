@@ -1,13 +1,13 @@
-import { isEnvTruthy } from '../../../../utils/envUtils.js'
-import { getMaxOutputLength } from '../../../../utils/shell/outputLimits.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { getMaxOutputLength } from '../../utils/shell/outputLimits.js'
 import {
   getPowerShellEdition,
   type PowerShellEdition,
-} from '../../../../utils/shell/powershellDetection.js'
+} from '../../utils/shell/powershellDetection.js'
 import {
   getDefaultBashTimeoutMs,
   getMaxBashTimeoutMs,
-} from '../../../../utils/timeouts.js'
+} from '../../utils/timeouts.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'

@@ -4,8 +4,8 @@ import {
   CodexOAuthService,
   type CodexOAuthTokens,
 } from '../../services/api/codexOAuth'
-import { openBrowser } from '../../agenc/upstream/utils/browser' // upstream-import: keep target is owned by another Z-PURGE item
-import { saveCodexCredentials } from '../../agenc/upstream/utils/codexCredentials' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser } from '../../utils/browser' // upstream-import: keep target is owned by another Z-PURGE item
+import { saveAgencCredentials } from '../../utils/agencCredentials' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { isBareMode } from '../../utils/envUtils'
 
 export type CodexOAuthFlowStatus =

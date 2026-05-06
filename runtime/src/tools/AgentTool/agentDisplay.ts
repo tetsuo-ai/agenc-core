@@ -3,11 +3,11 @@
  * Used by both the CLI `agenc agents` handler and the interactive `/agents` command.
  */
 
-import { getDefaultSubagentModel } from '../../../../utils/model/agent.js'
+import { getDefaultSubagentModel } from '../../utils/model/agent.js'
 import {
   getSourceDisplayName,
   type SettingSource,
-} from '../../../../utils/settings/constants.js'
+} from '../../utils/settings/constants.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 type AgentSource = SettingSource | 'built-in' | 'plugin'

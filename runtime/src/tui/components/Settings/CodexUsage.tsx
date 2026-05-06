@@ -11,8 +11,8 @@ import {
   type CodexUsageData,
   type CodexUsageRow,
 } from '../../../services/api/codexUsage'
-import { formatResetText } from '../../../agenc/upstream/utils/format' // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
+import { formatResetText } from '../../../utils/format' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint'
 import { Byline } from '../design-system/Byline'
 import { ProgressBar } from '../design-system/ProgressBar'

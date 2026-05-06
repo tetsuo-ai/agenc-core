@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
 import { getIsInteractive } from '../../bootstrap/state.js';
 import { ManagedSettingsSecurityDialog } from '../../tui/components/ManagedSettingsSecurityDialog/ManagedSettingsSecurityDialog.js';

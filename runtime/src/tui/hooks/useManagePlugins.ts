@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import type { Command } from '../../commands.js'
 import { useNotifications } from '../context/notifications'

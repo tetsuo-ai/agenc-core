@@ -7,8 +7,8 @@ import type {
 } from '../entrypoints/sdk/controlTypes.js'
 import type { RemotePermissionResponse } from '../remote/RemoteSessionManager.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'
-import type { RemoteMessageContent } from '../../../utils/teleport/api.js'
+import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
+import type { RemoteMessageContent } from '../utils/teleport/api.js'
 
 export type DirectConnectConfig = {
   serverUrl: string

@@ -3,7 +3,7 @@ import { Text } from '../../ink.js';
 import type { Tools } from '../../../tools/Tool';
 import { findToolByName } from '../../../tools/Tool';
 import type { ToolActivity } from '../../../tasks/LocalAgentTask/LocalAgentTask';
-import type { ThemeName } from '../../../agenc/upstream/utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ThemeName } from '../../../utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
 export function renderToolActivity(activity: ToolActivity, tools: Tools, theme: ThemeName): React.ReactNode {
   const tool = findToolByName(tools, activity.toolName);
   if (!tool) {

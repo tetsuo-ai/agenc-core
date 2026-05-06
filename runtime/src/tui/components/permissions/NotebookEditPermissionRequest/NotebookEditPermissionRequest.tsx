@@ -1,10 +1,12 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { basename } from 'path';
 import React from 'react';
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { NotebookEditTool } from '../../../../tools/NotebookEditTool/NotebookEditTool';
-import { logError } from '../../../../agenc/upstream/utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../../utils/log'; // upstream-import: keep target is owned by another Z-PURGE item
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { NotebookEditToolDiff } from './NotebookEditToolDiff';

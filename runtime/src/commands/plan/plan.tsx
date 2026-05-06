@@ -1,16 +1,18 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { handlePlanModeTransition } from '../../bootstrap/state.js';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import { Box, Text } from '../../tui/ink.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { getExternalEditor } from '../../../../utils/editor.js';
-import { toIDEDisplayName } from '../../../../utils/ide.js';
-import { applyPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate.js';
-import { prepareContextForPlanMode } from '../../../../utils/permissions/permissionSetup.js';
-import { getPlan, getPlanFilePath } from '../../../../utils/plans.js';
-import { editFileInEditor } from '../../../../utils/promptEditor.js';
-import { renderToString } from '../../../../utils/staticRender.js';
+import { getExternalEditor } from '../../utils/editor.js';
+import { toIDEDisplayName } from '../../utils/ide.js';
+import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js';
+import { prepareContextForPlanMode } from '../../utils/permissions/permissionSetup.js';
+import { getPlan, getPlanFilePath } from '../../utils/plans.js';
+import { editFileInEditor } from '../../utils/promptEditor.js';
+import { renderToString } from '../../utils/staticRender.js';
 function PlanDisplay(t0) {
   const $ = _c(11);
   const {

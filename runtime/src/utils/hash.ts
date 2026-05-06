@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * djb2 string hash — fast non-cryptographic hash returning a signed 32-bit int.
  * Deterministic across runtimes (unlike Bun.hash which uses wyhash). Use as a

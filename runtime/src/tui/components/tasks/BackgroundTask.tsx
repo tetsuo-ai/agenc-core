@@ -3,10 +3,10 @@ import * as React from 'react';
 import { Text } from '../../ink.js';
 import type { BackgroundTaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../types/utils.js';
-import { truncate } from '../../../agenc/upstream/utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { toInkColor } from '../../../agenc/upstream/utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../agenc/upstream/utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
 import { RemoteSessionProgress } from './RemoteSessionProgress';
 import { ShellProgress, TaskStatusText } from './ShellProgress';
 import { describeTeammateActivity } from './taskStatusUtils';

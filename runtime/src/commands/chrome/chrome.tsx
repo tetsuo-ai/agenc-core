@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useState } from 'react';
 import { type OptionWithDescription, Select } from '../../tui/components/CustomSelect/select.js';

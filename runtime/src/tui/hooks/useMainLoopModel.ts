@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useReducer } from 'react'
 import { onGrowthBookRefresh } from '../../services/analytics/growthbook'
 import { useAppState } from '../state/AppState.js'

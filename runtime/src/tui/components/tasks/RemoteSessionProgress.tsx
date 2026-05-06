@@ -2,7 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useRef } from 'react';
 import type { RemoteAgentTaskState } from '../../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import type { DeepImmutable } from '../../../types/utils.js';
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../agenc/upstream/constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSettings } from '../../hooks/useSettings';
 import { Text, useAnimationFrame } from '../../ink.js';
 import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item

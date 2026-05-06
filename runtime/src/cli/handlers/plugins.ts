@@ -22,18 +22,18 @@ import {
   VALID_UPDATE_SCOPES,
 } from '../../services/plugins/pluginCliCommands.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
-import { errorMessage } from '../../../../utils/errors.js'
-import { logError } from '../../../../utils/log.js'
-import { clearAllCaches } from '../../../../utils/plugins/cacheUtils.js'
-import { getInstallCounts } from '../../../../utils/plugins/installCounts.js'
+import { errorMessage } from '../../utils/errors.js'
+import { logError } from '../../utils/log.js'
+import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
+import { getInstallCounts } from '../../utils/plugins/installCounts.js'
 import {
   isPluginInstalled,
   loadInstalledPluginsV2,
-} from '../../../../utils/plugins/installedPluginsManager.js'
+} from '../../utils/plugins/installedPluginsManager.js'
 import {
   createPluginId,
   loadMarketplacesWithGracefulDegradation,
-} from '../../../../utils/plugins/marketplaceHelpers.js'
+} from '../../utils/plugins/marketplaceHelpers.js'
 import {
   addMarketplaceSource,
   loadKnownMarketplacesConfig,
@@ -41,22 +41,22 @@ import {
   refreshMarketplace,
   removeMarketplaceSource,
   saveMarketplaceToSettings,
-} from '../../../../utils/plugins/marketplaceManager.js'
-import { loadPluginMcpServers } from '../../../../utils/plugins/mcpPluginIntegration.js'
-import { parseMarketplaceInput } from '../../../../utils/plugins/parseMarketplaceInput.js'
+} from '../../utils/plugins/marketplaceManager.js'
+import { loadPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
+import { parseMarketplaceInput } from '../../utils/plugins/parseMarketplaceInput.js'
 import {
   parsePluginIdentifier,
   scopeToSettingSource,
-} from '../../../../utils/plugins/pluginIdentifier.js'
-import { loadAllPlugins } from '../../../../utils/plugins/pluginLoader.js'
-import type { PluginSource } from '../../../../utils/plugins/schemas.js'
+} from '../../utils/plugins/pluginIdentifier.js'
+import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
+import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
   type ValidationResult,
   validateManifest,
   validatePluginContents,
-} from '../../../../utils/plugins/validatePlugin.js'
-import { jsonStringify } from '../../../../utils/slowOperations.js'
-import { plural } from '../../../../utils/stringUtils.js'
+} from '../../utils/plugins/validatePlugin.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
+import { plural } from '../../utils/stringUtils.js'
 import { cliError, cliOk } from '../exit.js'
 
 // Re-export for main.tsx to reference in option definitions
@@ -164,7 +164,7 @@ export async function pluginListHandler(options: {
 
   const installedData = loadInstalledPluginsV2()
   const { getPluginEditableScopes } = await import(
-    '../../../../utils/plugins/pluginStartupCheck.js'
+    '../../utils/plugins/pluginStartupCheck.js'
   )
   const enabledPlugins = getPluginEditableScopes()
 

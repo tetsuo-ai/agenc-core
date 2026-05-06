@@ -9,15 +9,15 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { gracefulShutdown } from 'src/utils/gracefulShutdown.js'
 import { isEssentialTrafficOnly } from 'src/utils/privacyLevel.js'
 import { writeToStderr } from 'src/utils/process.js'
-import { getOauthConfig } from '../../../../constants/oauth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js'
+import { getOauthConfig } from '../../constants/oauth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import {
   getAuthHeaders,
   getUserAgent,
   withOAuth401Retry,
-} from '../../../../utils/http.js'
-import { logError } from '../../../../utils/log.js'
-import { getAgenCCodeUserAgent } from '../../../../utils/userAgent.js'
+} from '../../utils/http.js'
+import { logError } from '../../utils/log.js'
+import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
 
 // Cache expiration: 24 hours
 const GROVE_CACHE_EXPIRATION_MS = 24 * 60 * 60 * 1000

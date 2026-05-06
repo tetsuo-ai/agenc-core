@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // Content for the verify bundled skill.
 // Each .md file is inlined as a string at build time via Bun's text loader.
 

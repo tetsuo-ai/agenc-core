@@ -10,16 +10,16 @@ import {
   AGENC_AI_INFERENCE_SCOPE,
   AGENC_AI_OAUTH_SCOPES,
   getOauthConfig,
-} from '../../../../constants/oauth.js'
+} from '../../constants/oauth.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
   hasProfileScope,
   isAgenCAISubscriber,
   saveApiKey,
-} from '../../../../utils/auth.js'
-import type { AccountInfo } from '../../../../utils/config.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../../../utils/config.js'
+} from '../../utils/auth.js'
+import type { AccountInfo } from '../../utils/config.js'
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getOauthProfileFromOauthToken } from './getOauthProfile.js'
 import type {

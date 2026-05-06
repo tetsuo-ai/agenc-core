@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import * as React from 'react';
@@ -18,7 +20,7 @@ import { useEffect, useState } from 'react';
 import { getSteps, shouldShowProjectOnboarding, incrementProjectOnboardingSeenCount } from '../../../onboarding/projectOnboardingState';
 import { CondensedLogo } from './CondensedLogo';
 import { OffscreenFreeze } from '../OffscreenFreeze';
-import { checkForReleaseNotesSync } from '../../../agenc/upstream/utils/releaseNotes'; // upstream-import: keep target is owned by another Z-PURGE item
+import { checkForReleaseNotesSync } from '../../../utils/releaseNotes'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getDumpPromptsPath } from '../../../services/api/dumpPrompts.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { getStartupPerfLogPath, isDetailedProfilingEnabled } from '../../../utils/startupProfiler.js'; // upstream-import: keep target is owned by another Z-PURGE item

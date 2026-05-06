@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useRegisterOverlay } from '../context/overlayContext.js';

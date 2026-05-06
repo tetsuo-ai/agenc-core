@@ -12,9 +12,7 @@ let cachedModule: ProactiveModule | null | undefined
 function loadProactiveModule(): ProactiveModule | null {
   if (cachedModule !== undefined) return cachedModule
   try {
-    cachedModule = requireFromHere(
-      '../../../agenc/upstream/' + 'proactive/index.js',
-    ) as ProactiveModule
+    cachedModule = requireFromHere('../../../proactive/index.js') as ProactiveModule
   } catch {
     cachedModule = null
   }

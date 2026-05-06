@@ -68,7 +68,7 @@ import {
 import { isAutoModeGateEnabled } from "./permission-mode.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./permissions/settings"`
+// Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./settings.js"`
 // ─────────────────────────────────────────────────────────────────────
 
 export { SETTING_SOURCES, EDITABLE_SOURCES };

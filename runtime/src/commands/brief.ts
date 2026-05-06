@@ -14,7 +14,7 @@ import type {
   LocalJSXCommandContext,
   LocalJSXCommandOnDone,
 } from '../types/command.js'
-import { lazySchema } from '../../../utils/lazySchema.js'
+import { lazySchema } from '../utils/lazySchema.js'
 
 // Zod guards against fat-fingered GB pushes (same pattern as pollConfig.ts /
 // cronScheduler.ts). A malformed config falls back to DEFAULT_BRIEF_CONFIG

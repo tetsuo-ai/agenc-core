@@ -28,13 +28,13 @@ import {
   EFFORT_LEVELS,
   type EffortValue,
   parseEffortValue,
-} from '../../../utils/effort.js'
+} from '../utils/effort.js'
 import {
   getAgenCConfigHomeDir,
   isBareMode,
   isEnvTruthy,
-} from '../../../utils/envUtils.js'
-import { isENOENT, isFsInaccessible } from '../../../utils/errors.js'
+} from '../utils/envUtils.js'
+import { isENOENT, isFsInaccessible } from '../utils/errors.js'
 import {
   coerceDescriptionToString,
   type FrontmatterData,
@@ -43,25 +43,25 @@ import {
   parseFrontmatter,
   parseShellFrontmatter,
   splitPathInFrontmatter,
-} from '../../../utils/frontmatterParser.js'
-import { getFsImplementation } from '../../../utils/fsOperations.js'
-import { isPathGitignored } from '../../../utils/git/gitignore.js'
-import { logError } from '../../../utils/log.js'
+} from '../utils/frontmatterParser.js'
+import { getFsImplementation } from '../utils/fsOperations.js'
+import { isPathGitignored } from '../utils/git/gitignore.js'
+import { logError } from '../utils/log.js'
 import {
   extractDescriptionFromMarkdown,
   getProjectDirsUpToHome,
   loadMarkdownFilesForSubdir,
   type MarkdownFile,
   parseSlashCommandToolsFromFrontmatter,
-} from '../../../utils/markdownConfigLoader.js'
-import { parseUserSpecifiedModel } from '../../../utils/model/model.js'
-import { executeShellCommandsInPrompt } from '../../../utils/promptShellExecution.js'
-import type { SettingSource } from '../../../utils/settings/constants.js'
-import { isSettingSourceEnabled } from '../../../utils/settings/constants.js'
-import { getManagedFilePath } from '../../../utils/settings/managedPath.js'
-import { isRestrictedToPluginOnly } from '../../../utils/settings/pluginOnlyPolicy.js'
-import { HooksSchema, type HooksSettings } from '../../../utils/settings/types.js'
-import { createSignal } from '../../../utils/signal.js'
+} from '../utils/markdownConfigLoader.js'
+import { parseUserSpecifiedModel } from '../utils/model/model.js'
+import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
+import type { SettingSource } from '../utils/settings/constants.js'
+import { isSettingSourceEnabled } from '../utils/settings/constants.js'
+import { getManagedFilePath } from '../utils/settings/managedPath.js'
+import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
+import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
+import { createSignal } from '../utils/signal.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
 
 export type LoadedFrom =

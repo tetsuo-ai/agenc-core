@@ -5,7 +5,7 @@ import { OutputLine } from '../../tui/components/shell/OutputLine.js';
 import { Text } from '../../tui/ink.js';
 import type { ToolProgressData } from '../Tool.js';
 import type { ProgressMessage } from '../../types/message.js';
-import { jsonStringify } from '../../../../utils/slowOperations.js';
+import { jsonStringify } from '../../utils/slowOperations.js';
 import type { Output } from './ListMcpResourcesTool.js';
 export function renderToolUseMessage(input: Partial<{
   server?: string;

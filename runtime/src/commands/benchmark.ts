@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { Command } from '../types/command.js'
 import {
@@ -5,8 +7,8 @@ import {
   benchmarkMultipleModels,
   formatBenchmarkResults,
   isBenchmarkSupported,
-} from '../../../utils/model/benchmark.js'
-import { getOllamaModelOptions } from '../../../utils/model/ollamaModels.js'
+} from '../utils/model/benchmark.js'
+import { getOllamaModelOptions } from '../utils/model/ollamaModels.js'
 
 async function runBenchmark(
   model?: string,

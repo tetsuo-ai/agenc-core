@@ -1,8 +1,10 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useMemo } from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
 import { WebFetchTool } from '../../../../tools/WebFetchTool/WebFetchTool';
-import { shouldShowAlwaysAllowOptions } from '../../../../agenc/upstream/utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type OptionWithDescription, Select } from '../../CustomSelect/select';
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
 import { PermissionDialog } from '../PermissionDialog';

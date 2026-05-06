@@ -4,9 +4,9 @@ import { CCRClient } from '../cli/transports/ccrClient.js'
 import type { HybridTransport } from '../cli/transports/HybridTransport.js'
 import { SSETransport } from '../cli/transports/SSETransport.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../../utils/errors.js'
-import { updateSessionIngressAuthToken } from '../../../utils/sessionIngressAuth.js'
-import type { SessionState } from '../../../utils/sessionState.js'
+import { errorMessage } from '../utils/errors.js'
+import { updateSessionIngressAuthToken } from '../utils/sessionIngressAuth.js'
+import type { SessionState } from '../utils/sessionState.js'
 import { registerWorker } from './workSecret.js'
 /**
  * Transport abstraction for replBridge. Covers exactly the surface that

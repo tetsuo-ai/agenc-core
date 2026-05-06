@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react'
 import type { Key } from '../ink.js'
 import type { VimInputState, VimMode } from '../../types/textInputTypes'
-import { Cursor } from '../../agenc/upstream/utils/Cursor' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
-import { lastGrapheme } from '../../agenc/upstream/utils/intl' // upstream-import: keep target is owned by another Z-PURGE item
+import { TextCursor as Cursor } from '../../utils/TextCursor' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import { lastGrapheme } from '../../utils/intl' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   executeIndent,
   executeJoin,

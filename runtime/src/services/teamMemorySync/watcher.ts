@@ -15,10 +15,10 @@ import {
   getTeamMemPath,
   isTeamMemoryEnabled,
 } from '../../memdir/teamMemPaths.js'
-import { registerCleanup } from '../../../../utils/cleanupRegistry.js'
+import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../../../utils/errors.js'
-import { getGithubRepo } from '../../../../utils/git.js'
+import { errorMessage } from '../../utils/errors.js'
+import { getGithubRepo } from '../../utils/git.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

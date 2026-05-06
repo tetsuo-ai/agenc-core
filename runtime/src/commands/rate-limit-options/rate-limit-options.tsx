@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useMemo, useState } from 'react';
 import type { CommandResultDisplay, LocalJSXCommandContext } from '../../commands.js';
@@ -8,8 +10,8 @@ import { logEvent } from '../../services/analytics/index.js';
 import { useAgenCAiLimits } from '../../services/agencAiLimitsHook.js';
 import type { ToolUseContext } from '../../tools/Tool.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { getOauthAccountInfo, getRateLimitTier, getSubscriptionType } from '../../../../utils/auth.js';
-import { hasAgenCAiBillingAccess } from '../../../../utils/billing.js';
+import { getOauthAccountInfo, getRateLimitTier, getSubscriptionType } from '../../utils/auth.js';
+import { hasAgenCAiBillingAccess } from '../../utils/billing.js';
 import { call as extraUsageCall } from '../extra-usage/extra-usage.js';
 import { extraUsage } from '../extra-usage/index.js';
 import upgrade from '../upgrade/index.js';

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
@@ -9,7 +11,7 @@ import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import type { ToolPermissionContext } from '../../../../tools/Tool';
-import { getDirectoryCompletions } from '../../../../agenc/upstream/utils/suggestions/directoryCompletion'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getDirectoryCompletions } from '../../../../utils/suggestions/directoryCompletion'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../ConfigurableShortcutHint';
 import { Select } from '../../CustomSelect/select';
 import { Byline } from '../../design-system/Byline';

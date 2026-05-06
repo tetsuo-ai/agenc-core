@@ -7,9 +7,9 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { LocalShellTaskState } from '../../../tasks/LocalShellTask/guards';
-import { formatDuration, formatFileSize, truncateToWidth } from '../../../agenc/upstream/utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { tailFile } from '../../../agenc/upstream/utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTaskOutputPath } from '../../../agenc/upstream/utils/task/diskOutput'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatDuration, formatFileSize, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { tailFile } from '../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTaskOutputPath } from '../../../utils/task/diskOutput'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';

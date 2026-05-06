@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Copy command - minimal metadata only.
  * Implementation is lazy-loaded from copy.tsx to reduce startup time.

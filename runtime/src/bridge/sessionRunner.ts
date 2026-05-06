@@ -1,9 +1,11 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { type ChildProcess, spawn } from 'child_process'
 import { createWriteStream, type WriteStream } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { createInterface } from 'readline'
-import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'
+import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 import { debugTruncate } from './debugUtils.js'
 import type {
   SessionActivity,

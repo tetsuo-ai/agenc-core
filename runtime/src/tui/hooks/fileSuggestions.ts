@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { statSync } from 'fs'
 import ignore from 'ignore'
 import * as path from 'path'

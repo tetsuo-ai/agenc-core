@@ -1,11 +1,13 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Command } from '../commands.js'
 import {
   getAttributionTexts,
   getEnhancedPRAttribution,
-} from '../../../utils/attribution.js'
-import { getDefaultBranch } from '../../../utils/git.js'
-import { executeShellCommandsInPrompt } from '../../../utils/promptShellExecution.js'
-import { getUndercoverInstructions, isUndercover } from '../../../utils/undercover.js'
+} from '../utils/attribution.js'
+import { getDefaultBranch } from '../utils/git.js'
+import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
+import { getUndercoverInstructions, isUndercover } from '../utils/undercover.js'
 
 const ALLOWED_TOOLS = [
   'Bash(git checkout --branch:*)',

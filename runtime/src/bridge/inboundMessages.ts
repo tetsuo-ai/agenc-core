@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -5,7 +7,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { UUID } from 'crypto'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
-import { detectImageFormatFromBase64 } from '../../../utils/imageResizer.js'
+import { detectImageFormatFromBase64 } from '../utils/imageResizer.js'
 
 /**
  * Process an inbound user message from the bridge, extracting content

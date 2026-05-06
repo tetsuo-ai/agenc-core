@@ -4,20 +4,20 @@ import { isPolicyAllowed } from '../../services/policyLimits/index.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
 import { REMOTE_TRIGGER_TOOL_NAME } from '../../tools/RemoteTriggerTool/prompt.js'
-import { getAgenCAIOAuthTokens } from '../../../../utils/auth.js'
-import { checkRepoForRemoteAccess } from '../../../../utils/background/remote/preconditions.js'
+import { getAgenCAIOAuthTokens } from '../../utils/auth.js'
+import { checkRepoForRemoteAccess } from '../../utils/background/remote/preconditions.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
   detectCurrentRepositoryWithHost,
   parseGitRemote,
-} from '../../../../utils/detectRepository.js'
-import { getRemoteUrl } from '../../../../utils/git.js'
-import { jsonStringify } from '../../../../utils/slowOperations.js'
+} from '../../utils/detectRepository.js'
+import { getRemoteUrl } from '../../utils/git.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   createDefaultCloudEnvironment,
   type EnvironmentResource,
   fetchEnvironments,
-} from '../../../../utils/teleport/environments.js'
+} from '../../utils/teleport/environments.js'
 import { registerBundledSkill } from '../bundledSkills.js'
 
 // Base58 alphabet (Bitcoin-style) used by the tagged ID system

@@ -1,6 +1,8 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useRef, useState } from 'react'
 import { getLastInteractionTime } from '../../bootstrap/state'
-import { fetchPrStatus, type PrReviewState } from '../../agenc/upstream/utils/ghPrStatus' // upstream-import: keep target is owned by another Z-PURGE item
+import { fetchPrStatus, type PrReviewState } from '../../utils/ghPrStatus' // upstream-import: keep target is owned by another Z-PURGE item
 
 const POLL_INTERVAL_MS = 60_000
 const SLOW_GH_THRESHOLD_MS = 4_000

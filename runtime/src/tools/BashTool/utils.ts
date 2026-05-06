@@ -11,10 +11,10 @@ import type { ToolPermissionContext } from 'src/Tool.js'
 import { getCwd } from 'src/utils/cwd.js'
 import { pathInAllowedWorkingPath } from 'src/utils/permissions/filesystem.js'
 import { setCwd } from 'src/utils/Shell.js'
-import { shouldMaintainProjectWorkingDir } from '../../../../utils/envUtils.js'
-import { maybeResizeAndDownsampleImageBuffer } from '../../../../utils/imageResizer.js'
-import { getMaxOutputLength } from '../../../../utils/shell/outputLimits.js'
-import { countCharInString, plural } from '../../../../utils/stringUtils.js'
+import { shouldMaintainProjectWorkingDir } from '../../utils/envUtils.js'
+import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
+import { getMaxOutputLength } from '../../utils/shell/outputLimits.js'
+import { countCharInString, plural } from '../../utils/stringUtils.js'
 /**
  * Strips leading and trailing lines that contain only whitespace/newlines.
  * Unlike trim(), this preserves whitespace within content lines and only removes

@@ -1,10 +1,10 @@
 import { logEvent } from 'src/services/analytics/index.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'
-import { logError } from '../../../utils/log.js'
+import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import { logError } from '../utils/log.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
-} from '../../../utils/settings/settings.js'
+} from '../utils/settings/settings.js'
 /**
  * Migration: Move user-set autoUpdates preference to settings.json env var
  * Only migrates if user explicitly disabled auto-updates (not for protection)

@@ -3,7 +3,7 @@
  * Uses GitHub Copilot's official OAuth app for device authentication.
  */
 
-import { execFileNoThrow } from '../../../../utils/execFileNoThrow.js'
+import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 
 export const DEFAULT_GITHUB_DEVICE_FLOW_CLIENT_ID = 'Iv1.b507a08c87ecfe98'
 

@@ -11,7 +11,7 @@ import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
 import type { HookEvent } from '../../../entrypoints/agentSdkTypes.js';
-import type { HookEventMetadata } from '../../../agenc/upstream/utils/hooks/hooksConfigManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { HookEventMetadata } from '../../../utils/hooks/hooksConfigManager.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Link, Text } from '../../ink.js';
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';

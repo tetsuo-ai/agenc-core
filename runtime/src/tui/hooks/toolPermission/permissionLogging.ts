@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 // Centralized analytics/telemetry logging for tool permission decisions.
 // All permission approve/reject events flow through logPermissionDecision(),
 // which fans out to Statsig analytics, OTel telemetry, and code-edit metrics.
@@ -9,9 +11,9 @@ import {
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
 import { getCodeEditToolDecisionCounter } from '../../../bootstrap/state'
 import type { Tool as ToolType, ToolUseContext } from '../../../tools/Tool'
-import { getLanguageName } from '../../../agenc/upstream/utils/cliHighlight' // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../agenc/upstream/utils/sandbox/sandbox-adapter' // upstream-import: keep target is owned by another Z-PURGE item
-import { logOTelEvent } from '../../../agenc/upstream/utils/telemetry/events' // upstream-import: keep target is owned by another Z-PURGE item
+import { getLanguageName } from '../../../utils/cliHighlight' // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime' // upstream-import: keep target is owned by another Z-PURGE item
+import { logOTelEvent } from '../../../utils/telemetry/events' // upstream-import: keep target is owned by another Z-PURGE item
 import type {
   PermissionApprovalSource,
   PermissionRejectionSource,

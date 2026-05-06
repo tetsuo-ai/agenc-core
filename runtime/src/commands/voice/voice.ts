@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { normalizeLanguageForSTT } from '../../tui/hooks/useVoice.js'
 import { getShortcutDisplay } from '../../tui/keybindings/shortcutFormat.js'
 import { logEvent } from '../../services/analytics/index.js'

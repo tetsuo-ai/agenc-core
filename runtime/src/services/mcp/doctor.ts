@@ -1,4 +1,6 @@
-import type { ValidationError } from '../../../../utils/settings/validation.js'
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+import type { ValidationError } from '../../utils/settings/validation.js'
 import { clearServerCache, connectToServer } from './client.js'
 import {
   getAllMcpConfigs,

@@ -4,7 +4,7 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ValidationResult } from '../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionResult } from '../../types/permissions.js'
-import { isOutputLineTruncated } from '../../../../utils/terminal.js'
+import { isOutputLineTruncated } from '../../utils/terminal.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
   renderToolResultMessage,

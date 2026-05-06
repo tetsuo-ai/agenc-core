@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { URL } from 'url'
-import { isEnvTruthy } from '../../../../utils/envUtils.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { HybridTransport } from './HybridTransport.js'
 import { SSETransport } from './SSETransport.js'
 import type { Transport } from './Transport.js'

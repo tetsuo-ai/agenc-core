@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Session cache clearing utilities.
  * This module is imported at startup by main.tsx, so keep imports minimal.

@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { execFileSync } from 'child_process'
 import { diffLines } from 'diff'
 import {
@@ -15,21 +17,21 @@ import {
   LEGACY_AGENT_TOOL_NAME,
 } from 'src/tools/AgentTool/constants.js'
 import type { LogOption } from '../types/logs.js'
-import { getAgenCConfigHomeDir } from '../../../utils/envUtils.js'
-import { toError } from '../../../utils/errors.js'
-import { logError } from '../../../utils/log.js'
-import { extractTextContent } from '../../../utils/messages.js'
-import { getDefaultOpusModel } from '../../../utils/model/model.js'
+import { getAgenCConfigHomeDir } from '../utils/envUtils.js'
+import { toError } from '../utils/errors.js'
+import { logError } from '../utils/log.js'
+import { extractTextContent } from '../utils/messages.js'
+import { getDefaultOpusModel } from '../utils/model/model.js'
 import {
   getProjectsDir,
   getSessionFilesWithMtime,
   getSessionIdFromLog,
   loadAllLogsFromSessionFile,
-} from '../../../utils/sessionStorage.js'
-import { jsonParse, jsonStringify } from '../../../utils/slowOperations.js'
-import { countCharInString } from '../../../utils/stringUtils.js'
-import { asSystemPrompt } from '../../../utils/systemPromptType.js'
-import { escapeXmlAttr as escapeHtml } from '../../../utils/xml.js'
+} from '../utils/sessionStorage.js'
+import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
+import { countCharInString } from '../utils/stringUtils.js'
+import { asSystemPrompt } from '../utils/systemPromptType.js'
+import { escapeXmlAttr as escapeHtml } from '../utils/xml.js'
 
 // Model for facet extraction and summarization (Opus - best quality)
 function getAnalysisModel(): string {

@@ -1,7 +1,7 @@
 /**
- * Temporary declarations for upstream-mirror files that are still imported by
- * production code until the Z-02 cleanup removes runtime/src/agenc/upstream.
- * Keep this file narrow and delete it with that mirror.
+ * Temporary declarations for moved purge-boundary files that still need narrow
+ * ambient types. Keep this file narrow and delete it when those imports are
+ * made strict.
  */
 
 declare module "@opentelemetry/sdk-metrics" {

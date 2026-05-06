@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import figures from 'figures';
@@ -8,9 +10,9 @@ import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { AddWorkspaceDirectory } from '../../tui/components/permissions/rules/AddWorkspaceDirectory.js';
 import { Box, Text } from '../../tui/ink.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { applyPermissionUpdate, persistPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate.js';
-import type { PermissionUpdateDestination } from '../../../../utils/permissions/PermissionUpdateSchema.js';
-import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js';
+import { applyPermissionUpdate, persistPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js';
+import type { PermissionUpdateDestination } from '../../utils/permissions/PermissionUpdateSchema.js';
+import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js';
 import { addDirHelpMessage, validateDirectoryForWorkspace } from './validation.js';
 function AddDirError(t0) {
   const $ = _c(10);

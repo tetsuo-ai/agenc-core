@@ -7,7 +7,7 @@ import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import { buildMiniMaxUsageRows, type MiniMaxUsageRow } from '../../../services/api/minimaxUsage/parse'
 import type { MiniMaxUsageData } from '../../../services/api/minimaxUsage/types'
 import { fetchMiniMaxUsage } from '../../../services/api/minimaxUsage/fetch'
-import { logError } from '../../../agenc/upstream/utils/log' // upstream-import: keep target is owned by another Z-PURGE item
+import { logError } from '../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint'
 import { Byline } from '../design-system/Byline'
 import { ProgressBar } from '../design-system/ProgressBar'

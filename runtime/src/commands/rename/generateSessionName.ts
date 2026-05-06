@@ -1,11 +1,11 @@
 import { queryHaiku } from '../../services/api/anthropic.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { errorMessage } from '../../../../utils/errors.js'
-import { safeParseJSON } from '../../../../utils/json.js'
-import { extractTextContent } from '../../../../utils/messages.js'
-import { extractConversationText } from '../../../../utils/sessionTitle.js'
-import { asSystemPrompt } from '../../../../utils/systemPromptType.js'
+import { errorMessage } from '../../utils/errors.js'
+import { safeParseJSON } from '../../utils/json.js'
+import { extractTextContent } from '../../utils/messages.js'
+import { extractConversationText } from '../../utils/sessionTitle.js'
+import { asSystemPrompt } from '../../utils/systemPromptType.js'
 
 export async function generateSessionName(
   messages: Message[],

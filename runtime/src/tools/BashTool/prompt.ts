@@ -1,20 +1,20 @@
 import { feature } from 'bun:bundle'
-import { prependBullets } from '../../../../constants/prompts.js'
-import { getAttributionTexts } from '../../../../utils/attribution.js'
-import { hasEmbeddedSearchTools } from '../../../../utils/embeddedTools.js'
-import { isEnvTruthy } from '../../../../utils/envUtils.js'
-import { shouldIncludeGitInstructions } from '../../../../utils/gitSettings.js'
-import { getAgenCTempDir } from '../../../../utils/permissions/filesystem.js'
-import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js'
-import { jsonStringify } from '../../../../utils/slowOperations.js'
+import { prependBullets } from '../../constants/prompts.js'
+import { getAttributionTexts } from '../../utils/attribution.js'
+import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
+import { getAgenCTempDir } from '../../utils/permissions/filesystem.js'
+import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   getDefaultBashTimeoutMs,
   getMaxBashTimeoutMs,
-} from '../../../../utils/timeouts.js'
+} from '../../utils/timeouts.js'
 import {
   getUndercoverInstructions,
   isUndercover,
-} from '../../../../utils/undercover.js'
+} from '../../utils/undercover.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'

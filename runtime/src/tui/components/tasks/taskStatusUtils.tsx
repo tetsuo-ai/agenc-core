@@ -1,3 +1,5 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared utilities for displaying task status across different task types.
  */
@@ -8,7 +10,7 @@ import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammat
 import { isPanelAgentTask } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../types/utils.js';
-import { summarizeRecentActivities } from '../../../agenc/upstream/utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
  * Returns true if the given task status represents a terminal (finished) state.

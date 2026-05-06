@@ -4,7 +4,7 @@
 
 import type { TaskStateBase } from '../Task.js'
 import type { AgentId } from '../../types/ids.js'
-import type { ShellCommand } from '../../../../utils/ShellCommand.js'
+import type { ShellCommand } from '../../utils/ShellCommand.js'
 
 export type BashTaskKind = 'bash' | 'monitor'
 

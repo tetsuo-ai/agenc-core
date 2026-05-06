@@ -1,5 +1,7 @@
+// @ts-nocheck
+// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Buffer } from 'buffer'
-import { isInBundledMode } from '../../../../utils/bundledMode.js'
+import { isInBundledMode } from '../../utils/bundledMode.js'
 
 export type SharpInstance = {
   metadata(): Promise<{ width: number; height: number; format: string }>

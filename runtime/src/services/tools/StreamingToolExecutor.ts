@@ -9,7 +9,7 @@ import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../../tools/Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
-import { createChildAbortController } from '../../../../utils/abortController.js'
+import { createChildAbortController } from '../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
 type MessageUpdate = {
   message?: Message

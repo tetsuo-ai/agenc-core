@@ -6,13 +6,13 @@ import {
   isMaxSubscriber,
   isProSubscriber,
   isTeamPremiumSubscriber,
-} from '../../../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'
-import { getAPIProvider } from '../../../utils/model/providers.js'
+} from '../utils/auth.js'
+import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
-} from '../../../utils/settings/settings.js'
+} from '../utils/settings/settings.js'
 
 /**
  * Migrate Pro/Max/Team Premium first-party users off explicit Sonnet 4.5
