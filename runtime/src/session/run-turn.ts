@@ -106,6 +106,12 @@ import {
   type Terminal,
   type TurnState,
 } from "./turn-state.js";
+import {
+  AGENC_TURN_TTFM_DURATION_METRIC,
+  AGENC_TURN_TTFT_DURATION_METRIC,
+  agencTelemetry,
+  toMetricTags,
+} from "../observability/telemetry.js";
 
 export interface RunTurnOptions {
   readonly systemPrompt?: string;
@@ -147,6 +153,33 @@ class RegularTurnTask implements SessionTask {
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
+
+function recordTurnTimingForPhaseEvent(
+  ctx: TurnContext,
+  event: PhaseEvent,
+): void {
+  const tags = toMetricTags({ turn_id: ctx.subId, event: event.type });
+  const ttftMs = ctx.turnTimingState.recordTtftForPhaseEvent(event);
+  if (ttftMs !== undefined) {
+    agencTelemetry.recordDuration(
+      AGENC_TURN_TTFT_DURATION_METRIC,
+      ttftMs,
+      tags,
+    );
+  }
+  if (event.type === "assistant_text") {
+    const ttfmMs = ctx.turnTimingState.recordTtfmForAssistantText(
+      event.content,
+    );
+    if (ttfmMs !== undefined) {
+      agencTelemetry.recordDuration(
+        AGENC_TURN_TTFM_DURATION_METRIC,
+        ttfmMs,
+        tags,
+      );
+    }
+  }
+}
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
 const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
@@ -1610,6 +1643,7 @@ export async function* runTurnKernel(
   // recovery in rollout-reconstruction would treat every clean turn
   // as a `process_killed` abort.
   const turnStartedAt = Date.now();
+  ctx.turnTimingState.markTurnStarted(turnStartedAt);
   const emitTurnStarted = (): void => {
     session.emit({
       id: session.nextInternalSubId(),
@@ -2030,7 +2064,10 @@ async function* runTurnKernelInner(
     let modelNeedsFollowUp = false;
     try {
       const result = await runSamplingRequest(state, ctx, session, signal, pending);
-      for (const ev of pending) yield ev;
+      for (const ev of pending) {
+        recordTurnTimingForPhaseEvent(ctx, ev);
+        yield ev;
+      }
       // D1 fix: accumulate real provider usage returned from the
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
@@ -2052,7 +2089,10 @@ async function* runTurnKernelInner(
       }
     } catch (error) {
       await drainInFlight(state, ctx, session);
-      for (const ev of pending) yield ev;
+      for (const ev of pending) {
+        recordTurnTimingForPhaseEvent(ctx, ev);
+        yield ev;
+      }
       const sme = error instanceof StreamModelError ? error : undefined;
       const underlying =
         (sme?.cause instanceof Error ? sme.cause : undefined) ??
@@ -2296,7 +2336,9 @@ async function* runTurnKernelInner(
     // around the dispatch.
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
       for (const toolCall of lastAssistant.toolCalls) {
-        yield { type: "tool_call", toolCall };
+        const event: PhaseEvent = { type: "tool_call", toolCall };
+        recordTurnTimingForPhaseEvent(ctx, event);
+        yield event;
       }
     }
     await executeTools(state, ctx, session, signal);

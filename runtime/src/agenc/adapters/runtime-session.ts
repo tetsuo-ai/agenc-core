@@ -1,4 +1,10 @@
 import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
+import {
+  AGENC_COMPACT_CALL_METRIC,
+  AGENC_COMPACT_DURATION_METRIC,
+  agencTelemetry,
+  toMetricTags,
+} from "../../observability/telemetry.js";
 import type { CompactionResult } from "../../services/compact/types.js";
 import type { Session } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
@@ -141,52 +147,70 @@ export async function runAgenCAutoCompact(params: {
   readonly phase?: string;
   readonly initialContextInjection?: string;
 }): Promise<AgenCAutoCompactResult> {
+  const finishTelemetry = startCompactTelemetry("auto", {
+    query_source: params.querySource,
+    reason: params.reason,
+    phase: params.phase,
+  });
   if (!params.session || !params.ctx || !params.state) {
+    finishTelemetry("not_configured");
     return compactionNotRun();
   }
-  const state = params.state;
-  const sourceMessages =
-    state.messagesForQuery.length > 0
-      ? state.messagesForQuery
-      : state.messages;
-  const messages = toAgenCRuntimeMessages(sourceMessages);
-  const toolUseContext = buildAgenCToolUseContext(
-    params.session,
-    params.ctx,
-    { querySource: params.querySource },
-  );
-  const cacheSafeParams = {
-    systemPrompt: [],
-    userContext: {},
-    systemContext: {},
-    toolUseContext,
-    forkContextMessages: messages,
-  };
-  const result = await withUpstreamContextGuards(async () => {
-    const { autoCompactIfNeeded } =
-      await import("../../services/compact/autoCompact.js");
-    return autoCompactIfNeeded(
-      messages,
-      toolUseContext,
-      cacheSafeParams,
-      params.querySource,
-      state.autoCompactTracking,
-      state.snipTokensFreed ?? 0,
+  try {
+    const state = params.state;
+    const sourceMessages =
+      state.messagesForQuery.length > 0
+        ? state.messagesForQuery
+        : state.messages;
+    const messages = toAgenCRuntimeMessages(sourceMessages);
+    const toolUseContext = buildAgenCToolUseContext(
+      params.session,
+      params.ctx,
+      { querySource: params.querySource },
     );
-  }, envForToolUseContext(toolUseContext));
-  if (!result.wasCompacted || !result.compactionResult) {
-    return compactionNotRun(result.consecutiveFailures);
-  }
-  params.session.clearProviderResponseId();
-  return {
-    wasCompacted: true,
-    compactionResult: await toAgenCCompactionResult(
+    const cacheSafeParams = {
+      systemPrompt: [],
+      userContext: {},
+      systemContext: {},
+      toolUseContext,
+      forkContextMessages: messages,
+    };
+    const result = await withUpstreamContextGuards(async () => {
+      const { autoCompactIfNeeded } =
+        await import("../../services/compact/autoCompact.js");
+      return autoCompactIfNeeded(
+        messages,
+        toolUseContext,
+        cacheSafeParams,
+        params.querySource,
+        state.autoCompactTracking,
+        state.snipTokensFreed ?? 0,
+      );
+    }, envForToolUseContext(toolUseContext));
+    if (!result.wasCompacted || !result.compactionResult) {
+      finishTelemetry("skipped", {
+        consecutive_failures: result.consecutiveFailures,
+      });
+      return compactionNotRun(result.consecutiveFailures);
+    }
+    params.session.clearProviderResponseId();
+    const compactionResult = await toAgenCCompactionResult(
       result.compactionResult as AgenCCompactionResult,
-    ),
-    ...(result.consecutiveFailures !== undefined
-      ? { consecutiveFailures: result.consecutiveFailures }
-      : {}),
-  };
+    );
+    finishTelemetry("compacted", {
+      consecutive_failures: result.consecutiveFailures,
+    });
+    return {
+      wasCompacted: true,
+      compactionResult,
+      ...(result.consecutiveFailures !== undefined
+        ? { consecutiveFailures: result.consecutiveFailures }
+        : {}),
+    };
+  } catch (error) {
+    finishTelemetry("error");
+    throw error;
+  }
 }
 
 export async function runAgenCManualCompact(params: {
@@ -194,74 +218,81 @@ export async function runAgenCManualCompact(params: {
   readonly ctx: TurnContext;
   readonly customInstructions?: string;
 }): Promise<AgenCManualCompactResult> {
-  const sourceMessages = params.session.snapshotHistoryMessages();
-  const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
-  if (messages.length === 0) {
-    throw new Error("No messages to compact");
-  }
-  const toolUseContext = buildAgenCToolUseContext(
-    params.session,
-    params.ctx,
-    { querySource: "compact" },
-  );
-  const commandContext = {
-    ...toolUseContext,
-    messages,
-    setMessages: () => {},
-    setAppState: () => {},
-    setInProgressToolUseIDs: () => {},
-    updateFileHistoryState: () => {},
-    updateAttributionState: () => {},
-    onChangeAPIKey: () => {},
-    options: {
-      ...toolUseContext.options,
-      commands: [],
-      debug: false,
-      thinkingConfig: {},
-      mcpResources: {},
-      dynamicMcpConfig: {},
-      ideInstallationStatus: null,
-      theme: "dark",
-    },
-  };
-  const result = await withUpstreamContextGuards(async () => {
-    const { manualCompactCall } =
-      await import("../../services/compact/compact.js");
-    const call = manualCompactCall;
-    return call(params.customInstructions ?? "", commandContext as never);
-  }, envForToolUseContext(toolUseContext));
-  if (result.type !== "compact") {
-    throw new Error("Compact command did not return a compaction result");
-  }
-  const compactionResultWithSlashMessages =
-    await addManualCompactSlashMessages(
-      result.compactionResult as AgenCCompactionResult,
-      params.customInstructions ?? "",
-      typeof result.displayText === "string" ? result.displayText : undefined,
+  const finishTelemetry = startCompactTelemetry("manual");
+  try {
+    const sourceMessages = params.session.snapshotHistoryMessages();
+    const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
+    if (messages.length === 0) {
+      throw new Error("No messages to compact");
+    }
+    const toolUseContext = buildAgenCToolUseContext(
+      params.session,
+      params.ctx,
+      { querySource: "compact" },
     );
-  await resetAgenCMicrocompactState(toolUseContext);
-  const compactionResult = await toAgenCCompactionResult(
-    compactionResultWithSlashMessages,
-    toolUseContext,
-  );
-  const compacted = compactionResult.replacementHistory.map(cloneLLMMessage);
-  await params.session.state.with((sessionState) => {
-    sessionState.history = compacted.map(cloneLLMMessage);
-  });
-  params.session.clearProviderResponseId();
-  params.session.rolloutStore?.appendRollout(
-    {
-      type: "compacted",
-      payload: buildAgenCCompactedRolloutItem(compactionResult),
-    },
-    { durable: true },
-  );
-  return {
-    displayText: typeof result.displayText === "string"
-      ? result.displayText
-      : compactionResult.message,
-    compactionResult,
-  };
+    const commandContext = {
+      ...toolUseContext,
+      messages,
+      setMessages: () => {},
+      setAppState: () => {},
+      setInProgressToolUseIDs: () => {},
+      updateFileHistoryState: () => {},
+      updateAttributionState: () => {},
+      onChangeAPIKey: () => {},
+      options: {
+        ...toolUseContext.options,
+        commands: [],
+        debug: false,
+        thinkingConfig: {},
+        mcpResources: {},
+        dynamicMcpConfig: {},
+        ideInstallationStatus: null,
+        theme: "dark",
+      },
+    };
+    const result = await withUpstreamContextGuards(async () => {
+      const { manualCompactCall } =
+        await import("../../services/compact/compact.js");
+      const call = manualCompactCall;
+      return call(params.customInstructions ?? "", commandContext as never);
+    }, envForToolUseContext(toolUseContext));
+    if (result.type !== "compact") {
+      throw new Error("Compact command did not return a compaction result");
+    }
+    const compactionResultWithSlashMessages =
+      await addManualCompactSlashMessages(
+        result.compactionResult as AgenCCompactionResult,
+        params.customInstructions ?? "",
+        typeof result.displayText === "string" ? result.displayText : undefined,
+      );
+    await resetAgenCMicrocompactState(toolUseContext);
+    const compactionResult = await toAgenCCompactionResult(
+      compactionResultWithSlashMessages,
+      toolUseContext,
+    );
+    const compacted = compactionResult.replacementHistory.map(cloneLLMMessage);
+    await params.session.state.with((sessionState) => {
+      sessionState.history = compacted.map(cloneLLMMessage);
+    });
+    params.session.clearProviderResponseId();
+    params.session.rolloutStore?.appendRollout(
+      {
+        type: "compacted",
+        payload: buildAgenCCompactedRolloutItem(compactionResult),
+      },
+      { durable: true },
+    );
+    finishTelemetry("compacted");
+    return {
+      displayText: typeof result.displayText === "string"
+        ? result.displayText
+        : compactionResult.message,
+      compactionResult,
+    };
+  } catch (error) {
+    finishTelemetry("error");
+    throw error;
+  }
 }
 
 export async function runAgenCContextUsage(params: {
@@ -269,28 +300,35 @@ export async function runAgenCContextUsage(params: {
   readonly ctx: TurnContext;
   readonly args?: string;
 }): Promise<AgenCContextUsageResult> {
-  const sourceMessages = params.session.snapshotHistoryMessages();
-  const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
-  const toolUseContext = buildAgenCToolUseContext(
-    params.session,
-    params.ctx,
-    { querySource: "context" },
-  );
-  const commandContext = {
-    ...toolUseContext,
-    messages,
-    options: {
-      ...toolUseContext.options,
-      customSystemPrompt: undefined,
-      appendSystemPrompt: undefined,
-    },
-  };
-  const result = await withUpstreamContextGuards(async () => {
-    const { contextUsageCall } = await import("./compact-runtime.js");
-    const call = contextUsageCall;
-    return call(params.args ?? "", commandContext as never);
-  }, envForToolUseContext(toolUseContext));
-  return { text: result.value };
+  const finishTelemetry = startCompactTelemetry("context_usage");
+  try {
+    const sourceMessages = params.session.snapshotHistoryMessages();
+    const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
+    const toolUseContext = buildAgenCToolUseContext(
+      params.session,
+      params.ctx,
+      { querySource: "context" },
+    );
+    const commandContext = {
+      ...toolUseContext,
+      messages,
+      options: {
+        ...toolUseContext.options,
+        customSystemPrompt: undefined,
+        appendSystemPrompt: undefined,
+      },
+    };
+    const result = await withUpstreamContextGuards(async () => {
+      const { contextUsageCall } = await import("./compact-runtime.js");
+      const call = contextUsageCall;
+      return call(params.args ?? "", commandContext as never);
+    }, envForToolUseContext(toolUseContext));
+    finishTelemetry("reported");
+    return { text: result.value };
+  } catch (error) {
+    finishTelemetry("error");
+    throw error;
+  }
 }
 
 export async function runAgenCContextCollapseOverflowRecovery(params: {
@@ -298,18 +336,33 @@ export async function runAgenCContextCollapseOverflowRecovery(params: {
   readonly state: TurnState;
   readonly lastMessage?: AssistantMessage;
 }): Promise<AgenCOverflowRecoveryResult> {
-  const recovered = await withUpstreamContextGuards(async () => {
-    const { recoverFromOverflow } = await import("./compact-runtime.js");
-    return recoverFromOverflow(
-      toAgenCRuntimeMessages(params.state.messagesForQuery),
+  const finishTelemetry = startCompactTelemetry("overflow_recovery");
+  try {
+    const recovered = await withUpstreamContextGuards(async () => {
+      const { recoverFromOverflow } = await import("./compact-runtime.js");
+      return recoverFromOverflow(
+        toAgenCRuntimeMessages(params.state.messagesForQuery),
+      );
+    });
+    if (recovered.committed <= 0) {
+      const result = passRecovery();
+      finishTelemetry(result.kind);
+      return result;
+    }
+    params.state.messagesForQuery = fromAgenCRuntimeMessages(
+      recovered.messages as AgenCRuntimeMessage[],
     );
-  });
-  if (recovered.committed <= 0) return passRecovery();
-  params.state.messagesForQuery = fromAgenCRuntimeMessages(
-    recovered.messages as AgenCRuntimeMessage[],
-  );
-  params.state.messages = [...params.state.messagesForQuery];
-  return { kind: "applied", reason: "context_collapse" };
+    params.state.messages = [...params.state.messagesForQuery];
+    const result: AgenCOverflowRecoveryResult = {
+      kind: "applied",
+      reason: "context_collapse",
+    };
+    finishTelemetry(result.kind, { reason: result.reason });
+    return result;
+  } catch (error) {
+    finishTelemetry("error");
+    throw error;
+  }
 }
 
 export function buildAgenCCompactedRolloutItem(
@@ -355,36 +408,70 @@ async function prepareAgenCQueryMessages(params: {
   readonly snipTokensFreed: number;
   readonly committed: boolean;
 }> {
-  return await withUpstreamContextGuards(async () => {
-    let messages = toAgenCRuntimeMessages(params.messages);
-    const { applyToolResultBudget } = await import("./compact-runtime.js");
-    const budgeted = await applyToolResultBudget(
-      messages,
-    );
-    messages = budgeted.messages as AgenCRuntimeMessage[];
-    const { microcompactMessages } =
-      await import("../../services/compact/microCompact.js");
-    const microcompactResult = await microcompactMessages(
-      messages,
-      params.toolUseContext,
-      params.querySource,
-    );
-    messages = microcompactResult.messages as AgenCRuntimeMessage[];
-    let committed = false;
-    if (params.applyContextCollapse) {
-      const { applyCollapsesIfNeeded } = await import("./compact-runtime.js");
-      const projected = await applyCollapsesIfNeeded(
+  const finishTelemetry = startCompactTelemetry("prepare_query", {
+    query_source: params.querySource,
+    context_collapse: params.applyContextCollapse,
+  });
+  try {
+    const result = await withUpstreamContextGuards(async () => {
+      let messages = toAgenCRuntimeMessages(params.messages);
+      const { applyToolResultBudget } = await import("./compact-runtime.js");
+      const budgeted = await applyToolResultBudget(
         messages,
       );
-      messages = projected.messages as AgenCRuntimeMessage[];
-      committed = projected.committed > 0;
-    }
+      messages = budgeted.messages as AgenCRuntimeMessage[];
+      const { microcompactMessages } =
+        await import("../../services/compact/microCompact.js");
+      const microcompactResult = await microcompactMessages(
+        messages,
+        params.toolUseContext,
+        params.querySource,
+      );
+      messages = microcompactResult.messages as AgenCRuntimeMessage[];
+      let committed = false;
+      if (params.applyContextCollapse) {
+        const { applyCollapsesIfNeeded } = await import("./compact-runtime.js");
+        const projected = await applyCollapsesIfNeeded(
+          messages,
+        );
+        messages = projected.messages as AgenCRuntimeMessage[];
+        committed = projected.committed > 0;
+      }
+      return {
+        messages: fromAgenCRuntimeMessages(messages),
+        snipTokensFreed: 0,
+        committed,
+      };
+    }, envForToolUseContext(params.toolUseContext));
+    finishTelemetry(result.committed ? "committed" : "unchanged");
     return {
-      messages: fromAgenCRuntimeMessages(messages),
-      snipTokensFreed: 0,
-      committed,
+      messages: result.messages,
+      snipTokensFreed: result.snipTokensFreed,
+      committed: result.committed,
     };
-  }, envForToolUseContext(params.toolUseContext));
+  } catch (error) {
+    finishTelemetry("error");
+    throw error;
+  }
+}
+
+function startCompactTelemetry(
+  mode: string,
+  attributes: Readonly<Record<string, unknown>> = {},
+): (status: string, additionalAttributes?: Readonly<Record<string, unknown>>) => void {
+  const baseTags = toMetricTags({ mode, ...attributes });
+  const timer = agencTelemetry.timer(AGENC_COMPACT_DURATION_METRIC, baseTags);
+  let finished = false;
+  return (
+    status: string,
+    additionalAttributes: Readonly<Record<string, unknown>> = {},
+  ) => {
+    if (finished) return;
+    finished = true;
+    const tags = toMetricTags({ mode, ...attributes, status, ...additionalAttributes });
+    agencTelemetry.counter(AGENC_COMPACT_CALL_METRIC, 1, tags);
+    timer.end(tags);
+  };
 }
 
 async function toAgenCCompactionResult(

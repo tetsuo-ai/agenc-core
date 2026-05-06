@@ -1,11 +1,20 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { EventLog, type Event } from "../session/event-log.js";
 import { CostSidecar } from "../session/cost.js";
 import type { Session } from "../session/session.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import type { TurnContext } from "../session/turn-context.js";
+import { TurnTimingState } from "../session/turn-context.js";
 import { buildInitialTurnState } from "../session/turn-state.js";
 import { BudgetTracker } from "../llm/token-budget.js";
+import {
+  AGENC_TURN_TTFT_DURATION_METRIC,
+  resetAgencTelemetryClient,
+  setAgencTelemetryClient,
+  type TelemetryClient,
+  type TelemetrySpan,
+  type TelemetryTimer,
+} from "../observability/telemetry.js";
 import type {
   LLMMessage,
   LLMChatOptions,
@@ -79,6 +88,10 @@ import {
   type StreamModelRequestContract,
 } from "./stream-model.js";
 
+afterEach(() => {
+  resetAgencTelemetryClient();
+});
+
 function mkCtx(mode = "chat"): TurnContext {
   return {
     subId: "turn-stream",
@@ -112,6 +125,7 @@ function mkCtx(mode = "chat"): TurnContext {
     sessionSource: "cli_main",
     currentDate: "2026-04-20",
     timezone: "Etc/UTC",
+    turnTimingState: new TurnTimingState(),
     dynamicTools: [],
     depth: 0,
     toolCallGate: {
@@ -230,6 +244,67 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
+  test("records TTFT when the first stream chunk arrives", async () => {
+    const durations: Array<{ name: string; tags?: Record<string, string> }> = [];
+    const client: TelemetryClient = {
+      startSpan(name): TelemetrySpan {
+        return {
+          name,
+          setAttribute() {},
+          setAttributes() {},
+          addEvent() {},
+          enter(fn) {
+            return fn();
+          },
+          end() {},
+        };
+      },
+      withSpan(_name, _attributes, fn) {
+        return fn();
+      },
+      getCurrentSpan() {
+        return undefined;
+      },
+      counter() {},
+      histogram() {},
+      recordDuration(name, _durationMs, tags) {
+        durations.push({ name, tags });
+      },
+      timer(): TelemetryTimer {
+        return { record() {}, end() {} };
+      },
+      event() {},
+    };
+    setAgencTelemetryClient(client);
+    const ctx = mkCtx("chat");
+    ctx.turnTimingState.markTurnStarted(Date.now() - 25);
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({ content: "h", done: false });
+      await Promise.resolve();
+      return {
+        content: "hello",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+    const state = mkState(ctx);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+    );
+
+    expect(durations).toContainEqual({
+      name: AGENC_TURN_TTFT_DURATION_METRIC,
+      tags: { event: "assistant_text", turn_id: "turn-stream" },
+    });
+  });
+
   test("forwards reasoning summary and session-scoped transport hints to the provider", async () => {
     const ctx = mkCtx("chat");
     (ctx as TurnContext & { reasoningEffort?: "high" }).reasoningEffort = "high";
