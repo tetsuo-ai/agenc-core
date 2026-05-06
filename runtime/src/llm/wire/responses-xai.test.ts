@@ -67,6 +67,26 @@ describe("responses-xai wire shim", () => {
     });
   });
 
+  test("maps developer messages to system input items before the current user turn", () => {
+    const built = buildXaiResponsesInputItems([
+      { role: "user", content: "previous ask" },
+      { role: "developer", content: [{ type: "text", text: "realtime update" }] },
+      { role: "user", content: "current ask" },
+    ]);
+
+    expect(built).toEqual({
+      hasImages: false,
+      input: [
+        { role: "user", content: "previous ask" },
+        {
+          role: "system",
+          content: [{ type: "input_text", text: "realtime update" }],
+        },
+        { role: "user", content: "current ask" },
+      ],
+    });
+  });
+
   test("injects multimodal tool-result images as a follow-up user item", () => {
     const messages: LLMMessage[] = [
       {

@@ -1,7 +1,12 @@
 import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
 import type { CompactedItem, ResponseItem } from "../../session/rollout-item.js";
 
-export type AgenCMessageRole = "system" | "user" | "assistant" | "tool";
+export type AgenCMessageRole =
+  | "system"
+  | "developer"
+  | "user"
+  | "assistant"
+  | "tool";
 
 export interface AgenCMessage {
   readonly role: AgenCMessageRole;

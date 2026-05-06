@@ -9,6 +9,10 @@ import {
   type RolloutItem,
 } from "./rollout-item.js";
 import type { IndexSnapshot } from "./session-store.js";
+import {
+  REALTIME_CONVERSATION_CLOSE_TAG,
+  REALTIME_CONVERSATION_OPEN_TAG,
+} from "../conversation/realtime/instructions/markers.js";
 
 describe("rollout-reconstruction", () => {
   test("replays response_items into history", () => {
@@ -264,6 +268,79 @@ describe("rollout-reconstruction", () => {
     expect(userTexts).not.toContain(
       "<environment_context>cwd=/tmp</environment_context>",
     );
+  });
+
+  test("thread rollback trims realtime developer context without counting it as a user turn", () => {
+    const realtimeDeveloper = `${REALTIME_CONVERSATION_OPEN_TAG}\nstarted\n${REALTIME_CONVERSATION_CLOSE_TAG}`;
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "real-u1" } },
+      { type: "response_item", payload: { role: "assistant", content: "a1" } },
+      {
+        type: "response_item",
+        payload: {
+          role: "developer",
+          content: [{ type: "input_text", text: realtimeDeveloper }],
+        },
+      },
+      { type: "response_item", payload: { role: "user", content: "real-u2" } },
+      {
+        type: "event_msg",
+        payload: {
+          id: "r",
+          seq: 1,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+    ];
+
+    const r = reconstructFromRollout(items);
+
+    expect(r.history.map((item) => item.content)).toEqual(["real-u1", "a1"]);
+  });
+
+  test("rollback clears reduced turn context when trimming mixed developer context", () => {
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "real-u1" } },
+      { type: "response_item", payload: { role: "assistant", content: "a1" } },
+      {
+        type: "turn_context",
+        payload: {
+          turnId: "t2",
+          cwd: "/tmp",
+          approvalPolicy: "never",
+          sandboxPolicy: "workspace-write",
+          model: "grok-4",
+          realtimeActive: true,
+        } as unknown as import("./event-log.js").TurnContextItem,
+      },
+      {
+        type: "response_item",
+        payload: {
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: `${REALTIME_CONVERSATION_OPEN_TAG}\nstarted\n${REALTIME_CONVERSATION_CLOSE_TAG}`,
+            },
+            { type: "input_text", text: "persistent developer text" },
+          ],
+        },
+      },
+      { type: "response_item", payload: { role: "user", content: "real-u2" } },
+      {
+        type: "event_msg",
+        payload: {
+          id: "r",
+          seq: 1,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+    ];
+
+    const r = reconstructFromRollout(items);
+
+    expect(r.history.map((item) => item.content)).toEqual(["real-u1", "a1"]);
+    expect(r.state.lastTurnContext).toBeUndefined();
   });
 
   test("realtimeActive flows from turn_context into previousTurnSettings", () => {

@@ -30,7 +30,7 @@ export interface SessionStateUpdate {
 /** Port of agenc runtime `ResponseItem` subset used in rollout. Every history
  *  message the model sent/received lives here. */
 export interface ResponseItem {
-  readonly role: "system" | "user" | "assistant" | "tool";
+  readonly role: "system" | "developer" | "user" | "assistant" | "tool";
   readonly content: string | ReadonlyArray<{ readonly type: string; readonly text?: string; readonly [k: string]: unknown }>;
   readonly toolCallId?: string;
   readonly toolName?: string;

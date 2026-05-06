@@ -50,6 +50,9 @@ import {
   capToolResult,
   DEFAULT_MAX_TOOL_RESULT_BYTES,
 } from "./_deps/tool-execution.js";
+import {
+  startsWithRealtimeConversationOpenTag,
+} from "../conversation/realtime/instructions/markers.js";
 
 /**
  * Verbatim port of agenc runtime `core/templates/compact/summary_prefix.md`
@@ -154,6 +157,11 @@ interface ContextualFragmentDef {
   readonly startMarker: string;
   readonly endMarker: string;
 }
+
+type ResponseContentPart = Extract<
+  ResponseItem["content"],
+  ReadonlyArray<unknown>
+>[number];
 
 const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
   // AGENC.md instructions.
@@ -261,6 +269,50 @@ function isContextualUserContent(
       (typeof text === "string" && isContextualUserText(text))
     );
   });
+}
+
+function isContextualDeveloperText(text: string): boolean {
+  return startsWithRealtimeConversationOpenTag(text);
+}
+
+function isTextLikeDeveloperFragment(
+  fragment: ResponseContentPart,
+): boolean {
+  return (
+    (fragment.type === "text" ||
+      fragment.type === "input_text" ||
+      fragment.type === "output_text") &&
+    typeof fragment.text === "string"
+  );
+}
+
+function isContextualDeveloperFragment(
+  fragment: ResponseContentPart,
+): boolean {
+  return (
+    isTextLikeDeveloperFragment(fragment) &&
+    isContextualDeveloperText(fragment.text as string)
+  );
+}
+
+export function isContextualDeveloperMessageContent(
+  content: ResponseItem["content"],
+): boolean {
+  if (typeof content === "string") {
+    return isContextualDeveloperText(content);
+  }
+  if (!Array.isArray(content) || content.length === 0) return false;
+  return content.some(isContextualDeveloperFragment);
+}
+
+export function hasNonContextualDeveloperMessageContent(
+  content: ResponseItem["content"],
+): boolean {
+  if (typeof content === "string") {
+    return !isContextualDeveloperText(content);
+  }
+  if (!Array.isArray(content) || content.length === 0) return false;
+  return content.some((fragment) => !isContextualDeveloperFragment(fragment));
 }
 
 /**

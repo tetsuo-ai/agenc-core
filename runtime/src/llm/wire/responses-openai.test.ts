@@ -41,6 +41,38 @@ describe("buildOpenAIResponsesRequest", () => {
     expect(request.max_output_tokens).toBe(8192);
   });
 
+  test("folds developer messages into instructions before current user input", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "previous ask" },
+        { role: "developer", content: [{ type: "text", text: "realtime update" }] },
+        { role: "user", content: "current ask" },
+      ],
+      tools: [],
+      options: {
+        systemPrompt: "base instructions",
+      },
+    });
+
+    expect(request.instructions).toBe(
+      "base instructions\n\nstable prefix\n\nrealtime update",
+    );
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "previous ask" }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "current ask" }],
+      },
+    ]);
+  });
+
   test("uses AgenC-style response items and disables store by default", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",
@@ -364,7 +396,7 @@ describe("buildOpenAIResponsesRequest", () => {
     });
   });
 
-  test("forwards reasoning summary for reasoning-capable OpenAI responses models", () => {
+  test("forwards reasoning summary for reasoning-capable responses models", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",
       messages: [{ role: "user", content: "hello" }],

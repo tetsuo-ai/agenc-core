@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import type { ResponseItem } from "../../session/rollout-item.js";
 import {
+  REALTIME_CONVERSATION_CLOSE_TAG,
+  REALTIME_CONVERSATION_OPEN_TAG,
+} from "./instructions/markers.js";
+import {
   buildCurrentThreadSection,
   buildRealtimeStartupContext,
   buildRealtimeStartupContextFromSession,
@@ -66,6 +70,23 @@ describe("realtime startup context", () => {
     expect(section).not.toContain("secret editor");
     expect(section).not.toContain("secret multipart");
     expect(section).not.toContain("secret tool result");
+  });
+
+  test("omits realtime developer instruction fragments", () => {
+    const section = buildCurrentThreadSection([
+      msg("user", "real ask"),
+      msg("developer", [
+        {
+          type: "input_text",
+          text: `${REALTIME_CONVERSATION_OPEN_TAG}\nsecret realtime\n${REALTIME_CONVERSATION_CLOSE_TAG}`,
+        },
+      ]),
+      msg("assistant", "real answer"),
+    ]);
+
+    expect(section).toContain("real ask");
+    expect(section).toContain("real answer");
+    expect(section).not.toContain("secret realtime");
   });
 
   test("truncates rendered turns to the requested budget", () => {
