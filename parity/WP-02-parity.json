@@ -6,15 +6,18 @@
   "siblingEvidence": {
     "agenc-portal": {
       "path": "sibling:agenc-portal",
-      "commit": "7cb62b991d1d92c116ecad6778474cdb32bc64a7"
+      "commit": "35ddadd8f6209c233e821f5e8809e817f3880f06"
     }
   },
   "sourceFiles": [
     "runtime/src/app-server/protocol/index.ts",
+    "runtime/src/app-server/daemon-cli.ts",
     "runtime/src/app-server/transport/websocket.ts",
     "runtime/src/app-server-protocol/index.ts"
   ],
   "targetFiles": [
+    "runtime/src/app-server/daemon-cli.ts",
+    "runtime/src/app-server/daemon-cli.contract.test.ts",
     "runtime/src/app-server-protocol/index.ts",
     "runtime/src/app-server-protocol/portal.contract.test.ts",
     "runtime/src/index.ts",
@@ -22,23 +25,41 @@
     "agenc-portal/src/main.js",
     "agenc-portal/src/styles.css",
     "agenc-portal/scripts/check-scaffold.mjs",
+    "agenc-portal/scripts/dev-server.mjs",
     "agenc-portal/README.md"
   ],
   "testFiles": [
+    "runtime/src/app-server/daemon-cli.contract.test.ts",
     "runtime/src/app-server-protocol/portal.contract.test.ts",
     "agenc-portal/scripts/check-scaffold.mjs"
   ],
   "requiredBehaviors": [
     {
       "id": "websocket-initialize",
-      "behavior": "Portal daemon connections open a browser WebSocket to the selected local or remote endpoint and send initialize as the first JSON-RPC request with the daemon protocol version and portal capability flags.",
+      "behavior": "Portal daemon connections open a browser WebSocket to the selected local or remote endpoint and send initialize as the first JSON-RPC request with the daemon protocol version, portal capability flags, and an explicit daemon auth cookie when provided.",
       "edgeCases": [
         "rejects non-websocket URLs before opening a socket",
         "rejects credential-bearing URLs before opening a socket",
-        "rejects pending requests when the socket closes before a response"
+        "rejects pending requests when the socket closes before a response",
+        "times out when a websocket never opens",
+        "rejects requests after a websocket error"
       ],
       "tests": [
         "agenc-portal/scripts/check-scaffold.mjs",
+        "runtime/src/app-server-protocol/portal.contract.test.ts"
+      ]
+    },
+    {
+      "id": "daemon-websocket-listener",
+      "behavior": "Foreground agenc daemon starts a real WebSocket JSON-RPC listener on the portal default endpoint family, shares the existing dispatcher with the Unix socket transport, enforces cookie-authenticated initialize, and allows trusted browser origins.",
+      "edgeCases": [
+        "test hosts can bind the daemon websocket listener to an ephemeral port",
+        "untrusted browser origins are rejected at upgrade",
+        "missing daemon auth cookies reject initialize and close the websocket",
+        "valid daemon auth cookies allow initialize followed by health.ready"
+      ],
+      "tests": [
+        "runtime/src/app-server/daemon-cli.contract.test.ts",
         "runtime/src/app-server-protocol/portal.contract.test.ts"
       ]
     },

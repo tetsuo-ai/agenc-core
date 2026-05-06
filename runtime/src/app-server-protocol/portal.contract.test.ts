@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST,
+  AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH,
+  AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT,
+} from "../app-server/daemon-cli.js";
 import { isAgenCDaemonMethod } from "../app-server/protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITIES,
@@ -55,6 +60,10 @@ describe("AgenC portal protocol contract", () => {
     expect(AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT).toBe(
       "ws://127.0.0.1:7766/",
     );
+    const localUrl = new URL(AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT);
+    expect(localUrl.hostname).toBe(AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST);
+    expect(Number(localUrl.port)).toBe(AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT);
+    expect(localUrl.pathname).toBe(AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH);
     expect(AGENC_PORTAL_DEFAULT_REMOTE_DAEMON_ENDPOINT).toBe(
       "wss://agenc.tech/daemon",
     );

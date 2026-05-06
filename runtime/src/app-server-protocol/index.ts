@@ -3,8 +3,9 @@
  * are allowed to rely on before the portal repository grows its own transport
  * implementation.
  *
- * WP-01 owns this shared contract because the web portal lives in a sibling
- * repository while the daemon protocol is still defined by agenc-core.
+ * WP-01 introduced this shared contract; WP-02 extends it with the browser
+ * WebSocket connection defaults and initialize handshake used by the sibling
+ * portal repository while the daemon protocol is still defined by agenc-core.
  */
 
 import {
