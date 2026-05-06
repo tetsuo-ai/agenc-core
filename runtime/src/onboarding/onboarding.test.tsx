@@ -91,6 +91,25 @@ describe("first-run onboarding state", () => {
       ).toBe(false);
     });
   });
+
+  test("suppresses after the seen-count limit and recovers from malformed state", () => {
+    withTempDir("agenc-onboarding-", (agencHome) => {
+      writeFileSync(join(agencHome, "onboarding.json"), "{not-json\n");
+      expect(readOnboardingState({ agencHome }).completed).toBe(false);
+
+      for (let i = 0; i < 4; i += 1) {
+        incrementFirstRunOnboardingSeenCount({ agencHome });
+      }
+
+      expect(
+        shouldShowFirstRunOnboarding({
+          agencHome,
+          env: {},
+          isInteractive: true,
+        }),
+      ).toBe(false);
+    });
+  });
 });
 
 describe("first-run onboarding wizard", () => {
@@ -143,6 +162,18 @@ describe("first-run onboarding wizard", () => {
 
     await expect(
       checkOnboardingProviderConnection(
+        { config, env: {} },
+        "grok",
+        "grok-4-fast",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: "needs-key",
+      keyEnvVar: "XAI_API_KEY",
+    });
+
+    await expect(
+      checkOnboardingProviderConnection(
         {
           config,
           env: {},
@@ -155,6 +186,42 @@ describe("first-run onboarding wizard", () => {
       ok: true,
       status: "ready",
     });
+
+    await expect(
+      checkOnboardingProviderConnection(
+        {
+          config,
+          env: {},
+          fetchImpl: async () => ({ ok: false }) as Response,
+        },
+        "ollama",
+        "llama3.3",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: "local-down",
+    });
+  });
+
+  test("rejects invalid theme, provider, and connection-test input", async () => {
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    let state = createInitialFirstRunOnboardingState(context);
+
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    let result = await submitFirstRunOnboardingInput(state, "sepia", context);
+    expect(result.state.currentStepId).toBe("theme");
+    expect(result.state.error).toContain("Choose");
+
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    result = await submitFirstRunOnboardingInput(state, "missing-provider", context);
+    expect(result.state.currentStepId).toBe("provider");
+    expect(result.state.error).toContain("provider");
+
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    result = await submitFirstRunOnboardingInput(state, "later", context);
+    expect(result.state.currentStepId).toBe("connection-test");
+    expect(result.state.error).toContain("connection check");
   });
 });
 

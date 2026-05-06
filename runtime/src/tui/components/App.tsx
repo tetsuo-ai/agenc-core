@@ -53,6 +53,7 @@ import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCTuiProps } from "../session-types.js";
 import {
   Onboarding,
+  type FirstRunOnboardingState,
   useFirstRunOnboardingController,
 } from "../../onboarding/Onboarding.js";
 
@@ -893,13 +894,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       toolPermissionContext.mode,
     ],
   );
-  const onboarding = useFirstRunOnboardingController({
-    ...onboardingContext,
-    hasInitialPrompt:
-      (props.initialPrompt?.length ?? 0) > 0 ||
-      (props.initialUserMessages?.length ?? 0) > 0,
-    isInteractive: process.stdin.isTTY !== false,
-  });
   const transcript = useSessionTranscript(
     props.session,
     props.initialUserMessages ?? [],
@@ -919,6 +913,24 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     },
     [setAppState, props.session],
   );
+  const applyOnboardingSelection = useCallback(
+    (next: FirstRunOnboardingState) => {
+      setModel(next.selectedModel);
+      props.session.setPendingProviderSwitch?.({
+        provider: next.selectedProvider,
+        model: next.selectedModel,
+      });
+    },
+    [props.session, setModel],
+  );
+  const onboarding = useFirstRunOnboardingController({
+    ...onboardingContext,
+    hasInitialPrompt:
+      (props.initialPrompt?.length ?? 0) > 0 ||
+      (props.initialUserMessages?.length ?? 0) > 0,
+    isInteractive: props.isInteractive ?? process.stdin.isTTY === true,
+    onComplete: applyOnboardingSelection,
+  });
   const setExpandedView = useCallback(
     (next: "none" | "tasks") => {
       setAppState((prev) => ({

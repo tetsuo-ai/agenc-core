@@ -91,6 +91,7 @@ export interface ConfigStoreLike {
 export interface AgenCTuiProps {
   readonly session: AgenCBridgeSession;
   readonly configStore: ConfigStoreLike;
+  readonly isInteractive?: boolean;
   readonly model?: string;
   readonly initialPrompt?: string;
   readonly initialComposerText?: string;

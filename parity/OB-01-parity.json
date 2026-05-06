@@ -18,6 +18,7 @@
     "runtime/src/onboarding/projectOnboardingSteps.ts",
     "runtime/src/onboarding/PARITY.md",
     "runtime/src/tui/components/App.tsx",
+    "runtime/src/tui/main.tsx",
     "runtime/src/tui/session-types.ts"
   ],
   "testFiles": [

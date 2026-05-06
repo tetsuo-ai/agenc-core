@@ -5,27 +5,40 @@ import { join } from "node:path";
 import React, { type SetStateAction } from "react";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 
-import { defaultConfig } from "../../config/schema.js";
-import type { ToolPermissionContext } from "../../permissions/types.js";
-import type {
-  McpElicitationRequestEvent,
-  McpPrimitiveSchemaDefinition,
-  RequestUserInputEvent,
-} from "../../elicitation/types.js";
-import { createRoot } from "../ink/root.js";
-import type { AgenCBridgeSession } from "../session-types.js";
-import type { McpFormPending, McpUrlPending, PendingElicitation } from "./App.js";
-import { markFirstRunOnboardingComplete } from "../../onboarding/projectOnboardingState.js";
+if (process.versions.bun !== undefined) {
+  test("App render suite requires Vitest module mocks", () => {
+    expect(true).toBe(true);
+  });
+}
 
-const providerProbe = vi.hoisted(() => ({
+type PendingElicitation = any;
+type McpFormPending = any;
+type McpUrlPending = any;
+type ToolPermissionContext = any;
+type McpElicitationRequestEvent = any;
+type McpPrimitiveSchemaDefinition = any;
+type RequestUserInputEvent = any;
+type AgenCBridgeSession = any;
+
+let createRoot: any;
+let defaultConfig: any;
+let markFirstRunOnboardingComplete: any;
+let readOnboardingState: any;
+
+const providerProbe = {
   fpsGetters: [] as unknown[],
   statsStores: [] as unknown[],
   appStateProps: [] as Array<{
     initialState: unknown;
     onChangeAppState: unknown;
   }>,
-  onChangeAppState: vi.fn(),
-}));
+  promptSubmits: [] as Array<(input: string, helpers: {
+    clearBuffer(): void;
+    resetHistory(): void;
+    setCursorOffset(offset: number): void;
+  }) => Promise<void>>,
+  onChangeAppState: typeof vi.fn === "function" ? vi.fn() : () => {},
+};
 
 vi.mock("bun:bundle", () => ({
   feature: () => false,
@@ -261,8 +274,20 @@ vi.mock("./Messages.js", async () => {
 vi.mock("./PromptInput/PromptInput.js", async () => {
   const React = await import("react");
   return {
-    default: ({ input }: { input: string }) =>
-      React.createElement("ink-text", null, `prompt:${input}`),
+    default: ({
+      input,
+      onSubmit,
+    }: {
+      input: string;
+      onSubmit: (input: string, helpers: {
+        clearBuffer(): void;
+        resetHistory(): void;
+        setCursorOffset(offset: number): void;
+      }) => Promise<void>;
+    }) => {
+      providerProbe.promptSubmits.push(onSubmit);
+      return React.createElement("ink-text", null, `prompt:${input}`);
+    },
   };
 });
 
@@ -313,10 +338,19 @@ function createTestStreams(): {
   return { stdout, stdin, output: () => rendered };
 }
 
-let installElicitationResolvers: typeof import("./App.js").installElicitationResolvers;
-let settlePendingOnSubmit: typeof import("./App.js").settlePendingOnSubmit;
+let installElicitationResolvers: any;
+let settlePendingOnSubmit: any;
+const supportsVitestModuleMocks = process.versions.bun === undefined;
+const describeWithVitestMocks = supportsVitestModuleMocks ? describe : describe.skip;
 
 beforeAll(async () => {
+  if (!supportsVitestModuleMocks) return;
+  ({ createRoot } = await import("../ink/root.js"));
+  ({ defaultConfig } = await import("../../config/schema.js"));
+  ({
+    markFirstRunOnboardingComplete,
+    readOnboardingState,
+  } = await import("../../onboarding/projectOnboardingState.js"));
   const app = await import("./App.js");
   installElicitationResolvers = app.installElicitationResolvers;
   settlePendingOnSubmit = app.settlePendingOnSubmit;
@@ -333,6 +367,27 @@ async function renderApp(node: React.ReactNode): Promise<string> {
     root.render(node);
     await new Promise((resolve) => setTimeout(resolve, 25));
     return output();
+  } finally {
+    root.unmount();
+    stdin.end();
+    stdout.end();
+  }
+}
+
+async function withRenderedApp(
+  node: React.ReactNode,
+  run: (ctx: { readonly output: () => string }) => Promise<void>,
+): Promise<void> {
+  const { stdout, stdin, output } = createTestStreams();
+  const root = await createRoot({
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    patchConsole: false,
+  });
+  try {
+    root.render(node);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await run({ output });
   } finally {
     root.unmount();
     stdin.end();
@@ -371,7 +426,7 @@ function createSession(): AgenCBridgeSession {
   };
 }
 
-describe("AgenCTuiApp render smoke", () => {
+describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   test("App wrapper preserves provider wiring", async () => {
     const { App } = await import("./App.js");
     providerProbe.fpsGetters.length = 0;
@@ -412,6 +467,7 @@ describe("AgenCTuiApp render smoke", () => {
       <AgenCTuiApp
         session={session}
         configStore={{}}
+        isInteractive={false}
         initialComposerText="draft"
       />,
     );
@@ -428,6 +484,7 @@ describe("AgenCTuiApp render smoke", () => {
       const output = await renderApp(
         <AgenCTuiApp
           session={session}
+          isInteractive={true}
           configStore={{
             agencHome,
             current: () => defaultConfig(),
@@ -439,6 +496,29 @@ describe("AgenCTuiApp render smoke", () => {
       expect(output).toContain("AgenC");
       expect(output).toContain("Preflight");
       expect(output).not.toContain("messages:0");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("suppresses first-run onboarding in noninteractive renders", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    try {
+      const output = await renderApp(
+        <AgenCTuiApp
+          session={session}
+          isInteractive={false}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+      );
+
+      expect(output).toContain("messages:0");
+      expect(output).not.toContain("Preflight");
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -459,6 +539,7 @@ describe("AgenCTuiApp render smoke", () => {
       const output = await renderApp(
         <AgenCTuiApp
           session={session}
+          isInteractive={true}
           configStore={{
             agencHome,
             current: () => defaultConfig(),
@@ -468,6 +549,59 @@ describe("AgenCTuiApp render smoke", () => {
 
       expect(output).toContain("messages:0");
       expect(output).not.toContain("Welcome to AgenC");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("routes composer submissions through onboarding and stages provider switch on completion", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      setPendingProviderSwitch: vi.fn(),
+    };
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    providerProbe.promptSubmits.length = 0;
+    try {
+      const helpers = {
+        clearBuffer: vi.fn(),
+        resetHistory: vi.fn(),
+        setCursorOffset: vi.fn(),
+      };
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          isInteractive={true}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+        async ({ output }) => {
+          const submit = async (value: string): Promise<void> => {
+            const onSubmit = providerProbe.promptSubmits.at(-1);
+            expect(onSubmit).toBeDefined();
+            await onSubmit!(value, helpers);
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          };
+
+          expect(output()).toContain("Preflight");
+          await submit("next");
+          await submit("1");
+          await submit("2");
+          await submit("test");
+          await submit("next");
+          await submit("next");
+          await submit("done");
+
+          expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
+            provider: "openai",
+            model: "gpt-5",
+          });
+          expect(readOnboardingState({ agencHome }).completed).toBe(true);
+          expect(output()).toContain("messages:0");
+        },
+      );
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -555,7 +689,7 @@ function expectInvalidFormValue(
   expect((next as McpFormPending).error).toContain(expectedMessage);
 }
 
-describe("elicitation TUI renderer", () => {
+describeWithVitestMocks("elicitation TUI renderer", () => {
   test("queues resolver requests that arrive before the first submit", async () => {
     const session = createRendererSession();
     const prompted: (PendingElicitation | null)[] = [];

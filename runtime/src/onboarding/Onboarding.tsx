@@ -438,6 +438,13 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "connection-test": {
+      const command = raw.trim().toLowerCase();
+      if (command !== "" && command !== "next" && command !== "test") {
+        return {
+          state: { ...state, error: "Type test or next to run the connection check." },
+          completed: false,
+        };
+      }
       const connection = await checkOnboardingProviderConnection(
         context,
         state.selectedProvider,
@@ -494,7 +501,13 @@ export function useFirstRunOnboardingController(
     });
   const [active, setActive] = useState(shouldStart);
   const [state, setState] = useState(initialState);
+  const stateRef = useRef(initialState);
   const recordedSeen = useRef(false);
+  const submitInFlight = useRef(false);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     if (!active || recordedSeen.current || options.agencHome === undefined) {
@@ -507,33 +520,44 @@ export function useFirstRunOnboardingController(
   const submit = useCallback(
     async (input: string): Promise<boolean> => {
       if (!active) return false;
-      setState((current) => ({ ...current, isCheckingConnection: true }));
-      const result = await submitFirstRunOnboardingInput(
-        state,
-        input,
-        options,
-      );
-      const nextState = {
-        ...result.state,
-        isCheckingConnection: false,
-      };
-      setState(nextState);
-      if (result.completed) {
-        if (options.agencHome !== undefined) {
-          markFirstRunOnboardingComplete({
-            agencHome: options.agencHome,
-            selectedProvider: nextState.selectedProvider,
-            selectedModel: nextState.selectedModel,
-            selectedTheme: nextState.selectedTheme,
-            completedStepIds: nextState.completedStepIds,
-          });
+      if (submitInFlight.current) return true;
+      submitInFlight.current = true;
+      setState((current) => {
+        const next = { ...current, isCheckingConnection: true };
+        stateRef.current = next;
+        return next;
+      });
+      try {
+        const result = await submitFirstRunOnboardingInput(
+          stateRef.current,
+          input,
+          options,
+        );
+        const nextState = {
+          ...result.state,
+          isCheckingConnection: false,
+        };
+        stateRef.current = nextState;
+        setState(nextState);
+        if (result.completed) {
+          if (options.agencHome !== undefined) {
+            markFirstRunOnboardingComplete({
+              agencHome: options.agencHome,
+              selectedProvider: nextState.selectedProvider,
+              selectedModel: nextState.selectedModel,
+              selectedTheme: nextState.selectedTheme,
+              completedStepIds: nextState.completedStepIds,
+            });
+          }
+          setActive(false);
+          options.onComplete?.(nextState);
         }
-        setActive(false);
-        options.onComplete?.(nextState);
+        return true;
+      } finally {
+        submitInFlight.current = false;
       }
-      return true;
     },
-    [active, options, state],
+    [active, options],
   );
 
   const steps = useMemo(() => buildFirstRunOnboardingSteps(state), [state]);
@@ -577,7 +601,7 @@ function detailLinesForStep(
         : [
             `Provider: ${state.selectedProvider}`,
             `Model: ${state.selectedModel}`,
-            "Type test to run the connection check.",
+            "Type test or next to run the connection check.",
           ];
     case "api-key": {
       const connection = state.connection;
