@@ -187,8 +187,19 @@ describe('vim transitions', () => {
   })
 
   test('runs counted G, gg, and visual-line g motions', () => {
+    const bareG = makeContext('one\ntwo\nthree')
+    let command = input({ type: 'idle' }, 'G', bareG.ctx)
+    expect(command).toEqual({ type: 'idle' })
+    expect(bareG.state.offset).toBe(8)
+
+    const explicitOneG = makeContext('one\ntwo\nthree', 8)
+    command = input({ type: 'idle' }, '1', explicitOneG.ctx)
+    command = input(command, 'G', explicitOneG.ctx)
+    expect(command).toEqual({ type: 'idle' })
+    expect(explicitOneG.state.offset).toBe(0)
+
     const goToLine = makeContext('one\ntwo\nthree')
-    let command = input({ type: 'idle' }, '2', goToLine.ctx)
+    command = input({ type: 'idle' }, '2', goToLine.ctx)
     command = input(command, 'G', goToLine.ctx)
     expect(goToLine.state.offset).toBe(4)
 
@@ -205,6 +216,20 @@ describe('vim transitions', () => {
     command = input({ type: 'idle' }, 'g', visual.ctx)
     command = input(command, 'k', visual.ctx)
     expect(visual.state.offset).toBe(0)
+  })
+
+  test('uses explicit operator counts for G line targets', () => {
+    const explicitOneG = makeContext('one\ntwo\nthree', 4)
+    let command = input({ type: 'idle' }, 'd', explicitOneG.ctx)
+    command = input(command, '1', explicitOneG.ctx)
+    command = input(command, 'G', explicitOneG.ctx)
+
+    expect(command).toEqual({ type: 'idle' })
+    expect(explicitOneG.state.text).toBe('three')
+    expect(explicitOneG.state.register).toBe('one\ntwo\n')
+    expect(explicitOneG.state.changes).toEqual([
+      { type: 'operator', op: 'delete', motion: 'G', count: 1 },
+    ])
   })
 
   test('runs find and repeat-find states including n and N', () => {

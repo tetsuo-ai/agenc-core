@@ -219,7 +219,13 @@ describe("processUserInput", () => {
     });
 
     expect(result.shouldQuery).toBe(true);
-    expect(JSON.stringify(result.messages)).toContain("help status");
+    expect(result.messages[0]).toMatchObject({
+      type: "user",
+      message: {
+        content: "help status",
+      },
+      content: "help status",
+    });
     expect(mocks.processSlashCommand).not.toHaveBeenCalled();
     expect(mocks.processBashCommand).not.toHaveBeenCalled();
   });

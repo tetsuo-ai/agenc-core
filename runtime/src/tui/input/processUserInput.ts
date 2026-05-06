@@ -617,10 +617,12 @@ async function processUserInputBase(
     }
   }
 
-  // Regular user prompt
+  // Regular user prompt. For string input, normalizedInput is already the
+  // vim-finalized value passed into this base processor by processUserInput.
+  const promptInput = normalizedInput
   return addImageMetadataMessage(
     processTextPrompt(
-      normalizedInput,
+      promptInput,
       imageContentBlocks,
       imagePasteIds,
       attachmentMessages,

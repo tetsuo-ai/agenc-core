@@ -548,13 +548,11 @@ export function executeOperatorG(
   op: Operator,
   count: number,
   ctx: OperatorContext,
+  countProvided = false,
 ): void {
-  // count=1 means no count given, target = end of file
-  // otherwise target = line N
-  const target =
-    count === 1 ? ctx.cursor.startOfLastLine() : ctx.cursor.goToLine(count)
-
-  if (target.equals(ctx.cursor)) return
+  const target = countProvided
+    ? ctx.cursor.goToLine(count)
+    : ctx.cursor.startOfLastLine()
 
   const range = getOperatorRange(ctx.cursor, target, 'G', op, count)
   applyOperator(op, range.from, range.to, ctx, range.linewise)
@@ -570,8 +568,6 @@ export function executeOperatorGg(
   // otherwise target = line N
   const target =
     count === 1 ? ctx.cursor.startOfFirstLine() : ctx.cursor.goToLine(count)
-
-  if (target.equals(ctx.cursor)) return
 
   const range = getOperatorRange(ctx.cursor, target, 'gg', op, count)
   applyOperator(op, range.from, range.to, ctx, range.linewise)

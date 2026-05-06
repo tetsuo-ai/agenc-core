@@ -99,6 +99,7 @@ function handleNormalInput(
   input: string,
   count: number,
   ctx: TransitionContext,
+  countProvided = false,
 ): TransitionResult | null {
   if (isOperatorKey(input)) {
     return { next: { type: 'operator', op: OPERATORS[input], count } }
@@ -146,13 +147,10 @@ function handleNormalInput(
   if (input === 'G') {
     return {
       execute: () => {
-        // count=1 means no count given, go to last line
-        // otherwise go to line N
-        if (count === 1) {
-          ctx.setOffset(ctx.cursor.startOfLastLine().offset)
-        } else {
-          ctx.setOffset(ctx.cursor.goToLine(count).offset)
-        }
+        const target = countProvided
+          ? ctx.cursor.goToLine(count)
+          : ctx.cursor.startOfLastLine()
+        ctx.setOffset(target.offset)
       },
     }
   }
@@ -211,6 +209,7 @@ function handleOperatorInput(
   count: number,
   input: string,
   ctx: TransitionContext,
+  countProvided = false,
 ): TransitionResult | null {
   if (isTextObjScopeKey(input)) {
     return {
@@ -234,7 +233,7 @@ function handleOperatorInput(
   }
 
   if (input === 'G') {
-    return { execute: () => executeOperatorG(op, count, ctx) }
+    return { execute: () => executeOperatorG(op, count, ctx, countProvided) }
   }
 
   if (input === 'g') {
@@ -285,7 +284,7 @@ function fromCount(
   }
 
   const count = parseInt(state.digits, 10)
-  const result = handleNormalInput(input, count, ctx)
+  const result = handleNormalInput(input, count, ctx, true)
   if (result) return result
 
   return { next: { type: 'idle' } }
@@ -336,7 +335,13 @@ function fromOperatorCount(
 
   const motionCount = parseInt(state.digits, 10)
   const effectiveCount = state.count * motionCount
-  const result = handleOperatorInput(state.op, effectiveCount, input, ctx)
+  const result = handleOperatorInput(
+    state.op,
+    effectiveCount,
+    input,
+    ctx,
+    true,
+  )
   if (result) return result
 
   return { next: { type: 'idle' } }

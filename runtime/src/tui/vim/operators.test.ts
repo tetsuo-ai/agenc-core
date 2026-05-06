@@ -187,12 +187,30 @@ describe('vim operators', () => {
     expect(goToLastLine.state.register).toBe('\ntwo\nthree\n')
     expect(goToLastLine.state.linewise).toBe(true)
 
+    const explicitOneG = makeContext('one\ntwo\nthree', 4)
+    executeOperatorG('delete', 1, explicitOneG.ctx, true)
+    expect(explicitOneG.state.text).toBe('three')
+    expect(explicitOneG.state.register).toBe('one\ntwo\n')
+    expect(explicitOneG.state.linewise).toBe(true)
+
+    const deleteLastLineWithG = makeContext('one\ntwo\nthree', 8)
+    executeOperatorG('delete', 1, deleteLastLineWithG.ctx)
+    expect(deleteLastLineWithG.state.text).toBe('one\ntwo')
+    expect(deleteLastLineWithG.state.register).toBe('\nthree\n')
+    expect(deleteLastLineWithG.state.linewise).toBe(true)
+
     const goToFirstLine = makeContext('one\ntwo\nthree', 8)
     executeOperatorGg('yank', 1, goToFirstLine.ctx)
     expect(goToFirstLine.state.text).toBe('one\ntwo\nthree')
     expect(goToFirstLine.state.register).toBe('one\ntwo\nthree\n')
     expect(goToFirstLine.state.linewise).toBe(true)
     expect(goToFirstLine.state.offset).toBe(0)
+
+    const deleteFirstLineWithGg = makeContext('one\ntwo\nthree')
+    executeOperatorGg('delete', 1, deleteFirstLineWithGg.ctx)
+    expect(deleteFirstLineWithGg.state.text).toBe('two\nthree')
+    expect(deleteFirstLineWithGg.state.register).toBe('one\n')
+    expect(deleteFirstLineWithGg.state.linewise).toBe(true)
   })
 
   test('applies counts to text-object operations', () => {
