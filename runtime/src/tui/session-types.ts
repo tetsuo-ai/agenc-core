@@ -81,6 +81,7 @@ export interface AgenCBridgeSession {
 }
 
 export interface ConfigStoreLike {
+  readonly agencHome?: string;
   readonly snapshot?: unknown;
   current?(): AgenCConfig;
   subscribe?(listener: (config: unknown) => void): (() => void) | void;
@@ -90,6 +91,7 @@ export interface ConfigStoreLike {
 export interface AgenCTuiProps {
   readonly session: AgenCBridgeSession;
   readonly configStore: ConfigStoreLike;
+  readonly isInteractive?: boolean;
   readonly model?: string;
   readonly initialPrompt?: string;
   readonly initialComposerText?: string;

@@ -191,6 +191,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
       <AgenCTuiApp
         session={options.session}
         configStore={options.configStore}
+        isInteractive={stdin.isTTY === true}
         model={options.model}
         initialPrompt={options.initialPrompt}
         initialUserMessages={options.initialUserMessages}

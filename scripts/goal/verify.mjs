@@ -859,6 +859,26 @@ const ITEM_EVIDENCE = {
       { pattern: "stopTask\\(", scope: "runtime/src/tools/tasks/background.ts" },
     ],
   },
+  "OC-09": {
+    files: [
+      "runtime/src/onboarding/projectOnboardingState.ts",
+      "runtime/src/onboarding/projectOnboardingSteps.ts",
+      "runtime/src/onboarding/PARITY.md",
+      "parity/OC-09-parity.json",
+    ],
+    tests: [
+      "runtime/src/onboarding/projectOnboardingState.test.ts",
+      "runtime/src/onboarding/projectOnboardingSteps.test.ts",
+      "runtime/src/onboarding/onboarding.test.tsx",
+    ],
+    grepPresent: [
+      { pattern: "shouldShowProjectOnboarding", scope: "runtime/src/onboarding/projectOnboardingState.ts" },
+      { pattern: "maybeMarkProjectOnboardingComplete", scope: "runtime/src/onboarding/projectOnboardingState.ts" },
+      { pattern: "incrementProjectOnboardingSeenCount", scope: "runtime/src/onboarding/projectOnboardingState.ts" },
+      { pattern: "AGENC\\.md", scope: "runtime/src/onboarding/projectOnboardingSteps.ts" },
+      { pattern: "OC-09", scope: "runtime/src/onboarding/PARITY.md" },
+    ],
+  },
   "ST-07": {
     grepPresent: [{ pattern: "retention|prun", scope: "runtime/src/state" }],
   },
@@ -3587,6 +3607,45 @@ async function serviceGates(item) {
       );
     }
     pass("OC-08 typed task registry subsystem present");
+    return;
+  }
+
+  if (id === "OC-09") {
+    const required = [
+      "runtime/src/onboarding/projectOnboardingState.ts",
+      "runtime/src/onboarding/projectOnboardingSteps.ts",
+      "runtime/src/onboarding/projectOnboardingState.test.ts",
+      "runtime/src/onboarding/projectOnboardingSteps.test.ts",
+      "parity/OC-09-parity.json",
+    ];
+    for (const rel of required) {
+      if (!existsSync(path.join(root, rel))) failGate(`OC-09 file missing: ${rel}`);
+    }
+    const onboardingDir = path.join(root, "runtime/src/onboarding");
+    const upstreamImports = walkFiles(onboardingDir).filter((file) => {
+      if (!/\.(ts|tsx)$/.test(file)) return false;
+      return /agenc\/upstream/.test(readFileSync(file, "utf8"));
+    });
+    if (upstreamImports.length > 0) {
+      failGate(
+        `OC-09 onboarding subsystem must not import the upstream mirror:\n  ${
+          upstreamImports
+            .map((file) => `- ${path.relative(root, file)}`)
+            .join("\n  ")
+        }`,
+      );
+    }
+    const tests = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      "src/onboarding/projectOnboardingState.test.ts",
+      "src/onboarding/projectOnboardingSteps.test.ts",
+      "src/onboarding/onboarding.test.tsx",
+    ]);
+    if (tests.status !== 0) failGate("OC-09 project onboarding tests failed");
+    pass("OC-09 project onboarding state and step sequence present");
     return;
   }
 
