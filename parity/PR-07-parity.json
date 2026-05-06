@@ -10,6 +10,7 @@
   "targetFiles": [
     "runtime/src/services/compact/compact.ts",
     "runtime/src/services/compact/prompt.ts",
+    "runtime/src/services/compact/sessionMemoryCompact.ts",
     "scripts/goal/verify.mjs"
   ],
   "testFiles": [
@@ -22,6 +23,7 @@
       "behavior": "AgenC builds and uses a full conversation compaction prompt with a no-tool preamble, detailed continuation-summary structure, optional custom instructions, and a no-tool reminder trailer.",
       "edgeCases": [
         "custom instructions are appended only when non-empty",
+        "whitespace-only custom instructions are ignored",
         "the prompt starts with the no-tool text-only framing",
         "the prompt ends with the no-tool reminder",
         "live compact provider calls include the prompt builder output before the bounded transcript"
@@ -51,6 +53,7 @@
       "edgeCases": [
         "summaries without XML summary tags are returned as stripped plain text",
         "summary XML tags become a Summary section header",
+        "duplicate analysis blocks are stripped before the summary is retained",
         "extra blank lines are collapsed"
       ],
       "tests": [
@@ -63,6 +66,8 @@
       "id": "continuation-message",
       "behavior": "AgenC formats compacted summaries as continuation messages with optional transcript and preserved-recent-message context.",
       "edgeCases": [
+        "manual compaction stores the summary inside the continuation message wrapper",
+        "session-memory compaction stores the summary inside the continuation message wrapper",
         "transcript path guidance is included when supplied",
         "recent preserved messages are called out when supplied",
         "suppressFollowUpQuestions adds direct continuation guidance"
@@ -80,6 +85,7 @@
         "getPartialCompactPrompt must be present",
         "getCompactUserSummaryMessage must be present",
         "compactConversation must call getCompactPrompt",
+        "compactConversation must call getCompactUserSummaryMessage",
         "the PR-07 compact targeted Vitest suite must pass",
         "compact prompt tests must cover partial prompt behavior"
       ],

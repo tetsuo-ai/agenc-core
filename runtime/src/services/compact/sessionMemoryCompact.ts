@@ -6,7 +6,7 @@
  */
 
 import { createUserMessage } from "./compact.js";
-import { formatCompactSummary } from "./prompt.js";
+import { getCompactUserSummaryMessage } from "./prompt.js";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 
 type SessionMemoryCompactEnv = Partial<Record<
@@ -64,7 +64,7 @@ export async function trySessionMemoryCompaction(
     isMeta: true,
   });
   const summaryMessage = createUserMessage({
-    content: formatCompactSummary(content),
+    content: getCompactUserSummaryMessage(content, true, undefined, true),
     isMeta: true,
   });
   return {

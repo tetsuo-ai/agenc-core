@@ -104,10 +104,18 @@ describe("compact supporting surfaces", () => {
   test("formats compact summaries without analysis blocks", () => {
     expect(stripAnalysisTags("before <analysis>private</analysis> after"))
       .toBe("before  after");
+    expect(stripAnalysisTags([
+      "keep",
+      "<analysis>private one</analysis>",
+      "middle",
+      "<analysis>private two</analysis>",
+      "after",
+    ].join("\n"))).toBe("keep\n\nmiddle\n\nafter");
     expect(formatCompactSummary("<analysis>private</analysis>use this"))
       .toBe("use this");
     expect(formatCompactSummary([
       "<analysis>private</analysis>",
+      "<analysis>more private</analysis>",
       "<summary>",
       "use this",
       "",
@@ -128,6 +136,7 @@ describe("compact supporting surfaces", () => {
       /Tool calls will be rejected and you will fail the task\.$/u,
     );
     expect(getCompactPrompt()).not.toContain("Additional Instructions:");
+    expect(getCompactPrompt("   ")).not.toContain("Additional Instructions:");
   });
 
   test("builds partial compact prompts for recent and prefix summaries", () => {

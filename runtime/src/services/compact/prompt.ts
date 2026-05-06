@@ -250,7 +250,7 @@ const NO_TOOLS_TRAILER =
   "an <analysis> block followed by a <summary> block. " +
   "Tool calls will be rejected and you will fail the task.";
 
-const ANALYSIS_BLOCK_PATTERN = /<analysis>[\s\S]*?<\/analysis>/u;
+const ANALYSIS_BLOCK_PATTERN = /<analysis>[\s\S]*?<\/analysis>/gu;
 const SUMMARY_BLOCK_PATTERN = /<summary>([\s\S]*?)<\/summary>/u;
 
 export function getPartialCompactPrompt(

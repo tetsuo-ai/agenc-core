@@ -103,8 +103,12 @@ describe("compact service", () => {
     const transcript = extractTranscript(seen[0] ?? "");
     expect(transcript.length).toBeLessThan(48_000);
     expect(transcript).toContain("[image]");
-    expect(result.compactionResult.summaryMessages[0]?.content)
-      .toBe("bounded summary");
+    const summaryContent = result.compactionResult.summaryMessages[0]?.content;
+    expect(summaryContent).toContain(
+      "This session is being continued from a previous conversation",
+    );
+    expect(summaryContent).toContain("bounded summary");
+    expect(summaryContent).not.toContain("<analysis>");
   });
 
   test("preserves prefix and suffix ordering for partial compact projections", () => {

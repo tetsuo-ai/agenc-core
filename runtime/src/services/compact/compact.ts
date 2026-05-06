@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
-import { formatCompactSummary, getCompactPrompt } from "./prompt.js";
+import { getCompactPrompt, getCompactUserSummaryMessage } from "./prompt.js";
 import {
   estimateMessagesTokens,
   messageText,
@@ -137,7 +137,7 @@ export async function compactConversation(
   );
   const summaryMessage = createRuntimeMessage(
     "user",
-    formatCompactSummary(summary),
+    getCompactUserSummaryMessage(summary),
     true,
   );
   const attachments = await context.deps?.createAttachments?.(

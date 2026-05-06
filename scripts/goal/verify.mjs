@@ -4484,10 +4484,13 @@ async function promptGates(item) {
     if (!grepRepo("getCompactPrompt\\(customInstructions\\)", compactFile)) {
       failGate("PR-07: live compact service must use getCompactPrompt");
     }
+    if (!grepRepo("getCompactUserSummaryMessage\\(summary\\)", compactFile)) {
+      failGate("PR-07: live compact service must use compact continuation messages");
+    }
     if (!grepRepo("getPartialCompactPrompt|RECENT portion|Context for Continuing Work", surfaceTestFile)) {
       failGate("PR-07: compact prompt tests missing");
     }
-    if (!grepRepo("CRITICAL: Respond with TEXT ONLY|bounded summary", compactTestFile)) {
+    if (!grepRepo("CRITICAL: Respond with TEXT ONLY|This session is being continued", compactTestFile)) {
       failGate("PR-07: compact service prompt behavior test missing");
     }
     const vitest = run("node_modules/.bin/vitest", [
