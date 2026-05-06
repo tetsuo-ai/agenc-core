@@ -410,6 +410,12 @@ describe("AgenC command surface compatibility", () => {
       loadedFrom: "plugin",
       description: "Demo plugin skill",
     });
+
+    const disabledAfterEnabled = await getCommands(dir, {
+      plugins: { enabled: false },
+    });
+    expect(disabledAfterEnabled.find(command => command.name === "plugin-demo"))
+      .toBeUndefined();
   });
 
   it("filters MCP skill commands to model-invocable MCP prompts", () => {

@@ -400,7 +400,7 @@ export function hasExplicitPluginDiscoveryInput(
   if ((options.extraPluginDirs?.length ?? 0) > 0) return true;
   const plugins = options.config?.plugins;
   if (isRecord(options.config?.enabledPlugins)) return true;
-  return isRecord(plugins) && plugins.enabled === true;
+  return isRecord(plugins);
 }
 
 export function substituteArguments(

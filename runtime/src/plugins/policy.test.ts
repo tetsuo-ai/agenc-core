@@ -65,7 +65,7 @@ describe("plugin policy", () => {
           "object@market": { enabled: false },
         },
       }),
-    ).toEqual(new Set(["gamma"]));
+    ).toEqual(new Set(["alpha", "beta", "gamma"]));
     expect(getManagedPluginNames({ enabledPlugins: { local: true } })).toBeNull();
   });
 
@@ -96,6 +96,23 @@ describe("plugin policy", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  test("falls back to legacy enabledPlugins for entries not present in plugins.plugins", () => {
+    const settings = {
+      plugins: {
+        enabled: true,
+        plugins: {
+          "alpha@market": true,
+        },
+      },
+      enabledPlugins: {
+        "beta@market": false,
+      },
+    };
+
+    expect(isPluginBlockedByPolicy("alpha@market", settings)).toBe(false);
+    expect(isPluginBlockedByPolicy("beta@market", settings)).toBe(true);
   });
 
   test("evaluates capability allow and deny decisions", () => {

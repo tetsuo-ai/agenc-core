@@ -18,11 +18,14 @@ import {
   loadPluginSkills,
 } from "./plugins/registration/load-plugin-commands.js";
 import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js";
+import type { AgenCConfig } from "./config/schema.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
   | { type: "compact"; compactionResult?: unknown; displayText?: string }
   | { type: "skip" };
+
+type PluginConfigSurface = Pick<AgenCConfig, "plugins" | "enabledPlugins">;
 
 export type CommandResultDisplay = "skip" | "system" | "user";
 
@@ -361,7 +364,10 @@ async function callCommandSource(
   }
 }
 
-async function loadProductionCommandSources(cwd: string): Promise<readonly Command[]> {
+async function loadProductionCommandSources(
+  cwd: string,
+  config?: PluginConfigSurface,
+): Promise<readonly Command[]> {
   const skillsModulePath = "./agenc/upstream/skills/loadSkillsDir.js";
   const bundledSkillsModulePath = "./agenc/upstream/skills/bundledSkills.js";
   const builtinPluginsModulePath = "./agenc/upstream/plugins/builtinPlugins.js";
@@ -381,8 +387,8 @@ async function loadProductionCommandSources(cwd: string): Promise<readonly Comma
     callCommandSource(skillsModulePath, "getDynamicSkills"),
     callCommandSource(bundledSkillsModulePath, "getBundledSkills"),
     callCommandSource(builtinPluginsModulePath, "getBuiltinPluginSkillCommands"),
-    loadPluginCommands({ cwd }),
-    loadPluginSkills({ cwd }),
+    loadPluginCommands({ cwd, config }),
+    loadPluginSkills({ cwd, config }),
     callCommandSource(workflowCommandsModulePath, "getWorkflowCommands", cwd),
   ]);
 
@@ -405,10 +411,11 @@ export async function getCommands(
   cwd: string,
   config: unknown = {},
 ): Promise<Command[]> {
+  const pluginConfig = pluginConfigSurface(config);
   const dynamicCommands = await Promise.all(
     [
       loadLocalSkillCommands(cwd, config),
-      loadProductionCommandSources(cwd),
+      loadProductionCommandSources(cwd, pluginConfig),
       ...[...commandProviders].map(async provider => [...(await provider(cwd))]),
     ],
   );
@@ -421,6 +428,12 @@ export async function getCommands(
     seen.add(key);
     return true;
   });
+}
+
+function pluginConfigSurface(config: unknown): PluginConfigSurface | undefined {
+  return typeof config === "object" && config !== null && !Array.isArray(config)
+    ? config as PluginConfigSurface
+    : undefined;
 }
 
 export function findCommand(

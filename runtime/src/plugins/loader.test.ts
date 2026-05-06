@@ -688,6 +688,59 @@ describe("plugin loader", () => {
     });
   });
 
+  test("discovers configured plugin dirs only when plugins.enabled is true", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      await writePluginManifest(join(workspaceRoot, "vendor", "plugins", "toolbox"), {
+        name: "toolbox",
+      });
+
+      const disabled = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: false, dirs: ["vendor/plugins"] } },
+      });
+      const enabled = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: { plugins: { enabled: true, dirs: ["vendor/plugins"] } },
+      });
+
+      expect(disabled.enabled).toEqual([]);
+      expect(disabled.disabled.map((plugin) => plugin.name)).toEqual(["toolbox"]);
+      expect(enabled.enabled.map((plugin) => plugin.name)).toEqual(["toolbox"]);
+    });
+  });
+
+  test("falls back to enabledPlugins entries when plugins.plugins has unrelated entries", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const workspaceRoot = join(root, "workspace");
+      await writePluginManifest(join(agencHome, "plugins", "alpha"), { name: "alpha" });
+      await writePluginManifest(join(agencHome, "plugins", "beta"), { name: "beta" });
+
+      const result = await loadPlugins({
+        agencHome,
+        workspaceRoot,
+        config: {
+          enabledPlugins: {
+            beta: false,
+          },
+          plugins: {
+            enabled: true,
+            plugins: {
+              alpha: true,
+            },
+          },
+        },
+      });
+
+      expect(result.enabled.map((plugin) => plugin.name)).toEqual(["alpha"]);
+      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["beta"]);
+    });
+  });
+
   test("loads default components and server declarations from local plugins", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");

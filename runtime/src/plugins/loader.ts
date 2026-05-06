@@ -161,13 +161,14 @@ function configuredPluginEntries(
   config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
 ): Readonly<Record<string, boolean | PluginEntryConfig>> {
   const plugins = config?.plugins;
-  if (isRecord(plugins) && isRecord(plugins.plugins)) {
-    return plugins.plugins as Readonly<Record<string, boolean | PluginEntryConfig>>;
-  }
-  if (isRecord(config?.enabledPlugins)) {
-    return config.enabledPlugins as Readonly<Record<string, boolean | PluginEntryConfig>>;
-  }
-  return {};
+  return {
+    ...(isRecord(config?.enabledPlugins)
+      ? config.enabledPlugins as Readonly<Record<string, boolean | PluginEntryConfig>>
+      : {}),
+    ...(isRecord(plugins) && isRecord(plugins.plugins)
+      ? plugins.plugins as Readonly<Record<string, boolean | PluginEntryConfig>>
+      : {}),
+  };
 }
 
 function pluginAutoDiscoveryEnabled(
@@ -195,6 +196,17 @@ function configuredPluginAllowlist(
     .map((entry) => entry.trim())
     .filter(Boolean);
   return allowlist.length > 0 ? new Set(allowlist) : null;
+}
+
+function configuredPluginDirs(
+  config: Pick<AgenCConfig, "plugins"> | undefined,
+): readonly string[] {
+  const plugins = config?.plugins;
+  if (!isRecord(plugins) || !Array.isArray(plugins.dirs)) return [];
+  return plugins.dirs
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function pluginAllowedByAllowlist(
@@ -363,6 +375,14 @@ export async function discoverPluginRoots(
       key,
       enabled: featureEnabled && configEntryEnabled(value),
     });
+  }
+  for (const path of configuredPluginDirs(options.config)) {
+    roots.push(
+      ...(await discoverRootsUnder(resolvePath(options.workspaceRoot, path))).map((root) => ({
+        ...root,
+        enabled: root.enabled && featureEnabled,
+      })),
+    );
   }
   for (const path of options.extraPluginDirs ?? []) {
     roots.push(

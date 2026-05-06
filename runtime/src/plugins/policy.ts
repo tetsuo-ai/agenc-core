@@ -135,9 +135,10 @@ export function pluginPolicyEntry(
 function pluginPolicyEntries(
   settings?: PluginPolicySettings | null,
 ): Readonly<Record<string, unknown>> {
-  if (isRecord(settings?.plugins?.plugins)) return settings.plugins.plugins;
-  if (isRecord(settings?.enabledPlugins)) return settings.enabledPlugins;
-  return {};
+  return {
+    ...(isRecord(settings?.enabledPlugins) ? settings.enabledPlugins : {}),
+    ...(isRecord(settings?.plugins?.plugins) ? settings.plugins.plugins : {}),
+  };
 }
 
 function pluginFeatureBlockedByConfig(
