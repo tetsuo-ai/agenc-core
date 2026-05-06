@@ -126,7 +126,8 @@ Item-specific review notes:
 ${itemScopedReviewNotes}
 
 Some checklist items explicitly name sibling repositories such as
-\`agenc-sdk/\`, \`agenc-protocol/\`, or \`agenc-plugin-kit/\`. For those
+\`agenc-sdk/\`, \`agenc-protocol/\`, \`agenc-plugin-kit/\`, or
+\`agenc-portal/\`. For those
 items, evaluate the named sibling repository state and evidence above as part
 of the item. The agenc-core diff may carry only the local contract gate for
 that sibling deliverable. Still reject the item if the sibling evidence is
@@ -453,13 +454,18 @@ function collectCrossRepoEvidence(body) {
   if (body.includes("agenc-sdk")) repos.push("agenc-sdk");
   if (body.includes("agenc-protocol")) repos.push("agenc-protocol");
   if (body.includes("agenc-plugin-kit")) repos.push("agenc-plugin-kit");
+  if (body.includes("agenc-portal")) repos.push("agenc-portal");
   if (repos.length === 0) return "(none)";
 
   return repos.map((repo) => summarizeSiblingRepo(repo)).join("\n\n");
 }
 
 function summarizeSiblingRepo(repo) {
-  const siblingRoot = path.resolve(root, "..", repo);
+  const siblingRootCandidates = [
+    path.resolve(root, "..", repo),
+    path.resolve(mainCheckoutRoot(), "..", repo),
+  ];
+  const siblingRoot = siblingRootCandidates.find(existsSync) ?? siblingRootCandidates[0];
   if (!existsSync(siblingRoot)) {
     return `- ${repo}: missing at ${siblingRoot}`;
   }
