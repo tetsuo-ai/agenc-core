@@ -4,6 +4,7 @@ import type { Event } from "../session/event-log.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
+import type { MCPServerConnection } from "../agenc/upstream/services/mcp/types.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -77,7 +78,7 @@ export interface AgenCBridgeSession {
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
-  listMcpClients?(): readonly import("../agenc/upstream/services/mcp/types.js").MCPServerConnection[];
+  listMcpClients?(): readonly MCPServerConnection[];
 }
 
 export interface ConfigStoreLike {

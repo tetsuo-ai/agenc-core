@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import React from 'react';
 import { useTerminalSize } from '../../agenc/upstream/hooks/useTerminalSize.js';
 import { getOriginalCwd, switchSession } from '../../agenc/upstream/bootstrap/state.js';
+import { isCoordinatorMode, matchSessionMode } from '../../agenc/upstream/coordinator/coordinatorMode.js';
 import type { Command } from '../../commands.js';
 import { LogSelector } from '../../agenc/upstream/components/LogSelector.js';
 import { Spinner } from '../components/spinner/Spinner.js';
@@ -30,7 +31,8 @@ import type { FileHistorySnapshot } from '../../agenc/upstream/utils/fileHistory
 import { logError } from '../../agenc/upstream/utils/log.js';
 import { createSystemMessage } from '../../agenc/upstream/utils/messages.js';
 import { computeStandaloneAgentContext, restoreAgentFromSession, restoreWorktreeForResume } from '../../agenc/upstream/utils/sessionRestore.js';
-import { adoptResumedSessionFile, enrichLogs, isCustomTitleEnabled, loadAllProjectsMessageLogsProgressive, loadSameRepoMessageLogsProgressive, recordContentReplacement, resetSessionFilePointer, restoreSessionMetadata, type SessionLogResult } from '../../agenc/upstream/utils/sessionStorage.js';
+import { adoptResumedSessionFile, enrichLogs, isCustomTitleEnabled, loadAllProjectsMessageLogsProgressive, loadSameRepoMessageLogsProgressive, recordContentReplacement, resetSessionFilePointer, restoreSessionMetadata, saveMode, type SessionLogResult } from '../../agenc/upstream/utils/sessionStorage.js';
+import { restoreFromEntries } from '../../agenc/upstream/services/contextCollapse/persist.js';
 import type { ThinkingConfig } from '../../agenc/upstream/utils/thinking.js';
 import type { ContentReplacementRecord } from '../../agenc/upstream/utils/toolResultStorage.js';
 import { REPL } from '../../agenc/upstream/screens/REPL.js';
@@ -196,10 +198,7 @@ export function ResumeConversation({
         throw new Error('Failed to load conversation');
       }
       if (feature('COORDINATOR_MODE')) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        const coordinatorModule = require('../../agenc/upstream/coordinator/coordinatorMode.js') as typeof import('../../agenc/upstream/coordinator/coordinatorMode.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
-        const warning = coordinatorModule.matchSessionMode(result_3.mode);
+        const warning = matchSessionMode(result_3.mode);
         if (warning) {
           /* eslint-disable @typescript-eslint/no-require-imports */
           const {
@@ -237,14 +236,6 @@ export function ResumeConversation({
         agent: resolvedAgentDef?.agentType
       }));
       if (feature('COORDINATOR_MODE')) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        const {
-          saveMode
-        } = require('../../agenc/upstream/utils/sessionStorage.js');
-        const {
-          isCoordinatorMode
-        } = require('../../agenc/upstream/coordinator/coordinatorMode.js') as typeof import('../../agenc/upstream/coordinator/coordinatorMode.js');
-        /* eslint-enable @typescript-eslint/no-require-imports */
         saveMode(isCoordinatorMode() ? 'coordinator' : 'normal');
       }
       const standaloneAgentContext = computeStandaloneAgentContext(result_3.agentName, result_3.agentColor);
@@ -266,10 +257,7 @@ export function ResumeConversation({
         }
       }
       if (feature('CONTEXT_COLLAPSE')) {
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        ;
-        (require('../../agenc/upstream/services/contextCollapse/persist.js') as typeof import('../../agenc/upstream/services/contextCollapse/persist.js')).restoreFromEntries(result_3.contextCollapseCommits ?? [], result_3.contextCollapseSnapshot);
-        /* eslint-enable @typescript-eslint/no-require-imports */
+        restoreFromEntries(result_3.contextCollapseCommits ?? [], result_3.contextCollapseSnapshot);
       }
       logEvent('agenc_session_resumed', {
         entrypoint: 'picker' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

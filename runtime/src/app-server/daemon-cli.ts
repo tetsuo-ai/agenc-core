@@ -39,10 +39,12 @@ import {
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
+import { AgenCWebSocketServer } from "./transport/websocket.js";
 import {
   AgenCDaemonCookieAuthenticator,
   ensureAgenCDaemonCookie,
 } from "./transport/auth.js";
+import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
@@ -87,6 +89,23 @@ export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
 export const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
 export const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
+export const AGENC_DAEMON_WEBSOCKET_HOST_ENV =
+  "AGENC_DAEMON_WEBSOCKET_HOST";
+export const AGENC_DAEMON_WEBSOCKET_PORT_ENV =
+  "AGENC_DAEMON_WEBSOCKET_PORT";
+export const AGENC_DAEMON_WEBSOCKET_PATH_ENV =
+  "AGENC_DAEMON_WEBSOCKET_PATH";
+
+const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
+  AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
+);
+export const AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST =
+  DEFAULT_DAEMON_WEBSOCKET_URL.hostname;
+export const AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT = Number(
+  DEFAULT_DAEMON_WEBSOCKET_URL.port,
+);
+export const AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH =
+  DEFAULT_DAEMON_WEBSOCKET_URL.pathname;
 
 export type AgenCDaemonCliAction =
   | "restart"
@@ -127,6 +146,12 @@ export interface RunAgenCDaemonCliOptions {
   readonly stopTimeoutMs?: number;
 }
 
+export interface AgenCDaemonWebSocketListenOptions {
+  readonly host: string;
+  readonly port: number;
+  readonly path: string;
+}
+
 export function defaultAgenCDaemonPidPath(userHome = homedir()): string {
   return join(userHome, ".agenc", AGENC_DAEMON_PID_FILENAME);
 }
@@ -139,6 +164,68 @@ export function resolveAgenCDaemonHome(
   return configured && configured.length > 0
     ? configured
     : join(userHome, ".agenc");
+}
+
+export function resolveAgenCDaemonWebSocketListenOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): AgenCDaemonWebSocketListenOptions {
+  const host =
+    env[AGENC_DAEMON_WEBSOCKET_HOST_ENV]?.trim() ||
+    AGENC_DAEMON_WEBSOCKET_DEFAULT_HOST;
+  const path =
+    env[AGENC_DAEMON_WEBSOCKET_PATH_ENV]?.trim() ||
+    AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH;
+  return {
+    host,
+    port: parseAgenCDaemonWebSocketPort(
+      env[AGENC_DAEMON_WEBSOCKET_PORT_ENV],
+    ),
+    path,
+  };
+}
+
+function parseAgenCDaemonWebSocketPort(value: string | undefined): number {
+  if (value === undefined || value.trim() === "") {
+    return AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT;
+  }
+  const trimmed = value.trim();
+  const port = Number.parseInt(trimmed, 10);
+  if (
+    !Number.isInteger(port) ||
+    String(port) !== trimmed ||
+    port < 0 ||
+    port > 65_535
+  ) {
+    throw new Error(
+      `${AGENC_DAEMON_WEBSOCKET_PORT_ENV} must be an integer from 0 to 65535`,
+    );
+  }
+  return port;
+}
+
+export function validateAgenCDaemonWebSocketOrigin(
+  origin: string | undefined,
+): boolean {
+  if (origin === undefined) return true;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:" && url.hostname === "agenc.tech") {
+    return true;
+  }
+  return url.protocol === "http:" && isLoopbackHostname(url.hostname);
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1"
+  );
 }
 
 export function resolveAgenCDaemonPidPath(
@@ -379,6 +466,17 @@ async function runAgenCDaemonForeground(
     return 1;
   }
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+  let webSocketListenOptions: AgenCDaemonWebSocketListenOptions;
+  try {
+    webSocketListenOptions = resolveAgenCDaemonWebSocketListenOptions(
+      host.env,
+    );
+  } catch (error) {
+    io.stderr.write(
+      `agenc: daemon websocket configuration failed: ${formatCleanupError(error)}\n`,
+    );
+    return 1;
+  }
   const snapshotPath = resolveAgenCDaemonSnapshotPath(host.env, host.userHome);
   const daemonCookie = await ensureAgenCDaemonCookie(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
@@ -566,23 +664,32 @@ async function runAgenCDaemonForeground(
     initializeAuthenticator: (params) =>
       cookieAuthenticator.authenticateInitializeParams(params),
   });
-  const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
+  const connections = new Map<string, AgenCDaemonJsonRpcConnection>();
   const socketConnections = new Map<
-    number,
+    string,
     { readonly send: (message: JsonObject) => Promise<void> }
   >();
   const connectionFor = (
-    connectionId: number,
+    connectionKey: string,
   ): AgenCDaemonJsonRpcConnection => {
-    const current = connections.get(connectionId);
+    const current = connections.get(connectionKey);
     if (current !== undefined) return current;
     const next = dispatcher.createConnection({
       sendNotification: async (message) => {
-        await socketConnections.get(connectionId)?.send(message);
+        await socketConnections.get(connectionKey)?.send(message);
       },
     });
-    connections.set(connectionId, next);
+    connections.set(connectionKey, next);
     return next;
+  };
+  const closeConnection = (connectionKey: string): void => {
+    const connection = connections.get(connectionKey);
+    connections.delete(connectionKey);
+    socketConnections.delete(connectionKey);
+    void connection?.close().catch(() => {});
+    for (const clientId of connection?.trackedClientIds ?? []) {
+      void clientMultiplexer.removeClient(clientId).catch(() => {});
+    }
   };
   const socketServer = new AgenCUnixSocketServer({
     socketPath,
@@ -591,10 +698,14 @@ async function runAgenCDaemonForeground(
         await context.send(daemonShuttingDownResponse(message));
         return;
       }
-      socketConnections.set(context.connectionId, {
+      const connectionKey = daemonTransportConnectionKey(
+        "unix",
+        context.connectionId,
+      );
+      socketConnections.set(connectionKey, {
         send: (notification) => context.send(notification),
       });
-      const response = await connectionFor(context.connectionId).dispatch(
+      const response = await connectionFor(connectionKey).dispatch(
         message,
       );
       await context.send(response);
@@ -606,13 +717,36 @@ async function runAgenCDaemonForeground(
       io.stderr.write(`agenc: daemon socket error: ${error.message}\n`);
     },
     onConnectionClosed: (connectionId) => {
-      const connection = connections.get(connectionId);
-      connections.delete(connectionId);
-      socketConnections.delete(connectionId);
-      void connection?.close().catch(() => {});
-      for (const clientId of connection?.trackedClientIds ?? []) {
-        void clientMultiplexer.removeClient(clientId).catch(() => {});
+      closeConnection(daemonTransportConnectionKey("unix", connectionId));
+    },
+  });
+  const webSocketServer = new AgenCWebSocketServer({
+    ...webSocketListenOptions,
+    ready: () => !shuttingDown,
+    validateOrigin: validateAgenCDaemonWebSocketOrigin,
+    onMessage: async (message, context) => {
+      if (shuttingDown) {
+        await context.send(daemonShuttingDownResponse(message));
+        return;
       }
+      const connectionKey = daemonTransportConnectionKey(
+        "websocket",
+        context.connectionId,
+      );
+      socketConnections.set(connectionKey, {
+        send: (notification) => context.send(notification),
+      });
+      const response = await connectionFor(connectionKey).dispatch(message);
+      await context.send(response);
+      if (isDaemonConnectionAuthenticationFailure(response)) {
+        context.close();
+      }
+    },
+    onError: (error) => {
+      io.stderr.write(`agenc: daemon websocket error: ${error.message}\n`);
+    },
+    onConnectionClosed: (connectionId) => {
+      closeConnection(daemonTransportConnectionKey("websocket", connectionId));
     },
   });
   cleanup.register("daemon-pid", async () => {
@@ -644,6 +778,9 @@ async function runAgenCDaemonForeground(
   cleanup.register("daemon-socket", async () => {
     await socketServer.close();
   });
+  cleanup.register("daemon-websocket", async () => {
+    await webSocketServer.close();
+  });
 
   const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
     shuttingDown = true;
@@ -665,6 +802,10 @@ async function runAgenCDaemonForeground(
       return exitCode;
     }
     await socketServer.listen();
+    const webSocketAddress = await webSocketServer.listen();
+    io.stderr.write(
+      `AgenC daemon websocket listening on ${webSocketAddress.url}\n`,
+    );
     await options.beforeDaemonReady?.();
     if (!shuttingDown) {
       await writeAgenCDaemonPid(pidPath, host.pid);
@@ -1548,6 +1689,13 @@ function daemonShuttingDownResponse(message: JsonObject): JsonObject {
       message: "AgenC daemon is shutting down",
     },
   };
+}
+
+function daemonTransportConnectionKey(
+  transport: "unix" | "websocket",
+  connectionId: number,
+): string {
+  return `${transport}:${connectionId}`;
 }
 
 function isDaemonConnectionAuthenticationFailure(message: JsonObject): boolean {

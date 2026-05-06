@@ -7,7 +7,10 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-export const UPSTREAM_IMPORT_SEARCH_PATTERN = "from .*agenc/upstream/";
+export const UPSTREAM_IMPORT_SEARCH_PATTERNS = [
+  "agenc/upstream/",
+  "\\[[^]]*[\"']agenc[\"'][^]]*[\"']upstream[\"']",
+];
 
 export function normalizeRepoPath(filePath) {
   return filePath.split(path.sep).join("/");
@@ -75,7 +78,15 @@ function runCommand(cmd, args, options) {
 function importerFilesAtRef(root, ref) {
   const result = runCommand(
     "git",
-    ["grep", "-l", "-E", UPSTREAM_IMPORT_SEARCH_PATTERN, ref, "--", "runtime/src"],
+    [
+      "grep",
+      "-l",
+      "-E",
+      ...UPSTREAM_IMPORT_SEARCH_PATTERNS.flatMap((pattern) => ["-e", pattern]),
+      ref,
+      "--",
+      "runtime/src",
+    ],
     { root },
   );
   if (result.status === 1) return [];
@@ -94,7 +105,7 @@ function importerFilesInWorktree(root) {
     [
       "--no-messages",
       "-l",
-      UPSTREAM_IMPORT_SEARCH_PATTERN,
+      ...UPSTREAM_IMPORT_SEARCH_PATTERNS.flatMap((pattern) => ["-e", pattern]),
       "runtime/src",
       "--glob",
       "*.ts",
