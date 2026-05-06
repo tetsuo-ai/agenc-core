@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -257,6 +257,53 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.currentStepId).toBe("connection-test");
     expect(result.state.error).toContain("connection check");
   });
+
+  test("requires explicit commands for command-only steps", async () => {
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    let state = createInitialFirstRunOnboardingState(context);
+
+    let result = await submitFirstRunOnboardingInput(
+      state,
+      "write a project plan",
+      context,
+    );
+    expect(result.state.currentStepId).toBe("preflight");
+    expect(result.state.error).toContain("Type next");
+
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
+    expect(state.currentStepId).toBe("api-key");
+
+    result = await submitFirstRunOnboardingInput(
+      state,
+      "continue with no key",
+      context,
+    );
+    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.error).toContain("Type next");
+
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    result = await submitFirstRunOnboardingInput(
+      state,
+      "disable sandbox",
+      context,
+    );
+    expect(result.state.currentStepId).toBe("security");
+    expect(result.state.error).toContain("Type next");
+
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    result = await submitFirstRunOnboardingInput(
+      state,
+      "start coding",
+      context,
+    );
+    expect(result.completed).toBe(false);
+    expect(result.state.currentStepId).toBe("terminal-setup");
+    expect(result.state.error).toContain("Type done");
+  });
 });
 
 describe("project onboarding counterpart steps", () => {
@@ -271,6 +318,17 @@ describe("project onboarding counterpart steps", () => {
     });
   });
 
+  test("does not treat an AGENC.md directory as project instructions", () => {
+    withTempDir("agenc-project-", (cwd) => {
+      mkdirSync(join(cwd, "AGENC.md"));
+
+      const steps = getSteps({ cwd });
+
+      expect(steps.find((step) => step.key === "agencmd")?.isComplete).toBe(false);
+      expect(isProjectOnboardingComplete({ cwd })).toBe(false);
+    });
+  });
+
   test("uses the requested cwd for project completion state", () => {
     withTempDir("agenc-onboarding-", (agencHome) => {
       withTempDir("agenc-project-", (cwd) => {
@@ -280,8 +338,9 @@ describe("project onboarding counterpart steps", () => {
             path === join(projectRoot, "AGENC.md"),
           readdir: (path: string): readonly string[] =>
             resolve(path) === projectRoot ? ["AGENC.md"] : [],
-          stat: (): { isDirectory(): boolean } => ({
-            isDirectory: () => true,
+          stat: (path: string): { isDirectory(): boolean; isFile(): boolean } => ({
+            isDirectory: () => resolve(path) === projectRoot,
+            isFile: () => path === join(projectRoot, "AGENC.md"),
           }),
         };
 

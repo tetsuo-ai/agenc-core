@@ -14,7 +14,7 @@ export interface ProjectOnboardingStepOptions {
   readonly instructionFileName?: string;
   readonly exists?: (path: string) => boolean;
   readonly readdir?: (path: string) => readonly string[];
-  readonly stat?: (path: string) => { isDirectory(): boolean };
+  readonly stat?: (path: string) => { isDirectory(): boolean; isFile?(): boolean };
 }
 
 const DEFAULT_INSTRUCTION_FILE = "AGENC.md";
@@ -33,10 +33,24 @@ function existsAt(path: string, exists: ((path: string) => boolean) | undefined)
 
 function isDirectory(
   path: string,
-  stat: ((path: string) => { isDirectory(): boolean }) | undefined,
+  stat: ProjectOnboardingStepOptions["stat"],
 ): boolean {
   try {
     return stat ? stat(path).isDirectory() : statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isRegularFile(
+  path: string,
+  stat: ProjectOnboardingStepOptions["stat"],
+): boolean {
+  try {
+    const fileStat = stat ? stat(path) : statSync(path);
+    return typeof fileStat.isFile === "function"
+      ? fileStat.isFile()
+      : !fileStat.isDirectory();
   } catch {
     return false;
   }
@@ -51,7 +65,12 @@ export function findProjectInstructionFilePathInAncestors(
 
   while (true) {
     const candidate = join(current, instructionFileName);
-    if (existsAt(candidate, options.exists)) return candidate;
+    if (
+      existsAt(candidate, options.exists) &&
+      isRegularFile(candidate, options.stat)
+    ) {
+      return candidate;
+    }
     if (current === root) return null;
     current = dirname(current);
   }

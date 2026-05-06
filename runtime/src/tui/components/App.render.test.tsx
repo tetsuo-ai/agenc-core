@@ -4,21 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React, { type SetStateAction } from "react";
 import { beforeAll, describe, expect, test, vi } from "vitest";
+import type { ToolPermissionContext } from "../../permissions/types.js";
+import type {
+  McpElicitationRequestEvent,
+  McpPrimitiveSchemaDefinition,
+  RequestUserInputEvent,
+} from "../../elicitation/types.js";
+import type { AgenCBridgeSession } from "../session-types.js";
+import type { McpFormPending, McpUrlPending, PendingElicitation } from "./App.js";
 
 if (process.versions.bun !== undefined) {
   test("App render suite requires Vitest module mocks", () => {
     expect(true).toBe(true);
   });
 }
-
-type PendingElicitation = any;
-type McpFormPending = any;
-type McpUrlPending = any;
-type ToolPermissionContext = any;
-type McpElicitationRequestEvent = any;
-type McpPrimitiveSchemaDefinition = any;
-type RequestUserInputEvent = any;
-type AgenCBridgeSession = any;
 
 let createRoot: any;
 let defaultConfig: any;
@@ -586,6 +585,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           };
 
           expect(output()).toContain("Preflight");
+          await submit("summarize this repository");
+          expect(output()).toContain("Preflight");
+          expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
           await submit("next");
           await submit("1");
           await submit("2");

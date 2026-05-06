@@ -43,8 +43,7 @@ export type ProviderConnectionStatus =
   | "auth-failed"
   | "provider-unreachable"
   | "local-unchecked"
-  | "local-down"
-  | "unknown-provider";
+  | "local-down";
 
 export interface FirstRunOnboardingStep {
   readonly id: FirstRunOnboardingStepId;
@@ -260,6 +259,12 @@ function parseProvider(raw: string, current: BuiltInProviderSlug): BuiltInProvid
   return byName?.id ?? null;
 }
 
+function invalidCommandError(raw: string, expected: string): string | null {
+  return raw.trim().toLowerCase() === expected
+    ? null
+    : `Type ${expected} to continue.`;
+}
+
 function localModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string {
   const trimmed = baseURL.replace(/\/+$/, "");
   if (provider === "ollama") return `${trimmed.replace(/\/v1$/i, "")}/api/tags`;
@@ -468,6 +473,15 @@ export async function submitFirstRunOnboardingInput(
 ): Promise<FirstRunOnboardingSubmitResult> {
   switch (state.currentStepId) {
     case "preflight":
+      {
+        const error = invalidCommandError(raw, "next");
+        if (error !== null) {
+          return {
+            state: { ...state, error },
+            completed: false,
+          };
+        }
+      }
       return {
         state: withCompletedStep(state, "preflight", "theme"),
         completed: false,
@@ -518,7 +532,7 @@ export async function submitFirstRunOnboardingInput(
     }
     case "connection-test": {
       const command = raw.trim().toLowerCase();
-      if (command !== "" && command !== "next" && command !== "test") {
+      if (command !== "next" && command !== "test") {
         return {
           state: { ...state, error: "Type test or next to run the connection check." },
           completed: false,
@@ -539,16 +553,43 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "api-key":
+      {
+        const error = invalidCommandError(raw, "next");
+        if (error !== null) {
+          return {
+            state: { ...state, error },
+            completed: false,
+          };
+        }
+      }
       return {
         state: withCompletedStep(state, "api-key", "security"),
         completed: false,
       };
     case "security":
+      {
+        const error = invalidCommandError(raw, "next");
+        if (error !== null) {
+          return {
+            state: { ...state, error },
+            completed: false,
+          };
+        }
+      }
       return {
         state: withCompletedStep(state, "security", "terminal-setup"),
         completed: false,
       };
     case "terminal-setup":
+      {
+        const command = raw.trim().toLowerCase();
+        if (command !== "done") {
+          return {
+            state: { ...state, error: "Type done to finish onboarding." },
+            completed: false,
+          };
+        }
+      }
       return {
         state: withCompletedStep(state, "terminal-setup", null),
         completed: true,
