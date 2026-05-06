@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
 
 vi.mock("../tui/ink.js", async () => {
   const React = await import("react");
@@ -115,6 +116,21 @@ describe("first-run onboarding state", () => {
 });
 
 describe("first-run onboarding wizard", () => {
+  async function advanceToApiKey(
+    context: Parameters<typeof createInitialFirstRunOnboardingState>[0] & {
+      readonly checkLocalProviders?: boolean;
+      readonly fetchImpl?: typeof fetch;
+      readonly agencHome?: string;
+    },
+  ) {
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
+    return state;
+  }
+
   test("advances through provider selection, connection check, and completion", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
@@ -256,6 +272,90 @@ describe("first-run onboarding wizard", () => {
     result = await submitFirstRunOnboardingInput(state, "later", context);
     expect(result.state.currentStepId).toBe("connection-test");
     expect(result.state.error).toContain("connection check");
+  });
+
+  test("verifies and saves approved BYOK API keys through local auth", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      let state = await advanceToApiKey(context);
+
+      state = (
+        await submitFirstRunOnboardingInput(
+          state,
+          "XAI_API_KEY='xai-approved-key'",
+          context,
+        )
+      ).state;
+
+      expect(state.currentStepId).toBe("api-key");
+      expect(state.pendingApiKeyApproval).toMatchObject({
+        provider: "grok",
+        maskedTail: "...-key",
+        verificationStatus: "valid",
+      });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://api.x.ai/v1/models",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer xai-approved-key",
+          }),
+        }),
+      );
+
+      state = (await submitFirstRunOnboardingInput(state, "yes", context)).state;
+      expect(state.currentStepId).toBe("security");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+      ).resolves.toBe("xai-approved-key");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps rejected BYOK API keys out of local auth", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("unauthorized", { status: 401 }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      const state = await advanceToApiKey(context);
+      const result = await submitFirstRunOnboardingInput(
+        state,
+        "xai-invalid-key",
+        context,
+      );
+
+      expect(result.state.currentStepId).toBe("api-key");
+      expect(result.state.pendingApiKeyApproval).toBeNull();
+      expect(result.state.error).toContain("Provider rejected");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+      ).resolves.toBeUndefined();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 
   test("requires explicit commands for command-only steps", async () => {

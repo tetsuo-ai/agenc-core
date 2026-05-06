@@ -157,6 +157,32 @@ function firstNonEmptyString(...values: Array<string | undefined>): string | und
   return undefined;
 }
 
+interface AuthBackendWithLocalByokKeys extends AuthBackend {
+  readByokKey(
+    provider: string,
+  ): string | undefined | Promise<string | undefined>;
+}
+
+function canReadLocalByokKeys(
+  authBackend: AuthBackend | undefined,
+): authBackend is AuthBackendWithLocalByokKeys {
+  return (
+    authBackend !== undefined &&
+    typeof (authBackend as { readByokKey?: unknown }).readByokKey === "function"
+  );
+}
+
+async function readAuthBackendByokKey(
+  authBackend: AuthBackend | undefined,
+  provider: ProviderName,
+): Promise<string | undefined> {
+  if (!canReadLocalByokKeys(authBackend)) return undefined;
+  const apiKey = await authBackend.readByokKey(provider);
+  return typeof apiKey === "string" && apiKey.trim().length > 0
+    ? apiKey.trim()
+    : undefined;
+}
+
 async function resolveAuthSubscriptionTier(
   authBackend: AuthBackend | undefined,
   sessionId: string,
@@ -852,9 +878,17 @@ export async function bootstrapLocalRuntimeSession(
     conversationId,
   );
   const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
+  const startupAuthBackendByokKey = await readAuthBackendByokKey(
+    options.authBackend,
+    startup.provider,
+  );
+  const startupByokApiKey = firstNonEmptyString(
+    startup.apiKey,
+    startupAuthBackendByokKey,
+  );
   const byokApiKey = selectByokPrecedenceApiKey({
     explicitApiKey: options.apiKey,
-    byokApiKey: startup.apiKey,
+    byokApiKey: startupByokApiKey,
     managedKeysEnabled,
   });
   const startupProviderSettings = resolveProviderSettings(
@@ -887,12 +921,20 @@ export async function bootstrapLocalRuntimeSession(
     startup.config,
     env,
   );
+  const runtimeAuthBackendByokKey =
+    resolvedProvider === startup.provider
+      ? startupAuthBackendByokKey
+      : await readAuthBackendByokKey(options.authBackend, resolvedProvider);
+  const runtimeByokApiKey = firstNonEmptyString(
+    startup.apiKey,
+    runtimeAuthBackendByokKey,
+  );
   const providerSettings =
     profileProvider === resolvedProvider
       ? runtimeProviderSettings
       : resolveProviderSettings(profileProvider, startup.config, env);
   const managedKey =
-    byokApiKey === undefined &&
+    runtimeByokApiKey === undefined &&
     managedKeysEnabled &&
     !isHostedAgencProvider(resolvedProvider)
       ? await vendProviderKeyOrUndefined({
@@ -906,7 +948,7 @@ export async function bootstrapLocalRuntimeSession(
     providerSettings: runtimeProviderSettings,
     apiKey: selectByokPrecedenceApiKey({
       explicitApiKey: options.apiKey,
-      byokApiKey: startup.apiKey,
+      byokApiKey: runtimeByokApiKey,
       managedKeysEnabled,
       managedApiKey: managedKey.apiKey,
     }),

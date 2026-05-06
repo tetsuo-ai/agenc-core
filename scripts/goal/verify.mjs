@@ -1573,7 +1573,38 @@ const ITEM_EVIDENCE = {
     grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
   },
   "OB-09": {
-    grepPresent: [{ pattern: "byok|paste.*key|enter.*api.*key", scope: "runtime/src" }],
+    files: [
+      "runtime/src/onboarding/ApproveApiKey.tsx",
+      "runtime/src/onboarding/useApiKeyVerification.ts",
+      "runtime/src/onboarding/inputPaste.ts",
+      "runtime/src/onboarding/pasteStore.ts",
+      "runtime/src/onboarding/Onboarding.tsx",
+      "runtime/src/auth/backends/local.ts",
+      "runtime/src/bin/bootstrap.ts",
+      "runtime/src/onboarding/onboarding.test.tsx",
+      "runtime/src/onboarding/useApiKeyVerification.test.ts",
+      "runtime/src/onboarding/inputPaste.test.ts",
+      "runtime/src/auth/backends/local.contract.test.ts",
+      "runtime/src/bin/bootstrap.test.ts",
+      "parity/OB-09-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "ApproveApiKey", scope: "runtime/src/onboarding/ApproveApiKey.tsx" },
+      { pattern: "verifyApiKey", scope: "runtime/src/onboarding/useApiKeyVerification.ts" },
+      { pattern: "maybeTruncateInput", scope: "runtime/src/onboarding/inputPaste.ts" },
+      { pattern: "hashPastedText", scope: "runtime/src/onboarding/pasteStore.ts" },
+      { pattern: "pendingApiKeyApproval", scope: "runtime/src/onboarding/Onboarding.tsx" },
+      { pattern: "saveByokKey", scope: "runtime/src/auth/backends/local.ts" },
+      { pattern: "readByokKey", scope: "runtime/src/bin/bootstrap.ts" },
+      { pattern: "OB-09", scope: "parity/OB-09-parity.json" },
+    ],
+    tests: [
+      "runtime/src/onboarding/onboarding.test.tsx",
+      "runtime/src/onboarding/useApiKeyVerification.test.ts",
+      "runtime/src/onboarding/inputPaste.test.ts",
+      "runtime/src/auth/backends/local.contract.test.ts",
+      "runtime/src/bin/bootstrap.test.ts",
+    ],
   },
   "UP-01": {
     grepPresent: [{ pattern: "agenc update", scope: "runtime/src" }],
@@ -4094,7 +4125,25 @@ async function onboardingGates(item) {
     pass("OB-07: prompts subsystem present");
     return;
   }
-  if (id === "OB-08" || id === "OB-09") {
+  if (id === "OB-09") {
+    const test = run("npm", [
+      "--workspace=@tetsuo-ai/runtime",
+      "exec",
+      "vitest",
+      "run",
+      "src/onboarding/onboarding.test.tsx",
+      "src/onboarding/useApiKeyVerification.test.ts",
+      "src/onboarding/inputPaste.test.ts",
+      "src/auth/backends/local.contract.test.ts",
+      "src/bin/bootstrap.test.ts",
+    ]);
+    if (test.status !== 0) {
+      failGate("OB-09: BYOK onboarding tests failed");
+    }
+    pass("OB-09: BYOK onboarding tests passed");
+    return;
+  }
+  if (id === "OB-08") {
     // Progressive onboarding follow-ups.
     const found = grepRepo("onboarding|first.run|firstRun", "runtime/src");
     if (!found) failGate(`${id}: onboarding flow not referenced`);
