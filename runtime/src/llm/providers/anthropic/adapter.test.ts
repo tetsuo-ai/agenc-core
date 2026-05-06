@@ -407,7 +407,7 @@ describe("AnthropicProvider", () => {
     expect(headers.get("anthropic-beta")).toContain("context-management-2025-06-27");
   });
 
-  test("sends assembled AGENC.md context as a cacheable Anthropic system block", async () => {
+  test("sends assembled AGENC.md context as a cacheable provider system block", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -528,7 +528,7 @@ describe("AnthropicProvider", () => {
     ).toBe(false);
   });
 
-  test("serializes vision content into Anthropic image blocks", async () => {
+  test("serializes vision content into provider image blocks", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({

@@ -1,7 +1,7 @@
 /**
  * Changed-files attachment producer.
  *
- * Hand-port of openclaude `getChangedFiles()`
+ * Hand-port of reference `getChangedFiles()`
  * (`src/utils/attachments.ts:2064-2162`). For each file the model has
  * read this session, stat the file on disk and detect mid-session
  * mutation. Emit one attachment per changed file:
@@ -87,7 +87,7 @@ interface PendingFile {
 
 /**
  * Compute a compact diff snippet between two text contents. Mirrors
- * openclaude `getSnippetForTwoFileDiff` (FileEditTool/utils.ts:362).
+ * reference `getSnippetForTwoFileDiff` (FileEditTool/utils.ts:362).
  *
  * Returns "" when the contents are byte-identical. Returns a hunk-only
  * snippet (with deleted lines stripped, only kept lines numbered) when

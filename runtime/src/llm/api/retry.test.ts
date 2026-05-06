@@ -50,7 +50,7 @@ describe("llm api retry", () => {
     ).toBe(true);
   });
 
-  test("parses OpenAI-compatible reset durations", () => {
+  test("parses compatible-provider reset durations", () => {
     expect(parseOpenAIDuration("500ms")).toBe(500);
     expect(parseOpenAIDuration("6m0s")).toBe(360_000);
     expect(parseOpenAIDuration("1h30m0s")).toBe(5_400_000);

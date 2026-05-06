@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createPromptBridge } from "./prompt-bridge.js";
+import { createPromptBridge } from "./prompts.js";
 
 function makeClient(overrides: {
   listPrompts?: ReturnType<typeof vi.fn>;

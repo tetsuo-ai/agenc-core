@@ -39,7 +39,7 @@ async function runStream(frames: string[]): Promise<LLMStreamChunk[]> {
   return chunks;
 }
 
-describe("R6 Anthropic adapter forwards input_json_delta as toolInputBlockStart + toolInputDelta chunks", () => {
+describe("R6 messages adapter forwards input_json_delta as toolInputBlockStart + toolInputDelta chunks", () => {
   test("E6.1 a content_block_start with content_block.type !== 'tool_use' does NOT emit toolInputBlockStart", async () => {
     const chunks = await runStream([
       messageStart,
@@ -56,7 +56,7 @@ describe("R6 Anthropic adapter forwards input_json_delta as toolInputBlockStart 
   test("E6.2 a content_block_start with index missing/negative does NOT emit toolInputBlockStart (only valid >=0 indices reach the bridge)", async () => {
     const chunks = await runStream([
       messageStart,
-      // Anthropic should always send index, but if we ever see a malformed
+      // The provider should always send index, but if we ever see a malformed
       // event without it, the adapter sentinel is -1 and we must not forward.
       'event: content_block_start\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_x","name":"X","input":{}}}\n\n',
       messageStop,

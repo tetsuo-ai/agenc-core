@@ -502,6 +502,7 @@ export interface AgentCreateParams extends JsonObject {
   readonly provider?: string;
   readonly profile?: string;
   readonly instructions?: string;
+  readonly initialContent?: MessageContent;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   readonly metadata?: JsonObject;

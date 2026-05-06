@@ -55,6 +55,7 @@ import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import type { Command } from "../../commands.js";
 import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
+import type { VimMode } from "../../types/textInputTypes.js";
 import type { AgenCTuiProps } from "../session-types.js";
 import {
   Onboarding,
@@ -867,7 +868,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [stashedPrompt, setStashedPrompt] = useState<any>(undefined);
   const [submitCount, setSubmitCount] = useState(0);
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
-  const [vimMode, setVimMode] = useState<any>("insert");
+  const [vimMode, setVimMode] = useState<VimMode>("INSERT");
   const [showBashesDialog, setShowBashesDialog] = useState<string | boolean>(false);
   const [isSearchingHistory, setIsSearchingHistory] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);

@@ -1,34 +1,329 @@
-import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
+import {
+  safeExecute,
+  type SlashCommand,
+  type SlashCommandContext,
+  type SlashCommandResult,
+} from "./types.js";
+import type { LLMContentPart, LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
+import { readProviderFactoryOptions } from "../llm/provider.js";
+import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
+import type { CompactedItem, ResponseItem } from "../session/rollout-item.js";
+import type { Session } from "../session/session.js";
+import type { TurnContext } from "../session/turn-context.js";
+import { modelContextWindow } from "../session/turn-context.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   AGENC_COMPACT_CALL_METRIC,
   AGENC_COMPACT_DURATION_METRIC,
   agencTelemetry,
   toMetricTags,
-} from "../../observability/telemetry.js";
-import type { CompactionResult } from "../../services/compact/types.js";
-import type { RuntimeMessage } from "../../services/compact/types.js";
-import type { Session } from "../../session/session.js";
-import type { TurnContext } from "../../session/turn-context.js";
-import type {
-  AssistantMessage,
-  Terminal,
-  TurnState,
-} from "../../session/turn-state.js";
-import {
-  buildAgenCToolUseContext,
-  type AgenCToolUseContext,
-} from "./tool-use-context.js";
-import { toAgenCModelContext } from "./model-context.js";
-import {
-  buildCompactedRolloutPayload,
-  toAgenCMessage,
-  type AgenCMessage,
-} from "./message-rollout.js";
+} from "../observability/telemetry.js";
+
+export const compactCommand: SlashCommand = {
+  name: "compact",
+  description: "Compact the current conversation",
+  immediate: true,
+  supportsNonInteractive: true,
+  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
+    safeExecute(async () => {
+      await ensureNoActiveTurn(ctx);
+      const turnContext = ctx.session.newDefaultTurnWithSubId(
+        ctx.session.nextInternalSubId(),
+      );
+      if (!turnContext) {
+        return { kind: "error", message: "No turn context is available." };
+      }
+      const result = await runManualCompact({
+        session: ctx.session,
+        ctx: turnContext,
+        customInstructions: ctx.argsRaw,
+      });
+      return {
+        kind: "compact",
+        text: result.displayText,
+      };
+    }),
+};
+
+export const contextCommand: SlashCommand = {
+  name: "context",
+  description: "Show current context usage",
+  immediate: true,
+  supportsNonInteractive: true,
+  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
+    safeExecute(async () => {
+      const turnContext = ctx.session.newDefaultTurnWithSubId(
+        ctx.session.nextInternalSubId(),
+      );
+      if (!turnContext) {
+        return { kind: "error", message: "No turn context is available." };
+      }
+      const result = await runContextUsage({
+        session: ctx.session,
+        ctx: turnContext,
+        args: ctx.argsRaw,
+      });
+      return {
+        kind: "text",
+        text: result.text,
+      };
+    }),
+};
+
+async function ensureNoActiveTurn(ctx: SlashCommandContext): Promise<void> {
+  const activeTurn = (ctx.session as unknown as {
+    activeTurn?: { unsafePeek?: () => unknown };
+  }).activeTurn;
+  if (activeTurn?.unsafePeek?.() != null) {
+    throw new Error(
+      "Cannot compact right now: a turn is currently in flight; wait for it to complete before running /compact.",
+    );
+  }
+}
+
+interface AgenCModelContext {
+  readonly model: string;
+  readonly contextWindowTokens: number;
+  readonly maxOutputTokens?: number;
+}
+
+function toAgenCModelContext(ctx: TurnContext): AgenCModelContext {
+  const contextWindowTokens = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
+  if (
+    typeof contextWindowTokens !== "number" ||
+    !Number.isFinite(contextWindowTokens) ||
+    contextWindowTokens <= 0
+  ) {
+    throw new Error(`Missing context window for model ${ctx.modelInfo.slug}`);
+  }
+  return {
+    model: ctx.modelInfo.slug,
+    contextWindowTokens,
+    ...(ctx.modelInfo.maxOutputTokens !== undefined
+      ? { maxOutputTokens: ctx.modelInfo.maxOutputTokens }
+      : {}),
+  };
+}
+
+interface AgenCToolUseContext {
+  readonly abortController: AbortController;
+  readonly agentId?: string;
+  readonly sessionId: string;
+  readonly options: {
+    readonly mainLoopModel: string;
+    readonly tools: readonly AgenCRuntimeTool[];
+    readonly mcpClients: readonly unknown[];
+    readonly contextWindowTokens: number;
+    readonly maxOutputTokens?: number;
+    readonly providerOverride?: {
+      readonly model: string;
+      readonly baseURL: string;
+      readonly apiKey: string;
+    };
+    readonly querySource?: string;
+    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
+    readonly isNonInteractiveSession: boolean;
+    readonly cwd?: string;
+    readonly verbose: boolean;
+  };
+  readonly getAppState: () => {
+    readonly toolPermissionContext: unknown;
+    readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
+    readonly tasks: Record<string, unknown>;
+  };
+  readonly readFileState: Map<string, unknown>;
+  readonly loadedNestedMemoryPaths: Set<string>;
+  readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
+  readonly setResponseLength: (updater: (length: number) => number) => void;
+  readonly onCompactProgress: (event: unknown) => void;
+  readonly setSDKStatus: (status: "compacting" | null) => void;
+  readonly addNotification: (notification: unknown) => void;
+  readonly emitWarning: (warning: { readonly cause: string; readonly message: string }) => void;
+  readonly queryTracking?: {
+    readonly chainId?: string;
+    readonly depth?: number;
+  };
+  readonly clearProviderResponseId: () => void;
+  readonly rolloutStore?: unknown;
+  readonly session?: { readonly rolloutStore?: unknown };
+  readonly provider?: LLMProvider;
+  readonly cwd?: string;
+}
+
+type AgenCRuntimeTool = LLMTool & {
+  readonly name: string;
+  readonly description: string;
+  readonly inputJSONSchema: Record<string, unknown>;
+  readonly isMcp: boolean;
+  readonly maxResultSizeChars: number;
+};
+
+function buildAgenCToolUseContext(
+  session: Session,
+  ctx: TurnContext,
+  opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
+): AgenCToolUseContext {
+  const model = toAgenCModelContext(ctx);
+  const providerOverride = buildProviderOverride(session, model.model);
+  const surface = readSessionSurface(session);
+  const agentDefinitions = {
+    activeAgents: Array.isArray(surface.agentDefinitions?.activeAgents)
+      ? [...surface.agentDefinitions.activeAgents]
+      : [],
+  };
+  const cwd = ctx.cwd;
+  return {
+    abortController: session.abortController ?? new AbortController(),
+    sessionId: session.conversationId,
+    options: {
+      mainLoopModel: model.model,
+      tools: toAgenCRuntimeTools(session.services.registry.toLLMTools()),
+      mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
+      contextWindowTokens: model.contextWindowTokens,
+      ...(model.maxOutputTokens !== undefined
+        ? { maxOutputTokens: model.maxOutputTokens }
+        : {}),
+      ...(providerOverride !== undefined ? { providerOverride } : {}),
+      ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
+      agentDefinitions,
+      isNonInteractiveSession: false,
+      cwd,
+      verbose: opts.verbose ?? false,
+    },
+    getAppState: () => ({
+      toolPermissionContext:
+        session.permissionModeRegistry?.current?.() ??
+        session.services.permissionModeRegistry?.current?.() ??
+        createEmptyToolPermissionContext(),
+      agentDefinitions,
+      tasks: surface.tasks ?? {},
+    }),
+    readFileState: surface.readFileState ?? new Map<string, unknown>(),
+    loadedNestedMemoryPaths:
+      surface.loadedNestedMemoryPaths ?? new Set<string>(),
+    setStreamMode: surface.setStreamMode ?? (() => {}),
+    setResponseLength: surface.setResponseLength ?? (() => {}),
+    onCompactProgress: surface.onCompactProgress ?? (() => {}),
+    setSDKStatus: surface.setSDKStatus ?? (() => {}),
+    addNotification: surface.addNotification ?? (() => {}),
+    emitWarning:
+      surface.emitWarning ??
+      ((warning) => {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: warning,
+          },
+        });
+      }),
+    ...(surface.queryTracking !== undefined
+      ? { queryTracking: surface.queryTracking }
+      : {}),
+    clearProviderResponseId: () => session.clearProviderResponseId(),
+    ...(session.rolloutStore !== undefined ? { rolloutStore: session.rolloutStore } : {}),
+    ...(session.rolloutStore !== undefined
+      ? { session: { rolloutStore: session.rolloutStore } }
+      : {}),
+    provider: session.services.provider,
+    cwd,
+  };
+}
+
+function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
+  return tools.map((tool) => {
+    const name = tool.function.name;
+    return {
+      ...tool,
+      name,
+      description: tool.function.description,
+      inputJSONSchema: tool.function.parameters,
+      isMcp: name.startsWith("mcp__"),
+      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
+    };
+  });
+}
+
+function buildProviderOverride(
+  session: Session,
+  fallbackModel: string,
+): AgenCToolUseContext["options"]["providerOverride"] | undefined {
+  const provider = session.services.provider;
+  const options = readProviderFactoryOptions(provider);
+  const model = firstNonEmpty(options.model, fallbackModel);
+  const baseURL = firstNonEmpty(options.baseURL);
+  if (!model || !baseURL) return undefined;
+  return {
+    model,
+    baseURL,
+    apiKey: options.apiKey ?? "",
+  };
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+type SessionSurface = {
+  readonly readFileState?: Map<string, unknown>;
+  readonly loadedNestedMemoryPaths?: Set<string>;
+  readonly mcpClients?: readonly unknown[];
+  readonly agentDefinitions?: { readonly activeAgents?: readonly unknown[] };
+  readonly tasks?: Record<string, unknown>;
+  readonly queryTracking?: {
+    readonly chainId?: string;
+    readonly depth?: number;
+  };
+  readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
+  readonly setResponseLength?: (updater: (length: number) => number) => void;
+  readonly onCompactProgress?: (event: unknown) => void;
+  readonly setSDKStatus?: (status: "compacting" | null) => void;
+  readonly addNotification?: (notification: unknown) => void;
+  readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
+};
+
+function readSessionSurface(session: Session): SessionSurface {
+  const snapshot = session.state.unsafePeek() as unknown as Record<string, unknown>;
+  const direct = session as unknown as Record<string, unknown>;
+  const read = <T>(key: keyof SessionSurface): T | undefined => {
+    const directValue = direct[key];
+    if (directValue !== undefined) return directValue as T;
+    const snapshotValue = snapshot[key];
+    if (snapshotValue !== undefined) return snapshotValue as T;
+    return undefined;
+  };
+  return {
+    readFileState: read<Map<string, unknown>>("readFileState"),
+    loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
+    mcpClients: read<readonly unknown[]>("mcpClients"),
+    agentDefinitions:
+      read<{ readonly activeAgents?: readonly unknown[] }>("agentDefinitions"),
+    tasks: read<Record<string, unknown>>("tasks"),
+    queryTracking: read<{ readonly chainId?: string; readonly depth?: number }>(
+      "queryTracking",
+    ),
+    setStreamMode:
+      read<(mode: "requesting" | "responding" | null) => void>("setStreamMode"),
+    setResponseLength:
+      read<(updater: (length: number) => number) => void>("setResponseLength"),
+    onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
+    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
+    addNotification: read<(notification: unknown) => void>("addNotification"),
+    emitWarning:
+      read<(warning: { readonly cause: string; readonly message: string }) => void>(
+        "emitWarning",
+      ),
+  };
+}
 
 const AGENC_COMPACT_BOUNDARY = "<compact>";
-const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
-const RECOVERY_PASS: AgenCOverflowRecoveryResult = { kind: "pass" };
-const UPSTREAM_CONTEXT_GUARD_ENV = [
+const COMPACT_CONTEXT_GUARD_ENV = [
   "AGENC_USE_OPENAI",
   "OPENAI_MODEL",
   "OPENAI_BASE_URL",
@@ -36,16 +331,7 @@ const UPSTREAM_CONTEXT_GUARD_ENV = [
   "AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW",
 ] as const;
 
-export interface AgenCPreparedTerminal {
-  readonly terminal: Terminal;
-  readonly assistantMessage: AssistantMessage;
-}
-
-type PreparedState = TurnState & {
-  [PREPARED_TERMINAL]?: AgenCPreparedTerminal;
-};
-
-export interface AgenCAutoCompactResult {
+interface AgenCAutoCompactResult {
   readonly wasCompacted: boolean;
   readonly compactionResult?: {
     readonly message: string;
@@ -56,19 +342,29 @@ export interface AgenCAutoCompactResult {
   readonly consecutiveFailures?: number;
 }
 
-export interface AgenCManualCompactResult {
+interface AgenCManualCompactResult {
   readonly displayText: string;
   readonly compactionResult: NonNullable<AgenCAutoCompactResult["compactionResult"]>;
 }
 
-export interface AgenCContextUsageResult {
+interface AgenCContextUsageResult {
   readonly text: string;
 }
 
-export type AgenCOverflowRecoveryResult =
-  | { readonly kind: "applied"; readonly reason: string }
-  | { readonly kind: "pass" }
-  | { readonly kind: "surface"; readonly reason: string };
+type AgenCMessageRole =
+  | "system"
+  | "developer"
+  | "user"
+  | "assistant"
+  | "tool";
+
+interface AgenCMessage {
+  readonly role: AgenCMessageRole;
+  readonly content: string | readonly LLMContentPart[];
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly phase?: string;
+}
 
 type AgenCRuntimeWireRole = NonNullable<RuntimeMessage["role"]>;
 
@@ -101,121 +397,9 @@ type AgenCCompactionResult = {
   readonly truePostCompactTokenCount?: number;
 };
 
-type UpstreamGuardEnv = Partial<Record<(typeof UPSTREAM_CONTEXT_GUARD_ENV)[number], string>>;
+type CompactGuardEnv = Partial<Record<(typeof COMPACT_CONTEXT_GUARD_ENV)[number], string>>;
 
-export async function prepareAgenCTurnContext(
-  state: TurnState,
-  ctx: TurnContext,
-  session: Session,
-  signal?: AbortSignal,
-): Promise<void> {
-  delete (state as PreparedState)[PREPARED_TERMINAL];
-  if (signal?.aborted) return;
-  toAgenCModelContext(ctx);
-  const messages = messagesAfterAgenCBoundary(state.messages);
-  const toolUseContext = buildAgenCToolUseContext(session, ctx, {
-    querySource: "repl_main_thread",
-  });
-  try {
-    const prepared = await prepareAgenCQueryMessages({
-      messages,
-      toolUseContext,
-      querySource: "repl_main_thread",
-      applyContextCollapse: isAgenCContextCollapseRequested(),
-    });
-    state.messagesForQuery = prepared.messages;
-    state.snipTokensFreed = prepared.snipTokensFreed;
-    if (prepared.committed) {
-      state.messages = [...state.messagesForQuery];
-    }
-  } catch {
-    state.messagesForQuery = messages.map(cloneLLMMessage);
-    state.snipTokensFreed = 0;
-  }
-}
-
-export function getAgenCPreparedTerminal(
-  state: TurnState,
-): AgenCPreparedTerminal | undefined {
-  return (state as PreparedState)[PREPARED_TERMINAL];
-}
-
-export async function runAgenCAutoCompact(params: {
-  readonly session?: Session;
-  readonly ctx?: TurnContext;
-  readonly state?: TurnState;
-  readonly querySource?: string;
-  readonly reason?: string;
-  readonly phase?: string;
-  readonly initialContextInjection?: string;
-}): Promise<AgenCAutoCompactResult> {
-  const finishTelemetry = startCompactTelemetry("auto", {
-    query_source: params.querySource,
-    reason: params.reason,
-    phase: params.phase,
-  });
-  if (!params.session || !params.ctx || !params.state) {
-    finishTelemetry("not_configured");
-    return compactionNotRun();
-  }
-  try {
-    const state = params.state;
-    const sourceMessages =
-      state.messagesForQuery.length > 0
-        ? state.messagesForQuery
-        : state.messages;
-    const messages = toAgenCRuntimeMessages(sourceMessages);
-    const toolUseContext = buildAgenCToolUseContext(
-      params.session,
-      params.ctx,
-      { querySource: params.querySource },
-    );
-    const cacheSafeParams = {
-      systemPrompt: [],
-      userContext: {},
-      systemContext: {},
-      toolUseContext,
-      forkContextMessages: messages,
-    };
-    const result = await withUpstreamContextGuards(async () => {
-      const { autoCompactIfNeeded } =
-        await import("../../services/compact/autoCompact.js");
-      return autoCompactIfNeeded(
-        messages,
-        toolUseContext,
-        cacheSafeParams,
-        params.querySource,
-        state.autoCompactTracking,
-        state.snipTokensFreed ?? 0,
-      );
-    }, envForToolUseContext(toolUseContext));
-    if (!result.wasCompacted || !result.compactionResult) {
-      finishTelemetry("skipped", {
-        consecutive_failures: result.consecutiveFailures,
-      });
-      return compactionNotRun(result.consecutiveFailures);
-    }
-    params.session.clearProviderResponseId();
-    const compactionResult = await toAgenCCompactionResult(
-      result.compactionResult as AgenCCompactionResult,
-    );
-    finishTelemetry("compacted", {
-      consecutive_failures: result.consecutiveFailures,
-    });
-    return {
-      wasCompacted: true,
-      compactionResult,
-      ...(result.consecutiveFailures !== undefined
-        ? { consecutiveFailures: result.consecutiveFailures }
-        : {}),
-    };
-  } catch (error) {
-    finishTelemetry("error");
-    throw error;
-  }
-}
-
-export async function runAgenCManualCompact(params: {
+async function runManualCompact(params: {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly customInstructions?: string;
@@ -252,9 +436,9 @@ export async function runAgenCManualCompact(params: {
         theme: "dark",
       },
     };
-    const result = await withUpstreamContextGuards(async () => {
+    const result = await withCompactContextGuards(async () => {
       const { manualCompactCall } =
-        await import("../../services/compact/compact.js");
+        await import("../services/compact/compact.js");
       const call = manualCompactCall;
       return call(params.customInstructions ?? "", commandContext as never);
     }, envForToolUseContext(toolUseContext));
@@ -297,7 +481,7 @@ export async function runAgenCManualCompact(params: {
   }
 }
 
-export async function runAgenCContextUsage(params: {
+async function runContextUsage(params: {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly args?: string;
@@ -320,10 +504,8 @@ export async function runAgenCContextUsage(params: {
         appendSystemPrompt: undefined,
       },
     };
-    const result = await withUpstreamContextGuards(async () => {
-      const { contextUsageCall } = await import("./compact-runtime.js");
-      const call = contextUsageCall;
-      return call(params.args ?? "", commandContext as never);
+    const result = await withCompactContextGuards(async () => {
+      return contextUsageCall(params.args ?? "", commandContext as never);
     }, envForToolUseContext(toolUseContext));
     finishTelemetry("reported");
     return { text: result.value };
@@ -333,41 +515,7 @@ export async function runAgenCContextUsage(params: {
   }
 }
 
-export async function runAgenCContextCollapseOverflowRecovery(params: {
-  readonly session: Session;
-  readonly state: TurnState;
-  readonly lastMessage?: AssistantMessage;
-}): Promise<AgenCOverflowRecoveryResult> {
-  const finishTelemetry = startCompactTelemetry("overflow_recovery");
-  try {
-    const recovered = await withUpstreamContextGuards(async () => {
-      const { recoverFromOverflow } = await import("./compact-runtime.js");
-      return recoverFromOverflow(
-        toAgenCRuntimeMessages(params.state.messagesForQuery),
-      );
-    });
-    if (recovered.committed <= 0) {
-      const result = passRecovery();
-      finishTelemetry(result.kind);
-      return result;
-    }
-    params.state.messagesForQuery = fromAgenCRuntimeMessages(
-      recovered.messages as AgenCRuntimeMessage[],
-    );
-    params.state.messages = [...params.state.messagesForQuery];
-    const result: AgenCOverflowRecoveryResult = {
-      kind: "applied",
-      reason: "context_collapse",
-    };
-    finishTelemetry(result.kind, { reason: result.reason });
-    return result;
-  } catch (error) {
-    finishTelemetry("error");
-    throw error;
-  }
-}
-
-export function buildAgenCCompactedRolloutItem(
+function buildAgenCCompactedRolloutItem(
   result: NonNullable<AgenCAutoCompactResult["compactionResult"]>,
 ) {
   return buildCompactedRolloutPayload({
@@ -378,10 +526,44 @@ export function buildAgenCCompactedRolloutItem(
   });
 }
 
-export function buildAgenCPostCompactMessages(
-  result: NonNullable<AgenCAutoCompactResult["compactionResult"]>,
-): LLMMessage[] {
-  return result.replacementHistory.map((message) => ({ ...message }));
+function toAgenCMessage(message: LLMMessage): AgenCMessage {
+  return {
+    role: message.role,
+    content: cloneContent(message.content),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
+  };
+}
+
+function toResponseItem(message: LLMMessage): ResponseItem {
+  return {
+    role: message.role,
+    content: cloneContent(message.content),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
+  };
+}
+
+function buildCompactedRolloutPayload(params: {
+  readonly message: string;
+  readonly replacementHistory?: readonly LLMMessage[];
+  readonly preCompactTokens?: number;
+  readonly postCompactTokens?: number;
+}): CompactedItem {
+  return {
+    message: params.message,
+    ...(params.replacementHistory !== undefined
+      ? { replacementHistory: params.replacementHistory.map(toResponseItem) }
+      : {}),
+    ...(params.preCompactTokens !== undefined
+      ? { preCompactTokens: params.preCompactTokens }
+      : {}),
+    ...(params.postCompactTokens !== undefined
+      ? { postCompactTokens: params.postCompactTokens }
+      : {}),
+  };
 }
 
 function messagesAfterAgenCBoundary(
@@ -400,66 +582,31 @@ function messagesAfterAgenCBoundary(
   return messages.map((item) => ({ ...item }));
 }
 
-async function prepareAgenCQueryMessages(params: {
-  readonly messages: readonly LLMMessage[];
-  readonly toolUseContext: AgenCToolUseContext;
-  readonly querySource: string;
-  readonly applyContextCollapse: boolean;
-}): Promise<{
-  readonly messages: LLMMessage[];
-  readonly snipTokensFreed: number;
-  readonly committed: boolean;
-}> {
-  const finishTelemetry = startCompactTelemetry("prepare_query", {
-    query_source: params.querySource,
-    context_collapse: params.applyContextCollapse,
-  });
-  try {
-    const result = await withUpstreamContextGuards(async () => {
-      let messages = toAgenCRuntimeMessages(params.messages);
-      const { applyToolResultBudget } = await import("./compact-runtime.js");
-      const budgeted = await applyToolResultBudget(
-        messages,
-      );
-      messages = budgeted.messages as AgenCRuntimeMessage[];
-      const { microcompactMessages } =
-        await import("../../services/compact/microCompact.js");
-      const microcompactResult = await microcompactMessages(
-        messages,
-        params.toolUseContext,
-        params.querySource,
-      );
-      messages = microcompactResult.messages as AgenCRuntimeMessage[];
-      let committed = false;
-      if (params.applyContextCollapse) {
-        const { applyCollapsesIfNeeded } = await import("./compact-runtime.js");
-        const projected = await applyCollapsesIfNeeded(
-          messages,
-        );
-        messages = projected.messages as AgenCRuntimeMessage[];
-        committed = projected.committed > 0;
-      }
-      return {
-        messages: fromAgenCRuntimeMessages(messages),
-        snipTokensFreed: 0,
-        committed,
-      };
-    }, envForToolUseContext(params.toolUseContext));
-    finishTelemetry(result.committed ? "committed" : "unchanged");
-    return {
-      messages: result.messages,
-      snipTokensFreed: result.snipTokensFreed,
-      committed: result.committed,
+async function contextUsageCall(
+  _args: string,
+  context: {
+    readonly messages?: RuntimeMessage[];
+    readonly options?: {
+      readonly contextWindowTokens?: number;
     };
-  } catch (error) {
-    finishTelemetry("error");
-    throw error;
   }
+): Promise<{ readonly value: string }> {
+  const messages = context.messages ?? [];
+  const used = roughRuntimeTokenCount(messages);
+  const window = context.options?.contextWindowTokens ?? 0;
+  const percent = window > 0
+    ? Math.min(100, Math.round((used / window) * 100))
+    : 0;
+  return {
+    value: window > 0
+      ? `Context: ${used.toLocaleString()} / ${window.toLocaleString()} tokens (${percent}%)`
+      : `Context: ${used.toLocaleString()} estimated tokens`,
+  };
 }
 
 function startCompactTelemetry(
   mode: string,
-  attributes: Readonly<Record<string, unknown>> = {},
+  attributes: Readonly<Record<string, unknown>> = {}
 ): (status: string, additionalAttributes?: Readonly<Record<string, unknown>>) => void {
   const baseTags = toMetricTags({ mode, ...attributes });
   const timer = agencTelemetry.timer(AGENC_COMPACT_DURATION_METRIC, baseTags);
@@ -480,9 +627,9 @@ async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
   toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
-  const replacementHistory = await withUpstreamContextGuards(async () => {
+  const replacementHistory = await withCompactContextGuards(async () => {
     const { buildPostCompactMessages } =
-      await import("../../services/compact/compact.js");
+      await import("../services/compact/compact.js");
     return fromAgenCRuntimeMessages(
       buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
     );
@@ -538,7 +685,7 @@ async function addManualCompactSlashMessages(
     createSyntheticUserCaveatMessage,
     createUserMessage,
     formatCommandInputTags,
-  } = await import("../../services/compact/compact.js");
+  } = await import("../services/compact/compact.js");
   const slashMessages: AgenCRuntimeMessage[] = [
     createSyntheticUserCaveatMessage(),
     createUserMessage({
@@ -565,9 +712,9 @@ async function addManualCompactSlashMessages(
 async function resetAgenCMicrocompactState(
   toolUseContext: AgenCToolUseContext,
 ): Promise<void> {
-  await withUpstreamContextGuards(async () => {
+  await withCompactContextGuards(async () => {
     const { resetMicrocompactState } =
-      await import("../../services/compact/microCompact.js");
+      await import("../services/compact/microCompact.js");
     resetMicrocompactState();
   }, envForToolUseContext(toolUseContext));
 }
@@ -577,13 +724,13 @@ function toAgenCRuntimeMessages(
 ): AgenCRuntimeMessage[] {
   return messages.map((message, index) => {
     const converted = toAgenCMessage(message);
-    const upstreamContent = toUpstreamMessageContent(message.content);
+    const runtimeContent = toRuntimeMessageContent(message.content);
     if (message.role === "system") {
       return {
         ...converted,
         role: "system",
         type: "system",
-        content: upstreamContent,
+        content: runtimeContent,
         uuid: `agenc-system-${index}`,
         timestamp: new Date(0).toISOString(),
       };
@@ -591,13 +738,13 @@ function toAgenCRuntimeMessages(
     const role = toAgenCRuntimeWireRole(message.role);
     return {
       ...converted,
-      content: upstreamContent,
+      content: runtimeContent,
       role,
       ...(message.role !== role ? { originalRole: message.role } : {}),
       type: role,
       message: {
         role,
-        content: upstreamContent,
+        content: runtimeContent,
       },
       uuid: `agenc-${role}-${index}`,
       timestamp: new Date(0).toISOString(),
@@ -635,7 +782,7 @@ function fromAgenCRuntimeMessage(
     const role = message.originalRole ?? message.role;
     return {
       role,
-      content: fromUpstreamMessageContent(message.content),
+      content: fromRuntimeMessageContent(message.content),
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
       ...(message.phase === "commentary" || message.phase === "final_answer"
@@ -647,7 +794,7 @@ function fromAgenCRuntimeMessage(
   if (!role) return null;
   return {
     role,
-    content: fromUpstreamMessageContent(readContent(message)),
+    content: fromRuntimeMessageContent(readContent(message)),
   };
 }
 
@@ -761,7 +908,7 @@ function cloneContent(content: unknown): LLMMessage["content"] {
   return "";
 }
 
-function toUpstreamMessageContent(content: unknown): unknown {
+function toRuntimeMessageContent(content: unknown): unknown {
   if (typeof content === "string") return [{ type: "text", text: content }];
   if (!Array.isArray(content)) return [];
   return content.map((item) => {
@@ -789,7 +936,7 @@ function toUpstreamMessageContent(content: unknown): unknown {
   });
 }
 
-function fromUpstreamMessageContent(content: unknown): LLMMessage["content"] {
+function fromRuntimeMessageContent(content: unknown): LLMMessage["content"] {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: LLMContentPart[] = [];
@@ -844,15 +991,6 @@ function fromUpstreamMessageContent(content: unknown): LLMMessage["content"] {
   return parts;
 }
 
-function compactionNotRun(
-  consecutiveFailures?: number,
-): AgenCAutoCompactResult {
-  return {
-    wasCompacted: false,
-    ...(consecutiveFailures !== undefined ? { consecutiveFailures } : {}),
-  };
-}
-
 function cloneLLMMessage(message: LLMMessage): LLMMessage {
   return {
     ...message,
@@ -860,16 +998,12 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
   };
 }
 
-function passRecovery(): AgenCOverflowRecoveryResult {
-  return { ...RECOVERY_PASS };
-}
-
-async function withUpstreamContextGuards<T>(
+async function withCompactContextGuards<T>(
   fn: () => Promise<T>,
-  env: UpstreamGuardEnv = {},
+  env: CompactGuardEnv = {}
 ): Promise<T> {
   const previous = new Map<string, string | undefined>();
-  for (const key of Object.keys(env) as Array<keyof UpstreamGuardEnv>) {
+  for (const key of Object.keys(env) as Array<keyof CompactGuardEnv>) {
     previous.set(key, process.env[key]);
     const value = env[key];
     if (value === undefined) {
@@ -893,7 +1027,7 @@ async function withUpstreamContextGuards<T>(
 
 function envForToolUseContext(
   toolUseContext: AgenCToolUseContext,
-): UpstreamGuardEnv {
+): CompactGuardEnv {
   const providerOverride = toolUseContext.options.providerOverride;
   if (!providerOverride) return {};
   return {
@@ -906,6 +1040,17 @@ function envForToolUseContext(
   };
 }
 
-function isAgenCContextCollapseRequested(): boolean {
-  return true;
+function roughRuntimeTokenCount(messages: readonly RuntimeMessage[]): number {
+  return Math.ceil(
+    messages.reduce(
+      (total, message) => total + runtimeMessageText(message).length,
+      0,
+    ) / 4,
+  );
+}
+
+function runtimeMessageText(message: RuntimeMessage): string {
+  const content = message.message?.content ?? message.content ?? "";
+  if (typeof content === "string") return content;
+  return JSON.stringify(content ?? "");
 }

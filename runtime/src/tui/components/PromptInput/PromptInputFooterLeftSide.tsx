@@ -10,7 +10,7 @@ import figures from 'figures';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { VimMode, PromptInputMode } from '../../../types/textInputTypes.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
-import { isVimModeEnabled } from './utils.js';
+import { formatVimModeIndicator, isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../utils/permissions/PermissionMode.js';
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
@@ -170,7 +170,7 @@ export function PromptInputFooterLeftSide(t0) {
   }
   let t1;
   if ($[3] !== isSearching || $[4] !== vimMode) {
-    t1 = isVimModeEnabled() && vimMode === "INSERT" && !isSearching;
+    t1 = isVimModeEnabled() && vimMode !== undefined && !isSearching;
     $[3] = isSearching;
     $[4] = vimMode;
     $[5] = t1;
@@ -189,14 +189,8 @@ export function PromptInputFooterLeftSide(t0) {
   } else {
     t2 = $[10];
   }
-  let t3;
-  if ($[11] !== showVim) {
-    t3 = showVim ? <Text dimColor={true} key="vim-insert">-- INSERT --</Text> : null;
-    $[11] = showVim;
-    $[12] = t3;
-  } else {
-    t3 = $[12];
-  }
+  const vimModeIndicator = formatVimModeIndicator(vimMode);
+  const t3 = showVim && vimModeIndicator ? <Text dimColor={true} key="vim-mode">{vimModeIndicator}</Text> : null;
   const t4 = !suppressHint && !showVim;
   let t5;
   if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== tmuxSelected || $[21] !== toolPermissionContext) {

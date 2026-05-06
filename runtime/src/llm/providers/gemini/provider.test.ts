@@ -36,7 +36,7 @@ const echoTool: LLMTool = {
 };
 
 describe("GeminiProvider", () => {
-  test("uses the Gemini v1beta OpenAI shim with bearer auth", async () => {
+  test("uses the Gemini v1beta chat shim with bearer auth", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -85,7 +85,7 @@ describe("GeminiProvider", () => {
     expect("store" in requestBody).toBe(false);
   });
 
-  test("sends tools through the Gemini OpenAI-compatible route and parses tool calls", async () => {
+  test("sends tools through the Gemini compatible route and parses tool calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({

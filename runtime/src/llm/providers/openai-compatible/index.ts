@@ -1,5 +1,5 @@
 /**
- * Generic OpenAI-compatible provider module.
+ * Generic compatible provider module.
  *
  * @module
  */

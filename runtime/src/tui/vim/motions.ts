@@ -61,6 +61,10 @@ function applySingleMotion(key: string, cursor: TextCursor): TextCursor {
       return cursor.endOfLogicalLine()
     case 'G':
       return cursor.startOfLastLine()
+    case 'ge':
+      return cursor.prevVimWord().endOfVimWord()
+    case 'gE':
+      return cursor.prevWORD().endOfWORD()
     default:
       return cursor
   }
@@ -70,7 +74,7 @@ function applySingleMotion(key: string, cursor: TextCursor): TextCursor {
  * Check if a motion is inclusive (includes character at destination).
  */
 export function isInclusiveMotion(key: string): boolean {
-  return 'eE$'.includes(key)
+  return key === 'ge' || key === 'gE' || 'eE$'.includes(key)
 }
 
 /**

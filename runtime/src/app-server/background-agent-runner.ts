@@ -96,6 +96,7 @@ export interface AgenCBackgroundAgentStartParams {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly initialContent?: MessageContent;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
@@ -378,12 +379,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         params.unattendedAllow,
         params.unattendedDeny,
       );
+      const taskContent = messageContentToLlmParts(params.initialContent);
       const outcome = await this.#delegate({
         parent: bootstrap.session,
         parentPath: "/root" as AgentPath,
         control,
         registry,
         taskPrompt: params.objective,
+        ...(taskContent !== undefined ? { taskContent } : {}),
         runInBackground: true,
         isolation: "cwd",
         ...(params.model !== undefined ? { model: params.model } : {}),
@@ -1997,6 +2000,20 @@ function metadataNumberField(
   return typeof field === "number" && Number.isFinite(field)
     ? field
     : undefined;
+}
+
+function messageContentToLlmParts(
+  content: MessageContent | undefined,
+): readonly LLMContentPart[] | undefined {
+  if (content === undefined) return undefined;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return content.map((part) => {
+    if (part.type === "text") return { type: "text", text: part.text };
+    return {
+      type: "image_url",
+      image_url: { url: part.image_url.url },
+    };
+  });
 }
 
 function metadataStringList(

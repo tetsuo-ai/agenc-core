@@ -1,7 +1,7 @@
 /**
  * Agent-listing delta attachment producer.
  *
- * Hand-port of openclaude `getAgentListingDeltaAttachment`
+ * Hand-port of reference `getAgentListingDeltaAttachment`
  * (`src/utils/attachments.ts:1491-1557`). Fires when the set of available
  * agent types has changed since the last announcement, OR on first
  * emission (with `isInitial: true`).
@@ -18,7 +18,7 @@
  * STATUS — agent definition surface gap:
  *
  * AgenC's runtime exposes `session.agentDefinitions.activeAgents` as
- * `unknown[]` on the OpenClaude adapter boundary.
+ * `unknown[]` on the reference adapter boundary.
  * No typed `AgentDefinition` shape with `{agentType, whenToUse, tools}`
  * is published for the model-facing listing yet — `AgentControl.listAgents()`
  * returns *running* agent metadata, not the *available agent type catalog*

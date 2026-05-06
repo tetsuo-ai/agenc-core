@@ -1,5 +1,5 @@
 /**
- * T6 gap #119 — MCP tool-bridge `mcp_tool_call_begin` / `_end` smoke.
+ * T6 gap #119 — MCP tools `mcp_tool_call_begin` / `_end` smoke.
  *
  * Verifies that the bridge factory threads an `MCPCallObserver` into
  * each per-tool `execute()` wrapper so the session layer can emit
@@ -15,7 +15,7 @@ import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-r
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import { createToolBridge, type MCPCallObserver } from "./tool-bridge.js";
+import { createToolBridge, type MCPCallObserver } from "./tools.js";
 import {
   resetAgencTelemetryClient,
   setAgencTelemetryClient,

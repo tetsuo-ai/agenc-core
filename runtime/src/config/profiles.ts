@@ -1,4 +1,4 @@
-// T10 Group D — profile resolution (port of codex runtime profile_toml.rs).
+// T10 Group D — profile resolution (port of reference runtime profile_toml.rs).
 //
 // Profiles are named override bundles stored under `config.profiles`.
 // Only these keys may be overridden by a profile:

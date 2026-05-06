@@ -1,5 +1,5 @@
 /**
- * OpenAI auth resolver.
+ * Provider auth resolver.
  *
  * Supports API key and OAuth access-token modes.
  *

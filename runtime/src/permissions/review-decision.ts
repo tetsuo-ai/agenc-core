@@ -1,15 +1,15 @@
 /**
  * ReviewDecision — user's answer to an approval prompt.
  *
- * Hand-port of codex runtime `protocol/src/protocol.rs:3600-3654`
+ * Hand-port of reference runtime `protocol/src/protocol.rs:3600-3654`
  * (T11 Wave 1, Agent C).
  *
  * This file is the single canonical location for the `ReviewDecision`
- * type in the codex runtime. `runtime/src/tools/orchestrator.ts`
+ * type in the reference runtime. `runtime/src/tools/orchestrator.ts`
  * re-exports from here; nothing else in the runtime owns its own copy.
  *
  * Shape notes:
- *   - The original codex runtime enum is serde `snake_case` tagged, meaning
+ *   - The original reference runtime enum is serde `snake_case` tagged, meaning
  *     `ReviewDecision::Approved` serializes as `"approved"` and
  *     `ReviewDecision::ApprovedExecpolicyAmendment { .. }` as
  *     `{ "approved_execpolicy_amendment": { .. } }`. AgenC models the
@@ -138,7 +138,7 @@ export function reviewDecisionIsAllow(decision: ReviewDecision): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Stable, PII-free string form of a decision. Ports codex runtime
+ * Stable, PII-free string form of a decision. Ports reference runtime
  * `ReviewDecision::to_opaque_string()` (protocol.rs:3635-3653).
  *
  * These strings appear in metrics labels and logs. Do not rename or

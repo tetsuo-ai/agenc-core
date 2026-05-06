@@ -19,6 +19,7 @@
 
 import type { Session } from "../session/session.js";
 import type { LLMMessage } from "../llm/types.js";
+import type { LLMContentPart } from "../llm/types.js";
 import type { AgentControl, LiveAgent } from "./control.js";
 import type { AgentRegistry, AgentPath } from "./registry.js";
 import type { ForkMode } from "./fork-context.js";
@@ -55,6 +56,7 @@ export interface DelegateOpts {
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
+  readonly taskContent?: readonly LLMContentPart[];
   readonly role?: string;
   readonly agentName?: string;
   readonly model?: string;
@@ -167,6 +169,7 @@ export async function delegate(
       ? { useProvidedParentMessages: true }
       : {}),
     taskPrompt: opts.taskPrompt,
+    ...(opts.taskContent !== undefined ? { taskContent: opts.taskContent } : {}),
     ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
   });
 

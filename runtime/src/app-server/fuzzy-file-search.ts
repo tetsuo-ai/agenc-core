@@ -1,11 +1,7 @@
 /**
- * Ports donor fuzzy file search request handling onto AgenC's daemon protocol.
+ * Ports fuzzy file search request handling onto AgenC's daemon protocol.
  *
- * Source anchors:
- * - /home/tetsuo/git/codex/codex-rs/app-server/src/fuzzy_file_search.rs // branding-scan: allow donor source path
- * - /home/tetsuo/git/codex/codex-rs/file-search/src/lib.rs // branding-scan: allow donor source path
- *
- * Shape difference from upstream:
+ * Shape difference from the reference:
  *   - AgenC exposes the single-shot search as `fs.fuzzy_search` and keeps
  *     session streaming for a later notification/subscription row.
  */

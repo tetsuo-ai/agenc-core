@@ -2,7 +2,7 @@
  * T6 gap #119 — session-level observer wiring for MCP and bash tool
  * lifecycle events.
  *
- * `MCPCallObserver` (runtime/src/mcp-client/tool-bridge.ts) and
+ * `MCPCallObserver` (runtime/src/mcp-client/tools.ts) and
  * `BashExecObserver` (runtime/src/tools/system/types.ts) are tool-layer
  * hooks with no `Session` dependency: the bridges/factories call them
  * but stay session-agnostic. This module is the single place that
@@ -20,7 +20,7 @@
 
 import type { Session } from "./session.js";
 import type { Event } from "./event-log.js";
-import type { MCPCallObserver } from "../mcp-client/tool-bridge.js";
+import type { MCPCallObserver } from "../mcp-client/tools.js";
 import type { BashExecObserver } from "../tools/system/types.js";
 import {
   AGENC_TOOL_UNIFIED_EXEC_DURATION_METRIC,

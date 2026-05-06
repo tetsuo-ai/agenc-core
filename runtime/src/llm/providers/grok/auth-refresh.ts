@@ -1,5 +1,5 @@
 /**
- * Auth-refresh retry wrapper for the Grok / OpenAI-compatible
+ * Auth-refresh retry wrapper for the Grok compatible
  * Responses API adapter.
  *
  * Hand-port of agenc runtime `core/src/client.rs::stream_responses` retry loop

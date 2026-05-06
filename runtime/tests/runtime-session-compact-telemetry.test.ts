@@ -11,7 +11,7 @@ import {
   type TelemetryTags,
   type TelemetryTimer,
 } from "../src/observability/telemetry.js";
-import { runAgenCContextCollapseOverflowRecovery } from "../src/agenc/adapters/runtime-session.js";
+import { runContextCollapseOverflowRecovery } from "../src/phases/post-sample-recovery.js";
 
 class RecordingSpan implements TelemetrySpan {
   readonly attributes: Record<string, unknown> = {};
@@ -104,8 +104,7 @@ describe("runtime session compact telemetry", () => {
     const recording = new RecordingTelemetryClient();
     setAgencTelemetryClient(recording);
 
-    const result = await runAgenCContextCollapseOverflowRecovery({
-      session: {} as never,
+    const result = await runContextCollapseOverflowRecovery({
       state: {
         messages: [],
         messagesForQuery: [],

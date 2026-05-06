@@ -12,7 +12,7 @@ describe("renderInstructionTemplate", () => {
     expect(out).toBe("x and y");
   });
 
-  it("leaves unknown placeholders verbatim (matches codex)", () => {
+  it("leaves unknown placeholders verbatim (matches reference)", () => {
     const out = renderInstructionTemplate("Hi {missing}", { name: "x" });
     expect(out).toBe("Hi {missing}");
   });
@@ -24,8 +24,8 @@ describe("renderInstructionTemplate", () => {
     expect(out).toBe("{not a placeholder}");
   });
 
-  it("substitutes in row-key iteration order (matches codex sequential replace)", () => {
-    // Codex render_instruction_template loops Object.entries with .replace,
+  it("substitutes in row-key iteration order (matches reference sequential replace)", () => {
+    // reference render_instruction_template loops Object.entries with .replace,
     // so a value that itself looks like a placeholder will be re-substituted
     // if its key has not been visited yet in the iteration. This test
     // pins that documented behavior.

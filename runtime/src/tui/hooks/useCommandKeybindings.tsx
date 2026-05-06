@@ -16,11 +16,13 @@ import { useIsModalOverlayActive } from '../context/overlayContext';
 import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { VimRoutingState } from '../input/processTextPrompt.js';
 type Props = {
   // onSubmit accepts additional parameters beyond what we pass here,
   // so we use a rest parameter to allow any additional args
   onSubmit: (input: string, helpers: PromptInputHelpers, ...rest: [speculationAccept?: undefined, options?: {
     fromKeybinding?: boolean;
+    vimRoutingState?: VimRoutingState;
   }]) => void;
   /** Set to false to disable command keybindings (e.g., when a dialog is open) */
   isActive?: boolean;

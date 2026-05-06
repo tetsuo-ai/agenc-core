@@ -27,6 +27,7 @@ import {
   InvalidHooksConfigError,
   InvalidPermissionsConfigError,
   InvalidStatusLineConfigError,
+  InvalidTuiConfigError,
   UnknownModelError,
   isValidPermissionDefaultMode,
   isValidPermissionMode,
@@ -39,6 +40,7 @@ import {
   validateProviderConfig,
   validateHooksConfig,
   validateStatusLineConfig,
+  validateTuiConfig,
   validateOutputStyleConfig,
   KNOWN_CONFIG_KEYS,
   DEFERRED_SETTINGS_KEYS,
@@ -103,6 +105,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.default_mode).toBe("on-request");
     expect(cfg.editorMode).toBe("default");
+    expect(cfg.tui).toBeUndefined();
     expect(cfg.tuiLayout?.mode).toBe("single");
     expect(cfg.agent?.budget).toEqual({
       token_cap: 2_000_000,
@@ -263,11 +266,13 @@ describe("schema: normalizeRawConfig", () => {
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
       editorMode: "vim",
+      tui: { vimMode: true },
       agent_max_threads: 12,
       agent_max_depth: 2,
       tuiLayout: { mode: "multi-pane", sidePane: "context", minColumns: 100 },
     });
     expect(out.editorMode).toBe("vim");
+    expect(out.tui).toEqual({ vimMode: true });
     expect(out.agent_max_threads).toBe(12);
     expect(out.agent_max_depth).toBe(2);
     expect(out.tuiLayout).toEqual({
@@ -276,6 +281,13 @@ describe("schema: normalizeRawConfig", () => {
       minColumns: 100,
     });
     expect(out._unknown).toBeUndefined();
+  });
+
+  test("validates tui config shape", () => {
+    expect(validateTuiConfig({ vimMode: true })).toEqual({ vimMode: true });
+    expect(() => validateTuiConfig({ vimMode: "yes" })).toThrow(
+      InvalidTuiConfigError,
+    );
   });
 
   test("preserves configVersion on the typed path", () => {

@@ -21,12 +21,12 @@ export function parseEsc(chars: string): Action | null {
     return { type: 'reset' }
   }
 
-  // Cursor save (DECSC)
+  // cursor save (DECSC)
   if (first === '7') {
     return { type: 'cursor', action: { type: 'save' } }
   }
 
-  // Cursor restore (DECRC)
+  // cursor restore (DECRC)
   if (first === '8') {
     return { type: 'cursor', action: { type: 'restore' } }
   }

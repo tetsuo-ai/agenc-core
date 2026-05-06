@@ -1,7 +1,7 @@
 /**
  * Plan-mode attachment producer.
  *
- * Hand-port of openclaude `getPlanModeAttachments` + `getPlanModeExitAttachment`
+ * Hand-port of reference `getPlanModeAttachments` + `getPlanModeExitAttachment`
  * (`src/utils/attachments.ts:1187-1274`). Drives the per-turn pulse and the
  * one-shot exit reminder for AgenC plan mode (`PermissionMode === "plan"`).
  *
@@ -59,7 +59,7 @@ import type { AttachmentProducer, GetAttachmentsOptions } from "./orchestrator.j
 import type { Attachment } from "./types.js";
 
 /**
- * Source: openclaude `attachments.ts:260-263`.
+ * Source: reference `attachments.ts:260-263`.
  */
 export const PLAN_MODE_ATTACHMENT_CONFIG = {
   TURNS_BETWEEN_ATTACHMENTS: 5,
@@ -101,7 +101,7 @@ function messageContains(message: LLMMessage, marker: string): boolean {
  * Backward-walk the message history counting HUMAN turns until a prior
  * plan-mode attachment marker is encountered.
  *
- * Source: openclaude `getPlanModeAttachmentTurnCount` (:1132-1164).
+ * Source: reference `getPlanModeAttachmentTurnCount` (:1132-1164).
  */
 function getPlanModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
   turnCount: number;
@@ -133,7 +133,7 @@ function getPlanModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
  * start of history if no exit). Drives the full/sparse cycle so it
  * resets on re-entry.
  *
- * Source: openclaude `countPlanModeAttachmentsSinceLastExit` (:1170-1185).
+ * Source: reference `countPlanModeAttachmentsSinceLastExit` (:1170-1185).
  */
 function countPlanModeAttachmentsSinceLastExit(
   messages: readonly LLMMessage[],
@@ -256,7 +256,7 @@ export const planModeProducer: AttachmentProducer = async (
 
   // Always emit the plan_mode attachment alongside any reentry. The
   // attachment count we count INCLUDES the one we are about to emit
-  // (openclaude `+ 1` at :1224-1225). Full reminder fires on 1, 6, 11...
+  // (reference `+ 1` at :1224-1225). Full reminder fires on 1, 6, 11...
   const attachmentCount = priorAttachmentCount + 1;
   const variant: "full" | "sparse" =
     attachmentCount %

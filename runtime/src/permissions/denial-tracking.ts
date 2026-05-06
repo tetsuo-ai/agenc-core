@@ -1,7 +1,7 @@
 /**
  * Denial-tracking primitive (I-3).
  *
- * Ports openclaude's `denialTracking.ts` with the handful of integration
+ * Ports reference `denialTracking.ts` with the handful of integration
  * helpers (`handleDenialLimitExceeded`) needed by classifier + prompt fallback
  * logic. Tracks two counters:
  *

@@ -42,7 +42,7 @@ describe("assertProviderStructuredOutputCompatibility", () => {
     ).toThrow(LLMProviderError);
   });
 
-  test("allows Anthropic structured output alongside regular tool-loop tools", () => {
+  test("allows messages-provider structured output alongside regular tool-loop tools", () => {
     expect(() =>
       assertProviderStructuredOutputCompatibility({
         providerName: "anthropic",

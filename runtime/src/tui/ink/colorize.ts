@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import type { Color, TextStyles } from './styles.js'
 
 /**
- * xterm.js (VS Code, Cursor, code-server, Coder) has supported truecolor
+ * xterm.js-compatible terminals have supported truecolor
  * since 2017, but code-server/Coder containers often don't set
  * COLORTERM=truecolor. chalk's supports-color doesn't recognize
  * TERM_PROGRAM=vscode (it only knows iTerm.app/Apple_Terminal), so it falls

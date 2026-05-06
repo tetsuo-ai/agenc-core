@@ -1,15 +1,11 @@
 /**
  * Tool dispatch context types.
  *
- * Hand-port of codex runtime `core/src/tools/context.rs` (584 LOC). The codex runtime
- * trait `ToolOutput` has multiple concrete impls (`CallToolResult`,
- * `McpToolOutput`, `FunctionToolOutput`, `ToolSearchOutput`,
- * `AbortedToolOutput`, `ExecCommandToolOutput`) each with a distinct
- * payload shape. AgenC collapses `CallToolResult`/`McpToolOutput` into
- * one `mcp` variant and keeps the rest 1:1 so downstream consumers
- * (TUI rendering, rollout replay, MCP annotation pass-through,
- * code_mode projection) can switch on `kind` without re-parsing
- * strings.
+ * AgenC's tool output layer keeps each tool result shape explicit.
+ * MCP results, function outputs, tool-search results, aborted calls,
+ * and exec output each carry distinct payload data. Downstream
+ * consumers (TUI rendering, rollout replay, MCP annotation pass-through,
+ * code_mode projection) can switch on `kind` without re-parsing strings.
  *
  * The public `ToolOutput` interface stays backwards compatible: the
  * old flat envelope now represents the `function` variant. Call sites
@@ -26,7 +22,7 @@ import type { TurnContext } from "../session/turn-context.js";
 // ToolCallSource — which layer injected the call
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex runtime `ToolCallSource` (context.rs:32-37). */
+/** Which runtime layer injected a tool call. */
 export type ToolCallSource = "direct" | "js_repl" | "code_mode";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -34,9 +30,9 @@ export type ToolCallSource = "direct" | "js_repl" | "code_mode";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex runtime `ToolPayload` (context.rs:50-68). The variants stay
- * explicit so direct calls, JS REPL calls, MCP calls, and code-mode
- * projections can preserve their upstream payload-specific behavior.
+ * Per-call payload shape. The variants stay explicit so direct calls,
+ * JS REPL calls, MCP calls, and code-mode projections can preserve
+ * payload-specific behavior.
  */
 export type ToolPayload =
   | { readonly kind: "function"; readonly arguments: string }
@@ -74,7 +70,7 @@ export function logPayload(payload: ToolPayload): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ToolName — namespaced name (port of codex runtime `ToolName`)
+// ToolName — namespaced tool identifier
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ToolName {
@@ -97,9 +93,8 @@ export function parseToolName(full: string): ToolName {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex runtime `ToolInvocation` (context.rs:39-47). Bundles session +
- * turn + tracker + callId + tool name + payload so downstream hooks
- * receive a consistent shape.
+ * Bundles session + turn + tracker + callId + tool name + payload so
+ * downstream hooks receive a consistent shape.
  */
 export interface ToolInvocation {
   readonly session: Session;
@@ -112,10 +107,9 @@ export interface ToolInvocation {
 }
 
 /**
- * Port of codex runtime `SharedTurnDiffTracker` (context.rs:30). Tracks file
- * diffs emitted during a single turn so the final `TurnDiff` event
- * can be synthesized from the tool-side. T7 ships an empty tracker;
- * T12 (TUI transcript) materializes the diffs.
+ * Tracks file diffs emitted during a single turn so the final
+ * `TurnDiff` event can be synthesized from the tool side. T7 ships
+ * an empty tracker; T12 (TUI transcript) materializes the diffs.
  */
 export interface SharedTurnDiffTracker {
   appendFileDiff(path: string, before: string, after: string): void;
@@ -143,9 +137,8 @@ export function createTurnDiffTracker(): SharedTurnDiffTracker {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Telemetry preview — port of codex runtime `telemetry_preview`
-// (context.rs:542-580). Byte-boundary + line-limit truncation with a
-// trailing notice marker. Constants mirror `tools/mod.rs:24-27`.
+// Telemetry preview — byte-boundary + line-limit truncation with a
+// trailing notice marker.
 // ─────────────────────────────────────────────────────────────────────
 
 export const TELEMETRY_PREVIEW_MAX_BYTES = 2 * 1024; // 2 KiB
@@ -155,8 +148,7 @@ export const TELEMETRY_PREVIEW_TRUNCATION_NOTICE =
 
 /**
  * Take up to `maxBytes` bytes from `s` respecting UTF-8 character
- * boundaries (codex runtime `take_bytes_at_char_boundary`). Returns the
- * original string when it already fits.
+ * boundaries. Returns the original string when it already fits.
  */
 function takeBytesAtCharBoundary(s: string, maxBytes: number): string {
   const buf = Buffer.from(s, "utf8");
@@ -171,9 +163,9 @@ function takeBytesAtCharBoundary(s: string, maxBytes: number): string {
 }
 
 /**
- * Port of codex runtime `telemetry_preview` (context.rs:542-580). Truncates
- * `content` by byte and line caps and appends the truncation notice
- * only when truncation occurred. Byte boundary is UTF-8 safe.
+ * Truncates `content` by byte and line caps and appends the
+ * truncation notice only when truncation occurred. Byte boundary is
+ * UTF-8 safe.
  */
 export function telemetryPreview(content: string): string {
   return telemetryPreviewWith(
@@ -223,7 +215,7 @@ export function telemetryPreviewWith(
   }
 
   // Preserve the immediate trailing newline when the truncated slice
-  // had one at the cut point (codex runtime lines 565-571).
+  // had one at the cut point.
   if (
     preview.length < truncatedSlice.length &&
     truncatedSlice[preview.length] === "\n"
@@ -238,10 +230,9 @@ export function telemetryPreviewWith(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Image detail sanitizer — port of codex runtime
-// `sanitize_original_image_detail` (tools/src/image_detail.rs). When
-// the model does not support `detail: "original"`, rewrite it to the
-// default ("auto"). Returns a fresh copy; input is not mutated.
+// Image detail sanitizer. When the model does not support
+// `detail: "original"`, rewrite it to the default ("auto"). Returns
+// a fresh copy; input is not mutated.
 // ─────────────────────────────────────────────────────────────────────
 
 /** Default image detail when the model cannot request `"original"`. */
@@ -291,7 +282,6 @@ export type MCPContentItem =
     };
 
 /**
- * Port of codex runtime `sanitize_original_image_detail` (tools/image_detail.rs:23-38).
  * When the model does not support `detail: "original"`, rewrite every
  * nested `original_image_detail` on image items to the default
  * (`"auto"`). Non-mutating: the returned array is a fresh copy.
@@ -338,7 +328,7 @@ export interface MCPStructuredContent {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ToolOutputVariant — discriminated union mirroring the 7 codex runtime impls
+// ToolOutputVariant — discriminated union for runtime tool outputs
 // ─────────────────────────────────────────────────────────────────────
 
 /** Common fields carried by every variant. */
@@ -351,19 +341,14 @@ interface ToolOutputVariantCommon {
 }
 
 /**
- * Discriminated union — codex runtime `context.rs:82-96` trait `ToolOutput`
- * plus its concrete impls:
+ * Discriminated union for the runtime `ToolOutput` variants:
  *
- *   - `function`      — `FunctionToolOutput` (context.rs:226-275)
- *   - `mcp`           — `CallToolResult` / `McpToolOutput`
- *                       (context.rs:98-183). Preserves MCP content
- *                       array + structuredContent + wall_time.
- *   - `exec`          — `ExecCommandToolOutput` (context.rs:350-455).
- *                       Keeps `rawOutput: Buffer` + exitCode + wall
- *                       time + token-based truncation.
- *   - `tool_search`   — `ToolSearchOutput` (context.rs:185-224).
- *   - `aborted`       — `AbortedToolOutput` (context.rs:312-347).
- *                       Dispatches on the payload variant.
+ *   - `function`      — function-call output content items.
+ *   - `mcp`           — MCP content array, structuredContent, and wall time.
+ *   - `exec`          — raw Buffer output, exit code, wall time, and
+ *                       byte-based truncation metadata.
+ *   - `tool_search`   — tool-search result array.
+ *   - `aborted`       — cancellation result keyed by the payload variant.
  */
 export type ToolOutputVariant =
   | ({
@@ -407,8 +392,7 @@ export type ToolOutputVariant =
     } & ToolOutputVariantCommon);
 
 /**
- * Function-call output content item — port of codex runtime
- * `FunctionCallOutputContentItem`. Matches the OpenAI responses input
+ * Function-call output content item. Matches the Responses API input
  * shape. Image URLs carry an optional `detail` field.
  */
 export type FunctionCallOutputContentItem =
@@ -456,7 +440,7 @@ export interface ToolOutput {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex runtime `FunctionToolOutput::from_text` (context.rs:233-239).
+ * Build a function tool output from plain text.
  */
 export function functionToolOutputFromText(opts: {
   readonly callId: string;
@@ -476,7 +460,7 @@ export function functionToolOutputFromText(opts: {
 }
 
 /**
- * Port of codex runtime `FunctionToolOutput::from_content` (context.rs:241-250).
+ * Build a function tool output from content items.
  */
 export function functionToolOutputFromContent(opts: {
   readonly callId: string;
@@ -534,9 +518,8 @@ function buildFunctionToolOutput(opts: {
 }
 
 /**
- * Port of codex runtime `McpToolOutput` (context.rs:123-183). Preserves the
- * full MCP structured content + wall time. `toText()` synthesizes the
- * "Wall time: N.NNNN seconds\nOutput:" header (`response_payload`).
+ * Preserves the full MCP structured content and wall time. `toText()`
+ * synthesizes the "Wall time: N.NNNN seconds\nOutput:" header.
  */
 export function mcpToolOutput(opts: {
   readonly callId: string;
@@ -574,9 +557,9 @@ export function mcpToolOutput(opts: {
 }
 
 /**
- * Port of codex runtime `ExecCommandToolOutput` (context.rs:349-455).
- * `rawOutput` is a Buffer to preserve byte-level fidelity. The cap is
- * applied by `execResponseText()` via `truncatedOutput()`.
+ * Exec command output. `rawOutput` is a Buffer to preserve byte-level
+ * fidelity. The cap is applied by `execResponseText()` via
+ * `truncatedOutput()`.
  */
 export function execToolOutput(opts: {
   readonly callId: string;
@@ -629,7 +612,7 @@ export function execToolOutput(opts: {
 }
 
 /**
- * Port of codex runtime `ToolSearchOutput` (context.rs:186-224).
+ * Tool-search output.
  */
 export function toolSearchToolOutput(opts: {
   readonly callId: string;
@@ -662,9 +645,9 @@ export function toolSearchToolOutput(opts: {
 }
 
 /**
- * Port of codex runtime `AbortedToolOutput` (context.rs:312-347). Preserves
- * the abort message; `toResponseItem` dispatches on the payload
- * variant so ToolSearch/MCP callers get shape-compatible outputs.
+ * Aborted tool output. Preserves the abort message; `toResponseItem`
+ * dispatches on the payload variant so ToolSearch/MCP callers get
+ * shape-compatible outputs.
  */
 export function abortedToolOutput(
   callId: string,
@@ -745,8 +728,7 @@ export function functionToolOutput(opts: {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex runtime `function_call_output_content_items_to_text`. Flattens
- * a content-item body to a plain text body by joining text parts.
+ * Flattens a content-item body to a plain text body by joining text parts.
  */
 export function contentItemsToText(
   items: ReadonlyArray<FunctionCallOutputContentItem>,
@@ -760,7 +742,7 @@ export function contentItemsToText(
 }
 
 /**
- * Port of codex runtime `FunctionToolOutput::into_text` (context.rs:252-254).
+ * Flatten any tool output into text.
  */
 export function intoText(output: ToolOutput): string {
   return toText(output);
@@ -788,14 +770,14 @@ export function toText(output: ToolOutput): string {
 }
 
 /**
- * Port of codex runtime `ToolOutput::log_preview` dispatch (context.rs:83).
+ * Render a telemetry-safe log preview.
  */
 export function logPreview(output: ToolOutput): string {
   return telemetryPreview(toText(output));
 }
 
 /**
- * Port of codex runtime `ToolOutput::success_for_logging` (context.rs:85).
+ * Determine whether the output should count as successful in logs.
  */
 export function successForLogging(output: ToolOutput): boolean {
   const variant = output.variant;
@@ -815,9 +797,8 @@ export function successForLogging(output: ToolOutput): boolean {
 }
 
 /**
- * Port of codex runtime `McpToolOutput::response_payload` (context.rs:159-182).
- * Prepends the wall-time header and runs the image-detail sanitizer
- * on nested image items.
+ * Prepends the wall-time header and runs the image-detail sanitizer on
+ * nested image items.
  */
 function mcpResponseText(
   variant: Extract<ToolOutputVariant, { kind: "mcp" }>,
@@ -844,9 +825,7 @@ function mcpResponseText(
 }
 
 /**
- * Port of codex runtime `ExecCommandToolOutput::response_text` + `truncated_output`
- * (context.rs:422-454). Applies the 400KB cap (I-15) and composes the
- * chunk/exit/process sections.
+ * Applies the 400KB cap (I-15) and composes the chunk/exit/process sections.
  */
 function execResponseText(
   variant: Extract<ToolOutputVariant, { kind: "exec" }>,
@@ -872,11 +851,8 @@ function execResponseText(
 }
 
 /**
- * Port of codex runtime `ExecCommandToolOutput::truncated_output`
- * (context.rs:422-426). AgenC uses byte-based truncation via
- * `DEFAULT_MAX_EXEC_OUTPUT_BYTES` (I-15: 400KB) instead of codex runtime's
- * token-based policy — the cap is equivalent and avoids pulling a
- * tokenizer into the runtime.
+ * AgenC uses byte-based truncation via `DEFAULT_MAX_EXEC_OUTPUT_BYTES`
+ * (I-15: 400KB). The cap avoids pulling a tokenizer into the runtime.
  */
 export const DEFAULT_MAX_EXEC_OUTPUT_BYTES = 400_000;
 
@@ -895,11 +871,9 @@ function execTruncatedOutput(
 }
 
 /**
- * Port of codex runtime `ToolOutput::to_response_item` dispatch plus the
- * per-impl implementations (context.rs:87, 109-114, 144-149, 208-222,
- * 268-270, 296-305, 325-345). Emits an openclaude `LLMMessage`
- * (`role:"tool"`, `toolCallId`, `content`) — provider adapters map
- * that back into the wire-level function_call_output shape.
+ * Emit AgenC's provider-neutral tool-result message (`role:"tool"`,
+ * `toolCallId`, `content`). Provider adapters map that back into the
+ * wire-level function_call_output shape.
  */
 export interface LLMToolResultMessage {
   readonly role: "tool";
@@ -953,8 +927,8 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
       };
     }
     case "aborted":
-      // Dispatch on payload variant — matches codex runtime `AbortedToolOutput::to_response_item`
-      // (context.rs:325-345).
+      // Dispatch on payload variant so each tool family receives the
+      // shape it expects.
       if (variant.payload.kind === "tool_search") {
         return {
           ...base,
@@ -985,14 +959,13 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// code_mode projection — port of codex runtime code-mode result mapping
+// code_mode projection — AgenC code-mode result mapping
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex runtime `response_input_to_code_mode_result`
- * (context.rs:483-515) adapted to AgenC's provider-neutral
- * `LLMToolResultMessage` shape. This is used by code-mode host paths
- * that only have the response item, not the original `ToolOutput`.
+ * Convert a `ToolOutput` to the provider-neutral code-mode result
+ * shape. This is used by code-mode host paths that only have the
+ * response item, not the original `ToolOutput`.
  */
 export function codeModeResult(output: ToolOutput): unknown {
   const variant = output.variant;
@@ -1013,8 +986,7 @@ export function codeModeResult(output: ToolOutput): unknown {
 }
 
 /**
- * Port of codex runtime `response_input_to_code_mode_result` for the
- * `LLMToolResultMessage` form emitted by `toResponseItem`.
+ * Convert the `LLMToolResultMessage` form emitted by `toResponseItem`.
  */
 export function responseInputToCodeModeResult(
   response: LLMToolResultMessage,
@@ -1036,9 +1008,8 @@ export function responseInputToCodeModeResult(
 }
 
 /**
- * Port of codex runtime `content_items_to_code_mode_result`
- * (context.rs:517-534). Code-mode receives the useful item payloads
- * joined by newlines, not the response/transcript wrapper text.
+ * Code-mode receives the useful item payloads joined by newlines, not
+ * the response/transcript wrapper text.
  */
 export function contentItemsToCodeModeResult(
   items: ReadonlyArray<FunctionCallOutputContentItem>,

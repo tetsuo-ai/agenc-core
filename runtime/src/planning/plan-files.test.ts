@@ -5,7 +5,7 @@
  * to the active session's plan-file family even when the path is
  * outside the workspace allowlist.
  *
- * Mirrors openclaude `isSessionPlanFile`
+ * Mirrors reference `isSessionPlanFile`
  * (`src/utils/permissions/filesystem.ts:254`):
  *
  *     const expectedPrefix = join(getPlansDirectory(), getPlanSlug())

@@ -1,5 +1,5 @@
 /**
- * Incremental-request bookkeeping for the Grok (OpenAI-compatible
+ * Incremental-request bookkeeping for the Grok compatible
  * Responses API) adapter.
  *
  * Hand-port of agenc runtime `core/src/client.rs::get_incremental_items`
