@@ -8,7 +8,9 @@ import { RemoteAuthBackend } from "./backends/remote.js";
 import {
   createAuthBackend,
   InvalidAuthBackendConfigError,
+  InvalidAuthManagedKeysConfigError,
   resolveAuthBackendKind,
+  resolveAuthManagedKeysEnabled,
 } from "./selection.js";
 
 async function makeTempHome(): Promise<string> {
@@ -40,10 +42,11 @@ describe("auth backend selection", () => {
 
   it("honors auth.backend = remote and creates RemoteAuthBackend", async () => {
     const config = mergeConfigs(defaultConfig(), {
-      auth: { backend: "remote" },
+      auth: { backend: "remote", managedKeys: { enabled: true } },
     });
 
     expect(resolveAuthBackendKind(config)).toBe("remote");
+    expect(resolveAuthManagedKeysEnabled(config)).toBe(true);
     const backend = createAuthBackend(config, {
       remote: {
         keyVendor: ({ provider, sessionId }) => ({
@@ -60,6 +63,82 @@ describe("auth backend selection", () => {
       sessionId: "session-1",
       apiKey: "managed-key",
     });
+  });
+
+  it("defaults auth.managedKeys.enabled to false for backend selection", () => {
+    const config = defaultConfig();
+
+    expect(resolveAuthManagedKeysEnabled(config)).toBe(false);
+  });
+
+  it("passes disabled managed-key config through remote backend selection", async () => {
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "remote" },
+    });
+    const keyVendor = vi.fn(() => ({
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "managed-key",
+    }));
+
+    const backend = createAuthBackend(config, {
+      remote: { keyVendor },
+    });
+
+    expect(backend).toBeInstanceOf(RemoteAuthBackend);
+    await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
+      /auth\.managedKeys\.enabled/,
+    );
+    expect(keyVendor).not.toHaveBeenCalled();
+  });
+
+  it("applies env managed-key overrides before remote backend construction", async () => {
+    const agencHome = await makeTempHome();
+    homes.push(agencHome);
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "remote" },
+    });
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: "managed-key",
+    }));
+
+    const backend = createAuthBackend(config, {
+      agencHome,
+      env: {
+        AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+        AGENC_HOME: agencHome,
+      },
+      remote: { keyVendor },
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "managed-key",
+    });
+    expect(keyVendor).toHaveBeenCalledOnce();
+  });
+
+  it("does not let remote options override config-disabled managed keys", async () => {
+    const config = mergeConfigs(defaultConfig(), {
+      auth: { backend: "remote", managedKeys: { enabled: false } },
+    });
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: "managed-key",
+    }));
+
+    const backend = createAuthBackend(config, {
+      remote: { keyVendor, managedKeysEnabled: true },
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
+      /auth\.managedKeys\.enabled/,
+    );
+    expect(keyVendor).not.toHaveBeenCalled();
   });
 
   it("passes remote login prompt options through non-CLI backend selection", async () => {
@@ -117,6 +196,19 @@ describe("auth backend selection", () => {
 
     expect(() => resolveAuthBackendKind(config)).toThrow(
       InvalidAuthBackendConfigError,
+    );
+  });
+
+  it("rejects invalid auth.managedKeys.enabled values instead of coercing", () => {
+    const config = {
+      auth: { backend: "remote", managedKeys: { enabled: "yes" } },
+    } as unknown as ReturnType<typeof defaultConfig>;
+
+    expect(() => resolveAuthManagedKeysEnabled(config)).toThrow(
+      InvalidAuthManagedKeysConfigError,
+    );
+    expect(() => resolveAuthBackendKind(config)).toThrow(
+      InvalidAuthManagedKeysConfigError,
     );
   });
 });

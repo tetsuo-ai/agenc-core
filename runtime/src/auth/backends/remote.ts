@@ -110,6 +110,7 @@ export interface RemoteAuthBackendOptions {
   readonly keyCacheTtlMs?: number;
   readonly loginPollEndpoint?: string;
   readonly loginStartEndpoint?: string;
+  readonly managedKeysEnabled?: boolean;
   readonly modelEndpoint?: string;
   readonly nowMs?: () => number;
   readonly now?: () => Date;
@@ -131,6 +132,7 @@ export class RemoteAuthBackend implements AuthBackend {
   readonly #loginFlow: RemoteAuthLoginFlow;
   readonly #modelInferer: RemoteAuthModelInferer;
   readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
+  readonly #managedKeysEnabled: boolean;
   readonly #keyCacheTtlMs: number;
   readonly #now: () => Date;
   readonly #nowMs: () => number;
@@ -145,6 +147,7 @@ export class RemoteAuthBackend implements AuthBackend {
     this.#subscriptionTierResolver =
       options.subscriptionTierResolver ??
       createHttpRemoteAuthSubscriptionTierResolver(options);
+    this.#managedKeysEnabled = options.managedKeysEnabled === true;
     this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
     this.#now = options.now ?? (() => new Date());
     this.#nowMs = options.nowMs ?? (() => Date.now());
@@ -201,6 +204,13 @@ export class RemoteAuthBackend implements AuthBackend {
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
   ): Promise<AuthVendedKey> {
+    if (!this.#managedKeysEnabled) {
+      return Promise.reject(
+        new Error(
+          "RemoteAuthBackend managed key vending is disabled by auth.managedKeys.enabled",
+        ),
+      );
+    }
     const cacheKey = remoteProviderKeyCacheKey(provider, sessionId);
     const now = this.#nowMs();
     this.pruneExpiredKeys(now);

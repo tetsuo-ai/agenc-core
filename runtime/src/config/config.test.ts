@@ -71,6 +71,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_threads).toBe(4);
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
+    expect(cfg.auth?.managedKeys?.enabled).toBe(false);
     expect(cfg.daemon?.transport).toBe("unix");
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.default_mode).toBe("on-request");
@@ -238,11 +239,14 @@ describe("schema: normalizeRawConfig", () => {
     expect(out._unknown).toBeUndefined();
   });
 
-  test("preserves auth.backend config on the typed path", () => {
+  test("preserves auth config on the typed path", () => {
     const out = normalizeRawConfig({
-      auth: { backend: "remote" },
+      auth: { backend: "remote", managedKeys: { enabled: true } },
     });
-    expect(out.auth).toEqual({ backend: "remote" });
+    expect(out.auth).toEqual({
+      backend: "remote",
+      managedKeys: { enabled: true },
+    });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("auth")).toBe(true);
   });
@@ -1077,17 +1081,21 @@ default_model = "grok-4-fast"
     expect(out.config._unknown?.replBridgeEnabled).toBeUndefined();
   });
 
-  test("auth.backend TOML overrides the local default", async () => {
+  test("auth TOML overrides the local managed-keys defaults", async () => {
     writeFileSync(
       join(dir, "config.toml"),
       `
 [auth]
 backend = "remote"
+
+[auth.managedKeys]
+enabled = true
       `,
     );
     const out = await loadConfig({ home: dir });
     expect(out.exists).toBe(true);
     expect(out.config.auth?.backend).toBe("remote");
+    expect(out.config.auth?.managedKeys?.enabled).toBe(true);
     expect(out.config._unknown?.auth).toBeUndefined();
   });
 
@@ -1453,6 +1461,17 @@ describe("env: resolvers", () => {
     expect(out.model_provider).toBe("openai");
   });
 
+  test("applyEnvOverrides — AGENC_AUTH_MANAGED_KEYS_ENABLED wins over TOML auth flag", () => {
+    const base = mergeConfigs(defaultConfig(), {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const out = applyEnvOverrides(base, {
+      AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
+    });
+    expect(out.auth?.backend).toBe("local");
+    expect(out.auth?.managedKeys?.enabled).toBe(false);
+  });
+
   test("applyEnvOverrides is a no-op when no overrides set", () => {
     const base = defaultConfig();
     const out = applyEnvOverrides(base, {});
@@ -1496,14 +1515,17 @@ describe("env: resolvers", () => {
       {
         AGENC_MAX_OUTPUT_TOKENS: "bogus",
         AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS: "maybe",
+        AGENC_AUTH_MANAGED_KEYS_ENABLED: "sometimes",
       },
       (message) => warnings.push(message),
     );
     expect(out.max_output_tokens).toBeUndefined();
     expect(out.capped_default_max_output_tokens).toBeUndefined();
+    expect(out.auth?.managedKeys?.enabled).toBe(false);
     expect(warnings).toEqual([
       '[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="bogus"; expected a positive integer',
       '[agenc:config] invalid AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS="maybe"; expected boolean-like value',
+      '[agenc:config] invalid AGENC_AUTH_MANAGED_KEYS_ENABLED="sometimes"; expected boolean-like value',
     ]);
   });
 

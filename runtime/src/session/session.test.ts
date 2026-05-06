@@ -839,6 +839,11 @@ describe("Session.consumePendingProviderSwitch", () => {
             }),
             authBackend,
             authSubscriptionTier: "team",
+            configStore: {
+              current: () => ({
+                auth: { managedKeys: { enabled: true } },
+              }),
+            },
           },
         });
         session.setPendingProviderSwitch({
@@ -894,6 +899,11 @@ describe("Session.consumePendingProviderSwitch", () => {
             provider: startingProvider,
             authBackend,
             authSubscriptionTier: "free",
+            configStore: {
+              current: () => ({
+                auth: { managedKeys: { enabled: true } },
+              }),
+            },
           },
         });
         session.setPendingProviderSwitch({

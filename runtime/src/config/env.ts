@@ -13,6 +13,7 @@
 //   AGENC_MAX_OUTPUT_TOKENS                       → global output budget
 //   AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS        → 8k default + retry mode
 //   AGENC_MAX_BUDGET_USD                           → session cost budget
+//   AGENC_AUTH_MANAGED_KEYS_ENABLED               → auth.managedKeys.enabled
 //
 // `applyEnvOverrides(config)` layers env values onto a base config and
 // returns a new frozen snapshot.
@@ -35,6 +36,7 @@ export interface EnvSnapshot {
   readonly AGENC_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_MAX_BUDGET_USD?: string;
+  readonly AGENC_AUTH_MANAGED_KEYS_ENABLED?: string;
   readonly XAI_API_KEY?: string;
   readonly GROK_API_KEY?: string;
   readonly AGENC_XAI_API_KEY?: string;
@@ -297,6 +299,22 @@ export function applyEnvOverrides(
   const maxBudgetUsd = readPositiveNumber(e.AGENC_MAX_BUDGET_USD);
   if (maxBudgetUsd !== undefined) {
     override.max_budget_usd = maxBudgetUsd;
+  }
+  if (e.AGENC_AUTH_MANAGED_KEYS_ENABLED !== undefined) {
+    const enabled = readBoolean(e.AGENC_AUTH_MANAGED_KEYS_ENABLED);
+    if (enabled !== undefined) {
+      override.auth = {
+        ...(config.auth ?? {}),
+        managedKeys: {
+          ...(config.auth?.managedKeys ?? {}),
+          enabled,
+        },
+      };
+    } else if (e.AGENC_AUTH_MANAGED_KEYS_ENABLED.trim().length > 0) {
+      onWarn?.(
+        `[agenc:config] invalid AGENC_AUTH_MANAGED_KEYS_ENABLED="${e.AGENC_AUTH_MANAGED_KEYS_ENABLED}"; expected boolean-like value`,
+      );
+    }
   }
   // NOTE: API-key env vars (XAI_API_KEY / GROK_API_KEY / AGENC_XAI_API_KEY)
   // are intentionally NOT layered onto the config snapshot. `resolveApiKey`
