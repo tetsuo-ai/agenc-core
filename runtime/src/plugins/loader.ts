@@ -5,6 +5,7 @@ import type {
   AgenCConfig,
   HooksMap,
   LspServerConfigInput,
+  McpTransport,
   McpServerConfig,
   PerToolConfig,
   PluginEntryConfig,
@@ -1201,8 +1202,12 @@ function normalizeMcpServer(
   pluginRoot: string,
 ): McpServerConfig | null {
   if (!isRecord(value)) return null;
-  const transport = stringValue(value.transport) ?? stringValue(value.type);
   const endpoint = stringValue(value.endpoint) ?? stringValue(value.url);
+  const transport = normalizeMcpTransport(
+    stringValue(value.transport) ?? stringValue(value.type),
+    endpoint,
+    stringValue(value.command),
+  );
   const command = stringValue(value.command);
   const cwd = stringValue(value.cwd);
   const rawArgs = Array.isArray(value.args)
@@ -1230,6 +1235,28 @@ function normalizeMcpServer(
     ...(typeof value.timeout === "number" ? { timeout: value.timeout } : {}),
   };
   return server.command !== undefined || server.endpoint !== undefined ? server : null;
+}
+
+function normalizeMcpTransport(
+  value: string | undefined,
+  endpoint: string | undefined,
+  command: string | undefined,
+): McpTransport | undefined {
+  if (
+    value === "http" ||
+    value === "sse" ||
+    value === "stdio" ||
+    value === "websocket" ||
+    value === "ws"
+  ) {
+    return value;
+  }
+  if (value !== undefined || endpoint === undefined || command !== undefined) {
+    return undefined;
+  }
+  return endpoint.startsWith("ws://") || endpoint.startsWith("wss://")
+    ? "websocket"
+    : "http";
 }
 
 function normalizeLspServer(

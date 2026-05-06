@@ -15,3 +15,5 @@ This directory owns the TypeScript port of plugin MCP registration:
   resolution, server-name scoping, issue reporting, and registration handoff.
 - `loader.ts` and `manifest-schema.ts` own plugin manifest server-shape
   normalization before registration.
+- `test-fixtures/plugin-mcp-env-server.cjs` is the focused MCP stdio server
+  fixture used to verify the live child-process startup boundary.
