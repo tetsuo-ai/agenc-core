@@ -36,8 +36,7 @@ import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mj
 import {
   RUNTIME_UPSTREAM_SCAN_PATHS,
   collectRuntimeUpstreamReferences,
-  disallowedZPurgecTypecheckExcludes,
-  extractRuntimeTsconfigExcludes,
+  validateZPurgecTsconfigBoundary,
 } from "./purge-scans.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
@@ -2079,11 +2078,21 @@ if (toScan.length === 0 && candidates.size === 0) {
 //      filename suffix wouldn't flag — wrapper-by-another-name).
 
 header("no upstream growth; no new shim/adapter/compat/legacy/bridge files");
-const addedRes = git("diff", "--name-only", "--diff-filter=AR", "main...HEAD");
-const addedStagedRes = git("diff", "--name-only", "--diff-filter=AR", "--cached");
+const addedRes = git("diff", "--name-only", "--diff-filter=ACR", "-M", "-C", "main...HEAD");
+const addedStagedRes = git("diff", "--name-only", "--diff-filter=ACR", "-M", "-C", "--cached");
 const addedWtRes = git("ls-files", "--others", "--exclude-standard");
 const added = new Set(
   [addedRes.stdout, addedStagedRes.stdout, addedWtRes.stdout]
+    .join("\n")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+const changedRes = git("diff", "--name-only", "--diff-filter=ACMR", "-M", "-C", "main...HEAD");
+const changedStagedRes = git("diff", "--name-only", "--diff-filter=ACMR", "-M", "-C", "--cached");
+const changedWtRes = git("diff", "--name-only", "--diff-filter=ACMR", "-M", "-C");
+const changed = new Set(
+  [changedRes.stdout, changedStagedRes.stdout, changedWtRes.stdout, addedWtRes.stdout]
     .join("\n")
     .split("\n")
     .map((s) => s.trim())
@@ -2212,7 +2221,7 @@ if (shimAdditions.length > 0) {
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const forwardingViolations = [];
 const hiddenStubViolations = [];
-for (const rel of added) {
+for (const rel of changed) {
   if (!/^runtime\/src\//.test(rel)) continue;
   if (!/\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
   if (/\.test\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
@@ -7452,17 +7461,13 @@ async function cleanupGates(item) {
 
   function assertZPurgecTemporaryBoundaries() {
     const tsconfigSource = readFileSync(path.join(root, "runtime/tsconfig.json"), "utf8");
-    const broadBoundary = disallowedZPurgecTypecheckExcludes(tsconfigSource);
-    if (broadBoundary.length > 0) {
+    const tsconfigBoundary = validateZPurgecTsconfigBoundary(tsconfigSource);
+    if (tsconfigBoundary.issues.length > 0) {
       failGate(
-        `Z-PURGEC: runtime/tsconfig.json still excludes migrated Z-PURGEC roots from typecheck:\n  ${broadBoundary.join("\n  ")}`,
+        `Z-PURGEC: runtime/tsconfig.json temporary boundary is not exact:\n  ${tsconfigBoundary.issues.join("\n  ")}`,
       );
     }
-    const concreteExcludes = extractRuntimeTsconfigExcludes(tsconfigSource);
-    if (concreteExcludes.length > 400) {
-      failGate(`Z-PURGEC: runtime/tsconfig.json exclude list grew to ${concreteExcludes.length}; expected <= 400 concrete entries`);
-    }
-    pass(`Z-PURGEC: runtime/tsconfig.json has no broad migrated-root exclusions and ${concreteExcludes.length} capped concrete exclude(s)`);
+    pass(`Z-PURGEC: runtime/tsconfig.json has exact ${tsconfigBoundary.entries.length}-entry concrete temporary boundary and no broad migrated-root exclusions`);
 
     const movedBoundaryPrefixes = [
       "// @ts-nocheck\n" +

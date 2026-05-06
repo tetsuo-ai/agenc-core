@@ -5,9 +5,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {
+  Z_PURGEC_TSCONFIG_BOUNDARY_END,
+  Z_PURGEC_TSCONFIG_BOUNDARY_ENTRY_COUNT,
+  Z_PURGEC_TSCONFIG_BOUNDARY_START,
   collectRuntimeUpstreamReferences,
   disallowedZPurgecTypecheckExcludes,
+  extractMarkedZPurgecTsconfigBoundary,
   extractRuntimeTsconfigExcludes,
+  validateZPurgecTsconfigBoundary,
 } from "./purge-scans.mjs";
 
 let passed = 0;
@@ -85,6 +90,49 @@ try {
     "Z-PURGEC tsconfig scan rejects migrated broad roots but leaves concrete files and earlier baselines alone",
     disallowedZPurgecTypecheckExcludes(tsconfig).join(",") ===
       "src/bootstrap/**/*",
+  );
+
+  const boundaryEntries = Array.from(
+    { length: Z_PURGEC_TSCONFIG_BOUNDARY_ENTRY_COUNT },
+    (_value, index) => `src/services/file-${index}.ts`,
+  );
+  const exactBoundary = `{
+    "exclude": [
+      "node_modules",
+      ${Z_PURGEC_TSCONFIG_BOUNDARY_START}
+      ${boundaryEntries.map((entry) => JSON.stringify(entry)).join(",\n      ")},
+      ${Z_PURGEC_TSCONFIG_BOUNDARY_END}
+      "src/constants/**/*"
+    ]
+  }`;
+  assert(
+    "Z-PURGEC tsconfig marker parser returns the exact marker block",
+    extractMarkedZPurgecTsconfigBoundary(exactBoundary).length ===
+      Z_PURGEC_TSCONFIG_BOUNDARY_ENTRY_COUNT,
+  );
+  assert(
+    "Z-PURGEC tsconfig validator accepts the exact bounded marker block",
+    validateZPurgecTsconfigBoundary(exactBoundary).issues.length === 0,
+  );
+  const broadOutsideBoundary = exactBoundary.replace(
+    '"src/constants/**/*"',
+    '"src/tools/**/*"',
+  );
+  assert(
+    "Z-PURGEC tsconfig validator rejects broad migrated roots anywhere in the exclude list",
+    validateZPurgecTsconfigBoundary(broadOutsideBoundary).issues.some((issue) =>
+      issue.includes("excludes migrated Z-PURGEC roots"),
+    ),
+  );
+  const grownBoundary = exactBoundary.replace(
+    Z_PURGEC_TSCONFIG_BOUNDARY_END,
+    `${JSON.stringify("src/services/extra.ts")},\n      ${Z_PURGEC_TSCONFIG_BOUNDARY_END}`,
+  );
+  assert(
+    "Z-PURGEC tsconfig validator rejects boundary entry growth",
+    validateZPurgecTsconfigBoundary(grownBoundary).issues.some((issue) =>
+      issue.includes(`expected ${Z_PURGEC_TSCONFIG_BOUNDARY_ENTRY_COUNT}`),
+    ),
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -27,8 +27,26 @@ describe('Z-PURGEC tsup resolution boundaries', () => {
     expect(__agencTsupAliasTest.resolveAgenCBareSrc('src/not-present.js')).toBeNull()
   })
 
-  it('keeps optional missing modules explicit', () => {
-    expect(__agencTsupAliasTest.isKnownMissingOptionalModule('../tools/SleepTool/SleepTool.js')).toBe(true)
+  it('does not mark missing runtime modules as optional externals', () => {
+    expect(__agencTsupAliasTest.isKnownMissingOptionalModule('./tools/SleepTool/SleepTool.js')).toBe(false)
+    expect(__agencTsupAliasTest.isKnownMissingOptionalModule('../tools/SleepTool/SleepTool.js')).toBe(false)
     expect(__agencTsupAliasTest.isKnownMissingOptionalModule('./not-present.js')).toBe(false)
+    expect(__agencTsupAliasTest.isKnownMissingOptionalModule('@mendable/firecrawl-js')).toBe(true)
+  })
+
+  it('inlines copied-tree feature gates before unresolved import resolution', () => {
+    expect(__agencTsupAliasTest.featureFlagLiteral('HISTORY_SNIP')).toBe('false')
+    expect(__agencTsupAliasTest.featureFlagLiteral('CONTEXT_COLLAPSE')).toBe('true')
+    expect(__agencTsupAliasTest.featureFlagLiteral('NOT_A_REAL_FLAG')).toBe('false')
+    expect(
+      __agencTsupAliasTest.inlineCopiedTreeFeatureCalls(
+        "const x = feature('HISTORY_SNIP') ? require('./missing.js') : null; const y = feature(\"CONTEXT_COLLAPSE\")",
+      ),
+    ).toBe("const x = false ? require('./missing.js') : null; const y = true")
+    expect(
+      __agencTsupAliasTest.inlineCopiedTreeFeatureCalls(
+        "const x = feature(\n  'EXPERIMENTAL_SKILL_SEARCH',\n) ? require('./missing.js') : null",
+      ),
+    ).toBe("const x = false ? require('./missing.js') : null")
   })
 })

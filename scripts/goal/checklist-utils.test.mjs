@@ -142,6 +142,7 @@ assert("at least one numeric phase parsed", hasNumericPhase, `phases=${[...phase
 
 const completeSource = readFileSync(new URL("./complete.mjs", import.meta.url), "utf8");
 const verifySource = readFileSync(new URL("./verify.mjs", import.meta.url), "utf8");
+const reviewSource = readFileSync(new URL("./review.mjs", import.meta.url), "utf8");
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 const purgeScanSource = readFileSync(new URL("./purge-scans.mjs", import.meta.url), "utf8");
 const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
@@ -218,7 +219,8 @@ assert(
 );
 assert(
   "verify.mjs forwarding gate includes rename destinations and hidden stubs",
-  verifySource.includes('--diff-filter=AR') &&
+  verifySource.includes('--diff-filter=ACMR') &&
+    verifySource.includes('--diff-filter=ACR') &&
     verifySource.includes("hiddenStubViolations") &&
     verifySource.includes("name\\s*:\\s*[\"']stub"),
 );
@@ -259,8 +261,9 @@ assert(
 assert(
   "verify.mjs Z-PURGEC caps temporary typecheck and ts-nocheck boundaries",
   zPurgecGateSource.includes("assertZPurgecTemporaryBoundaries()") &&
-    verifySource.includes("runtime/tsconfig.json has no broad migrated-root exclusions") &&
-    verifySource.includes("concreteExcludes.length > 400") &&
+    verifySource.includes("runtime/tsconfig.json has exact") &&
+    purgeScanSource.includes("Z_PURGEC_TSCONFIG_BOUNDARY_ENTRY_COUNT = 367") &&
+    purgeScanSource.includes("validateZPurgecTsconfigBoundary") &&
     verifySource.includes("boundaryFiles.length > 800") &&
     verifySource.includes("scripts/goal/purge-scans.test.mjs"),
 );
@@ -279,7 +282,14 @@ assert(
 assert(
   "runtime tsup config does not externalize unresolved moved relative imports generically",
   runtimeTsupConfigSource.includes("isKnownMissingOptionalModule(args.path)") &&
+    !runtimeTsupConfigSource.includes("knownMissingOptionalModuleFragments") &&
     !runtimeTsupConfigSource.includes("return resolved === null ? { path: args.path, external: true } : { path: resolved };"),
+);
+assert(
+  "review.mjs Z-PURGEC reviewer rejects runtime-internal missing-module allowlists",
+  reviewSource.includes("tsup must not externalize missing runtime-internal modules") &&
+    reviewSource.includes("runtime-internal known-missing allowlists") &&
+    !reviewSource.includes("knownMissingOptionalModuleFragments allowlist"),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

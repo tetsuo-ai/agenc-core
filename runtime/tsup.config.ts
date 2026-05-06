@@ -1,6 +1,6 @@
 import { defineConfig } from 'tsup';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const entry = [
@@ -15,6 +15,7 @@ const runtimeRoot = dirname(fileURLToPath(import.meta.url));
 const agencRoot = resolve(runtimeRoot, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(runtimeRoot, 'src');
+const copiedTreeFeatureFlags = readCopiedTreeFeatureFlags();
 // Moved utils/constants still contain upstream-relative imports to sibling
 // subsystems that later purge items own. These aliases let the production
 // bundle resolve those imports without leaving dead external paths in dist.
@@ -174,6 +175,71 @@ function normalizeRuntimePath(file: string): string {
   return file.split(/[/\\]+/).join('/');
 }
 
+function readCopiedTreeFeatureFlags(): ReadonlyMap<string, boolean> {
+  const featureSource = readFileSync(
+    resolve(runtimeSourceRoot, 'build/feature.ts'),
+    'utf8',
+  );
+  const flags = new Map<string, boolean>();
+  for (const match of featureSource.matchAll(/\b([A-Z][A-Z0-9_]*)\s*:\s*(true|false)\s*,/g)) {
+    flags.set(match[1], match[2] === 'true');
+  }
+  if (flags.size === 0) {
+    throw new Error('Unable to read copied tree feature flags for tsup DCE');
+  }
+  return flags;
+}
+
+function featureFlagLiteral(flag: string): 'true' | 'false' {
+  return copiedTreeFeatureFlags.get(flag) === true ? 'true' : 'false';
+}
+
+function inlineCopiedTreeFeatureCalls(source: string): string {
+  return source.replace(
+    /\bfeature\(\s*(['"])([A-Z][A-Z0-9_]*)\1\s*,?\s*\)/g,
+    (_match, _quote, flag: string) => featureFlagLiteral(flag),
+  );
+}
+
+function loaderForSourcePath(file: string): 'ts' | 'tsx' | 'js' | 'jsx' | null {
+  switch (extname(file)) {
+    case '.ts':
+    case '.mts':
+    case '.cts':
+      return 'ts';
+    case '.tsx':
+      return 'tsx';
+    case '.js':
+    case '.mjs':
+    case '.cjs':
+      return 'js';
+    case '.jsx':
+      return 'jsx';
+    default:
+      return null;
+  }
+}
+
+const agencFeatureFlagInline = {
+  name: 'agenc-feature-flag-inline',
+  setup(build: {
+    onLoad: (
+      options: { filter: RegExp },
+      callback: (args: { path: string }) => { contents: string; loader: 'ts' | 'tsx' | 'js' | 'jsx' } | null,
+    ) => void;
+  }) {
+    build.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, (args) => {
+      if (!isWithin(runtimeSourceRoot, args.path)) return null;
+      const loader = loaderForSourcePath(args.path);
+      if (loader === null) return null;
+      const source = readFileSync(args.path, 'utf8');
+      const inlined = inlineCopiedTreeFeatureCalls(source);
+      if (inlined === source) return null;
+      return { contents: inlined, loader };
+    });
+  },
+};
+
 function topKey(logical: string): string {
   return logical.split('/')[0]?.replace(/\.(?:jsx?|tsx?)$/, '') ?? '';
 }
@@ -293,62 +359,8 @@ const agencOptionalExternal = {
   },
 };
 
-const knownMissingOptionalModuleFragments = [
-  // Feature-gated modules that are intentionally absent from the current
-  // runtime tree. Unresolved relative imports must match this explicit list
-  // or the bundle fails closed.
-  '../../../utils/systemThemeWatcher',
-  './UserCrossSessionMessage',
-  './UserForkBoilerplateMessage',
-  './UserGitHubWebhookMessage',
-  './WorkflowDetailDialog',
-  './messages/SnipBoundaryMessage',
-  '/memdir/memoryShapeTelemetry',
-  '/services/compact/snipProjection',
-  '/services/sessionTranscript/sessionTranscript',
-  '/tasks/LocalWorkflowTask/LocalWorkflowTask',
-  '/tools/DiscoverSkillsTool/prompt',
-  '/utils/attributionTrailer',
-  '/jobs/classifier.js',
-  '/proactive/index.js',
-  '/services/compact/reactiveCompact.js',
-  '/services/compact/snipProjection',
-  '/services/skillSearch/',
-  '/services/sessionTranscript/sessionTranscript.js',
-  '/skills/mcpSkills.js',
-  '/tasks/LocalWorkflowTask/LocalWorkflowTask.js',
-  '/tools/DiscoverSkillsTool/prompt.js',
-  '/utils/taskSummary.js',
-  '/utils/udsClient.js',
-  '/utils/systemThemeWatcher',
-  '/bridge/peerSessions.js',
-  '/memdir/memoryShapeTelemetry.js',
-  '/messages/SnipBoundaryMessage',
-  '/UserCrossSessionMessage',
-  '/UserForkBoilerplateMessage',
-  '/UserGitHubWebhookMessage',
-  '/WorkflowDetailDialog',
-  '/attributionTrailer.js',
-  '/memoryShapeTelemetry.js',
-  '/tools/ListPeersTool/',
-  '/tools/OverflowTestTool/',
-  '/tools/PushNotificationTool/',
-  '/tools/SendUserFileTool/',
-  '/tools/SleepTool/SleepTool.js',
-  '/tools/SnipTool/',
-  '/tools/SubscribePRTool/',
-  '/tools/TerminalCaptureTool/',
-  '/tools/WebBrowserTool/',
-  '/tools/WorkflowTool/',
-  '../SendUserFileTool/',
-];
-
 function isKnownMissingOptionalModule(source: string): boolean {
-  if (source === '@mendable/firecrawl-js') return true;
-  const normalized = normalizeRuntimePath(source);
-  return knownMissingOptionalModuleFragments.some((fragment) =>
-    normalized.includes(fragment),
-  );
+  return source === '@mendable/firecrawl-js';
 }
 
 const agencKnownMissingOptionalExternal = {
@@ -368,6 +380,8 @@ const agencKnownMissingOptionalExternal = {
 };
 
 export const __agencTsupAliasTest = {
+  featureFlagLiteral,
+  inlineCopiedTreeFeatureCalls,
   isKnownMissingOptionalModule,
   relocatedTuiSourceRoots,
   relocatedUpstreamRoots,
@@ -440,6 +454,7 @@ export default defineConfig({
   external,
   noExternal: ['supports-hyperlinks'],
   esbuildPlugins: [
+    agencFeatureFlagInline,
     agencBareSrcAlias,
     agencOptionalExternal,
     agencKnownMissingOptionalExternal,
