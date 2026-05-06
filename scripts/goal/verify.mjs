@@ -2554,6 +2554,15 @@ header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
   const newImports = [];        // Part A failures (count grew)
   const missedMigrations = [];  // Part B failures (touched but didn't reduce)
 
+  // Helper: count RAW upstream import LINES, ignoring keep comments.
+  // Used by Part B — agents cannot satisfy the touch-tax by adding keep
+  // comments; an actual import line must be deleted.
+  function countRawImports(src) {
+    if (!src) return 0;
+    const matches = src.match(upstreamImportRe);
+    return matches ? matches.length : 0;
+  }
+
   for (const rel of diffFiles) {
     const abs = path.join(root, rel);
     if (!existsSync(abs)) continue; // file was deleted in this diff
@@ -2561,15 +2570,22 @@ header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
     try { after = readFileSync(abs, "utf8"); } catch { continue; }
     const before = getMainContent(rel);
 
-    const beforeCount = countUnexemptedImports(before);
-    const afterCount = countUnexemptedImports(after);
+    // Part A uses unexempted count — keep comments legitimately exempt
+    // imports (e.g., for migration-target-not-yet-exists cases).
+    const beforeUnexempted = countUnexemptedImports(before);
+    const afterUnexempted = countUnexemptedImports(after);
 
-    if (afterCount > beforeCount) {
-      newImports.push(`${rel}: ${beforeCount} → ${afterCount} (+${afterCount - beforeCount})`);
+    if (afterUnexempted > beforeUnexempted) {
+      newImports.push(`${rel}: ${beforeUnexempted} → ${afterUnexempted} (+${afterUnexempted - beforeUnexempted})`);
     }
-    if (beforeCount > 0 && afterCount >= beforeCount) {
-      // File had upstream imports AND we touched it AND we didn't remove any.
-      missedMigrations.push(`${rel}: still has ${afterCount} upstream import(s) — remove ≥1 while you're in this file`);
+
+    // Part B uses RAW count — touch-tax must remove an actual import line,
+    // not just add a keep comment to exempt one. Adding keep comments
+    // without deleting any imports is evasion, not migration.
+    const beforeRaw = countRawImports(before);
+    const afterRaw = countRawImports(after);
+    if (beforeRaw > 0 && afterRaw >= beforeRaw) {
+      missedMigrations.push(`${rel}: ${beforeRaw} import line(s) before, ${afterRaw} after — at least one import line must be DELETED, not just exempted with a keep comment`);
     }
   }
 
@@ -2584,10 +2600,11 @@ header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
   if (missedMigrations.length > 0) {
     failGate(
       `Gate 3.7 (Part B): files touched by this item still carry upstream imports — opportunistic migration required:\n  ${missedMigrations.join("\n  ")}\n\n` +
-        `When you touch a file that imports from agenc/upstream/, remove at least one of those imports as part of the same diff. ` +
+        `When you touch a file that imports from agenc/upstream/, you must DELETE at least one of those import lines as part of the same diff. ` +
+        `Adding "// upstream-import: keep ..." comments WITHOUT deleting the import lines does NOT satisfy this gate — that's exemption, not migration. ` +
         `Either: (a) port the upstream module to its proper AgenC-owned destination and update this file's import, OR ` +
-        `(b) inline the small subset of the upstream module's behavior that this file actually uses, OR ` +
-        `(c) add "// upstream-import: keep <reason>" above the import line if the migration target genuinely depends on another item.`,
+        `(b) inline the small subset of the upstream module's behavior that this file actually uses (and delete the import). ` +
+        `The keep comment is for Part A only (preventing NEW imports while a target genuinely doesn't exist) — it cannot satisfy the touch-tax.`,
     );
   }
 
