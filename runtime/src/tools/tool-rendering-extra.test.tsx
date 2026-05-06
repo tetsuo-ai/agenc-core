@@ -454,8 +454,8 @@ describe("Tool error cross-cutting dispatch", () => {
 
 describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   test("FileRead envelope produced by formatStructuredToolResult is consumed by FileReadView (no shape drift)", async () => {
-    const adapter = await import("../tui/session-transcript.js");
-    const blocks = adapter.formatStructuredToolResult(
+    const transcript = await import("../tui/session-transcript.js");
+    const blocks = transcript.formatStructuredToolResult(
       "FileRead",
       "tool_call_completed",
       {
@@ -477,8 +477,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Write envelope produced by formatStructuredToolResult is consumed by FileWriteView", async () => {
-    const adapter = await import("../tui/session-transcript.js");
-    const blocks = adapter.formatStructuredToolResult(
+    const transcript = await import("../tui/session-transcript.js");
+    const blocks = transcript.formatStructuredToolResult(
       "Write",
       "tool_call_completed",
       { result: { path: "src/out.ts", bytesWritten: 100 } },
@@ -491,8 +491,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Grep envelope produced by formatStructuredToolResult is consumed by GrepMatchesView", async () => {
-    const adapter = await import("../tui/session-transcript.js");
-    const blocks = adapter.formatStructuredToolResult(
+    const transcript = await import("../tui/session-transcript.js");
+    const blocks = transcript.formatStructuredToolResult(
       "Grep",
       "tool_call_completed",
       {
@@ -510,8 +510,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("Glob envelope produced by formatStructuredToolResult is consumed by GlobPathsView", async () => {
-    const adapter = await import("../tui/session-transcript.js");
-    const blocks = adapter.formatStructuredToolResult(
+    const transcript = await import("../tui/session-transcript.js");
+    const blocks = transcript.formatStructuredToolResult(
       "Glob",
       "tool_call_completed",
       { result: { pattern: "*.ts", paths: ["a.ts", "b.ts"] } },
@@ -524,8 +524,8 @@ describe("formatStructuredToolResult ⇄ per-tool view wire-shape lock", () => {
   });
 
   test("formatStructuredToolError envelope is consumed by ToolErrorView", async () => {
-    const adapter = await import("../tui/session-transcript.js");
-    const blocks = adapter.formatStructuredToolError(
+    const transcript = await import("../tui/session-transcript.js");
+    const blocks = transcript.formatStructuredToolError(
       "FileRead",
       "ENOENT: no such file",
     );

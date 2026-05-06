@@ -4,11 +4,11 @@ import { describe, expect, test } from "vitest";
 
 import { adaptTranscriptEvents } from "../session-transcript.js";
 
-const MESSAGE_ADAPTER_PATH = path.resolve(
+const SESSION_TRANSCRIPT_PATH = path.resolve(
   import.meta.dirname,
   "../session-transcript.ts",
 );
-const TUI_OPENCLAUDE_DIR = path.resolve(import.meta.dirname);
+const TUI_PARITY_DIR = path.resolve(import.meta.dirname);
 const RUNTIME_SRC_DIR = path.resolve(import.meta.dirname, "..", "..");
 
 function readSource(p: string): string {
@@ -38,18 +38,18 @@ function listTsFilesRecursive(root: string): string[] {
 
 describe("R4 runningToolProgress / RunningToolProgress removal from session-transcript", () => {
   test("B4.4 RunningToolProgress interface is no longer exported from session-transcript.ts", () => {
-    const source = readSource(MESSAGE_ADAPTER_PATH);
+    const source = readSource(SESSION_TRANSCRIPT_PATH);
     expect(source).not.toMatch(/export\s+interface\s+RunningToolProgress\b/);
     expect(source).not.toMatch(/export\s+type\s+RunningToolProgress\b/);
   });
 
   test("B4.4 AdaptedTranscript no longer declares the runningToolProgress field", () => {
-    const source = readSource(MESSAGE_ADAPTER_PATH);
+    const source = readSource(SESSION_TRANSCRIPT_PATH);
     expect(source).not.toMatch(/runningToolProgress\s*:/);
   });
 
   test("B4.4 adaptTranscriptEvents no longer constructs a runningToolProgress Map or includes it in the return object", () => {
-    const source = readSource(MESSAGE_ADAPTER_PATH);
+    const source = readSource(SESSION_TRANSCRIPT_PATH);
     expect(source).not.toMatch(/runningToolProgress\s*=\s*new\s+Map\b/);
     expect(source).not.toMatch(/runningToolProgress\.set\b/);
     expect(source).not.toMatch(/runningToolProgress\.delete\b/);
@@ -71,7 +71,7 @@ describe("R4 runningToolProgress / RunningToolProgress removal from session-tran
       }
       // Tests are verifiers, not production consumers; they may refer to the
       // removed symbol in descriptions or assertion strings (e.g.,
-      // session-transcript.test.ts asserts that a transcript no longer carries
+    // session-transcript.test.ts asserts that a transcript no longer carries
       // the runningToolProgress field). Restrict the scan to production code.
       if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) {
         continue;
@@ -86,23 +86,23 @@ describe("R4 runningToolProgress / RunningToolProgress removal from session-tran
 
   test("E4.4 RunningToolProgress symbol absence is asserted across the transcript test source", () => {
     const offenders: string[] = [];
-    for (const file of listTsFilesRecursive(TUI_OPENCLAUDE_DIR)) {
+    for (const file of listTsFilesRecursive(TUI_PARITY_DIR)) {
       // Same exclusion as E4.2: tests are verifiers, not production consumers.
       if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) {
         continue;
       }
       const text = readSource(file);
       if (/RunningToolProgress(?!Indicator)/.test(text)) {
-        offenders.push(path.relative(TUI_OPENCLAUDE_DIR, file));
+        offenders.push(path.relative(TUI_PARITY_DIR, file));
       }
       if (/RunningToolProgressIndicator\b/.test(text)) {
-        offenders.push(path.relative(TUI_OPENCLAUDE_DIR, file));
+        offenders.push(path.relative(TUI_PARITY_DIR, file));
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  test("E4.1 tool_progress events still arrive without throwing — adapter just stops capturing them; streamingToolUses is the new live-tool surface (populated by R5)", () => {
+  test("E4.1 tool_progress events still arrive without throwing; session transcript stops capturing them and streamingToolUses is the live-tool surface (populated by R5)", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "turn",

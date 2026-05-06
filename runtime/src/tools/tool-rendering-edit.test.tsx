@@ -192,9 +192,9 @@ describe("EditDiffView — local renderer fidelity to upstream visual contract",
 });
 
 describe("formatStructuredToolResult ⇄ EditDiffView wire-shape lock", () => {
-  test("the tags formatStructuredToolResult emits for Edit are the exact tags EditDiffView consumes (so a future flip to upstream FileEditToolDiff requires no shape changes here)", async () => {
-    const adapter = await import("../tui/session-transcript.js");
-    const blocks = adapter.formatStructuredToolResult(
+  test("the tags formatStructuredToolResult emits for Edit are the exact tags EditDiffView consumes", async () => {
+    const transcript = await import("../tui/session-transcript.js");
+    const blocks = transcript.formatStructuredToolResult(
       "Edit",
       "tool_call_completed",
       {

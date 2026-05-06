@@ -22,7 +22,7 @@ function args(over: Partial<ToolJSXArgs> = {}): ToolJSXArgs {
   };
 }
 
-describe("R2 toolJSX state contract (use-tool-jsx + App.tsx wiring)", () => {
+describe("R2 toolJSX state contract (tool-jsx-state + App.tsx wiring)", () => {
   test("E2.1 isLocalJSXCommand:true persists to local-ref AND returns args (minus clearLocalJSX) as next state", () => {
     const incoming = args({
       jsx: "X",
