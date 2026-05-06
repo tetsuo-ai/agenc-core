@@ -11,6 +11,11 @@ export type NetworkApprovalProtocol =
   | "https"
   | "socks5-tcp"
   | "socks5-udp";
+export type NetworkPolicyRequestProtocol =
+  | "http"
+  | "https_connect"
+  | "socks5_tcp"
+  | "socks5_udp";
 export type ExecPolicyNetworkRuleProtocol =
   | "http"
   | "https"
@@ -32,7 +37,7 @@ export interface NetworkApprovalContext {
 }
 
 export interface NetworkPolicyRequest {
-  readonly protocol: NetworkApprovalProtocol;
+  readonly protocol: NetworkPolicyRequestProtocol;
   readonly host: string;
   readonly port: number;
   readonly clientAddr?: string | null;
@@ -69,7 +74,7 @@ export interface BlockedRequest {
   readonly decision?: string | null;
   readonly source?: string | null;
   readonly port?: number | null;
-  readonly timestamp?: number;
+  readonly timestamp: number;
 }
 
 export type BlockedRequestObserverFunction = (
@@ -145,12 +150,27 @@ export function networkPolicyDecisionPayloadFromDecision(
     reason: decision.reason,
     ...(request !== undefined
       ? {
-          protocol: request.protocol,
+          protocol: networkApprovalProtocolFromRequestProtocol(request.protocol),
           host: request.host,
           port: request.port,
         }
       : {}),
   };
+}
+
+export function networkApprovalProtocolFromRequestProtocol(
+  protocol: NetworkPolicyRequestProtocol,
+): NetworkApprovalProtocol {
+  switch (protocol) {
+    case "http":
+      return "http";
+    case "https_connect":
+      return "https";
+    case "socks5_tcp":
+      return "socks5-tcp";
+    case "socks5_udp":
+      return "socks5-udp";
+  }
 }
 
 export function blockedRequest(args: Omit<BlockedRequest, "timestamp"> & {

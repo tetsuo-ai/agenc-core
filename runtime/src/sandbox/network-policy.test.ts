@@ -11,6 +11,7 @@ import {
   execpolicyNetworkRuleAmendment,
   networkPolicyDeciderFrom,
   networkPolicyDecisionPayloadFromDecision,
+  networkApprovalProtocolFromRequestProtocol,
   networkApprovalContextFromPayload,
   noopBlockedRequestObserver,
   notifyBlockedRequest,
@@ -19,6 +20,7 @@ import {
   type BlockedRequestObserver,
   type NetworkPolicyDecider,
   type NetworkPolicyRequest,
+  type NetworkPolicyRequestProtocol,
 } from "./network-policy.js";
 
 describe("network policy decision payloads", () => {
@@ -132,6 +134,7 @@ describe("denied network policy messages", () => {
     decision: "deny",
     source: "baseline_policy",
     port: 80,
+    timestamp: 1234,
   };
 
   test("only deny decisions produce messages", () => {
@@ -181,7 +184,7 @@ describe("denied network policy messages", () => {
 
 describe("network policy decider contracts", () => {
   const request: NetworkPolicyRequest = {
-    protocol: "https",
+    protocol: "https_connect",
     host: "api.agenc.tech",
     port: 443,
     clientAddr: "127.0.0.1",
@@ -239,8 +242,37 @@ describe("network policy decider contracts", () => {
     await expect(networkPolicyDeciderFrom(decider).decide(request)).resolves.toEqual({
       decision: "deny",
       source: "mode_guard",
-      reason: "blocked https",
+      reason: "blocked https_connect",
     });
+  });
+
+  test("request protocols preserve proxy labels before approval normalization", () => {
+    const protocols: ReadonlyArray<{
+      readonly request: NetworkPolicyRequestProtocol;
+      readonly approval: "http" | "https" | "socks5-tcp" | "socks5-udp";
+    }> = [
+      { request: "http", approval: "http" },
+      { request: "https_connect", approval: "https" },
+      { request: "socks5_tcp", approval: "socks5-tcp" },
+      { request: "socks5_udp", approval: "socks5-udp" },
+    ];
+
+    for (const { request: protocol, approval } of protocols) {
+      const networkRequest: NetworkPolicyRequest = {
+        protocol,
+        host: "api.agenc.tech",
+        port: protocol === "http" ? 80 : 443,
+      };
+
+      expect(networkRequest.protocol).toBe(protocol);
+      expect(networkApprovalProtocolFromRequestProtocol(protocol)).toBe(approval);
+      expect(
+        networkPolicyDecisionPayloadFromDecision(
+          askNetworkDecision("approval required"),
+          networkRequest,
+        )?.protocol,
+      ).toBe(approval);
+    }
   });
 });
 
@@ -302,6 +334,7 @@ describe("blocked request observers", () => {
       entry,
       { ...entry, reason: "async-observed" },
     ]);
+    expect(observed.map((request) => request.timestamp)).toEqual([1234, 1234]);
   });
 });
 

@@ -100,20 +100,23 @@
     {
       "id": "network-policy-decider-shape",
       "sourceSymbols": [
+        "NetworkProtocol",
         "NetworkPolicyDecider",
         "NetworkPolicyRequest",
         "NetworkDecision"
       ],
       "targetSymbols": [
+        "NetworkPolicyRequestProtocol",
         "NetworkPolicyDecider",
         "NetworkPolicyRequest",
         "NetworkDecision",
+        "networkApprovalProtocolFromRequestProtocol",
         "networkPolicyDeciderFrom",
         "askNetworkDecision",
         "denyNetworkDecision",
         "allowNetworkDecision"
       ],
-      "behavior": "A synchronous or async decider can return allow, ask, or deny decisions. Ask and deny carry a decision source and reason; allow maps to no decision payload because it does not request approval.",
+      "behavior": "A synchronous or async decider can return allow, ask, or deny decisions. NetworkPolicyRequest.protocol preserves proxy request labels (http, https_connect, socks5_tcp, socks5_udp); approval-context helpers normalize those labels separately to http, https, socks5-tcp, or socks5-udp. Ask and deny carry a decision source and reason; allow maps to no decision payload because it does not request approval.",
       "tests": [
         "runtime/src/sandbox/network-policy.test.ts"
       ]
@@ -132,7 +135,7 @@
         "noopBlockedRequestObserver",
         "notifyBlockedRequest"
       ],
-      "behavior": "A blocked request record carries host, reason, protocol, decision metadata, and a unix timestamp. Function and object observers receive records; the exported no-op observer completes without changing policy behavior.",
+      "behavior": "A blocked request record carries host, reason, protocol, decision metadata, and a required unix timestamp. Function and object observers receive timestamped records; the exported no-op observer completes without changing policy behavior.",
       "tests": [
         "runtime/src/sandbox/network-policy.test.ts"
       ]

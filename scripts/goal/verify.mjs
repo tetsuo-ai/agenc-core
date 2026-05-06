@@ -5824,11 +5824,15 @@ function assertZc43NetworkPolicyInterfaces() {
 
   const policySource = readRequired("runtime/src/sandbox/network-policy.ts");
   for (const marker of [
+    "export type NetworkPolicyRequestProtocol",
     "export interface NetworkPolicyRequest",
     "export type NetworkDecision",
     "export interface NetworkPolicyDecider",
     "export interface BlockedRequestObserver",
+    "readonly protocol: NetworkPolicyRequestProtocol",
+    "readonly timestamp: number",
     "networkPolicyDeciderFrom",
+    "networkApprovalProtocolFromRequestProtocol",
     "blockedRequestObserverFrom",
     "noopBlockedRequestObserver",
     "notifyBlockedRequest",
@@ -5935,7 +5939,9 @@ function assertZc43NetworkPolicyInterfaces() {
   const testSource = readRequired("runtime/src/sandbox/network-policy.test.ts");
   for (const marker of [
     "network policy decider contracts",
+    "request protocols preserve proxy labels before approval normalization",
     "blocked request observers",
+    "request.timestamp",
     "allowNetworkDecision",
     "noopBlockedRequestObserver",
   ]) {
