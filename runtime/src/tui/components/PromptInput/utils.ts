@@ -1,13 +1,20 @@
+import type { VimMode } from '../../../types/textInputTypes.js'
 import type { Key } from '../../ink.js'
-import { getGlobalConfig } from '../../../utils/config.js'
+import { type GlobalConfig, getGlobalConfig } from '../../../utils/config.js'
 import { env } from '../../../utils/env.js'
 /**
  * Helper function to check if vim mode is currently enabled
  * @returns boolean indicating if vim mode is active
  */
-export function isVimModeEnabled(): boolean {
-  const config = getGlobalConfig()
+export function isVimModeEnabled(config: GlobalConfig = getGlobalConfig()): boolean {
+  if (typeof config.tui?.vimMode === 'boolean') {
+    return config.tui.vimMode
+  }
   return config.editorMode === 'vim'
+}
+
+export function formatVimModeIndicator(vimMode: VimMode | undefined): string | null {
+  return vimMode === undefined ? null : `-- ${vimMode} --`
 }
 
 export function getNewlineInstructions(): string {

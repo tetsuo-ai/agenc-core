@@ -179,6 +179,9 @@ export type AccountInfo = {
 }
 
 export type EditorMode = 'emacs' | (typeof EDITOR_MODES)[number]
+export type TuiConfig = {
+  vimMode?: boolean
+}
 
 export type DiffTool = 'terminal' | 'auto'
 
@@ -254,6 +257,7 @@ export type GlobalConfig = {
   oauthAccount?: AccountInfo
   iterm2KeyBindingInstalled?: boolean // Legacy - keeping for backward compatibility
   editorMode?: EditorMode
+  tui?: TuiConfig
   bypassPermissionsModeAccepted?: boolean
   hasUsedBackslashReturn?: boolean
   autoCompactEnabled: boolean // Controls whether auto-compact is enabled
@@ -693,6 +697,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'preferredNotifChannel',
   'shiftEnterKeyBindingInstalled',
   'editorMode',
+  'tui',
   'hasUsedBackslashReturn',
   'autoCompactEnabled',
   'toolHistoryCompressionEnabled',

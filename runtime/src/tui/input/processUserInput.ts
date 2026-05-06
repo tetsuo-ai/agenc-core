@@ -60,7 +60,11 @@ import {
   hasUltraplanKeyword,
   replaceUltraplanKeyword,
 } from '../../utils/ultraplan/keyword.js'
-import { processTextPrompt } from './processTextPrompt.js'
+import {
+  finalizeVimInputForRouting,
+  processTextPrompt,
+  type VimRoutingState,
+} from './processTextPrompt.js'
 export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 
 export type ProcessUserInputBaseResult = {
@@ -102,6 +106,7 @@ export async function processUserInput({
   bridgeOrigin,
   isMeta,
   skipAttachments,
+  vimRoutingState,
 }: {
   input: string | Array<ContentBlockParam>
   /**
@@ -139,8 +144,13 @@ export async function processUserInput({
    */
   isMeta?: boolean
   skipAttachments?: boolean
+  vimRoutingState?: VimRoutingState
 }): Promise<ProcessUserInputBaseResult> {
-  const inputString = typeof input === 'string' ? input : null
+  const routedInput =
+    typeof input === 'string'
+      ? finalizeVimInputForRouting(input, vimRoutingState)
+      : input
+  const inputString = typeof routedInput === 'string' ? routedInput : null
   // Immediately show the user input prompt while we are still processing the input.
   // Skip for isMeta (system-generated prompts like scheduled tasks) — those
   // should run invisibly.
@@ -153,7 +163,7 @@ export async function processUserInput({
   const appState = context.getAppState()
 
   const result = await processUserInputBase(
-    input,
+    routedInput,
     mode,
     setToolJSX,
     context,
@@ -179,7 +189,7 @@ export async function processUserInput({
 
   // Execute UserPromptSubmit hooks and handle blocking
   queryCheckpoint('query_hooks_start')
-  const inputMessage = getContentText(input) || ''
+  const inputMessage = getContentText(routedInput) || ''
   const blockingContextMessages: AttachmentMessage[] = []
 
   const appendUserPromptSubmitContexts = (
@@ -221,7 +231,7 @@ export async function processUserInput({
           ...blockingContextMessages,
           // TODO: Make this an attachment message
           createSystemMessage(
-            `${blockingMessage}\n\nOriginal prompt: ${input}`,
+            `${blockingMessage}\n\nOriginal prompt: ${inputMessage}`,
             'warning',
           ),
         ],
@@ -607,10 +617,12 @@ async function processUserInputBase(
     }
   }
 
-  // Regular user prompt
+  // Regular user prompt. For string input, normalizedInput is already the
+  // vim-finalized value passed into this base processor by processUserInput.
+  const promptInput = normalizedInput
   return addImageMetadataMessage(
     processTextPrompt(
-      normalizedInput,
+      promptInput,
       imageContentBlocks,
       imagePasteIds,
       attachmentMessages,

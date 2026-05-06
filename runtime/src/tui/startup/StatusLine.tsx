@@ -28,7 +28,7 @@ import { getCurrentWorktreeSession } from '../../utils/worktree.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { Ansi, Box, Text } from '../ink.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { isVimModeEnabled } from '../components/PromptInput/utils.js';
+import { formatVimModeIndicator, isVimModeEnabled } from '../components/PromptInput/utils.js';
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
   // REPL/daemon process, not what the agent child is actually running. Hide it.
@@ -308,12 +308,14 @@ function StatusLineInner({
 
   // Get padding from settings or default to 0
   const paddingX = settings?.statusLine?.padding ?? 0;
+  const vimModeIndicator = isVimModeEnabled() ? formatVimModeIndicator(vimMode) : null;
 
   // StatusLine must have stable height in fullscreen — the footer is
   // flexShrink:0 so a 0→1 row change when the command finishes steals
   // a row from ScrollBox and shifts content. Reserve the row while loading
   // (same trick as PromptInputFooterLeftSide).
   return <Box paddingX={paddingX} gap={2}>
+      {vimModeIndicator ? <Text dimColor>{vimModeIndicator}</Text> : null}
       {statusLineText ? <Text dimColor wrap="truncate">
           <Ansi>{statusLineText}</Ansi>
         </Text> : isFullscreenEnvEnabled() ? <Text> </Text> : null}

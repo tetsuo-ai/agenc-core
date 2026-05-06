@@ -155,6 +155,31 @@ describe("processUserInput", () => {
     expect(mocks.processSlashCommand).not.toHaveBeenCalled();
   });
 
+  it("applies vim routing keys before bash dispatch", async () => {
+    const result = await processUserInput({
+      input: "pwd",
+      mode: "bash",
+      setToolJSX: vi.fn(),
+      context: context(),
+      pastedContents: {},
+      vimRoutingState: {
+        enabled: true,
+        mode: "NORMAL",
+        keys: ["x"],
+      },
+    });
+
+    expect(result.shouldQuery).toBe(false);
+    expect(mocks.processBashCommand).toHaveBeenCalledWith(
+      "wd",
+      [],
+      [],
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(mocks.processSlashCommand).not.toHaveBeenCalled();
+  });
+
   it("routes slash-prefixed prompt input to the slash command processor", async () => {
     const result = await processUserInput({
       input: "/help status",
@@ -162,6 +187,61 @@ describe("processUserInput", () => {
       setToolJSX: vi.fn(),
       context: context(),
       pastedContents: {},
+    });
+
+    expect(result.shouldQuery).toBe(false);
+    expect(mocks.processSlashCommand).toHaveBeenCalledWith(
+      "/help status",
+      [],
+      [],
+      [],
+      expect.any(Object),
+      expect.any(Function),
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(mocks.processBashCommand).not.toHaveBeenCalled();
+  });
+
+  it("applies vim routing keys before slash dispatch", async () => {
+    const result = await processUserInput({
+      input: "/help status",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context(),
+      pastedContents: {},
+      vimRoutingState: {
+        enabled: true,
+        mode: "NORMAL",
+        keys: ["x"],
+      },
+    });
+
+    expect(result.shouldQuery).toBe(true);
+    expect(result.messages[0]).toMatchObject({
+      type: "user",
+      message: {
+        content: "help status",
+      },
+      content: "help status",
+    });
+    expect(mocks.processSlashCommand).not.toHaveBeenCalled();
+    expect(mocks.processBashCommand).not.toHaveBeenCalled();
+  });
+
+  it("preserves slash dispatch when vim routing is disabled", async () => {
+    const result = await processUserInput({
+      input: "/help status",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context(),
+      pastedContents: {},
+      vimRoutingState: {
+        enabled: false,
+        mode: "NORMAL",
+        keys: ["x"],
+      },
     });
 
     expect(result.shouldQuery).toBe(false);
@@ -254,6 +334,38 @@ describe("processUserInput", () => {
       "UserPromptSubmit operation blocked by hook",
     );
     expect(JSON.stringify(result.messages)).toContain("policy denied");
+  });
+
+  it("reports the routed vim prompt when a hook blocks submission", async () => {
+    const result = await processUserInput({
+      input: "/danger",
+      mode: "prompt",
+      setToolJSX: vi.fn(),
+      context: context({
+        session: {
+          services: {
+            hooks: {
+              userPromptSubmitHooks: [
+                () => ({
+                  blockingError: { blockingError: "policy denied" },
+                }),
+              ],
+            },
+          },
+        },
+      }),
+      pastedContents: {},
+      vimRoutingState: {
+        enabled: true,
+        mode: "NORMAL",
+        keys: ["x"],
+      },
+    });
+
+    const serialized = JSON.stringify(result.messages);
+    expect(result.shouldQuery).toBe(false);
+    expect(serialized).toContain("Original prompt: danger");
+    expect(serialized).not.toContain("Original prompt: /danger");
   });
 
   it("preserves UserPromptSubmit additional context when blocking", async () => {

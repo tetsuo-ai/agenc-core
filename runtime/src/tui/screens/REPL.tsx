@@ -50,6 +50,7 @@ import { endInteractionSpan } from '../../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../../commands.js';
+import type { VimRoutingState } from '../input/processTextPrompt.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../../types/textInputTypes.js';
 import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
 import { useIdeLogging } from '../hooks/useIdeLogging.js';
@@ -3205,6 +3206,7 @@ export function REPL({
     setAppState: SetAppState;
   }, options?: {
     fromKeybinding?: boolean;
+    vimRoutingState?: VimRoutingState;
   }) => {
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
@@ -3575,7 +3577,8 @@ export function REPL({
       // Read via ref so streamMode can be dropped from onSubmit deps —
       // handlePromptSubmit only uses it for debug log + telemetry event.
       streamMode: streamModeRef.current,
-      hasInterruptibleToolInProgress: hasInterruptibleToolInProgressRef.current
+      hasInterruptibleToolInProgress: hasInterruptibleToolInProgressRef.current,
+      vimRoutingState: options?.vimRoutingState
     });
 
     // Restore stash that was deferred above. Two cases:

@@ -12,7 +12,7 @@ import {
   isLinewiseMotion,
   resolveMotion,
 } from './motions.js'
-import { findTextObject } from './textObjects.js'
+import { findTextObject } from './text-objects.js'
 import type {
   FindType,
   Operator,
@@ -84,16 +84,39 @@ export function executeOperatorTextObj(
   count: number,
   ctx: OperatorContext,
 ): void {
-  const range = findTextObject(
+  const range = findCountedTextObject(
     ctx.text,
     ctx.cursor.offset,
     objType,
     scope === 'inner',
+    count,
   )
   if (!range) return
 
   applyOperator(op, range.start, range.end, ctx)
   ctx.recordChange({ type: 'operatorTextObj', op, objType, scope, count })
+}
+
+function findCountedTextObject(
+  text: string,
+  offset: number,
+  objType: string,
+  isInner: boolean,
+  count: number,
+): { start: number; end: number } | null {
+  const first = findTextObject(text, offset, objType, isInner)
+  if (!first) return null
+
+  let start = first.start
+  let end = first.end
+  for (let i = 1; i < Math.max(1, count); i++) {
+    const nextOffset = Math.min(Math.max(end, 0), Math.max(text.length - 1, 0))
+    const next = findTextObject(text, nextOffset, objType, isInner)
+    if (!next || next.end <= end) break
+    start = Math.min(start, next.start)
+    end = next.end
+  }
+  return { start, end }
 }
 
 /**
@@ -449,10 +472,13 @@ function getOperatorRange(
       motion === 'w' ? wordCursor.endOfVimWord() : wordCursor.endOfWORD()
     to = cursor.measuredText.nextOffset(wordEnd.offset)
   } else if (isLinewiseMotion(motion)) {
-    // Linewise motions extend to include entire lines
     linewise = true
     const text = cursor.text
-    const nextNewline = text.indexOf('\n', to)
+    const cursorLineStart = cursor.startOfLogicalLine().offset
+    const targetLineStart = target.startOfLogicalLine().offset
+    from = Math.min(cursorLineStart, targetLineStart)
+    const endLineStart = Math.max(cursorLineStart, targetLineStart)
+    const nextNewline = text.indexOf('\n', endLineStart)
     if (nextNewline === -1) {
       // Deleting to end of file - include the preceding newline if exists
       to = text.length
@@ -525,13 +551,11 @@ export function executeOperatorG(
   op: Operator,
   count: number,
   ctx: OperatorContext,
+  countProvided = false,
 ): void {
-  // count=1 means no count given, target = end of file
-  // otherwise target = line N
-  const target =
-    count === 1 ? ctx.cursor.startOfLastLine() : ctx.cursor.goToLine(count)
-
-  if (target.equals(ctx.cursor)) return
+  const target = countProvided
+    ? ctx.cursor.goToLine(count)
+    : ctx.cursor.startOfLastLine()
 
   const range = getOperatorRange(ctx.cursor, target, 'G', op, count)
   applyOperator(op, range.from, range.to, ctx, range.linewise)
@@ -547,8 +571,6 @@ export function executeOperatorGg(
   // otherwise target = line N
   const target =
     count === 1 ? ctx.cursor.startOfFirstLine() : ctx.cursor.goToLine(count)
-
-  if (target.equals(ctx.cursor)) return
 
   const range = getOperatorRange(ctx.cursor, target, 'gg', op, count)
   applyOperator(op, range.from, range.to, ctx, range.linewise)

@@ -191,7 +191,7 @@ Required output format. Your FINAL line must be exactly one of:
 
 Before that line, write a structured report:
 - 1-3 sentence summary of the diff
-- "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected. For very large diffs where listing every file would make the report unreadable, you may instead write exactly \`ALL_CHANGED_SOURCE_FILES_SHA256: ${changedSourceFilesHash}\` after you have read every changed source file represented by the manifest above. The runner accepts that manifest claim only for large diffs and only when the hash matches the actual changed source list.
+- "Files reviewed:" — explicit list of every changed file path you read in full. The runner WILL grep-verify this list against \`git diff main...HEAD --name-only\`; if your list omits a changed source file, the run is rejected. You may use the shortcut \`ALL_CHANGED_SOURCE_FILES_SHA256: ${changedSourceFilesHash}\` only when the changed source manifest count above is greater than 200. This item has ${changedSourceFilesForReview.length} changed source files, so list every changed source path explicitly and do not use the hash shortcut.
 - "Issues:" — numbered list, each with severity (CRITICAL / HIGH / MEDIUM / LOW), file path + line if known, and the specific change needed. Include EVERY issue you found at EVERY severity. If no issues at a severity, write "  CRITICAL: none" / etc.
   The Issues section MUST include all four severity markers exactly once even when empty, using this shape:
     CRITICAL: none
