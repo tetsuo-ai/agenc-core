@@ -88,6 +88,12 @@ describe("API error UX helpers", () => {
     expect(startsWithApiErrorPrefix(`${API_ERROR_MESSAGE_PREFIX}: bad`)).toBe(
       true,
     );
+    expect(startsWithApiErrorPrefix("Please run /login - API Error: bad")).toBe(
+      true,
+    );
+    expect(startsWithApiErrorPrefix("Please run /login · API Error: bad")).toBe(
+      true,
+    );
     expect(categorizeRetryableAPIError({ status: 503 })).toBe("server_error");
   });
 });

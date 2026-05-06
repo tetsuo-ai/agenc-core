@@ -251,6 +251,7 @@ function mapOpenAIHttpFailureToError(args: {
     return new LLMRateLimitError(
       args.providerName,
       args.retryAfterMs ?? readRetryAfterMs(args.body),
+      message,
     );
   }
   if (failure.category === "provider_unavailable") {
@@ -263,7 +264,7 @@ function mapOpenAIHttpFailureToError(args: {
     return new LLMInvalidResponseError(args.providerName, message);
   }
   if (failure.category === "auth_invalid" && args.status === 401) {
-    return new LLMAuthenticationError(args.providerName, args.status);
+    return new LLMAuthenticationError(args.providerName, args.status, message);
   }
   return new LLMProviderError(args.providerName, message, args.status);
 }

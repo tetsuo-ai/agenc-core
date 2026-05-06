@@ -20,7 +20,7 @@ import {
   type AgenCCodeHint,
   hasShownHintThisSession,
   setPendingHint,
-} from '../claudeCodeHints.js'
+} from '../../../../errors/hints.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isPluginInstalled } from './installedPluginsManager.js'
@@ -32,7 +32,7 @@ import {
 import { isPluginBlockedByPolicy } from './pluginPolicy.js'
 
 /**
- * Hard cap on `claudeCodeHints.plugin[]` — bounds config growth. Each shown
+ * Hard cap on `agencCodeHints.plugin[]` — bounds config growth. Each shown
  * plugin appends one slug; past this point we stop prompting (and stop
  * appending) rather than let the config grow without limit.
  */
@@ -144,7 +144,7 @@ export function markHintPluginShown(pluginId: string): void {
     if (existing.includes(pluginId)) return current
     return {
       ...current,
-      claudeCodeHints: {
+      agencCodeHints: {
         ...current.agencCodeHints,
         plugin: [...existing, pluginId],
       },
@@ -158,7 +158,7 @@ export function disableHintRecommendations(): void {
     if (current.agencCodeHints?.disabled) return current
     return {
       ...current,
-      claudeCodeHints: { ...current.agencCodeHints, disabled: true },
+      agencCodeHints: { ...current.agencCodeHints, disabled: true },
     }
   })
 }

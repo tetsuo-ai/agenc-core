@@ -79,7 +79,7 @@ describe("ProviderHttpClientSession", () => {
     });
     const session = new ProviderHttpClientSession({
       providerName: "openai",
-      baseURL: "https://example.test/v1",
+      baseURL: "http://127.0.0.1:40123/v1",
       wireApi: "responses",
       defaultHeaders: { [PROVIDER_PROJECT_HEADER]: "proj-1" },
       defaultQuery: { "api-version": "2025-04-01-preview" },
@@ -97,7 +97,7 @@ describe("ProviderHttpClientSession", () => {
     expect(resolveAuthHeaders).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(url)).toBe(
-      "https://example.test/v1/responses?api-version=2025-04-01-preview&debug=true",
+      "http://127.0.0.1:40123/v1/responses?api-version=2025-04-01-preview&debug=true",
     );
     const headers = init?.headers as Headers;
     expect(headers.get(PROVIDER_PROJECT_HEADER)).toBe("proj-1");
@@ -108,7 +108,7 @@ describe("ProviderHttpClientSession", () => {
   test("rejects successful malformed JSON from requestJson as a provider response error", async () => {
     const session = new ProviderHttpClientSession({
       providerName: "openai",
-      baseURL: "https://example.test/v1",
+      baseURL: "http://127.0.0.1:40123/v1",
       wireApi: "responses",
       fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
         new Response("{not-json", {
@@ -131,7 +131,7 @@ describe("ProviderHttpClientSession", () => {
   test("rejects successful non-JSON bodies from requestJson as provider response errors", async () => {
     const session = new ProviderHttpClientSession({
       providerName: "openai",
-      baseURL: "https://example.test/v1",
+      baseURL: "http://127.0.0.1:40123/v1",
       wireApi: "responses",
       fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
         new Response("OK", {

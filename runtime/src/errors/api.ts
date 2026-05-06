@@ -269,7 +269,8 @@ export function formatAPIError(error: unknown): string {
 export function startsWithApiErrorPrefix(text: string): boolean {
   return (
     text.startsWith(API_ERROR_MESSAGE_PREFIX) ||
-    text.startsWith(`Please run /login - ${API_ERROR_MESSAGE_PREFIX}`)
+    text.startsWith(`Please run /login - ${API_ERROR_MESSAGE_PREFIX}`) ||
+    text.startsWith(`Please run /login · ${API_ERROR_MESSAGE_PREFIX}`)
   );
 }
 

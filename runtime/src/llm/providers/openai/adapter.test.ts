@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import {
+  LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMRateLimitError,
   LLMServerError,
@@ -770,6 +771,57 @@ describe("OpenAIProvider", () => {
     ).rejects.toThrow("openai_category=endpoint_not_found");
   });
 
+  test("preserves openai markers on typed rate-limit errors", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("rate limit", {
+          status: 429,
+          headers: { "retry-after": "3" },
+        }),
+      ),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected rate limit");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMRateLimitError);
+        expect((error as Error).message).toContain(
+          "openai_category=rate_limited",
+        );
+        expect(error).toMatchObject({ retryAfterMs: 3_000 });
+      },
+    );
+  });
+
+  test("preserves openai markers on typed authentication errors", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: "invalid key" } }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected authentication failure");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMAuthenticationError);
+        expect((error as Error).message).toContain(
+          "openai_category=auth_invalid",
+        );
+      },
+    );
+  });
+
   test("classifies chat transport refusals with the openai marker and local hint", async () => {
     const restoreTimers = useDeterministicFallbackTimers();
     const connectionError = Object.assign(
@@ -1162,12 +1214,20 @@ describe("OpenAIProvider", () => {
       ),
     });
 
-    await expect(
-      provider.chatStream(
-        [{ role: "user", content: "hello" }],
-        () => {},
-      ),
-    ).rejects.toEqual(new LLMRateLimitError("openai", 7_000));
+    await provider
+      .chatStream([{ role: "user", content: "hello" }], () => {})
+      .then(
+        () => {
+          throw new Error("expected rate limit");
+        },
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(LLMRateLimitError);
+          expect((error as Error).message).toContain(
+            "openai_category=rate_limited",
+          );
+          expect(error).toMatchObject({ retryAfterMs: 7_000 });
+        },
+      );
   });
 
   test("surfaces streaming 5xxs as typed server errors for compat providers", async () => {
