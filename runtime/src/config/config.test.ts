@@ -84,6 +84,10 @@ describe("schema: defaultConfig", () => {
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
     expect(cfg.auth?.managedKeys?.enabled).toBe(false);
+    expect(cfg.mcp?.server).toEqual({
+      enabled: false,
+      transport: "stdio",
+    });
     expect(cfg.daemon?.transport).toBe("unix");
     expect(cfg.daemon?.autostart).toBe(true);
     expect(cfg.permissions?.default_mode).toBe("on-request");
@@ -123,6 +127,18 @@ describe("schema: mergeConfigs", () => {
     expect(out.toolBudget?.max_bytes_per_call).toBe(
       base.toolBudget?.max_bytes_per_call,
     );
+  });
+
+  test("deep merges nested mcp.server config", () => {
+    const base = defaultConfig();
+    const out = mergeConfigs(base, {
+      mcp: { server: { port: 4444 } },
+    });
+    expect(out.mcp?.server).toEqual({
+      enabled: false,
+      transport: "stdio",
+      port: 4444,
+    });
   });
 
   test("arrays are replaced not concatenated", () => {
@@ -270,6 +286,27 @@ describe("schema: normalizeRawConfig", () => {
     expect(out.sandbox).toEqual({ mode: "off" });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("sandbox")).toBe(true);
+  });
+
+  test("preserves mcp.server config on the typed path", () => {
+    const out = normalizeRawConfig({
+      mcp: {
+        server: {
+          enabled: true,
+          transport: "sse",
+          host: "localhost",
+          port: 4444,
+        },
+      },
+    });
+    expect(out.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "localhost",
+      port: 4444,
+    });
+    expect(out._unknown?.mcp).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("mcp")).toBe(true);
   });
 
   test("preserves daemon.transport config on the typed path", () => {
@@ -949,7 +986,7 @@ describe("schema: closed config block validators (CF-13)", () => {
     ).toThrow(InvalidMcpServerModeConfigError);
   });
 
-  test("validateAgenCConfigBlocks checks typed blocks and staged mcp.server", () => {
+  test("validateAgenCConfigBlocks checks typed blocks including mcp.server", () => {
     const out = validateAgenCConfigBlocks(
       normalizeRawConfig({
         auth: { backend: "local" },
@@ -963,12 +1000,15 @@ describe("schema: closed config block validators (CF-13)", () => {
     expect(out.agent?.retention?.completed_days).toBe(7);
     expect(out.providers?.grok?.default_model).toBe("grok-4-fast");
     expect(out.plugins?.enabled?.local).toBe(true);
-    expect(out._unknown?.mcp).toEqual({
-      server: { enabled: true, transport: "sse", port: 4444 },
+    expect(out.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      port: 4444,
     });
+    expect(out._unknown?.mcp).toBeUndefined();
   });
 
-  test("validateAgenCConfigBlocks reports staged mcp table fields accurately", () => {
+  test("validateAgenCConfigBlocks reports mcp table fields accurately", () => {
     let caught: unknown;
     try {
       validateAgenCConfigBlocks(
@@ -1394,6 +1434,28 @@ autostart = false
     expect(out.config._unknown?.daemon).toBeUndefined();
   });
 
+  test("mcp.server TOML overrides the disabled stdio defaults", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "localhost"
+port = 4444
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "localhost",
+      port: 4444,
+    });
+    expect(out.config._unknown?.mcp).toBeUndefined();
+  });
+
   test("agent.budget TOML overrides the default caps", async () => {
     writeFileSync(
       join(dir, "config.toml"),
@@ -1478,7 +1540,7 @@ enabled = true
     expect(out.config.plugins).toBeUndefined();
   });
 
-  test("loader validates provider, plugins, agent, and staged mcp.server blocks", async () => {
+  test("loader validates provider, plugins, agent, and mcp.server blocks", async () => {
     writeFileSync(
       join(dir, "config.toml"),
       `
@@ -1563,7 +1625,7 @@ required = false
     expect(servers?.docs?.required).toBe(false);
   });
 
-  test("valid staged mcp.server is validated while remaining forward-compatible", async () => {
+  test("valid mcp.server is validated on the typed path", async () => {
     writeFileSync(
       join(dir, "config.toml"),
       `
@@ -1576,14 +1638,13 @@ port = 4444
     );
     const out = await loadConfig({ home: dir });
     expect(out.parseError).toBeUndefined();
-    expect(out.config._unknown?.mcp).toEqual({
-      server: {
-        enabled: true,
-        transport: "sse",
-        host: "127.0.0.1",
-        port: 4444,
-      },
+    expect(out.config.mcp?.server).toEqual({
+      enabled: true,
+      transport: "sse",
+      host: "127.0.0.1",
+      port: 4444,
     });
+    expect(out.config._unknown?.mcp).toBeUndefined();
   });
 
   test("AgenC key aliases: tools → tools_config via loader", async () => {

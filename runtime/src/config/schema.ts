@@ -230,6 +230,19 @@ export interface McpServerConfig {
   readonly required?: boolean;
 }
 
+export type McpServerModeTransport = "stdio" | "sse";
+
+export interface McpServerModeConfig {
+  readonly enabled?: boolean;
+  readonly transport?: McpServerModeTransport;
+  readonly port?: number;
+  readonly host?: string;
+}
+
+export interface McpConfig {
+  readonly server?: McpServerModeConfig;
+}
+
 export type DaemonTransport = "unix" | "stdio";
 
 export interface DaemonConfig {
@@ -405,15 +418,6 @@ export interface PluginsConfig {
   readonly plugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
 }
 
-export type McpServerModeTransport = "stdio" | "sse";
-
-export interface McpServerModeConfig {
-  readonly enabled?: boolean;
-  readonly transport?: McpServerModeTransport;
-  readonly port?: number;
-  readonly host?: string;
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -444,6 +448,7 @@ export interface AgenCConfig {
   readonly tools_config?: ToolsConfig;
   readonly compact_prompt?: string;
   readonly hooks?: HooksMap;
+  readonly mcp?: McpConfig;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly daemon?: DaemonConfig;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
@@ -534,6 +539,9 @@ export interface AgenCConfig {
  * Lit up by S-07:
  *   - lsp_servers      → see `services/lsp/config.ts`.
  *
+ * Lit up by CF-11:
+ *   - mcp              → see `McpConfig` above.
+ *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
  * extend the merge + env-override paths if it reaches the runtime,
@@ -585,6 +593,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "tools_config",
   "compact_prompt",
   "hooks",
+  "mcp",
   "mcp_servers",
   "daemon",
   "lsp_servers",
@@ -639,6 +648,12 @@ export function defaultConfig(): AgenCConfig {
         enabled: false,
       }) as AuthManagedKeysConfig,
     }) as AuthConfig,
+    mcp: Object.freeze({
+      server: Object.freeze({
+        enabled: false,
+        transport: "stdio",
+      }) as McpServerModeConfig,
+    }) as McpConfig,
     daemon: Object.freeze({
       transport: "unix",
       autostart: true,

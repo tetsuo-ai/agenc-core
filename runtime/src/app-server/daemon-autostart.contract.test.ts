@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgenCDaemonAutostartError,
   ensureAgenCDaemonAutostart,
+  resolveAgenCDaemonAutostartConfig,
   shouldAutostartAgenCDaemon,
 } from "./daemon-autostart.js";
 import {
@@ -64,6 +65,37 @@ describe("AgenC daemon autostart", () => {
     expect(
       shouldAutostartAgenCDaemon({ AGENC_DAEMON_AUTOSTART: "1" }, false),
     ).toBe(true);
+  });
+
+  it("loads daemon autostart and mcp.server config together", async () => {
+    const agencHome = await tempAgencHome();
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[daemon]
+autostart = false
+
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "localhost"
+port = 0
+      `,
+    );
+
+    await expect(
+      resolveAgenCDaemonAutostartConfig({ AGENC_HOME: agencHome }, "/home/test"),
+    ).resolves.toEqual({
+      daemonEnabled: false,
+      mcpServer: {
+        enabled: true,
+        transport: "sse",
+        host: "localhost",
+        port: 0,
+      },
+    });
+
+    await rm(agencHome, { recursive: true, force: true });
   });
 
   it("connects to an already-running daemon without spawning", async () => {
