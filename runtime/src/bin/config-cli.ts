@@ -22,7 +22,11 @@ import {
   getConfigFilePath,
   getConfigPath,
 } from "../commands/config.js";
-import { resolveAgencHome } from "../config/env.js";
+import {
+  applyEnvOverrides,
+  resolveAgencHome,
+  type EnvSnapshot,
+} from "../config/env.js";
 import { loadConfig, parseToml } from "../config/loader.js";
 import {
   CONFIG_FILE_VERSION_KEY,
@@ -204,11 +208,11 @@ export async function runAgenCConfigCli(
         io.stdout.write(`${getConfigFilePath(agencHome)}\n`);
         return 0;
       case "show":
-        return await runConfigShow(agencHome, io);
+        return await runConfigShow(agencHome, env, io);
       case "get":
-        return await runConfigGet(command.key, agencHome, io);
+        return await runConfigGet(command.key, agencHome, env, io);
       case "validate":
-        return await runConfigValidate(agencHome, io);
+        return await runConfigValidate(agencHome, env, io);
       case "set":
         return await runConfigSet(command.key, command.value, agencHome, io);
       case "unset":
@@ -248,12 +252,11 @@ function errorMessage(error: unknown): string {
 
 async function runConfigShow(
   agencHome: string,
+  env: EnvSnapshot,
   io: AgenCConfigCliIo,
 ): Promise<number> {
-  const loaded = await loadConfig({
-    home: agencHome,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
+  await runConfigMigrationForRead(agencHome, io);
+  const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
   if (loaded.parseError !== undefined) {
     io.stderr.write(`agenc: config is invalid: ${loaded.parseError}\n`);
     return 1;
@@ -271,12 +274,11 @@ async function runConfigShow(
 async function runConfigGet(
   key: string,
   agencHome: string,
+  env: EnvSnapshot,
   io: AgenCConfigCliIo,
 ): Promise<number> {
-  const loaded = await loadConfig({
-    home: agencHome,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
+  await runConfigMigrationForRead(agencHome, io);
+  const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
   if (loaded.parseError !== undefined) {
     io.stderr.write(`agenc: config is invalid: ${loaded.parseError}\n`);
     return 1;
@@ -293,12 +295,11 @@ async function runConfigGet(
 
 async function runConfigValidate(
   agencHome: string,
+  env: EnvSnapshot,
   io: AgenCConfigCliIo,
 ): Promise<number> {
-  const loaded = await loadConfig({
-    home: agencHome,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
+  await runConfigMigrationForRead(agencHome, io);
+  const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
   if (loaded.parseError !== undefined) {
     io.stderr.write(`agenc: config validation failed: ${loaded.parseError}\n`);
     return 1;
@@ -311,6 +312,29 @@ async function runConfigValidate(
   }
   io.stdout.write(`Config valid: ${loaded.path}\n`);
   return 0;
+}
+
+async function loadEffectiveConfigForCli(
+  agencHome: string,
+  env: EnvSnapshot,
+  io: AgenCConfigCliIo,
+): Promise<{
+  readonly config: AgenCConfig;
+  readonly path: string;
+  readonly parseError?: string;
+}> {
+  const onWarn = (message: string): void => {
+    io.stderr.write(`${message}\n`);
+  };
+  const loaded = await loadConfig({
+    home: agencHome,
+    onWarn,
+  });
+  return {
+    config: applyEnvOverrides(loaded.config, env, onWarn),
+    path: loaded.path,
+    ...(loaded.parseError !== undefined ? { parseError: loaded.parseError } : {}),
+  };
 }
 
 async function runConfigSet(
@@ -362,10 +386,10 @@ async function runConfigEdit(
 ): Promise<number> {
   const path = getConfigFilePath(agencHome);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const editor = editorForEnv(env);
-  const code = await spawner(editor, [path]);
+  const editor = parseEditorCommand(editorForEnv(env));
+  const code = await spawner(editor.command, [...editor.args, path]);
   if (code !== 0) {
-    io.stderr.write(`agenc: editor "${editor}" exited with code ${code}. File path: ${path}\n`);
+    io.stderr.write(`agenc: editor "${editor.command}" exited with code ${code}. File path: ${path}\n`);
     return 1;
   }
   io.stdout.write(`Edited ${path}\n`);
@@ -382,6 +406,87 @@ const defaultSpawnEditor: ConfigEditorSpawner = (command, args) =>
       resolve(127);
     }
   });
+
+function parseEditorCommand(raw: string): {
+  readonly command: string;
+  readonly args: readonly string[];
+} {
+  const parts = splitCommandLine(raw);
+  const command = parts[0]?.trim();
+  if (command === undefined || command.length === 0) {
+    throw new Error("EDITOR resolved to an empty command");
+  }
+  return {
+    command,
+    args: parts.slice(1),
+  };
+}
+
+function splitCommandLine(raw: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+  let escaped = false;
+
+  const push = (): void => {
+    if (current.length > 0) {
+      args.push(current);
+      current = "";
+    }
+  };
+
+  for (const char of raw.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (/\s/u.test(char)) {
+      push();
+      continue;
+    }
+    current += char;
+  }
+  if (escaped) current += "\\";
+  if (quote !== null) {
+    throw new Error("EDITOR contains an unterminated quote");
+  }
+  push();
+  return args;
+}
+
+async function runConfigMigrationForRead(
+  agencHome: string,
+  io: AgenCConfigCliIo,
+): Promise<void> {
+  const configPath = getConfigFilePath(agencHome);
+  const initialTarget = await resolveWritableConfigTarget(configPath);
+  const migrationResult = await runConfigFileMigrations({
+    home: agencHome,
+    configTomlPath: initialTarget.path,
+    parseToml,
+    onWarn: (message) => io.stderr.write(`${message}\n`),
+  });
+  const target = await resolveWritableConfigTarget(configPath);
+  await assertMigrationAllowsEdit({
+    result: migrationResult,
+    tomlExists: target.exists,
+    jsonExists: await pathIsFile(join(agencHome, "config.json")),
+  });
+}
 
 async function prepareConfigEditTarget(
   agencHome: string,

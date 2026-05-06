@@ -21,6 +21,7 @@ import {
   formatAgenCConfigCliHelpText,
   parseAgenCConfigCliArgs,
   runAgenCConfigCli,
+  type AgenCConfigCliOptions,
   type AgenCConfigCliIo,
 } from "./config-cli.js";
 import { main } from "./agenc.js";
@@ -69,9 +70,10 @@ async function run(
   command: ReturnType<typeof parseAgenCConfigCliArgs>,
   home: string,
   io = createIo(),
+  options: Omit<AgenCConfigCliOptions, "agencHome" | "io"> = {},
 ): Promise<{ readonly code: number; readonly io: ReturnType<typeof createIo> }> {
   if (command === null) throw new Error("expected config command");
-  const code = await runAgenCConfigCli(command, { agencHome: home, io });
+  const code = await runAgenCConfigCli(command, { ...options, agencHome: home, io });
   return { code, io };
 }
 
@@ -129,7 +131,7 @@ describe("agenc config CLI", () => {
       { kind: "edit" },
       {
         agencHome: home,
-        env: { EDITOR: "vim-test" },
+        env: { EDITOR: "code --wait" },
         io: editIo,
         spawner: async (command, args) => {
           calls.push({ command, args });
@@ -138,9 +140,26 @@ describe("agenc config CLI", () => {
       },
     );
     expect(editExit).toBe(0);
-    expect(calls).toEqual([{ command: "vim-test", args: [configPath(home)] }]);
+    expect(calls).toEqual([{ command: "code", args: ["--wait", configPath(home)] }]);
     expect(existsSync(home)).toBe(true);
     expect(editIo.stdoutText()).toContain(`Edited ${configPath(home)}`);
+
+    const failedIo = createIo();
+    const failedExit = await runAgenCConfigCli(
+      { kind: "edit" },
+      {
+        agencHome: home,
+        env: { VISUAL: "vim -n" },
+        io: failedIo,
+        spawner: async (command, args) => {
+          calls.push({ command, args });
+          return 42;
+        },
+      },
+    );
+    expect(failedExit).toBe(1);
+    expect(calls.at(-1)).toEqual({ command: "vim", args: ["-n", configPath(home)] });
+    expect(failedIo.stderrText()).toContain('editor "vim" exited with code 42');
   });
 
   it("shows, gets, and validates effective config without hiding invalid files", async () => {
@@ -154,6 +173,24 @@ describe("agenc config CLI", () => {
     const get = await run(parseAgenCConfigCliArgs(["config", "get", "model"]), home);
     expect(get.code).toBe(0);
     expect(get.io.stdoutText()).toBe("grok-3\n");
+
+    const envGet = await run(
+      parseAgenCConfigCliArgs(["config", "get", "model"]),
+      home,
+      createIo(),
+      { env: { AGENC_MODEL: "grok-env" } },
+    );
+    expect(envGet.code).toBe(0);
+    expect(envGet.io.stdoutText()).toBe("grok-env\n");
+
+    const envShow = await run(
+      parseAgenCConfigCliArgs(["config", "show"]),
+      home,
+      createIo(),
+      { env: { AGENC_MODEL: "grok-env" } },
+    );
+    expect(envShow.code).toBe(0);
+    expect(JSON.parse(envShow.io.stdoutText())).toMatchObject({ model: "grok-env" });
 
     const validate = await run(parseAgenCConfigCliArgs(["config", "validate"]), home);
     expect(validate.code).toBe(0);
@@ -209,6 +246,14 @@ describe("agenc config CLI", () => {
 
     const invalidHome = makeHome();
     writeFileSync(join(invalidHome, "config.json"), "{not json", "utf8");
+    const invalidValidate = await run(
+      parseAgenCConfigCliArgs(["config", "validate"]),
+      invalidHome,
+    );
+    expect(invalidValidate.code).toBe(1);
+    expect(invalidValidate.io.stderrText()).toContain("skipped config migration");
+    expect(invalidValidate.io.stdoutText()).not.toContain("Config valid");
+
     const rejected = await run(parseAgenCConfigCliArgs(["config", "set", "model", "grok-3"]), invalidHome);
     expect(rejected.code).toBe(1);
     expect(existsSync(configPath(invalidHome))).toBe(false);
