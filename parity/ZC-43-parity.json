@@ -24,6 +24,8 @@
     "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/process-manager.ts",
     "runtime/src/unified-exec/process-manager.test.ts",
+    "runtime/src/tools/router.ts",
+    "runtime/src/tools/router.test.ts",
     "runtime/src/permissions/guardian/approval-request.ts",
     "runtime/src/permissions/guardian/approval-request.test.ts",
     "runtime/src/permissions/guardian/arbiter.ts"
@@ -34,7 +36,8 @@
     "runtime/src/session/session.test.ts",
     "runtime/src/tools/system/exec-command.test.ts",
     "runtime/src/unified-exec/process-manager.test.ts",
-    "runtime/src/permissions/guardian/approval-request.test.ts"
+    "runtime/src/permissions/guardian/approval-request.test.ts",
+    "runtime/src/tools/router.test.ts"
   ],
   "checklistPortSites": [
     {
@@ -79,11 +82,13 @@
       "checklistFile": "core/src/guardian/review.rs",
       "sourceFile": "core/src/guardian/review.rs",
       "targetFiles": [
+        "runtime/src/tools/router.ts",
+        "runtime/src/tools/router.test.ts",
         "runtime/src/permissions/guardian/approval-request.ts",
         "runtime/src/permissions/guardian/approval-request.test.ts",
         "runtime/src/permissions/guardian/arbiter.ts"
       ],
-      "resolution": "Threaded through ApprovalCtx policyDecider and blockedRequestObserver fields, then represented on GuardianApprovalRequest as networkPolicyInterfaces metadata so review prompt construction sees the interface presence without serializing functions."
+      "resolution": "Threaded through ToolRouter approval-context construction into ApprovalCtx policyDecider and blockedRequestObserver fields, then represented on GuardianApprovalRequest as networkPolicyInterfaces metadata so review prompt construction sees the interface presence without serializing functions."
     }
   ],
   "requiredBehaviors": [
@@ -154,13 +159,15 @@
         "UnifiedExecRuntimeSandbox.blockedRequestObserver",
         "SandboxTransformRequest.networkPolicyDecider",
         "ApprovalCtx.networkPolicyDecider",
+        "ToolRouter.networkPolicyInterfacesFromTurn",
         "GuardianApprovalRequestBase.networkPolicyInterfaces"
       ],
       "behavior": "Exec, spawn, and guardian target surfaces carry the optional interface presence without starting a managed proxy transport.",
       "tests": [
         "runtime/src/tools/system/exec-command.test.ts",
         "runtime/src/unified-exec/process-manager.test.ts",
-        "runtime/src/permissions/guardian/approval-request.test.ts"
+        "runtime/src/permissions/guardian/approval-request.test.ts",
+        "runtime/src/tools/router.test.ts"
       ]
     }
   ],

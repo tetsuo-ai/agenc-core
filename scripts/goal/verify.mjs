@@ -1523,6 +1523,8 @@ const ITEM_EVIDENCE = {
       "runtime/src/session/session.test.ts",
       "runtime/src/tools/system/exec-command.ts",
       "runtime/src/tools/system/exec-command.test.ts",
+      "runtime/src/tools/router.ts",
+      "runtime/src/tools/router.test.ts",
       "runtime/src/unified-exec/types.ts",
       "runtime/src/unified-exec/process-manager.ts",
       "runtime/src/unified-exec/process-manager.test.ts",
@@ -1543,6 +1545,8 @@ const ITEM_EVIDENCE = {
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.ts" },
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/permissions/guardian/approval-request.test.ts" },
       { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/system/exec-command.ts" },
+      { pattern: "networkPolicyInterfacesFromTurn", scope: "runtime/src/tools/router.ts" },
+      { pattern: "networkPolicyInterfaces", scope: "runtime/src/tools/router.test.ts" },
       { pattern: "networkPolicyDecider", scope: "runtime/src/unified-exec/process-manager.ts" },
       { pattern: "no-op-interface-port", scope: "parity/ZC-43-parity.json" },
     ],
@@ -1551,6 +1555,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/session/turn-context.test.ts",
       "runtime/src/session/session.test.ts",
       "runtime/src/tools/system/exec-command.test.ts",
+      "runtime/src/tools/router.test.ts",
       "runtime/src/unified-exec/process-manager.test.ts",
       "runtime/src/permissions/guardian/approval-request.test.ts",
     ],
@@ -5696,6 +5701,8 @@ function assertZc43NetworkPolicyInterfaces() {
     "runtime/src/session/session.ts",
     "runtime/src/tools/system/exec-command.ts",
     "runtime/src/tools/system/exec-command.test.ts",
+    "runtime/src/tools/router.ts",
+    "runtime/src/tools/router.test.ts",
     "runtime/src/unified-exec/types.ts",
     "runtime/src/unified-exec/process-manager.ts",
     "runtime/src/unified-exec/process-manager.test.ts",
@@ -5786,6 +5793,24 @@ function assertZc43NetworkPolicyInterfaces() {
   if (!guardianSource.includes("networkPolicyInterfaces")) {
     failGate("ZC-43: guardian approval request must carry network policy interface metadata.");
   }
+  const routerSource = readRequired("runtime/src/tools/router.ts");
+  for (const marker of [
+    "networkPolicyInterfacesFromTurn",
+    "networkPolicyDecider",
+    "blockedRequestObserver",
+  ]) {
+    if (!routerSource.includes(marker)) {
+      failGate(`ZC-43: router approval-context threading is missing ${marker}.`);
+    }
+  }
+  const routerTestSource = readRequired("runtime/src/tools/router.test.ts");
+  if (
+    !routerTestSource.includes(
+      "threads turn network policy interfaces into guardian approval request",
+    )
+  ) {
+    failGate("ZC-43: router guardian approval path must test network policy interface threading.");
+  }
 
   const testRun = run("npm", [
     "exec",
@@ -5796,6 +5821,7 @@ function assertZc43NetworkPolicyInterfaces() {
     "src/session/turn-context.test.ts",
     "src/session/session.test.ts",
     "src/tools/system/exec-command.test.ts",
+    "src/tools/router.test.ts",
     "src/unified-exec/process-manager.test.ts",
     "src/permissions/guardian/approval-request.test.ts",
   ]);

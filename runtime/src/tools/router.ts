@@ -546,6 +546,7 @@ export class ToolRouter {
           callId: invocation.callId,
           toolName: nameDisplay(invocation.toolName),
           turnId: directDispatchTurnId(invocation),
+          ...networkPolicyInterfacesFromTurn(executionInvocation.turn),
           ...(forcedApprovalReason !== undefined
             ? { retryReason: forcedApprovalReason }
             : {}),
@@ -839,6 +840,7 @@ export class ToolRouter {
       callId: toolCall.id,
       toolName: toolCall.name,
       turnId: opts.turn.subId,
+      ...networkPolicyInterfacesFromTurn(opts.turn),
       ...(forcedApprovalReason !== undefined
         ? { retryReason: forcedApprovalReason }
         : {}),
@@ -1015,6 +1017,20 @@ function directDispatchTurnId(invocation: ToolInvocation): string {
   return typeof value === "string" && value.length > 0
     ? value
     : invocation.callId;
+}
+
+function networkPolicyInterfacesFromTurn(
+  turn: TurnContext,
+): Partial<Pick<ApprovalCtx, "networkPolicyDecider" | "blockedRequestObserver">> {
+  const network = turn.network;
+  return {
+    ...(network?.policyDecider !== undefined
+      ? { networkPolicyDecider: network.policyDecider }
+      : {}),
+    ...(network?.blockedRequestObserver !== undefined
+      ? { blockedRequestObserver: network.blockedRequestObserver }
+      : {}),
+  };
 }
 
 function directDispatchApprovalPolicy(invocation: ToolInvocation): ApprovalPolicy {

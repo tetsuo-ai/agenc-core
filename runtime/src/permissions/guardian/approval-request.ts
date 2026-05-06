@@ -266,16 +266,17 @@ function guardianApprovalRequestBase(ctx: ApprovalCtx): GuardianApprovalRequestB
 function guardianNetworkPolicyInterfaces(
   ctx: ApprovalCtx,
 ): Pick<GuardianApprovalRequestBase, "networkPolicyInterfaces"> {
-  if (
-    ctx.networkPolicyDecider === undefined &&
-    ctx.blockedRequestObserver === undefined
-  ) {
+  const network = ctx.invocation.turn.network;
+  const policyDecider = ctx.networkPolicyDecider ?? network?.policyDecider;
+  const blockedRequestObserver = ctx.blockedRequestObserver ??
+    network?.blockedRequestObserver;
+  if (policyDecider === undefined && blockedRequestObserver === undefined) {
     return {};
   }
   return {
     networkPolicyInterfaces: {
-      policyDecider: ctx.networkPolicyDecider !== undefined,
-      blockedRequestObserver: ctx.blockedRequestObserver !== undefined,
+      policyDecider: policyDecider !== undefined,
+      blockedRequestObserver: blockedRequestObserver !== undefined,
     },
   };
 }
