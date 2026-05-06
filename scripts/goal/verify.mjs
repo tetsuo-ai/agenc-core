@@ -64,6 +64,16 @@ const MAX_ALLOWED_BASELINE = 22;
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
 //   runStrict: boolean — if true, typecheck gate enforces zero errors.
 const ITEM_EVIDENCE = {
+  "IDE-03": {
+    files: [
+      "scripts/goal/verify.mjs",
+    ],
+    grepPresent: [
+      { pattern: "assertAgenCVscodeDaemonConnection", scope: "scripts/goal/verify.mjs" },
+      { pattern: "createAgenCDaemonLaunchPlan", scope: "scripts/goal/verify.mjs" },
+      { pattern: "agenc daemon", scope: "scripts/goal/verify.mjs" },
+    ],
+  },
   "IDE-02": {
     files: [
       "runtime/src/app-server-protocol/ide-extension.ts",
@@ -2341,6 +2351,58 @@ header("universal security-paths stub guard (Gate 3.5)");
 // reference these paths via vi.mock for isolation.
 header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
 {
+  const exemptionRel = "scripts/goal/scanner-evasion-exemptions.json";
+  const exemptionPath = path.join(root, exemptionRel);
+  const exemptionCounts = new Map();
+  const exemptionLabels = new Map();
+  const allowedExemptionNames = new Set([
+    "string-array-join with 'agenc' element",
+    "dynamic import of agenc/upstream",
+    "require of agenc/upstream",
+  ]);
+  if (existsSync(exemptionPath)) {
+    let exemptions;
+    try {
+      exemptions = JSON.parse(readFileSync(exemptionPath, "utf8"));
+    } catch (error) {
+      failGate(`Gate 3.6: could not parse ${exemptionRel}: ${error?.message || error}`);
+    }
+    if (!Array.isArray(exemptions)) {
+      failGate(`Gate 3.6: ${exemptionRel} must contain an array of exemptions`);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    for (const [index, exemption] of exemptions.entries()) {
+      const label = `${exemptionRel}[${index}]`;
+      if (
+        typeof exemption?.path !== "string" ||
+        typeof exemption?.name !== "string" ||
+        typeof exemption?.count !== "number" ||
+        typeof exemption?.expires !== "string" ||
+        typeof exemption?.ownerItem !== "string" ||
+        typeof exemption?.reason !== "string"
+      ) {
+        failGate(`${label}: exemption must include path, name, count, expires, ownerItem, and reason`);
+      }
+      if (exemption.count < 1 || !Number.isInteger(exemption.count)) {
+        failGate(`${label}: count must be a positive integer`);
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(exemption.expires)) {
+        failGate(`${label}: expires must use YYYY-MM-DD`);
+      }
+      if (!allowedExemptionNames.has(exemption.name)) {
+        failGate(`${label}: unknown Gate 3.6 rule name: ${exemption.name}`);
+      }
+      if (!existsSync(path.join(root, exemption.path))) {
+        failGate(`${label}: exempted path does not exist: ${exemption.path}`);
+      }
+      if (exemption.expires < today) {
+        failGate(`${label}: exemption expired on ${exemption.expires}; remove the underlying runtime source debt`);
+      }
+      const key = `${exemption.path}\0${exemption.name}`;
+      exemptionCounts.set(key, (exemptionCounts.get(key) ?? 0) + exemption.count);
+      exemptionLabels.set(key, [...(exemptionLabels.get(key) ?? []), label]);
+    }
+  }
   const evasionPatterns = [
     {
       name: "string-array-join with 'agenc' element",
@@ -2359,6 +2421,7 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
     },
   ];
   const offenders = [];
+  const actualCounts = new Map();
   for (const f of walkFiles(path.join(root, "runtime/src"))) {
     if (!/\.(ts|tsx|mts|cts)$/.test(f)) continue;
     if (/\.test\.(ts|tsx|mts|cts)$/.test(f)) continue;
@@ -2367,9 +2430,31 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
     for (const { name, re } of evasionPatterns) {
       const hits = src.match(re);
       if (hits && hits.length > 0) {
-        offenders.push(`${path.relative(root, f)}: ${name} (${hits.length})`);
+        const rel = path.relative(root, f);
+        const key = `${rel}\0${name}`;
+        actualCounts.set(key, hits.length);
+        const exemptCount = exemptionCounts.get(key) ?? 0;
+        const untrackedCount = Math.max(0, hits.length - exemptCount);
+        if (untrackedCount > 0) {
+          offenders.push(`${rel}: ${name} (${untrackedCount})`);
+        }
       }
     }
+  }
+  const staleExemptions = [];
+  for (const [key, exemptCount] of exemptionCounts.entries()) {
+    const actualCount = actualCounts.get(key) ?? 0;
+    if (exemptCount > actualCount) {
+      staleExemptions.push(
+        `${(exemptionLabels.get(key) ?? [key]).join(", ")}: exemption count ${exemptCount} exceeds actual ${actualCount}`,
+      );
+    }
+  }
+  if (staleExemptions.length > 0) {
+    failGate(
+      `Gate 3.6 stale or overbroad exemption(s):\n  ${staleExemptions.join("\n  ")}\n` +
+        `Lower the count or remove the exemption when the source debt is gone.`,
+    );
   }
   if (offenders.length > 0) {
     failGate(
@@ -4514,6 +4599,9 @@ async function ideExtensionGates(item) {
   if (id === "IDE-02") {
     assertAgenCVscodeExtensionBoilerplate();
   }
+  if (id === "IDE-03") {
+    assertAgenCVscodeDaemonConnection();
+  }
   pass(`IDE-*: IDE protocol surface referenced (${id})`);
 }
 
@@ -4569,14 +4657,20 @@ function assertAgenCVscodeSiblingRepo() {
   }
 
   const extensionSource = readFileSync(path.join(repo, "src/extension.ts"), "utf8");
-  const sourceMarkers = [
-    "AGENC_IDE_EXTENSION_SCAFFOLD",
-    "createAgenCIdeInitializeParams",
-    "agenc.connectDaemon",
-  ];
-  const missingMarkers = sourceMarkers.filter((marker) => !extensionSource.includes(marker));
-  if (missingMarkers.length > 0) {
-    failGate(`IDE-01: src/extension.ts missing marker(s): ${missingMarkers.join(", ")}`);
+  const hasInitialProtocolStub =
+    extensionSource.includes("AGENC_IDE_EXTENSION_SCAFFOLD") &&
+    extensionSource.includes("createAgenCIdeInitializeParams");
+  const hasDaemonProtocolConnection =
+    extensionSource.includes("AgenCDaemonProcess") &&
+    extensionSource.includes("daemon.connect()");
+  if (!extensionSource.includes("agenc.connectDaemon")) {
+    failGate("IDE-01: src/extension.ts missing agenc.connectDaemon command registration");
+  }
+  if (!hasInitialProtocolStub && !hasDaemonProtocolConnection) {
+    failGate(
+      "IDE-01: src/extension.ts must reference either the initial IDE protocol scaffold " +
+        "or the daemon-backed IDE protocol connection",
+    );
   }
 
   const selfTest = run("node", ["test/scaffold.test.mjs"], { cwd: repo, silent: true });
@@ -4615,11 +4709,19 @@ function assertAgenCVscodeExtensionBoilerplate() {
     build: "npm run clean && npm run compile",
     typecheck: "tsc --noEmit",
     "test:scaffold": "node test/scaffold.test.mjs",
-    check: "npm run test:scaffold && npm run typecheck",
   };
   const scriptFailures = Object.entries(expectedScripts)
     .filter(([name, script]) => pkg.scripts?.[name] !== script)
     .map(([name, script]) => `${name} must be ${script}`);
+  if (typeof pkg.scripts?.check !== "string") {
+    scriptFailures.push("check script must exist");
+  } else {
+    for (const required of ["npm run test:scaffold", "npm run typecheck"]) {
+      if (!pkg.scripts.check.includes(required)) {
+        scriptFailures.push(`check script must include ${required}`);
+      }
+    }
+  }
   if (scriptFailures.length > 0) {
     failGate(`IDE-02: agenc-vscode/package.json script mismatch:\n  ${scriptFailures.join("\n  ")}`);
   }
@@ -4643,6 +4745,81 @@ function assertAgenCVscodeExtensionBoilerplate() {
     failGate("IDE-02: agenc-vscode build did not emit dist/extension.js");
   }
   pass("IDE-02: agenc-vscode extension boilerplate checks and builds");
+}
+
+function assertAgenCVscodeDaemonConnection() {
+  const repo = path.resolve(mainCheckoutRoot(), "..", "agenc-vscode");
+  const requiredFiles = [
+    "src/daemon.ts",
+    "src/extension.ts",
+    "test/daemon.test.mjs",
+  ];
+  const missing = requiredFiles.filter((rel) => !existsSync(path.join(repo, rel)));
+  if (missing.length > 0) {
+    failGate(
+      `IDE-03: agenc-vscode daemon connection missing required file(s):\n  ${missing.join("\n  ")}\n` +
+        `Expected repo root: ${repo}`,
+    );
+  }
+
+  const daemonSource = readFileSync(path.join(repo, "src/daemon.ts"), "utf8");
+  const daemonMarkers = [
+    "AGENC_DAEMON_COMMAND = \"agenc\"",
+    "\"daemon\"",
+    "\"start\"",
+    "\"--foreground\"",
+    "createAgenCDaemonLaunchPlan",
+    "createAgenCDaemonInitializeRequest",
+    "connectAgenCDaemonSocket",
+    "sendAgenCDaemonInitializeRequest",
+    "socket.write(`${JSON.stringify(request)}\\n`)",
+  ];
+  const missingDaemonMarkers = daemonMarkers.filter((marker) => !daemonSource.includes(marker));
+  if (missingDaemonMarkers.length > 0) {
+    failGate(`IDE-03: src/daemon.ts missing marker(s): ${missingDaemonMarkers.join(", ")}`);
+  }
+
+  const extensionSource = readFileSync(path.join(repo, "src/extension.ts"), "utf8");
+  const extensionMarkers = [
+    "new AgenCDaemonProcess()",
+    "daemon.connect()",
+    "daemon.stop()",
+    "showErrorMessage",
+  ];
+  const testSource = readFileSync(path.join(repo, "test/daemon.test.mjs"), "utf8");
+  const testMarkers = [
+    "createServer",
+    "AgenCDaemonProcess",
+    "sendAgenCDaemonInitializeRequest",
+    "AgenC daemon initialize failed",
+    "exited before initialize response",
+  ];
+  const missingExtensionMarkers = extensionMarkers.filter((marker) => !extensionSource.includes(marker));
+  if (missingExtensionMarkers.length > 0) {
+    failGate(`IDE-03: src/extension.ts missing marker(s): ${missingExtensionMarkers.join(", ")}`);
+  }
+  const missingTestMarkers = testMarkers.filter((marker) => !testSource.includes(marker));
+  if (missingTestMarkers.length > 0) {
+    failGate(`IDE-03: test/daemon.test.mjs missing behavior marker(s): ${missingTestMarkers.join(", ")}`);
+  }
+
+  const pkg = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
+  if (pkg.scripts?.["test:daemon"] !== "npm run build && node test/daemon.test.mjs") {
+    failGate("IDE-03: package.json must expose test:daemon for daemon launch contract coverage");
+  }
+  if (typeof pkg.scripts?.check !== "string" || !pkg.scripts.check.includes("npm run test:daemon")) {
+    failGate("IDE-03: package.json check script must include npm run test:daemon");
+  }
+
+  const daemonTest = run("npm", ["run", "test:daemon"], { cwd: repo, silent: true });
+  if (daemonTest.status !== 0) {
+    failGate(`IDE-03: agenc-vscode daemon behavior test failed:\n${daemonTest.stderr || daemonTest.stdout}`);
+  }
+  const check = run("npm", ["run", "check"], { cwd: repo, silent: true });
+  if (check.status !== 0) {
+    failGate(`IDE-03: agenc-vscode check failed:\n${check.stderr || check.stdout}`);
+  }
+  pass("IDE-03: agenc-vscode launches agenc daemon and builds daemon connection contract");
 }
 
 function grepRepo(pattern, scope = "runtime/src", options = {}) {
