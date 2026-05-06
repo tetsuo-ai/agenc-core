@@ -18,6 +18,29 @@ settings-env scrubber wholesale; the live behavior is owned by:
 - `runtime/src/bin/bootstrap.ts` and `runtime/src/session/session.ts` for
   runtime managed-key attempt gating.
 
+## CF-06 `agent.retention`
+
+CF-06 is net-new AgenC config over the daemon state pruners that already own
+agent-run and snapshot cleanup. Runtime ownership is split intentionally:
+
+- `runtime/src/config/schema.ts` owns the typed `AgentRunRetentionConfig` and
+  defaults: `completed_days=30`, `failed_days=90`, `snapshot_days=3`,
+  `snapshot_max_count=10000`, and `snapshot_max_bytes=67108864`.
+- `runtime/src/app-server/daemon-cli.ts` reads `config.agent?.retention` at
+  daemon startup and passes it to terminal-run pruning and snapshot pruning.
+- `runtime/src/state/pruning.ts` applies completed-run, failed-run,
+  snapshot-age, snapshot-count, and snapshot-byte retention.
+- `runtime/src/state/snapshot-policy.ts` receives daemon `snapshotRetention`
+  and prunes after each session snapshot write.
+- `runtime/src/agents/run-agent.ts` does not read retention directly. It emits
+  `run_complete`, `run_error`, and `run_interrupted` progress events; the
+  daemon/background-agent runner records those events through the snapshot
+  policy, and the state pruners apply retention outside the live turn loop. This
+  avoids having `runAgent` open state databases or prune while an agent turn is
+  still active.
+
+## CF-10 `plugins`
+
 CF-10 ports the plugin config shape from `/home/tetsuo/git/codex` at commit <!-- branding-scan: allow local donor citation in parity artifact -->
 `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
 

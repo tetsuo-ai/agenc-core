@@ -119,6 +119,7 @@ import {
   arbitratePermissionMode,
   requestApproval as requestGuardianApproval,
   requestToolUserApproval,
+  type ApprovalCtx,
   type ApprovalRequestFn,
   type ApprovalResolver,
 } from "../permissions/guardian/arbiter.js";
@@ -1311,6 +1312,7 @@ export async function runToolUse(
         callId: invocation.callId,
         toolName: toolNameDisplay(invocation.toolName),
         turnId: currentTurnId,
+        ...networkPolicyInterfacesFromInvocation(invocation),
         ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
       },
       args: inputForTool,
@@ -1794,6 +1796,20 @@ export async function executeToolDispatch(
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
+
+function networkPolicyInterfacesFromInvocation(
+  invocation: ToolInvocation,
+): Partial<Pick<ApprovalCtx, "networkPolicyDecider" | "blockedRequestObserver">> {
+  const network = invocation.turn.network;
+  return {
+    ...(network?.policyDecider !== undefined
+      ? { networkPolicyDecider: network.policyDecider }
+      : {}),
+    ...(network?.blockedRequestObserver !== undefined
+      ? { blockedRequestObserver: network.blockedRequestObserver }
+      : {}),
+  };
+}
 
 function errorOutput(opts: {
   readonly invocation: ToolInvocation;

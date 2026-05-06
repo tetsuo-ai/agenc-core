@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
+  unrestrictedFileSystemPolicy,
   type SandboxExecRequest,
   type SandboxManager,
   type SandboxTransformRequest,
@@ -143,12 +144,22 @@ describe("UnifiedExecProcessManager", () => {
 
   test("transforms restricted commands through the configured sandbox manager", async () => {
     const transforms: SandboxTransformRequest[] = [];
+    const selections: Array<{
+      readonly hasManagedNetworkRequirements: boolean;
+    }> = [];
     const commandCwd = process.cwd();
     const sandboxPolicyCwd = dirname(commandCwd);
+    const networkPolicyDecider = {
+      decide: () => ({ decision: "allow" as const }),
+    };
+    const blockedRequestObserver = { onBlockedRequest: () => undefined };
     const manager = new UnifiedExecProcessManager({
       cwd: sandboxPolicyCwd,
       sandboxManager: {
-        selectInitial: () => "linux_seccomp",
+        selectInitial: (request) => {
+          selections.push(request);
+          return "linux_seccomp";
+        },
         transform: (request): SandboxExecRequest => {
           transforms.push(request);
           return {
@@ -185,6 +196,8 @@ describe("UnifiedExecProcessManager", () => {
         sandboxPolicyCwd,
         preference: "require",
         agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
+        networkPolicyDecider,
+        blockedRequestObserver,
       },
     });
 
@@ -197,6 +210,74 @@ describe("UnifiedExecProcessManager", () => {
       sandboxPolicyCwd,
       command: expect.objectContaining({ cwd: commandCwd }),
     });
+    expect(selections).toEqual([
+      expect.objectContaining({ hasManagedNetworkRequirements: false }),
+    ]);
+    expect(transforms[0]?.networkPolicyDecider).toBe(networkPolicyDecider);
+    expect(transforms[0]?.blockedRequestObserver).toBe(blockedRequestObserver);
+  });
+
+  test("network policy interfaces alone do not force managed network sandboxing", async () => {
+    const transforms: SandboxTransformRequest[] = [];
+    const selections: Array<{
+      readonly hasManagedNetworkRequirements: boolean;
+      readonly preference: string;
+    }> = [];
+    const networkPolicyDecider = { decide: () => ({ decision: "allow" as const }) };
+    const blockedRequestObserver = { onBlockedRequest: () => undefined };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: {
+        selectInitial: (request) => {
+          selections.push(request);
+          return "none";
+        },
+        transform: (request): SandboxExecRequest => {
+          transforms.push(request);
+          return {
+            command: [request.command.program, ...request.command.args],
+            cwd: request.command.cwd,
+            env: request.command.env,
+            sandbox: request.sandbox,
+            windowsSandboxLevel: request.windowsSandboxLevel,
+            windowsSandboxPrivateDesktop:
+              request.windowsSandboxPrivateDesktop,
+            permissionProfile: request.permissions,
+            fileSystemSandboxPolicy: request.permissions.fileSystem,
+            networkSandboxPolicy: request.permissions.network,
+          };
+        },
+      },
+    });
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      unrestrictedFileSystemPolicy(),
+      "enabled",
+    );
+
+    const result = await manager.execCommand({
+      cmd: "printf host-command",
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "auto",
+        networkPolicyDecider,
+        blockedRequestObserver,
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("host-command");
+    expect(selections).toEqual([
+      expect.objectContaining({
+        preference: "auto",
+        hasManagedNetworkRequirements: false,
+      }),
+    ]);
+    expect(transforms).toHaveLength(1);
+    expect(transforms[0]).toMatchObject({ sandbox: "none" });
+    expect(transforms[0]?.networkPolicyDecider).toBe(networkPolicyDecider);
+    expect(transforms[0]?.blockedRequestObserver).toBe(blockedRequestObserver);
   });
 
   test("records Windows sandbox setup metrics only for restricted-token backend", async () => {
