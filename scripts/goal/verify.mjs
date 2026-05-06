@@ -64,6 +64,16 @@ const MAX_ALLOWED_BASELINE = 22;
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
 //   runStrict: boolean — if true, typecheck gate enforces zero errors.
 const ITEM_EVIDENCE = {
+  "IDE-03": {
+    files: [
+      "scripts/goal/verify.mjs",
+    ],
+    grepPresent: [
+      { pattern: "assertAgenCVscodeDaemonConnection", scope: "scripts/goal/verify.mjs" },
+      { pattern: "createAgenCDaemonLaunchPlan", scope: "scripts/goal/verify.mjs" },
+      { pattern: "agenc daemon", scope: "scripts/goal/verify.mjs" },
+    ],
+  },
   "IDE-02": {
     files: [
       "runtime/src/app-server-protocol/ide-extension.ts",
@@ -4452,6 +4462,9 @@ async function ideExtensionGates(item) {
   if (id === "IDE-02") {
     assertAgenCVscodeExtensionBoilerplate();
   }
+  if (id === "IDE-03") {
+    assertAgenCVscodeDaemonConnection();
+  }
   pass(`IDE-*: IDE protocol surface referenced (${id})`);
 }
 
@@ -4507,14 +4520,20 @@ function assertAgenCVscodeSiblingRepo() {
   }
 
   const extensionSource = readFileSync(path.join(repo, "src/extension.ts"), "utf8");
-  const sourceMarkers = [
-    "AGENC_IDE_EXTENSION_SCAFFOLD",
-    "createAgenCIdeInitializeParams",
-    "agenc.connectDaemon",
-  ];
-  const missingMarkers = sourceMarkers.filter((marker) => !extensionSource.includes(marker));
-  if (missingMarkers.length > 0) {
-    failGate(`IDE-01: src/extension.ts missing marker(s): ${missingMarkers.join(", ")}`);
+  const hasInitialProtocolStub =
+    extensionSource.includes("AGENC_IDE_EXTENSION_SCAFFOLD") &&
+    extensionSource.includes("createAgenCIdeInitializeParams");
+  const hasDaemonProtocolConnection =
+    extensionSource.includes("AgenCDaemonProcess") &&
+    extensionSource.includes("createAgenCDaemonInitializeRequest");
+  if (!extensionSource.includes("agenc.connectDaemon")) {
+    failGate("IDE-01: src/extension.ts missing agenc.connectDaemon command registration");
+  }
+  if (!hasInitialProtocolStub && !hasDaemonProtocolConnection) {
+    failGate(
+      "IDE-01: src/extension.ts must reference either the initial IDE protocol scaffold " +
+        "or the daemon-backed IDE protocol connection",
+    );
   }
 
   const selfTest = run("node", ["test/scaffold.test.mjs"], { cwd: repo, silent: true });
@@ -4553,11 +4572,19 @@ function assertAgenCVscodeExtensionBoilerplate() {
     build: "npm run clean && npm run compile",
     typecheck: "tsc --noEmit",
     "test:scaffold": "node test/scaffold.test.mjs",
-    check: "npm run test:scaffold && npm run typecheck",
   };
   const scriptFailures = Object.entries(expectedScripts)
     .filter(([name, script]) => pkg.scripts?.[name] !== script)
     .map(([name, script]) => `${name} must be ${script}`);
+  if (typeof pkg.scripts?.check !== "string") {
+    scriptFailures.push("check script must exist");
+  } else {
+    for (const required of ["npm run test:scaffold", "npm run typecheck"]) {
+      if (!pkg.scripts.check.includes(required)) {
+        scriptFailures.push(`check script must include ${required}`);
+      }
+    }
+  }
   if (scriptFailures.length > 0) {
     failGate(`IDE-02: agenc-vscode/package.json script mismatch:\n  ${scriptFailures.join("\n  ")}`);
   }
@@ -4581,6 +4608,60 @@ function assertAgenCVscodeExtensionBoilerplate() {
     failGate("IDE-02: agenc-vscode build did not emit dist/extension.js");
   }
   pass("IDE-02: agenc-vscode extension boilerplate checks and builds");
+}
+
+function assertAgenCVscodeDaemonConnection() {
+  const repo = path.resolve(mainCheckoutRoot(), "..", "agenc-vscode");
+  const requiredFiles = [
+    "src/daemon.ts",
+    "src/extension.ts",
+    "test/daemon.test.mjs",
+  ];
+  const missing = requiredFiles.filter((rel) => !existsSync(path.join(repo, rel)));
+  if (missing.length > 0) {
+    failGate(
+      `IDE-03: agenc-vscode daemon connection missing required file(s):\n  ${missing.join("\n  ")}\n` +
+        `Expected repo root: ${repo}`,
+    );
+  }
+
+  const daemonSource = readFileSync(path.join(repo, "src/daemon.ts"), "utf8");
+  const daemonMarkers = [
+    "AGENC_DAEMON_COMMAND = \"agenc\"",
+    "\"daemon\"",
+    "\"start\"",
+    "\"--foreground\"",
+    "createAgenCDaemonLaunchPlan",
+    "createAgenCDaemonInitializeRequest",
+    "spawn(plan.command, plan.args, plan.options)",
+  ];
+  const missingDaemonMarkers = daemonMarkers.filter((marker) => !daemonSource.includes(marker));
+  if (missingDaemonMarkers.length > 0) {
+    failGate(`IDE-03: src/daemon.ts missing marker(s): ${missingDaemonMarkers.join(", ")}`);
+  }
+
+  const extensionSource = readFileSync(path.join(repo, "src/extension.ts"), "utf8");
+  const extensionMarkers = [
+    "new AgenCDaemonProcess()",
+    "daemon.start()",
+    "daemon.stop()",
+    "createAgenCDaemonInitializeRequest",
+  ];
+  const missingExtensionMarkers = extensionMarkers.filter((marker) => !extensionSource.includes(marker));
+  if (missingExtensionMarkers.length > 0) {
+    failGate(`IDE-03: src/extension.ts missing marker(s): ${missingExtensionMarkers.join(", ")}`);
+  }
+
+  const pkg = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
+  if (pkg.scripts?.["test:daemon"] !== "npm run build && node test/daemon.test.mjs") {
+    failGate("IDE-03: package.json must expose test:daemon for daemon launch contract coverage");
+  }
+
+  const check = run("npm", ["run", "check"], { cwd: repo, silent: true });
+  if (check.status !== 0) {
+    failGate(`IDE-03: agenc-vscode check failed:\n${check.stderr || check.stdout}`);
+  }
+  pass("IDE-03: agenc-vscode launches agenc daemon and builds daemon connection contract");
 }
 
 function grepRepo(pattern, scope = "runtime/src", options = {}) {
