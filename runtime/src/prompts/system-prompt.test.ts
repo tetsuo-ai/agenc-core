@@ -36,7 +36,10 @@ import type { Session } from "../session/session.js";
 import { clearSystemPromptSections } from "./sections.js";
 import {
   assembleSystemPrompt,
+  asSystemPrompt,
+  buildEffectiveSystemPrompt,
   buildEnvInfoSection,
+  DEFAULT_AGENT_PROMPT,
   getActionsSection,
   getAgentToolSection,
   getLanguageSection,
@@ -138,13 +141,13 @@ describe("static section emitters", () => {
   test("simple_doing_tasks describes task execution protocol", () => {
     const s = getSimpleDoingTasksSection();
     expect(s).toContain("# Doing tasks");
-    // Lifted from openclaude — top-level instruction.
+    // Core task guidance.
     expect(s).toContain(
       "do not propose changes to code you haven't read",
     );
-    // Lifted from openclaude `USER_TYPE === 'ant'` faithful-reporting bullet.
+    // Faithful-reporting guidance.
     expect(s).toContain("Report outcomes faithfully");
-    // Lifted from openclaude code-style sub-bullets.
+    // Code-style sub-bullets.
     expect(s).toContain("Default to writing no comments");
     // AgenC-specific slash-commands and bug-report bullets must be gone.
     expect(s).not.toContain("/help");
@@ -275,6 +278,65 @@ describe("static section emitters", () => {
     expect(s).toContain("concise");
     expect(s).toContain("Lead with the answer or action");
   });
+
+  test("default agent prompt is AgenC-branded", () => {
+    expect(DEFAULT_AGENT_PROMPT).toContain("AgenC");
+    expect(DEFAULT_AGENT_PROMPT).toContain("coding agent and CLI");
+    expect(DEFAULT_AGENT_PROMPT).not.toContain(["Open", "Cla", "ude"].join(""));
+  });
+});
+
+describe("effective system prompt", () => {
+  test("asSystemPrompt normalizes strings and arrays", () => {
+    expect([...asSystemPrompt("one")]).toEqual(["one"]);
+    expect([...asSystemPrompt(["one", "two"])]).toEqual(["one", "two"]);
+  });
+
+  test("override prompt replaces default and append prompt", () => {
+    expect([
+      ...buildEffectiveSystemPrompt({
+        overrideSystemPrompt: "OVERRIDE",
+        defaultSystemPrompt: ["DEFAULT"],
+        appendSystemPrompt: "APPEND",
+      }),
+    ]).toEqual(["OVERRIDE"]);
+  });
+
+  test("agent prompt takes precedence over custom and default prompts", () => {
+    const agent = {
+      getSystemPrompt: ({ toolUseContext }: { readonly toolUseContext?: unknown } = {}) =>
+        `AGENT:${String((toolUseContext as { readonly role?: string } | undefined)?.role)}`,
+    };
+
+    expect([
+      ...buildEffectiveSystemPrompt({
+        mainThreadAgentDefinition: agent,
+        toolUseContext: { role: "reviewer" },
+        customSystemPrompt: "CUSTOM",
+        defaultSystemPrompt: ["DEFAULT"],
+        appendSystemPrompt: "APPEND",
+      }),
+    ]).toEqual(["AGENT:reviewer", "APPEND"]);
+  });
+
+  test("custom prompt replaces default prompt and preserves append prompt", () => {
+    expect([
+      ...buildEffectiveSystemPrompt({
+        customSystemPrompt: "CUSTOM",
+        defaultSystemPrompt: ["DEFAULT"],
+        appendSystemPrompt: "APPEND",
+      }),
+    ]).toEqual(["CUSTOM", "APPEND"]);
+  });
+
+  test("empty custom prompt falls back to default prompt", () => {
+    expect([
+      ...buildEffectiveSystemPrompt({
+        customSystemPrompt: "",
+        defaultSystemPrompt: ["DEFAULT"],
+      }),
+    ]).toEqual(["DEFAULT"]);
+  });
 });
 
 describe("dynamic section emitters", () => {
@@ -397,6 +459,26 @@ describe("assembleSystemPrompt", () => {
     expect(first.sections.slice(0, boundaryIdxFirst)).toEqual(
       second.sections.slice(0, boundaryIdxSecond),
     );
+  });
+
+  test("static prefix preserves the base section order", async () => {
+    const { sections } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      enabledToolNames: new Set(["exec_command"]),
+      envForSimpleMode: {},
+    });
+
+    const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(sections.slice(0, boundaryIdx).map((s) => s.split("\n")[0])).toEqual([
+      expect.stringContaining("You are AgenC"),
+      "# System",
+      "# Doing tasks",
+      "# Executing actions with care",
+      "# Using your tools",
+      "# Tone and style",
+      "# Output efficiency",
+    ]);
   });
 
   test("AGENC_SIMPLE truthy → ultra-minimal prompt", async () => {

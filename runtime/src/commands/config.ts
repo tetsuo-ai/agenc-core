@@ -108,7 +108,9 @@ export function getConfigPath(cfg: AgenCConfig, key: string): string {
       continue;
     }
     const record = cur as Record<string, unknown>;
-    if (!(seg in record)) return `not set: ${trimmed}`;
+    if (!Object.prototype.hasOwnProperty.call(record, seg)) {
+      return `not set: ${trimmed}`;
+    }
     cur = record[seg];
   }
   if (cur === undefined || cur === null) return `not set: ${trimmed}`;

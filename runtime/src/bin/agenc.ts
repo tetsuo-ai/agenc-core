@@ -135,6 +135,11 @@ import {
   runAgenCProvidersCli,
 } from "./providers-cli.js";
 import {
+  formatAgenCConfigCliHelpText,
+  parseAgenCConfigCliArgs,
+  runAgenCConfigCli,
+} from "./config-cli.js";
+import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
   runAgenCPluginCli,
@@ -185,6 +190,7 @@ export function formatCliHelpText(): string {
     "       agenc logout",
     "       agenc whoami",
     "       agenc providers [--json]",
+    "       agenc config <get|set|unset|validate|show|edit|path>",
     "       agenc plugin <list|install|uninstall|enable|disable|marketplace>",
     "       agenc permissions <list|approve|revoke>",
     "       agenc state export <agent-id>",
@@ -202,6 +208,7 @@ export function formatCliHelpText(): string {
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness",
+    "  config                                  Show, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
     "  permissions                             List or update permission rules",
     "  state                                   Export or import project state",
@@ -234,6 +241,7 @@ export function formatCliHelpText(): string {
     "  agenc --no-tui \"run the tests and report failures\"",
     "  agenc --resume <session-id>",
     "  agenc agent start \"fix the failing parser test\"",
+    "  agenc config validate",
     "  agenc mcp serve --transport stdio",
     "  agenc help permissions",
   ].join("\n");
@@ -269,6 +277,8 @@ export function formatCliHelpTopicText(topic: string): string | null {
       return formatAgenCPluginCliHelpText();
     case "providers":
       return formatAgenCProvidersCliHelpText();
+    case "config":
+      return formatAgenCConfigCliHelpText();
     case "state":
       return formatAgenCStateCliHelpText();
     default:
@@ -2350,6 +2360,10 @@ export async function main(): Promise<number> {
   const providersCommand = parseAgenCProvidersCliArgs(argv);
   if (providersCommand !== null) {
     return runAgenCProvidersCli(providersCommand);
+  }
+  const configCommand = parseAgenCConfigCliArgs(argv);
+  if (configCommand !== null) {
+    return runAgenCConfigCli(configCommand);
   }
   const pluginCommand = parseAgenCPluginCliArgs(argv);
   if (pluginCommand !== null) {

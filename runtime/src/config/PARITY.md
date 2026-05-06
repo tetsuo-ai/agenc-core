@@ -89,7 +89,7 @@ Upstream reference: `/home/tetsuo/git/codex` at commit <!-- branding-scan: allow
 `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
 
 Primary source anchor:
-- `codex-rs/config/src/schema.rs` (`additional_properties = false` on closed
+- `codex-rs/config/src/schema.rs` (`additional_properties = false` on closed <!-- branding-scan: allow local donor citation in parity artifact -->
   config schema blocks). <!-- branding-scan: allow local donor citation in parity artifact -->
 
 CF-13 ports the closed-subschema posture onto AgenC's live config loader while
@@ -112,3 +112,28 @@ after it.
   reload message.
 - `agenc config validate` is owned by CF-14 and can reuse the exported
   validators without re-parsing block semantics.
+
+## CF-14 Shell config CLI
+
+Upstream reference: `/home/tetsuo/git/codex` at commit <!-- branding-scan: allow local donor citation in parity artifact -->
+`c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
+
+Primary CF-14 source anchors:
+- `codex-rs/config/src/plugin_edit.rs::apply_user_plugin_config_edits` <!-- branding-scan: allow local donor citation in parity artifact -->
+- `codex-rs/config/src/mcp_edit.rs::ConfigEditsBuilder` <!-- branding-scan: allow local donor citation in parity artifact -->
+- `codex-rs/config/src/mcp_edit_tests.rs::replace_mcp_servers_serializes_per_tool_approval_overrides` <!-- branding-scan: allow local donor citation in parity artifact -->
+
+CF-14 ports the donor's user-facing config edit safety posture onto AgenC's
+shell command surface:
+
+- `runtime/src/bin/config-cli.ts` owns `agenc config <get|set|unset|validate|show|edit|path>`.
+- `set`/`unset` run the CF-12 file migration before editing, so legacy
+  `config.json` is converted rather than shadowed by a newly-created TOML file.
+- Edits are schema-validated, serialized, parsed back, and atomically written;
+  existing `config.toml` symlinks write through to their target file.
+- `configVersion` remains a managed file-format field and is not directly
+  settable or unsettable by the CLI.
+- AgenC intentionally uses its existing semantic TOML serializer instead of a
+  comment/decor-preserving edit tree. The resulting command preserves
+  key/value behavior and schema safety; users who need literal-dot key paths or
+  comment-preserving manual edits can use `agenc config edit`.

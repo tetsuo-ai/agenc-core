@@ -1534,7 +1534,27 @@ const ITEM_EVIDENCE = {
     ],
   },
   "CF-14": {
-    grepPresent: [{ pattern: "agenc config", scope: "runtime/src" }],
+    files: [
+      "runtime/src/bin/config-cli.ts",
+      "runtime/src/bin/config-cli.test.ts",
+      "runtime/src/config/PARITY.md",
+    ],
+    grepPresent: [
+      { pattern: "agenc config <get\\|set\\|unset\\|validate\\|show\\|edit\\|path>", scope: "runtime/src/bin/agenc.ts" },
+      { pattern: "parseAgenCConfigCliArgs", scope: "runtime/src/bin/config-cli.ts" },
+      { pattern: "runAgenCConfigCli", scope: "runtime/src/bin/config-cli.ts" },
+      { pattern: "runConfigFileMigrations", scope: "runtime/src/bin/config-cli.ts" },
+      { pattern: "validateAgenCConfigBlocks", scope: "runtime/src/bin/config-cli.ts" },
+      { pattern: "CONFIG_FILE_VERSION_KEY", scope: "runtime/src/bin/config-cli.ts" },
+      { pattern: "configCommand = parseAgenCConfigCliArgs", scope: "runtime/src/bin/agenc.ts" },
+      { pattern: "agenc config validate", scope: "runtime/src/bin/agenc-help.test.ts" },
+      { pattern: "CF-14 Shell config CLI", scope: "runtime/src/config/PARITY.md" },
+      { pattern: "apply_user_plugin_config_edits", scope: "runtime/src/config/PARITY.md" },
+    ],
+    tests: [
+      "runtime/src/bin/config-cli.test.ts",
+      "runtime/src/bin/agenc-help.test.ts",
+    ],
   },
   "OB-01": {
     grepPresent: [{ pattern: "onboarding|firstRun|first-run", scope: "runtime/src" }],
@@ -4040,9 +4060,15 @@ async function configGates(item) {
     return;
   }
   if (id === "CF-14") {
-    const cli = grepRepo("agenc config", "runtime/src");
-    if (!cli) failGate("'agenc config' CLI surface not found anywhere in runtime/src/");
-    pass("agenc config subcommand present");
+    const cli = grepRepo("parseAgenCConfigCliArgs|runAgenCConfigCli", "runtime/src/bin/config-cli.ts");
+    if (!cli) failGate("config CLI parser/runner not found in runtime/src/bin/config-cli.ts");
+    const route = grepRepo("configCommand = parseAgenCConfigCliArgs", "runtime/src/bin/agenc.ts");
+    if (!route) failGate("agenc config is not routed through the top-level CLI dispatcher");
+    for (const anchor of ["runConfigFileMigrations", "validateAgenCConfigBlocks", "writeTextAtomic"]) {
+      const editSafety = grepRepo(anchor, "runtime/src/bin/config-cli.ts");
+      if (!editSafety) failGate(`config CLI edit safety anchor missing: ${anchor}`);
+    }
+    pass("agenc config shell CLI present with routing and edit-safety anchors");
     return;
   }
   if (id === "CF-12") {
