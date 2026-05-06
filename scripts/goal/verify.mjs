@@ -37,6 +37,7 @@ import {
   RUNTIME_UPSTREAM_SCAN_PATHS,
   collectRuntimeUpstreamReferences,
   disallowedZPurgecTypecheckExcludes,
+  extractRuntimeTsconfigExcludes,
 } from "./purge-scans.mjs";
 import {
   SHIM_BEHAVIOR_RATIO_LIMIT,
@@ -2078,8 +2079,8 @@ if (toScan.length === 0 && candidates.size === 0) {
 //      filename suffix wouldn't flag — wrapper-by-another-name).
 
 header("no upstream growth; no new shim/adapter/compat/legacy/bridge files");
-const addedRes = git("diff", "--name-only", "--diff-filter=A", "main...HEAD");
-const addedStagedRes = git("diff", "--name-only", "--diff-filter=A", "--cached");
+const addedRes = git("diff", "--name-only", "--diff-filter=AR", "main...HEAD");
+const addedStagedRes = git("diff", "--name-only", "--diff-filter=AR", "--cached");
 const addedWtRes = git("ls-files", "--others", "--exclude-standard");
 const added = new Set(
   [addedRes.stdout, addedStagedRes.stdout, addedWtRes.stdout]
@@ -2210,6 +2211,7 @@ if (shimAdditions.length > 0) {
 // A new module whose body is >50% imports + re-exports + single-line forwards AND
 // has fewer than 40 significant lines is functionally a shim regardless of name.
 const forwardingViolations = [];
+const hiddenStubViolations = [];
 for (const rel of added) {
   if (!/^runtime\/src\//.test(rel)) continue;
   if (!/\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(rel)) continue;
@@ -2223,6 +2225,13 @@ for (const rel of added) {
   }
   const violation = measureShimBehaviorForPath(rel, body);
   if (violation) forwardingViolations.push(violation);
+  if (
+    /\bname\s*:\s*["']stub["']/.test(body) &&
+    /\bisHidden\s*:\s*true/.test(body) &&
+    /\bisEnabled\s*:\s*\(\s*\)\s*=>\s*false/.test(body)
+  ) {
+    hiddenStubViolations.push(rel);
+  }
 }
 if (forwardingViolations.length > 0) {
   failGate(
@@ -2232,6 +2241,13 @@ if (forwardingViolations.length > 0) {
       forwardingViolations
         .map((violation) => `- ${formatShimBehaviorViolation(violation)}`)
         .join("\n  "),
+  );
+}
+if (hiddenStubViolations.length > 0) {
+  failGate(
+    `forbidden: this item adds ${hiddenStubViolations.length} hidden stub module(s). ` +
+      `Remove intentionally unavailable command surfaces or migrate real behavior.\n  ` +
+      hiddenStubViolations.map((p) => `- ${p}`).join("\n  "),
   );
 }
 pass("no new upstream/ files, no new shim-pattern additions, no forwarding-only modules");
@@ -7442,7 +7458,11 @@ async function cleanupGates(item) {
         `Z-PURGEC: runtime/tsconfig.json still excludes migrated Z-PURGEC roots from typecheck:\n  ${broadBoundary.join("\n  ")}`,
       );
     }
-    pass("Z-PURGEC: runtime/tsconfig.json has no broad migrated-root exclusions");
+    const concreteExcludes = extractRuntimeTsconfigExcludes(tsconfigSource);
+    if (concreteExcludes.length > 400) {
+      failGate(`Z-PURGEC: runtime/tsconfig.json exclude list grew to ${concreteExcludes.length}; expected <= 400 concrete entries`);
+    }
+    pass(`Z-PURGEC: runtime/tsconfig.json has no broad migrated-root exclusions and ${concreteExcludes.length} capped concrete exclude(s)`);
 
     const movedBoundaryPrefixes = [
       "// @ts-nocheck\n" +

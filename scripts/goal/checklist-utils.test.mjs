@@ -216,6 +216,12 @@ assert(
     !upstreamGrowthGateSource.includes("neutralBoundary") &&
     !upstreamGrowthGateSource.includes("ts-nocheck"),
 );
+assert(
+  "verify.mjs forwarding gate includes rename destinations and hidden stubs",
+  verifySource.includes('--diff-filter=AR') &&
+    verifySource.includes("hiddenStubViolations") &&
+    verifySource.includes("name\\s*:\\s*[\"']stub"),
+);
 
 const zPurgeaGateStart = verifySource.indexOf('if (id === "Z-PURGEA")');
 const zPurgeaGateEnd = verifySource.indexOf('if (id === "Z-PURGEB")');
