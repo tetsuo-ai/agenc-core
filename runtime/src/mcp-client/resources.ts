@@ -3,7 +3,7 @@
  *
  * The MCP spec distinguishes *tools* (callable actions) from
  * *resources* (readable content — files, blobs, logs). The existing
- * `tool-bridge.ts` covers tools only; this module adds read-only
+ * `tools.ts` covers tools only; this module adds read-only
  * access to MCP resources so AgenC callers can list + fetch them.
  *
  * Resource URIs are namespaced as `mcp.<serverName>.<origUri>` when

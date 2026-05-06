@@ -1,18 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ResilientMCPBridge } from "./resilient-bridge.js";
-import type { MCPToolBridgePermissionOptions } from "./tool-bridge.js";
+import { ResilientMCPBridge } from "./resilient-client.js";
+import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import type { MCPServerConfig, MCPToolBridge } from "./types.js";
 
 vi.mock("./connection.js", () => ({
   createMCPConnection: vi.fn(),
 }));
 
-vi.mock("./tool-bridge.js", () => ({
+vi.mock("./tools.js", () => ({
   createToolBridge: vi.fn(),
 }));
 
 import { createMCPConnection } from "./connection.js";
-import { createToolBridge } from "./tool-bridge.js";
+import { createToolBridge } from "./tools.js";
 
 const mockCreateMCPConnection = vi.mocked(createMCPConnection);
 const mockCreateToolBridge = vi.mocked(createToolBridge);
