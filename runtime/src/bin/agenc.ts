@@ -905,7 +905,7 @@ async function expandPromptFileMentions(params: {
 }
 
 async function expandOneShotPromptFileMentions(params: {
-  readonly configStore: ConfigStore;
+  readonly configStore: Pick<ConfigStore, "current">;
   readonly input: string;
   readonly cwd: string;
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
@@ -1096,7 +1096,7 @@ function createOneShotHookTarget(): HookInstallTarget {
 
 async function prepareOneShotPromptForDaemon(params: {
   readonly prompt: string;
-  readonly configStore: ConfigStore;
+  readonly configStore: Pick<ConfigStore, "current">;
   readonly agencHome: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
@@ -1897,7 +1897,9 @@ function messageContentBlocksFromUnknown(input: unknown): MessageContentBlock[] 
 
 async function createDeferredDaemonPromptTuiSession(params: {
   readonly baseSession: unknown;
+  readonly configStore: Pick<ConfigStore, "current">;
   readonly deps: AgenCDaemonCliDeps;
+  readonly agencHome: string;
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly clientId: string;
@@ -1913,6 +1915,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
 
   let liveSession: TuiSessionShape | null = null;
+  let liveSessionPromise: Promise<TuiSessionShape | null> | null = null;
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
@@ -1925,17 +1928,34 @@ async function createDeferredDaemonPromptTuiSession(params: {
     firstMessage: string,
   ): Promise<TuiSessionShape | null> => {
     if (liveSession !== null) return liveSession;
+    if (liveSessionPromise !== null) return liveSessionPromise;
+    liveSessionPromise = (async () => {
+      if (isLocalSlashCommandInput(firstMessage)) return null;
+      const preparedFirstMessage =
+        firstMessage.length > 0
+          ? await prepareDaemonTuiPrompt({
+              message: firstMessage,
+              configStore: params.configStore,
+              agencHome: params.agencHome,
+              cwd: params.cwd,
+              env: params.env,
+              stderr: process.stderr,
+            })
+          : firstMessage;
+      if (preparedFirstMessage === null) return null;
     const content: MessageContentBlock[] = [
       ...queuedInputs,
-      ...(firstMessage.length > 0
-        ? [{ type: "text" as const, text: firstMessage }]
+        ...(preparedFirstMessage.length > 0
+          ? [{ type: "text" as const, text: preparedFirstMessage }]
         : []),
     ];
     if (content.length === 0) return null;
     const prompt =
-      firstMessage.trim().length > 0
-        ? firstMessage
+        preparedFirstMessage.trim().length > 0
+          ? preparedFirstMessage
         : "Multimodal AgenC startup";
+      let startedAgentId: string | null = null;
+      try {
     const started = await params.deps.startPromptAgent({
       prompt,
       env: params.env,
@@ -1946,6 +1966,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
           : content,
       metadata: { mode: "tui" },
     });
+        startedAgentId = started.agentId;
     daemonClient = await params.deps.createConnectedTuiClient({
       env: params.env,
     });
@@ -1958,13 +1979,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
       throw new Error(`daemon agent has no attached session: ${started.agentId}`);
     }
     const createDaemonTuiSession = await loadCreateDaemonTuiSession();
-    liveSession = (await createDaemonTuiSession({
+        liveSession = wrapDaemonTuiSessionWithPromptPreparation(
+          (await createDaemonTuiSession({
       baseSession: params.baseSession,
       client: daemonClient,
       sessionId,
       conversationId: attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
       clientId: params.clientId,
-    })) as TuiSessionShape;
+          })) as TuiSessionShape,
+          {
+            configStore: params.configStore,
+            agencHome: params.agencHome,
+            cwd: params.cwd,
+            env: params.env,
+            stderr: process.stderr,
+          },
+        );
     queuedInputs = [];
     queuedInputCount = 0;
     for (const subscriber of subscribers) {
@@ -1972,6 +2002,25 @@ async function createDeferredDaemonPromptTuiSession(params: {
       if (unsubscribe !== undefined) liveUnsubscribers.set(subscriber, unsubscribe);
     }
     return liveSession;
+      } catch (error) {
+        if (startedAgentId !== null) {
+          await daemonClient
+            ?.request("agent.stop", {
+              agentId: startedAgentId,
+              reason: "tui_startup_failed",
+            })
+            .catch(() => {
+              /* best effort */
+            });
+        }
+        throw error;
+      }
+    })();
+    try {
+      return await liveSessionPromise;
+    } finally {
+      if (liveSession === null) liveSessionPromise = null;
+    }
   };
 
   const base = params.baseSession as Record<string, unknown>;
@@ -2020,6 +2069,68 @@ async function createDeferredDaemonPromptTuiSession(params: {
       await daemonClient?.close().catch(() => {
         /* best effort */
       });
+    },
+  };
+}
+
+function isLocalSlashCommandInput(message: string): boolean {
+  const trimmed = message.trimStart();
+  return trimmed.startsWith("/") && !/[\r\n]/.test(message);
+}
+
+async function prepareDaemonTuiPrompt(params: {
+  readonly message: string;
+  readonly configStore: Pick<ConfigStore, "current">;
+  readonly agencHome: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}): Promise<string | null> {
+  if (isLocalSlashCommandInput(params.message)) return null;
+  const outcome = await prepareOneShotPromptForDaemon({
+    prompt: params.message,
+    configStore: params.configStore,
+    agencHome: params.agencHome,
+    cwd: params.cwd,
+    env: params.env,
+    signal: new AbortController().signal,
+    stderr: params.stderr,
+  });
+  if (outcome.blocked) {
+    params.stderr.write(`${outcome.blockMessage}\n`);
+    return null;
+  }
+  return outcome.prompt;
+}
+
+function wrapDaemonTuiSessionWithPromptPreparation<
+  Session extends {
+    submit?: (
+      message: string,
+      opts?: { readonly displayUserMessage?: string | null },
+    ) => Promise<void>;
+  },
+>(
+  session: Session,
+  params: {
+    readonly configStore: Pick<ConfigStore, "current">;
+    readonly agencHome: string;
+    readonly cwd: string;
+    readonly env: NodeJS.ProcessEnv;
+    readonly stderr: Pick<NodeJS.WriteStream, "write">;
+  },
+): Session {
+  const originalSubmit = session.submit?.bind(session);
+  if (originalSubmit === undefined) return session;
+  return {
+    ...session,
+    submit: async (message, opts) => {
+      const prepared = await prepareDaemonTuiPrompt({
+        message,
+        ...params,
+      });
+      if (prepared === null) return;
+      await originalSubmit(prepared, opts);
     },
   };
 }
@@ -2078,7 +2189,6 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     const startupImages = args.startupImages ?? [];
     if (
       (initialPrompt === undefined || initialPrompt.length === 0) &&
-      capturedEarlyInput.length === 0 &&
       startupImages.length === 0
     ) {
       const deps = daemonCliDeps();
@@ -2094,7 +2204,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       });
       const deferred = await createDeferredDaemonPromptTuiSession({
         baseSession,
+        configStore: configStore as unknown as Pick<ConfigStore, "current">,
         deps,
+        agencHome:
+          (configStore as { readonly agencHome?: string }).agencHome ??
+          resolveAgencHome(process.env),
         env: process.env,
         cwd: workspaceRoot,
         clientId: `agenc-tui-${process.pid}`,
@@ -2105,6 +2219,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
           session: deferred.session,
           configStore,
           model,
+          ...(capturedEarlyInput.length > 0
+            ? { initialComposerText: capturedEarlyInput }
+            : {}),
         });
         activeInkUnmount = handle.unmount;
         await handle.waitUntilExit();
@@ -2117,17 +2234,39 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     const objective =
       initialPrompt !== undefined && initialPrompt.length > 0
         ? initialPrompt
-        : capturedEarlyInput.length > 0
-          ? capturedEarlyInput
-          : "Multimodal AgenC startup";
+        : "Multimodal AgenC startup";
+    const agencHome = resolveAgencHome(process.env);
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: process.env,
+      onWarn: (message) => process.stderr.write(`${message}\n`),
+    });
+    await configStore.reload();
+    const promptPreparation =
+      initialPrompt !== undefined && initialPrompt.length > 0
+        ? await prepareOneShotPromptForDaemon({
+            prompt: objective,
+            configStore,
+            agencHome,
+            cwd: daemonCwd,
+            env: process.env,
+            signal: new AbortController().signal,
+            stderr: process.stderr,
+          })
+        : { blocked: false as const, prompt: objective };
+    if (promptPreparation.blocked) {
+      process.stderr.write(`${promptPreparation.blockMessage}\n`);
+      return 1;
+    }
+    const preparedObjective = promptPreparation.prompt;
     const initialContent = startupContentFromInputs(
-      objective,
+      preparedObjective,
       startupImages,
       daemonCwd,
       process.env.HOME,
     );
     const started = await daemonCliDeps().startPromptAgent({
-      prompt: objective,
+      prompt: preparedObjective,
       env: process.env,
       cwd: daemonCwd,
       ...(initialContent !== undefined ? { initialContent } : {}),
@@ -2221,6 +2360,23 @@ export async function attachAgentTuiEntry(
       conversationId: runtimeSessionId,
       clientId: args.clientId,
     });
+    const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
+      daemonSession as {
+        submit?: (
+          message: string,
+          opts?: { readonly displayUserMessage?: string | null },
+        ) => Promise<void>;
+      },
+      {
+        configStore: configStore as unknown as Pick<ConfigStore, "current">,
+        agencHome:
+          (configStore as { readonly agencHome?: string }).agencHome ??
+          resolveAgencHome(env),
+        cwd: workspaceRoot,
+        env,
+        stderr: process.stderr,
+      },
+    );
     const boot = await loadBootTUI();
     const startupImages = args.startupImages ?? [];
     const initialUserMessages =
@@ -2233,7 +2389,7 @@ export async function attachAgentTuiEntry(
         : [];
     try {
       const handle = await boot({
-        session: daemonSession,
+        session: preparedDaemonSession,
         configStore,
         model,
         ...(args.initialComposerText !== undefined &&

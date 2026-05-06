@@ -1726,7 +1726,7 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry starts a daemon prompt agent on first TUI input", async () => {
+  it("bootTUIEntry starts a daemon prompt agent on first ordinary TUI input", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
     const prevEnv = { ...process.env };
@@ -1766,16 +1766,16 @@ describe("main() smoke", () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(capturedSession).not.toBeNull();
 
-      await capturedSession?.submit?.("/help");
+      await capturedSession?.submit?.("hello daemon");
 
       resolveExit?.();
       const code = await pending;
       expect(code).toBe(0);
       expect(daemon.startPromptAgent).toHaveBeenCalledWith(
         expect.objectContaining({
-          prompt: "/help",
+          prompt: "hello daemon",
           cwd: tmpCwd,
-          initialContent: "/help",
+          initialContent: "hello daemon",
         }),
       );
       expect(daemon.requests.map((request) => request.method)).toEqual([
@@ -1792,7 +1792,9 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry starts a daemon prompt agent for first /permissions input", async () => {
+  it.each(["/help", "/permissions"])(
+    "bootTUIEntry does not send first %s input as a daemon prompt",
+    async (slashInput) => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-cwd-"));
     const prevArgv = process.argv;
@@ -1836,21 +1838,13 @@ describe("main() smoke", () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(capturedSession).not.toBeNull();
 
-      await capturedSession?.submit?.("/permissions");
+      await capturedSession?.submit?.(slashInput);
 
       resolveExit?.();
       const code = await pending;
       expect(code).toBe(0);
-      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "/permissions",
-          cwd: tmpCwd,
-          initialContent: "/permissions",
-        }),
-      );
-      expect(daemon.requests.map((request) => request.method)).toEqual([
-        "agent.attach",
-      ]);
+      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+      expect(daemon.requests).toEqual([]);
     } finally {
       process.argv = prevArgv;
       vi.doUnmock("../tui/main.js");
@@ -1861,7 +1855,8 @@ describe("main() smoke", () => {
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
     }
-  });
+    },
+  );
 
   it("runs the full main() path through daemon-backed one-shot and exits 0", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-main-"));
