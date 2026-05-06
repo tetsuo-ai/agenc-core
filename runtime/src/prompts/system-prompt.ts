@@ -3,24 +3,25 @@
  * with a cache-boundary marker separating cross-session cacheable content
  * from session-specific content.
  *
- * Lifted from openclaude `src/constants/prompts.ts` and adapted for AgenC:
- *   - "AgenC" → "AgenC" everywhere
- *   - AgenC tool-name interpolations mapped to AgenC's visible
- *     AgenC-owned catalog (FileRead, Edit, Write, Glob, Grep,
- *     TodoWrite, exec_command)
- *   - AgenC-only slash commands (`/help`, `/issue`, `/share`, `/fast`)
- *     and Anthropic-specific bullets dropped
- *   - feature-gated AgenC branches (REPL, fork-subagent, embedded
- *     search tools, skill discovery) dropped — AgenC has no equivalent
+ * Source provenance and source-to-target mapping live in
+ * `parity/PR-01-parity.json`; runtime source stays AgenC-branded.
+ *
+ * Adaptations:
+ *   - tool-name interpolations map to AgenC's visible catalog
+ *     (FileRead, Edit, Write, Glob, Grep, TodoWrite, exec_command)
+ *   - product-specific help, feedback, and model-launch bullets are
+ *     dropped when AgenC has no equivalent surface
+ *   - feature-gated branches without AgenC ownership are intentionally
+ *     omitted rather than revived as inert branches
  *
  * The static head is stable across sessions (so a prompt-cache prefix can
  * hash it once); the dynamic tail holds per-session guidance, permissions,
  * env info, memory, project instructions, MCP server instructions, output
  * style overrides, and scratchpad info.
  *
- * Sole codex runtime holdout: `getPermissionsSection` (in `permissions-prompt.ts`)
- * — orthogonal to the AgenC content and load-bearing for the
- * approval-policy / sandbox-mode prose.
+ * `getPermissionsSection` lives in `permissions-prompt.ts`; it is
+ * orthogonal to the prompt content here and load-bearing for the
+ * approval-policy and sandbox-mode prose.
  *
  * Depends on:
  *   - `config/env.resolveSimpleMode()` — drives the AGENC_SIMPLE short-path
@@ -85,21 +86,15 @@ function joinSection(heading: string, items: Array<string | string[]>): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Static sections (cache-safe — live before the boundary marker)
-//
-// All section helpers in this region are lifted from AgenC
-// `src/constants/prompts.ts` and adapted for AgenC. Per-section provenance
-// is documented above each function.
+// Static sections (cache-safe — live before the boundary marker).
+// Each helper owns one section of AgenC's static prompt prefix.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * 1. simple_intro — who AgenC is.
  *
- * Lifted from openclaude `getSimpleIntroSection` (prompts.ts:175). Adapted:
- *   - opening "interactive agent that helps users" → AgenC identity
- *   - dropped openclaude `CYBER_RISK_INSTRUCTION` interpolation (no AgenC
- *     equivalent)
- *   - dropped session-start date line (AgenC surfaces time via env_info)
+ * AgenC identity plus URL-generation guardrail. Session date and
+ * environment details live in the dynamic env section.
  */
 export function getSimpleIntroSection(hasOutputStyle: boolean): string {
   const audience = hasOutputStyle
@@ -113,13 +108,8 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
 /**
  * 2. simple_system — hard constraints.
  *
- * Lifted from openclaude `getSimpleSystemSection` (prompts.ts:186). Adapted:
- *   - dropped openclaude `getHooksSection` bullet (no hook subsystem in
- *     AgenC's runtime — the equivalent is the permission/approval gate,
- *     covered by the dynamic permissions section)
- *   - kept the AgenC-specific AGENC.md instruction-file guard at the end
- *     (load-bearing — prevents the model from claiming it updated some
- *     other instruction file the runtime doesn't actually wire)
+ * Includes the AgenC instruction-file guard so the model cannot claim it
+ * updated instruction files the runtime does not load.
  */
 export function getSimpleSystemSection(): string {
   const items = [
@@ -136,18 +126,8 @@ export function getSimpleSystemSection(): string {
 /**
  * 3. simple_doing_tasks — task execution protocol (gated on output style).
  *
- * Lifted from openclaude `getSimpleDoingTasksSection` (prompts.ts:199).
- * Adapted:
- *   - swapped AgenC's `${ASK_USER_QUESTION_TOOL_NAME}` interpolation
- *     for the literal "ask-user-question tool" since AgenC's tool surface
- *     uses a stable display name
- *   - unconditionally lifted the openclaude `process.env.USER_TYPE === 'ant'`
- *     code-style and faithful-reporting bullets — these are higher-quality
- *     guidance than the external-build defaults and we own the prompt
- *     copy now (no upstream dependency)
- *   - dropped the AgenC bug-report bullet (`/issue`, `/share` slash
- *     commands don't exist in AgenC)
- *   - dropped the openclaude `/help` + feedback-issue user-help block
+ * AgenC uses stable tool display names here and keeps only guidance backed
+ * by live AgenC surfaces.
  */
 export function getSimpleDoingTasksSection(): string {
   const codeStyleSubitems = [
@@ -179,10 +159,6 @@ export function getSimpleDoingTasksSection(): string {
 
 /**
  * 4. actions — standard action loops / risk calibration.
- *
- * Lifted verbatim from openclaude `getActionsSection` (prompts.ts:255).
- * No model-family or product references in the upstream copy, so no
- * adaptation needed.
  */
 export function getActionsSection(): string {
   return `# Executing actions with care
@@ -201,32 +177,9 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
 /**
  * 5. using_your_tools — tool invocation conventions.
  *
- * Lifted from openclaude `getUsingYourToolsSection` (prompts.ts:269).
- * Adapted:
- *   - tool-name interpolations mapped to AgenC's visible AgenC-
- *     derived catalog:
- *
- *       `${BASH_TOOL_NAME}`       → `exec_command` (with fallback resolution
- *                                   when the session uses a different shell
- *                                   tool name like `system.bash`)
- *       `${FILE_READ_TOOL_NAME}`  → `FileRead`
- *       `${FILE_EDIT_TOOL_NAME}`  → `Edit`
- *       `${FILE_WRITE_TOOL_NAME}` → `Write`
- *       `${GLOB_TOOL_NAME}`       → `Glob`
- *       `${GREP_TOOL_NAME}`       → `Grep`
- *       `${taskToolName}`         → `TodoWrite`
- *
- *   - dropped openclaude `isReplModeEnabled()` REPL-mode branch (no AgenC
- *     equivalent — REPL_ONLY_TOOLS does not exist here)
- *   - dropped openclaude `hasEmbeddedSearchTools()` branch (AgenC always
- *     ships dedicated Glob/Grep)
- *   - per-tool sub-bullets are gated on the tool actually being in
- *     `enabledTools`, so a session that boots with a slimmer catalog
- *     (e.g. shell-only) sees only the bullets it can act on
- *   - added the AgenC-specific `write_stdin` interactive-session bullet
- *     when both shell and `write_stdin` are visible (no upstream
- *     equivalent — AgenC's exec_command exposes a tty=true session
- *     handle that AgenC's BashTool does not)
+ * Tool-name interpolations map to AgenC's visible catalog. Per-tool
+ * bullets are gated on `enabledTools`, so slimmer sessions only receive
+ * guidance for tools they can actually call.
  */
 export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): string {
   const hasTool = (...names: readonly string[]): boolean =>
@@ -310,10 +263,10 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
 /**
  * 6. agent_tool — guidance for the multi-agent delegation surface.
  *
- * Codex exposes delegation through the `spawn_agent` tool spec itself.
+ * The host exposes delegation through the primary agent tool spec.
  * Do not add separate prompt guidance for AgenC's legacy
  * `system.agent.delegate` compatibility shim; surfacing that tool here
- * causes the model to bypass Codex's task-name/background semantics.
+ * causes the model to bypass the supported task-name/background semantics.
  */
 export function getAgentToolSection(
   enabledTools: ReadonlySet<string>,
@@ -324,12 +277,6 @@ export function getAgentToolSection(
 
 /**
  * 7. output_efficiency — brevity rules.
- *
- * Lifted verbatim from openclaude `getOutputEfficiencySection`
- * (prompts.ts:403, the non-`USER_TYPE === 'ant'` branch). The ant branch
- * is intentionally not used — its prose-style "Communicating with the
- * user" framing is heavier than what AgenC needs, and the external
- * default is more aligned with the rest of AgenC's tone guidance.
  */
 export function getOutputEfficiencySection(): string {
   return `# Output efficiency
@@ -349,12 +296,8 @@ If you can say it in one sentence, don't use three. Prefer short, direct sentenc
 /**
  * 8. simple_tone_and_style — response shape.
  *
- * Lifted from openclaude `getSimpleToneAndStyleSection` (prompts.ts:430).
- * Adapted:
- *   - vendor-specific issue examples are replaced with `owner/repo#123`
- *   - dropped the openclaude `process.env.USER_TYPE === 'ant'` gating on
- *     "Your responses should be short and concise." — kept that bullet
- *     unconditionally, since AgenC has no ant/external split
+ * Uses neutral issue-reference examples and keeps the concise-response
+ * bullet unconditionally because AgenC has no internal/external split.
  */
 export function getSimpleToneAndStyleSection(): string {
   const items: Array<string | string[]> = [
@@ -628,6 +571,55 @@ export interface AssembledSystemPrompt {
   readonly sections: string[];
 }
 
+export type SystemPrompt = readonly string[] & {
+  readonly __brand: "SystemPrompt";
+};
+
+export function asSystemPrompt(
+  text: string | readonly string[],
+): SystemPrompt {
+  return (typeof text === "string" ? [text] : [...text]) as unknown as SystemPrompt;
+}
+
+interface MainThreadAgentDefinition {
+  readonly getSystemPrompt: (
+    params?: { readonly toolUseContext?: unknown },
+  ) => string;
+}
+
+export interface BuildEffectiveSystemPromptInput {
+  readonly mainThreadAgentDefinition?: MainThreadAgentDefinition;
+  readonly toolUseContext?: unknown;
+  readonly customSystemPrompt?: string;
+  readonly defaultSystemPrompt: readonly string[];
+  readonly appendSystemPrompt?: string;
+  readonly overrideSystemPrompt?: string | null;
+}
+
+export const DEFAULT_AGENT_PROMPT =
+  `You are an agent for AgenC, an autonomous coding agent and CLI. Given the user's message, use the available tools to complete the task. Complete the task fully: do not gold-plate, and do not leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings; the caller will relay this to the user, so include only the essentials.`;
+
+export function buildEffectiveSystemPrompt(
+  input: BuildEffectiveSystemPromptInput,
+): SystemPrompt {
+  if (input.overrideSystemPrompt) {
+    return asSystemPrompt([input.overrideSystemPrompt]);
+  }
+
+  const agentSystemPrompt = input.mainThreadAgentDefinition?.getSystemPrompt({
+    toolUseContext: input.toolUseContext,
+  });
+
+  return asSystemPrompt([
+    ...(agentSystemPrompt
+      ? [agentSystemPrompt]
+      : input.customSystemPrompt
+        ? [input.customSystemPrompt]
+        : input.defaultSystemPrompt),
+    ...(input.appendSystemPrompt ? [input.appendSystemPrompt] : []),
+  ]);
+}
+
 /**
  * Assemble the system prompt. Concatenates the static head, the boundary
  * marker, and the dynamic tail.
@@ -662,12 +654,10 @@ export async function assembleSystemPrompt(
     return { text: sections.join("\n\n"), sections };
   }
 
-  // Static (cacheable) head — openclaude `getSystemPrompt` ordering with
-  // the AgenC-only `# Subagents` (agent_tool) section slotted right after
-  // `# Using your tools` so multi-agent guidance lives next to per-tool
-  // guidance, mirroring AgenC's own tool/agent grouping.
-  //
-  // Section order matches openclaude `constants/prompts.ts:560-577`:
+  // Static (cacheable) head. The AgenC-only `# Subagents` section is
+  // slotted right after `# Using your tools` so multi-agent guidance lives
+  // next to per-tool guidance.
+  // Section order:
   //   intro → system → doing_tasks → actions → using_your_tools
   //   → (agent_tool) → tone_and_style → output_efficiency
   const staticSections: Array<string | null> = [
@@ -679,8 +669,8 @@ export async function assembleSystemPrompt(
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
     getAgentToolSection(enabledTools),
-    getOutputEfficiencySection(),
     getSimpleToneAndStyleSection(),
+    getOutputEfficiencySection(),
   ];
 
   // Dynamic (post-boundary) tail. Sections returning null are dropped.
