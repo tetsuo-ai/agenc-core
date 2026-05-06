@@ -1,7 +1,11 @@
 import { PassThrough } from "node:stream";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import React, { type SetStateAction } from "react";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 
+import { defaultConfig } from "../../config/schema.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type {
   McpElicitationRequestEvent,
@@ -11,6 +15,7 @@ import type {
 import { createRoot } from "../ink/root.js";
 import type { AgenCBridgeSession } from "../session-types.js";
 import type { McpFormPending, McpUrlPending, PendingElicitation } from "./App.js";
+import { markFirstRunOnboardingComplete } from "../../onboarding/projectOnboardingState.js";
 
 const providerProbe = vi.hoisted(() => ({
   fpsGetters: [] as unknown[],
@@ -413,6 +418,59 @@ describe("AgenCTuiApp render smoke", () => {
 
     expect(output).toContain("messages:0");
     expect(output).toContain("prompt:draft");
+  });
+
+  test("renders first-run onboarding before the normal transcript when enabled", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    try {
+      const output = await renderApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+      );
+
+      expect(output).toContain("Welcome");
+      expect(output).toContain("AgenC");
+      expect(output).toContain("Preflight");
+      expect(output).not.toContain("messages:0");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("skips first-run onboarding after completion is persisted", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    try {
+      markFirstRunOnboardingComplete({
+        agencHome,
+        selectedProvider: "grok",
+        selectedModel: "grok-4-fast",
+        selectedTheme: "dark",
+        completedStepIds: ["terminal-setup"],
+      });
+      const output = await renderApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+      );
+
+      expect(output).toContain("messages:0");
+      expect(output).not.toContain("Welcome to AgenC");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 });
 

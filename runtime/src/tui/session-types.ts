@@ -81,6 +81,7 @@ export interface AgenCBridgeSession {
 }
 
 export interface ConfigStoreLike {
+  readonly agencHome?: string;
   readonly snapshot?: unknown;
   current?(): AgenCConfig;
   subscribe?(listener: (config: unknown) => void): (() => void) | void;
