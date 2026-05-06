@@ -80,4 +80,66 @@ describe("app-server-client daemon helpers", () => {
       listAgenCDaemonAgents(client as never, { maxPages: 1 }),
     ).rejects.toThrow("exceeded pagination limit");
   });
+
+  it("passes startup multimodal content through agent.create", async () => {
+    vi.resetModules();
+    const createAgent = vi.fn(async (params: unknown) => ({
+      agentId: "agent_image",
+      objective: "describe this",
+      status: "running" as const,
+      createdAt: "2026-05-06T00:00:00.000Z",
+      sessionId: "session_image",
+      params,
+    }));
+    const request = vi.fn();
+    const close = vi.fn();
+    vi.doMock("../app-server/agent-cli.js", async (importActual) => {
+      const actual =
+        await importActual<typeof import("../app-server/agent-cli.js")>();
+      return {
+        ...actual,
+        defaultEnsureDaemonReady: vi.fn(() => vi.fn(async () => {})),
+        createAgenCJsonLineDaemonClient: vi.fn(() => ({ createAgent })),
+        createConnectedAgenCJsonLineDaemonTuiClient: vi.fn(async () => ({
+          request,
+          close,
+        })),
+      };
+    });
+
+    try {
+      const { startAgenCDaemonPromptAgent } = await import("./index.js");
+      await startAgenCDaemonPromptAgent({
+        prompt: "describe this",
+        cwd: "/workspace",
+        initialContent: [
+          { type: "text", text: "describe this" },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/cat.png" },
+          },
+        ],
+      });
+
+      expect(createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          objective: "describe this",
+          instructions: "describe this",
+          cwd: "/workspace",
+          initialContent: [
+            { type: "text", text: "describe this" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/cat.png" },
+            },
+          ],
+        }),
+      );
+      expect(request).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../app-server/agent-cli.js");
+      vi.resetModules();
+    }
+  });
 });

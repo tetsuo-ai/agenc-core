@@ -905,7 +905,7 @@ function validateRequestCancelParams(params: JsonObject): RequestCancelParams {
 }
 
 function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
-  return validateObjectShape(params, {
+  const validated = validateObjectShape(params, {
     methodName: "agent.create",
     stringFields: [
       "objective",
@@ -917,7 +917,16 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     ],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     objectFields: ["metadata"],
-  }) as AgentCreateParams;
+    valueFields: ["initialContent"],
+  });
+  if (validated.initialContent !== undefined) {
+    validateMessageContent(
+      "agent.create",
+      "initialContent",
+      validated.initialContent,
+    );
+  }
+  return validated as AgentCreateParams;
 }
 
 function validateAgentListParams(params: JsonObject): AgentListParams {
@@ -981,22 +990,27 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   ) {
     throw invalidParams("message.stream requires sessionId");
   }
-  const content = validated.content;
+  validateMessageContent("message.stream", "content", validated.content);
+  return validated as MessageStreamParams;
+}
+
+function validateMessageContent(
+  methodName: string,
+  fieldName: string,
+  content: unknown,
+): void {
   if (typeof content !== "string" && !Array.isArray(content)) {
-    throw invalidParams(
-      "message.stream param 'content' must be a string or array",
-    );
+    throw invalidParams(`${methodName} param '${fieldName}' must be a string or array`);
   }
   if (Array.isArray(content)) {
     for (const [index, block] of content.entries()) {
       if (!isValidMessageContentBlock(block)) {
         throw invalidParams(
-          `message.stream param 'content[${index}]' must be a text or image_url block`,
+          `${methodName} param '${fieldName}[${index}]' must be a text or image_url block`,
         );
       }
     }
   }
-  return validated as MessageStreamParams;
 }
 
 function validateThreadRealtimeStartParams(

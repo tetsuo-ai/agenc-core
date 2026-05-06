@@ -38,6 +38,37 @@ describe("forkSubagent", () => {
     expect(res.directivePrompt).toContain("do the thing");
   });
 
+  it("keeps startup image parts on the directive message", async () => {
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: history,
+      taskPrompt: "describe this",
+      taskContent: [
+        { type: "text", text: "describe this" },
+        {
+          type: "image_url",
+          image_url: { url: "file:///tmp/cat.png" },
+        },
+      ],
+    });
+
+    expect(res.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: expect.stringContaining("Task: describe this"),
+          },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/cat.png" },
+          },
+        ],
+      },
+    ]);
+  });
+
   it("mode=full_history keeps every parent message + directive", async () => {
     const res = await forkSubagent({
       parent: stubSession(),

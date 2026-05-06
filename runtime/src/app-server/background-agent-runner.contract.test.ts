@@ -194,6 +194,65 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
+  it("passes startup multimodal content into the initial delegate turn", async () => {
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry: {
+        current: () => createEmptyToolPermissionContext(),
+        update: vi.fn(async () => {}),
+      },
+    };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const registry = {};
+    const thread = {
+      threadId: "agent_image",
+      agentPath: "/root/agent_image",
+      join: vi.fn(() => new Promise(() => {})),
+    } as AgentThread;
+    const delegateFn = vi.fn(async () => ({
+      kind: "async_launched",
+      thread,
+    })) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown: vi.fn(async () => {}),
+      })) as unknown as AgenCBootstrapFunction,
+      delegateFn,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry,
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+
+    await runner.startAgent({
+      objective: "describe this",
+      initialContent: [
+        { type: "text", text: "describe this" },
+        {
+          type: "image_url",
+          image_url: { url: "file:///tmp/cat.png" },
+        },
+      ],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(delegateFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskPrompt: "describe this",
+        taskContent: [
+          { type: "text", text: "describe this" },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/cat.png" },
+          },
+        ],
+      }),
+    );
+  });
+
   it("restores a recovered live agent through the concrete runner", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

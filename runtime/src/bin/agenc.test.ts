@@ -189,16 +189,6 @@ function installDaemonCliDepsForTest(
       prompt: string;
       initialContent?: string | readonly unknown[];
     }) => {
-      if (params.initialContent !== undefined) {
-        requests.push({
-          method: "message.stream",
-          params: {
-            sessionId,
-            content: params.initialContent,
-            streamId: "agenc-startup-test",
-          },
-        });
-      }
       return {
         ...agent,
         objective: params.prompt.trim(),
@@ -1529,21 +1519,10 @@ describe("main() smoke", () => {
           initialUserMessages: expect.anything(),
         }),
       );
-      expect(daemon.requests).toContainEqual(
-        expect.objectContaining({
-          method: "message.stream",
-          params: expect.objectContaining({
-            sessionId: "session_image",
-            content: [
-              { type: "text", text: "describe this" },
-              {
-                type: "image_url",
-                image_url: { url: "http://127.0.0.1/cat.png" },
-              },
-            ],
-          }),
-        }),
-      );
+      expect(daemon.requests.map((request) => request.method)).toEqual([
+        "agent.list",
+        "agent.attach",
+      ]);
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -1695,21 +1674,7 @@ describe("main() smoke", () => {
           ],
         }),
       );
-      expect(daemon.requests).toContainEqual(
-        expect.objectContaining({
-          method: "message.stream",
-          params: expect.objectContaining({
-            sessionId: "session_one_shot_image",
-            content: [
-              { type: "text", text: "describe this" },
-              {
-                type: "image_url",
-                image_url: { url: "http://127.0.0.1/cat.png" },
-              },
-            ],
-          }),
-        }),
-      );
+      expect(daemon.requests).toEqual([]);
     } finally {
       stdoutSpy.mockRestore();
       for (const key of Object.keys(process.env)) {

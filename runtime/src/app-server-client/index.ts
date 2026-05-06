@@ -55,34 +55,18 @@ export async function startAgenCDaemonPromptAgent(
   const env = options.env ?? process.env;
   await defaultEnsureDaemonReady(env)();
   const client = createAgenCJsonLineDaemonClient({ env });
-  const started = await client.createAgent({
+  return client.createAgent({
     objective: prompt,
     instructions: prompt,
     cwd: options.cwd ?? processCwd(),
+    ...(options.initialContent !== undefined
+      ? { initialContent: options.initialContent }
+      : {}),
     metadata: {
       source: "agenc.prompt",
       ...(options.metadata ?? {}),
     },
   });
-  if (options.initialContent === undefined) return started;
-
-  const sessionId = started.sessionId ?? started.activeSessionIds?.[0];
-  if (sessionId === undefined) {
-    throw new Error(`daemon prompt agent has no session: ${started.agentId}`);
-  }
-  const tuiClient = await createConnectedAgenCJsonLineDaemonTuiClient({ env });
-  try {
-    await tuiClient.request("message.stream", {
-      sessionId,
-      content: options.initialContent,
-      streamId: `agenc-startup-${randomUUID()}`,
-    });
-  } finally {
-    await tuiClient.close().catch(() => {
-      /* best effort */
-    });
-  }
-  return started;
 }
 
 export async function listAgenCDaemonAgents(

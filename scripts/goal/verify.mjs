@@ -4692,8 +4692,11 @@ async function migrationGates(item) {
       "src/bin/agenc.test.ts",
       "src/bin/agenc.user-prompt-submit.test.ts",
       "src/app-server-client/index.test.ts",
+      "src/app-server/agent-lifecycle.contract.test.ts",
+      "src/app-server/background-agent-runner.contract.test.ts",
       "src/tui/daemon-session.contract.test.ts",
       "src/app-server/agent-cli.contract.test.ts",
+      "src/agents/fork-context.test.ts",
     ]);
     if (vitest.status !== 0) {
       failGate("MG-04: daemon-only CLI targeted Vitest suite failed");
