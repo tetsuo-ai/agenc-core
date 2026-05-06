@@ -255,6 +255,28 @@ describe("configCommand — reload", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("surfaces config validation warnings from reload", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(
+        join(tmp, "config.toml"),
+        `
+[auth.managedKeys]
+enabled = "yes"
+        `,
+      );
+      const store = new ConfigStore({ home: tmp, env: {} });
+      const r = await configCommand.execute(
+        stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
+      );
+      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
+      expect(r.text).toContain("warnings (1)");
+      expect(r.text).toContain("Invalid auth.managedKeys.enabled");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("configCommand — profile", () => {

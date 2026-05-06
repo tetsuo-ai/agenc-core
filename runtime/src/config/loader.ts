@@ -48,6 +48,7 @@ import {
   mergeConfigs,
   normalizeAgenCKeyAliases,
   normalizeRawConfig,
+  validateAgenCConfigBlocks,
 } from "./schema.js";
 import { resolveAgencHome } from "./env.js";
 import { readTextFile } from "./_deps/file-read.js";
@@ -639,7 +640,7 @@ export interface LoadedConfig {
  * Read `<agenc_home>/config.toml` and merge onto `defaultConfig()`.
  *
  * - Missing file → returns defaults + `exists: false`.
- * - Parse error → warns, returns defaults + `parseError` message.
+ * - Parse/validation error → warns, returns defaults + `parseError` message.
  * - Unknown top-level keys → preserved under `config._unknown`.
  */
 export async function loadConfig(
@@ -700,7 +701,21 @@ export async function loadConfig(
   const aliased = normalizeAgenCKeyAliases(parsed);
   const migrated = migrateRawAgenCConfig(aliased);
   const normalized = normalizeRawConfig(migrated);
-  const merged = mergeConfigs(base, normalized);
+  let validated: AgenCConfig;
+  try {
+    validated = validateAgenCConfigBlocks(normalized);
+  } catch (error) {
+    const msg =
+      error instanceof Error ? error.message : String(error);
+    onWarn(`[agenc:config] invalid config at ${path}: ${msg}`);
+    return Object.freeze({
+      config: base,
+      path,
+      exists: true,
+      parseError: msg,
+    });
+  }
+  const merged = mergeConfigs(base, validated);
   return Object.freeze({
     config: merged,
     path,

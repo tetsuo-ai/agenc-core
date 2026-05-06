@@ -192,6 +192,12 @@ async function refreshMcpAfterConfigReload(
   return `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
 }
 
+function formatConfigReloadWarnings(configStore: ConfigStore): string {
+  const warnings = configStore.warnings();
+  if (warnings.length === 0) return "";
+  return `; warnings (${warnings.length}): ${warnings.join(" | ")}`;
+}
+
 // ---------------------------------------------------------------------------
 // Edit
 // ---------------------------------------------------------------------------
@@ -310,9 +316,10 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
                 ctx.session,
                 next,
               );
+              const warningSuffix = formatConfigReloadWarnings(configStore);
               return {
                 kind: "text",
-                text: `Config reloaded (model ${changed}: ${before.model ?? "<unset>"} → ${next.model ?? "<unset>"})${mcpSuffix}`,
+                text: `Config reloaded (model ${changed}: ${before.model ?? "<unset>"} → ${next.model ?? "<unset>"})${mcpSuffix}${warningSuffix}`,
               };
             } catch (error) {
               return {

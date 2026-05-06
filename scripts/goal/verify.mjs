@@ -1419,7 +1419,31 @@ const ITEM_EVIDENCE = {
     grepPresent: [{ pattern: "configMigration|migrateConfig|configVersion", scope: "runtime/src/config" }],
   },
   "CF-13": {
-    tests: [{ globUnder: "runtime/src/config", matching: /\.test\.tsx?$/ }],
+    files: [
+      "runtime/src/config/schema.ts",
+      "runtime/src/config/loader.ts",
+      "runtime/src/config/PARITY.md",
+    ],
+    grepPresent: [
+      { pattern: "validateAuthConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "validateProviderConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "validateAgentConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "validatePluginsConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "validateMcpServerModeConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "InvalidAuthConfigError", scope: "runtime/src/config/schema.ts" },
+      { pattern: "InvalidProviderConfigError", scope: "runtime/src/config/schema.ts" },
+      { pattern: "InvalidAgentConfigError", scope: "runtime/src/config/schema.ts" },
+      { pattern: "InvalidPluginsConfigError", scope: "runtime/src/config/schema.ts" },
+      { pattern: "InvalidMcpServerModeConfigError", scope: "runtime/src/config/schema.ts" },
+      { pattern: "validateAgenCConfigBlocks", scope: "runtime/src/config/loader.ts" },
+      { pattern: "invalid config at", scope: "runtime/src/config/loader.ts" },
+      { pattern: "formatConfigReloadWarnings", scope: "runtime/src/commands/config.ts" },
+      { pattern: "CF-13", scope: "runtime/src/config/PARITY.md" },
+    ],
+    tests: [
+      "runtime/src/config/config.test.ts",
+      "runtime/src/commands/config.test.ts",
+    ],
   },
   "CF-14": {
     grepPresent: [{ pattern: "agenc config", scope: "runtime/src" }],
@@ -3837,6 +3861,7 @@ async function configGates(item) {
     );
     if (tests.length === 0) failGate("no test files under runtime/src/config/");
     pass(`${tests.length} test file(s) under config/`);
+    return;
   }
   if (id === "CF-14") {
     const cli = grepRepo("agenc config", "runtime/src");
