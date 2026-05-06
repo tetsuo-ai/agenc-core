@@ -1358,7 +1358,7 @@ function stringValue(value: unknown): string | undefined {
 function stringArray(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out = value.filter((entry): entry is string => typeof entry === "string");
-  return out.length > 0 ? out : undefined;
+  return out;
 }
 
 function stringRecord(value: unknown): Record<string, string> | undefined {

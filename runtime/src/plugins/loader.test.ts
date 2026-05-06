@@ -771,6 +771,7 @@ describe("plugin loader", () => {
         mcpServers: {
           local: { command: "node" },
           disabled: { command: "node" },
+          locked: { command: "node" },
           passthrough: { command: "node" },
         },
       });
@@ -793,6 +794,7 @@ describe("plugin loader", () => {
                     },
                   },
                   disabled: { enabled: false },
+                  locked: { enabled_tools: [] },
                 },
               },
             },
@@ -802,7 +804,7 @@ describe("plugin loader", () => {
       const plugin = result.enabled[0];
 
       expect(result.errors).toEqual([]);
-      expect(Object.keys(plugin?.mcpServers ?? {}).sort()).toEqual(["local", "passthrough"]);
+      expect(Object.keys(plugin?.mcpServers ?? {}).sort()).toEqual(["local", "locked", "passthrough"]);
       expect(plugin?.mcpServers.local).toMatchObject({
         command: "node",
         default_tools_approval_mode: "on-request",
@@ -812,6 +814,7 @@ describe("plugin loader", () => {
           read: { default_permission_mode: "never" },
         },
       });
+      expect(plugin?.mcpServers.locked?.enabled_tools).toEqual([]);
     });
   });
 

@@ -1371,7 +1371,7 @@ function createSkillTool(opts: ModelFacingToolOptions): Tool {
         })) ?? null;
       if (!rendered) {
         const outcome = await sessionOrError.services.skillsManager.skillsForConfig(
-          {},
+          sessionOrError.services.configStore?.current?.() ?? {},
           null,
         );
         return json({

@@ -111,7 +111,9 @@ function perMcpToolApprovalMode(
     toolConfig?.defaultPermissionMode ??
     approvalModeAlias(toolConfig?.approval_mode);
   if (isValidPermissionDefaultMode(explicit)) return explicit;
-  return config?.defaultToolsApprovalMode;
+  return isValidPermissionDefaultMode(config?.defaultToolsApprovalMode)
+    ? config.defaultToolsApprovalMode
+    : undefined;
 }
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;

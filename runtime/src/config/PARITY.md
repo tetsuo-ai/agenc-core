@@ -61,3 +61,6 @@ shape, but wraps it in AgenC's ship-safe `plugins.enabled` feature gate and
 - `runtime/src/plugins/cli/pluginOperations.ts` writes managed entries under
   `plugins.plugins.<id>` and turns on the global `plugins.enabled` gate for
   install/enable operations.
+- `runtime/src/commands.ts` and prompt attachment producers pass the active
+  config snapshot into local skill discovery so plugin-provided skills follow
+  the same gate in command and model-visible surfaces.

@@ -233,6 +233,50 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
       .toBe("never");
   });
 
+  test("treats an empty server allowlist as exposing zero tools", async () => {
+    const fakeClient = {
+      listTools: async () => ({
+        tools: [
+          { name: "read", inputSchema: { type: "object", properties: {} } },
+        ],
+      }),
+      callTool: async () => ({
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      }),
+      close: async () => {},
+    };
+
+    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
+      serverConfig: { allowedTools: [] },
+    });
+
+    expect(bridge.tools).toEqual([]);
+  });
+
+  test("ignores invalid server default approval modes", async () => {
+    const fakeClient = {
+      listTools: async () => ({
+        tools: [
+          { name: "read", inputSchema: { type: "object", properties: {} } },
+        ],
+      }),
+      callTool: async () => ({
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      }),
+      close: async () => {},
+    };
+
+    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
+      serverConfig: {
+        defaultToolsApprovalMode: "invalid",
+      } as never,
+    });
+
+    expect(bridge.tools[0]?.defaultPermissionMode).toBeUndefined();
+  });
+
   test("observer.onEnd still fires with isError when client throws", async () => {
     const ends: Array<{ isError: boolean }> = [];
     const counters: Array<{ name: string; tags?: Record<string, string> }> = [];

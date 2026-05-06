@@ -327,10 +327,13 @@ function projectLocalSkill(
   };
 }
 
-async function loadLocalSkillCommands(cwd: string): Promise<readonly Command[]> {
+async function loadLocalSkillCommands(
+  cwd: string,
+  config: unknown = {},
+): Promise<readonly Command[]> {
   try {
     const services = localSkillServices(cwd);
-    const outcome = await services.skillsManager.skillsForConfig({}, null);
+    const outcome = await services.skillsManager.skillsForConfig(config, null);
     return (outcome.availableSkills ?? []).map(skill =>
       projectLocalSkill(skill as LocalSkillMetadata, services),
     );
@@ -398,10 +401,13 @@ export function getCommandsSync(): Command[] {
   return [...builtInCommands()];
 }
 
-export async function getCommands(cwd: string): Promise<Command[]> {
+export async function getCommands(
+  cwd: string,
+  config: unknown = {},
+): Promise<Command[]> {
   const dynamicCommands = await Promise.all(
     [
-      loadLocalSkillCommands(cwd),
+      loadLocalSkillCommands(cwd, config),
       loadProductionCommandSources(cwd),
       ...[...commandProviders].map(async provider => [...(await provider(cwd))]),
     ],
@@ -532,8 +538,11 @@ export function isBridgeSafeCommand(cmd: Command): boolean {
   return commandMatchesNameSet(cmd, BRIDGE_SAFE_COMMAND_NAMES);
 }
 
-export async function getSkillToolCommands(cwd: string): Promise<Command[]> {
-  const allCommands = await getCommands(cwd);
+export async function getSkillToolCommands(
+  cwd: string,
+  config: unknown = {},
+): Promise<Command[]> {
+  const allCommands = await getCommands(cwd, config);
   return allCommands.filter(
     command =>
       command.type === "prompt" &&
@@ -551,9 +560,12 @@ getSkillToolCommands.cache = {
   clear() {},
 };
 
-export async function getSlashCommandToolSkills(cwd: string): Promise<Command[]> {
+export async function getSlashCommandToolSkills(
+  cwd: string,
+  config: unknown = {},
+): Promise<Command[]> {
   try {
-    const allCommands = await getCommands(cwd);
+    const allCommands = await getCommands(cwd, config);
     return allCommands.filter(
       command =>
         command.type === "prompt" &&
