@@ -28,13 +28,19 @@ describe("remote AuthBackend bootstrap key vending", () => {
       ),
     );
     const authBackend = createAuthBackend(
-      mergeConfigs(defaultConfig(), { auth: { backend: "remote" } }),
+      mergeConfigs(defaultConfig(), {
+        auth: { backend: "remote", managedKeys: { enabled: true } },
+      }),
       {
+        agencHome,
         env: {
           [REMOTE_AUTH_URL_ENV]: "http://127.0.0.1:8787/vend-key",
           [REMOTE_AUTH_TOKEN_ENV]: "remote-token",
         },
-        remote: { fetchImpl },
+        remote: {
+          fetchImpl,
+          subscriptionTierResolver: () => "pro",
+        },
       },
     );
 
@@ -65,6 +71,7 @@ describe("remote AuthBackend bootstrap key vending", () => {
         conversationId: "conv-remote-key",
         env: {
           AGENC_HOME: agencHome,
+          AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
           AGENC_WORKSPACE: workspace,
           AGENC_XAI_API_KEY: "",
           GROK_API_KEY: "",

@@ -59,6 +59,7 @@ import type {
   AuthBackend,
   AuthSubscriptionTier,
 } from "../auth/backend.js";
+import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
@@ -859,6 +860,7 @@ async function providerFactoryOptionsFromSettings(params: {
   readonly settings: ResolvedProviderSettings | undefined;
   readonly authBackend?: AuthBackend;
   readonly authSubscriptionTier?: AuthSubscriptionTier;
+  readonly managedKeysEnabled: boolean;
   readonly sessionId: string;
   readonly reusableApiKey?: string;
 }): Promise<ProviderFactoryOptions> {
@@ -892,6 +894,7 @@ async function providerFactoryOptionsFromSettings(params: {
       );
     }
     if (
+      params.managedKeysEnabled &&
       byokApiKey === undefined &&
       normalizedProvider !== null &&
       MANAGED_KEY_PROVIDERS.has(normalizedProvider)
@@ -902,7 +905,9 @@ async function providerFactoryOptionsFromSettings(params: {
     }
   }
   const managedApiKey =
-    byokApiKey === undefined && normalizedProvider !== null
+    byokApiKey === undefined &&
+    params.managedKeysEnabled &&
+    normalizedProvider !== null
       ? await vendManagedProviderKey({
           provider: normalizedProvider,
           authBackend: params.authBackend,
@@ -1611,6 +1616,9 @@ export class Session {
               settings: targetProviderSettings,
               authBackend: this.services.authBackend,
               authSubscriptionTier: this.services.authSubscriptionTier,
+              managedKeysEnabled: configStore?.current
+                ? resolveAuthManagedKeysEnabled(configStore.current())
+                : false,
               sessionId: this.conversationId,
               reusableApiKey: reusableLiveProviderOptions?.apiKey,
             })

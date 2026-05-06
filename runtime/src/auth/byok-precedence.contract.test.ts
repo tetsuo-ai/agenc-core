@@ -13,6 +13,7 @@ describe("BYOK precedence", () => {
       selectByokPrecedenceApiKey({
         explicitApiKey: " explicit-key ",
         byokApiKey: "env-key",
+        managedKeysEnabled: true,
         managedApiKey: "managed-key",
       }),
     ).toBe("explicit-key");
@@ -20,15 +21,24 @@ describe("BYOK precedence", () => {
       selectByokPrecedenceApiKey({
         explicitApiKey: " ",
         byokApiKey: " env-key ",
+        managedKeysEnabled: true,
         managedApiKey: "managed-key",
       }),
     ).toBe("env-key");
     expect(
       selectByokPrecedenceApiKey({
         byokApiKey: "",
+        managedKeysEnabled: true,
         managedApiKey: " managed-key ",
       }),
     ).toBe("managed-key");
+    expect(
+      selectByokPrecedenceApiKey({
+        byokApiKey: "",
+        managedKeysEnabled: false,
+        managedApiKey: " managed-key ",
+      }),
+    ).toBeUndefined();
   });
 
   it("uses env-var BYOK keys without vending managed keys", async () => {

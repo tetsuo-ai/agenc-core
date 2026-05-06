@@ -360,8 +360,13 @@ export interface ProviderConfig {
 
 export type AuthBackendConfigKind = "local" | "remote";
 
+export interface AuthManagedKeysConfig {
+  readonly enabled?: boolean;
+}
+
 export interface AuthConfig {
   readonly backend?: AuthBackendConfigKind;
+  readonly managedKeys?: AuthManagedKeysConfig;
 }
 
 export interface LspServerConfigInput {
@@ -610,6 +615,9 @@ export function defaultConfig(): AgenCConfig {
     agent_max_depth: 1,
     auth: Object.freeze({
       backend: "local",
+      managedKeys: Object.freeze({
+        enabled: false,
+      }) as AuthManagedKeysConfig,
     }) as AuthConfig,
     daemon: Object.freeze({
       transport: "unix",
