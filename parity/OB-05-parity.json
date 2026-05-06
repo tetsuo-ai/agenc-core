@@ -20,6 +20,7 @@
     "runtime/src/errors/api.ts",
     "runtime/src/errors/openai-compatible.ts",
     "runtime/src/errors/hints.ts",
+    "runtime/src/errors/PARITY.md",
     "runtime/src/types/message.ts",
     "runtime/src/tui/components/SystemAPIErrorMessage.tsx",
     "runtime/src/tui/components/ValidationErrorsList.tsx",
@@ -182,6 +183,7 @@
   "intentionalReductions": [
     "Plugin marketplace prompting, persisted show-once config, and install dialogs are not wired in this item because the cited hint source only owns parser/store behavior and the live AgenC plugin recommendation UI is still confined to the temporary upstream mirror.",
     "The React/Ink validation component is ported to a local AgenC tree renderer and local Ink exports instead of importing from the temporary upstream mirror.",
+    "The hint parser source row uses a scrubbed label in this JSON matrix; runtime/src/errors/PARITY.md records the verbatim donor file path and the reason for the scrubbed label.",
     "The system API error renderer keeps the small response prefix and expansion hint inline so the new component does not grow production dependencies on the temporary upstream mirror.",
     "The stale compact compatible-provider classifier under runtime/src/llm/_deps was removed instead of kept as a forwarding module, because re-export shims are forbidden.",
     "The old mirror copies of SystemAPIErrorMessage, ValidationErrorsList, and the hint parser were deleted after their live callers were migrated to the AgenC-owned modules."

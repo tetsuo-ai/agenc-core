@@ -45,6 +45,13 @@ describe("API error UX helpers", () => {
     ).toBe("Proxy");
     expect(
       formatAPIError({
+        message: "<html><body>proxy auth page</body></html>",
+      }),
+    ).toBe(
+      "Received an HTML response from the API instead of JSON. Check provider endpoint, proxy, or login status.",
+    );
+    expect(
+      formatAPIError({
         status: 400,
         error: { error: { message: "nested detail" } },
       }),

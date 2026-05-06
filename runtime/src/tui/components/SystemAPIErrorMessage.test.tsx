@@ -146,6 +146,27 @@ describe("SystemAPIErrorMessage", () => {
     expect(output).not.toContain("x".repeat(1001));
   });
 
+  test("does not render raw title-less HTML provider bodies", () => {
+    const output = renderPlain(
+      <SystemAPIErrorMessage
+        verbose={false}
+        message={{
+          type: "system",
+          subtype: "api_error",
+          level: "error",
+          error: new Error("<html><body>proxy auth page</body></html>"),
+          retryAttempt: 4,
+          retryInMs: 1000,
+          maxRetries: 5,
+        }}
+      />,
+    );
+
+    expect(output).toContain("Received an HTML response from the API");
+    expect(output).not.toContain("<html>");
+    expect(output).not.toContain("proxy auth page");
+  });
+
   test("renders the live-created API retry message shape through the typed boundary", () => {
     const cause = Object.assign(new Error("connect refused"), {
       code: "ECONNREFUSED",

@@ -25,6 +25,8 @@ export const REPEATED_529_ERROR_MESSAGE = "Repeated 529 Overloaded errors";
 export const API_TIMEOUT_ERROR_MESSAGE = "Request timed out";
 
 const MAX_FORMATTED_API_ERROR_CHARS = 4000;
+const HTML_API_ERROR_MESSAGE =
+  "Received an HTML response from the API instead of JSON. Check provider endpoint, proxy, or login status.";
 
 const SSL_ERROR_CODES = new Set([
   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
@@ -155,7 +157,7 @@ export function getSSLErrorHint(error: unknown): string | null {
 function sanitizeMessageHTML(message: string): string {
   if (/<!doctype\s+html|<html\b/i.test(message)) {
     const titleMatch = message.match(/<title[^>]*>([^<]+)<\/title>/i);
-    return titleMatch?.[1]?.trim() ?? "";
+    return titleMatch?.[1]?.trim() ?? HTML_API_ERROR_MESSAGE;
   }
   return message;
 }
