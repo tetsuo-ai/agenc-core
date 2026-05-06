@@ -1,0 +1,130 @@
+{
+  "contractName": "oc-06-vim-modal-editing",
+  "scope": "Vim modal editing for the TUI composer",
+  "generatedAt": "2026-05-06T00:00:00.000Z",
+  "sourceRootLabel": "typescript UI reference checkout",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/vim/types.ts",
+    "src/vim/motions.ts",
+    "src/vim/operators.ts",
+    "src/vim/textObjects.ts",
+    "src/vim/transitions.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/tui/vim/types.ts",
+    "runtime/src/tui/vim/motions.ts",
+    "runtime/src/tui/vim/operators.ts",
+    "runtime/src/tui/vim/text-objects.ts",
+    "runtime/src/tui/vim/transitions.ts",
+    "runtime/src/tui/hooks/useVimInput.ts",
+    "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+    "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx",
+    "runtime/src/tui/components/PromptInput/utils.ts",
+    "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+    "runtime/src/tui/startup/StatusLine.tsx",
+    "runtime/src/config/schema.ts",
+    "runtime/src/utils/config.ts",
+    "runtime/src/commands/vim/vim.ts",
+    "runtime/src/tools/ConfigTool/ConfigTool.ts",
+    "runtime/src/tools/ConfigTool/supportedSettings.ts"
+  ],
+  "testFiles": [
+    "runtime/src/tui/vim/types.test.ts",
+    "runtime/src/tui/vim/motions.test.ts",
+    "runtime/src/tui/vim/operators.test.ts",
+    "runtime/src/tui/vim/text-objects.test.ts",
+    "runtime/src/tui/vim/transitions.test.ts",
+    "runtime/src/tui/input/processTextPrompt.test.ts",
+    "runtime/src/tui/input/processUserInput.test.ts",
+    "runtime/src/tui/components/App.render.test.tsx",
+    "runtime/src/utils/handlePromptSubmit.vimMode.test.ts",
+    "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx",
+    "runtime/src/tui/components/PromptInput/utils.test.ts",
+    "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx",
+    "runtime/src/tui/startup/StatusLine.test.tsx",
+    "runtime/src/tools/ConfigTool/ConfigTool.test.ts",
+    "runtime/src/config/config.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "state-machine-and-motions",
+      "source": "src/vim/{types,motions,transitions}.ts",
+      "target": "runtime/src/tui/vim/{types,motions,transitions}.ts",
+      "requiredBehaviors": [
+        "normal and insert mode state factories",
+        "counts before motions and operators",
+        "hjkl, word, WORD, line, file, find, repeat-find, and g-prefixed motions",
+        "operator-pending transitions for motions, text objects, find, repeat-find, and g-prefix"
+      ],
+      "edgeCases": [
+        "zero is a line-start motion rather than a count prefix",
+        "count values clamp to the maximum vim count",
+        "replace with an empty literal cancels instead of deleting",
+        "n and N are bounded to stored find-repeat semantics"
+      ],
+      "tests": [
+        "runtime/src/tui/vim/types.test.ts",
+        "runtime/src/tui/vim/motions.test.ts",
+        "runtime/src/tui/vim/transitions.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "operators-and-text-objects",
+      "source": "src/vim/{operators,textObjects}.ts",
+      "target": "runtime/src/tui/vim/{operators,text-objects}.ts",
+      "requiredBehaviors": [
+        "delete, change, and yank operators",
+        "linewise operators, paste, indent, replace, x, join, and open-line operations",
+        "word, WORD, quote, bracket, brace, paragraph, and tag text objects"
+      ],
+      "edgeCases": [
+        "linewise deletes keep newline-backed register content",
+        "self-closing and unmatched tags return no text object",
+        "nested same-name tags select the innermost balanced pair",
+        "paragraph around objects include the adjacent blank-line separator"
+      ],
+      "tests": [
+        "runtime/src/tui/vim/operators.test.ts",
+        "runtime/src/tui/vim/text-objects.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "composer-config-and-routing",
+      "source": "src/components/PromptInput/PromptInput.tsx",
+      "target": "runtime/src/tui/components/PromptInput/{PromptInput,ConfiguredPromptTextInput}.tsx",
+      "requiredBehaviors": [
+        "tui.vimMode enables the VimTextInput composer path",
+        "legacy editorMode remains a fallback when the nested flag is absent",
+        "StatusLine renders insert and normal vim mode indicators when the custom status line is active",
+        "PromptInputFooterLeftSide renders insert and normal vim mode indicators when the custom status line is absent",
+        "processTextPrompt can finalize vim routing keys before prompt message construction",
+        "processUserInput can apply vim finalization before bash, slash, or prompt dispatch"
+      ],
+      "edgeCases": [
+        "tui.vimMode false overrides legacy editorMode vim",
+        "settings writes mirror tui.vimMode and editorMode",
+        "ConfigTool dotted global settings preserve sibling fields",
+        "vim routing finalization leaves bash and slash dispatch unchanged when disabled"
+      ],
+      "tests": [
+        "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx",
+        "runtime/src/tui/components/PromptInput/utils.test.ts",
+        "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx",
+        "runtime/src/tui/input/processTextPrompt.test.ts",
+        "runtime/src/tools/ConfigTool/ConfigTool.test.ts",
+        "runtime/src/config/config.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "equivalenceNotes": [
+    "The pinned donor vim files were already present before OC-06; this item finishes the destination filename, config, composer, tests, and checklist-required extensions.",
+    "n and N intentionally repeat f/F/t/T find memory because the TUI composer does not own slash-search state.",
+    "StatusLine.tsx owns visible vim mode status while a custom status line is active; PromptInputFooterLeftSide owns the built-in prompt footer indicator otherwise.",
+    "PromptInput owns live composer modal transitions; processTextPrompt/processUserInput expose route-level vim finalization for dispatch surfaces that receive unfinalized routing keys."
+  ]
+}

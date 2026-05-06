@@ -8,13 +8,100 @@ import type {
 } from '../../types/message.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { PermissionMode } from '../../types/permissions.js'
+import type { VimMode } from '../../types/textInputTypes.js'
 import { createUserMessage } from '../../utils/messages.js'
+import { TextCursor } from '../../utils/TextCursor.js'
 import { logOTelEvent, redactIfDisabled } from '../../utils/telemetry/events.js'
 import { startInteractionSpan } from '../../utils/telemetry/sessionTracing.js'
 import {
   matchesKeepGoingKeyword,
   matchesNegativeKeyword,
 } from '../../utils/userPromptKeywords.js'
+import { transition, type TransitionContext } from '../vim/transitions.js'
+import type { CommandState, FindType, RecordedChange } from '../vim/types.js'
+
+export type VimRoutingState = {
+  enabled: boolean
+  mode: VimMode
+  keys: readonly string[]
+  cursorOffset?: number
+  columns?: number
+}
+
+export function finalizeVimInputForRouting(
+  input: string,
+  vimRoutingState?: VimRoutingState,
+): string {
+  if (vimRoutingState?.enabled !== true) {
+    return input
+  }
+
+  let text = input
+  let offset = Math.max(
+    0,
+    Math.min(vimRoutingState.cursorOffset ?? 0, text.length),
+  )
+  let mode: VimMode = vimRoutingState.mode
+  let command: CommandState = { type: 'idle' }
+  let register = ''
+  let registerIsLinewise = false
+  let lastFind: { type: FindType; char: string } | null = null
+  const changes: RecordedChange[] = []
+  const columns = vimRoutingState.columns ?? 80
+
+  const ctx: TransitionContext = {
+    get cursor() {
+      return TextCursor.fromText(text, columns, offset)
+    },
+    get text() {
+      return text
+    },
+    setText: nextText => {
+      text = nextText
+      offset = Math.min(offset, text.length)
+    },
+    setOffset: nextOffset => {
+      offset = Math.max(0, Math.min(nextOffset, text.length))
+    },
+    enterInsert: nextOffset => {
+      mode = 'INSERT'
+      offset = Math.max(0, Math.min(nextOffset, text.length))
+    },
+    getRegister: () => register,
+    setRegister: (content, linewise) => {
+      register = content
+      registerIsLinewise = linewise
+    },
+    getLastFind: () => lastFind,
+    setLastFind: (type, char) => {
+      lastFind = { type, char }
+    },
+    recordChange: change => {
+      changes.push(change)
+    },
+  }
+
+  for (const key of vimRoutingState.keys) {
+    if (mode === 'INSERT') {
+      if (key === '\x1b') {
+        mode = 'NORMAL'
+        command = { type: 'idle' }
+        continue
+      }
+      text = text.slice(0, offset) + key + text.slice(offset)
+      offset += key.length
+      continue
+    }
+
+    const result = transition(command, key, ctx)
+    result.execute?.()
+    command = result.next ?? { type: 'idle' }
+  }
+
+  void registerIsLinewise
+  void changes
+  return text
+}
 
 export function processTextPrompt(
   input: string | Array<ContentBlockParam>,
@@ -24,17 +111,22 @@ export function processTextPrompt(
   uuid?: string,
   permissionMode?: PermissionMode,
   isMeta?: boolean,
+  vimRoutingState?: VimRoutingState,
 ): {
   messages: (UserMessage | AttachmentMessage | SystemMessage)[]
   shouldQuery: boolean
 } {
+  const routedInput =
+    typeof input === 'string'
+      ? finalizeVimInputForRouting(input, vimRoutingState)
+      : input
   const promptId = randomUUID()
   setPromptId(promptId)
 
   const userPromptText =
-    typeof input === 'string'
-      ? input
-      : input.find(block => block.type === 'text')?.text || ''
+    typeof routedInput === 'string'
+      ? routedInput
+      : routedInput.find(block => block.type === 'text')?.text || ''
   startInteractionSpan(userPromptText)
 
   // Emit user_prompt OTEL event for both string (CLI) and array (SDK/VS Code)
@@ -45,9 +137,9 @@ export function processTextPrompt(
   // so .findLast gets the actual prompt. userPromptText (first block) is kept
   // unchanged for startInteractionSpan to preserve existing span attributes.
   const otelPromptText =
-    typeof input === 'string'
-      ? input
-      : input.findLast(block => block.type === 'text')?.text || ''
+    typeof routedInput === 'string'
+      ? routedInput
+      : routedInput.findLast(block => block.type === 'text')?.text || ''
   if (otelPromptText) {
     void logOTelEvent('user_prompt', {
       prompt_length: String(otelPromptText.length),
@@ -67,11 +159,11 @@ export function processTextPrompt(
   if (imageContentBlocks.length > 0) {
     // Build content: text first, then images below
     const textContent =
-      typeof input === 'string'
-        ? input.trim()
-          ? [{ type: 'text' as const, text: input }]
+      typeof routedInput === 'string'
+        ? routedInput.trim()
+          ? [{ type: 'text' as const, text: routedInput }]
           : []
-        : input
+        : routedInput
     const userMessage = createUserMessage({
       content: [...textContent, ...imageContentBlocks],
       uuid: uuid,
@@ -87,7 +179,7 @@ export function processTextPrompt(
   }
 
   const userMessage = createUserMessage({
-    content: input,
+    content: routedInput,
     uuid,
     permissionMode,
     isMeta: isMeta || undefined,

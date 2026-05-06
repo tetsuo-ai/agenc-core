@@ -12,7 +12,7 @@ import {
   isLinewiseMotion,
   resolveMotion,
 } from './motions.js'
-import { findTextObject } from './textObjects.js'
+import { findTextObject } from './text-objects.js'
 import type {
   FindType,
   Operator,
@@ -84,16 +84,39 @@ export function executeOperatorTextObj(
   count: number,
   ctx: OperatorContext,
 ): void {
-  const range = findTextObject(
+  const range = findCountedTextObject(
     ctx.text,
     ctx.cursor.offset,
     objType,
     scope === 'inner',
+    count,
   )
   if (!range) return
 
   applyOperator(op, range.start, range.end, ctx)
   ctx.recordChange({ type: 'operatorTextObj', op, objType, scope, count })
+}
+
+function findCountedTextObject(
+  text: string,
+  offset: number,
+  objType: string,
+  isInner: boolean,
+  count: number,
+): { start: number; end: number } | null {
+  const first = findTextObject(text, offset, objType, isInner)
+  if (!first) return null
+
+  let start = first.start
+  let end = first.end
+  for (let i = 1; i < Math.max(1, count); i++) {
+    const nextOffset = Math.min(Math.max(end, 0), Math.max(text.length - 1, 0))
+    const next = findTextObject(text, nextOffset, objType, isInner)
+    if (!next || next.end <= end) break
+    start = Math.min(start, next.start)
+    end = next.end
+  }
+  return { start, end }
 }
 
 /**

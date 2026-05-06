@@ -30,6 +30,10 @@ import {
   isSupported,
 } from './supportedSettings.js'
 import {
+  getNestedSettingValue,
+  setGlobalConfigSettingValue,
+} from './nestedSettingPath.js'
+import {
   renderToolResultMessage,
   renderToolUseMessage,
   renderToolUseRejectedMessage,
@@ -314,8 +318,7 @@ export const ConfigTool = buildTool({
     // 4. Write to storage
     try {
       if (config.source === 'global') {
-        const key = path[0]
-        if (!key) {
+        if (path.length === 0) {
           return {
             data: {
               success: false,
@@ -326,8 +329,21 @@ export const ConfigTool = buildTool({
           }
         }
         saveGlobalConfig(prev => {
-          if (prev[key as keyof GlobalConfig] === finalValue) return prev
-          return { ...prev, [key]: finalValue }
+          const currentValue = getNestedSettingValue(prev, path)
+          const next = setGlobalConfigSettingValue(
+            prev,
+            setting,
+            path,
+            finalValue,
+          )
+          if (
+            Object.is(currentValue, finalValue) &&
+            Object.is(prev.editorMode, next.editorMode) &&
+            Object.is(prev.tui?.vimMode, next.tui?.vimMode)
+          ) {
+            return prev
+          }
+          return next
         })
       } else {
         const update = buildNestedObject(path, finalValue)
@@ -437,21 +453,10 @@ export const ConfigTool = buildTool({
 
 function getValue(source: 'global' | 'settings', path: string[]): unknown {
   if (source === 'global') {
-    const config = getGlobalConfig()
-    const key = path[0]
-    if (!key) return undefined
-    return config[key as keyof GlobalConfig]
+    return getNestedSettingValue(getGlobalConfig(), path)
   }
   const settings = getInitialSettings()
-  let current: unknown = settings
-  for (const key of path) {
-    if (current && typeof current === 'object' && key in current) {
-      current = (current as Record<string, unknown>)[key]
-    } else {
-      return undefined
-    }
-  }
-  return current
+  return getNestedSettingValue(settings, path)
 }
 
 function buildNestedObject(

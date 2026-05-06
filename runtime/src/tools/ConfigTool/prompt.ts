@@ -55,6 +55,7 @@ export function generatePrompt(): string {
 ## Usage
 - **Get current value:** Omit the "value" parameter
 - **Set new value:** Include the "value" parameter
+- **Vim mode:** Use "tui.vimMode" as the canonical setting; "editorMode" is kept as a legacy alias.
 
 ## Configurable settings list
 The following settings are available for you to change:
@@ -69,7 +70,7 @@ ${modelSection}
 ## Examples
 - Get theme: { "setting": "theme" }
 - Set dark theme: { "setting": "theme", "value": "dark" }
-- Enable vim mode: { "setting": "editorMode", "value": "vim" }
+- Enable vim mode: { "setting": "tui.vimMode", "value": true }
 - Enable verbose: { "setting": "verbose", "value": true }
 - Change model: { "setting": "model", "value": "opus" }
 - Change permission mode: { "setting": "permissions.defaultMode", "value": "plan" }

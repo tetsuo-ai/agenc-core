@@ -87,6 +87,86 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc/upstream", scope: "runtime/src" },
     ],
   },
+  "OC-06": {
+    files: [
+      "runtime/src/tui/vim/types.ts",
+      "runtime/src/tui/vim/motions.ts",
+      "runtime/src/tui/vim/operators.ts",
+      "runtime/src/tui/vim/text-objects.ts",
+      "runtime/src/tui/vim/transitions.ts",
+      "runtime/src/tui/vim/PARITY.md",
+      "parity/OC-06-vim-parity.json",
+      "runtime/src/tools/ConfigTool/nestedSettingPath.ts",
+      "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx",
+    ],
+    filesAbsent: [
+      "runtime/src/tui/vim/textObjects.ts",
+    ],
+    tests: [
+      "runtime/src/tui/vim/types.test.ts",
+      "runtime/src/tui/vim/motions.test.ts",
+      "runtime/src/tui/vim/operators.test.ts",
+      "runtime/src/tui/vim/text-objects.test.ts",
+      "runtime/src/tui/vim/transitions.test.ts",
+      "runtime/src/tui/input/processTextPrompt.test.ts",
+      "runtime/src/tui/input/processUserInput.test.ts",
+      "runtime/src/tui/components/App.render.test.tsx",
+      "runtime/src/utils/handlePromptSubmit.vimMode.test.ts",
+      "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx",
+      "runtime/src/tui/components/PromptInput/utils.test.ts",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx",
+      "runtime/src/tui/startup/StatusLine.test.tsx",
+      "runtime/src/tools/ConfigTool/ConfigTool.test.ts",
+      "runtime/src/config/config.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "TEXT_OBJ_TYPES = new Set", scope: "runtime/src/tui/vim/types.ts" },
+      { pattern: "'p'", scope: "runtime/src/tui/vim/types.ts" },
+      { pattern: "'t'", scope: "runtime/src/tui/vim/types.ts" },
+      { pattern: "case 'ge'", scope: "runtime/src/tui/vim/motions.ts" },
+      { pattern: "case 'gE'", scope: "runtime/src/tui/vim/motions.ts" },
+      { pattern: "findParagraphObject", scope: "runtime/src/tui/vim/text-objects.ts" },
+      { pattern: "findTagObject", scope: "runtime/src/tui/vim/text-objects.ts" },
+      { pattern: "executeOperatorRepeatFind", scope: "runtime/src/tui/vim/transitions.ts" },
+      { pattern: "input === ';' \\|\\| input === ','", scope: "runtime/src/tui/vim/transitions.ts" },
+      { pattern: "tui\\.vimMode", scope: "runtime/src/tools/ConfigTool/supportedSettings.ts" },
+      { pattern: "setGlobalConfigSettingValue", scope: "runtime/src/tools/ConfigTool/ConfigTool.ts" },
+      { pattern: "vimMode: value_1 === 'vim'", scope: "runtime/src/tui/components/Settings/Config.tsx" },
+      { pattern: "editorMode: value_1", scope: "runtime/src/tui/components/Settings/Config.tsx" },
+      { pattern: "ConfiguredPromptTextInput", scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx" },
+      { pattern: "vimRoutingState", scope: "runtime/src/tui/components/PromptInput/PromptInput.tsx" },
+      { pattern: "vimRoutingState: options\\?\\.vimRoutingState", scope: "runtime/src/tui/screens/REPL.tsx" },
+      { pattern: "vimRoutingState: isFirst \\? vimRoutingState : undefined", scope: "runtime/src/utils/handlePromptSubmit.ts" },
+      { pattern: "threads vim routing state into the real input dispatch path", scope: "runtime/src/utils/handlePromptSubmit.vimMode.test.ts" },
+      { pattern: "isVimModeEnabled\\(\\) \\? \\(", scope: "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx" },
+      { pattern: "useState<VimMode>\\(\"INSERT\"\\)", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "treats 0 as a line-start motion after operators", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "clamps normal and operator counts to the maximum vim count", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "operatorSemicolon", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "operatorComma", scope: "runtime/src/tui/vim/transitions.test.ts" },
+      { pattern: "declares delimiter alias text object keys", scope: "runtime/src/tui/vim/types.test.ts" },
+      { pattern: "executes required operator motion behavior", scope: "runtime/src/tui/vim/operators.test.ts" },
+      { pattern: "routes modal-edited composer text when tui\\.vimMode is true", scope: "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx" },
+      { pattern: "keeps normal text input behavior when tui\\.vimMode is false", scope: "runtime/src/tui/components/PromptInput/PromptInput.vimMode.test.tsx" },
+      { pattern: "processes finalized text after configured vim composer movement", scope: "runtime/src/tui/input/processTextPrompt.test.ts" },
+      { pattern: "ConfiguredPromptTextInput", scope: "runtime/src/tui/input/processTextPrompt.test.ts" },
+      { pattern: "finalizeVimInputForRouting", scope: "runtime/src/tui/input/processTextPrompt.ts" },
+      { pattern: "applies vim routing keys before slash dispatch", scope: "runtime/src/tui/input/processUserInput.test.ts" },
+      { pattern: "applies vim routing keys before bash dispatch", scope: "runtime/src/tui/input/processUserInput.test.ts" },
+      { pattern: "reports the routed vim prompt when a hook blocks submission", scope: "runtime/src/tui/input/processUserInput.test.ts" },
+      { pattern: "covers delete, change, and yank across required text objects", scope: "runtime/src/tui/vim/operators.test.ts" },
+      { pattern: "formatVimModeIndicator\\(vimMode\\)", scope: "runtime/src/tui/startup/StatusLine.tsx" },
+      { pattern: "renders current %s vim mode when vim mode is active", scope: "runtime/src/tui/startup/StatusLine.test.tsx" },
+      { pattern: "StatusLine.*renders the visible", scope: "runtime/src/tui/vim/PARITY.md" },
+      { pattern: "processUserInput.*before bash, slash, or prompt dispatch", scope: "runtime/src/tui/vim/PARITY.md" },
+      { pattern: "formatVimModeIndicator", scope: "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx" },
+      { pattern: "readonly tui\\?: TuiConfig", scope: "runtime/src/config/schema.ts" },
+      { pattern: "tui\\?: TuiConfig", scope: "runtime/src/utils/config.ts" },
+    ],
+    grepNotPresent: [
+      { pattern: "\\./textObjects\\.js", scope: "runtime/src/tui/vim" },
+    ],
+  },
   "RT-11": {
     files: [
       "runtime/src/conversation/realtime/instructions/markers.ts",
@@ -4036,6 +4116,48 @@ async function donorRuntimePortGates(item) {
 }
 
 async function serviceGates(item) {
+  if (id === "OC-06") {
+    const evidence = ITEM_EVIDENCE["OC-06"];
+    const required = [
+      ...(evidence.files ?? []),
+      ...(evidence.tests ?? []),
+      "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+      "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx",
+      "runtime/src/tui/components/Settings/Config.tsx",
+      "runtime/src/tools/ConfigTool/ConfigTool.ts",
+      "runtime/src/tools/ConfigTool/supportedSettings.ts",
+    ];
+    for (const rel of required) {
+      if (typeof rel !== "string") continue;
+      if (!existsSync(path.join(root, rel))) failGate(`OC-06 file missing: ${rel}`);
+    }
+    const vimDir = path.join(root, "runtime/src/tui/vim");
+    const upstreamImports = walkFiles(vimDir).filter((file) => {
+      if (!/\.(ts|tsx)$/.test(file)) return false;
+      return /agenc\/upstream/.test(readFileSync(file, "utf8"));
+    });
+    if (upstreamImports.length > 0) {
+      failGate(
+        `OC-06 vim subsystem must not import the upstream mirror:\n  ${
+          upstreamImports
+            .map((file) => `- ${path.relative(root, file)}`)
+            .join("\n  ")
+        }`,
+      );
+    }
+    const runtimeTests = (evidence.tests ?? []).map((rel) => rel.replace(/^runtime\//, ""));
+    const testRun = run("npm", [
+      "exec",
+      "--workspace=@tetsuo-ai/runtime",
+      "vitest",
+      "run",
+      ...runtimeTests,
+    ]);
+    if (testRun.status !== 0) failGate("OC-06 targeted vim modal input tests failed");
+    pass("OC-06 vim modal input, configuration, footer, and tests present");
+    return;
+  }
+
   if (id === "OC-10") {
     const required = [
       "runtime/src/cost/tracker.ts",

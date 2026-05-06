@@ -42,6 +42,11 @@ export const SUPPORTED_SETTINGS: Record<string, SettingConfig> = {
     description: 'Key binding mode',
     options: EDITOR_MODES,
   },
+  'tui.vimMode': {
+    source: 'global',
+    type: 'boolean',
+    description: 'Enable vim modal editing in the TUI composer',
+  },
   verbose: {
     source: 'global',
     type: 'boolean',

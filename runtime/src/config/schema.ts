@@ -296,6 +296,10 @@ export interface TuiLayoutConfig {
   readonly minColumns?: number;
 }
 
+export interface TuiConfig {
+  readonly vimMode?: boolean;
+}
+
 /**
  * Permissions block as it appears in `~/.agenc/config.toml` (or any
  * settings.json the loader folds in). Mirrors the subset of
@@ -475,6 +479,7 @@ export interface AgenCConfig {
   readonly outputStyle?: PartialOutputStyleConfig;
   readonly attachments?: AttachmentsConfig;
   readonly editorMode?: EditorMode;
+  readonly tui?: TuiConfig;
   readonly tuiLayout?: TuiLayoutConfig;
   readonly telemetryOptIn?: boolean;
   readonly autoFix?: unknown;
@@ -538,6 +543,7 @@ export interface AgenCConfig {
  *
  * Lit up by runtime/TUI upstream closeout:
  *   - editorMode       → see `EditorMode` above.
+ *   - tui              → see `TuiConfig` above.
  *   - tuiLayout        → see `TuiLayoutConfig` above.
  *
  * Lit up by S-05:
@@ -621,6 +627,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "outputStyle",
   "attachments",
   "editorMode",
+  "tui",
   "tuiLayout",
   "telemetryOptIn",
   "autoFix",
@@ -1837,6 +1844,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     out.plugins = validatePluginsConfig(config.plugins);
     changed = true;
   }
+  if (config.tui !== undefined) {
+    out.tui = validateTuiConfig(config.tui);
+    changed = true;
+  }
 
   const configWithMcp = config as AgenCConfig & {
     readonly mcp?: unknown;
@@ -1854,6 +1865,31 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   }
 
   return changed ? (deepFreeze(out) as AgenCConfig) : config;
+}
+
+export class InvalidTuiConfigError extends Error {
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid tui.${field}: ${detail}`);
+    this.name = "InvalidTuiConfigError";
+    this.field = field;
+  }
+}
+
+export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new InvalidTuiConfigError("", "expected plain object");
+  }
+
+  const out: { -readonly [K in keyof TuiConfig]: TuiConfig[K] } = {};
+  if (raw.vimMode !== undefined) {
+    if (typeof raw.vimMode !== "boolean") {
+      throw new InvalidTuiConfigError("vimMode", "expected boolean");
+    }
+    out.vimMode = raw.vimMode;
+  }
+  return Object.freeze(out as TuiConfig);
 }
 
 // ─────────────────────────────────────────────────────────────────────
