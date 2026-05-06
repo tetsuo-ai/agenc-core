@@ -47,7 +47,10 @@ import {
   resolveProviderSelection,
   resolveProviderSettings,
 } from "./resolve-provider.js";
-import { configuredModelForProvider } from "./resolve-model.js";
+import {
+  configuredModelForProvider,
+  resolveModelSelection,
+} from "./resolve-model.js";
 import { ConfigStore } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -498,6 +501,20 @@ describe("provider resolution (T13)", () => {
     expect(configuredModelForProvider(config, "groq")).toBe(
       "llama-3.1-8b-instant",
     );
+  });
+
+  test('model = "agenc" selects the hosted AgenC provider', () => {
+    const config = mergeConfigs(defaultConfig(), { model: "agenc" });
+
+    expect(resolveProviderSelection({ config })).toBe("agenc");
+    expect(resolveProviderSelection({ config, cliProvider: "openai" })).toBe(
+      "openai",
+    );
+    expect(
+      resolveProviderSelection({ config, env: { AGENC_PROVIDER: "xai" } }),
+    ).toBe("grok");
+    expect(resolveModelSelection({ config })).toBe("agenc");
+    expect(resolveModelSelection({ config, provider: "agenc" })).toBe("agenc");
   });
 
   test("buildProviderModelCatalog includes configured provider defaults", () => {
