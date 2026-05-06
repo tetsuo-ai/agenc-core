@@ -428,14 +428,6 @@
       "type": "string",
       "enum": ["audio", "text"]
     },
-    "ThreadRealtimeTranscriptRole": {
-      "type": "string",
-      "enum": ["user", "assistant"]
-    },
-    "ThreadRealtimeClosedReason": {
-      "type": "string",
-      "enum": ["requested", "transport_closed", "error"]
-    },
     "ThreadRealtimeVoice": {
       "type": "string",
       "enum": [
@@ -503,11 +495,25 @@
           "minLength": 1
         },
         "transport": {
-          "$ref": "#/definitions/ThreadRealtimeStartTransport"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadRealtimeStartTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "realtimeSessionId": {
-          "type": "string",
-          "minLength": 1
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "prompt": {
           "anyOf": [
@@ -531,26 +537,9 @@
               "type": "null"
             }
           ]
-        },
-        "version": {
-          "$ref": "#/definitions/ThreadRealtimeVersion"
-        },
-        "sessionMode": {
-          "$ref": "#/definitions/ThreadRealtimeSessionMode"
-        },
-        "model": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "null"
-            }
-          ]
         }
       },
-      "required": ["threadId"]
+      "required": ["threadId", "outputModality"]
     },
     "ThreadRealtimeAudioChunk": {
       "type": "object",
@@ -644,14 +633,21 @@
           "minLength": 1
         },
         "realtimeSessionId": {
-          "type": "string",
-          "minLength": 1
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "version": {
           "$ref": "#/definitions/ThreadRealtimeVersion"
         }
       },
-      "required": ["threadId", "realtimeSessionId", "version"]
+      "required": ["threadId", "version"]
     },
     "ThreadRealtimeItemAddedParams": {
       "type": "object",
@@ -661,9 +657,7 @@
           "type": "string",
           "minLength": 1
         },
-        "item": {
-          "$ref": "#/definitions/JsonObject"
-        }
+        "item": true
       },
       "required": ["threadId", "item"]
     },
@@ -676,7 +670,7 @@
           "minLength": 1
         },
         "role": {
-          "$ref": "#/definitions/ThreadRealtimeTranscriptRole"
+          "type": "string"
         },
         "delta": {
           "type": "string"
@@ -693,7 +687,7 @@
           "minLength": 1
         },
         "role": {
-          "$ref": "#/definitions/ThreadRealtimeTranscriptRole"
+          "type": "string"
         },
         "text": {
           "type": "string"
@@ -754,10 +748,17 @@
           "minLength": 1
         },
         "reason": {
-          "$ref": "#/definitions/ThreadRealtimeClosedReason"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "required": ["threadId", "reason"]
+      "required": ["threadId"]
     },
     "ToolApproveParams": {
       "type": "object",

@@ -84,6 +84,27 @@ export interface AgenCDaemonConnectionInitializeState {
 }
 
 const AGENC_DAEMON_SERVER_CAPABILITIES = Object.freeze({}) as JsonObject;
+const THREAD_REALTIME_VOICES = [
+  "alloy",
+  "arbor",
+  "ash",
+  "ballad",
+  "breeze",
+  "cedar",
+  "coral",
+  "cove",
+  "echo",
+  "ember",
+  "juniper",
+  "maple",
+  "marin",
+  "sage",
+  "shimmer",
+  "sol",
+  "spruce",
+  "vale",
+  "verse",
+] as const;
 
 export interface AgenCDaemonDispatcherOptions {
   readonly agentManager: Pick<
@@ -983,39 +1004,33 @@ function validateThreadRealtimeStartParams(
 ): ThreadRealtimeStartParams {
   const validated = validateObjectShape(params, {
     methodName: "thread/realtime/start",
-    stringFields: ["threadId", "realtimeSessionId"],
+    stringFields: ["threadId"],
     valueFields: [
       "transport",
+      "realtimeSessionId",
       "prompt",
       "outputModality",
       "voice",
-      "version",
-      "sessionMode",
-      "model",
     ],
   });
   validateRequiredString(validated, "thread/realtime/start", "threadId");
-  validateOptionalString(
+  validateOptionalNonEmptyStringOrNull(
     validated,
     "thread/realtime/start",
     "realtimeSessionId",
   );
   validateOptionalStringOrNull(validated, "thread/realtime/start", "prompt");
-  validateOptionalStringOrNull(validated, "thread/realtime/start", "voice");
-  validateOptionalStringOrNull(validated, "thread/realtime/start", "model");
-  validateOptionalEnum(validated, "thread/realtime/start", "outputModality", [
+  validateOptionalEnumOrNull(
+    validated,
+    "thread/realtime/start",
+    "voice",
+    THREAD_REALTIME_VOICES,
+  );
+  validateRequiredEnum(validated, "thread/realtime/start", "outputModality", [
     "audio",
     "text",
   ]);
-  validateOptionalEnum(validated, "thread/realtime/start", "version", [
-    "v1",
-    "v2",
-  ]);
-  validateOptionalEnum(validated, "thread/realtime/start", "sessionMode", [
-    "conversational",
-    "transcription",
-  ]);
-  if (validated.transport !== undefined) {
+  if (validated.transport !== undefined && validated.transport !== null) {
     validateThreadRealtimeTransport(validated.transport);
   }
   return validated as ThreadRealtimeStartParams;
@@ -1030,6 +1045,9 @@ function validateThreadRealtimeAppendAudioParams(
     objectFields: ["audio"],
   });
   validateRequiredString(validated, "thread/realtime/appendAudio", "threadId");
+  if (!isPlainJsonObject(validated.audio)) {
+    throw invalidParams("thread/realtime/appendAudio requires audio");
+  }
   const audio = validateObjectShape(validated.audio as JsonObject, {
     methodName: "thread/realtime/appendAudio.audio",
     stringFields: ["data", "itemId"],
@@ -1357,14 +1375,42 @@ function validateOptionalStringOrNull(
   }
 }
 
-function validateOptionalEnum(
+function validateOptionalNonEmptyStringOrNull(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+): void {
+  const value = params[field];
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw invalidParams(
+      `${methodName} param '${field}' must be a non-empty string or null`,
+    );
+  }
+}
+
+function validateOptionalEnumOrNull(
   params: JsonObject,
   methodName: string,
   field: string,
   allowed: readonly string[],
 ): void {
   const value = params[field];
-  if (value === undefined) return;
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw invalidParams(
+      `${methodName} param '${field}' must be one of: ${allowed.join(", ")}`,
+    );
+  }
+}
+
+function validateRequiredEnum(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+  allowed: readonly string[],
+): void {
+  const value = params[field];
   if (typeof value !== "string" || !allowed.includes(value)) {
     throw invalidParams(
       `${methodName} param '${field}' must be one of: ${allowed.join(", ")}`,

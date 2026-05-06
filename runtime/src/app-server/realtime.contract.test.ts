@@ -35,14 +35,47 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
     realtime.registerThread(binding.thread);
 
     const notifications: JsonObject[] = [];
+    const ordering: string[] = [];
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: createAgentManagerStub(),
       realtime,
     });
     const connection = dispatcher.createConnection({
-      sendNotification: (notification) => notifications.push(notification),
+      sendNotification: (notification) => {
+        ordering.push(`notification:${String(notification.method)}`);
+        notifications.push(notification);
+      },
     });
     await initialize(connection);
+
+    const missingOutputModality = await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-start",
+      method: "thread/realtime/start",
+      params: { threadId: "thread_1" },
+    });
+    expect(missingOutputModality).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    const invalidVoice = await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-voice",
+      method: "thread/realtime/start",
+      params: {
+        threadId: "thread_1",
+        outputModality: "audio",
+        voice: "bad",
+      },
+    });
+    expect(invalidVoice).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
 
     const start = await connection.dispatch({
       jsonrpc: JSON_RPC_VERSION,
@@ -53,15 +86,15 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
         transport: { type: "webrtc", sdp: "offer-sdp" },
         realtimeSessionId: "rt_thread_1",
         outputModality: "audio",
-        version: "v2",
         voice: "marin",
       },
     });
+    ordering.push("response:start");
 
     expect(start).toMatchObject({
       jsonrpc: JSON_RPC_VERSION,
       id: "start",
-      result: { callId: "rtc_dispatch" },
+      result: {},
     });
     expect(binding.transportRequests[0]).toMatchObject({
       callerSdp: "offer-sdp",
@@ -69,6 +102,22 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       providerSdp: "answer-sdp",
       requestedSessionId: "rt_thread_1",
     });
+    await waitFor(
+      () =>
+        notifications.some(
+          (notification) => notification.method === "thread/realtime/started",
+        ) &&
+        notifications.some(
+          (notification) => notification.method === "thread/realtime/sdp",
+        ),
+      "post-start notifications",
+    );
+    expect(ordering.indexOf("response:start")).toBeLessThan(
+      ordering.indexOf("notification:thread/realtime/started"),
+    );
+    expect(ordering.indexOf("response:start")).toBeLessThan(
+      ordering.indexOf("notification:thread/realtime/sdp"),
+    );
     expect(notifications).toEqual(
       expect.arrayContaining([
         {
@@ -103,6 +152,20 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
         },
       },
     });
+
+    const missingAudio = await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-audio",
+      method: "thread/realtime/appendAudio",
+      params: { threadId: "thread_1" },
+    });
+    expect(missingAudio).toMatchObject({
+      error: {
+        code: -32602,
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+
     await connection.dispatch({
       jsonrpc: JSON_RPC_VERSION,
       id: "text",
@@ -164,7 +227,6 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       {
         threadId: "thread_1",
         outputModality: "audio",
-        version: "v2",
       },
       { sendNotification: (notification) => notifications.push(notification) },
     );
@@ -179,10 +241,21 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       },
     });
     binding.events.send({ type: "input_transcript_delta", delta: "hel" });
+    binding.events.send({ type: "output_transcript_delta", delta: "lo" });
+    binding.events.send({ type: "input_transcript_done", text: "hello" });
     binding.events.send({ type: "output_transcript_done", text: "hello" });
     binding.events.send({
       type: "conversation_item_added",
       item: { type: "message", role: "assistant" },
+    });
+    binding.events.send({
+      type: "handoff_requested",
+      handoff: {
+        handoffId: "handoff_1",
+        itemId: "item_1",
+        inputTranscript: "please continue",
+        activeTranscript: [{ role: "assistant", text: "working" }],
+      },
     });
     binding.events.send({ type: "error", message: "provider failed" });
     binding.events.close();
@@ -218,6 +291,16 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
         },
         {
           jsonrpc: JSON_RPC_VERSION,
+          method: "thread/realtime/transcript/delta",
+          params: { threadId: "thread_1", role: "assistant", delta: "lo" },
+        },
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "thread/realtime/transcript/done",
+          params: { threadId: "thread_1", role: "user", text: "hello" },
+        },
+        {
+          jsonrpc: JSON_RPC_VERSION,
           method: "thread/realtime/transcript/done",
           params: { threadId: "thread_1", role: "assistant", text: "hello" },
         },
@@ -231,11 +314,53 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
         },
         {
           jsonrpc: JSON_RPC_VERSION,
+          method: "thread/realtime/itemAdded",
+          params: {
+            threadId: "thread_1",
+            item: {
+              type: "handoff_request",
+              handoffId: "handoff_1",
+              itemId: "item_1",
+              inputTranscript: "please continue",
+              activeTranscript: [{ role: "assistant", text: "working" }],
+            },
+          },
+        },
+        {
+          jsonrpc: JSON_RPC_VERSION,
           method: "thread/realtime/error",
           params: { threadId: "thread_1", message: "provider failed" },
         },
       ]),
     );
+  });
+
+  test("cleans up started realtime conversation when notification delivery fails", async () => {
+    const realtime = new AgenCRealtimeRpcService();
+    const binding = createRealtimeBinding();
+    realtime.registerThread(binding.thread);
+
+    await expect(
+      realtime.start(
+        {
+          threadId: "thread_1",
+          outputModality: "audio",
+        },
+        {
+          sendNotification: () => {
+            throw new Error("client disconnected");
+          },
+        },
+      ),
+    ).resolves.toEqual({});
+    await waitFor(
+      () => binding.events.isClosed,
+      "post-start notification failure cleanup",
+    );
+    await expect(binding.thread.conversation.runningState()).resolves.toBe(
+      undefined,
+    );
+    expect(binding.events.isClosed).toBe(true);
   });
 
   test("builds realtime call transport requests for provider and backend APIs", async () => {
@@ -314,6 +439,31 @@ describe("AgenC daemon realtime JSON-RPC surface", () => {
       },
     });
     expect(backendBody.session as JsonObject).not.toHaveProperty("id");
+
+    const failingClient = new AgenCRealtimeCallClient({
+      baseUrl: "https://api.openai.com/v1",
+      fetch: async () =>
+        fakeResponse({
+          status: 500,
+          body: "provider unavailable",
+          location: "/v1/realtime/calls/rtc_failed",
+        }),
+    });
+    await expect(failingClient.create("offer-sdp")).rejects.toThrow(
+      "HTTP 500: provider unavailable",
+    );
+
+    const missingLocationClient = new AgenCRealtimeCallClient({
+      baseUrl: "https://api.openai.com/v1",
+      fetch: async () =>
+        fakeResponse({
+          body: "answer-without-location",
+          location: null,
+        }),
+    });
+    await expect(
+      missingLocationClient.createWithSession("offer-sdp", session),
+    ).rejects.toThrow("realtime call response missing Location");
 
     expect(
       realtimeCallMultipartBody("sdp", { type: "realtime" }).endsWith(
@@ -404,7 +554,7 @@ function createCallClient(options: {
 function fakeResponse(options: {
   readonly status?: number;
   readonly body: string;
-  readonly location: string;
+  readonly location: string | null;
 }) {
   return {
     status: options.status ?? 201,

@@ -362,11 +362,10 @@ describe("AgenC daemon protocol surface", () => {
         method: "thread/realtime/start",
         params: {
           threadId: "session_1",
-          transport: { type: "webrtc", sdp: "v=0\r\n" },
-          realtimeSessionId: "rt_session_1",
+          transport: null,
+          realtimeSessionId: null,
           outputModality: "audio",
-          version: "v2",
-          voice: "marin",
+          voice: null,
         },
       },
       {
@@ -631,6 +630,28 @@ describe("AgenC daemon protocol surface", () => {
         params: { threadId: "session_1", transport: { type: "webrtc" } },
       }),
     ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "missing-realtime-output-modality",
+        method: "thread/realtime/start",
+        params: { threadId: "session_1" },
+      }),
+    ).toBe(false);
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-realtime-voice",
+        method: "thread/realtime/start",
+        params: {
+          threadId: "session_1",
+          outputModality: "audio",
+          voice: "bad",
+        },
+      }),
+    ).toBe(false);
   });
 
   it("validates server notification envelopes through the published schema", () => {
@@ -750,7 +771,7 @@ describe("AgenC daemon protocol surface", () => {
         method: "thread/realtime/started",
         params: {
           threadId: "session_1",
-          realtimeSessionId: "rt_session_1",
+          realtimeSessionId: null,
           version: "v2",
         },
       },
@@ -797,7 +818,7 @@ describe("AgenC daemon protocol surface", () => {
         method: "thread/realtime/itemAdded",
         params: {
           threadId: "session_1",
-          item: { type: "message", role: "assistant" },
+          item: "assistant-message",
         },
       },
       {
@@ -813,7 +834,7 @@ describe("AgenC daemon protocol surface", () => {
         method: "thread/realtime/closed",
         params: {
           threadId: "session_1",
-          reason: "transport_closed",
+          reason: null,
         },
       },
     ];
@@ -852,7 +873,7 @@ describe("AgenC daemon protocol surface", () => {
         method: "thread/realtime/transcript/delta",
         params: {
           threadId: "session_1",
-          role: "system",
+          role: 1,
           delta: "bad",
         },
       }),

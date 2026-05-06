@@ -474,6 +474,70 @@ describe("tool-registry dynamic and deferred catalog", () => {
     );
   });
 
+  test("deferred bash surface is cataloged and loads by explicit selection", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const bash = registry.tools.find((tool) => tool.name === "system.bash");
+
+    expect(bash).toMatchObject({
+      name: "system.bash",
+      metadata: expect.objectContaining({
+        family: "terminal",
+        deferred: true,
+        hiddenByDefault: true,
+      }),
+      recoveryCategory: "side-effecting",
+    });
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
+      "system.bash",
+    );
+
+    const result = await registry.dispatch({
+      id: "search-select-bash",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "system.bash" }),
+    });
+
+    const body = JSON.parse(result.content) as {
+      loaded: string[];
+      results: Array<{ name: string; selected: boolean }>;
+    };
+    expect(body.loaded).toContain("system.bash");
+    expect(body.results).toContainEqual(
+      expect.objectContaining({ name: "system.bash", selected: true }),
+    );
+    expect(registry.getDiscoveredToolNames?.().has("system.bash")).toBe(true);
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
+      "system.bash",
+    );
+
+    const rawStringResult = await registry.dispatch({
+      id: "bash-raw-string",
+      name: "system.bash",
+      arguments: "printf agenc-bash-raw",
+    });
+    expect(rawStringResult.isError).toBeUndefined();
+    expect(rawStringResult.content).toContain("agenc-bash-raw");
+
+    const objectResult = await registry.dispatch({
+      id: "bash-object",
+      name: "system.bash",
+      arguments: JSON.stringify({
+        command: "printf",
+        args: ["agenc-bash-object"],
+      }),
+    });
+    expect(objectResult.isError).toBeUndefined();
+    expect(objectResult.content).toContain("agenc-bash-object");
+
+    const deniedResult = await registry.dispatch({
+      id: "bash-denied",
+      name: "system.bash",
+      arguments: JSON.stringify({ command: "sudo", args: ["true"] }),
+    });
+    expect(deniedResult.isError).toBe(true);
+    expect(deniedResult.content).toContain("denied");
+  });
+
   test("first-class file tools are visible without searchTools discovery", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 

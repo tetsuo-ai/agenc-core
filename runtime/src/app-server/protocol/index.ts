@@ -605,11 +605,6 @@ export interface MessageStreamParams extends MessageSendParams {
 export type ThreadRealtimeVersion = "v1" | "v2";
 export type ThreadRealtimeSessionMode = "conversational" | "transcription";
 export type ThreadRealtimeOutputModality = "audio" | "text";
-export type ThreadRealtimeTranscriptRole = "user" | "assistant";
-export type ThreadRealtimeClosedReason =
-  | "requested"
-  | "transport_closed"
-  | "error";
 export type ThreadRealtimeVoice =
   | "alloy"
   | "arbor"
@@ -646,19 +641,14 @@ export type ThreadRealtimeStartTransport =
 
 export interface ThreadRealtimeStartParams extends JsonObject {
   readonly threadId: string;
-  readonly transport?: ThreadRealtimeStartTransport;
-  readonly realtimeSessionId?: string;
+  readonly transport?: ThreadRealtimeStartTransport | null;
+  readonly realtimeSessionId?: string | null;
   readonly prompt?: string | null;
-  readonly outputModality?: ThreadRealtimeOutputModality;
+  readonly outputModality: ThreadRealtimeOutputModality;
   readonly voice?: ThreadRealtimeVoice | null;
-  readonly version?: ThreadRealtimeVersion;
-  readonly sessionMode?: ThreadRealtimeSessionMode;
-  readonly model?: string | null;
 }
 
-export interface ThreadRealtimeStartResponse extends JsonObject {
-  readonly callId?: string;
-}
+export interface ThreadRealtimeStartResponse extends JsonObject {}
 
 export interface ThreadRealtimeAudioChunk extends JsonObject {
   readonly data: string;
@@ -861,21 +851,21 @@ export interface ThreadRealtimeBaseParams extends JsonObject {
 }
 
 export interface ThreadRealtimeStartedParams extends ThreadRealtimeBaseParams {
-  readonly realtimeSessionId: string;
+  readonly realtimeSessionId?: string | null;
   readonly version: ThreadRealtimeVersion;
 }
 
 export interface ThreadRealtimeItemAddedParams extends ThreadRealtimeBaseParams {
-  readonly item: JsonObject;
+  readonly item: JsonValue;
 }
 
 export interface ThreadRealtimeTranscriptDeltaParams extends ThreadRealtimeBaseParams {
-  readonly role: ThreadRealtimeTranscriptRole;
+  readonly role: string;
   readonly delta: string;
 }
 
 export interface ThreadRealtimeTranscriptDoneParams extends ThreadRealtimeBaseParams {
-  readonly role: ThreadRealtimeTranscriptRole;
+  readonly role: string;
   readonly text: string;
 }
 
@@ -892,7 +882,7 @@ export interface ThreadRealtimeErrorParams extends ThreadRealtimeBaseParams {
 }
 
 export interface ThreadRealtimeClosedParams extends ThreadRealtimeBaseParams {
-  readonly reason: ThreadRealtimeClosedReason;
+  readonly reason?: string | null;
 }
 
 export interface AgenCDaemonNotificationWithParams<

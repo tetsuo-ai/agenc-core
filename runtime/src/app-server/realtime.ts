@@ -138,7 +138,6 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
     const transport = normalizeRealtimeStartTransport(params.transport);
     const config = await this.#buildSessionConfig(binding, params);
     let providerSdp: string | undefined;
-    let providerCallId: string | undefined;
     let connectTransport = binding.connectTransport;
     if (transport.type === "webrtc" && binding.callClient !== undefined) {
       const response = await binding.callClient.createWithSession(
@@ -147,7 +146,6 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         binding.headers,
       );
       providerSdp = response.sdp;
-      providerCallId = response.callId;
       connectTransport = (request) =>
         binding.connectTransport({
           ...request,
@@ -173,24 +171,6 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
     };
     this.#activeFanouts.set(params.threadId, activeFanout);
 
-    await this.#send(context.sendNotification, {
-      method: "thread/realtime/started",
-      params: {
-        threadId: params.threadId,
-        realtimeSessionId: config.sessionId,
-        version: config.version,
-      },
-    });
-    if (providerSdp !== undefined) {
-      await this.#send(context.sendNotification, {
-        method: "thread/realtime/sdp",
-        params: {
-          threadId: params.threadId,
-          sdp: providerSdp,
-        },
-      });
-    }
-
     const fanoutRegistered = await binding.conversation.registerFanout(
       started.active,
       (events) =>
@@ -202,15 +182,29 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         ),
     );
     if (!fanoutRegistered) {
+      activeFanout.closeReason = "error";
+      if (this.#activeFanouts.get(params.threadId) === activeFanout) {
+        this.#activeFanouts.delete(params.threadId);
+      }
+      activeFanout.closed = true;
+      await binding.conversation.finishIfActive(started.active).catch(() => {});
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
         `realtime fanout is already registered for thread: ${params.threadId}`,
       );
     }
+    this.#deferPostStartNotifications({
+      threadId: params.threadId,
+      binding,
+      activeFanout,
+      active: started.active,
+      realtimeSessionId: config.sessionId,
+      version: config.version,
+      providerSdp,
+      sendNotification: context.sendNotification,
+    });
 
-    return {
-      ...(providerCallId !== undefined ? { callId: providerCallId } : {}),
-    };
+    return {};
   }
 
   async appendAudio(
@@ -269,8 +263,7 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
     binding: AgenCRealtimeThreadBinding,
     params: ThreadRealtimeStartParams,
   ) {
-    const outputModality = (params.outputModality ??
-      "audio") as RealtimeOutputModality;
+    const outputModality = params.outputModality as RealtimeOutputModality;
     const voice = params.voice as RealtimeVoice | null | undefined;
     if (binding.session !== undefined) {
       return buildRealtimeSessionConfigFromSession({
@@ -282,9 +275,9 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
         realtimeSessionId: params.realtimeSessionId,
         voice,
         configuredVoice: binding.configuredVoice,
-        version: params.version ?? binding.version,
-        sessionMode: params.sessionMode ?? binding.sessionMode,
-        model: params.model ?? binding.model,
+        version: binding.version,
+        sessionMode: binding.sessionMode,
+        model: binding.model,
         ...(binding.startupContextOptions !== undefined
           ? { startupContextOptions: binding.startupContextOptions }
           : {}),
@@ -299,9 +292,9 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
       realtimeSessionId: params.realtimeSessionId,
       voice,
       configuredVoice: binding.configuredVoice,
-      version: params.version ?? binding.version,
-      sessionMode: params.sessionMode ?? binding.sessionMode,
-      model: params.model ?? binding.model,
+      version: binding.version,
+      sessionMode: binding.sessionMode,
+      model: binding.model,
     });
   }
 
@@ -331,6 +324,58 @@ export class AgenCRealtimeRpcService implements AgenCRealtimeRpcHandlers {
       });
     } finally {
       await this.#closeFanout(threadId, activeFanout, sendNotification);
+    }
+  }
+
+  #deferPostStartNotifications(options: {
+    readonly threadId: string;
+    readonly binding: AgenCRealtimeThreadBinding;
+    readonly activeFanout: ActiveRealtimeFanout;
+    readonly active: RealtimeActiveHandle;
+    readonly realtimeSessionId: string;
+    readonly version: RealtimeSessionVersion;
+    readonly providerSdp?: string;
+    readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
+  }): void {
+    setImmediate(() => {
+      void this.#sendPostStartNotifications(options).catch(async () => {
+        options.activeFanout.closeReason = "error";
+        if (
+          this.#activeFanouts.get(options.threadId) === options.activeFanout
+        ) {
+          this.#activeFanouts.delete(options.threadId);
+        }
+        options.activeFanout.closed = true;
+        await options.binding.conversation
+          .finishIfActive(options.active)
+          .catch(() => {});
+      });
+    });
+  }
+
+  async #sendPostStartNotifications(options: {
+    readonly threadId: string;
+    readonly realtimeSessionId: string;
+    readonly version: RealtimeSessionVersion;
+    readonly providerSdp?: string;
+    readonly sendNotification: AgenCRealtimeNotificationSender | undefined;
+  }): Promise<void> {
+    await this.#send(options.sendNotification, {
+      method: "thread/realtime/started",
+      params: {
+        threadId: options.threadId,
+        realtimeSessionId: options.realtimeSessionId,
+        version: options.version,
+      },
+    });
+    if (options.providerSdp !== undefined) {
+      await this.#send(options.sendNotification, {
+        method: "thread/realtime/sdp",
+        params: {
+          threadId: options.threadId,
+          sdp: options.providerSdp,
+        },
+      });
     }
   }
 
