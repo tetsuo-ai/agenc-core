@@ -1,0 +1,87 @@
+{
+  "contractName": "rt-13-realtime-json-rpc-method-surface",
+  "itemId": "RT-13",
+  "status": "implemented",
+  "sourceRoot": "local CX runtime donor checkout",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": [
+    "api/src/endpoint/realtime_call.rs",
+    "api/src/endpoint/realtime_websocket/methods.rs",
+    "api/src/endpoint/realtime_websocket/methods_common.rs",
+    "api/src/endpoint/realtime_websocket/methods_v1.rs",
+    "api/src/endpoint/realtime_websocket/methods_v2.rs",
+    "api/src/endpoint/realtime_websocket/mod.rs",
+    "api/src/endpoint/realtime_websocket/protocol.rs",
+    "api/src/endpoint/realtime_websocket/protocol_common.rs",
+    "api/src/endpoint/realtime_websocket/protocol_v1.rs",
+    "api/src/endpoint/realtime_websocket/protocol_v2.rs",
+    "app-server-protocol/src/protocol/common.rs",
+    "app-server/tests/suite/v2/realtime_conversation.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/app-server/protocol/index.ts",
+    "runtime/src/app-server/protocol/schema.json",
+    "runtime/src/app-server/daemon-dispatcher.ts",
+    "runtime/src/app-server/realtime.ts",
+    "runtime/src/app-server/realtime-transport.ts",
+    "runtime/src/conversation/realtime/conversation.ts",
+    "runtime/src/index.ts"
+  ],
+  "tests": [
+    "runtime/src/app-server/realtime.contract.test.ts",
+    "runtime/src/app-server/protocol.contract.test.ts"
+  ],
+  "parityMatrix": [
+    {
+      "source": "app-server-protocol/src/protocol/common.rs",
+      "target": "runtime/src/app-server/protocol/index.ts",
+      "coverage": [
+        "thread/realtime/start",
+        "thread/realtime/appendAudio",
+        "thread/realtime/appendText",
+        "thread/realtime/stop",
+        "thread/realtime/listVoices",
+        "thread/realtime/started",
+        "thread/realtime/itemAdded",
+        "thread/realtime/transcript/delta",
+        "thread/realtime/transcript/done",
+        "thread/realtime/outputAudio/delta",
+        "thread/realtime/sdp",
+        "thread/realtime/error",
+        "thread/realtime/closed"
+      ],
+      "evidence": ["runtime/src/app-server/protocol.contract.test.ts"]
+    },
+    {
+      "source": "api/src/endpoint/realtime_call.rs",
+      "target": "runtime/src/app-server/realtime-transport.ts",
+      "coverage": [
+        "raw SDP call creation",
+        "multipart SDP plus session call creation",
+        "backend JSON call creation shape",
+        "Location call id decoding"
+      ],
+      "evidence": ["runtime/src/app-server/realtime.contract.test.ts"]
+    },
+    {
+      "source": "api/src/endpoint/realtime_websocket/",
+      "target": "runtime/src/app-server/realtime.ts",
+      "coverage": [
+        "daemon method dispatch to existing realtime conversation spine",
+        "server-push notification fanout for realtime audio, transcript, item, error, and close events",
+        "voice list defaults for v1 and v2"
+      ],
+      "evidence": ["runtime/src/app-server/realtime.contract.test.ts"]
+    },
+    {
+      "source": "app-server/tests/suite/v2/realtime_conversation.rs",
+      "target": "runtime/src/app-server/daemon-dispatcher.ts",
+      "coverage": [
+        "JSON-RPC start response precedes realtime server notifications",
+        "appendAudio, appendText, stop, and listVoices dispatcher routing",
+        "WebRTC SDP negotiation handoff to the injected realtime transport"
+      ],
+      "evidence": ["runtime/src/app-server/realtime.contract.test.ts"]
+    }
+  ]
+}

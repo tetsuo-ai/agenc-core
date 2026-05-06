@@ -28,10 +28,11 @@ import {
   createAgenCDaemonAuthHandlers,
   type AgenCDaemonAuthHandlers,
 } from "./auth.js";
-import type {
-  AuthBackend,
-  AuthDaemonSocketIdentity,
-} from "../auth/backend.js";
+import {
+  AgenCRealtimeRpcService,
+  type AgenCRealtimeRpcHandlers,
+} from "./realtime.js";
+import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonMethod,
@@ -58,6 +59,11 @@ import {
   type PermissionListParams,
   type RequestCancelParams,
   type RequestId,
+  type ThreadRealtimeAppendAudioParams,
+  type ThreadRealtimeAppendTextParams,
+  type ThreadRealtimeListVoicesParams,
+  type ThreadRealtimeStartParams,
+  type ThreadRealtimeStopParams,
   type ToolApproveParams,
   type ToolCancelParams,
   type ToolDenyParams,
@@ -112,6 +118,7 @@ export interface AgenCDaemonDispatcherOptions {
   readonly commandExec?: AgenCCommandExec;
   readonly authBackend?: AuthBackend;
   readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly realtime?: AgenCRealtimeRpcHandlers;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -159,6 +166,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #commandExec: AgenCCommandExec;
   readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
   readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
+  readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -175,6 +183,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       new AgenCDaemonHealthService({
         stateCounter: options.healthStateCounter,
       });
+    this.#realtime = options.realtime ?? new AgenCRealtimeRpcService();
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -272,12 +281,9 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
       }
       if (!connection.initialized) {
-        return errorResponse(
-          id,
-          -32000,
-          "Not initialized",
-          { code: "CONNECTION_NOT_INITIALIZED" },
-        );
+        return errorResponse(id, -32000, "Not initialized", {
+          code: "CONNECTION_NOT_INITIALIZED",
+        });
       }
 
       if (method === "request.cancel") {
@@ -341,6 +347,42 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "message.stream":
         return this.#streamMessage(id, params);
+      case "thread/realtime/start":
+        return successResponse(
+          id,
+          await this.#realtime.start(
+            validateThreadRealtimeStartParams(params),
+            {
+              sendNotification: connection.sendNotification,
+            },
+          ),
+        );
+      case "thread/realtime/appendAudio":
+        return successResponse(
+          id,
+          await this.#realtime.appendAudio(
+            validateThreadRealtimeAppendAudioParams(params),
+          ),
+        );
+      case "thread/realtime/appendText":
+        return successResponse(
+          id,
+          await this.#realtime.appendText(
+            validateThreadRealtimeAppendTextParams(params),
+          ),
+        );
+      case "thread/realtime/stop":
+        return successResponse(
+          id,
+          await this.#realtime.stop(validateThreadRealtimeStopParams(params)),
+        );
+      case "thread/realtime/listVoices":
+        return successResponse(
+          id,
+          await this.#realtime.listVoices(
+            validateThreadRealtimeListVoicesParams(params),
+          ),
+        );
       case "fs.fuzzy_search":
         return successResponse(
           id,
@@ -767,9 +809,7 @@ function validateInitializeParams(params: JsonObject): InitializeParams {
   return validated as InitializeParams;
 }
 
-function negotiateInitializeProtocol(
-  params: InitializeParams,
-):
+function negotiateInitializeProtocol(params: InitializeParams):
   | {
       readonly supported: true;
       readonly state: AgenCDaemonConnectionInitializeState;
@@ -936,6 +976,117 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     }
   }
   return validated as MessageStreamParams;
+}
+
+function validateThreadRealtimeStartParams(
+  params: JsonObject,
+): ThreadRealtimeStartParams {
+  const validated = validateObjectShape(params, {
+    methodName: "thread/realtime/start",
+    stringFields: ["threadId", "realtimeSessionId"],
+    valueFields: [
+      "transport",
+      "prompt",
+      "outputModality",
+      "voice",
+      "version",
+      "sessionMode",
+      "model",
+    ],
+  });
+  validateRequiredString(validated, "thread/realtime/start", "threadId");
+  validateOptionalString(
+    validated,
+    "thread/realtime/start",
+    "realtimeSessionId",
+  );
+  validateOptionalStringOrNull(validated, "thread/realtime/start", "prompt");
+  validateOptionalStringOrNull(validated, "thread/realtime/start", "voice");
+  validateOptionalStringOrNull(validated, "thread/realtime/start", "model");
+  validateOptionalEnum(validated, "thread/realtime/start", "outputModality", [
+    "audio",
+    "text",
+  ]);
+  validateOptionalEnum(validated, "thread/realtime/start", "version", [
+    "v1",
+    "v2",
+  ]);
+  validateOptionalEnum(validated, "thread/realtime/start", "sessionMode", [
+    "conversational",
+    "transcription",
+  ]);
+  if (validated.transport !== undefined) {
+    validateThreadRealtimeTransport(validated.transport);
+  }
+  return validated as ThreadRealtimeStartParams;
+}
+
+function validateThreadRealtimeAppendAudioParams(
+  params: JsonObject,
+): ThreadRealtimeAppendAudioParams {
+  const validated = validateObjectShape(params, {
+    methodName: "thread/realtime/appendAudio",
+    stringFields: ["threadId"],
+    objectFields: ["audio"],
+  });
+  validateRequiredString(validated, "thread/realtime/appendAudio", "threadId");
+  const audio = validateObjectShape(validated.audio as JsonObject, {
+    methodName: "thread/realtime/appendAudio.audio",
+    stringFields: ["data", "itemId"],
+    numberFields: ["sampleRate", "numChannels", "samplesPerChannel"],
+  });
+  validateRequiredString(audio, "thread/realtime/appendAudio.audio", "data");
+  validateOptionalString(audio, "thread/realtime/appendAudio.audio", "itemId");
+  validatePositiveInteger(
+    audio,
+    "thread/realtime/appendAudio.audio",
+    "sampleRate",
+    true,
+  );
+  validatePositiveInteger(
+    audio,
+    "thread/realtime/appendAudio.audio",
+    "numChannels",
+    true,
+  );
+  validatePositiveInteger(
+    audio,
+    "thread/realtime/appendAudio.audio",
+    "samplesPerChannel",
+    false,
+  );
+  return validated as ThreadRealtimeAppendAudioParams;
+}
+
+function validateThreadRealtimeAppendTextParams(
+  params: JsonObject,
+): ThreadRealtimeAppendTextParams {
+  const validated = validateObjectShape(params, {
+    methodName: "thread/realtime/appendText",
+    stringFields: ["threadId", "text"],
+  });
+  validateRequiredString(validated, "thread/realtime/appendText", "threadId");
+  validateRequiredString(validated, "thread/realtime/appendText", "text");
+  return validated as ThreadRealtimeAppendTextParams;
+}
+
+function validateThreadRealtimeStopParams(
+  params: JsonObject,
+): ThreadRealtimeStopParams {
+  const validated = validateObjectShape(params, {
+    methodName: "thread/realtime/stop",
+    stringFields: ["threadId"],
+  });
+  validateRequiredString(validated, "thread/realtime/stop", "threadId");
+  return validated as ThreadRealtimeStopParams;
+}
+
+function validateThreadRealtimeListVoicesParams(
+  params: JsonObject,
+): ThreadRealtimeListVoicesParams {
+  return validateObjectShape(params, {
+    methodName: "thread/realtime/listVoices",
+  }) as ThreadRealtimeListVoicesParams;
 }
 
 function validateFuzzyFileSearchParams(
@@ -1111,10 +1262,7 @@ function validateElicitationRespondParams(
   ) {
     throw invalidParams("elicitation.respond requires requestId");
   }
-  if (
-    validated.kind !== "request_user_input" &&
-    validated.kind !== "mcp"
-  ) {
+  if (validated.kind !== "request_user_input" && validated.kind !== "mcp") {
     throw invalidParams(
       "elicitation.respond param 'kind' must be request_user_input or mcp",
     );
@@ -1128,15 +1276,46 @@ function validateElicitationRespondParams(
   return validated as ElicitationRespondParams;
 }
 
-function validatePermissionListParams(params: JsonObject): PermissionListParams {
+function validatePermissionListParams(
+  params: JsonObject,
+): PermissionListParams {
   const validated = validateObjectShape(params, {
     methodName: "permission.list",
     stringFields: ["agentId", "sessionId"],
   });
   if (validated.agentId !== undefined && validated.sessionId !== undefined) {
-    throw invalidParams("permission.list accepts agentId or sessionId, not both");
+    throw invalidParams(
+      "permission.list accepts agentId or sessionId, not both",
+    );
   }
   return validated as PermissionListParams;
+}
+
+function validateThreadRealtimeTransport(value: unknown): void {
+  if (!isPlainJsonObject(value)) {
+    throw invalidParams(
+      "thread/realtime/start param 'transport' must be an object",
+    );
+  }
+  const transport = validateObjectShape(value, {
+    methodName: "thread/realtime/start.transport",
+    stringFields: ["type", "sdp"],
+  });
+  if (transport.type === "websocket") {
+    if (transport.sdp !== undefined) {
+      throw invalidParams(
+        "thread/realtime/start websocket transport does not accept sdp",
+      );
+    }
+    return;
+  }
+  if (transport.type === "webrtc") {
+    validateRequiredString(transport, "thread/realtime/start.transport", "sdp");
+    return;
+  }
+  throw invalidParams(
+    "thread/realtime/start transport type must be websocket or webrtc",
+  );
 }
 
 function validateRequiredString(
@@ -1147,6 +1326,67 @@ function validateRequiredString(
   const value = params[field];
   if (typeof value !== "string" || value.trim().length === 0) {
     throw invalidParams(`${methodName} requires ${field}`);
+  }
+}
+
+function validateOptionalString(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+): void {
+  const value = params[field];
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw invalidParams(
+      `${methodName} param '${field}' must be a non-empty string`,
+    );
+  }
+}
+
+function validateOptionalStringOrNull(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+): void {
+  const value = params[field];
+  if (value === undefined || value === null) return;
+  if (typeof value !== "string") {
+    throw invalidParams(
+      `${methodName} param '${field}' must be a string or null`,
+    );
+  }
+}
+
+function validateOptionalEnum(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+  allowed: readonly string[],
+): void {
+  const value = params[field];
+  if (value === undefined) return;
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw invalidParams(
+      `${methodName} param '${field}' must be one of: ${allowed.join(", ")}`,
+    );
+  }
+}
+
+function validatePositiveInteger(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+  required: boolean,
+): void {
+  const value = params[field];
+  if (value === undefined) {
+    if (required) throw invalidParams(`${methodName} requires ${field}`);
+    return;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw invalidParams(
+      `${methodName} param '${field}' must be a positive integer`,
+    );
   }
 }
 
