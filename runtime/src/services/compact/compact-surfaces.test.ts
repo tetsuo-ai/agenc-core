@@ -18,7 +18,13 @@ import {
 } from "./compactWarningState.js";
 import { groupMessagesAtAssistantBoundaries } from "./grouping.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
-import { formatCompactSummary, stripAnalysisTags } from "./prompt.js";
+import {
+  formatCompactSummary,
+  getCompactPrompt,
+  getCompactUserSummaryMessage,
+  getPartialCompactPrompt,
+  stripAnalysisTags,
+} from "./prompt.js";
 import {
   calculateMessagesToKeepIndex,
   preserveToolPairsFromIndex,
@@ -99,7 +105,59 @@ describe("compact supporting surfaces", () => {
     expect(stripAnalysisTags("before <analysis>private</analysis> after"))
       .toBe("before  after");
     expect(formatCompactSummary("<analysis>private</analysis>use this"))
-      .toBe("<summary>\nuse this\n</summary>");
+      .toBe("use this");
+    expect(formatCompactSummary([
+      "<analysis>private</analysis>",
+      "<summary>",
+      "use this",
+      "",
+      "",
+      "next",
+      "</summary>",
+    ].join("\n"))).toBe("Summary:\nuse this\n\nnext");
+  });
+
+  test("builds compact prompts with no-tool framing and custom instructions", () => {
+    const prompt = getCompactPrompt("Focus on runtime files.");
+
+    expect(prompt).toMatch(/^CRITICAL: Respond with TEXT ONLY/u);
+    expect(prompt).toContain("Do NOT use Read, Bash, Grep, Glob, Edit, Write");
+    expect(prompt).toContain("Primary Request and Intent");
+    expect(prompt).toContain("Additional Instructions:\nFocus on runtime files.");
+    expect(prompt).toMatch(
+      /Tool calls will be rejected and you will fail the task\.$/u,
+    );
+    expect(getCompactPrompt()).not.toContain("Additional Instructions:");
+  });
+
+  test("builds partial compact prompts for recent and prefix summaries", () => {
+    const recentPrompt = getPartialCompactPrompt("Keep errors.", "from");
+    const prefixPrompt = getPartialCompactPrompt(undefined, "up_to");
+
+    expect(recentPrompt).toContain("RECENT portion of the conversation");
+    expect(recentPrompt).toContain("Current Work");
+    expect(recentPrompt).toContain("Additional Instructions:\nKeep errors.");
+    expect(prefixPrompt).toContain("Context for Continuing Work");
+    expect(prefixPrompt).not.toContain("RECENT portion of the conversation");
+  });
+
+  test("builds compact continuation messages with transcript context", () => {
+    const message = getCompactUserSummaryMessage(
+      "<analysis>draft</analysis><summary>done</summary>",
+      false,
+      "/tmp/agenc-transcript.jsonl",
+      true,
+    );
+
+    expect(message).toContain("Summary:\ndone");
+    expect(message).toContain(
+      "read the full transcript at: /tmp/agenc-transcript.jsonl",
+    );
+    expect(message).toContain("Recent messages are preserved verbatim.");
+
+    const directContinuation = getCompactUserSummaryMessage("done", true);
+    expect(directContinuation).toContain("without asking the user");
+    expect(directContinuation).toContain("Resume directly - do not acknowledge");
   });
 
   test("keeps session-memory compact behind AgenC switches", async () => {

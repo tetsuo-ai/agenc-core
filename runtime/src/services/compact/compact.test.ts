@@ -76,7 +76,7 @@ describe("compact service", () => {
         return { content: "<analysis>drop</analysis>bounded summary" };
       }),
     };
-    const result = await manualCompactCall("", {
+    const result = await manualCompactCall("keep image notes", {
       provider: provider as never,
       messages: [
         {
@@ -97,10 +97,14 @@ describe("compact service", () => {
     });
 
     expect(provider.chat).toHaveBeenCalledOnce();
-    expect(seen[0]?.length).toBeLessThan(50_000);
-    expect(seen[0]).toContain("[image]");
+    expect(seen[0]).toContain("CRITICAL: Respond with TEXT ONLY");
+    expect(seen[0]).toContain("Additional Instructions:\nkeep image notes");
+    expect(seen[0]).toContain("Do NOT use Read, Bash, Grep, Glob, Edit, Write");
+    const transcript = extractTranscript(seen[0] ?? "");
+    expect(transcript.length).toBeLessThan(48_000);
+    expect(transcript).toContain("[image]");
     expect(result.compactionResult.summaryMessages[0]?.content)
-      .toBe("<summary>\nbounded summary\n</summary>");
+      .toBe("bounded summary");
   });
 
   test("preserves prefix and suffix ordering for partial compact projections", () => {
@@ -141,4 +145,8 @@ function message(
     content,
     message: { role, content },
   };
+}
+
+function extractTranscript(payload: string): string {
+  return /<transcript>\n([\s\S]*)\n<\/transcript>/u.exec(payload)?.[1] ?? "";
 }
