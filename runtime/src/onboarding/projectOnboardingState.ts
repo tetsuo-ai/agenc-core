@@ -283,13 +283,23 @@ function writeProjectRecord(
   );
 }
 
+function projectStepOptions(
+  options: ProjectOnboardingOptions,
+): ProjectOnboardingStepOptions {
+  const cwd = options.stepsOptions?.cwd ?? options.cwd;
+  return {
+    ...options.stepsOptions,
+    ...(cwd !== undefined ? { cwd } : {}),
+  };
+}
+
 export function maybeMarkProjectOnboardingComplete(
   options: ProjectOnboardingOptions = {},
 ): void {
   if (options.agencHome === undefined) return;
   const current = readProjectRecord(options);
   if (current.hasCompletedProjectOnboarding) return;
-  if (!isProjectOnboardingComplete(options.stepsOptions)) return;
+  if (!isProjectOnboardingComplete(projectStepOptions(options))) return;
   writeProjectRecord(
     { ...options, agencHome: options.agencHome },
     {
@@ -312,7 +322,7 @@ export function shouldShowProjectOnboarding(
   ) {
     return false;
   }
-  return !isProjectOnboardingComplete(options.stepsOptions);
+  return !isProjectOnboardingComplete(projectStepOptions(options));
 }
 
 export function incrementProjectOnboardingSeenCount(

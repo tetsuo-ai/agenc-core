@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
@@ -22,9 +22,11 @@ import {
 } from "./Onboarding.js";
 import {
   incrementFirstRunOnboardingSeenCount,
+  maybeMarkProjectOnboardingComplete,
   markFirstRunOnboardingComplete,
   readOnboardingState,
   shouldShowFirstRunOnboarding,
+  shouldShowProjectOnboarding,
 } from "./projectOnboardingState.js";
 import {
   getSteps,
@@ -148,9 +150,20 @@ describe("first-run onboarding wizard", () => {
 
   test("checks configured provider credentials and local endpoints", async () => {
     const config = defaultConfig();
+    const remoteFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
     await expect(
       checkOnboardingProviderConnection(
-        { config, env: { XAI_API_KEY: "xai-test-key" } },
+        {
+          config,
+          env: { XAI_API_KEY: "xai-test-key" },
+          fetchImpl: remoteFetch,
+        },
         "grok",
         "grok-4-fast",
       ),
@@ -159,6 +172,11 @@ describe("first-run onboarding wizard", () => {
       status: "ready",
       keyEnvVar: "XAI_API_KEY",
     });
+    const [requestUrl, requestInit] = remoteFetch.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe("https://api.x.ai/v1/models");
+    expect(
+      (requestInit?.headers as Record<string, string>).Authorization,
+    ).toBe("Bearer xai-test-key");
 
     await expect(
       checkOnboardingProviderConnection(
@@ -169,6 +187,22 @@ describe("first-run onboarding wizard", () => {
     ).resolves.toMatchObject({
       ok: false,
       status: "needs-key",
+      keyEnvVar: "XAI_API_KEY",
+    });
+
+    await expect(
+      checkOnboardingProviderConnection(
+        {
+          config,
+          env: { XAI_API_KEY: "xai-test-key" },
+          fetchImpl: async () => new Response("unauthorized", { status: 401 }),
+        },
+        "grok",
+        "grok-4-fast",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: "auth-failed",
       keyEnvVar: "XAI_API_KEY",
     });
 
@@ -234,6 +268,46 @@ describe("project onboarding counterpart steps", () => {
 
       expect(steps.find((step) => step.key === "agencmd")?.isComplete).toBe(true);
       expect(isProjectOnboardingComplete({ cwd })).toBe(true);
+    });
+  });
+
+  test("uses the requested cwd for project completion state", () => {
+    withTempDir("agenc-onboarding-", (agencHome) => {
+      withTempDir("agenc-project-", (cwd) => {
+        const projectRoot = resolve(cwd);
+        const stepsOptions = {
+          exists: (path: string): boolean =>
+            path === join(projectRoot, "AGENC.md"),
+          readdir: (path: string): readonly string[] =>
+            resolve(path) === projectRoot ? ["AGENC.md"] : [],
+          stat: (): { isDirectory(): boolean } => ({
+            isDirectory: () => true,
+          }),
+        };
+
+        expect(
+          shouldShowProjectOnboarding({
+            agencHome,
+            cwd,
+            env: {},
+            stepsOptions,
+          }),
+        ).toBe(false);
+
+        maybeMarkProjectOnboardingComplete({
+          agencHome,
+          cwd,
+          stepsOptions,
+          now: new Date("2026-01-02T00:00:00.000Z"),
+        });
+
+        expect(
+          readOnboardingState({ agencHome }).projects[projectRoot],
+        ).toMatchObject({
+          hasCompletedProjectOnboarding: true,
+          completedAt: "2026-01-02T00:00:00.000Z",
+        });
+      });
     });
   });
 });

@@ -40,6 +40,8 @@ export type FirstRunOnboardingStepId =
 export type ProviderConnectionStatus =
   | "ready"
   | "needs-key"
+  | "auth-failed"
+  | "provider-unreachable"
   | "local-unchecked"
   | "local-down"
   | "unknown-provider";
@@ -268,6 +270,31 @@ function localModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string 
   return `${trimmed}/v1/models`;
 }
 
+function remoteModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string {
+  const trimmed = baseURL.replace(/\/+$/, "");
+  if (provider === "gemini" && !/\/openai$/i.test(trimmed)) {
+    return `${trimmed}/openai/models`;
+  }
+  if (trimmed.endsWith("/models")) return trimmed;
+  if (/\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)) {
+    return `${trimmed}/models`;
+  }
+  return `${trimmed}/v1/models`;
+}
+
+function remoteProviderHeaders(
+  provider: BuiltInProviderSlug,
+  apiKey: string,
+): Readonly<Record<string, string>> {
+  if (provider === "anthropic") {
+    return {
+      "anthropic-version": "2023-06-01",
+      "x-api-key": apiKey,
+    };
+  }
+  return { Authorization: `Bearer ${apiKey}` };
+}
+
 async function probeLocalProvider(params: {
   readonly provider: BuiltInProviderSlug;
   readonly baseURL: string;
@@ -292,6 +319,37 @@ async function probeLocalProvider(params: {
     return response.ok;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeRemoteProvider(params: {
+  readonly provider: BuiltInProviderSlug;
+  readonly baseURL: string;
+  readonly apiKey: string;
+  readonly fetchImpl?: typeof fetch;
+  readonly timeoutMs?: number;
+}): Promise<{ readonly ok: boolean; readonly status?: number }> {
+  const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  if (fetchImpl === undefined) return { ok: false };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 1_500);
+  if (typeof (timer as { unref?: () => void }).unref === "function") {
+    (timer as { unref: () => void }).unref();
+  }
+  try {
+    const response = await fetchImpl(
+      remoteModelsUrl(params.provider, params.baseURL),
+      {
+        method: "GET",
+        headers: remoteProviderHeaders(params.provider, params.apiKey),
+        signal: controller.signal,
+      },
+    );
+    return { ok: response.ok, status: response.status };
+  } catch {
+    return { ok: false };
   } finally {
     clearTimeout(timer);
   }
@@ -357,7 +415,28 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
+  const apiKey = settings?.apiKey?.trim();
+  if (apiKey !== undefined && apiKey.length > 0) {
+    const remote = await probeRemoteProvider({
+      provider,
+      baseURL,
+      apiKey,
+      fetchImpl: context.fetchImpl,
+    });
+    if (!remote.ok) {
+      const authFailed = remote.status === 401 || remote.status === 403;
+      return {
+        provider,
+        model,
+        status: authFailed ? "auth-failed" : "provider-unreachable",
+        ok: false,
+        detail: authFailed
+          ? `Provider rejected ${keyEnvVar ?? "the configured API key"}.`
+          : "Provider readiness check did not complete; verify network access and retry.",
+        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        baseURL,
+      };
+    }
     return {
       provider,
       model,
