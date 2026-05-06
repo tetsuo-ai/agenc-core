@@ -215,12 +215,13 @@ export interface ManagedWorkspacesConfig {
   readonly [k: string]: unknown;
 }
 
-export type McpTransport = "stdio" | "sse" | "http";
+export type McpTransport = "stdio" | "sse" | "http" | "websocket" | "ws";
 
 export interface McpServerConfig {
   readonly command?: string;
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  readonly env_vars?: readonly string[];
   readonly cwd?: string;
   readonly transport?: McpTransport;
   readonly endpoint?: string;

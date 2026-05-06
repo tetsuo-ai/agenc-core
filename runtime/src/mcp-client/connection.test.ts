@@ -1,50 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { MCPElicitationHandlers, MCPServerConfig } from "./types.js";
 
-// Mock the SSE and HTTP transport modules so we can assert dispatch
+// Mock the transport modules so we can assert dispatch
 // without touching the real SDK.
+vi.mock("./transports/stdio.js", () => ({
+  createStdioMCPConnection: vi.fn(),
+}));
 vi.mock("./transports/sse.js", () => ({
   createSseMCPConnection: vi.fn(),
 }));
 vi.mock("./transports/http.js", () => ({
   createHttpMCPConnection: vi.fn(),
 }));
-
-// Mock the upstream MCP SDK so the stdio path doesn't try to fork a child.
-// vi.fn() can't be used with `new`, so we use real classes and expose
-// call-tracking spies on instance methods / constructor args.
-const mockStdioClientConnect = vi.fn().mockResolvedValue(undefined);
-const mockStdioClientClose = vi.fn().mockResolvedValue(undefined);
-const stdioTransportCalls: Array<Record<string, unknown>> = [];
-const stdioClientCalls: Array<Record<string, unknown>> = [];
-
-class MockClient {
-  connect = mockStdioClientConnect;
-  close = mockStdioClientClose;
-  constructor(info: Record<string, unknown>, caps: Record<string, unknown>) {
-    stdioClientCalls.push({ info, caps });
-  }
-}
-
-class MockStdioTransport {
-  constructor(args: Record<string, unknown>) {
-    stdioTransportCalls.push(args);
-  }
-}
-
-vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
-  Client: MockClient,
-}));
-vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
-  StdioClientTransport: MockStdioTransport,
+vi.mock("./transports/websocket.js", () => ({
+  createWebSocketMCPConnection: vi.fn(),
 }));
 
 import { createMCPConnection } from "./connection.js";
+import { createStdioMCPConnection } from "./transports/stdio.js";
 import { createSseMCPConnection } from "./transports/sse.js";
 import { createHttpMCPConnection } from "./transports/http.js";
+import { createWebSocketMCPConnection } from "./transports/websocket.js";
 
+const mockCreateStdio = vi.mocked(createStdioMCPConnection);
 const mockCreateSse = vi.mocked(createSseMCPConnection);
 const mockCreateHttp = vi.mocked(createHttpMCPConnection);
+const mockCreateWebSocket = vi.mocked(createWebSocketMCPConnection);
 
 function baseStdioConfig(
   overrides: Partial<MCPServerConfig> = {},
@@ -60,9 +41,6 @@ function baseStdioConfig(
 describe("createMCPConnection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    stdioTransportCalls.length = 0;
-    stdioClientCalls.length = 0;
-    mockStdioClientConnect.mockResolvedValue(undefined);
   });
 
   // ------------------------------------------------------------------
@@ -70,29 +48,35 @@ describe("createMCPConnection", () => {
   // ------------------------------------------------------------------
 
   it("defaults to stdio when no transport is specified", async () => {
+    mockCreateStdio.mockResolvedValueOnce("stdio-client");
+
     const client = await createMCPConnection(baseStdioConfig());
 
-    expect(stdioTransportCalls).toHaveLength(1);
-    const transportArgs = stdioTransportCalls[0] as {
-      command: string;
-      args: string[];
-    };
-    expect(transportArgs.command).toBe("npx");
-    expect(transportArgs.args).toEqual(["-y", "@test/srv"]);
-    expect(mockStdioClientConnect).toHaveBeenCalledOnce();
+    expect(mockCreateStdio).toHaveBeenCalledOnce();
+    const [stdioConfig] = mockCreateStdio.mock.calls[0]!;
+    expect(stdioConfig).toEqual({
+      name: "stdio-srv",
+      command: "npx",
+      args: ["-y", "@test/srv"],
+    });
     expect(mockCreateSse).not.toHaveBeenCalled();
     expect(mockCreateHttp).not.toHaveBeenCalled();
-    expect(client).toBeDefined();
+    expect(mockCreateWebSocket).not.toHaveBeenCalled();
+    expect(client).toBe("stdio-client");
   });
 
   it("uses stdio explicitly when transport='stdio'", async () => {
+    mockCreateStdio.mockResolvedValueOnce("stdio-client");
+
     await createMCPConnection(baseStdioConfig({ transport: "stdio" }));
-    expect(stdioTransportCalls).toHaveLength(1);
+    expect(mockCreateStdio).toHaveBeenCalledOnce();
     expect(mockCreateSse).not.toHaveBeenCalled();
     expect(mockCreateHttp).not.toHaveBeenCalled();
+    expect(mockCreateWebSocket).not.toHaveBeenCalled();
   });
 
-  it("advertises MCP elicitation without claiming form default application", async () => {
+  it("passes MCP elicitation handlers to stdio transport factory", async () => {
+    mockCreateStdio.mockResolvedValueOnce("stdio-client");
     const handlers: MCPElicitationHandlers = {
       handleRequest: vi.fn(),
     };
@@ -103,9 +87,7 @@ describe("createMCPConnection", () => {
       handlers,
     );
 
-    expect(stdioClientCalls[0]?.caps).toEqual({
-      capabilities: { elicitation: { form: {}, url: {} } },
-    });
+    expect(mockCreateStdio.mock.calls[0]?.[2]).toBe(handlers);
   });
 
   it("throws when stdio transport is missing a command", async () => {
@@ -115,7 +97,7 @@ describe("createMCPConnection", () => {
         transport: "stdio",
       } as MCPServerConfig),
     ).rejects.toThrow(/transport="stdio" but no "command"/);
-    expect(stdioTransportCalls).toHaveLength(0);
+    expect(mockCreateStdio).not.toHaveBeenCalled();
   });
 
   // ------------------------------------------------------------------
@@ -128,7 +110,7 @@ describe("createMCPConnection", () => {
     const result = await createMCPConnection({
       name: "remote",
       transport: "sse",
-      endpoint: "https://mcp.example/sse",
+      endpoint: "http://127.0.0.1:4100/sse",
       headers: { Authorization: "Bearer abc" },
       timeout: 12_345,
     });
@@ -137,12 +119,13 @@ describe("createMCPConnection", () => {
     const [sseConfig] = mockCreateSse.mock.calls[0]!;
     expect(sseConfig).toEqual({
       name: "remote",
-      endpoint: "https://mcp.example/sse",
+      endpoint: "http://127.0.0.1:4100/sse",
       headers: { Authorization: "Bearer abc" },
       timeout: 12_345,
     });
     expect(mockCreateHttp).not.toHaveBeenCalled();
-    expect(stdioTransportCalls).toHaveLength(0);
+    expect(mockCreateStdio).not.toHaveBeenCalled();
+    expect(mockCreateWebSocket).not.toHaveBeenCalled();
     expect(result).toBe("sse-client");
   });
 
@@ -152,13 +135,13 @@ describe("createMCPConnection", () => {
     await createMCPConnection({
       name: "remote",
       transport: "sse",
-      endpoint: "https://mcp.example/sse",
+      endpoint: "http://127.0.0.1:4100/sse",
     });
 
     const [sseConfig] = mockCreateSse.mock.calls[0]!;
     expect(sseConfig).toEqual({
       name: "remote",
-      endpoint: "https://mcp.example/sse",
+      endpoint: "http://127.0.0.1:4100/sse",
     });
     expect((sseConfig as Record<string, unknown>).headers).toBeUndefined();
     expect((sseConfig as Record<string, unknown>).timeout).toBeUndefined();
@@ -184,7 +167,7 @@ describe("createMCPConnection", () => {
     const result = await createMCPConnection({
       name: "stream",
       transport: "http",
-      endpoint: "https://mcp.example/stream",
+      endpoint: "http://127.0.0.1:4101/mcp",
       headers: { "X-Api-Key": "secret" },
       timeout: 5_000,
     });
@@ -193,12 +176,13 @@ describe("createMCPConnection", () => {
     const [httpConfig] = mockCreateHttp.mock.calls[0]!;
     expect(httpConfig).toEqual({
       name: "stream",
-      endpoint: "https://mcp.example/stream",
+      endpoint: "http://127.0.0.1:4101/mcp",
       headers: { "X-Api-Key": "secret" },
       timeout: 5_000,
     });
     expect(mockCreateSse).not.toHaveBeenCalled();
-    expect(stdioTransportCalls).toHaveLength(0);
+    expect(mockCreateStdio).not.toHaveBeenCalled();
+    expect(mockCreateWebSocket).not.toHaveBeenCalled();
     expect(result).toBe("http-client");
   });
 
@@ -210,5 +194,56 @@ describe("createMCPConnection", () => {
       }),
     ).rejects.toThrow(/transport="http" but no "endpoint"/);
     expect(mockCreateHttp).not.toHaveBeenCalled();
+  });
+
+  // ------------------------------------------------------------------
+  // websocket
+  // ------------------------------------------------------------------
+
+  it("routes transport='websocket' to createWebSocketMCPConnection", async () => {
+    mockCreateWebSocket.mockResolvedValueOnce("ws-client");
+
+    const result = await createMCPConnection({
+      name: "socket",
+      transport: "websocket",
+      endpoint: "ws://127.0.0.1:4102/mcp",
+      headers: { Authorization: "Bearer ws" },
+      timeout: 7_000,
+    });
+
+    expect(mockCreateWebSocket).toHaveBeenCalledOnce();
+    const [wsConfig] = mockCreateWebSocket.mock.calls[0]!;
+    expect(wsConfig).toEqual({
+      name: "socket",
+      endpoint: "ws://127.0.0.1:4102/mcp",
+      headers: { Authorization: "Bearer ws" },
+      timeout: 7_000,
+    });
+    expect(mockCreateStdio).not.toHaveBeenCalled();
+    expect(mockCreateSse).not.toHaveBeenCalled();
+    expect(mockCreateHttp).not.toHaveBeenCalled();
+    expect(result).toBe("ws-client");
+  });
+
+  it("routes transport='ws' to createWebSocketMCPConnection", async () => {
+    mockCreateWebSocket.mockResolvedValueOnce("ws-client");
+
+    await createMCPConnection({
+      name: "socket",
+      transport: "ws",
+      endpoint: "ws://127.0.0.1:4103/mcp",
+    });
+
+    expect(mockCreateWebSocket).toHaveBeenCalledOnce();
+  });
+
+  it("throws when websocket transport is missing an endpoint", async () => {
+    await expect(
+      createMCPConnection({
+        name: "socket",
+        transport: "websocket",
+      }),
+    ).rejects.toThrow(/transport="websocket" but no "endpoint"/);
+    expect(mockCreateWebSocket).not.toHaveBeenCalled();
   });
 });

@@ -13,27 +13,32 @@ import type { Tool } from "./_deps/tools-types.js";
 /**
  * Configuration for an external MCP server.
  *
- * Supports three transport modes selected by `transport`:
+ * Supports transport modes selected by `transport`:
  *   - `"stdio"` (default): spawn a child process via `command` + `args`.
  *   - `"sse"`: connect to a remote server over legacy SSE at `endpoint`.
  *   - `"http"`: connect over the Streamable HTTP transport at `endpoint`.
+ *   - `"websocket"` / `"ws"`: connect to a remote WebSocket endpoint.
  */
 export interface MCPServerConfig {
   /** Human-readable server name (used for tool namespacing) */
   name: string;
   /** Transport kind. Default: "stdio". */
-  transport?: "stdio" | "sse" | "http";
+  transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
   /** Executable command (e.g. "npx", "node"). Required for stdio transport. */
   command?: string;
   /** Command arguments (e.g. ["-y", "@nicholasareed/peekaboo-mcp@latest"]).
    *  Required for stdio transport. */
   args?: string[];
-  /** Remote endpoint URL. Required when `transport` is `"sse"` or `"http"`. */
+  /** Remote endpoint URL. Required when `transport` is `"sse"`, `"http"`, or WebSocket. */
   endpoint?: string;
-  /** Optional HTTP headers to send on the initial request (SSE/HTTP). */
+  /** Optional headers to send on the initial request (SSE/HTTP/WebSocket). */
   headers?: Record<string, string>;
   /** Optional environment variables for the child process (stdio only). */
   env?: Record<string, string>;
+  /** Optional parent environment variable names to copy into stdio process env. */
+  env_vars?: readonly string[];
+  /** Optional working directory for the stdio process. */
+  cwd?: string;
   /** Whether this server is enabled. Default: true */
   enabled?: boolean;
   /** Whether startup/reload must fail if this server cannot connect. */
