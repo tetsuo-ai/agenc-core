@@ -46,10 +46,10 @@ import {
   usePermissionRequests,
 } from "../permission-requests.js";
 import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
-import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
-import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";
-import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
-import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attachments.js";
+import { listTuiCommandList } from "../../commands.js";
+import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
+import { buildPendingProviderSwitch } from "../model-switch.js";
+import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import type { Command } from "../../commands.js";
 import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCTuiProps } from "../session-types.js";
@@ -956,8 +956,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     return names;
   }, [permissionRequests, transcript.toolNames]);
   const tools = useMemo(() => createTuiTools(toolNames), [toolNames]);
-  const commands = useMemo(() => loadUpstreamCommandList(), []);
-  const agents = useMemo(() => loadUpstreamAgentList(), []);
+  const commands = useMemo(() => listTuiCommandList(), []);
+  const agents = useMemo(() => listAgentRoleDefinitions(), []);
 
   const submit = useCallback(
     async (value: string) => {
