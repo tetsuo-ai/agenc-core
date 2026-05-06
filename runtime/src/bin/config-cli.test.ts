@@ -393,6 +393,16 @@ describe("agenc config CLI", () => {
     ]), home);
     expect(readPollution.code).toBe(1);
     expect(readPollution.io.stderrText()).toContain("path segment is not allowed");
+
+    for (const inheritedKey of ["toString", "valueOf", "hasOwnProperty"]) {
+      const inherited = await run(parseAgenCConfigCliArgs([
+        "config",
+        "get",
+        inheritedKey,
+      ]), home);
+      expect(inherited.code, inheritedKey).toBe(0);
+      expect(inherited.io.stdoutText()).toBe(`not set: ${inheritedKey}\n`);
+    }
   });
 
   it("rejects invalid permissions config on validate and set", async () => {

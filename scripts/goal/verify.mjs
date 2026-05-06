@@ -4033,8 +4033,10 @@ async function configGates(item) {
     if (!cli) failGate("config CLI parser/runner not found in runtime/src/bin/config-cli.ts");
     const route = grepRepo("configCommand = parseAgenCConfigCliArgs", "runtime/src/bin/agenc.ts");
     if (!route) failGate("agenc config is not routed through the top-level CLI dispatcher");
-    const editSafety = grepRepo("runConfigFileMigrations|validateAgenCConfigBlocks|writeTextAtomic", "runtime/src/bin/config-cli.ts");
-    if (!editSafety) failGate("config CLI edit safety anchors missing");
+    for (const anchor of ["runConfigFileMigrations", "validateAgenCConfigBlocks", "writeTextAtomic"]) {
+      const editSafety = grepRepo(anchor, "runtime/src/bin/config-cli.ts");
+      if (!editSafety) failGate(`config CLI edit safety anchor missing: ${anchor}`);
+    }
     pass("agenc config shell CLI present with routing and edit-safety anchors");
     return;
   }
