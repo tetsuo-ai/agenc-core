@@ -62,6 +62,10 @@ describe("AgenC state CLI", () => {
       kind: "export",
       agentId: "agent-1",
     });
+    expect(parseAgenCStateCliArgs(["state", "export", "--help"])).toEqual({
+      kind: "help",
+      text: formatAgenCStateCliHelpText(),
+    });
     expect(parseAgenCStateCliArgs(["state", "export"])).toEqual({
       kind: "error",
       message: "state export requires an agent id",
@@ -75,6 +79,7 @@ describe("AgenC state CLI", () => {
     });
     expect(formatAgenCStateCliHelpText()).toContain("agenc state export");
     expect(formatAgenCStateCliHelpText()).toContain("agenc state import");
+    expect(formatAgenCStateCliHelpText()).toContain("Examples:");
   });
 
   it("prints exported state JSON and imports it from stdin", async () => {

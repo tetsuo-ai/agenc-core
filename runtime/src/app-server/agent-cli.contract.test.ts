@@ -75,6 +75,14 @@ describe("agenc agent start CLI", () => {
     expect(parseAgenCAgentCliArgs(["agent", "list"])).toEqual({
       kind: "list",
     });
+    expect(parseAgenCAgentCliArgs(["agent", "list", "--help"])).toEqual({
+      kind: "help",
+      text: formatAgenCAgentCliHelpText(),
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "start", "--help"])).toEqual({
+      kind: "help",
+      text: formatAgenCAgentCliHelpText(),
+    });
     expect(parseAgenCAgentCliArgs(["agent", "list", "extra"])).toEqual({
       kind: "error",
       message: "agent list does not accept arguments",
@@ -176,6 +184,7 @@ describe("agenc agent start CLI", () => {
     expect(formatAgenCAgentCliHelpText()).toContain("attach <id>");
     expect(formatAgenCAgentCliHelpText()).toContain("stop <id>");
     expect(formatAgenCAgentCliHelpText()).toContain("logs <id>");
+    expect(formatAgenCAgentCliHelpText()).toContain("Examples:");
   });
 
   it("prints only the daemon-returned agent ID", async () => {

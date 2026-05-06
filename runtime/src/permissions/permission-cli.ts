@@ -122,6 +122,12 @@ export function formatAgenCPermissionsCliHelpText(): string {
     "  revoke [--persist <user|project|local>] <rule>",
     "  approve --session <id> [--scope <once|session|agent>] <request-id>",
     "  revoke --session <id> [--reason <text>] <request-id>",
+    "",
+    "Examples:",
+    "  agenc permissions list",
+    "  agenc permissions approve --persist project 'Read(./src/**)'",
+    "  agenc permissions approve --session session_123 call_456",
+    "  agenc permissions revoke --session session_123 call_456",
   ].join("\n");
 }
 
@@ -134,6 +140,9 @@ export function parseAgenCPermissionsCliArgs(
     return { kind: "help", text: formatAgenCPermissionsCliHelpText() };
   }
   const args = argv.slice(2);
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+    return { kind: "help", text: formatAgenCPermissionsCliHelpText() };
+  }
   if (action === "list") return parseListArgs(args);
   if (action === "approve") return parseApproveArgs(args);
   if (action === "revoke") return parseRevokeArgs(args);

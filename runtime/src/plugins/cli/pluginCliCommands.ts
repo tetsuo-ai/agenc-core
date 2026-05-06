@@ -66,6 +66,12 @@ export function formatAgenCPluginCliHelpText(): string {
     "Marketplace options:",
     "  --ref <ref>       Git branch, tag, or revision to checkout",
     "  --sparse <path>   Git sparse-checkout path containing marketplace.json",
+    "",
+    "Examples:",
+    "  agenc plugin list",
+    "  agenc plugin install ./my-plugin --scope project",
+    "  agenc plugin enable my-plugin",
+    "  agenc plugin marketplace add ./marketplace --name team",
   ].join("\n");
 }
 
