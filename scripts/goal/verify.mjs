@@ -64,6 +64,14 @@ const MAX_ALLOWED_BASELINE = 22;
 //   tests: string[] | { globUnder, matching, minCount?, optional? }[]
 //   runStrict: boolean — if true, typecheck gate enforces zero errors.
 const ITEM_EVIDENCE = {
+  "CF-02": {
+    files: ["runtime/src/config/schema.ts", "runtime/src/config/config.test.ts"],
+    grepPresent: [
+      { pattern: "model_provider: \"grok\"", scope: "runtime/src/config/schema.ts" },
+      { pattern: "expect\\(cfg\\.model_provider\\)\\.toBe\\(\"grok\"\\)", scope: "runtime/src/config/config.test.ts" },
+    ],
+    tests: ["runtime/src/config/config.test.ts"],
+  },
   "F-01": {
     files: ["runtime/src/constants/querySource.ts"],
     grepNotPresent: [{ pattern: "@ts-nocheck", scope: "runtime/src/constants/querySource.ts" }],
@@ -3675,7 +3683,7 @@ async function configGates(item) {
   // CF-* items: each adds a named config flag. Look for the flag in the schema.
   const flagMap = {
     "CF-01": "auth.backend",
-    "CF-02": "provider.default",
+    "CF-02": "model_provider",
     "CF-03": "provider.managed_keys",
     "CF-04": "agenc",
     "CF-05": "sandbox.mode",

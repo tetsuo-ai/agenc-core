@@ -42,7 +42,11 @@ import {
   resolveSimpleMode,
   applyEnvOverrides,
 } from "./env.js";
-import { buildProviderModelCatalog, resolveProviderSettings } from "./resolve-provider.js";
+import {
+  buildProviderModelCatalog,
+  resolveProviderSelection,
+  resolveProviderSettings,
+} from "./resolve-provider.js";
 import { configuredModelForProvider } from "./resolve-model.js";
 import { ConfigStore } from "./store.js";
 
@@ -54,6 +58,8 @@ describe("schema: defaultConfig", () => {
   test("returns frozen snapshot with sane defaults", () => {
     const cfg = defaultConfig();
     expect(cfg.model).toBe("grok-4-fast");
+    expect(cfg.model_provider).toBe("grok");
+    expect(resolveProviderSelection({ config: cfg })).toBe("grok");
     expect(cfg.approval_policy).toBe("on-request");
     expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
