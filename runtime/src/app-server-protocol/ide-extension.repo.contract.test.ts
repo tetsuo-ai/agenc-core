@@ -85,11 +85,29 @@ describe("AgenC VS Code sibling repo scaffold", () => {
     const hasInitialProtocolStub =
       source.includes("AGENC_IDE_EXTENSION_SCAFFOLD") &&
       source.includes("createAgenCIdeInitializeParams");
-  const hasDaemonProtocolConnection =
-    source.includes("AgenCDaemonProcess") &&
-    source.includes("daemon.connect()");
+    const hasDaemonProtocolConnection =
+      source.includes("AgenCDaemonProcess") &&
+      source.includes("daemon.connect()");
 
     expect(hasInitialProtocolStub || hasDaemonProtocolConnection).toBe(true);
     expect(source).toContain("agenc.connectDaemon");
+  });
+
+  it("requires the daemon-backed activation path once the daemon module exists", () => {
+    const repoRoot = findAgenCVscodeRepo();
+    const daemonModulePath = resolve(repoRoot, "src/daemon.ts");
+    if (!existsSync(daemonModulePath)) return;
+
+    const extensionSource = readFileSync(
+      resolve(repoRoot, "src/extension.ts"),
+      "utf8",
+    );
+    const daemonSource = readFileSync(daemonModulePath, "utf8");
+
+    expect(extensionSource).toContain("AgenCDaemonProcess");
+    expect(extensionSource).toContain("daemon.connect()");
+    expect(extensionSource).toContain("showErrorMessage");
+    expect(daemonSource).toContain("sendAgenCDaemonInitializeRequest");
+    expect(daemonSource).toContain("connectAgenCDaemonSocket");
   });
 });

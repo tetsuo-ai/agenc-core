@@ -2354,6 +2354,12 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
   const exemptionRel = "scripts/goal/scanner-evasion-exemptions.json";
   const exemptionPath = path.join(root, exemptionRel);
   const exemptionCounts = new Map();
+  const exemptionLabels = new Map();
+  const allowedExemptionNames = new Set([
+    "string-array-join with 'agenc' element",
+    "dynamic import of agenc/upstream",
+    "require of agenc/upstream",
+  ]);
   if (existsSync(exemptionPath)) {
     let exemptions;
     try {
@@ -2383,11 +2389,18 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(exemption.expires)) {
         failGate(`${label}: expires must use YYYY-MM-DD`);
       }
+      if (!allowedExemptionNames.has(exemption.name)) {
+        failGate(`${label}: unknown Gate 3.6 rule name: ${exemption.name}`);
+      }
+      if (!existsSync(path.join(root, exemption.path))) {
+        failGate(`${label}: exempted path does not exist: ${exemption.path}`);
+      }
       if (exemption.expires < today) {
         failGate(`${label}: exemption expired on ${exemption.expires}; remove the underlying runtime source debt`);
       }
       const key = `${exemption.path}\0${exemption.name}`;
       exemptionCounts.set(key, (exemptionCounts.get(key) ?? 0) + exemption.count);
+      exemptionLabels.set(key, [...(exemptionLabels.get(key) ?? []), label]);
     }
   }
   const evasionPatterns = [
@@ -2408,6 +2421,7 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
     },
   ];
   const offenders = [];
+  const actualCounts = new Map();
   for (const f of walkFiles(path.join(root, "runtime/src"))) {
     if (!/\.(ts|tsx|mts|cts)$/.test(f)) continue;
     if (/\.test\.(ts|tsx|mts|cts)$/.test(f)) continue;
@@ -2418,6 +2432,7 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
       if (hits && hits.length > 0) {
         const rel = path.relative(root, f);
         const key = `${rel}\0${name}`;
+        actualCounts.set(key, hits.length);
         const exemptCount = exemptionCounts.get(key) ?? 0;
         const untrackedCount = Math.max(0, hits.length - exemptCount);
         if (untrackedCount > 0) {
@@ -2425,6 +2440,21 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
         }
       }
     }
+  }
+  const staleExemptions = [];
+  for (const [key, exemptCount] of exemptionCounts.entries()) {
+    const actualCount = actualCounts.get(key) ?? 0;
+    if (exemptCount > actualCount) {
+      staleExemptions.push(
+        `${(exemptionLabels.get(key) ?? [key]).join(", ")}: exemption count ${exemptCount} exceeds actual ${actualCount}`,
+      );
+    }
+  }
+  if (staleExemptions.length > 0) {
+    failGate(
+      `Gate 3.6 stale or overbroad exemption(s):\n  ${staleExemptions.join("\n  ")}\n` +
+        `Lower the count or remove the exemption when the source debt is gone.`,
+    );
   }
   if (offenders.length > 0) {
     failGate(
@@ -4777,7 +4807,14 @@ function assertAgenCVscodeDaemonConnection() {
   if (pkg.scripts?.["test:daemon"] !== "npm run build && node test/daemon.test.mjs") {
     failGate("IDE-03: package.json must expose test:daemon for daemon launch contract coverage");
   }
+  if (typeof pkg.scripts?.check !== "string" || !pkg.scripts.check.includes("npm run test:daemon")) {
+    failGate("IDE-03: package.json check script must include npm run test:daemon");
+  }
 
+  const daemonTest = run("npm", ["run", "test:daemon"], { cwd: repo, silent: true });
+  if (daemonTest.status !== 0) {
+    failGate(`IDE-03: agenc-vscode daemon behavior test failed:\n${daemonTest.stderr || daemonTest.stdout}`);
+  }
   const check = run("npm", ["run", "check"], { cwd: repo, silent: true });
   if (check.status !== 0) {
     failGate(`IDE-03: agenc-vscode check failed:\n${check.stderr || check.stdout}`);
