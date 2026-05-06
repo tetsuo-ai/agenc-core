@@ -334,6 +334,12 @@ describe("Edit tool", () => {
   test("empty old_string on an existing nonempty file is rejected", async () => {
     const file = join(root, "existing.txt");
     await writeFile(file, "already here\n", "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "already here\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
     const tool = createFileEditTool({ allowedPaths: [root] });
     const result = await tool.execute({
       file_path: file,
@@ -348,7 +354,102 @@ describe("Edit tool", () => {
     await expect(readFile(file, "utf8")).resolves.toBe("already here\n");
   });
 
-  test("smart-quote normalization matches ASCII quotes against curly quotes", async () => {
+  test("empty old_string on an existing empty file requires a full read", async () => {
+    const file = join(root, "empty-unread.txt");
+    await writeFile(file, "", "utf8");
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "",
+      new_string: "fresh\n",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe("");
+  });
+
+  test("empty old_string rejects stale full reads before checking existing content", async () => {
+    const file = join(root, "empty-stale.txt");
+    await writeFile(file, "", "utf8");
+    const initial = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "",
+      timestamp: initial.mtimeMs,
+      viewKind: "full",
+    });
+    await writeFile(file, "external\n", "utf8");
+    const newer = await stat(file);
+    await utimes(file, newer.atime, new Date(initial.mtimeMs + 5_000));
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "",
+      new_string: "fresh\n",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe("external\n");
+  });
+
+  test("Edit and MultiEdit reject partial session reads", async () => {
+    const editFile = join(root, "partial-edit.txt");
+    const multiFile = join(root, "partial-multi.txt");
+    await writeFile(editFile, "alpha beta\n", "utf8");
+    await writeFile(multiFile, "alpha beta\n", "utf8");
+    const editStats = await stat(editFile);
+    const multiStats = await stat(multiFile);
+    recordSessionRead(SESSION_ID, editFile, {
+      content: "alpha\n",
+      timestamp: editStats.mtimeMs,
+      viewKind: "partial",
+      readOffset: 1,
+      readLimit: 1,
+    });
+    recordSessionRead(SESSION_ID, multiFile, {
+      content: "alpha\n",
+      timestamp: multiStats.mtimeMs,
+      viewKind: "partial",
+      readOffset: 1,
+      readLimit: 1,
+    });
+
+    const editTool = createFileEditTool({ allowedPaths: [root] });
+    const multiTool = createFileMultiEditTool({ allowedPaths: [root] });
+    const editResult = await editTool.execute({
+      file_path: editFile,
+      old_string: "beta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+    const multiResult = await multiTool.execute({
+      file_path: multiFile,
+      edits: [{ old_string: "beta", new_string: "gamma" }],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(editResult.isError).toBe(true);
+    expect(editResult.content).toBe(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    expect(multiResult.isError).toBe(true);
+    expect(multiResult.content).toBe(
+      "File has not been read yet. Read it first before writing to it.",
+    );
+    await expect(readFile(editFile, "utf8")).resolves.toBe("alpha beta\n");
+    await expect(readFile(multiFile, "utf8")).resolves.toBe("alpha beta\n");
+  });
+
+  test("smart-quote normalization preserves file quote style in replacements", async () => {
     // File contains curly double quote; old_string uses straight quotes.
     const file = join(root, "smart.md");
     const fileContent = "He said “hello” to her\n"; // “hello”
@@ -370,7 +471,274 @@ describe("Edit tool", () => {
 
     expect(result.isError).toBeUndefined();
     const after = await readFile(file, "utf8");
-    expect(after).toBe("He whispered \"goodbye\" to her\n");
+    expect(after).toBe("He whispered “goodbye” to her\n");
+  });
+
+  test("semantic no-op after quote preservation is rejected", async () => {
+    const file = join(root, "smart-noop.md");
+    const fileContent = "“x”\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: '"x"',
+      new_string: "“x”",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(
+      "No changes to make: old_string and new_string are exactly the same.",
+    );
+    await expect(readFile(file, "utf8")).resolves.toBe(fileContent);
+  });
+
+  test("deleting line contents removes the trailing newline", async () => {
+    const file = join(root, "delete-line.txt");
+    const fileContent = "alpha\nbeta\ngamma\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha\ngamma\n");
+  });
+
+  test("inline empty replacements remove the following newline", async () => {
+    const file = join(root, "delete-inline.txt");
+    const fileContent = "alpha beta\ngamma\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha gamma\n");
+  });
+
+  test("replace_all empty replacement follows old_string newline semantics", async () => {
+    const file = join(root, "delete-all-mixed.txt");
+    const fileContent = "beta\nalpha beta\nbeta";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "",
+      replace_all: true,
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata).toMatchObject({
+      ui: {
+        replacements: 2,
+      },
+    });
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha beta");
+  });
+
+  test("replacement strings are applied literally", async () => {
+    const file = join(root, "literal-replacement.txt");
+    const fileContent = "value = foo\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "foo",
+      new_string: "$&bar",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("value = $&bar\n");
+  });
+
+  test("replace_all replacement strings are applied literally", async () => {
+    const file = join(root, "literal-replace-all.txt");
+    const fileContent = "foo foo\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "foo",
+      new_string: "$&bar",
+      replace_all: true,
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("$&bar $&bar\n");
+  });
+
+  test("replace_all preserves quote style across normalized matches", async () => {
+    const file = join(root, "smart-replace-all.md");
+    const fileContent = "“one” and “one”\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: '"one"',
+      new_string: '"two"',
+      replace_all: true,
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("“two” and “two”\n");
+  });
+
+  test("ASCII dash matches stay literal when typographic dashes are present", async () => {
+    const file = join(root, "mixed-dash-literal.md");
+    const fileContent = "a-b\na—b\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "a-b",
+      new_string: "c-d",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("c-d\na—b\n");
+  });
+
+  test("replace_all does not edit dash or space typographic variants", async () => {
+    const file = join(root, "mixed-literal-replace-all.md");
+    const fileContent = "a-b a—b\nx y x y\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [
+        { old_string: "a-b", new_string: "c-d", replace_all: true },
+        { old_string: "x y", new_string: "z y", replace_all: true },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata).toMatchObject({
+      ui: {
+        replacements: 2,
+      },
+    });
+    await expect(readFile(file, "utf8")).resolves.toBe("c-d a—b\nz y x y\n");
+  });
+
+  test("edits preserve CRLF line endings on disk", async () => {
+    const file = join(root, "crlf.txt");
+    const diskContent = "alpha\r\nbeta\r\n";
+    await writeFile(file, diskContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: "alpha\nbeta\n",
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("alpha\r\ngamma\r\n");
+  });
+
+  test("edits preserve UTF-16LE encoding on disk", async () => {
+    const file = join(root, "utf16.txt");
+    const diskContent = "\ufeffalpha\nbeta\n";
+    await writeFile(file, Buffer.from(diskContent, "utf16le"));
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      old_string: "beta",
+      new_string: "gamma",
+    });
+
+    expect(result.isError).toBeUndefined();
+    const after = await readFile(file);
+    expect(after[0]).toBe(0xff);
+    expect(after[1]).toBe(0xfe);
+    expect(after.toString("utf16le")).toBe("\ufeffalpha\ngamma\n");
   });
 
   test("findActualString returns null for unrelated text", () => {
@@ -378,6 +746,8 @@ describe("Edit tool", () => {
     expect(findActualString("alpha beta", "alpha")).toBe("alpha");
     // Curly quote in file, ASCII in search.
     expect(findActualString("a‘b’c", "a'b'c")).toBe("a‘b’c");
+    expect(findActualString("a—b", "a-b")).toBeNull();
+    expect(findActualString("x y", "x y")).toBeNull();
   });
 
   test("rejects paths outside allowedPaths", async () => {
@@ -550,10 +920,41 @@ describe("Edit tool", () => {
     expect(notifyLspFileChanged).toHaveBeenCalledWith(file, "done\n");
   });
 
+  test("MultiEdit empty replacement follows the same newline semantics", async () => {
+    const file = join(root, "multi-delete-inline.txt");
+    const fileContent = "one beta\ntwo\n";
+    await writeFile(file, fileContent, "utf8");
+    const fileStats = await stat(file);
+    recordSessionRead(SESSION_ID, file, {
+      content: fileContent,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [
+        { old_string: "beta", new_string: "" },
+        { old_string: "two", new_string: "three" },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("one three\n");
+  });
+
   test("notifies LSP for Edit create and empty-file writes", async () => {
     const created = join(root, "created.ts");
     const empty = join(root, "empty.ts");
     await writeFile(empty, "", "utf8");
+    const emptyStats = await stat(empty);
+    recordSessionRead(SESSION_ID, empty, {
+      content: "",
+      timestamp: emptyStats.mtimeMs,
+      viewKind: "full",
+    });
 
     const tool = createFileEditTool({ allowedPaths: [root] });
     await tool.execute({
@@ -583,6 +984,12 @@ describe("Edit tool", () => {
     const created = join(root, "multi-created.ts");
     const empty = join(root, "multi-empty.ts");
     await writeFile(empty, "", "utf8");
+    const emptyStats = await stat(empty);
+    recordSessionRead(SESSION_ID, empty, {
+      content: "",
+      timestamp: emptyStats.mtimeMs,
+      viewKind: "full",
+    });
 
     const tool = createFileMultiEditTool({ allowedPaths: [root] });
     await tool.execute({

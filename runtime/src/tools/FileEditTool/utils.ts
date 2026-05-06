@@ -1,7 +1,7 @@
 import { type StructuredPatchHunk, structuredPatch } from 'diff'
-import { logError } from 'src/utils/log.js'
-import { expandPath } from 'src/utils/path.js'
-import { countCharInString } from 'src/utils/stringUtils.js'
+import { logError } from '../../utils/log.js'
+import { expandPath } from '../../utils/path.js'
+import { countCharInString } from '../../utils/stringUtils.js'
 import {
   DIFF_TIMEOUT_MS,
   getPatchForDisplay,
@@ -24,9 +24,9 @@ export const LEFT_DOUBLE_CURLY_QUOTE = '“'
 export const RIGHT_DOUBLE_CURLY_QUOTE = '”'
 
 /**
- * Normalizes quotes in a string by converting curly quotes to straight quotes
+ * Normalizes curly quote variants to ASCII equivalents.
  * @param str The string to normalize
- * @returns The string with all curly quotes replaced by straight quotes
+ * @returns The string with curly quotes normalized
  */
 export function normalizeQuotes(str: string): string {
   return str
@@ -209,6 +209,13 @@ export function applyEditToFile(
   newString: string,
   replaceAll: boolean = false,
 ): string {
+  const actualOldString = findActualString(originalContent, oldString)
+  if (actualOldString === null) return originalContent
+  const actualNewString = preserveQuoteStyle(
+    oldString,
+    actualOldString,
+    newString,
+  )
   const f = replaceAll
     ? (content: string, search: string, replace: string) =>
         content.replaceAll(search, () => replace)
@@ -216,15 +223,16 @@ export function applyEditToFile(
         content.replace(search, () => replace)
 
   if (newString !== '') {
-    return f(originalContent, oldString, newString)
+    return f(originalContent, actualOldString, actualNewString)
   }
 
   const stripTrailingNewline =
-    !oldString.endsWith('\n') && originalContent.includes(oldString + '\n')
+    !actualOldString.endsWith('\n') &&
+    originalContent.includes(actualOldString + '\n')
 
   return stripTrailingNewline
-    ? f(originalContent, oldString + '\n', newString)
-    : f(originalContent, oldString, newString)
+    ? f(originalContent, actualOldString + '\n', actualNewString)
+    : f(originalContent, actualOldString, actualNewString)
 }
 
 /**
