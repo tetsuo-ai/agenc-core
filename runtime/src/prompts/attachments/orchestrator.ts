@@ -111,6 +111,8 @@ export interface GetAttachmentsOptions {
       }>;
     }>;
   };
+  /** Current loaded config snapshot for config-gated skill/plugin discovery. */
+  readonly config?: unknown;
   /** Current model context window, if known, for listing budget sizing. */
   readonly contextWindowTokens?: number;
 }

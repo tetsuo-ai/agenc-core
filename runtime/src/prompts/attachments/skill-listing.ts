@@ -16,7 +16,7 @@ export const skillListingProducer: AttachmentProducer = async (
   if (opts.subagentDepth > 0) return [];
   if (!opts.skillsManager) return [];
 
-  const outcome = await opts.skillsManager.skillsForConfig({}, null);
+  const outcome = await opts.skillsManager.skillsForConfig(opts.config ?? {}, null);
   const skills = outcome.availableSkills ?? [];
   const listing = formatSkillListingWithinBudget(
     skills,

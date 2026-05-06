@@ -38,6 +38,32 @@ agent-run and snapshot cleanup. Runtime ownership is split intentionally:
   policy, and the state pruners apply retention outside the live turn loop. This
   avoids having `runAgent` open state databases or prune while an agent turn is
   still active.
+## CF-10 `plugins`
+
+CF-10 ports the plugin config shape from `/home/tetsuo/git/codex` at commit <!-- branding-scan: allow local donor citation in parity artifact -->
+`c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
+
+Primary CF-10 source anchors:
+- `codex-rs/config/src/types.rs::PluginConfig` <!-- branding-scan: allow local donor citation in parity artifact -->
+- `codex-rs/config/src/config_toml.rs::ConfigToml.plugins` <!-- branding-scan: allow local donor citation in parity artifact -->
+
+AgenC keeps the donor's per-plugin enablement and MCP-server policy overlay
+shape, but wraps it in AgenC's ship-safe `plugins.enabled` feature gate and
+`plugins.allowlist` filter:
+
+- `runtime/src/config/schema.ts` owns the typed config and disabled defaults.
+- `runtime/src/plugins/loader.ts` applies the feature gate and allowlist before
+  plugin component loading, and applies `plugins.plugins.<id>.mcp_servers`
+  enablement/tool-policy overlays to plugin-contributed MCP servers.
+- `runtime/src/plugins/policy.ts` applies the same per-plugin and allowlist
+  policy at permission decision time.
+- `runtime/src/plugins/cli/pluginOperations.ts` writes managed entries under
+  `plugins.plugins.<id>` and turns on the global `plugins.enabled` gate for
+  install/enable operations.
+- `runtime/src/commands.ts` and prompt attachment producers pass the active
+  config snapshot into local skill discovery so plugin-provided skills follow
+  the same gate in command and model-visible surfaces.
+
 ## CF-11 `mcp.server`
 
 CF-11 is net-new AgenC config for serving AgenC's own MCP endpoint. Runtime

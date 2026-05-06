@@ -136,6 +136,31 @@ describe("MCPManager", () => {
     expect(manager.getConnectedServers()).toEqual(["srv1"]);
   });
 
+  it("drops invalid server default approval modes before bridge creation", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([
+      makeConfig("srv1", {
+        default_tools_approval_mode: "invalid",
+        enabled_tools: [],
+      } as never),
+    ]);
+    await manager.start();
+
+    expect(mockCreateToolBridge).toHaveBeenCalledWith(
+      "client1",
+      "srv1",
+      expect.anything(),
+      expect.objectContaining({
+        serverConfig: {
+          allowedTools: [],
+        },
+      }),
+    );
+  });
+
   it("does nothing with empty config", async () => {
     const manager = new MCPManager([]);
     await manager.start();
