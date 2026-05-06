@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,6 +44,7 @@ import {
   DEFERRED_SETTINGS_KEYS,
 } from "./schema.js";
 import { parseToml, loadConfig, TomlParseError } from "./loader.js";
+import { CURRENT_CONFIG_FILE_VERSION } from "./migrate.js";
 import {
   resolveProfile,
   listProfiles,
@@ -72,6 +80,7 @@ import { ConfigStore } from "./store.js";
 describe("schema: defaultConfig", () => {
   test("returns frozen snapshot with sane defaults", () => {
     const cfg = defaultConfig();
+    expect(cfg.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
     expect(cfg.model).toBe("grok-4-fast");
     expect(cfg.model_provider).toBe("grok");
     expect(resolveProviderSelection({ config: cfg })).toBe("grok");
@@ -267,6 +276,15 @@ describe("schema: normalizeRawConfig", () => {
       minColumns: 100,
     });
     expect(out._unknown).toBeUndefined();
+  });
+
+  test("preserves configVersion on the typed path", () => {
+    const out = normalizeRawConfig({
+      configVersion: CURRENT_CONFIG_FILE_VERSION,
+    });
+    expect(out.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("configVersion")).toBe(true);
   });
 
   test("preserves auth config on the typed path", () => {
@@ -1076,6 +1094,19 @@ describe("schema: closed config block validators (CF-13)", () => {
     expect((caught as InvalidMcpConfigError).field).toBe("unexpected");
     expect((caught as Error).message).toContain("Invalid mcp.unexpected");
   });
+
+  test("validateAgenCConfigBlocks rejects invalid configVersion", () => {
+    expect(() =>
+      validateAgenCConfigBlocks(
+        normalizeRawConfig({ configVersion: 0 }),
+      ),
+    ).toThrow("Invalid configVersion");
+    expect(() =>
+      validateAgenCConfigBlocks(
+        normalizeRawConfig({ configVersion: 2.5 }),
+      ),
+    ).toThrow("Invalid configVersion");
+  });
 });
 
 describe("schema: hooks block", () => {
@@ -1398,6 +1429,46 @@ model = "grok-4-fast"
     expect(out.config.model).toBe("grok-3");
     expect(out.config.max_turns).toBe(7);
     expect(out.config.profiles?.fast?.model).toBe("grok-4-fast");
+  });
+
+  test("migrates config.json before loading config.toml", async () => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        provider: "xai",
+        max_turns: 9,
+      }),
+      "utf8",
+    );
+
+    const out = await loadConfig({ home: dir });
+
+    expect(out.exists).toBe(true);
+    expect(out.path).toBe(join(dir, "config.toml"));
+    expect(out.config.model_provider).toBe("grok");
+    expect(out.config.max_turns).toBe(9);
+    expect(out.config.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
+    expect(existsSync(join(dir, "config.json.bak-cf12"))).toBe(true);
+    expect(readFileSync(join(dir, "config.toml"), "utf8")).toContain(
+      `"configVersion" = ${CURRENT_CONFIG_FILE_VERSION}`,
+    );
+  });
+
+  test("versions older TOML before the normal loader parse", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+provider = "xai"
+max_turns = 8
+      `,
+    );
+
+    const out = await loadConfig({ home: dir });
+
+    expect(out.config.model_provider).toBe("grok");
+    expect(out.config.max_turns).toBe(8);
+    expect(out.config.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
+    expect(existsSync(join(dir, "config.toml.bak-cf12"))).toBe(true);
   });
 
   test("applies read-only config migrations before normalization", async () => {

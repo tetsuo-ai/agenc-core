@@ -428,6 +428,7 @@ export interface PluginsConfig {
 
 export interface AgenCConfig {
   // ── Runtime fields ─────────────────────────────────────────────────
+  readonly configVersion?: number;
   readonly model?: string;
   readonly model_provider?: string;
   readonly approval_policy?: ApprovalPolicy;
@@ -573,6 +574,7 @@ export const DEFERRED_SETTINGS_KEYS: readonly string[] = Object.freeze([
 // catch up. Forward-compat: unknown keys land on `_unknown` rather than
 // being dropped.
 export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
+  "configVersion",
   "model",
   "model_provider",
   "approval_policy",
@@ -634,6 +636,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
 
 export function defaultConfig(): AgenCConfig {
   return Object.freeze({
+    configVersion: 1,
     model: "grok-4-fast",
     model_provider: "grok",
     approval_policy: "on-request" as ApprovalPolicy,
@@ -1785,6 +1788,17 @@ function validateMcpConfigTable(raw: unknown): Readonly<{
 export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   const out: Record<string, unknown> = { ...config };
   let changed = false;
+
+  if (config.configVersion !== undefined) {
+    if (
+      typeof config.configVersion !== "number" ||
+      !Number.isSafeInteger(config.configVersion) ||
+      config.configVersion < 1
+    ) {
+      throw new Error("Invalid configVersion: expected positive safe integer");
+    }
+    changed = true;
+  }
 
   if (config.auth !== undefined) {
     out.auth = validateAuthConfig(config.auth);
