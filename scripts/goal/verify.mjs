@@ -4690,6 +4690,7 @@ async function migrationGates(item) {
       "src/bin/agenc.daemon-fallback.test.ts",
       "src/bin/agenc.cli-branch.test.ts",
       "src/bin/agenc.test.ts",
+      "src/bin/agenc.user-prompt-submit.test.ts",
       "src/app-server-client/index.test.ts",
       "src/tui/daemon-session.contract.test.ts",
       "src/app-server/agent-cli.contract.test.ts",

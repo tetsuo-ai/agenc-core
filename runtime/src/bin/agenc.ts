@@ -152,6 +152,10 @@ import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
 } from "../hooks/user-prompt-submit.js";
+import {
+  ConfiguredHooksRuntime,
+  type HookInstallTarget,
+} from "../hooks/configured-hooks.js";
 import { resolveStartupSelection } from "./startup-selection.js";
 import {
   isProjectTrustedSync,
@@ -870,6 +874,15 @@ function emitFileMentionWarnings(
   }
 }
 
+function writeFileMentionWarnings(
+  stderr: Pick<NodeJS.WriteStream, "write">,
+  expansion: FileMentionExpansion,
+): void {
+  for (const rejection of expansion.rejected) {
+    stderr.write(`agenc: ${formatFileMentionRejection(rejection)}\n`);
+  }
+}
+
 async function expandPromptFileMentions(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -889,6 +902,21 @@ async function expandPromptFileMentions(params: {
     input: expansion.prompt,
     displayInput: params.input,
   };
+}
+
+async function expandOneShotPromptFileMentions(params: {
+  readonly configStore: ConfigStore;
+  readonly input: string;
+  readonly cwd: string;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}): Promise<string> {
+  const config = params.configStore.current();
+  const expansion = await expandFileMentions(params.input, {
+    cwd: params.cwd,
+    allowedRoots: extractMentionAllowedRoots(config),
+  });
+  writeFileMentionWarnings(params.stderr, expansion);
+  return expansion.attachments.length === 0 ? params.input : expansion.prompt;
 }
 
 function userInputDisplayText(input: string | readonly LLMContentPart[]): string {
@@ -1050,6 +1078,111 @@ async function collectUserPromptSubmitHookOutcome(params: {
   return {
     blocked: false,
     additionalContexts,
+  };
+}
+
+function createOneShotHookTarget(): HookInstallTarget {
+  return {
+    preToolUseHooks: [],
+    postToolUseHooks: [],
+    failureToolUseHooks: [],
+    permissionDecisionHooks: [],
+    userPromptSubmitHooks: [],
+    stopHooks: [],
+    stopFailureHooks: [],
+    clearConfiguredLifecycleHooks: () => {},
+  };
+}
+
+async function prepareOneShotPromptForDaemon(params: {
+  readonly prompt: string;
+  readonly configStore: ConfigStore;
+  readonly agencHome: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly signal: AbortSignal;
+  readonly stderr: Pick<NodeJS.WriteStream, "write">;
+}): Promise<
+  | { readonly blocked: false; readonly prompt: string }
+  | { readonly blocked: true; readonly blockMessage: string }
+> {
+  const target = createOneShotHookTarget();
+  const hooksRuntime = new ConfiguredHooksRuntime({
+    cwd: params.cwd,
+    env: params.env,
+    agencHome: params.agencHome,
+    shellPath: params.env.SHELL ?? "/bin/sh",
+  });
+  hooksRuntime.attachTarget(target);
+  hooksRuntime.load(params.configStore.current().hooks);
+
+  const additionalContexts: string[] = [];
+  for await (const hookResult of executeUserPromptSubmitHooks(
+    params.prompt,
+    "default",
+    {
+      cwd: params.cwd,
+      services: { hooks: target },
+      abortController: { signal: params.signal },
+    },
+    undefined,
+    (err, idx) => {
+      params.stderr.write(
+        `agenc: UserPromptSubmit hook ${idx} threw: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    },
+  )) {
+    if (hookResult.additionalContexts) {
+      additionalContexts.push(...hookResult.additionalContexts);
+    }
+    if (hookResult.blockingError) {
+      return {
+        blocked: true,
+        blockMessage: appendUserPromptSubmitContextsToMessage(
+          getUserPromptSubmitHookBlockingMessage(hookResult.blockingError),
+          additionalContexts,
+        ),
+      };
+    }
+    if (hookResult.preventContinuation) {
+      return {
+        blocked: true,
+        blockMessage: appendUserPromptSubmitContextsToMessage(
+          hookResult.stopReason
+            ? `Operation stopped by hook: ${hookResult.stopReason}`
+            : "Operation stopped by hook",
+          additionalContexts,
+        ),
+      };
+    }
+    const attachment = hookResult.message?.attachment;
+    if (
+      attachment?.type === "hook_success" &&
+      typeof attachment.content === "string" &&
+      attachment.content.length > 0
+    ) {
+      additionalContexts.push(attachment.content);
+    }
+  }
+
+  const expandedPrompt = await expandOneShotPromptFileMentions({
+    configStore: params.configStore,
+    input: params.prompt,
+    cwd: params.cwd,
+    stderr: params.stderr,
+  });
+  const promptWithContext = appendUserPromptSubmitContexts(
+    expandedPrompt,
+    additionalContexts,
+  );
+  return {
+    blocked: false,
+    prompt:
+      typeof promptWithContext === "string"
+        ? promptWithContext
+        : userInputDisplayText(promptWithContext),
   };
 }
 
@@ -1377,6 +1510,7 @@ export async function oneShotCLI(
   try {
     validateAgencHome();
     throwIfAborted("validateAgencHome");
+    const agencHome = resolveAgencHome(process.env);
 
     const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
@@ -1396,22 +1530,43 @@ export async function oneShotCLI(
     throwIfAborted("requireProjectTrustForTui");
 
     const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: process.env,
+      onWarn: (message) => process.stderr.write(`${message}\n`),
+    });
+    await configStore.reload();
+    const promptPreparation = await prepareOneShotPromptForDaemon({
+      prompt: resolvedUserMessage,
+      configStore,
+      agencHome,
+      cwd: daemonCwd,
+      env: process.env,
+      signal: initAbort.signal,
+      stderr: process.stderr,
+    });
+    throwIfAborted("prepareOneShotPromptForDaemon");
+    if (promptPreparation.blocked) {
+      process.stderr.write(`${promptPreparation.blockMessage}\n`);
+      return 1;
+    }
+    const preparedUserMessage = promptPreparation.prompt;
     const resolvedStartupImages =
       startupImages.length > 0
         ? startupImages
         : extractFlagValues(process.argv.slice(2), "--image");
     const initialContent = startupContentFromInputs(
-      resolvedUserMessage,
+      preparedUserMessage,
       resolvedStartupImages,
       daemonCwd,
       process.env.HOME,
     );
     const daemonPrompt =
-      resolvedUserMessage.trim().length > 0
-        ? resolvedUserMessage
+      preparedUserMessage.trim().length > 0
+        ? preparedUserMessage
         : initialContent !== undefined
           ? "Multimodal AgenC startup"
-          : resolvedUserMessage;
+          : preparedUserMessage;
     const started = await daemonCliDeps().startPromptAgent({
       prompt: daemonPrompt,
       env: process.env,
