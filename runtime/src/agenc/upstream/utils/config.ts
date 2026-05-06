@@ -544,16 +544,14 @@ export type GlobalConfig = {
   lspRecommendationNeverPlugins?: string[] // Plugin IDs to never suggest
   lspRecommendationIgnoredCount?: number // Track ignored recommendations (stops after 5)
 
-  // AgenC hint protocol state (<agenc-code-hint /> tags from CLIs/SDKs).
-  // Nested by hint type so future types (docs, mcp, ...) slot in without new
-  // top-level keys.
+  // AgenC hint protocol state (<agenc-code-hint /> tags).
+  agencCodeHints?: {
+    plugin?: string[]
+    disabled?: boolean
+  }
   // branding-scan: allow persisted legacy config key
   claudeCodeHints?: {
-    // Plugin IDs the user has already been prompted for. Show-once semantics:
-    // recorded regardless of yes/no response, never re-prompted. Capped at
-    // 100 entries to bound config growth — past that, hints stop entirely.
     plugin?: string[]
-    // User chose "don't show plugin installation hints again" from the dialog.
     disabled?: boolean
   }
 

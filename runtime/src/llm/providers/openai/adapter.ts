@@ -1,5 +1,5 @@
 /**
- * OpenAI provider adapter.
+ * OpenAI provider adapter. // branding-scan: allow real OpenAI provider identifier
  *
  * Uses the new T13 wire shims rather than the legacy `openai` SDK path.
  *
@@ -36,7 +36,8 @@ import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   buildOpenAICompatibilityErrorMessage,
   classifyOpenAIHttpFailure,
-} from "../../_deps/openai-error-classification.js";
+  classifyOpenAINetworkFailure,
+} from "../../../errors/openai-compatible.js";
 import {
   buildChatCompletionsRequest,
   collectChatCompletionsRequestMetadata,
@@ -61,6 +62,11 @@ import {
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
+  "OpenAI Responses stream emitted invalid function_call"; // branding-scan: allow real OpenAI provider identifier
+const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed"; // branding-scan: allow real OpenAI provider identifier
+const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
+  "OpenAI chat-completions stream emitted invalid tool_call"; // branding-scan: allow real OpenAI provider identifier
 
 interface OpenAISseEvent {
   readonly event?: string;
@@ -114,6 +120,88 @@ function providerHttpBodyToString(body: unknown): string {
   } catch {
     return String(body);
   }
+}
+
+function errorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (
+      current &&
+      typeof current === "object" &&
+      "code" in current &&
+      typeof (current as { code?: unknown }).code === "string"
+    ) {
+      return (current as { code: string }).code;
+    }
+    if (
+      current &&
+      typeof current === "object" &&
+      "cause" in current &&
+      (current as { cause?: unknown }).cause !== current
+    ) {
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return undefined;
+}
+
+function errorName(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (
+      current &&
+      typeof current === "object" &&
+      "name" in current &&
+      typeof (current as { name?: unknown }).name === "string"
+    ) {
+      return (current as { name: string }).name;
+    }
+    if (
+      current &&
+      typeof current === "object" &&
+      "cause" in current &&
+      (current as { cause?: unknown }).cause !== current
+    ) {
+      current = (current as { cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return undefined;
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return errorCode(error) === "ABORT_ERR" || errorName(error) === "AbortError";
+}
+
+function isTransportFailure(error: unknown): boolean {
+  if (isAbortLikeError(error)) return false;
+
+  const code = errorCode(error);
+  if (
+    code &&
+    [
+      "ECONNABORTED",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENETDOWN",
+      "ENETUNREACH",
+      "ENOTFOUND",
+      "EAI_AGAIN",
+      "ETIMEDOUT",
+      "UND_ERR_CONNECT_TIMEOUT",
+    ].includes(code)
+  ) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:fetch failed|network|socket|connect econn|getaddrinfo|timed out|timeout)/i.test(
+    message,
+  );
 }
 
 function withStreamingMetrics(response: LLMResponse): LLMResponse {
@@ -182,9 +270,10 @@ function mapOpenAIHttpFailureToError(args: {
   readonly body: unknown;
   readonly retryAfterMs?: number;
 }): Error {
+  const bodyText = providerHttpBodyToString(args.body);
   const failure = classifyOpenAIHttpFailure({
     status: args.status,
-    body: providerHttpBodyToString(args.body),
+    body: `${args.message}\n${bodyText}`.trim(),
   });
   const message = buildOpenAICompatibilityErrorMessage(args.message, failure);
 
@@ -192,6 +281,7 @@ function mapOpenAIHttpFailureToError(args: {
     return new LLMRateLimitError(
       args.providerName,
       args.retryAfterMs ?? readRetryAfterMs(args.body),
+      message,
     );
   }
   if (failure.category === "provider_unavailable") {
@@ -203,10 +293,26 @@ function mapOpenAIHttpFailureToError(args: {
   if (failure.category === "malformed_provider_response") {
     return new LLMInvalidResponseError(args.providerName, message);
   }
-  if (failure.category === "auth_invalid" && args.status === 401) {
-    return new LLMAuthenticationError(args.providerName, args.status);
+  if (
+    failure.category === "auth_invalid" &&
+    (args.status === 401 || args.status === 403)
+  ) {
+    return new LLMAuthenticationError(args.providerName, args.status, message);
   }
   return new LLMProviderError(args.providerName, message, args.status);
+}
+
+function mapOpenAINetworkFailureToError(args: {
+  readonly providerName: string;
+  readonly error: unknown;
+  readonly url: string;
+}): Error | null {
+  if (!isTransportFailure(args.error)) return null;
+  const failure = classifyOpenAINetworkFailure(args.error, { url: args.url });
+  return new LLMProviderError(
+    args.providerName,
+    buildOpenAICompatibilityErrorMessage(failure.message, failure),
+  );
 }
 
 function mapOpenAIStreamError(args: {
@@ -450,6 +556,14 @@ export class OpenAIProvider implements LLMProvider {
           retryAfterMs: error.retryAfterMs,
         });
       }
+      const networkError = mapOpenAINetworkFailureToError({
+        providerName: this.name,
+        error,
+        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+      });
+      if (networkError) {
+        throw networkError;
+      }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
     }
   }
@@ -485,6 +599,14 @@ export class OpenAIProvider implements LLMProvider {
           body: error.body,
           retryAfterMs: error.retryAfterMs,
         });
+      }
+      const networkError = mapOpenAINetworkFailureToError({
+        providerName: this.name,
+        error,
+        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+      });
+      if (networkError) {
+        throw networkError;
       }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
     }
@@ -756,7 +878,7 @@ export class OpenAIProvider implements LLMProvider {
                 name: String(item.name ?? "").trim(),
                 arguments: String(item.arguments ?? "{}"),
               },
-              "OpenAI Responses stream emitted invalid function_call",
+              OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
             );
             streamedToolCalls.set(toolCall.id, toolCall);
             onChunk({ content: "", done: false, toolCalls: [toolCall] });
@@ -793,7 +915,7 @@ export class OpenAIProvider implements LLMProvider {
               ? String(failedError.message)
               : typeof eventError?.message === "string"
                 ? String(eventError.message)
-                : "OpenAI stream failed";
+                : OPENAI_STREAM_FAILED_MESSAGE;
           const errorBody = failedError ?? eventError ?? failedResponse;
           const streamError = mapOpenAIStreamError({
             providerName: this.name,
@@ -933,11 +1055,14 @@ export class OpenAIProvider implements LLMProvider {
           const streamError = mapOpenAIStreamError({
             providerName: this.name,
             errorBody: chunk.error,
-            fallbackMessage: "OpenAI stream failed",
+            fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
           });
           if (content.length === 0 && toolCallAccumulator.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
-              openAIStreamFallbackCandidate(chunk.error, "OpenAI stream failed"),
+              openAIStreamFallbackCandidate(
+                chunk.error,
+                OPENAI_STREAM_FAILED_MESSAGE,
+              ),
               consecutiveFallbackFailures,
               requestModel,
             );
@@ -1033,7 +1158,7 @@ export class OpenAIProvider implements LLMProvider {
           validateProviderToolCallOrThrow(
             this.name,
             toolCall,
-            "OpenAI chat-completions stream emitted invalid tool_call",
+            OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE,
           ))
         : [];
       const parsed = withStreamingMetrics(

@@ -12,7 +12,7 @@ import type { CommandResultDisplay } from '../../../commands.js';
 import { Pane } from '../components/design-system/Pane.js';
 import { PressEnterToContinue } from '../components/PressEnterToContinue.js';
 import { SandboxDoctorSection } from '../components/sandbox/SandboxDoctorSection.js';
-import { ValidationErrorsList } from '../components/ValidationErrorsList.js';
+import { ValidationErrorsList } from '../../../tui/components/ValidationErrorsList.js';
 import { useSettingsErrors } from '../hooks/notifs/useSettingsErrors.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../../tui/ink.js';

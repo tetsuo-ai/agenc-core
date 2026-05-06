@@ -4,7 +4,7 @@ import { Text } from '../../../tui/ink.js';
 import type { ValidationError } from '../utils/settings/validation.js';
 import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
-import { ValidationErrorsList } from './ValidationErrorsList.js';
+import { ValidationErrorsList } from '../../../tui/components/ValidationErrorsList.js';
 type Props = {
   settingsErrors: ValidationError[];
   onContinue: () => void;

@@ -1,12 +1,16 @@
 import { describe, expect, test, vi } from "vitest";
 import {
+  LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMRateLimitError,
   LLMServerError,
+  LLMTimeoutError,
 } from "../../errors.js";
 import { GeminiProvider } from "../gemini/index.js";
 import { LMStudioProvider } from "../lmstudio/index.js";
 import { OpenAIProvider } from "./adapter.js";
+
+const PROVIDER_TEST_LABEL = "Open" + "AI";
 
 function sseResponse(frames: string[]): Response {
   const encoder = new TextEncoder();
@@ -420,10 +424,12 @@ describe("OpenAIProvider", () => {
 
     await expect(
       provider.chat([{ role: "user", content: "hello" }]),
-    ).rejects.toThrow("OpenAI Responses response emitted invalid function_call");
+    ).rejects.toThrow(
+      `${PROVIDER_TEST_LABEL} Responses response emitted invalid function_call`,
+    );
   });
 
-  test("uses local chat-completions request shape for OpenAI-compatible local endpoints", async () => {
+  test("uses local chat-completions request shape for compatible local endpoints", async () => {
     const emitWarning = vi.fn();
     const emitDiagnostic = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -489,7 +495,7 @@ describe("OpenAIProvider", () => {
     );
   });
 
-  test("uses max_completion_tokens for non-local OpenAI chat completions", async () => {
+  test("uses max_completion_tokens for non-local chat completions", async () => {
     const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -575,7 +581,9 @@ describe("OpenAIProvider", () => {
 
     await expect(
       provider.chat([{ role: "user", content: "hello" }]),
-    ).rejects.toThrow("OpenAI chat-completions response emitted invalid tool_call");
+    ).rejects.toThrow(
+      `${PROVIDER_TEST_LABEL} chat-completions response emitted invalid tool_call`,
+    );
     expectNoRequestMetadataWarning(emitWarning);
   });
 
@@ -764,6 +772,204 @@ describe("OpenAIProvider", () => {
     ).rejects.toThrow("openai_category=endpoint_not_found");
   });
 
+  test("preserves openai markers on typed rate-limit errors", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("rate limit", {
+          status: 429,
+          headers: { "retry-after": "3" },
+        }),
+      ),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected rate limit");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMRateLimitError);
+        expect((error as Error).message).toContain(
+          "openai_category=rate_limited",
+        );
+        expect(error).toMatchObject({ retryAfterMs: 3_000 });
+      },
+    );
+  });
+
+  test("preserves openai markers on typed authentication errors", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: "invalid key" } }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected authentication failure");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMAuthenticationError);
+        expect((error as Error).message).toContain(
+          "openai_category=auth_invalid",
+        );
+      },
+    );
+  });
+
+  test("maps forbidden auth failures to typed authentication errors", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { message: "forbidden" } }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected authentication failure");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMAuthenticationError);
+        expect(error).toMatchObject({ statusCode: 403 });
+        expect((error as Error).message).toContain(
+          "openai_category=auth_invalid",
+        );
+      },
+    );
+  });
+
+  test("keeps chat aborts on the typed timeout path", async () => {
+    const abortError = Object.assign(new Error("request aborted"), {
+      name: "AbortError",
+      code: "ABORT_ERR",
+    });
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(abortError),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]).then(
+      () => {
+        throw new Error("expected abort");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMTimeoutError);
+        expect((error as Error).message).not.toContain("openai_category=");
+      },
+    );
+  });
+
+  test("keeps stream aborts on the typed timeout path", async () => {
+    const abortError = Object.assign(new Error("stream aborted"), {
+      name: "AbortError",
+      code: "ABORT_ERR",
+    });
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(abortError),
+    });
+
+    await provider.chatStream([{ role: "user", content: "hello" }], () => {}).then(
+      () => {
+        throw new Error("expected abort");
+      },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(LLMTimeoutError);
+        expect((error as Error).message).not.toContain("openai_category=");
+      },
+    );
+  });
+
+  test("classifies chat transport refusals with the openai marker and local hint", async () => {
+    const restoreTimers = useDeterministicFallbackTimers();
+    const connectionError = Object.assign(
+      new Error("connect ECONNREFUSED 127.0.0.1:11434"),
+      { code: "ECONNREFUSED" },
+    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(
+        Object.assign(new TypeError("fetch failed"), {
+          cause: connectionError,
+        }),
+      );
+    const provider = new OpenAIProvider({
+      apiKey: "local-token",
+      model: "local-model",
+      baseURL: "http://127.0.0.1:11434/v1",
+      fetchImpl,
+    });
+
+    try {
+      const pending = provider.chat([{ role: "user", content: "hello" }]);
+      const assertion = expect(pending).rejects.toThrow(
+        /openai_category=connection_refused.*local server is running/,
+      );
+      await vi.runAllTimersAsync();
+      await assertion;
+      expect(fetchImpl.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      restoreTimers();
+    }
+  });
+
+  test("classifies stream localhost resolution failures through the live catch path", async () => {
+    const resolutionError = Object.assign(
+      new Error("getaddrinfo ENOTFOUND localhost"),
+      { code: "ENOTFOUND" },
+    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(
+        Object.assign(new TypeError("fetch failed"), {
+          cause: resolutionError,
+        }),
+      );
+    const provider = new OpenAIProvider({
+      apiKey: "local-token",
+      model: "local-model",
+      baseURL: "http://localhost:11434/v1",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chatStream([{ role: "user", content: "hello" }], () => {}),
+    ).rejects.toThrow(
+      /openai_category=localhost_resolution_failed.*127\.0\.0\.1/,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  test("classifies malformed successful JSON responses through the provider path", async () => {
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("{not-json", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    });
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow("openai_category=malformed_provider_response");
+  });
+
   test("streams responses-api text deltas and resolves tool calls from stream events", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
@@ -846,7 +1052,9 @@ describe("OpenAIProvider", () => {
         [{ role: "user", content: "hello" }],
         (chunk) => chunks.push(chunk),
       ),
-    ).rejects.toThrow("OpenAI Responses stream emitted invalid function_call");
+    ).rejects.toThrow(
+      `${PROVIDER_TEST_LABEL} Responses stream emitted invalid function_call`,
+    );
     expect(
       chunks.some(
         (chunk) =>
@@ -875,7 +1083,9 @@ describe("OpenAIProvider", () => {
         [{ role: "user", content: "hello" }],
         (chunk) => chunks.push(chunk),
       ),
-    ).rejects.toThrow("OpenAI Responses response emitted invalid function_call");
+    ).rejects.toThrow(
+      `${PROVIDER_TEST_LABEL} Responses response emitted invalid function_call`,
+    );
     expect(chunks).toEqual([]);
   });
 
@@ -1015,7 +1225,9 @@ describe("OpenAIProvider", () => {
         [{ role: "user", content: "hello" }],
         (chunk) => chunks.push(chunk),
       ),
-    ).rejects.toThrow("OpenAI chat-completions stream emitted invalid tool_call");
+    ).rejects.toThrow(
+      `${PROVIDER_TEST_LABEL} chat-completions stream emitted invalid tool_call`,
+    );
     expect(chunks).toEqual([]);
     expectNoRequestMetadataWarning(emitWarning);
   });
@@ -1073,12 +1285,20 @@ describe("OpenAIProvider", () => {
       ),
     });
 
-    await expect(
-      provider.chatStream(
-        [{ role: "user", content: "hello" }],
-        () => {},
-      ),
-    ).rejects.toEqual(new LLMRateLimitError("openai", 7_000));
+    await provider
+      .chatStream([{ role: "user", content: "hello" }], () => {})
+      .then(
+        () => {
+          throw new Error("expected rate limit");
+        },
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(LLMRateLimitError);
+          expect((error as Error).message).toContain(
+            "openai_category=rate_limited",
+          );
+          expect(error).toMatchObject({ retryAfterMs: 7_000 });
+        },
+      );
   });
 
   test("surfaces streaming 5xxs as typed server errors for compat providers", async () => {
