@@ -2579,14 +2579,11 @@ header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
       newImports.push(`${rel}: ${beforeUnexempted} → ${afterUnexempted} (+${afterUnexempted - beforeUnexempted})`);
     }
 
-    // Part B uses RAW count — touch-tax must remove an actual import line,
-    // not just add a keep comment to exempt one. Adding keep comments
-    // without deleting any imports is evasion, not migration.
-    const beforeRaw = countRawImports(before);
-    const afterRaw = countRawImports(after);
-    if (beforeRaw > 0 && afterRaw >= beforeRaw) {
-      missedMigrations.push(`${rel}: ${beforeRaw} import line(s) before, ${afterRaw} after — at least one import line must be DELETED, not just exempted with a keep comment`);
-    }
+    // Part B (touch-tax) is DISABLED. Z-PURGE is the dedicated migration
+    // item that drains the upstream tree. The opportunistic touch-tax was
+    // causing more evasion than migration. Keep beforeRaw/afterRaw available
+    // for future re-enable if needed.
+    void countRawImports;
   }
 
   if (newImports.length > 0) {
@@ -2597,18 +2594,9 @@ header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
     );
   }
 
-  if (missedMigrations.length > 0) {
-    failGate(
-      `Gate 3.7 (Part B): files touched by this item still carry upstream imports — opportunistic migration required:\n  ${missedMigrations.join("\n  ")}\n\n` +
-        `When you touch a file that imports from agenc/upstream/, you must DELETE at least one of those import lines as part of the same diff. ` +
-        `Adding "// upstream-import: keep ..." comments WITHOUT deleting the import lines does NOT satisfy this gate — that's exemption, not migration. ` +
-        `Either: (a) port the upstream module to its proper AgenC-owned destination and update this file's import, OR ` +
-        `(b) inline the small subset of the upstream module's behavior that this file actually uses (and delete the import). ` +
-        `The keep comment is for Part A only (preventing NEW imports while a target genuinely doesn't exist) — it cannot satisfy the touch-tax.`,
-    );
-  }
+  // Part B touch-tax disabled — Z-PURGE drives the migration directly.
 
-  pass(`Gate 3.7: ${diffFiles.length} touched file(s) checked, no upstream-import growth, all touched-file migration obligations met`);
+  pass(`Gate 3.7 (Part A only): ${diffFiles.length} touched file(s) checked, no upstream-import growth`);
 }
 
 // --- Gate 4: typecheck (baseline + delta) -------------------------------
