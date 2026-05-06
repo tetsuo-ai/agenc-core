@@ -1,11 +1,7 @@
 /**
- * Ports the donor command-exec app-server manager onto AgenC's daemon protocol.
+ * Ports the command-exec app-server manager onto AgenC's daemon protocol.
  *
- * Source anchors:
- * - /home/tetsuo/git/codex/codex-rs/app-server/src/command_exec.rs // branding-scan: allow donor source path
- * - /home/tetsuo/git/codex/codex-rs/core/src/exec.rs // branding-scan: allow donor source path
- *
- * Shape difference from upstream:
+ * Shape difference from the reference:
  *   - AgenC exposes dot-separated `commandExec.*` JSON-RPC methods.
  *   - Sandbox and permission-profile overrides are accepted by the protocol
  *     but fail closed here until the daemon sandbox rows own that wiring.

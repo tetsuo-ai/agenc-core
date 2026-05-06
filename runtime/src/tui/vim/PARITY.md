@@ -1,6 +1,6 @@
 # TUI Vim Parity
 
-Donor source: `/home/tetsuo/git/openclaude/src/vim/{types,motions,operators,textObjects,transitions}.ts` at commit `0ca43335375beec6e58711b797d5b0c4bb5019b8`. <!-- branding-scan: allow donor citation in local parity artifact -->
+Reference source: `src/vim/{types,motions,operators,textObjects,transitions}.ts` at commit `0ca43335375beec6e58711b797d5b0c4bb5019b8`.
 
 AgenC destinations:
 
@@ -12,7 +12,7 @@ AgenC destinations:
 
 The state machine, motion resolver, operator executor, and text-object resolver are ported onto AgenC's `TextCursor` primitive. `textObjects.ts` is intentionally renamed to `text-objects.ts` for the OC-06 destination contract.
 
-AgenC-required extensions beyond the pinned donor files:
+AgenC-required extensions beyond the pinned reference files:
 
 - `ip` and `ap` paragraph text objects.
 - `it` and `at` balanced tag text objects.
