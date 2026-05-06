@@ -4,6 +4,9 @@ import { join, resolve } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
+import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
+import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
 vi.mock("../tui/ink.js", async () => {
   const React = await import("react");
@@ -115,6 +118,21 @@ describe("first-run onboarding state", () => {
 });
 
 describe("first-run onboarding wizard", () => {
+  async function advanceToApiKey(
+    context: Parameters<typeof createInitialFirstRunOnboardingState>[0] & {
+      readonly checkLocalProviders?: boolean;
+      readonly fetchImpl?: typeof fetch;
+      readonly agencHome?: string;
+    },
+  ) {
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
+    return state;
+  }
+
   test("advances through provider selection, connection check, and completion", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
@@ -256,6 +274,274 @@ describe("first-run onboarding wizard", () => {
     result = await submitFirstRunOnboardingInput(state, "later", context);
     expect(result.state.currentStepId).toBe("connection-test");
     expect(result.state.error).toContain("connection check");
+  });
+
+  test("verifies and saves approved BYOK API keys through local auth", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      let state = await advanceToApiKey(context);
+
+      state = (
+        await submitFirstRunOnboardingInput(
+          state,
+          "XAI_API_KEY='xai-approved-key'",
+          context,
+        )
+      ).state;
+
+      expect(state.currentStepId).toBe("api-key");
+      expect(state.pendingApiKeyApproval).toMatchObject({
+        provider: "grok",
+        maskedTail: "...-key",
+        verificationStatus: "valid",
+      });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://api.x.ai/v1/models",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            Authorization: "Bearer xai-approved-key",
+          }),
+        }),
+      );
+
+      state = (await submitFirstRunOnboardingInput(state, "yes", context)).state;
+      expect(state.currentStepId).toBe("security");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+      ).resolves.toBe("xai-approved-key");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps rejected BYOK API keys out of local auth", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("unauthorized", { status: 401 }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      const state = await advanceToApiKey(context);
+      const result = await submitFirstRunOnboardingInput(
+        state,
+        "xai-invalid-key",
+        context,
+      );
+
+      expect(result.state.currentStepId).toBe("api-key");
+      expect(result.state.pendingApiKeyApproval).toBeNull();
+      expect(result.state.error).toContain("Provider rejected");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+      ).resolves.toBeUndefined();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("does not persist verified BYOK keys declined at approval", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      let state = await advanceToApiKey(context);
+
+      state = (
+        await submitFirstRunOnboardingInput(
+          state,
+          "xai-declined-key",
+          context,
+        )
+      ).state;
+      expect(state.pendingApiKeyApproval).toMatchObject({
+        provider: "grok",
+        maskedTail: "...-key",
+      });
+
+      state = (await submitFirstRunOnboardingInput(state, "no", context)).state;
+      expect(state.currentStepId).toBe("security");
+      await expect(
+        new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+      ).resolves.toBeUndefined();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("captures long pasted API-key input through the onboarding path", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl,
+      };
+      const longKey = "x".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
+      const state = (
+        await submitFirstRunOnboardingInput(
+          await advanceToApiKey(context),
+          longKey,
+          context,
+        )
+      ).state;
+
+      expect(state.pendingApiKeyApproval?.pasteHash).toMatch(/^[a-f0-9]{16}$/);
+      expect(state.pendingApiKeyApproval?.pastePreview).toContain(
+        "Pasted content #1",
+      );
+      expect(state.pastedContents).toHaveLength(1);
+      expect(state.pastedContents[0]?.content.length).toBe(longKey.length - 2_000);
+      await expect(
+        retrievePastedText({
+          agencHome,
+          hash: state.pendingApiKeyApproval?.pasteHash ?? "",
+        }),
+      ).resolves.toBeNull();
+
+      const approved = await submitFirstRunOnboardingInput(state, "yes", context);
+      expect(approved.state.currentStepId).toBe("security");
+      await expect(
+        retrievePastedText({
+          agencHome,
+          hash: state.pendingApiKeyApproval?.pasteHash ?? "",
+        }),
+      ).resolves.toBe(state.pastedContents[0]?.content);
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("does not persist declined or invalid long pasted API-key input", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    try {
+      const config = defaultConfig();
+      const longKey = "y".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
+      const omittedHash = hashPastedText(longKey.slice(1_000, -1_000));
+      const validContext = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [] }), { status: 200 }),
+        ),
+      };
+      const pendingState = (
+        await submitFirstRunOnboardingInput(
+          await advanceToApiKey(validContext),
+          longKey,
+          validContext,
+        )
+      ).state;
+      const declined = await submitFirstRunOnboardingInput(
+        pendingState,
+        "no",
+        validContext,
+      );
+      expect(declined.state.currentStepId).toBe("security");
+      await expect(
+        retrievePastedText({ agencHome, hash: omittedHash }),
+      ).resolves.toBeNull();
+
+      const invalidContext = {
+        ...validContext,
+        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response("unauthorized", { status: 401 }),
+        ),
+      };
+      const invalid = await submitFirstRunOnboardingInput(
+        await advanceToApiKey(invalidContext),
+        longKey,
+        invalidContext,
+      );
+      expect(invalid.state.pendingApiKeyApproval).toBeNull();
+      await expect(
+        retrievePastedText({ agencHome, hash: omittedHash }),
+      ).resolves.toBeNull();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("removes approved paste cache if BYOK key persistence fails", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-byok-"));
+    try {
+      const config = defaultConfig();
+      const context = {
+        agencHome,
+        config,
+        env: {},
+        checkLocalProviders: false,
+        fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(JSON.stringify({ data: [] }), { status: 200 }),
+        ),
+        authBackend: {
+          saveByokKey: () => {
+            throw new Error("disk unavailable");
+          },
+        },
+      };
+      const longKey = "z".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
+      const pendingState = (
+        await submitFirstRunOnboardingInput(
+          await advanceToApiKey(context),
+          longKey,
+          context,
+        )
+      ).state;
+      const failed = await submitFirstRunOnboardingInput(
+        pendingState,
+        "yes",
+        context,
+      );
+
+      expect(failed.state.currentStepId).toBe("api-key");
+      expect(failed.state.error).toContain("disk unavailable");
+      await expect(
+        retrievePastedText({
+          agencHome,
+          hash: pendingState.pendingApiKeyApproval?.pasteHash ?? "",
+        }),
+      ).resolves.toBeNull();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 
   test("requires explicit commands for command-only steps", async () => {

@@ -608,6 +608,63 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       rmSync(agencHome, { recursive: true, force: true });
     }
   });
+
+  test("routes BYOK key approval through the real first-run TUI submission path", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
+    const session = {
+      ...createSession(),
+      setPendingProviderSwitch: vi.fn(),
+    };
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    providerProbe.promptSubmits.length = 0;
+    try {
+      const helpers = {
+        clearBuffer: vi.fn(),
+        resetHistory: vi.fn(),
+        setCursorOffset: vi.fn(),
+      };
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          isInteractive={true}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+        async ({ output }) => {
+          const submit = async (value: string): Promise<void> => {
+            const onSubmit = providerProbe.promptSubmits.at(-1);
+            expect(onSubmit).toBeDefined();
+            await onSubmit!(value, helpers);
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          };
+
+          await submit("next");
+          await submit("1");
+          await submit("1");
+          await submit("test");
+          await submit("xai-app-key");
+
+          expect(output()).toContain("Approve BYOK API key");
+          expect(output()).toContain("...-key");
+          expect(output()).not.toContain("xai-app-key");
+
+          await submit("yes");
+          await expect(
+            new LocalAuthBackend({ agencHome }).readByokKey("grok"),
+          ).resolves.toBe("xai-app-key");
+        },
+      );
+    } finally {
+      fetchSpy.mockRestore();
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
 });
 
 function createRendererSession(): Parameters<typeof installElicitationResolvers>[0] {
