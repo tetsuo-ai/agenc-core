@@ -1624,6 +1624,99 @@ snapshot_max_bytes = 64
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("foreground daemon restores payload messages and completed tool turns", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    seedRecoverableCompletedToolState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-completed-tool",
+      sessionId: "session-completed-tool",
+    });
+
+    const live = restoredLiveAgent(
+      "run-completed-tool",
+      "/root/run-completed-tool",
+    );
+    const resumeAgentFromRollout = vi.fn(async () => ({
+      resumedCount: 1,
+      rootLive: live,
+    }));
+    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
+    const runAgentFn = async function* (
+      params: Parameters<AgenCRunAgentFunction>[0],
+    ) {
+      runParams = params;
+      params.live.status.markRunning("turn-completed-tool");
+      yield { kind: "status", text: "restored" };
+      await new Promise(() => {});
+    } as AgenCRunAgentFunction;
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: async () => {},
+    };
+    const runner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async () => ({
+          session: {
+            conversationId: "daemon-completed-tool",
+            permissionModeRegistry,
+            services: {},
+          },
+          shutdown: async () => {},
+        })) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            resumeAgentFromRollout,
+            sendInput: async () => {},
+            shutdown: async () => {},
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        runAgentFn,
+      });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await waitForCondition(
+      () => runParams !== undefined,
+      "restored run params",
+    );
+    expect(runParams?.initialMessages).toEqual([
+      {
+        role: "user",
+        content: "recover this completed tool run",
+      },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "tool-completed",
+            name: "Write",
+            arguments: JSON.stringify({ file_path: "smallcc", content: "x" }),
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "File created successfully at: smallcc",
+        toolCallId: "tool-completed",
+        toolName: "Write",
+      },
+    ]);
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon poisons replay when current tool registration is not idempotent", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -2362,6 +2455,96 @@ function seedDaemonRunWithSnapshots(
         JSON.stringify(snapshot.mcpConnectionState ?? {}),
       );
     }
+  } finally {
+    driver.close();
+  }
+}
+
+function seedRecoverableCompletedToolState(
+  agencHome: string,
+  params: {
+    readonly cwd: string;
+    readonly runId: string;
+    readonly sessionId: string;
+  },
+): void {
+  const driver = openStateDatabases({
+    cwd: params.cwd,
+    agencHome,
+  });
+  try {
+    driver
+      .prepareState(
+        `INSERT INTO agent_runs (
+          id,
+          objective,
+          status,
+          started_at,
+          last_active_at,
+          current_session_id,
+          created_by_client,
+          last_snapshot_at,
+          metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.runId,
+        "recover this completed tool run",
+        "running",
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:05:00.000Z",
+        params.sessionId,
+        "client-1",
+        "2026-05-01T00:06:00.000Z",
+        JSON.stringify({
+          agentPath: `/root/${params.runId}`,
+        }),
+      );
+    driver
+      .prepareState(
+        `INSERT INTO session_state_snapshots (
+          session_id,
+          snapshot_at,
+          conversation_json,
+          tool_state_json,
+          mcp_connection_state_json
+        ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        params.sessionId,
+        "2026-05-01T00:06:00.000Z",
+        JSON.stringify([
+          {
+            role: "user",
+            eventId: "user-payload",
+            payload: {
+              message: "recover this completed tool run",
+              displayText: "recover this completed tool run",
+            },
+          },
+          {
+            role: "user",
+            eventId: "user-empty",
+            payload: {
+              message: "",
+              displayText: "",
+            },
+          },
+        ]),
+        JSON.stringify({
+          inFlight: {},
+          completed: {
+            "tool-completed": {
+              requestId: "tool-completed",
+              toolName: "Write",
+              input: { file_path: "smallcc", content: "x" },
+              status: "completed",
+              result: "File created successfully at: smallcc",
+            },
+          },
+        }),
+        JSON.stringify({ connected: true }),
+      );
   } finally {
     driver.close();
   }

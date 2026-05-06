@@ -1389,10 +1389,16 @@ function recoveredInitialMessages(
   snapshot: RecoveredSessionStateSnapshot | undefined,
 ): ReadonlyArray<LLMMessage> | undefined {
   const conversation = snapshot?.conversation;
-  if (!Array.isArray(conversation)) return undefined;
-  const messages = conversation
-    .map(recoveredMessage)
-    .filter((message): message is LLMMessage => message !== undefined);
+  const conversationMessages = Array.isArray(conversation)
+    ? conversation
+        .map(recoveredMessage)
+        .filter((message): message is LLMMessage => message !== undefined)
+        .filter(isUsefulRecoveredMessage)
+    : [];
+  const messages = appendRecoveredCompletedToolMessages(
+    conversationMessages,
+    snapshot?.toolState,
+  );
   return messages.length > 0 ? messages : undefined;
 }
 
@@ -1403,7 +1409,9 @@ function recoveredMessage(value: unknown): LLMMessage | undefined {
   const candidate = value as {
     readonly role?: unknown;
     readonly content?: unknown;
+    readonly delta?: unknown;
     readonly phase?: unknown;
+    readonly payload?: unknown;
     readonly toolCalls?: unknown;
     readonly toolCallId?: unknown;
     readonly toolName?: unknown;
@@ -1416,15 +1424,10 @@ function recoveredMessage(value: unknown): LLMMessage | undefined {
   ) {
     return undefined;
   }
-  const content =
-    typeof candidate.content === "string"
-      ? candidate.content
-      : Array.isArray(candidate.content)
-        ? recoveredContentParts(candidate.content)
-        : "";
+  const content = recoveredMessageContent(candidate);
   return {
     role: candidate.role,
-    content,
+    content: content ?? "",
     ...(candidate.phase === "commentary" || candidate.phase === "final_answer"
       ? { phase: candidate.phase }
       : {}),
@@ -1438,6 +1441,23 @@ function recoveredMessage(value: unknown): LLMMessage | undefined {
       ? { toolName: candidate.toolName }
       : {}),
   };
+}
+
+function recoveredMessageContent(candidate: {
+  readonly content?: unknown;
+  readonly delta?: unknown;
+  readonly payload?: unknown;
+}): string | LLMContentPart[] | undefined {
+  if (typeof candidate.content === "string") return candidate.content;
+  if (Array.isArray(candidate.content)) {
+    return recoveredContentParts(candidate.content);
+  }
+  if (typeof candidate.delta === "string") return candidate.delta;
+  const payload = recoveredJsonObject(candidate.payload);
+  if (payload === undefined) return undefined;
+  if (typeof payload.message === "string") return payload.message;
+  if (typeof payload.displayText === "string") return payload.displayText;
+  return undefined;
 }
 
 function recoveredContentParts(value: readonly unknown[]): LLMContentPart[] {
@@ -1516,6 +1536,128 @@ function recoveredContentParts(value: readonly unknown[]): LLMContentPart[] {
     }
   }
   return parts;
+}
+
+function isUsefulRecoveredMessage(message: LLMMessage): boolean {
+  if (
+    message.role === "user" &&
+    typeof message.content === "string" &&
+    message.content.length === 0 &&
+    message.toolCallId === undefined &&
+    (message.toolCalls?.length ?? 0) === 0
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function appendRecoveredCompletedToolMessages(
+  messages: readonly LLMMessage[],
+  toolState: unknown,
+): LLMMessage[] {
+  const completed = recoveredCompletedToolCalls(toolState);
+  if (completed.length === 0) return [...messages];
+  const next = messages.map((message) => ({ ...message }));
+  for (const toolCall of completed) {
+    if (!hasRecoveredAssistantToolCall(next, toolCall.callId)) {
+      next.push({
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: toolCall.callId,
+            name: toolCall.toolName,
+            arguments: stringifyRecoveredJson(toolCall.args ?? {}),
+          },
+        ],
+      });
+    }
+    if (!hasRecoveredToolResult(next, toolCall.callId)) {
+      next.push({
+        role: "tool",
+        content: stringifyRecoveredToolResult(toolCall.result),
+        toolCallId: toolCall.callId,
+        toolName: toolCall.toolName,
+      });
+    }
+  }
+  return next;
+}
+
+function recoveredCompletedToolCalls(
+  toolState: unknown,
+): Array<{
+  readonly callId: string;
+  readonly toolName: string;
+  readonly args?: unknown;
+  readonly result?: unknown;
+}> {
+  const completed = recoveredJsonObject(toolState)?.completed;
+  const completedObject = recoveredJsonObject(completed);
+  if (completedObject === undefined) return [];
+  const calls: Array<{
+    readonly callId: string;
+    readonly toolName: string;
+    readonly args?: unknown;
+    readonly result?: unknown;
+  }> = [];
+  for (const [key, value] of Object.entries(completedObject)) {
+    const entry = recoveredJsonObject(value);
+    if (entry === undefined) continue;
+    if (entry.status !== "completed" && entry.status !== "failed") continue;
+    const toolName = typeof entry.toolName === "string" ? entry.toolName : "";
+    if (toolName.length === 0) continue;
+    const callId =
+      typeof entry.requestId === "string" && entry.requestId.length > 0
+        ? entry.requestId
+        : key;
+    calls.push({
+      callId,
+      toolName,
+      ...(entry.input !== undefined ? { args: entry.input } : {}),
+      ...(entry.result !== undefined ? { result: entry.result } : {}),
+    });
+  }
+  return calls;
+}
+
+function hasRecoveredAssistantToolCall(
+  messages: readonly LLMMessage[],
+  callId: string,
+): boolean {
+  return messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.toolCalls?.some((toolCall) => toolCall.id === callId) === true,
+  );
+}
+
+function hasRecoveredToolResult(
+  messages: readonly LLMMessage[],
+  callId: string,
+): boolean {
+  return messages.some(
+    (message) => message.role === "tool" && message.toolCallId === callId,
+  );
+}
+
+function stringifyRecoveredToolResult(value: unknown): string {
+  if (typeof value === "string") return value;
+  return stringifyRecoveredJson(value ?? null);
+}
+
+function stringifyRecoveredJson(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "null";
+  }
+}
+
+function recoveredJsonObject(value: unknown): JsonObject | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : undefined;
 }
 
 function recoveryToolCallMetadata(call: RecoveredInFlightToolCall): JsonObject {
