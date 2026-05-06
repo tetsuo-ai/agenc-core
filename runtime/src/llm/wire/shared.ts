@@ -599,7 +599,9 @@ export function collectRequestMetrics(messages: readonly LLMMessage[], tools: re
   let imageParts = 0;
 
   for (const message of messages) {
-    if (message.role === "system") systemMessages += 1;
+    if (message.role === "system" || message.role === "developer") {
+      systemMessages += 1;
+    }
     if (message.role === "user") userMessages += 1;
     if (message.role === "assistant") assistantMessages += 1;
     if (message.role === "tool") toolMessages += 1;

@@ -1014,6 +1014,7 @@ function normalizeHistoryMessages(
     };
     if (
       candidate.role !== "system" &&
+      candidate.role !== "developer" &&
       candidate.role !== "user" &&
       candidate.role !== "assistant" &&
       candidate.role !== "tool"

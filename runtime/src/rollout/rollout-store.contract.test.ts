@@ -99,6 +99,39 @@ describe("AgenC rollout recorder", () => {
     expect(indexed!.byteLength).toBeGreaterThan(0);
   });
 
+  it("persists developer response items in limited mode", () => {
+    const recorder = new AgenCRolloutRecorder({
+      rootDir,
+      sessionId: "session-developer-response-item",
+      createdAt: "2026-05-02T17:05:00.000Z",
+    });
+
+    expect(
+      recorder.append(
+        {
+          type: "response_item",
+          payload: {
+            role: "developer",
+            content: "runtime instruction fragment",
+          },
+        },
+        { now: () => "2026-05-02T17:05:01.000Z" },
+      )?.seq,
+    ).toBe(1);
+    recorder.close();
+
+    expect(readAgenCRolloutLines(recorder.rolloutPath).map((line) => line.item))
+      .toEqual([
+        {
+          type: "response_item",
+          payload: {
+            role: "developer",
+            content: "runtime instruction fragment",
+          },
+        },
+      ]);
+  });
+
   it("continues sequence numbers when reopening the same session file", () => {
     const options = {
       rootDir,
@@ -383,6 +416,7 @@ describe("AgenC rollout persistence policy", () => {
       { type: "event_msg", event: { type: "context_compacted" } },
       { type: "event_msg", payload: { msg: { type: "user_message", payload: {} } } },
       { type: "response_item", item: { type: "function_call" } },
+      { type: "response_item", payload: { role: "developer", content: "handoff" } },
       { type: "response_item", payload: { role: "user", content: "hello" } },
       { type: "item_completed", item: { type: "plan" } },
       { type: "session_meta" },

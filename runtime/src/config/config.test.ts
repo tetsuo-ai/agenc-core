@@ -1431,6 +1431,7 @@ describe("loader: loadConfig", () => {
       `
 model = "grok-3"
 max_turns = 7
+experimental_realtime_start_instructions = "custom realtime handoff"
 
 [profiles.fast]
 model = "grok-4-fast"
@@ -1439,6 +1440,11 @@ model = "grok-4-fast"
     const out = await loadConfig({ home: dir });
     expect(out.config.model).toBe("grok-3");
     expect(out.config.max_turns).toBe(7);
+    expect(out.config.experimental_realtime_start_instructions).toBe(
+      "custom realtime handoff",
+    );
+    expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_start_instructions"))
+      .toBe(true);
     expect(out.config.profiles?.fast?.model).toBe("grok-4-fast");
   });
 

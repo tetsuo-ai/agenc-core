@@ -86,6 +86,36 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc/upstream", scope: "runtime/src" },
     ],
   },
+  "RT-11": {
+    files: [
+      "runtime/src/conversation/realtime/instructions/markers.ts",
+      "runtime/src/conversation/realtime/instructions/messages.ts",
+      "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts",
+      "parity/RT-11-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "REALTIME_CONVERSATION_OPEN_TAG", scope: "runtime/src/conversation/realtime/instructions/markers.ts" },
+      { pattern: "REALTIME_CONVERSATION_CLOSE_TAG", scope: "runtime/src/conversation/realtime/instructions/markers.ts" },
+      { pattern: "realtimeEndInstructionMessage\\(\"inactive\"\\)", scope: "runtime/src/session/run-turn.ts" },
+      { pattern: "isContextualDeveloperMessageContent", scope: "runtime/src/session/rollout-reconstruction.ts" },
+      { pattern: "developer", scope: "runtime/src/llm/types.ts" },
+      { pattern: "experimental_realtime_start_instructions", scope: "runtime/src/config/config.test.ts" },
+      { pattern: "role === \"developer\"", scope: "runtime/src/rollout/policy.ts" },
+      { pattern: "deferredSourceFiles", scope: "parity/RT-11-parity.json" },
+    ],
+    tests: [
+      "runtime/src/conversation/realtime/instructions/instructions.contract.test.ts",
+      "runtime/src/conversation/realtime/context.contract.test.ts",
+      "runtime/src/session/run-turn.test.ts",
+      "runtime/src/session/rollout-reconstruction.test.ts",
+      "runtime/src/llm/wire/responses-openai.test.ts",
+      "runtime/src/llm/wire/chat-completions.test.ts",
+      "runtime/src/llm/wire/messages-anthropic.test.ts",
+      "runtime/src/llm/wire/responses-xai.test.ts",
+      "runtime/src/config/config.test.ts",
+      "runtime/src/rollout/rollout-store.contract.test.ts",
+    ],
+  },
   "IDE-03": {
     files: [
       "scripts/goal/verify.mjs",

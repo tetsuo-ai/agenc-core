@@ -33,6 +33,37 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
+  test("folds developer messages into the system prompt for compatible providers", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "previous ask" },
+        { role: "developer", content: "realtime update" },
+        { role: "user", content: "current ask" },
+      ],
+      tools: [],
+      options: {
+        systemPrompt: "base instructions",
+      },
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "system",
+        content: "base instructions\n\nstable prefix\n\nrealtime update",
+      },
+      {
+        role: "user",
+        content: "previous ask",
+      },
+      {
+        role: "user",
+        content: "current ask",
+      },
+    ]);
+  });
+
   test("always sends a positive output-token budget", () => {
     const request = buildChatCompletionsRequest({
       model: "qwen-local",
@@ -215,7 +246,7 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
-  test("preserves inline input_audio parts for OpenAI-compatible audio models", () => {
+  test("preserves inline input_audio parts for compatible audio models", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-audio",
       messages: [
@@ -366,7 +397,7 @@ describe("buildChatCompletionsRequest", () => {
     });
   });
 
-  test("forwards service_tier to OpenAI-compatible chat completions providers", () => {
+  test("forwards service_tier to chat completions providers", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-4.1",
       messages: [{ role: "user", content: "hello" }],
