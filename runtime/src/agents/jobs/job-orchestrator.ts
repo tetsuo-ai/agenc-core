@@ -1,9 +1,9 @@
 /**
- * Agent-jobs orchestrator (codex-v2 parity).
+ * Agent-jobs orchestrator (reference parity).
  *
- * Hand-port of codex `core/src/tools/handlers/agent_jobs.rs`. When a
+ * Port of reference `core/src/tools/handlers/agent_jobs.rs`. When a
  * `CsvAgentJobsRepository` is supplied, all job + item lifecycle
- * transitions are mirrored to the codex-shaped SQLite tables in
+ * transitions are mirrored to the reference-compatible SQLite tables in
  * `state/csv-agent-jobs.ts`; jobs survive a daemon restart in the DB.
  * When the repository is omitted, the orchestrator runs purely
  * in-memory (used by tests that don't need persistence).
@@ -73,7 +73,7 @@ export interface AgentJobSpawnOutcome {
    * Resolves when the spawned worker thread reaches a terminal status
    * (`completed | errored | shutdown | not_found`). The orchestrator
    * uses this to detect workers that finish without calling
-   * `report_agent_job_result` and apply codex's `finalize_finished_item`
+   * `report_agent_job_result` and apply reference `finalize_finished_item`
    * guard at `agent_jobs.rs:992-1004` ("worker finished without calling
    * report_agent_job_result"). Adapters that cannot observe terminal
    * status may omit this field; the orchestrator falls back to the
@@ -89,7 +89,7 @@ export interface AgentJobSpawn {
 
 /**
  * Optional thread-control surface used by `recoverRunningItems`. Mirrors
- * the slice of codex's `AgentControl` that the recovery path touches:
+ * the slice of the reference `AgentControl` that the recovery path touches:
  *   - `agent_control.get_status(thread_id)` (agent_jobs.rs:877)
  *   - `agent_control.shutdown_live_agent(thread_id)` (agent_jobs.rs:850)
  *
@@ -107,7 +107,7 @@ export interface AgentJobThreadOps {
 /**
  * Thrown by an `AgentJobSpawn.spawn` adapter when the underlying agent
  * control plane refuses to spawn because the session is at its concurrent
- * thread cap. Mirrors codex's `CodexErr::AgentLimitReached` arm at
+ * thread cap. Mirrors the reference `AgentLimitReached` arm at
  * `agent_jobs.rs:658`. The orchestrator catches this specifically: it
  * rolls the item back to `pending` and breaks the dispatch loop until
  * an inflight worker completes (capacity opens up).
@@ -120,10 +120,10 @@ export class AgentJobCapacityError extends Error {
 }
 
 /**
- * One progress notification, mirroring codex `AgentJobProgressUpdate`
+ * One progress notification, mirroring reference `AgentJobProgressUpdate`
  * (the payload of `agent_job_progress:{...}` events emitted via
  * `notify_background_event` at `agent_jobs.rs:172-174`). Fields match
- * codex's serialized struct exactly.
+ * the reference serialized struct exactly.
  */
 export interface AgentJobProgressUpdate {
   readonly jobId: JobId;
@@ -153,18 +153,18 @@ export interface RunAgentsOnCsvOpts {
   readonly threadOps?: AgentJobThreadOps;
   /**
    * Optional progress callback. The orchestrator rate-limits emissions
-   * to one per second except when state actually changes (matches codex
+   * to one per second except when state actually changes (matches reference
    * `JobProgressEmitter::maybe_emit` at `agent_jobs.rs:134-179`). The
    * caller is responsible for serializing the update to a JSON-encoded
    * `agent_job_progress:{payload}` event if it wants byte-for-byte
-   * codex parity on the emitted line.
+   * reference parity on the emitted line.
    */
   readonly progressEmitter?: AgentJobProgressEmitter;
   /**
-   * Session-level cap on concurrent agent threads. Mirrors codex
+   * Session-level cap on concurrent agent threads. Mirrors reference
    * `turn.config.agent_max_threads`. When set, the effective
    * concurrency is `min(min(requested_or_16, 64), agent_max_threads)`
-   * (codex `normalize_concurrency` at agent_jobs.rs:552-560).
+   * (reference `normalize_concurrency` at agent_jobs.rs:552-560).
    */
   readonly agentMaxThreads?: number;
 }
@@ -193,11 +193,11 @@ interface JobRuntimeState {
 }
 
 /**
- * Hand-port of codex `JobProgressEmitter` at `agent_jobs.rs:113-180`.
+ * Port of reference `JobProgressEmitter` at `agent_jobs.rs:113-180`.
  * Decides when to fire a progress callback: forced (init/completion),
  * or when the processed/failed counts change, or when 1 second has
  * elapsed since the last emission. Computes `eta_seconds` from
- * processed-rate (matches codex agent_jobs.rs:150-161).
+ * processed-rate (matches reference agent_jobs.rs:150-161).
  */
 class JobProgressEmitterImpl {
   private readonly startedAtMs = Date.now();
@@ -278,7 +278,7 @@ function computeProgressSnapshot(state: JobRuntimeState): {
         failed += 1;
         break;
       case "cancelled":
-        // Codex AgentJobItemStatus has no Cancelled; mapping cancelled
+        // The reference AgentJobItemStatus has no Cancelled; mapping cancelled
         // items into failedItems for the purpose of progress counts
         // matches "processed = completed + failed" in the emitter.
         failed += 1;
@@ -393,12 +393,12 @@ export async function runAgentsOnCsv(
   jobs.set(jobId, state);
 
   try {
-    // Codex `run_agent_job_loop` calls `recover_running_items`
+    // reference `run_agent_job_loop` calls `recover_running_items`
     // (agent_jobs.rs:588) before dispatching new items. For freshly-
     // created jobs this is a no-op; the helper is defensive against
     // re-entry where an item was left in `running` status.
     await recoverRunningItems(state);
-    // Initial progress (force=true) — codex agent_jobs.rs:597-605.
+    // Initial progress (force=true) — reference agent_jobs.rs:597-605.
     state.progress.maybeEmit(jobId, computeProgressSnapshot(state), true);
     await processItems(state, opts.spawn);
     if (opts.outputCsvPath !== undefined) {
@@ -408,7 +408,7 @@ export async function runAgentsOnCsv(
       if (state.stopRequested) {
         // recordAgentJobResult may have already flipped the job to
         // `cancelled` (with reason "cancelled by worker request" per
-        // codex agent_jobs.rs:500-505). Avoid clobbering that exact
+        // reference agent_jobs.rs:500-505). Avoid clobbering that exact
         // reason with a different one — only mark cancelled here if
         // the job hasn't already transitioned.
         const current = opts.repository.getJob(jobId);
@@ -419,7 +419,7 @@ export async function runAgentsOnCsv(
         opts.repository.markJobCompleted(jobId);
       }
     }
-    // Final progress (force=true) — codex agent_jobs.rs:790-803.
+    // Final progress (force=true) — reference agent_jobs.rs:790-803.
     state.progress.maybeEmit(jobId, computeProgressSnapshot(state), true);
     return {
       jobId,
@@ -444,7 +444,7 @@ function clampConcurrency(
   requested: number | undefined,
   agentMaxThreads: number | undefined,
 ): number {
-  // Mirrors codex `normalize_concurrency` (agent_jobs.rs:552-560):
+  // Mirrors reference `normalize_concurrency` (agent_jobs.rs:552-560):
   //   requested = unwrap_or(16).max(1).min(64);
   //   if let Some(max_threads) = max_threads { requested.min(max_threads.max(1)) } else { requested }
   const raw = requested ?? DEFAULT_MAX_CONCURRENCY;
@@ -459,18 +459,18 @@ function clampConcurrency(
 }
 
 /**
- * Codex `recover_running_items` (agent_jobs.rs:825-903): defensive
+ * reference `recover_running_items` (agent_jobs.rs:825-903): defensive
  * within-run reconciliation. Called at the start of every job run to
  * resolve items left in `running` status (e.g. from a re-entered job
  * or from a half-finished prior dispatch).
  *
- * Branches mirror codex's exact policy:
+ * Branches mirror the reference policy:
  *   - Stale (age >= maxRuntimeSeconds): markItemFailed + shutdown thread
  *     (agent_jobs.rs:840-852)
  *   - Missing assigned_thread_id: markItemFailed (agent_jobs.rs:855-862)
  *   - Thread in final state: finalize from DB (agent_jobs.rs:877-885)
  *   - Otherwise: leave alone — caller's loop will observe the worker
- *     via subscribeStatus (codex agent_jobs.rs:887-902); AgenC's
+ *     via subscribeStatus (reference agent_jobs.rs:887-902); AgenC's
  *     orchestrator does not currently re-attach Promise resolvers in
  *     this branch since the original `report_agent_job_result` waiter
  *     is gone, so we mark the item failed defensively.
@@ -524,7 +524,7 @@ async function recoverRunningItems(state: JobRuntimeState): Promise<void> {
         status.kind === "shutdown" ||
         status.kind === "not_found"
       ) {
-        // Codex finalize_finished_item path (agent_jobs.rs:877-885).
+        // reference finalize_finished_item path (agent_jobs.rs:877-885).
         if (status.kind === "completed" && dbItem.result !== undefined) {
           repository.markItemCompleted(
             state.config.jobId,
@@ -558,7 +558,7 @@ async function recoverRunningItems(state: JobRuntimeState): Promise<void> {
           }
         }
       }
-      // Otherwise (thread still alive, not stale): codex re-attaches
+      // Otherwise (thread still alive, not stale): reference re-attaches
       // to the active set via subscribe_status. AgenC has no way to
       // recreate the original `report_agent_job_result` Promise here,
       // so this branch is unreachable from a fresh runAgentsOnCsv
@@ -575,7 +575,7 @@ async function processItems(
   const max = state.config.maxConcurrency;
   // Preserve original row order while still allowing capacity-rejected
   // items to be re-queued at the front. `unshift` inside the catch path
-  // matches codex's `mark_agent_job_item_pending` + `break` behavior at
+  // matches reference `mark_agent_job_item_pending` + `break` behavior at
   // agent_jobs.rs:658-665. Items that aren't pending in memory (e.g.
   // moved to `failed` by recoverRunningItems) are filtered out.
   const queue: ItemId[] = Array.from(state.items.entries())
@@ -610,7 +610,7 @@ async function processItems(
       ),
     );
     item.attemptCount += 1;
-    // Mirror codex ordering: status flips to running before the worker
+    // Mirror reference ordering: status flips to running before the worker
     // can report. Thread_id is attached after spawn returns. On capacity
     // rejection we roll back to pending below.
     state.repository?.markItemRunning(state.config.jobId, itemId);
@@ -629,10 +629,10 @@ async function processItems(
         racers.push(outcome.threadFinished);
       }
       await Promise.race(racers);
-      // Codex finalize_finished_item guard (agent_jobs.rs:992-1004):
+      // reference finalize_finished_item guard (agent_jobs.rs:992-1004):
       // if the item is still pending after the worker thread terminated
       // (or after the wait resolved without `recordAgentJobResult`),
-      // mark failed with codex's exact message.
+      // mark failed with the reference message.
       if (item.status === "pending") {
         const message =
           "worker finished without calling report_agent_job_result";
@@ -648,7 +648,7 @@ async function processItems(
       return {};
     } catch (err) {
       if (err instanceof AgentJobCapacityError) {
-        // Codex agent_jobs.rs:658-665: capacity rejection rolls the
+        // reference agent_jobs.rs:658-665: capacity rejection rolls the
         // item back to pending and the dispatch loop breaks until an
         // inflight worker frees a slot.
         state.repository?.markItemPending(state.config.jobId, itemId);
@@ -666,7 +666,7 @@ async function processItems(
   };
 
   while (queue.length > 0 || inflight.size > 0) {
-    // Codex `run_agent_job_loop` polls `is_agent_job_cancelled` at the
+    // reference `run_agent_job_loop` polls `is_agent_job_cancelled` at the
     // top of each loop iteration (agent_jobs.rs:611) so external
     // cancellation flips the job's flag in the DB and the next
     // dispatch round notices. AgenC mirrors via the repository.
@@ -736,8 +736,8 @@ function buildWorkerPrompt(
 }
 
 /**
- * Render the output CSV with codex's exact column shape
- * (codex `agent_jobs.rs:1143-1217`):
+ * Render the output CSV with the reference column shape
+ * (reference `agent_jobs.rs:1143-1217`):
  *   {input_headers...} + job_id, item_id, row_index, source_id, status,
  *   attempt_count, last_error, result_json, reported_at, completed_at.
  * All items are written regardless of status.
@@ -818,10 +818,10 @@ export function recordAgentJobResult(
   state.repository?.markItemCompleted(args.jobId, args.itemId, args.result);
   if (args.stop === true) {
     state.stopRequested = true;
-    // Codex agent_jobs.rs:500-505: when a worker reports stop=true, the
+    // reference agent_jobs.rs:500-505: when a worker reports stop=true, the
     // job's status is flipped to cancelled in the DB so subsequent
     // `is_agent_job_cancelled` checks (and other observers) see the
-    // cancellation. The reason text mirrors codex byte-for-byte.
+    // cancellation. The reason text mirrors reference byte-for-byte.
     state.repository?.markJobCancelled(args.jobId, "cancelled by worker request");
   }
   state.pending.get(args.itemId)?.resolve();

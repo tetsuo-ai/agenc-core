@@ -1,12 +1,12 @@
 /**
  * Auto-mode attachment producer.
  *
- * Hand-port of openclaude `getAutoModeAttachments` + `getAutoModeExitAttachment`
+ * Hand-port of reference `getAutoModeAttachments` + `getAutoModeExitAttachment`
  * (`src/utils/attachments.ts:1276-1401`). Drives the per-turn pulse and
  * the one-shot exit reminder for AgenC's autonomous-execution permission
  * modes.
  *
- * Mode mapping (openclaude `auto` → AgenC):
+ * Mode mapping (reference `auto` → AgenC):
  *   - AgenC single mode `"auto"` becomes the canonical autonomous
  *     family in AgenC. AgenC has its own literal `"auto"` mode plus two
  *     other autonomous-leaning modes from the broader runtime: `"acceptEdits"`
@@ -39,7 +39,7 @@ import type { AttachmentProducer } from "./orchestrator.js";
 import type { Attachment } from "./types.js";
 
 /**
- * Source: openclaude `attachments.ts:265-268`.
+ * Source: reference `attachments.ts:265-268`.
  */
 export const AUTO_MODE_ATTACHMENT_CONFIG = {
   TURNS_BETWEEN_ATTACHMENTS: 5,
@@ -83,7 +83,7 @@ function messageContains(message: LLMMessage, marker: string): boolean {
 }
 
 /**
- * Source: openclaude `getAutoModeAttachmentTurnCount` (:1276-1314).
+ * Source: reference `getAutoModeAttachmentTurnCount` (:1276-1314).
  *
  * The exit-marker case mirrors AgenC's "exit resets the throttle —
  * treat as if no prior attachment exists" branch.
@@ -115,7 +115,7 @@ function getAutoModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
 }
 
 /**
- * Source: openclaude `countAutoModeAttachmentsSinceLastExit` (:1320-1334).
+ * Source: reference `countAutoModeAttachmentsSinceLastExit` (:1320-1334).
  */
 function countAutoModeAttachmentsSinceLastExit(
   messages: readonly LLMMessage[],

@@ -8001,12 +8001,13 @@ async function cleanupGates(item) {
   }
   if (id === "Z-05") {
     // Z-05 final branding sweep — branding-scan must come back clean over the whole runtime/src tree.
-    const allTsRes = run("bash", ["-c", "find runtime/src -type f \\( -name '*.ts' -o -name '*.tsx' \\) | head -2000"], { silent: true });
+    const allTsRes = run("bash", ["-c", "git ls-files runtime/src | rg '\\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$'"], { silent: true });
+    if (allTsRes.status !== 0) failGate("Z-05: failed to enumerate tracked runtime source files");
     const files = (allTsRes.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean);
     if (files.length === 0) failGate("Z-05: no TS files found to scan");
     const r = run("node", [path.join(root, "scripts/branding-scan.mjs"), ...files]);
     if (r.status !== 0) failGate("Z-05: branding-scan reported findings on full runtime/src sweep");
-    pass(`Z-05: branding clean across ${files.length} files`);
+    pass(`Z-05: branding clean across ${files.length} tracked source files`);
   }
   if (id === "Z-06") {
     // Z-06 removes parity scaffolding (MATRIX files, port-tracking artifacts)

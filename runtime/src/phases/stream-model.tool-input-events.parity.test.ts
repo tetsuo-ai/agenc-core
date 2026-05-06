@@ -112,7 +112,7 @@ describe("R6 stream-model emits tool_input_block_start / tool_input_delta sessio
     ]);
   });
 
-  test("E6.8 chunks emitted by non-Anthropic providers that do not set the new fields never produce streaming-tool-use session events", () => {
+  test("E6.8 chunks emitted by providers without the new fields never produce streaming-tool-use session events", () => {
     const { session, emitted } = buildSessionStub();
     const chunks: LLMStreamChunk[] = [
       { content: "hello", done: false },

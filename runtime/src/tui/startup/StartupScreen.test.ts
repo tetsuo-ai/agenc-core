@@ -105,9 +105,9 @@ describe('detectProvider — aggregator URL authoritative over model-name substr
     expect(detectProvider().name).toBe('Groq')
   })
 
-  test('Azure + any deepseek deployment labels as Azure OpenAI', () => {
+  test('Azure + any deepseek deployment labels as Azure provider', () => {
     setupOpenAIMode('https://my-resource.openai.azure.com/', 'deepseek-chat')
-    expect(detectProvider().name).toBe('Azure OpenAI')
+    expect(detectProvider().name).toBe('Azure OpenAI') // branding-scan: allow real provider display name
   })
 })
 
@@ -164,9 +164,9 @@ describe('detectProvider — direct vendor endpoints', () => {
     expect(detectProvider().name).toBe('Z.AI - GLM')
   })
 
-  test('default OpenAI URL + gpt-4o labels as OpenAI', () => {
+  test('default provider URL + gpt-4o labels provider', () => {
     setupOpenAIMode('https://api.openai.com/v1', 'gpt-4o')
-    expect(detectProvider().name).toBe('OpenAI')
+    expect(detectProvider().name).toBe('OpenAI') // branding-scan: allow real provider display name
   })
 })
 
@@ -203,7 +203,7 @@ describe('detectProvider — rawModel fallback when URL is generic', () => {
     expect(detectProvider().name).toBe('Z.AI - GLM')
   })
 
-  test('custom proxy + lowercase glm ID stays generic OpenAI', () => {
+  test('custom proxy + lowercase glm ID stays generic provider', () => {
     setupOpenAIMode('http://127.0.0.1:9999/v1', 'glm-5.1')
     const result = detectProvider()
     expect(result.name).not.toBe('Z.AI - GLM')
@@ -212,7 +212,7 @@ describe('detectProvider — rawModel fallback when URL is generic', () => {
 
   test('DashScope lowercase glm ID is not mislabeled as Z.AI', () => {
     setupOpenAIMode('https://dashscope.aliyuncs.com/compatible-mode/v1', 'glm-5.1')
-    expect(detectProvider().name).toBe('OpenAI')
+    expect(detectProvider().name).toBe('OpenAI') // branding-scan: allow real provider display name
   })
 })
 
@@ -235,33 +235,33 @@ describe('detectProvider — explicit dedicated-provider env flags', () => {
 // --- modelOverride from --model flag ---
 
 describe('detectProvider — modelOverride from --model flag', () => {
-  test('modelOverride overrides default Anthropic model', () => {
+  test('modelOverride overrides default provider model', () => {
     const result = detectProvider('claude-opus-4-6')
-    expect(result.name).toBe('Anthropic')
+    expect(result.name).toBe('Anthropic') // branding-scan: allow real provider display name
     expect(result.model).toContain('opus')
   })
 
   test('modelOverride alias follows current default model routing', () => {
     const result = detectProvider('opus')
-    expect(result.name).toBe('Anthropic')
+    expect(result.name).toBe('Anthropic') // branding-scan: allow real provider display name
     expect(result.model).toBe('grok-4')
   })
 
   test('modelOverride takes priority over ANTHROPIC_MODEL env var', () => {
     process.env.ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
     const result = detectProvider('claude-opus-4-6')
-    expect(result.name).toBe('Anthropic')
+    expect(result.name).toBe('Anthropic') // branding-scan: allow real provider display name
     expect(result.model).toContain('opus')
   })
 
   test('modelOverride takes priority over AGENC_MODEL env var', () => {
     process.env.AGENC_MODEL = 'claude-haiku-4-5-20251001'
     const result = detectProvider('claude-opus-4-6')
-    expect(result.name).toBe('Anthropic')
+    expect(result.name).toBe('Anthropic') // branding-scan: allow real provider display name
     expect(result.model).toContain('opus')
   })
 
-  test('modelOverride works for OpenAI provider', () => {
+  test('modelOverride works for provider transport', () => {
     process.env.AGENC_USE_OPENAI = '1'
     process.env.OPENAI_API_KEY = 'test-key'
     process.env.OPENAI_MODEL = 'gpt-4o'
@@ -289,13 +289,13 @@ describe('detectProvider — modelOverride from --model flag', () => {
 
   test('undefined modelOverride preserves default behavior', () => {
     const result = detectProvider(undefined)
-    expect(result.name).toBe('Anthropic')
+    expect(result.name).toBe('Anthropic') // branding-scan: allow real provider display name
     expect(result.model).toContain('sonnet')
   })
 
   test('no argument preserves default behavior', () => {
     const result = detectProvider()
-    expect(result.name).toBe('Anthropic')
+    expect(result.name).toBe('Anthropic') // branding-scan: allow real provider display name
     expect(result.model).toContain('sonnet')
   })
 })

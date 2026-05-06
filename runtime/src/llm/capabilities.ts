@@ -339,7 +339,7 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsProviderNativeWebSearch: false,
     supportsExtendedThinking: isOpenAIReasoningModel,
     acceptsImageHistory: true,
-    // T13 only serializes inline/base64 OpenAI audio parts. Session history
+    // T13 only serializes inline/base64 audio parts for this provider. Session history
     // currently records audio as opaque URL-bearing blocks, so provider/model
     // switches must fail closed until replay serialization grows a transcoding
     // layer for those history entries.
@@ -409,7 +409,7 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     supportsProviderNativeWebSearch: false,
     supportsExtendedThinking: isGeminiThinkingModel,
     acceptsImageHistory: true,
-    // Gemini's OpenAI-compatible surface accepts inline `input_audio`
+    // Gemini's chat-compatible surface accepts inline `input_audio`
     // payloads, but this runtime slice does not yet replay stored `audio_url`
     // history into that wire format.
     acceptsAudioHistory: false,

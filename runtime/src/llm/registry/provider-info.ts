@@ -118,11 +118,11 @@ export interface BuiltInProviderInfo {
 const PROVIDER_DISPLAY_NAMES: Readonly<Record<BuiltInProviderSlug, string>> =
   Object.freeze({
     grok: "xAI Grok",
-    openai: "OpenAI",
-    anthropic: "Anthropic",
+    openai: "OpenAI", // branding-scan: allow real provider display name
+    anthropic: "Anthropic", // branding-scan: allow real provider display name
     ollama: "Ollama",
     lmstudio: "LM Studio",
-    "openai-compatible": "OpenAI-compatible",
+    "openai-compatible": "OpenAI-compatible", // branding-scan: allow provider category display name
     openrouter: "OpenRouter",
     groq: "Groq",
     deepseek: "DeepSeek",

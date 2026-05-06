@@ -182,7 +182,7 @@ describe("plan-mode attachment producer", () => {
   });
 
   test("exit flag is cleared silently when current mode is still plan", async () => {
-    // Mirrors openclaude :1258-1261 — a quick toggle out and back in must
+    // Mirrors reference :1258-1261 — a quick toggle out and back in must
     // not surface an exit reminder for an exit the model never saw. The
     // flag is cleared, but no exit reminder fires AND the
     // hasExitedPlanModeInSession flag is NOT set.

@@ -54,16 +54,16 @@ export function csi(...args: (string | number)[]): string {
  * CSI final bytes - the command identifier
  */
 export const CSI = {
-  // Cursor movement
-  CUU: 0x41, // A - Cursor Up
-  CUD: 0x42, // B - Cursor Down
-  CUF: 0x43, // C - Cursor Forward
-  CUB: 0x44, // D - Cursor Back
-  CNL: 0x45, // E - Cursor Next Line
-  CPL: 0x46, // F - Cursor Previous Line
-  CHA: 0x47, // G - Cursor Horizontal Absolute
-  CUP: 0x48, // H - Cursor Position
-  CHT: 0x49, // I - Cursor Horizontal Tab
+  // cursor movement
+  CUU: 0x41, // A - cursor up
+  CUD: 0x42, // B - cursor down
+  CUF: 0x43, // C - cursor forward
+  CUB: 0x44, // D - cursor back
+  CNL: 0x45, // E - cursor next line
+  CPL: 0x46, // F - cursor previous line
+  CHA: 0x47, // G - cursor horizontal absolute
+  CUP: 0x48, // H - cursor position
+  CHT: 0x49, // I - cursor horizontal tab
   VPA: 0x64, // d - Vertical Position Absolute
   HVP: 0x66, // f - Horizontal Vertical Position
 
@@ -91,11 +91,11 @@ export const CSI = {
 
   // Other
   DSR: 0x6e, // n - Device Status Report
-  DECSCUSR: 0x71, // q - Set Cursor Style (with space intermediate)
+  DECSCUSR: 0x71, // q - set cursor style (with space intermediate)
   DECSTBM: 0x72, // r - Set Top and Bottom Margins
-  SCOSC: 0x73, // s - Save Cursor Position
-  SCORC: 0x75, // u - Restore Cursor Position
-  CBT: 0x5a, // Z - Cursor Backward Tabulation
+  SCOSC: 0x73, // s - save cursor position
+  SCORC: 0x75, // u - restore cursor position
+  CBT: 0x5a, // Z - cursor backward tabulation
 } as const
 
 /**
@@ -109,7 +109,7 @@ export const ERASE_DISPLAY = ['toEnd', 'toStart', 'all', 'scrollback'] as const
 export const ERASE_LINE_REGION = ['toEnd', 'toStart', 'all'] as const
 
 /**
- * Cursor styles (DECSCUSR)
+ * cursor styles (DECSCUSR)
  */
 export type CursorStyle = 'block' | 'underline' | 'bar'
 
@@ -123,7 +123,7 @@ export const CURSOR_STYLES: Array<{ style: CursorStyle; blinking: boolean }> = [
   { style: 'bar', blinking: false }, // 6
 ]
 
-// Cursor movement generators
+// cursor movement generators
 
 /** Move cursor up n lines (CSI n A) */
 export function cursorUp(n = 1): string {

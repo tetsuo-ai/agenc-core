@@ -82,7 +82,7 @@ describe("AgentStatusTracker", () => {
   });
 });
 
-describe("agentStatusFromEvent (codex parity)", () => {
+describe("agentStatusFromEvent (reference parity)", () => {
   it("turn_started -> running with turnId + startedAtMs", () => {
     const status = agentStatusFromEvent({
       type: "turn_started",

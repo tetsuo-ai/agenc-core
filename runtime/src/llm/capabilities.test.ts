@@ -54,7 +54,7 @@ describe("resolveProviderModelCapabilities", () => {
     expect(caps.supportsStructuredOutput).toBe(false);
   });
 
-  it("tracks the documented OpenAI multimodal and reasoning support by model family", () => {
+  it("tracks documented multimodal and reasoning support by model family", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "openai",
@@ -98,7 +98,7 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
-  it("uses registered model capability hints for staged OpenAI catalog entries", () => {
+  it("uses registered model capability hints for staged provider catalog entries", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "openai",
@@ -114,7 +114,7 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
-  it("distinguishes provider-level OpenAI audio support from history replay support", () => {
+  it("distinguishes provider-level audio support from history replay support", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "openai",
@@ -128,7 +128,7 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
-  it("keeps routed OpenAI-compatible providers fail-closed where the matrix says varies", () => {
+  it("keeps routed compatible providers fail-closed where the matrix says varies", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "openrouter",
@@ -182,7 +182,7 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
-  it("keeps Anthropic aligned with the documented image and thinking support", () => {
+  it("keeps messages-provider image and thinking support aligned with the matrix", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "anthropic",

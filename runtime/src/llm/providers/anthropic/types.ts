@@ -1,5 +1,5 @@
 /**
- * Anthropic provider configuration types.
+ * Messages API provider configuration types.
  *
  * @module
  */
