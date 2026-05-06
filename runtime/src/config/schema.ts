@@ -387,11 +387,31 @@ export interface PluginEntryConfig {
   readonly version?: string;
   readonly required?: boolean;
   readonly options?: Readonly<Record<string, unknown>>;
+  readonly mcp_servers?: Readonly<Record<string, PluginMcpServerConfig>>;
+}
+
+export interface PluginMcpServerConfig {
+  readonly enabled?: boolean;
+  readonly default_tools_approval_mode?: PermissionDefaultMode;
+  readonly enabled_tools?: readonly string[];
+  readonly disabled_tools?: readonly string[];
+  readonly tools?: Readonly<Record<string, PerToolConfig>>;
 }
 
 export interface PluginsConfig {
   readonly dirs?: readonly string[];
   readonly enabled?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+  readonly allowlist?: readonly string[];
+  readonly plugins?: Readonly<Record<string, boolean | PluginEntryConfig>>;
+}
+
+export type McpServerModeTransport = "stdio" | "sse";
+
+export interface McpServerModeConfig {
+  readonly enabled?: boolean;
+  readonly transport?: McpServerModeTransport;
+  readonly port?: number;
+  readonly host?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -812,6 +832,959 @@ export function normalizeRawConfig(raw: Record<string, unknown>): AgenCConfig {
     out._unknown = unknown;
   }
   return deepFreeze(out as AgenCConfig);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Block-level schema validation
+// ─────────────────────────────────────────────────────────────────────
+
+class InvalidNamedConfigError extends Error {
+  readonly field: string;
+
+  constructor(blockName: string, errorName: string, field: string, detail: string) {
+    const path = field.length > 0 ? `${blockName}.${field}` : blockName;
+    super(`Invalid ${path}: ${detail}`);
+    this.name = errorName;
+    this.field = field;
+  }
+}
+
+export class InvalidAuthConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("auth", "InvalidAuthConfigError", field, detail);
+  }
+}
+
+export class InvalidProviderConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("providers", "InvalidProviderConfigError", field, detail);
+  }
+}
+
+export class InvalidAgentConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("agent", "InvalidAgentConfigError", field, detail);
+  }
+}
+
+export class InvalidPluginsConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("plugins", "InvalidPluginsConfigError", field, detail);
+  }
+}
+
+export class InvalidMcpServerModeConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("mcp.server", "InvalidMcpServerModeConfigError", field, detail);
+  }
+}
+
+export class InvalidMcpConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("mcp", "InvalidMcpConfigError", field, detail);
+  }
+}
+
+type InvalidConfigFactory = (field: string, detail: string) => Error;
+
+function fieldPath(parent: string, child: string): string {
+  return parent.length > 0 ? `${parent}.${child}` : child;
+}
+
+function requirePlainObject(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): Record<string, unknown> {
+  if (!isPlainObject(value)) {
+    throw makeError(field, "expected plain object");
+  }
+  return value;
+}
+
+function rejectUnknownFields(
+  record: Readonly<Record<string, unknown>>,
+  allowed: ReadonlySet<string>,
+  makeError: InvalidConfigFactory,
+  parent = "",
+): void {
+  for (const key of Object.keys(record)) {
+    if (!allowed.has(key)) {
+      throw makeError(fieldPath(parent, key), "unknown field");
+    }
+  }
+}
+
+function optionalBoolean(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw makeError(field, "expected boolean");
+  }
+  return value;
+}
+
+function optionalString(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw makeError(field, "expected string");
+  }
+  return value;
+}
+
+function optionalStringArray(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw makeError(field, "expected string[]");
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw makeError(field, `array element is not a string: ${typeof item}`);
+    }
+  }
+  return Object.freeze([...(value as string[])]);
+}
+
+function optionalRecord(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): Readonly<Record<string, unknown>> | undefined {
+  if (value === undefined) return undefined;
+  return deepFreeze({ ...requirePlainObject(value, field, makeError) });
+}
+
+function optionalPositiveInteger(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 1
+  ) {
+    throw makeError(field, "expected positive integer");
+  }
+  return value;
+}
+
+function optionalNonNegativeNumber(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw makeError(field, "expected non-negative number");
+  }
+  return value;
+}
+
+function optionalHttpStatusArray(
+  value: unknown,
+  field: string,
+  makeError: InvalidConfigFactory,
+): readonly number[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw makeError(field, "expected HTTP status integer[]");
+  }
+  const out: number[] = [];
+  for (const item of value) {
+    if (
+      typeof item !== "number" ||
+      !Number.isInteger(item) ||
+      item < 100 ||
+      item > 599
+    ) {
+      throw makeError(field, `invalid HTTP status: ${String(item)}`);
+    }
+    out.push(item);
+  }
+  return Object.freeze(out);
+}
+
+const AUTH_KEYS: ReadonlySet<string> = new Set(["backend", "managedKeys"]);
+const AUTH_MANAGED_KEYS: ReadonlySet<string> = new Set(["enabled"]);
+
+export function validateAuthConfig(raw: unknown): AuthConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidAuthConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    AUTH_KEYS,
+    (field, detail) => new InvalidAuthConfigError(field, detail),
+  );
+  const out: { -readonly [K in keyof AuthConfig]: AuthConfig[K] } = {};
+  if (record.backend !== undefined) {
+    if (record.backend !== "local" && record.backend !== "remote") {
+      throw new InvalidAuthConfigError(
+        "backend",
+        "expected \"local\" or \"remote\"",
+      );
+    }
+    out.backend = record.backend;
+  }
+  if (record.managedKeys !== undefined) {
+    const managedKeys = requirePlainObject(
+      record.managedKeys,
+      "managedKeys",
+      (field, detail) => new InvalidAuthConfigError(field, detail),
+    );
+    rejectUnknownFields(
+      managedKeys,
+      AUTH_MANAGED_KEYS,
+      (field, detail) => new InvalidAuthConfigError(field, detail),
+      "managedKeys",
+    );
+    const enabled = optionalBoolean(
+      managedKeys.enabled,
+      "managedKeys.enabled",
+      (field, detail) => new InvalidAuthConfigError(field, detail),
+    );
+    out.managedKeys = Object.freeze({
+      ...(enabled !== undefined ? { enabled } : {}),
+    }) as AuthManagedKeysConfig;
+  }
+  return Object.freeze(out as AuthConfig);
+}
+
+const PROVIDER_KEYS: ReadonlySet<string> = new Set([
+  "api_key_env",
+  "base_url",
+  "default_model",
+  "context_window_tokens",
+  "max_output_tokens",
+  "capability_overrides",
+  "fallback_models",
+  "fallback",
+]);
+
+const PROVIDER_CAPABILITY_KEYS: ReadonlySet<string> = new Set([
+  "supportsToolUse",
+  "supportsPromptCaching",
+  "supportsContextEdits",
+  "supportsImageInput",
+  "supportsAudioInput",
+  "supportsAudioOutput",
+  "supportsProviderNativeWebSearch",
+  "supportsExtendedThinking",
+  "acceptsImageHistory",
+  "acceptsAudioHistory",
+  "acceptsThinkingHistory",
+  "acceptsReasoningEffort",
+]);
+
+const PROVIDER_FALLBACK_KEYS: ReadonlySet<string> = new Set([
+  "targets",
+  "models",
+  "max_failures",
+  "statuses",
+]);
+
+const PROVIDER_FALLBACK_TARGET_KEYS: ReadonlySet<string> = new Set([
+  "provider",
+  "model",
+  "reason",
+]);
+
+function validateProviderCapabilities(
+  raw: unknown,
+  parent: string,
+): ProviderCapabilityOverrides | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    parent,
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PROVIDER_CAPABILITY_KEYS,
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+    parent,
+  );
+  const out: Record<string, boolean> = {};
+  for (const key of PROVIDER_CAPABILITY_KEYS) {
+    const value = optionalBoolean(
+      record[key],
+      fieldPath(parent, key),
+      (field, detail) => new InvalidProviderConfigError(field, detail),
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  return Object.freeze(out) as ProviderCapabilityOverrides;
+}
+
+function validateProviderFallbackTarget(
+  raw: unknown,
+  field: string,
+): ProviderFallbackTargetConfig {
+  const record = requirePlainObject(
+    raw,
+    field,
+    (path, detail) => new InvalidProviderConfigError(path, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PROVIDER_FALLBACK_TARGET_KEYS,
+    (path, detail) => new InvalidProviderConfigError(path, detail),
+    field,
+  );
+  const model = optionalString(
+    record.model,
+    fieldPath(field, "model"),
+    (path, detail) => new InvalidProviderConfigError(path, detail),
+  );
+  if (model === undefined || model.trim().length === 0) {
+    throw new InvalidProviderConfigError(
+      fieldPath(field, "model"),
+      "expected non-empty string",
+    );
+  }
+  const provider = optionalString(
+    record.provider,
+    fieldPath(field, "provider"),
+    (path, detail) => new InvalidProviderConfigError(path, detail),
+  );
+  const reason = optionalString(
+    record.reason,
+    fieldPath(field, "reason"),
+    (path, detail) => new InvalidProviderConfigError(path, detail),
+  );
+  return Object.freeze({
+    ...(provider !== undefined ? { provider } : {}),
+    model,
+    ...(reason !== undefined ? { reason } : {}),
+  }) as ProviderFallbackTargetConfig;
+}
+
+function validateProviderFallback(
+  raw: unknown,
+  parent: string,
+): ProviderFallbackConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    parent,
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PROVIDER_FALLBACK_KEYS,
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+    parent,
+  );
+  const out: { -readonly [K in keyof ProviderFallbackConfig]: ProviderFallbackConfig[K] } = {};
+  if (record.targets !== undefined) {
+    if (!Array.isArray(record.targets)) {
+      throw new InvalidProviderConfigError(
+        fieldPath(parent, "targets"),
+        "expected target array",
+      );
+    }
+    out.targets = Object.freeze(
+      record.targets.map((target, index) =>
+        validateProviderFallbackTarget(
+          target,
+          `${fieldPath(parent, "targets")}.${index}`,
+        ),
+      ),
+    );
+  }
+  const models = optionalStringArray(
+    record.models,
+    fieldPath(parent, "models"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (models !== undefined) out.models = models;
+  const maxFailures = optionalPositiveInteger(
+    record.max_failures,
+    fieldPath(parent, "max_failures"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (maxFailures !== undefined) out.max_failures = maxFailures;
+  const statuses = optionalHttpStatusArray(
+    record.statuses,
+    fieldPath(parent, "statuses"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (statuses !== undefined) out.statuses = statuses;
+  return Object.freeze(out as ProviderFallbackConfig);
+}
+
+function validateSingleProviderConfig(raw: unknown, providerId: string): ProviderConfig {
+  const record = requirePlainObject(
+    raw,
+    providerId,
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PROVIDER_KEYS,
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+    providerId,
+  );
+  const out: { -readonly [K in keyof ProviderConfig]: ProviderConfig[K] } = {};
+  for (const key of ["api_key_env", "base_url", "default_model"] as const) {
+    const value = optionalString(
+      record[key],
+      fieldPath(providerId, key),
+      (field, detail) => new InvalidProviderConfigError(field, detail),
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  const contextWindow = optionalPositiveInteger(
+    record.context_window_tokens,
+    fieldPath(providerId, "context_window_tokens"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (contextWindow !== undefined) out.context_window_tokens = contextWindow;
+  const maxOutput = optionalPositiveInteger(
+    record.max_output_tokens,
+    fieldPath(providerId, "max_output_tokens"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (maxOutput !== undefined) out.max_output_tokens = maxOutput;
+  const capabilities = validateProviderCapabilities(
+    record.capability_overrides,
+    fieldPath(providerId, "capability_overrides"),
+  );
+  if (capabilities !== undefined) out.capability_overrides = capabilities;
+  const fallbackModels = optionalStringArray(
+    record.fallback_models,
+    fieldPath(providerId, "fallback_models"),
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  if (fallbackModels !== undefined) out.fallback_models = fallbackModels;
+  const fallback = validateProviderFallback(
+    record.fallback,
+    fieldPath(providerId, "fallback"),
+  );
+  if (fallback !== undefined) out.fallback = fallback;
+  return Object.freeze(out as ProviderConfig);
+}
+
+export function validateProviderConfig(
+  raw: unknown,
+): Readonly<Record<string, ProviderConfig>> | undefined {
+  if (raw === undefined) return undefined;
+  const providers = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidProviderConfigError(field, detail),
+  );
+  const out: Record<string, ProviderConfig> = {};
+  for (const [providerId, providerConfig] of Object.entries(providers)) {
+    if (providerId.trim().length === 0) {
+      throw new InvalidProviderConfigError(providerId, "provider id is empty");
+    }
+    out[providerId] = validateSingleProviderConfig(providerConfig, providerId);
+  }
+  return deepFreeze(out);
+}
+
+const AGENT_KEYS: ReadonlySet<string> = new Set(["budget", "retention"]);
+const AGENT_BUDGET_KEYS: ReadonlySet<string> = new Set([
+  "token_cap",
+  "dollar_cap",
+  "wall_clock_seconds",
+]);
+const AGENT_RETENTION_KEYS: ReadonlySet<string> = new Set([
+  "completed_days",
+  "failed_days",
+  "snapshot_days",
+  "snapshot_max_count",
+  "snapshot_max_bytes",
+]);
+
+function validateAgentBudget(raw: unknown): AgentBudgetConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "budget",
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    AGENT_BUDGET_KEYS,
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+    "budget",
+  );
+  const out: { -readonly [K in keyof AgentBudgetConfig]: AgentBudgetConfig[K] } = {};
+  const tokenCap = optionalPositiveInteger(
+    record.token_cap,
+    "budget.token_cap",
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  if (tokenCap !== undefined) out.token_cap = tokenCap;
+  const dollarCap = optionalNonNegativeNumber(
+    record.dollar_cap,
+    "budget.dollar_cap",
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  if (dollarCap !== undefined) out.dollar_cap = dollarCap;
+  const wallClock = optionalPositiveInteger(
+    record.wall_clock_seconds,
+    "budget.wall_clock_seconds",
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  if (wallClock !== undefined) out.wall_clock_seconds = wallClock;
+  return Object.freeze(out as AgentBudgetConfig);
+}
+
+function validateAgentRetention(raw: unknown): AgentRunRetentionConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "retention",
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    AGENT_RETENTION_KEYS,
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+    "retention",
+  );
+  const out: {
+    -readonly [K in keyof AgentRunRetentionConfig]: AgentRunRetentionConfig[K];
+  } = {};
+  for (const key of [
+    "completed_days",
+    "failed_days",
+    "snapshot_days",
+  ] as const) {
+    const value = optionalNonNegativeNumber(
+      record[key],
+      fieldPath("retention", key),
+      (field, detail) => new InvalidAgentConfigError(field, detail),
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  for (const key of ["snapshot_max_count", "snapshot_max_bytes"] as const) {
+    const value = optionalPositiveInteger(
+      record[key],
+      fieldPath("retention", key),
+      (field, detail) => new InvalidAgentConfigError(field, detail),
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  return Object.freeze(out as AgentRunRetentionConfig);
+}
+
+export function validateAgentConfig(raw: unknown): AgentConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    AGENT_KEYS,
+    (field, detail) => new InvalidAgentConfigError(field, detail),
+  );
+  const out: { -readonly [K in keyof AgentConfig]: AgentConfig[K] } = {};
+  const budget = validateAgentBudget(record.budget);
+  if (budget !== undefined) out.budget = budget;
+  const retention = validateAgentRetention(record.retention);
+  if (retention !== undefined) out.retention = retention;
+  return Object.freeze(out as AgentConfig);
+}
+
+const PER_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "default_permission_mode",
+  "defaultPermissionMode",
+  "approval_mode",
+]);
+
+function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
+  const record = requirePlainObject(
+    raw,
+    field,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PER_TOOL_CONFIG_KEYS,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+    field,
+  );
+  const out: { -readonly [K in keyof PerToolConfig]: PerToolConfig[K] } = {};
+  const enabled = optionalBoolean(
+    record.enabled,
+    fieldPath(field, "enabled"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (enabled !== undefined) out.enabled = enabled;
+  for (const key of ["default_permission_mode", "defaultPermissionMode"] as const) {
+    if (record[key] !== undefined) {
+      if (!isValidPermissionDefaultMode(record[key])) {
+        throw new InvalidPluginsConfigError(
+          fieldPath(field, key),
+          "unknown approval policy",
+        );
+      }
+      out[key] = record[key];
+    }
+  }
+  if (record.approval_mode !== undefined) {
+    if (
+      record.approval_mode !== "auto" &&
+      record.approval_mode !== "prompt" &&
+      record.approval_mode !== "approve"
+    ) {
+      throw new InvalidPluginsConfigError(
+        fieldPath(field, "approval_mode"),
+        "expected \"auto\", \"prompt\", or \"approve\"",
+      );
+    }
+    out.approval_mode = record.approval_mode;
+  }
+  return Object.freeze(out as PerToolConfig);
+}
+
+const PLUGIN_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "default_tools_approval_mode",
+  "enabled_tools",
+  "disabled_tools",
+  "tools",
+]);
+
+function validatePluginMcpServerConfig(
+  raw: unknown,
+  field: string,
+): PluginMcpServerConfig {
+  const record = requirePlainObject(
+    raw,
+    field,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PLUGIN_MCP_SERVER_KEYS,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+    field,
+  );
+  const out: {
+    -readonly [K in keyof PluginMcpServerConfig]: PluginMcpServerConfig[K];
+  } = {};
+  const enabled = optionalBoolean(
+    record.enabled,
+    fieldPath(field, "enabled"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (enabled !== undefined) out.enabled = enabled;
+  if (record.default_tools_approval_mode !== undefined) {
+    if (!isValidPermissionDefaultMode(record.default_tools_approval_mode)) {
+      throw new InvalidPluginsConfigError(
+        fieldPath(field, "default_tools_approval_mode"),
+        "unknown approval policy",
+      );
+    }
+    out.default_tools_approval_mode = record.default_tools_approval_mode;
+  }
+  const enabledTools = optionalStringArray(
+    record.enabled_tools,
+    fieldPath(field, "enabled_tools"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (enabledTools !== undefined) out.enabled_tools = enabledTools;
+  const disabledTools = optionalStringArray(
+    record.disabled_tools,
+    fieldPath(field, "disabled_tools"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (disabledTools !== undefined) out.disabled_tools = disabledTools;
+  if (record.tools !== undefined) {
+    const tools = requirePlainObject(
+      record.tools,
+      fieldPath(field, "tools"),
+      (path, detail) => new InvalidPluginsConfigError(path, detail),
+    );
+    const toolOut: Record<string, PerToolConfig> = {};
+    for (const [toolName, toolConfig] of Object.entries(tools)) {
+      toolOut[toolName] = validatePerToolConfig(
+        toolConfig,
+        `${fieldPath(field, "tools")}.${toolName}`,
+      );
+    }
+    out.tools = deepFreeze(toolOut);
+  }
+  return Object.freeze(out as PluginMcpServerConfig);
+}
+
+const PLUGIN_ENTRY_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "path",
+  "source",
+  "version",
+  "required",
+  "options",
+  "mcp_servers",
+]);
+
+function validatePluginEntryConfig(raw: unknown, field: string): PluginEntryConfig {
+  const record = requirePlainObject(
+    raw,
+    field,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PLUGIN_ENTRY_KEYS,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+    field,
+  );
+  const out: { -readonly [K in keyof PluginEntryConfig]: PluginEntryConfig[K] } = {};
+  const enabled = optionalBoolean(
+    record.enabled,
+    fieldPath(field, "enabled"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (enabled !== undefined) out.enabled = enabled;
+  for (const key of ["path", "source", "version"] as const) {
+    const value = optionalString(
+      record[key],
+      fieldPath(field, key),
+      (path, detail) => new InvalidPluginsConfigError(path, detail),
+    );
+    if (value !== undefined) out[key] = value;
+  }
+  const required = optionalBoolean(
+    record.required,
+    fieldPath(field, "required"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (required !== undefined) out.required = required;
+  const options = optionalRecord(
+    record.options,
+    fieldPath(field, "options"),
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  if (options !== undefined) out.options = options;
+  if (record.mcp_servers !== undefined) {
+    const servers = requirePlainObject(
+      record.mcp_servers,
+      fieldPath(field, "mcp_servers"),
+      (path, detail) => new InvalidPluginsConfigError(path, detail),
+    );
+    const serverOut: Record<string, PluginMcpServerConfig> = {};
+    for (const [serverName, serverConfig] of Object.entries(servers)) {
+      serverOut[serverName] = validatePluginMcpServerConfig(
+        serverConfig,
+        `${fieldPath(field, "mcp_servers")}.${serverName}`,
+      );
+    }
+    out.mcp_servers = deepFreeze(serverOut);
+  }
+  return Object.freeze(out as PluginEntryConfig);
+}
+
+function validatePluginEntryMap(
+  raw: unknown,
+  field: string,
+): Readonly<Record<string, boolean | PluginEntryConfig>> | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    field,
+    (path, detail) => new InvalidPluginsConfigError(path, detail),
+  );
+  const out: Record<string, boolean | PluginEntryConfig> = {};
+  for (const [pluginId, pluginConfig] of Object.entries(record)) {
+    const pluginField = fieldPath(field, pluginId);
+    if (typeof pluginConfig === "boolean") {
+      out[pluginId] = pluginConfig;
+    } else {
+      out[pluginId] = validatePluginEntryConfig(pluginConfig, pluginField);
+    }
+  }
+  return deepFreeze(out);
+}
+
+const PLUGINS_KEYS: ReadonlySet<string> = new Set([
+  "dirs",
+  "enabled",
+  "allowlist",
+  "plugins",
+]);
+
+export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidPluginsConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    PLUGINS_KEYS,
+    (field, detail) => new InvalidPluginsConfigError(field, detail),
+  );
+  const out: Record<string, unknown> = {};
+  const dirs = optionalStringArray(
+    record.dirs,
+    "dirs",
+    (field, detail) => new InvalidPluginsConfigError(field, detail),
+  );
+  if (dirs !== undefined) out.dirs = dirs;
+  const allowlist = optionalStringArray(
+    record.allowlist,
+    "allowlist",
+    (field, detail) => new InvalidPluginsConfigError(field, detail),
+  );
+  if (allowlist !== undefined) out.allowlist = allowlist;
+  if (record.enabled !== undefined) {
+    out.enabled = validatePluginEntryMap(record.enabled, "enabled");
+  }
+  const plugins = validatePluginEntryMap(record.plugins, "plugins");
+  if (plugins !== undefined) out.plugins = plugins;
+  return Object.freeze(out) as PluginsConfig;
+}
+
+const MCP_SERVER_MODE_KEYS: ReadonlySet<string> = new Set([
+  "enabled",
+  "transport",
+  "port",
+  "host",
+]);
+
+export function validateMcpServerModeConfig(
+  raw: unknown,
+): McpServerModeConfig | undefined {
+  if (raw === undefined) return undefined;
+  const record = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    MCP_SERVER_MODE_KEYS,
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  const out: { -readonly [K in keyof McpServerModeConfig]: McpServerModeConfig[K] } = {};
+  const enabled = optionalBoolean(
+    record.enabled,
+    "enabled",
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  if (enabled !== undefined) out.enabled = enabled;
+  if (record.transport !== undefined) {
+    if (record.transport !== "stdio" && record.transport !== "sse") {
+      throw new InvalidMcpServerModeConfigError(
+        "transport",
+        "expected \"stdio\" or \"sse\"",
+      );
+    }
+    out.transport = record.transport;
+  }
+  const port = optionalPositiveInteger(
+    record.port,
+    "port",
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  if (port !== undefined) {
+    if (port > 65_535) {
+      throw new InvalidMcpServerModeConfigError(
+        "port",
+        "expected TCP port between 1 and 65535",
+      );
+    }
+    out.port = port;
+  }
+  const host = optionalString(
+    record.host,
+    "host",
+    (field, detail) => new InvalidMcpServerModeConfigError(field, detail),
+  );
+  if (host !== undefined) out.host = host;
+  return Object.freeze(out as McpServerModeConfig);
+}
+
+function validateMcpConfigTable(raw: unknown): Readonly<{
+  readonly server?: McpServerModeConfig;
+}> {
+  const record = requirePlainObject(
+    raw,
+    "",
+    (field, detail) => new InvalidMcpConfigError(field, detail),
+  );
+  rejectUnknownFields(
+    record,
+    new Set(["server"]),
+    (field, detail) => new InvalidMcpConfigError(field, detail),
+  );
+  const server = validateMcpServerModeConfig(record.server);
+  return Object.freeze({
+    ...(server !== undefined ? { server } : {}),
+  });
+}
+
+/**
+ * Validate config blocks with closed sub-schemas. Top-level unknown keys still
+ * flow to `_unknown` for forward compatibility; once a block is known, its
+ * nested fields are deny-by-default so misspellings cannot silently change
+ * runtime behavior.
+ */
+export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
+  const out: Record<string, unknown> = { ...config };
+  let changed = false;
+
+  if (config.auth !== undefined) {
+    out.auth = validateAuthConfig(config.auth);
+    changed = true;
+  }
+  if (config.providers !== undefined) {
+    out.providers = validateProviderConfig(config.providers);
+    changed = true;
+  }
+  if (config.agent !== undefined) {
+    out.agent = validateAgentConfig(config.agent);
+    changed = true;
+  }
+  if (config.plugins !== undefined) {
+    out.plugins = validatePluginsConfig(config.plugins);
+    changed = true;
+  }
+
+  const configWithMcp = config as AgenCConfig & {
+    readonly mcp?: unknown;
+  };
+  if (configWithMcp.mcp !== undefined) {
+    out.mcp = validateMcpConfigTable(configWithMcp.mcp);
+    changed = true;
+  } else if (isPlainObject(config._unknown?.mcp)) {
+    validateMcpConfigTable(config._unknown.mcp);
+  } else if (config._unknown?.mcp !== undefined) {
+    throw new InvalidMcpConfigError(
+      "",
+      "expected [mcp] table with optional [mcp.server]",
+    );
+  }
+
+  return changed ? (deepFreeze(out) as AgenCConfig) : config;
 }
 
 // ─────────────────────────────────────────────────────────────────────
