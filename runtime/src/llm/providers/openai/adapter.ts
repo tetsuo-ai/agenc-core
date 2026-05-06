@@ -1,5 +1,5 @@
 /**
- * OpenAI provider adapter.
+ * OpenAI provider adapter. // branding-scan: allow real OpenAI provider identifier
  *
  * Uses the new T13 wire shims rather than the legacy `openai` SDK path.
  *
@@ -36,7 +36,7 @@ import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   buildOpenAICompatibilityErrorMessage,
   classifyOpenAIHttpFailure,
-} from "../../_deps/openai-error-classification.js";
+} from "../../../errors/openai-compatible.js";
 import {
   buildChatCompletionsRequest,
   collectChatCompletionsRequestMetadata,
@@ -61,6 +61,11 @@ import {
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
+  "OpenAI Responses stream emitted invalid function_call"; // branding-scan: allow real OpenAI provider identifier
+const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed"; // branding-scan: allow real OpenAI provider identifier
+const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
+  "OpenAI chat-completions stream emitted invalid tool_call"; // branding-scan: allow real OpenAI provider identifier
 
 interface OpenAISseEvent {
   readonly event?: string;
@@ -756,7 +761,7 @@ export class OpenAIProvider implements LLMProvider {
                 name: String(item.name ?? "").trim(),
                 arguments: String(item.arguments ?? "{}"),
               },
-              "OpenAI Responses stream emitted invalid function_call",
+              OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
             );
             streamedToolCalls.set(toolCall.id, toolCall);
             onChunk({ content: "", done: false, toolCalls: [toolCall] });
@@ -793,7 +798,7 @@ export class OpenAIProvider implements LLMProvider {
               ? String(failedError.message)
               : typeof eventError?.message === "string"
                 ? String(eventError.message)
-                : "OpenAI stream failed";
+                : OPENAI_STREAM_FAILED_MESSAGE;
           const errorBody = failedError ?? eventError ?? failedResponse;
           const streamError = mapOpenAIStreamError({
             providerName: this.name,
@@ -933,11 +938,14 @@ export class OpenAIProvider implements LLMProvider {
           const streamError = mapOpenAIStreamError({
             providerName: this.name,
             errorBody: chunk.error,
-            fallbackMessage: "OpenAI stream failed",
+            fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
           });
           if (content.length === 0 && toolCallAccumulator.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
-              openAIStreamFallbackCandidate(chunk.error, "OpenAI stream failed"),
+              openAIStreamFallbackCandidate(
+                chunk.error,
+                OPENAI_STREAM_FAILED_MESSAGE,
+              ),
               consecutiveFallbackFailures,
               requestModel,
             );
@@ -1033,7 +1041,7 @@ export class OpenAIProvider implements LLMProvider {
           validateProviderToolCallOrThrow(
             this.name,
             toolCall,
-            "OpenAI chat-completions stream emitted invalid tool_call",
+            OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE,
           ))
         : [];
       const parsed = withStreamingMetrics(

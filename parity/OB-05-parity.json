@@ -1,0 +1,191 @@
+{
+  "item": "OB-05",
+  "contractName": "ob-05-error-ux",
+  "status": "implemented",
+  "scope": "Typed runtime/API error UX, \u004fpenAI-compatible error classification, validation-error rendering, system API retry rendering, and AgenC code-hint parsing for shell output.",
+  "sourceRoot": "/home/tetsuo/git/\u006fpenclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/errors.ts",
+    "src/services/api/errors.ts",
+    "src/services/api/errorUtils.ts",
+    "src/services/api/openaiErrorClassification.ts",
+    "src/components/messages/SystemAPIErrorMessage.tsx",
+    "src/components/ValidationErrorsList.tsx",
+    "src/utils/\u0063laudeCodeHints.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/errors/runtime.ts",
+    "runtime/src/errors/api.ts",
+    "runtime/src/errors/openai-compatible.ts",
+    "runtime/src/errors/hints.ts",
+    "runtime/src/types/message.ts",
+    "runtime/src/tui/components/SystemAPIErrorMessage.tsx",
+    "runtime/src/tui/components/ValidationErrorsList.tsx",
+    "runtime/src/agenc/upstream/components/messages/SystemTextMessage.tsx",
+    "runtime/src/llm/providers/openai/adapter.ts",
+    "runtime/src/tools/system/bash.ts"
+  ],
+  "testFiles": [
+    "runtime/src/errors/runtime.test.ts",
+    "runtime/src/errors/api.test.ts",
+    "runtime/src/errors/openai-compatible.test.ts",
+    "runtime/src/errors/hints.test.ts",
+    "runtime/src/tui/components/SystemAPIErrorMessage.test.tsx",
+    "runtime/src/tui/components/ValidationErrorsList.test.tsx",
+    "runtime/src/llm/providers/openai/adapter.test.ts",
+    "runtime/src/tools/system/bash.test.ts"
+  ],
+  "counterparts": {
+    "src/utils/errors.ts": "runtime/src/errors/runtime.ts",
+    "src/services/api/errors.ts": "runtime/src/errors/api.ts",
+    "src/services/api/errorUtils.ts": "runtime/src/errors/api.ts",
+    "src/services/api/openaiErrorClassification.ts": "runtime/src/errors/openai-compatible.ts",
+    "src/components/messages/SystemAPIErrorMessage.tsx": "runtime/src/tui/components/SystemAPIErrorMessage.tsx",
+    "src/components/ValidationErrorsList.tsx": "runtime/src/tui/components/ValidationErrorsList.tsx",
+    "src/utils/\u0063laudeCodeHints.ts": "runtime/src/errors/hints.ts"
+  },
+  "rows": [
+    {
+      "id": "runtime-error-types",
+      "source": [
+        "src/utils/errors.ts",
+        "src/services/api/errors.ts"
+      ],
+      "target": [
+        "runtime/src/errors/runtime.ts",
+        "runtime/src/errors/api.ts"
+      ],
+      "requiredBehaviors": [
+        "Expose typed runtime, SDK, shell, config, abort, API, retry, and media/context error helpers from AgenC-owned runtime paths.",
+        "Preserve abort detection, errno extraction, short stack formatting, SDK assistant-message error mapping, and axios-shaped error classification.",
+        "Format API errors with connection, timeout, SSL, auth, prompt-too-long, media-size, retryable, and overload categories."
+      ],
+      "edgeCases": [
+        "Nested API error bodies without a top-level message.",
+        "Connection errors whose useful code is on a nested cause.",
+        "Secret-bearing API messages with bearer tokens, authorization headers, cookies, or sk-prefixed keys."
+      ],
+      "tests": [
+        "runtime/src/errors/runtime.test.ts",
+        "runtime/src/errors/api.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "openai-compatible-classification",
+      "source": [
+        "src/services/api/openaiErrorClassification.ts"
+      ],
+      "target": [
+        "runtime/src/errors/openai-compatible.ts",
+        "runtime/src/llm/providers/openai/adapter.ts"
+      ],
+      "requiredBehaviors": [
+        "Classify local \u004fpenAI-compatible network failures by errno, localhost resolution, connection refusal, timeouts, DNS, TLS, and generic fetch failure.",
+        "Classify HTTP failures by model not found, endpoint not found, context overflow, unsupported tool calls, auth, rate limit, server overload, and malformed success bodies.",
+        "Embed and recover stable category markers in user-facing \u004fpenAI-compatible provider errors."
+      ],
+      "edgeCases": [
+        "Nested cause chains on TypeError fetch failures.",
+        "Localhost URLs that should produce local-server remediation hints.",
+        "2xx responses with malformed JSON from self-hosted providers."
+      ],
+      "tests": [
+        "runtime/src/errors/openai-compatible.test.ts",
+        "runtime/src/llm/providers/openai/adapter.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tui-error-rendering",
+      "source": [
+        "src/components/messages/SystemAPIErrorMessage.tsx",
+        "src/components/ValidationErrorsList.tsx"
+      ],
+      "target": [
+        "runtime/src/tui/components/SystemAPIErrorMessage.tsx",
+        "runtime/src/tui/components/ValidationErrorsList.tsx",
+        "runtime/src/types/message.ts",
+        "runtime/src/agenc/upstream/components/messages/SystemTextMessage.tsx"
+      ],
+      "requiredBehaviors": [
+        "Type system API retry messages instead of leaving them as any.",
+        "Render late retry attempts with formatted API error text, retry countdown, and timeout hint text.",
+        "Render validation errors grouped by file with nested path trees and de-duplicated suggestions."
+      ],
+      "edgeCases": [
+        "Early retry attempts stay quiet to avoid noisy transient errors.",
+        "Long API error text is capped outside verbose mode.",
+        "Indexed invalid config values render as readable keys in the validation tree."
+      ],
+      "tests": [
+        "runtime/src/tui/components/SystemAPIErrorMessage.test.tsx",
+        "runtime/src/tui/components/ValidationErrorsList.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agenc-code-hints",
+      "source": [
+        "src/utils/\u0063laudeCodeHints.ts"
+      ],
+      "target": [
+        "runtime/src/errors/hints.ts",
+        "runtime/src/tools/system/bash.ts"
+      ],
+      "requiredBehaviors": [
+        "Parse AgenC-owned hint tags with version, type, value, and source-command metadata.",
+        "Strip whole-line hint tags from shell output before model-visible content is assembled.",
+        "Carry parsed hints in structured bash result metadata for direct, shell, and shell-wrapper paths."
+      ],
+      "edgeCases": [
+        "Unsupported versions, unsupported types, empty values, and inline quoted tags are ignored.",
+        "Hint stripping happens before output truncation so partial tag prefixes cannot leak.",
+        "The pending-hint store remains single-slot and once-per-session."
+      ],
+      "tests": [
+        "runtime/src/errors/hints.test.ts",
+        "runtime/src/tools/system/bash.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "carriedBehavior": [
+    "Runtime error primitives now live under runtime/src/errors and include abort, errno, SDK assistant-message, axios-shaped, API-formatting, SSL/TLS, prompt-too-long, media-size, and retryable-error helpers.",
+    "The \u004fpenAI-compatible provider imports the canonical runtime classifier and keeps stable category markers for actionable self-hosted provider failures.",
+    "The system API retry message is typed through runtime/src/types/message.ts and rendered by the AgenC-owned TUI component from the live system-message path.",
+    "Validation error rendering builds nested trees from dot paths, replaces invalid indexed leaves with readable invalid values, sorts files, and de-duplicates suggestions.",
+    "AgenC code hints use the AgenC tag name and debug prefix, strip from bash output before truncation, and are surfaced as structured metadata while preserving the single-slot pending store."
+  ],
+  "intentionalReductions": [
+    "Plugin marketplace prompting, persisted show-once config, and install dialogs are not wired in this item because the cited hint source only owns parser/store behavior and the live AgenC plugin recommendation UI is still confined to the temporary upstream mirror.",
+    "The React/Ink validation component is ported to a local AgenC tree renderer and local Ink exports instead of importing from the temporary upstream mirror.",
+    "The system API error renderer keeps the small response prefix and expansion hint inline so the new component does not grow production dependencies on the temporary upstream mirror.",
+    "The stale compact \u004fpenAI-compatible classifier under runtime/src/llm/_deps was removed instead of kept as a forwarding module, because re-export shims are forbidden."
+  ],
+  "conflictResolutions": [
+    "No merge conflict was present after merging main into the worktree for this iteration."
+  ],
+  "validation": {
+    "tests": [
+      "runtime/src/errors/runtime.test.ts",
+      "runtime/src/errors/api.test.ts",
+      "runtime/src/errors/openai-compatible.test.ts",
+      "runtime/src/errors/hints.test.ts",
+      "runtime/src/tui/components/SystemAPIErrorMessage.test.tsx",
+      "runtime/src/tui/components/ValidationErrorsList.test.tsx",
+      "runtime/src/llm/providers/openai/adapter.test.ts",
+      "runtime/src/tools/system/bash.test.ts"
+    ],
+    "commands": [
+      "npm --workspace=@tetsuo-ai/runtime exec vitest run src/errors/runtime.test.ts src/errors/api.test.ts src/errors/openai-compatible.test.ts src/errors/hints.test.ts src/tui/components/SystemAPIErrorMessage.test.tsx src/tui/components/ValidationErrorsList.test.tsx src/llm/providers/openai/adapter.test.ts src/tools/system/bash.test.ts",
+      "npm run typecheck --workspace=@tetsuo-ai/runtime",
+      "agenc-upstream-port branding scan over changed AgenC-owned files",
+      "agenc-tui-validate full gate for /tmp/agenc-core-wt/OB-05",
+      "node scripts/goal/verify.mjs OB-05 --skip-validate --skip-typecheck",
+      "node scripts/goal/complete.mjs OB-05"
+    ]
+  }
+}

@@ -205,6 +205,33 @@ describe("system.bash tool", () => {
     expect(parsed.truncated).toBe(false);
   });
 
+  it("strips AgenC code hints before truncating direct-mode output", async () => {
+    const tool = createBashTool({ maxOutputBytes: 24 });
+    mockSuccess(
+      [
+        "visible",
+        '<agenc-code-hint v="1" type="plugin" value="lint@official" />',
+        "after",
+      ].join("\n"),
+      "",
+    );
+
+    const result = await tool.execute({ command: "echo" });
+    const parsed = parseContent(result);
+
+    expect(result.content).not.toContain("<agenc-code-hint");
+    expect(parsed.stdout).toBe("visible\n\nafter");
+    expect(parsed.truncated).toBe(false);
+    expect(parsed.agencCodeHints).toEqual([
+      {
+        v: 1,
+        type: "plugin",
+        value: "lint@official",
+        sourceCommand: "echo",
+      },
+    ]);
+  });
+
   // ---- Deny list ----
 
   it("rejects command on default deny list", async () => {
@@ -927,6 +954,33 @@ describe("system.bash tool", () => {
       expect(args).toHaveLength(1);
       expect(args[0]).toMatch(/agenc-sh-[0-9a-f]+\.sh$/);
       expect(parseContent(result).exitCode).toBe(0);
+    });
+
+    it("strips AgenC code hints from spawned shell output", async () => {
+      const tool = createBashTool();
+      mockSpawnSuccess(
+        "out\n",
+        [
+          '<agenc-code-hint v="1" type="plugin" value="shell@official" />',
+          "warn",
+        ].join("\n"),
+      );
+
+      const result = await tool.execute({ command: "printf out | cat" });
+      const parsed = parseContent(result);
+
+      expect(result.content).not.toContain("<agenc-code-hint");
+      expect(result.content).toContain("out");
+      expect(result.content).toContain("warn");
+      expect(parsed.stderr).toBe("\nwarn");
+      expect(parsed.agencCodeHints).toEqual([
+        {
+          v: 1,
+          type: "plugin",
+          value: "shell@official",
+          sourceCommand: "printf",
+        },
+      ]);
     });
 
     it("executes redirect commands via spawn with temp script", async () => {

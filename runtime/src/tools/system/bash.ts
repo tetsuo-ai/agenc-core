@@ -34,6 +34,10 @@ import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import {
+  extractAgenCCodeHints,
+  type AgenCCodeHint,
+} from "../../errors/hints.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -241,6 +245,59 @@ function truncate(
   return { text: truncatedText + "\n[truncated]", truncated: true };
 }
 
+function combineOutput(stdout: string, stderr: string): string {
+  if (stderr.length === 0) return stdout;
+  return stdout.length > 0 ? `${stdout}\n${stderr}` : stderr;
+}
+
+function stripAgenCCodeHintsFromToolOutput(
+  stdout: string,
+  stderr: string,
+  command: string,
+): {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly content: string;
+  readonly hints: readonly AgenCCodeHint[];
+} {
+  const stdoutExtracted = extractAgenCCodeHints(stdout, command);
+  const stderrExtracted = extractAgenCCodeHints(stderr, command);
+  return {
+    stdout: stdoutExtracted.stripped,
+    stderr: stderrExtracted.stripped,
+    content: combineOutput(stdoutExtracted.stripped, stderrExtracted.stripped),
+    hints: [...stdoutExtracted.hints, ...stderrExtracted.hints],
+  };
+}
+
+function buildDisplayOutput(params: {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly command: string;
+  readonly maxOutputBytes: number;
+}): {
+  readonly content: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly hints: readonly AgenCCodeHint[];
+  readonly truncated: boolean;
+} {
+  const extractedOutput = stripAgenCCodeHintsFromToolOutput(
+    params.stdout,
+    params.stderr,
+    params.command,
+  );
+  const stdoutResult = truncate(extractedOutput.stdout, params.maxOutputBytes);
+  const stderrResult = truncate(extractedOutput.stderr, params.maxOutputBytes);
+  return {
+    content: combineOutput(stdoutResult.text, stderrResult.text),
+    stdout: stdoutResult.text,
+    stderr: stderrResult.text,
+    hints: extractedOutput.hints,
+    truncated: stdoutResult.truncated || stderrResult.truncated,
+  };
+}
+
 function runSpawnedCommand(params: {
   readonly execCommand: string;
   readonly execArgs: readonly string[];
@@ -375,17 +432,20 @@ function runSpawnedCommand(params: {
       const stdoutBuf = Buffer.concat(stdoutChunks).toString("utf8");
       const stderrBuf = Buffer.concat(stderrChunks).toString("utf8");
 
-      const stdoutResult = truncate(stdoutBuf, params.maxOutputBytes);
-      const stderrResult = truncate(
+      const stderrText =
         stderrBuf.trim().length > 0
           ? stderrBuf
           : aborted
             ? "Command aborted"
-          : isError
-            ? `Command "${params.metadataCommand}" failed`
-            : "",
-        params.maxOutputBytes,
-      );
+            : isError
+              ? `Command "${params.metadataCommand}" failed`
+              : "";
+      const displayOutput = buildDisplayOutput({
+        stdout: stdoutBuf,
+        stderr: stderrText,
+        command: params.metadataCommand,
+        maxOutputBytes: params.maxOutputBytes,
+      });
 
       if (timedOut) {
         params.logger.warn(
@@ -410,16 +470,8 @@ function runSpawnedCommand(params: {
       // the result envelope). Structured fields move to `metadata`
       // where the inner emitEnd observer + ToolResult consumers can
       // still read them.
-      const stdoutText = stdoutResult.text;
-      const stderrText = stderrResult.text;
-      const content =
-        stderrText.length > 0
-          ? stdoutText.length > 0
-            ? `${stdoutText}\n${stderrText}`
-            : stderrText
-          : stdoutText;
       resolve({
-        content,
+        content: displayOutput.content,
         isError: isError || undefined,
         metadata: {
           command: params.metadataCommand,
@@ -427,11 +479,14 @@ function runSpawnedCommand(params: {
           cwd: params.cwd,
           shellMode: params.shellMode,
           exitCode,
-          stdout: stdoutText,
-          stderr: stderrText,
+          stdout: displayOutput.stdout,
+          stderr: displayOutput.stderr,
           timedOut,
           durationMs,
-          truncated: stdoutResult.truncated || stderrResult.truncated,
+          truncated: displayOutput.truncated,
+          ...(displayOutput.hints.length > 0
+            ? { agencCodeHints: displayOutput.hints }
+            : {}),
         },
       });
     };
@@ -1157,11 +1212,15 @@ export function createBashTool(config?: BashToolConfig): Tool {
               const fallbackErrorText =
                 error.message || `Command "${command}" failed`;
 
-              const stdoutResult = truncate(stdoutText, maxOutputBytes);
-              const stderrResult = truncate(
-                stderrText.trim().length > 0 ? stderrText : fallbackErrorText,
+              const displayOutput = buildDisplayOutput({
+                stdout: stdoutText,
+                stderr:
+                  stderrText.trim().length > 0
+                    ? stderrText
+                    : fallbackErrorText,
+                command: execObservedCommand,
                 maxOutputBytes,
-              );
+              });
 
               if (isTimeout) {
                 logger.warn(
@@ -1173,14 +1232,8 @@ export function createBashTool(config?: BashToolConfig): Tool {
                 );
               }
 
-              const directErrorContent =
-                stderrResult.text.length > 0
-                  ? stdoutResult.text.length > 0
-                    ? `${stdoutResult.text}\n${stderrResult.text}`
-                    : stderrResult.text
-                  : stdoutResult.text || fallbackErrorText;
               resolve({
-                content: directErrorContent,
+                content: displayOutput.content,
                 isError: true,
                 metadata: {
                   command,
@@ -1188,42 +1241,43 @@ export function createBashTool(config?: BashToolConfig): Tool {
                   cwd,
                   shellMode: false,
                   exitCode,
-                  stdout: stdoutResult.text,
-                  stderr: stderrResult.text,
+                  stdout: displayOutput.stdout,
+                  stderr: displayOutput.stderr,
                   timedOut: isTimeout,
                   durationMs,
-                  truncated:
-                    stdoutResult.truncated || stderrResult.truncated,
+                  truncated: displayOutput.truncated,
+                  ...(displayOutput.hints.length > 0
+                    ? { agencCodeHints: displayOutput.hints }
+                    : {}),
                 },
               });
               return;
             }
 
-            const stdoutResult = truncate(toText(stdout), maxOutputBytes);
-            const stderrResult = truncate(toText(stderr), maxOutputBytes);
-
             logger.debug(`Bash tool success (${durationMs}ms): ${logCmd}`);
 
-            const directContent =
-              stderrResult.text.length > 0
-                ? stdoutResult.text.length > 0
-                  ? `${stdoutResult.text}\n${stderrResult.text}`
-                  : stderrResult.text
-                : stdoutResult.text;
+            const displayOutput = buildDisplayOutput({
+              stdout: toText(stdout),
+              stderr: toText(stderr),
+              command: execObservedCommand,
+              maxOutputBytes,
+            });
             resolve({
-              content: directContent,
+              content: displayOutput.content,
               metadata: {
                 command,
                 args: execArgs,
                 cwd,
                 shellMode: false,
                 exitCode: 0,
-                stdout: stdoutResult.text,
-                stderr: stderrResult.text,
+                stdout: displayOutput.stdout,
+                stderr: displayOutput.stderr,
                 timedOut: false,
                 durationMs,
-                truncated:
-                  stdoutResult.truncated || stderrResult.truncated,
+                truncated: displayOutput.truncated,
+                ...(displayOutput.hints.length > 0
+                  ? { agencCodeHints: displayOutput.hints }
+                  : {}),
               },
             });
           },
