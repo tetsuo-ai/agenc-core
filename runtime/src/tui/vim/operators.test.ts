@@ -145,6 +145,38 @@ describe('vim operators', () => {
     expect(bigWord.state.register).toBe('o ')
   })
 
+  test('expands linewise operator motions from mid-line cursors', () => {
+    const deleteDown = makeContext('one\ntwo\nthree', 5)
+    executeOperatorMotion('delete', 'j', 1, deleteDown.ctx)
+    expect(deleteDown.state.text).toBe('one')
+    expect(deleteDown.state.register).toBe('\ntwo\nthree\n')
+    expect(deleteDown.state.linewise).toBe(true)
+
+    const deleteUp = makeContext('one\ntwo\nthree', 5)
+    executeOperatorMotion('delete', 'k', 1, deleteUp.ctx)
+    expect(deleteUp.state.text).toBe('three')
+    expect(deleteUp.state.register).toBe('one\ntwo\n')
+    expect(deleteUp.state.linewise).toBe(true)
+
+    const deleteToLastLine = makeContext('one\ntwo\nthree', 5)
+    executeOperatorG('delete', 1, deleteToLastLine.ctx)
+    expect(deleteToLastLine.state.text).toBe('one')
+    expect(deleteToLastLine.state.register).toBe('\ntwo\nthree\n')
+    expect(deleteToLastLine.state.linewise).toBe(true)
+
+    const deleteToFirstLine = makeContext('one\ntwo\nthree', 5)
+    executeOperatorGg('delete', 1, deleteToFirstLine.ctx)
+    expect(deleteToFirstLine.state.text).toBe('three')
+    expect(deleteToFirstLine.state.register).toBe('one\ntwo\n')
+    expect(deleteToFirstLine.state.linewise).toBe(true)
+
+    const yankToLastLine = makeContext('one\ntwo\nthree', 5)
+    executeOperatorG('yank', 1, yankToLastLine.ctx)
+    expect(yankToLastLine.state.text).toBe('one\ntwo\nthree')
+    expect(yankToLastLine.state.register).toBe('\ntwo\nthree\n')
+    expect(yankToLastLine.state.linewise).toBe(true)
+  })
+
   test('executes required operator motion behavior', () => {
     const reverseDelete = makeContext('abc', 2)
     executeOperatorMotion('delete', 'h', 1, reverseDelete.ctx)

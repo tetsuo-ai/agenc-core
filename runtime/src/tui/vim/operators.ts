@@ -472,10 +472,13 @@ function getOperatorRange(
       motion === 'w' ? wordCursor.endOfVimWord() : wordCursor.endOfWORD()
     to = cursor.measuredText.nextOffset(wordEnd.offset)
   } else if (isLinewiseMotion(motion)) {
-    // Linewise motions extend to include entire lines
     linewise = true
     const text = cursor.text
-    const nextNewline = text.indexOf('\n', to)
+    const cursorLineStart = cursor.startOfLogicalLine().offset
+    const targetLineStart = target.startOfLogicalLine().offset
+    from = Math.min(cursorLineStart, targetLineStart)
+    const endLineStart = Math.max(cursorLineStart, targetLineStart)
+    const nextNewline = text.indexOf('\n', endLineStart)
     if (nextNewline === -1) {
       // Deleting to end of file - include the preceding newline if exists
       to = text.length

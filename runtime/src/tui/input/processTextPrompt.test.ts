@@ -293,4 +293,26 @@ describe('processTextPrompt with vim-aware composer input', () => {
       expect.objectContaining({ content: 'help status' }),
     )
   })
+
+  test('can finalize multi-key vim routing before prompt message construction', () => {
+    const result = processTextPrompt(
+      'one two three four five six\nnext line',
+      [],
+      [],
+      [],
+      undefined,
+      undefined,
+      undefined,
+      {
+        enabled: true,
+        mode: 'NORMAL',
+        keys: ['5', 'd', 'w', 'j', 'x'],
+      },
+    )
+
+    expect(result.shouldQuery).toBe(true)
+    expect(mocks.createUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'six\next line' }),
+    )
+  })
 })
