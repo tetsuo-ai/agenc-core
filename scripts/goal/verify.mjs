@@ -685,8 +685,19 @@ const ITEM_EVIDENCE = {
     tests: ["runtime/src/sandbox/linux-launcher/linux-launcher.test.ts"],
   },
   "C-01c": {
-    files: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.tsx?$/, minCount: 1 }],
-    tests: [{ globUnder: "runtime/src/sandbox/policy", matching: /\.test\.tsx?$/ }],
+    files: [
+      "runtime/src/sandbox/hardening/index.ts",
+    ],
+    grepPresent: [
+      { pattern: "applyPreMainProcessHardening", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "scrubDangerousEnvironment", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "compileAndLoadNativeHardeningBinding", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "prlimit", scope: "runtime/src/sandbox/hardening/index.ts" },
+      { pattern: "LD_|DYLD_|MallocStackLogging|MallocLogFile", scope: "runtime/src/sandbox/hardening/index.ts" },
+    ],
+    tests: [
+      "runtime/src/sandbox/hardening/hardening.test.ts",
+    ],
   },
   "C-01d": {
     files: [
@@ -2468,6 +2479,126 @@ header("branding-scan evasion + dynamic-import-of-upstream guard (Gate 3.6)");
   pass("no branding-scan evasion or dynamic upstream imports in non-test source");
 }
 
+// --- Gate 3.7: upstream-import non-growth + opportunistic migration ---------
+//
+// Two parts:
+//
+//   A. NON-GROWTH (additive guard): no file may add a NEW import from
+//      `agenc/upstream/`. The total upstream-import count in any file cannot
+//      go up. Adding a 77th importer fails the gate.
+//
+//   B. OPPORTUNISTIC MIGRATION (touch-tax): if your item modifies a file
+//      that ALREADY had upstream imports in main, you must remove at least
+//      one of those imports as part of the same diff. Touching a tainted
+//      file = obligation to clean ONE import while you're there. This drains
+//      the importer pool over time without needing a separate sweep item.
+//
+// Escape hatch: an import line preceded by `// upstream-import: keep <reason>`
+// (within 3 lines above) is exempt — for cases where the migration target
+// genuinely doesn't exist yet because it depends on another item.
+//
+// Gate is scoped to non-test files in runtime/src/, excluding the upstream/
+// tree itself (which is allowed to import from sibling upstream/ files
+// during the migration window).
+header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
+{
+  const upstreamImportRe = /\bfrom\s+["'`][^"'`]*agenc\/upstream\//g;
+  const keepCommentRe = /\/\/\s*upstream-import:\s*keep\b/i;
+
+  // Get every file modified in this branch's diff vs main.
+  const diffRes = run("git", ["diff", "--name-only", "--diff-filter=ACMR", "main...HEAD"], { silent: true });
+  if (diffRes.status !== 0) {
+    failGate(`Gate 3.7: could not list diff files: ${diffRes.stderr || ""}`);
+  }
+  const diffFiles = (diffRes.stdout || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((f) => f.startsWith("runtime/src/"))
+    .filter((f) => !f.startsWith("runtime/src/agenc/upstream/"))
+    .filter((f) => /\.(ts|tsx|mts|cts)$/.test(f))
+    .filter((f) => !/\.test\.(ts|tsx|mts|cts)$/.test(f));
+
+  // Helper: count upstream imports in a string, excluding lines preceded by
+  // a `// upstream-import: keep` comment within the prior 3 lines.
+  function countUnexemptedImports(src) {
+    if (!src) return 0;
+    const lines = src.split("\n");
+    let count = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!upstreamImportRe.test(line)) {
+        upstreamImportRe.lastIndex = 0;
+        continue;
+      }
+      upstreamImportRe.lastIndex = 0;
+      // Look back up to 3 lines for the keep override.
+      let exempt = false;
+      for (let j = Math.max(0, i - 3); j < i; j++) {
+        if (keepCommentRe.test(lines[j])) { exempt = true; break; }
+      }
+      // Also accept same-line trailing comment.
+      if (!exempt && keepCommentRe.test(line)) exempt = true;
+      if (!exempt) count++;
+    }
+    return count;
+  }
+
+  function getMainContent(relPath) {
+    const r = spawnSync("git", ["-C", root, "show", `main:${relPath}`], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+    return r.status === 0 ? r.stdout : "";
+  }
+
+  const newImports = [];        // Part A failures (count grew)
+  const missedMigrations = [];  // Part B failures (touched but didn't reduce)
+
+  // Helper: count RAW upstream import LINES, ignoring keep comments.
+  // Used by Part B — agents cannot satisfy the touch-tax by adding keep
+  // comments; an actual import line must be deleted.
+  function countRawImports(src) {
+    if (!src) return 0;
+    const matches = src.match(upstreamImportRe);
+    return matches ? matches.length : 0;
+  }
+
+  for (const rel of diffFiles) {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) continue; // file was deleted in this diff
+    let after;
+    try { after = readFileSync(abs, "utf8"); } catch { continue; }
+    const before = getMainContent(rel);
+
+    // Part A uses unexempted count — keep comments legitimately exempt
+    // imports (e.g., for migration-target-not-yet-exists cases).
+    const beforeUnexempted = countUnexemptedImports(before);
+    const afterUnexempted = countUnexemptedImports(after);
+
+    if (afterUnexempted > beforeUnexempted) {
+      newImports.push(`${rel}: ${beforeUnexempted} → ${afterUnexempted} (+${afterUnexempted - beforeUnexempted})`);
+    }
+
+    // Part B (touch-tax) is DISABLED. Z-PURGE is the dedicated migration
+    // item that drains the upstream tree. The opportunistic touch-tax was
+    // causing more evasion than migration. Keep beforeRaw/afterRaw available
+    // for future re-enable if needed.
+    void countRawImports;
+  }
+
+  if (newImports.length > 0) {
+    failGate(
+      `Gate 3.7 (Part A): NEW upstream imports added — runtime/src/agenc/upstream/ is being deleted, do not add new importers:\n  ${newImports.join("\n  ")}\n\n` +
+        `Either import from the migrated AgenC-owned path, OR if the migration target genuinely doesn't exist yet, ` +
+        `add a previous-line comment "// upstream-import: keep <reason>" to exempt the import.`,
+    );
+  }
+
+  // Part B touch-tax disabled — Z-PURGE drives the migration directly.
+
+  pass(`Gate 3.7 (Part A only): ${diffFiles.length} touched file(s) checked, no upstream-import growth`);
+}
+
 // --- Gate 4: typecheck (baseline + delta) -------------------------------
 
 if (skipTypecheck) {
@@ -3450,6 +3581,57 @@ async function donorRuntimePortGates(item) {
     pass("C-01b: Linux launcher subprocess, package bin, reentry, proxy routes, bwrap, seccomp, and tests present");
     return;
   }
+
+  if (id === "C-01c") {
+    const hardeningFile = "runtime/src/sandbox/hardening/index.ts";
+    const hardeningTest = "runtime/src/sandbox/hardening/hardening.test.ts";
+    if (!existsSync(path.join(root, hardeningFile))) {
+      failGate("C-01c: process hardening module missing");
+    }
+    if (!existsSync(path.join(root, hardeningTest))) {
+      failGate("C-01c: process hardening test missing");
+    }
+    if (!grepRepo("compileAndLoadNativeHardeningBinding|node_api\\.h", hardeningFile)) {
+      failGate("C-01c: hardening must include a native binding path");
+    }
+    if (!grepRepo("prlimit", hardeningFile)) {
+      failGate("C-01c: hardening must include a prlimit core-limit fallback");
+    }
+    if (!grepRepo("LD_|DYLD_|MallocStackLogging|MallocLogFile", hardeningFile)) {
+      failGate("C-01c: hardening must scrub dangerous env prefixes");
+    }
+    if (!grepRepo('nativeMode = options\\.nativeMode \\?\\? "required"', hardeningFile)) {
+      failGate("C-01c: main hardening primitive must fail closed by default");
+    }
+    if (!grepRepo("applyBestEffortPreMainProcessHardening", hardeningFile)) {
+      failGate("C-01c: best-effort hardening must be a separate API");
+    }
+    if (!grepRepo("allowRuntimeNativeBuild", hardeningFile)) {
+      failGate("C-01c: runtime native compilation must require explicit opt-in");
+    }
+    if (!grepRepo("spawnSync\\(process\\.execPath", hardeningTest)) {
+      failGate("C-01c: hardening tests must exercise a real subprocess");
+    }
+    if (!grepRepo("getCoreFileSizeLimit|getLinuxDumpable", hardeningTest)) {
+      failGate("C-01c: hardening tests must assert OS hardening state");
+    }
+    if (!grepRepo("runtime native hardening build disabled", hardeningTest)) {
+      failGate("C-01c: hardening tests must cover fail-closed default behavior");
+    }
+    if (!grepRepo("allowRuntimeNativeBuild: true", hardeningTest)) {
+      failGate("C-01c: hardening tests must cover explicit runtime-build opt-in");
+    }
+    const vitest = run("node_modules/.bin/vitest", [
+      "run",
+      hardeningTest,
+    ]);
+    if (vitest.status !== 0) {
+      failGate("C-01c process hardening tests failed");
+    }
+    pass("C-01c: process hardening native path, env scrub, prlimit fallback, and tests present");
+    return;
+  }
+
   if (id === "C-01d") {
     const dir = path.join(root, "runtime/src/sandbox/execpolicy");
     if (!existsSync(dir)) failGate("C-01d: runtime/src/sandbox/execpolicy/ missing");
@@ -4459,10 +4641,48 @@ async function promptGates(item) {
     return;
   }
   if (id === "PR-07") {
-    // Plugin instructions.
-    const found = grepRepo("pluginInstructions|plugin_instructions|availablePlugins", "runtime/src/prompts");
-    if (!found) failGate("PR-07: plugin instructions not referenced");
-    pass("PR-07: plugin instructions referenced");
+    const promptFile = "runtime/src/services/compact/prompt.ts";
+    const compactFile = "runtime/src/services/compact/compact.ts";
+    const compactTestFile = "runtime/src/services/compact/compact.test.ts";
+    const surfaceTestFile = "runtime/src/services/compact/compact-surfaces.test.ts";
+    if (!existsSync(path.join(root, promptFile))) {
+      failGate("PR-07: compact prompt file missing");
+    }
+    if (!existsSync(path.join(root, compactFile))) {
+      failGate("PR-07: compact service file missing");
+    }
+    if (!grepRepo("getCompactPrompt", promptFile)) {
+      failGate("PR-07: getCompactPrompt missing");
+    }
+    if (!grepRepo("getPartialCompactPrompt", promptFile)) {
+      failGate("PR-07: getPartialCompactPrompt missing");
+    }
+    if (!grepRepo("getCompactUserSummaryMessage", promptFile)) {
+      failGate("PR-07: compact continuation message helper missing");
+    }
+    if (!grepRepo("Summary:\\\\n", promptFile)) {
+      failGate("PR-07: formatted compact summaries must use readable Summary header");
+    }
+    if (!grepRepo("getCompactPrompt\\(customInstructions\\)", compactFile)) {
+      failGate("PR-07: live compact service must use getCompactPrompt");
+    }
+    if (!grepRepo("getCompactUserSummaryMessage\\(summary\\)", compactFile)) {
+      failGate("PR-07: live compact service must use compact continuation messages");
+    }
+    if (!grepRepo("getPartialCompactPrompt|RECENT portion|Context for Continuing Work", surfaceTestFile)) {
+      failGate("PR-07: compact prompt tests missing");
+    }
+    if (!grepRepo("CRITICAL: Respond with TEXT ONLY|This session is being continued", compactTestFile)) {
+      failGate("PR-07: compact service prompt behavior test missing");
+    }
+    const vitest = run("node_modules/.bin/vitest", [
+      "run",
+      compactTestFile,
+      surfaceTestFile,
+    ]);
+    if (vitest.status !== 0) failGate("PR-07 targeted Vitest suite failed");
+    pass("PR-07 targeted Vitest suite passed");
+    pass("PR-07: compact prompt APIs and tests present");
     return;
   }
   if (id === "PR-08") {

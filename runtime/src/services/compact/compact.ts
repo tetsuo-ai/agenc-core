@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
-import { formatCompactSummary } from "./prompt.js";
+import { getCompactPrompt, getCompactUserSummaryMessage } from "./prompt.js";
 import {
   estimateMessagesTokens,
   messageText,
@@ -137,7 +137,7 @@ export async function compactConversation(
   );
   const summaryMessage = createRuntimeMessage(
     "user",
-    formatCompactSummary(summary),
+    getCompactUserSummaryMessage(summary),
     true,
   );
   const attachments = await context.deps?.createAttachments?.(
@@ -191,13 +191,7 @@ async function summarizeMessages(
   customInstructions: string,
 ): Promise<string> {
   const transcript = boundTranscript(messages.map(formatForSummary).join("\n\n"));
-  const instruction = [
-    "Summarize this conversation for lossless continuation.",
-    "Preserve user requests, decisions, file paths, commands, errors, fixes, and pending work.",
-    customInstructions
-      ? `Additional compact instructions:\n${customInstructions}`
-      : "",
-  ].filter(Boolean).join("\n\n");
+  const compactPrompt = getCompactPrompt(customInstructions);
   const fallback = fallbackSummary(transcript);
   const provider = context.provider;
   if (!provider) return fallback;
@@ -205,7 +199,7 @@ async function summarizeMessages(
     const response = await provider.chat(
       [{
         role: "user",
-        content: `${instruction}\n\n<transcript>\n${transcript}\n</transcript>`,
+        content: `${compactPrompt}\n\n<transcript>\n${transcript}\n</transcript>`,
       }],
       {
         model: context.options?.mainLoopModel,

@@ -3,7 +3,10 @@ import { appendFile, mkdir, symlink, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import memoize from 'lodash-es/memoize.js'
 
-import { getSessionId } from '../agenc/upstream/bootstrap/state.js'
+import {
+  getSessionId,
+  setSessionTrustAccepted,
+} from '../agenc/upstream/bootstrap/state.js'
 import { registerCleanup } from '../agenc/upstream/utils/cleanupRegistry.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { writeToStderr } from './process.js'
@@ -60,6 +63,10 @@ export function enableDebugLogging(): boolean {
   runtimeDebugEnabled = true
   isDebugMode.cache.clear?.()
   return wasActive
+}
+
+export function markSessionTrustAccepted(): void {
+  setSessionTrustAccepted(true)
 }
 
 const parseDebugFilter = memoize(

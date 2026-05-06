@@ -1,15 +1,3 @@
-/**
- * Plugin-hint recommendations.
- *
- * Companion to lspRecommendation.ts: where LSP recommendations are triggered
- * by file edits, plugin hints are triggered by CLIs/SDKs emitting a
- * `<agenc-code-hint />` tag to stderr (detected by the Bash/PowerShell tools).
- *
- * State persists in GlobalConfig.agencCodeHints — a show-once record per
- * plugin and a disabled flag (user picked "don't show again"). Official-
- * marketplace filtering is hardcoded for v1.
- */
-
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -20,7 +8,7 @@ import {
   type AgenCCodeHint,
   hasShownHintThisSession,
   setPendingHint,
-} from '../claudeCodeHints.js'
+} from '../../../../errors/hints.js'
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isPluginInstalled } from './installedPluginsManager.js'
@@ -31,8 +19,18 @@ import {
 } from './pluginIdentifier.js'
 import { isPluginBlockedByPolicy } from './pluginPolicy.js'
 
+type HintRecommendationState = { plugin?: string[]; disabled?: boolean }
+type HintConfigShape = {
+  agencCodeHints?: HintRecommendationState
+  claudeCodeHints?: HintRecommendationState // branding-scan: allow persisted legacy config key
+}
+const readHintState = (
+  config: HintConfigShape,
+): HintRecommendationState | undefined =>
+  config.agencCodeHints ?? config.claudeCodeHints // branding-scan: allow persisted legacy config key
+
 /**
- * Hard cap on `claudeCodeHints.plugin[]` — bounds config growth. Each shown
+ * Hard cap on `agencCodeHints.plugin[]` — bounds config growth. Each shown
  * plugin appends one slug; past this point we stop prompting (and stop
  * appending) rather than let the config grow without limit.
  */
@@ -66,7 +64,7 @@ export function maybeRecordPluginHint(hint: AgenCCodeHint): void {
   if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_lapis_finch', false)) return
   if (hasShownHintThisSession()) return
 
-  const state = getGlobalConfig().agencCodeHints
+  const state = readHintState(getGlobalConfig() as HintConfigShape)
   if (state?.disabled) return
 
   const shown = state?.plugin ?? []
@@ -140,12 +138,13 @@ export async function resolvePluginHint(
  */
 export function markHintPluginShown(pluginId: string): void {
   saveGlobalConfig(current => {
-    const existing = current.agencCodeHints?.plugin ?? []
+    const state = readHintState(current as HintConfigShape)
+    const existing = state?.plugin ?? []
     if (existing.includes(pluginId)) return current
     return {
       ...current,
-      claudeCodeHints: {
-        ...current.agencCodeHints,
+      agencCodeHints: {
+        ...state,
         plugin: [...existing, pluginId],
       },
     }
@@ -155,10 +154,11 @@ export function markHintPluginShown(pluginId: string): void {
 /** Called when the user picks "don't show plugin installation hints again". */
 export function disableHintRecommendations(): void {
   saveGlobalConfig(current => {
-    if (current.agencCodeHints?.disabled) return current
+    const state = readHintState(current as HintConfigShape)
+    if (state?.disabled) return current
     return {
       ...current,
-      claudeCodeHints: { ...current.agencCodeHints, disabled: true },
+      agencCodeHints: { ...state, disabled: true },
     }
   })
 }

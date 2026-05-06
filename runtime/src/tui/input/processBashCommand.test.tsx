@@ -64,6 +64,7 @@ vi.mock("../../agenc/upstream/utils/shell/resolveDefaultShell.js", () => ({
 }));
 
 vi.mock("../../agenc/upstream/utils/shell/shellToolUtils.js", () => ({
+  getPowerShellTool: vi.fn(() => null),
   isPowerShellToolEnabled: vi.fn(() => false),
 }));
 

@@ -13,8 +13,13 @@ import {
   mapAgenCApiErrorToLLMError,
   parsePromptTooLongTokenCounts,
 } from "./errors.js";
+import { AgenCApiError as CanonicalAgenCApiError } from "../../errors/api.js";
 
 describe("llm api errors", () => {
+  test("shares the canonical runtime API error class", () => {
+    expect(AgenCApiError).toBe(CanonicalAgenCApiError);
+  });
+
   test("parses prompt-too-long token counts and gap", () => {
     const raw = "Prompt is too long: 137500 tokens > 135000 maximum";
 

@@ -1,40 +1,8 @@
 import { useEffect, useState } from 'react'
-import * as rateLimitServiceModule from '../../agenc/upstream/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
+import * as rateLimitService from '../../agenc/upstream/services/claudeAiLimits.js' // branding-scan: allow existing upstream rate-limit service path
 
-type QuotaStatus = 'allowed' | 'allowed_warning' | 'rejected'
-type RateLimitType =
-  | 'five_hour'
-  | 'seven_day'
-  | 'seven_day_opus'
-  | 'seven_day_sonnet'
-  | 'overage'
-type RateLimitSnapshot = {
-  status: QuotaStatus
-  unifiedRateLimitFallbackAvailable: boolean
-  resetsAt?: number
-  rateLimitType?: RateLimitType
-  utilization?: number
-  overageStatus?: QuotaStatus
-  overageResetsAt?: number
-  overageDisabledReason?: string
-  isUsingOverage?: boolean
-  surpassedThreshold?: number
-}
-type RawWindowUtilization = {
-  utilization: number
-  resets_at: number
-}
-type RawUtilization = {
-  five_hour?: RawWindowUtilization
-  seven_day?: RawWindowUtilization
-}
-type RateLimitService = {
-  currentLimits: RateLimitSnapshot
-  statusListeners: Set<(limits: RateLimitSnapshot) => void>
-  getRawUtilization(): RawUtilization
-}
-
-const rateLimitService = rateLimitServiceModule as unknown as RateLimitService
+type RawUtilization = ReturnType<typeof rateLimitService.getRawUtilization>
+type RateLimitSnapshot = typeof rateLimitService.currentLimits
 type AgenCAILimits = RateLimitSnapshot
 
 export function useAgenCAiLimits(): AgenCAILimits {
