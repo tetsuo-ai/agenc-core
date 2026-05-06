@@ -32,6 +32,37 @@ export {
   type RequestId,
 } from "./app-server/protocol/index.js";
 export {
+  AGENC_PORTAL_CLIENT_CAPABILITIES,
+  AGENC_PORTAL_METHODS,
+  AGENC_PORTAL_PROTOCOL_VERSION,
+  isAgenCPortalMethod,
+  type AgenCPortalAgentSummary,
+  type AgenCPortalClientCapability,
+  type AgenCPortalConnectionTarget,
+  type AgenCPortalDashboardSnapshot,
+  type AgenCPortalMethod,
+  type AgenCPortalSessionSummary,
+} from "./app-server-protocol/index.js";
+export {
+  AGENC_IDE_EXTENSION_CAPABILITY_NAMESPACE,
+  AGENC_IDE_EXTENSION_LSP_CAPABILITY,
+  AGENC_IDE_EXTENSION_PACKAGE_NAME,
+  AGENC_IDE_EXTENSION_REPOSITORY_NAME,
+  AGENC_IDE_EXTENSION_SCAFFOLD,
+  AGENC_IDE_EXTENSION_TARGET,
+  AGENC_IDE_REQUIRED_METHODS,
+  AGENC_IDE_REQUIRED_NOTIFICATIONS,
+  checkAgenCIdeProtocolSurface,
+  createAgenCIdeInitializeParams,
+  isAgenCIdeRequiredMethod,
+  isAgenCIdeRequiredNotification,
+  type AgenCIdeExtensionScaffold,
+  type AgenCIdeInitializeOptions,
+  type AgenCIdeProtocolSurfaceCheck,
+  type AgenCIdeRequiredMethod,
+  type AgenCIdeRequiredNotification,
+} from "./app-server-protocol/ide-extension.js";
+export {
   AgenCDaemonSessionManager,
   type AgenCSessionLifecycleOptions,
 } from "./app-server/session-lifecycle.js";
