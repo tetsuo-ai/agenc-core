@@ -6,6 +6,12 @@ import {
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_NOTIFICATION_METHODS,
 } from "./protocol/index.js";
+import {
+  createAgenCDaemonClient as createSdkDaemonClient,
+  type AgenCDaemonRequest as SdkDaemonRequest,
+  type AgenCDaemonResponse as SdkDaemonResponse,
+  type AgenCDaemonTransport as SdkDaemonTransport,
+} from "../../../../agenc-sdk/src/daemon";
 
 function siblingSdkPath(...segments: readonly string[]): string {
   const path = [
@@ -84,4 +90,108 @@ describe("AgenC SDK daemon client wrapper", () => {
       /from "\.\/(agents|tasks|bid-marketplace|proofs|prover|queries|protocol)"/,
     );
   });
+
+  it("frames session lifecycle methods onto daemon JSON-RPC requests", async () => {
+    const requests: SdkDaemonRequest[] = [];
+    const requestIds = sequence([
+      "sdk-create-session",
+      "sdk-detach-session",
+      "sdk-terminate-session",
+    ]);
+    const transport: SdkDaemonTransport = {
+      request: async (request) => {
+        requests.push(request);
+        const resultByMethod = {
+          "session.create": {
+            sessionId: "session_sdk",
+            agentId: "agent_sdk",
+            status: "idle",
+            createdAt: "2026-05-01T14:00:00.000Z",
+          },
+          "session.detach": {
+            sessionId: "session_sdk",
+            attachmentId: "attachment_sdk",
+            detached: true,
+            remainingAttachmentIds: [],
+          },
+          "session.terminate": {
+            sessionId: "session_sdk",
+            terminated: true,
+            status: "closed",
+            closedAt: "2026-05-01T14:00:01.000Z",
+          },
+        } as const;
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: resultByMethod[request.method as keyof typeof resultByMethod],
+        } as SdkDaemonResponse<typeof request.method>;
+      },
+    };
+    const client = createSdkDaemonClient({
+      transport,
+      createRequestId: requestIds,
+    });
+
+    await expect(
+      client.createSession({
+        agentId: "agent_sdk",
+        metadata: { source: "sdk-contract" },
+      }),
+    ).resolves.toMatchObject({ sessionId: "session_sdk" });
+    await expect(
+      client.detachSession({
+        sessionId: "session_sdk",
+        attachmentId: "attachment_sdk",
+      }),
+    ).resolves.toMatchObject({ detached: true });
+    await expect(
+      client.terminateSession({
+        sessionId: "session_sdk",
+        reason: "done",
+      }),
+    ).resolves.toMatchObject({ terminated: true });
+
+    expect(requests).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: "sdk-create-session",
+        method: "session.create",
+        params: {
+          agentId: "agent_sdk",
+          metadata: { source: "sdk-contract" },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "sdk-detach-session",
+        method: "session.detach",
+        params: {
+          sessionId: "session_sdk",
+          attachmentId: "attachment_sdk",
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: "sdk-terminate-session",
+        method: "session.terminate",
+        params: {
+          sessionId: "session_sdk",
+          reason: "done",
+        },
+      },
+    ]);
+  });
 });
+
+function sequence(values: readonly string[]): () => string {
+  let index = 0;
+  return () => {
+    const value = values[index];
+    if (value === undefined) {
+      throw new Error("test sequence exhausted");
+    }
+    index += 1;
+    return value;
+  };
+}

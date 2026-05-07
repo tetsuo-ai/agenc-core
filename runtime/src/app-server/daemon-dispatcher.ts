@@ -12,7 +12,10 @@ import {
   type AgenCDaemonAgentManager,
 } from "./agent-lifecycle.js";
 import type { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
-import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import {
+  AgenCSessionLifecycleError,
+  type AgenCDaemonSessionManager,
+} from "./session-lifecycle.js";
 import {
   AgenCFuzzyFileSearchService,
   type AgenCFuzzyFileSearch,
@@ -65,9 +68,12 @@ import {
   type SessionAttachParams,
   type SessionAttachResult,
   type SessionClearParams,
+  type SessionCreateParams,
+  type SessionDetachParams,
   type SessionListParams,
   type SessionPartialCompactFromMessageParams,
   type SessionRewindConversationToMessageParams,
+  type SessionTerminateParams,
   type ThreadRealtimeAppendAudioParams,
   type ThreadRealtimeAppendTextParams,
   type ThreadRealtimeListVoicesParams,
@@ -143,12 +149,18 @@ export interface AgenCDaemonDispatcherOptions {
     AgenCDaemonClientMultiplexer,
     | "attachClientToSession"
     | "broadcastSessionEvent"
+    | "detachSession"
     | "registerClient"
+    | "terminateSession"
     | "removeClient"
   >;
   readonly sessionManager?: Pick<
     AgenCDaemonSessionManager,
-    "attachSession" | "listSessions"
+    | "attachSession"
+    | "createSession"
+    | "detachSession"
+    | "listSessions"
+    | "terminateSession"
   >;
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
@@ -197,12 +209,21 @@ export class AgenCDaemonJsonRpcDispatcher {
         AgenCDaemonClientMultiplexer,
         | "attachClientToSession"
         | "broadcastSessionEvent"
+        | "detachSession"
         | "registerClient"
+        | "terminateSession"
         | "removeClient"
       >
     | undefined;
   readonly #sessionManager:
-    | Pick<AgenCDaemonSessionManager, "attachSession" | "listSessions">
+    | Pick<
+        AgenCDaemonSessionManager,
+        | "attachSession"
+        | "createSession"
+        | "detachSession"
+        | "listSessions"
+        | "terminateSession"
+      >
     | undefined;
   readonly #createMessageId: () => string;
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
@@ -389,6 +410,8 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateAgentLogsParams(params),
           ),
         );
+      case "session.create":
+        return this.#createSession(id, params);
       case "session.list":
         if (this.#sessionManager === undefined) {
           return errorResponse(
@@ -405,6 +428,10 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.attach":
         return this.#attachSession(id, connection, params);
+      case "session.detach":
+        return this.#detachSession(id, params);
+      case "session.terminate":
+        return this.#terminateSession(id, params);
       case "session.clear":
         return successResponse(
           id,
@@ -616,6 +643,23 @@ export class AgenCDaemonJsonRpcDispatcher {
     return successResponse(id, result);
   }
 
+  async #createSession(
+    id: RequestId,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    if (this.#sessionManager === undefined) {
+      return errorResponse(
+        id,
+        -32601,
+        "daemon method is not implemented yet: session.create",
+      );
+    }
+    return successResponse(
+      id,
+      await this.#sessionManager.createSession(validateSessionCreateParams(params)),
+    );
+  }
+
   async #attachSession(
     id: RequestId,
     connection: AgenCDaemonJsonRpcConnection,
@@ -637,6 +681,44 @@ export class AgenCDaemonJsonRpcDispatcher {
     return successResponse(
       id,
       multiplexedResult ?? (await this.#sessionManager.attachSession(attachParams)),
+    );
+  }
+
+  async #detachSession(
+    id: RequestId,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    if (this.#sessionManager === undefined) {
+      return errorResponse(
+        id,
+        -32601,
+        "daemon method is not implemented yet: session.detach",
+      );
+    }
+    const detachParams = validateSessionDetachParams(params);
+    return successResponse(
+      id,
+      await (this.#clientMultiplexer?.detachSession(detachParams) ??
+        this.#sessionManager.detachSession(detachParams)),
+    );
+  }
+
+  async #terminateSession(
+    id: RequestId,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    if (this.#sessionManager === undefined) {
+      return errorResponse(
+        id,
+        -32601,
+        "daemon method is not implemented yet: session.terminate",
+      );
+    }
+    const terminateParams = validateSessionTerminateParams(params);
+    return successResponse(
+      id,
+      await (this.#clientMultiplexer?.terminateSession(terminateParams) ??
+        this.#sessionManager.terminateSession(terminateParams)),
     );
   }
 
@@ -1122,6 +1204,15 @@ function validateSessionListParams(params: JsonObject): SessionListParams {
   return validated as SessionListParams;
 }
 
+function validateSessionCreateParams(params: JsonObject): SessionCreateParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.create",
+    stringFields: ["agentId", "cwd", "initialPrompt"],
+    objectFields: ["metadata"],
+  });
+  return validated as SessionCreateParams;
+}
+
 function validateSessionAttachParams(params: JsonObject): SessionAttachParams {
   const validated = validateObjectShape(params, {
     methodName: "session.attach",
@@ -1129,6 +1220,40 @@ function validateSessionAttachParams(params: JsonObject): SessionAttachParams {
   });
   validateRequiredString(validated, "session.attach", "sessionId");
   return validated as SessionAttachParams;
+}
+
+function validateSessionDetachParams(params: JsonObject): SessionDetachParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.detach",
+    stringFields: ["sessionId", "attachmentId", "clientId"],
+  });
+  validateRequiredString(validated, "session.detach", "sessionId");
+  const attachmentId = validated.attachmentId;
+  const clientId = validated.clientId;
+  if (
+    typeof attachmentId === "string" &&
+    attachmentId.trim().length === 0
+  ) {
+    throw invalidParams("session.detach param 'attachmentId' must be non-empty");
+  }
+  if (typeof clientId === "string" && clientId.trim().length === 0) {
+    throw invalidParams("session.detach param 'clientId' must be non-empty");
+  }
+  if (attachmentId === undefined && clientId === undefined) {
+    throw invalidParams("session.detach requires attachmentId or clientId");
+  }
+  return validated as SessionDetachParams;
+}
+
+function validateSessionTerminateParams(
+  params: JsonObject,
+): SessionTerminateParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.terminate",
+    stringFields: ["sessionId", "reason"],
+  });
+  validateRequiredString(validated, "session.terminate", "sessionId");
+  return validated as SessionTerminateParams;
 }
 
 function validateSessionClearParams(params: JsonObject): SessionClearParams {
@@ -1773,6 +1898,9 @@ function mapDispatchError(
     });
   }
   if (error instanceof AgenCDaemonAgentLifecycleError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCSessionLifecycleError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   return errorResponse(

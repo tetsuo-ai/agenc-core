@@ -160,6 +160,84 @@ describe("AgenC daemon client multiplexer", () => {
     expect(client2Messages).toEqual([event]);
   });
 
+  it("detaches by params while preserving attachmentId precedence", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const client2Messages: JsonObject[] = [];
+
+    await sessionManager.createSession({ agentId: "agent_1" });
+    await multiplexer.registerClient({
+      clientId: "client_1",
+      send: () => {},
+    });
+    await multiplexer.registerClient({
+      clientId: "client_2",
+      send: (message) => client2Messages.push(message),
+    });
+    await multiplexer.attachClientToSession("session_1", "client_1");
+    await multiplexer.attachClientToSession("session_1", "client_2");
+
+    await expect(
+      multiplexer.detachSession({
+        sessionId: "session_1",
+        attachmentId: "attachment_1",
+        clientId: "client_2",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session_1",
+      attachmentId: "attachment_1",
+      detached: true,
+      remainingAttachmentIds: ["attachment_2"],
+    });
+    await expect(multiplexer.attachedClientIds("session_1")).resolves.toEqual([
+      "client_2",
+    ]);
+    await expect(multiplexer.removeClient("client_1")).resolves.toEqual([]);
+
+    const event = {
+      type: "session.delta",
+      sessionId: "session_1",
+      sequence: 3,
+    };
+    await multiplexer.broadcastSessionEvent("session_1", event);
+    expect(client2Messages).toEqual([event]);
+  });
+
+  it("terminates by params and clears route/client memberships", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+
+    await sessionManager.createSession({ agentId: "agent_1" });
+    for (const clientId of ["client_1", "client_2"]) {
+      await multiplexer.registerClient({ clientId, send: () => {} });
+      await multiplexer.attachClientToSession("session_1", clientId);
+    }
+
+    await expect(
+      multiplexer.terminateSession({
+        sessionId: "session_1",
+        reason: "done",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session_1",
+      terminated: true,
+      status: "closed",
+      closedAt: "2026-05-01T10:00:03.000Z",
+      reason: "done",
+    });
+    await expect(multiplexer.attachedClientIds("session_1")).resolves.toEqual([]);
+    await expect(sessionManager.getSession("session_1")).resolves.not.toHaveProperty(
+      "activeAttachmentIds",
+    );
+    await expect(multiplexer.removeClient("client_1")).resolves.toEqual([]);
+    await expect(multiplexer.removeClient("client_2")).resolves.toEqual([]);
+    await expect(
+      multiplexer.terminateSession({ sessionId: "session_1" }),
+    ).resolves.toMatchObject({
+      sessionId: "session_1",
+      terminated: false,
+      status: "closed",
+    });
+  });
+
   it("serializes event order independently for each client", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const received: number[] = [];
