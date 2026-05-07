@@ -15,14 +15,18 @@ import {
   resolveStartupSelection,
 } from "./bootstrap.js";
 import { defaultConfig, mergeConfigs } from "../config/schema.js";
+import { parseToml } from "../config/loader.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { AuthBackend } from "../auth/backend.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import type { Tool } from "../tools/types.js";
 import type { RolloutItem } from "../session/rollout-item.js";
+import { RolloutStore } from "../session/rollout-store.js";
+import { FileThreadStore } from "../thread-store/store.js";
 import { Session } from "../session/session.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
+import { PERSONALITY_MIGRATION_FILENAME } from "../personality/migration.js";
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -53,6 +57,72 @@ function trustWorkspaceForTest(agencHome: string, workspace: string): void {
     agencHome,
     cwd: workspace,
     env: { HOME: agencHome },
+  });
+}
+
+function withAgencHomeForThreadStore<T>(agencHome: string, fn: () => T): T {
+  const previous = process.env.AGENC_HOME;
+  process.env.AGENC_HOME = agencHome;
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.AGENC_HOME;
+    } else {
+      process.env.AGENC_HOME = previous;
+    }
+  }
+}
+
+function writeRecordedThreadForBootstrap(params: {
+  readonly agencHome: string;
+  readonly workspace: string;
+  readonly threadId: string;
+  readonly provider: string;
+}): void {
+  withAgencHomeForThreadStore(params.agencHome, () => {
+    const rolloutStore = new RolloutStore({
+      cwd: params.workspace,
+      sessionId: params.threadId,
+      agencVersion: "0.2.0",
+      autoStartScheduler: false,
+    });
+    rolloutStore.open({
+      sessionId: params.threadId,
+      timestamp: new Date().toISOString(),
+      cwd: params.workspace,
+      originator: "bootstrap-personality-migration-test",
+      agencVersion: "0.2.0",
+      model: "grok-4-fast",
+      modelProvider: params.provider,
+    });
+    const threadStore = new FileThreadStore({
+      cwd: params.workspace,
+      agencHome: params.agencHome,
+      defaultModelProviderId: params.provider,
+    });
+    try {
+      threadStore.createThread({
+        threadId: params.threadId,
+        rolloutStore,
+        cwd: params.workspace,
+        model: "grok-4-fast",
+        modelProvider: params.provider,
+      });
+      threadStore.appendItems({
+        threadId: params.threadId,
+        items: [
+          {
+            type: "response_item",
+            payload: { role: "user", content: "previous session" },
+          },
+        ],
+      });
+      threadStore.shutdownThread(params.threadId);
+    } finally {
+      threadStore.close();
+      rolloutStore.close();
+    }
   });
 }
 
@@ -281,6 +351,65 @@ describe("readStartupCliFlags", () => {
 describe("bootstrapLocalRuntimeSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("runs personality migration before constructing the first turn context", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    writeRecordedThreadForBootstrap({
+      agencHome: home,
+      workspace,
+      threadId: "personality-prior-thread",
+      provider: "grok",
+    });
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.config.personality).toBe("pragmatic");
+      expect(boot.ctx.config.personality).toBe("pragmatic");
+      await expect(
+        readFile(join(home, PERSONALITY_MIGRATION_FILENAME), "utf8"),
+      ).resolves.toBe("v1\n");
+      const persisted = parseToml(
+        await readFile(join(home, "config.toml"), "utf8"),
+      ) as Record<string, unknown>;
+      expect(persisted.personality).toBe("pragmatic");
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   it("builds the shared local bootstrap contract and forwards registry customizations", async () => {

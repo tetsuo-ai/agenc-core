@@ -39,7 +39,6 @@ function runPowerShell(
   options?: { input?: string },
 ): ReturnType<typeof execaSync> | null {
   try {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     return execaSync('powershell.exe', ['-Command', script], {
       input: options?.input,
       reject: false,
