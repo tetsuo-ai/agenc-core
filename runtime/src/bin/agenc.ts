@@ -244,7 +244,7 @@ export function formatCliHelpText(): string {
     "       agenc agent attach <id>",
     "       agenc agent stop <id>",
     "       agenc agent logs <id>",
-    "       agenc mcp serve --transport <stdio|sse>",
+    "       agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor>",
     "",
     "Commands:",
     "  init                                    Create .agenc/config.json and AGENC.md",
@@ -256,7 +256,7 @@ export function formatCliHelpText(): string {
     "  state                                   Export or import project state",
     "  daemon                                  Manage the local AgenC daemon",
     "  agent                                   Start, attach, inspect, or stop background agents",
-    "  mcp                                     Serve AgenC tools over MCP",
+    "  mcp                                     Manage MCP servers or serve AgenC tools over MCP",
     "  help [command]                          Show top-level or command help",
     "",
     "Options:",
@@ -283,7 +283,7 @@ export function formatCliHelpText(): string {
     "  agenc --resume <session-id>",
     "  agenc agent start \"fix the failing parser test\"",
     "  agenc config validate",
-    "  agenc mcp serve --transport stdio",
+    "  agenc mcp list",
     "  agenc help permissions",
   ].join("\n");
 }

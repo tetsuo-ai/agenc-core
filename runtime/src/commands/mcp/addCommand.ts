@@ -7,27 +7,8 @@
  */
 import { type Command, Option } from '@commander-js/extra-typings'
 import { cliError, cliOk } from '../../cli/exit.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
-import {
-  readClientSecret,
-  saveMcpClientSecret,
-} from '../../services/mcp/auth.js'
-import { addMcpConfig } from '../../services/mcp/config.js'
-import {
-  describeMcpConfigFilePath,
-  ensureConfigScope,
-  ensureTransport,
-  parseHeaders,
-} from '../../services/mcp/utils.js'
-import {
-  getXaaIdpSettings,
-  isXaaEnabled,
-} from '../../services/mcp/xaaIdpLogin.js'
-import { parseEnvVars } from '../../utils/envUtils.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { isXaaEnabled } from '../../services/mcp/xaaIdpLogin.js'
+import { runMcpAddAction } from './addAction.js'
 
 /**
  * Registers the `mcp add` subcommand on the given Commander command.
@@ -99,182 +80,17 @@ export function registerMcpAddCommand(mcp: Command): void {
       }
 
       try {
-        const scope = ensureConfigScope(options.scope)
-        const transport = ensureTransport(options.transport)
-
-        // XAA fail-fast: validate at add-time, not auth-time.
-        if (options.xaa && !isXaaEnabled()) {
-          cliError(
-            'Error: --xaa requires AGENC_ENABLE_XAA=1 in your environment',
-          )
-        }
-        const xaa = Boolean(options.xaa)
-        if (xaa) {
-          const missing: string[] = []
-          if (!options.clientId) missing.push('--client-id')
-          if (!options.clientSecret) missing.push('--client-secret')
-          if (!getXaaIdpSettings()) {
-            missing.push(
-              "'agenc mcp xaa setup' (settings.xaaIdp not configured)",
-            )
-          }
-          if (missing.length) {
-            cliError(`Error: --xaa requires: ${missing.join(', ')}`)
-          }
-        }
-
-        // Check if transport was explicitly provided
-        const transportExplicit = options.transport !== undefined
-
-        // Check if the command looks like a URL (likely incorrect usage)
-        const looksLikeUrl =
-          actualCommand.startsWith('http://') ||
-          actualCommand.startsWith('https://') ||
-          actualCommand.startsWith('localhost') ||
-          actualCommand.endsWith('/sse') ||
-          actualCommand.endsWith('/mcp')
-
-        logEvent('tengu_mcp_add', {
-          type: transport as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          scope:
-            scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          source:
-            'command' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          transport:
-            transport as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-          transportExplicit: transportExplicit,
-          looksLikeUrl: looksLikeUrl,
+        await runMcpAddAction(name, actualCommand, actualArgs, {
+          scope: options.scope,
+          transport: options.transport,
+          env: options.env,
+          header: options.header,
+          clientId: options.clientId,
+          clientSecret: options.clientSecret,
+          callbackPort: options.callbackPort,
+          xaa: options.xaa,
         })
-
-        if (transport === 'sse') {
-          if (!actualCommand) {
-            cliError('Error: URL is required for SSE transport.')
-          }
-
-          const headers = options.header
-            ? parseHeaders(options.header)
-            : undefined
-
-          const callbackPort = options.callbackPort
-            ? parseInt(options.callbackPort, 10)
-            : undefined
-          const oauth =
-            options.clientId || callbackPort || xaa
-              ? {
-                  ...(options.clientId ? { clientId: options.clientId } : {}),
-                  ...(callbackPort ? { callbackPort } : {}),
-                  ...(xaa ? { xaa: true } : {}),
-                }
-              : undefined
-
-          const clientSecret =
-            options.clientSecret && options.clientId
-              ? await readClientSecret()
-              : undefined
-
-          const serverConfig = {
-            type: 'sse' as const,
-            url: actualCommand,
-            headers,
-            oauth,
-          }
-          await addMcpConfig(name, serverConfig, scope)
-
-          if (clientSecret) {
-            saveMcpClientSecret(name, serverConfig, clientSecret)
-          }
-
-          process.stdout.write(
-            `Added SSE MCP server ${name} with URL: ${actualCommand} to ${scope} config\n`,
-          )
-          if (headers) {
-            process.stdout.write(
-              `Headers: ${jsonStringify(headers, null, 2)}\n`,
-            )
-          }
-        } else if (transport === 'http') {
-          if (!actualCommand) {
-            cliError('Error: URL is required for HTTP transport.')
-          }
-
-          const headers = options.header
-            ? parseHeaders(options.header)
-            : undefined
-
-          const callbackPort = options.callbackPort
-            ? parseInt(options.callbackPort, 10)
-            : undefined
-          const oauth =
-            options.clientId || callbackPort || xaa
-              ? {
-                  ...(options.clientId ? { clientId: options.clientId } : {}),
-                  ...(callbackPort ? { callbackPort } : {}),
-                  ...(xaa ? { xaa: true } : {}),
-                }
-              : undefined
-
-          const clientSecret =
-            options.clientSecret && options.clientId
-              ? await readClientSecret()
-              : undefined
-
-          const serverConfig = {
-            type: 'http' as const,
-            url: actualCommand,
-            headers,
-            oauth,
-          }
-          await addMcpConfig(name, serverConfig, scope)
-
-          if (clientSecret) {
-            saveMcpClientSecret(name, serverConfig, clientSecret)
-          }
-
-          process.stdout.write(
-            `Added HTTP MCP server ${name} with URL: ${actualCommand} to ${scope} config\n`,
-          )
-          if (headers) {
-            process.stdout.write(
-              `Headers: ${jsonStringify(headers, null, 2)}\n`,
-            )
-          }
-        } else {
-          if (
-            options.clientId ||
-            options.clientSecret ||
-            options.callbackPort ||
-            options.xaa
-          ) {
-            process.stderr.write(
-              `Warning: --client-id, --client-secret, --callback-port, and --xaa are only supported for HTTP/SSE transports and will be ignored for stdio.\n`,
-            )
-          }
-
-          // Warn if this looks like a URL but transport wasn't explicitly specified
-          if (!transportExplicit && looksLikeUrl) {
-            process.stderr.write(
-              `\nWarning: The command "${actualCommand}" looks like a URL, but is being interpreted as a stdio server as --transport was not specified.\n`,
-            )
-            process.stderr.write(
-              `If this is an HTTP server, use: agenc mcp add --transport http ${name} ${actualCommand}\n`,
-            )
-            process.stderr.write(
-              `If this is an SSE server, use: agenc mcp add --transport sse ${name} ${actualCommand}\n`,
-            )
-          }
-
-          const env = parseEnvVars(options.env)
-          await addMcpConfig(
-            name,
-            { type: 'stdio', command: actualCommand, args: actualArgs, env },
-            scope,
-          )
-
-          process.stdout.write(
-            `Added stdio MCP server ${name} with command: ${actualCommand} ${actualArgs.join(' ')} to ${scope} config\n`,
-          )
-        }
-        cliOk(`File modified: ${describeMcpConfigFilePath(scope)}`)
+        cliOk()
       } catch (error) {
         cliError((error as Error).message)
       }
