@@ -11,12 +11,12 @@ Primary source anchors:
 - `src/memdir/memoryScan.ts`
 - `src/memdir/memoryAge.ts`
 - `src/memdir/findRelevantMemories.ts`
+- `src/utils/claudemd.ts` <!-- branding-scan: allow source citation path -->
 - `src/services/extractMemories/extractMemories.ts`
 - `src/services/extractMemories/prompts.ts`
 - `src/services/SessionMemory/sessionMemory.ts`
 - `src/services/SessionMemory/sessionMemoryUtils.ts`
 - `src/services/SessionMemory/prompts.ts`
-- project-instruction loader source
 - `src/utils/memoryFileDetection.ts`
 - `state/src/model/memories.rs`
 - `state/src/runtime/memories.rs`
@@ -35,7 +35,7 @@ This directory owns the MM-01 memory subsystem:
   runtime code paths, including stable relevant-memory header formatting and
   branded instruction-memory loader, filtering, selector, cache-management,
   external-include, and @memory mention entrypoints.
-- `agencmd.ts` owns full AGENC.md discovery with includes and rules. It is the only temporary strictness boundary in this directory.
+- `agencmd.ts` owns full AGENC.md discovery with includes and rules. It is the only temporary strictness boundary in this directory. OB-07 tightens root instruction priority to `AGENC.md`, with `AGENTS.md` and `CLAUDE.md` as compatibility fallbacks.
 - `project-memory.ts` is the strict project-memory API that consolidates the
   project-instruction loader, selector path, privacy helpers, and @memory
   mention syntax for callers.

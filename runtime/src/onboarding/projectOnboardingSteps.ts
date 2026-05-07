@@ -1,6 +1,11 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
 
+import {
+  getProjectInstructionFilePaths,
+  PRIMARY_PROJECT_INSTRUCTION_FILE,
+} from "../utils/projectInstructions.js";
+
 export type Step = {
   readonly key: string;
   readonly text: string;
@@ -17,7 +22,7 @@ export interface ProjectOnboardingStepOptions {
   readonly stat?: (path: string) => { isDirectory(): boolean; isFile?(): boolean };
 }
 
-const DEFAULT_INSTRUCTION_FILE = "AGENC.md";
+const DEFAULT_INSTRUCTION_FILE = PRIMARY_PROJECT_INSTRUCTION_FILE;
 
 function projectCwd(cwd: string | undefined): string {
   return resolve(cwd ?? process.cwd());
@@ -64,12 +69,16 @@ export function findProjectInstructionFilePathInAncestors(
   const root = parse(current).root;
 
   while (true) {
-    const candidate = join(current, instructionFileName);
-    if (
-      existsAt(candidate, options.exists) &&
-      isRegularFile(candidate, options.stat)
-    ) {
-      return candidate;
+    const candidates = options.instructionFileName
+      ? [join(current, instructionFileName)]
+      : getProjectInstructionFilePaths(current);
+    for (const candidate of candidates) {
+      if (
+        existsAt(candidate, options.exists) &&
+        isRegularFile(candidate, options.stat)
+      ) {
+        return candidate;
+      }
     }
     if (current === root) return null;
     current = dirname(current);

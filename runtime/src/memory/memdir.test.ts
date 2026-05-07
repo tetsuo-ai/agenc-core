@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { getProjectRoot, setProjectRoot } from "../bootstrap/state.js";
+import {
+  getOriginalCwd,
+  getProjectRoot,
+  setOriginalCwd,
+  setProjectRoot,
+} from "../bootstrap/state.js";
 import {
   getGlobalMemoryEntrypoint,
   getGlobalMemoryPath,
@@ -35,6 +40,7 @@ let agencmd: typeof import("./agencmd.js");
 
 let tempRoot = "";
 let oldProjectRoot = "";
+let oldOriginalCwd = "";
 let oldConfigDir: string | undefined;
 let oldDisableAutoMemory: string | undefined;
 
@@ -46,21 +52,28 @@ beforeAll(async () => {
 beforeEach(() => {
   tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-prompt-"));
   oldProjectRoot = getProjectRoot();
+  oldOriginalCwd = getOriginalCwd();
   oldConfigDir = process.env.AGENC_CONFIG_DIR;
   oldDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
   process.env.AGENC_CONFIG_DIR = join(tempRoot, "home");
   process.env.AGENC_DISABLE_AUTO_MEMORY = "0";
-  setProjectRoot(join(tempRoot, "repo"));
+  const repo = join(tempRoot, "repo");
+  mkdirSync(repo, { recursive: true });
+  setProjectRoot(repo);
+  setOriginalCwd(repo);
   getProjectMemoryPath.cache?.clear?.();
+  agencmd.clearMemoryFileCaches();
 });
 
 afterEach(() => {
   setProjectRoot(oldProjectRoot);
+  setOriginalCwd(oldOriginalCwd);
   if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
   else process.env.AGENC_CONFIG_DIR = oldConfigDir;
   if (oldDisableAutoMemory === undefined) delete process.env.AGENC_DISABLE_AUTO_MEMORY;
   else process.env.AGENC_DISABLE_AUTO_MEMORY = oldDisableAutoMemory;
   getProjectMemoryPath.cache?.clear?.();
+  agencmd.clearMemoryFileCaches();
   rmSync(tempRoot, { recursive: true, force: true });
 });
 
@@ -127,6 +140,20 @@ describe("memory prompt", () => {
         expect.stringContaining("Global durable memory"),
         expect.stringContaining("Project durable memory"),
       ]),
+    );
+  });
+
+  it("falls back to a usable project instruction file when AGENC.md is not regular", async () => {
+    const repo = getProjectRoot();
+    mkdirSync(join(repo, "AGENC.md"));
+    writeFileSync(join(repo, "AGENTS.md"), "Fallback project instructions");
+
+    const files = await agencmd.getMemoryFiles();
+
+    expect(files.map((file) => file.path)).toContain(join(repo, "AGENTS.md"));
+    expect(files.map((file) => file.path)).not.toContain(join(repo, "AGENC.md"));
+    expect(files.map((file) => file.content)).toContain(
+      "Fallback project instructions",
     );
   });
 

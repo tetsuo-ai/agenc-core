@@ -72,6 +72,20 @@ describe("project onboarding steps", () => {
     });
   });
 
+  test("completes when a fallback project instruction file exists", () => {
+    withTempDir("agenc-project-steps-", (cwd) => {
+      const child = join(cwd, "app", "src");
+      mkdirSync(child, { recursive: true });
+      writeFileSync(join(cwd, "AGENTS.md"), "Project rules.\n");
+      writeFileSync(join(child, "index.ts"), "export {};\n");
+
+      expect(findProjectInstructionFilePathInAncestors({ cwd: child })).toBe(
+        join(cwd, "AGENTS.md"),
+      );
+      expect(isProjectOnboardingComplete({ cwd: child })).toBe(true);
+    });
+  });
+
   test("does not treat an AGENC.md directory as project instructions", () => {
     withTempDir("agenc-project-steps-", (cwd) => {
       mkdirSync(join(cwd, "AGENC.md"));

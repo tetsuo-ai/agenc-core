@@ -1,0 +1,132 @@
+{
+  "contractName": "agenc-md-handling",
+  "scope": "Implement AgenC project instruction file handling with AGENC.md priority, compatibility fallbacks, include expansion, memory-file detection, and the external-include trust dialog.",
+  "sourceRoot": "TUI/source reference checkout",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "project instruction loader source",
+    "external include dialog source",
+    "memory scan source",
+    "memory taxonomy source",
+    "memory age source",
+    "memory file detection source",
+    "memory selector path source"
+  ],
+  "sourceCitationFiles": [
+    "runtime/src/prompts/PARITY.md",
+    "runtime/src/memory/PARITY.md",
+    "runtime/src/tui/components/PARITY.md"
+  ],
+  "targetFiles": [
+    "runtime/src/prompts/project-instructions.ts",
+    "runtime/src/prompts/agenc-md.ts",
+    "runtime/src/utils/projectInstructions.ts",
+    "runtime/src/memory/agencmd.ts",
+    "runtime/src/memory/project-memory.ts",
+    "runtime/src/memory/scan.ts",
+    "runtime/src/memory/types.ts",
+    "runtime/src/memory/age.ts",
+    "runtime/src/memory/privacy.ts",
+    "runtime/src/tui/components/AgenCMdExternalIncludesDialog.tsx",
+    "runtime/src/tui/components/memory/selector-options.ts",
+    "runtime/src/onboarding/projectOnboardingSteps.ts"
+  ],
+  "testFiles": [
+    "runtime/src/prompts/project-instructions.test.ts",
+    "runtime/src/prompts/agenc-md.test.ts",
+    "runtime/src/utils/projectInstructions.test.ts",
+    "runtime/src/onboarding/projectOnboardingSteps.test.ts",
+    "runtime/src/tui/components/AgenCMdExternalIncludesDialog.test.tsx",
+    "runtime/src/memory/memdir.test.ts",
+    "runtime/src/memory/project-memory.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "OB-07-01",
+      "source": "project instruction loader source",
+      "target": "runtime/src/prompts/project-instructions.ts + runtime/src/utils/projectInstructions.ts",
+      "requiredBehaviors": [
+        "Project instruction discovery prefers AGENC.md over compatibility fallback files.",
+        "AGENTS.md is used when AGENC.md is absent.",
+        "CLAUDE.md is used only when both AGENC.md and AGENTS.md are absent.",
+        "Root-to-cwd project instruction chains preserve the same priority at each directory."
+      ],
+      "edgeCases": [
+        "Non-regular instruction candidates are skipped.",
+        "The byte budget and UTF-8 boundary truncation behavior remain unchanged.",
+        "Project onboarding treats fallback instruction files as satisfying project instruction setup."
+      ],
+      "tests": [
+        "runtime/src/prompts/project-instructions.test.ts",
+        "runtime/src/prompts/agenc-md.test.ts",
+        "runtime/src/utils/projectInstructions.test.ts",
+        "runtime/src/onboarding/projectOnboardingSteps.test.ts",
+        "runtime/src/memory/memdir.test.ts",
+        "runtime/src/memory/project-memory.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "OB-07-02",
+      "source": "project instruction loader source",
+      "target": "runtime/src/prompts/agenc-md.ts + runtime/src/memory/agencmd.ts",
+      "requiredBehaviors": [
+        "Managed, user, project, and local instruction tiers remain assembled in that order.",
+        "Prompt-facing AGENC.md content expands @include directives with depth, byte, circular-reference, and path-boundary checks.",
+        "Memory-facing instruction loading preserves include-parent tracking, external include detection, and warning gating."
+      ],
+      "edgeCases": [
+        "External includes remain approval-gated.",
+        "Dropped prompt includes remain visible through warning text.",
+        "Instruction reload hooks are not fired by cache invalidation that is only needed for correctness."
+      ],
+      "tests": [
+        "runtime/src/tui/components/AgenCMdExternalIncludesDialog.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "OB-07-03",
+      "source": "external include dialog source",
+      "target": "runtime/src/tui/components/AgenCMdExternalIncludesDialog.tsx",
+      "requiredBehaviors": [
+        "The external include warning dialog renders AgenC-branded trust copy and the external include list.",
+        "Accepting or declining records the AgenC project-config fields used by the instruction loader.",
+        "Telemetry event names use AgenC-owned instruction terminology."
+      ],
+      "edgeCases": [
+        "Escape is treated as decline.",
+        "The standalone dialog can hide the surrounding border/input guide when embedded."
+      ],
+      "tests": [
+        "runtime/src/prompts/agenc-md.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "OB-07-04",
+      "source": "memory scan, taxonomy, age, detection, and selector path sources",
+      "target": "runtime/src/memory/scan.ts + runtime/src/memory/types.ts + runtime/src/memory/age.ts + runtime/src/memory/privacy.ts + runtime/src/tui/components/memory/selector-options.ts",
+      "requiredBehaviors": [
+        "Memory directory scanning, taxonomy parsing, freshness text, auto-managed memory detection, and selector path behavior remain owned by the AgenC memory subsystem.",
+        "This item reuses those existing AgenC-owned counterparts instead of recreating donor-shaped files under runtime/src/memdir/."
+      ],
+      "edgeCases": [
+        "Team memory stays behind existing feature gates.",
+        "Session memory files are classified under the AgenC config directory."
+      ],
+      "tests": [
+        "runtime/src/memory/scan.test.ts",
+        "runtime/src/memory/privacy.test.ts",
+        "runtime/src/commands/memory/memory.contract.test.tsx"
+      ],
+      "status": "required"
+    }
+  ],
+  "intentionalReductions": [
+    "No files were added under the upstream mirror.",
+    "The prompt loader keeps the existing explicit @include syntax rather than accepting every bare at-path token.",
+    "The memory scan, type, age, detection, and selector-path behavior already lives in AgenC-owned memory modules from earlier memory items; OB-07 documents and reuses those counterparts."
+  ]
+}

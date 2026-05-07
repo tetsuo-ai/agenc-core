@@ -40,7 +40,7 @@ describe('project-memory API', () => {
     expect(
       getProjectMemoryPathForSelector(
         [
-          projectFile(join(repoDir, 'AGENTS.md')),
+          projectFile(join(repoDir, 'AGENC.md')),
           projectFile(join(packageDir, 'AGENC.md')),
         ],
         join(packageDir, 'src'),
@@ -48,14 +48,14 @@ describe('project-memory API', () => {
     ).toBe(join(packageDir, 'AGENC.md'))
   })
 
-  it('defaults new project memory to AGENTS.md in the current directory', () => {
+  it('defaults new project memory to AGENC.md in the current directory', () => {
     const cwd = join('/repo', 'packages', 'app')
     expect(
       getProjectMemoryPathForSelector(
         [projectFile(join('/other-worktree', 'AGENTS.md'))],
         cwd,
       ),
-    ).toBe(join(cwd, 'AGENTS.md'))
+    ).toBe(join(cwd, 'AGENC.md'))
   })
 
   it('ignores included project instruction files for selector ownership', () => {
@@ -65,12 +65,12 @@ describe('project-memory API', () => {
     expect(
       getProjectMemoryPathForSelector(
         [
-          projectFile(join(repoDir, 'AGENTS.md')),
-          projectFile(includePath, join(repoDir, 'AGENTS.md')),
+          projectFile(join(repoDir, 'AGENC.md')),
+          projectFile(includePath, join(repoDir, 'AGENC.md')),
         ],
         join(repoDir, 'src'),
       ),
-    ).toBe(join(repoDir, 'AGENTS.md'))
+    ).toBe(join(repoDir, 'AGENC.md'))
   })
 
   it('exposes memory mention syntax for mention extraction routing', () => {
@@ -88,6 +88,7 @@ describe('project-memory API', () => {
 
   it('re-exports project memory file and pattern detection helpers', () => {
     expect(isMemoryFilePath(join('/repo', 'AGENTS.md'))).toBe(true)
+    expect(isMemoryFilePath(join('/repo', 'CLAUDE.md'))).toBe(true)
     expect(isMemoryFilePath(join('/repo', '.agenc', 'rules', 'style.md'))).toBe(
       true,
     )

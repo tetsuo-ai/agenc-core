@@ -2,8 +2,12 @@ import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 
 import {
+  AGENTS_PROJECT_INSTRUCTION_FILE,
+  CLAUDE_PROJECT_INSTRUCTION_FILE,
   findProjectInstructionFilePathInAncestors,
   FALLBACK_PROJECT_INSTRUCTION_FILE,
+  FALLBACK_PROJECT_INSTRUCTION_FILES,
+  getProjectInstructionFileNames,
   getProjectInstructionFilePath,
   getProjectInstructionFilePaths,
   hasProjectInstructionFile,
@@ -12,11 +16,12 @@ import {
 } from './projectInstructions.js'
 
 describe('projectInstructions', () => {
-  test('prefers AGENTS.md over AGENC.md for root project instructions', () => {
+  test('prefers AGENC.md over fallback project instructions', () => {
     const dir = '/repo'
     const existingPaths = new Set([
       join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE),
       join(dir, FALLBACK_PROJECT_INSTRUCTION_FILE),
+      join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE),
     ])
 
     const filePath = getProjectInstructionFilePath(
@@ -27,7 +32,7 @@ describe('projectInstructions', () => {
     expect(filePath).toBe(join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE))
   })
 
-  test('falls back to AGENC.md when AGENTS.md is absent', () => {
+  test('falls back to AGENTS.md when AGENC.md is absent', () => {
     const dir = '/repo'
     const existingPaths = new Set([join(dir, FALLBACK_PROJECT_INSTRUCTION_FILE)])
 
@@ -39,12 +44,53 @@ describe('projectInstructions', () => {
     expect(filePath).toBe(join(dir, FALLBACK_PROJECT_INSTRUCTION_FILE))
   })
 
-  test('returns both candidate root instruction paths', () => {
+  test('falls back to CLAUDE.md when AGENC.md and AGENTS.md are absent', () => {
+    const dir = '/repo'
+    const existingPaths = new Set([join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE)])
+
+    const filePath = getProjectInstructionFilePath(
+      dir,
+      path => existingPaths.has(path),
+    )
+
+    expect(filePath).toBe(join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE))
+  })
+
+  test('skips non-regular candidates when a usable predicate is provided', () => {
+    const dir = '/repo'
+    const existingPaths = new Set([
+      join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE),
+      join(dir, AGENTS_PROJECT_INSTRUCTION_FILE),
+    ])
+    const regularFiles = new Set([join(dir, AGENTS_PROJECT_INSTRUCTION_FILE)])
+
+    const filePath = getProjectInstructionFilePath(
+      dir,
+      path => existingPaths.has(path),
+      path => regularFiles.has(path),
+    )
+
+    expect(filePath).toBe(join(dir, AGENTS_PROJECT_INSTRUCTION_FILE))
+    expect(
+      findProjectInstructionFilePathInAncestors(
+        join(dir, 'src'),
+        path => existingPaths.has(path),
+        path => regularFiles.has(path),
+      ),
+    ).toBe(join(dir, AGENTS_PROJECT_INSTRUCTION_FILE))
+  })
+
+  test('returns project instruction paths in priority order', () => {
     const dir = '/repo'
 
+    expect(getProjectInstructionFileNames()).toEqual([
+      PRIMARY_PROJECT_INSTRUCTION_FILE,
+      ...FALLBACK_PROJECT_INSTRUCTION_FILES,
+    ])
     expect(getProjectInstructionFilePaths(dir)).toEqual([
       join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE),
-      join(dir, FALLBACK_PROJECT_INSTRUCTION_FILE),
+      join(dir, AGENTS_PROJECT_INSTRUCTION_FILE),
+      join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE),
     ])
   })
 
@@ -58,11 +104,14 @@ describe('projectInstructions', () => {
     expect(hasProjectInstructionFile(dir, () => false)).toBe(false)
   })
 
-  test('recognizes AGENTS.md as a root instruction filename', () => {
+  test('recognizes root instruction filenames', () => {
     expect(isProjectInstructionFileName(PRIMARY_PROJECT_INSTRUCTION_FILE)).toBe(
       true,
     )
     expect(isProjectInstructionFileName(FALLBACK_PROJECT_INSTRUCTION_FILE)).toBe(
+      true,
+    )
+    expect(isProjectInstructionFileName(CLAUDE_PROJECT_INSTRUCTION_FILE)).toBe(
       true,
     )
     expect(isProjectInstructionFileName('README.md')).toBe(false)
