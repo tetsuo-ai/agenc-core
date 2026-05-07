@@ -129,6 +129,7 @@ import {
   SessionConfiguration,
   SessionTelemetry,
   SkillLoadOutcome,
+  type Personality,
   type TurnContext,
 } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
@@ -218,6 +219,7 @@ export interface SessionState {
   previousTurnSettings?: {
     readonly model: string;
     readonly realtimeActive?: boolean;
+    readonly personality?: Personality;
     readonly contextWindow?: number;
     readonly autoCompactTokenLimit?: number;
     readonly modelInfo?: {

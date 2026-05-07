@@ -614,7 +614,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
   it("propagates personality, reasoning_summary, and compact_prompt", () => {
     const cfg = {
       ...defaultConfig(),
-      personality: "terse" as const,
+      personality: "friendly" as const,
       reasoning_summary: "detailed" as const,
       compact_prompt: "COMPACT: keep only the durable facts.",
     };
@@ -623,15 +623,14 @@ describe("sessionConfigurationFromAgenCConfig", () => {
       workspaceRoot: "/tmp/ws",
       model: "grok-4-fast",
     });
-    expect(sc.personality).toBe("terse");
+    expect(sc.personality).toBe("friendly");
     expect(sc.modelReasoningSummary).toBe("detailed");
     expect(sc.compactPrompt).toBe("COMPACT: keep only the durable facts.");
   });
 
   it("leaves propagated fields undefined when config omits them", () => {
     const cfg = { ...defaultConfig() };
-    // defaultConfig() sets personality=default — override to undefined
-    // to confirm the bridge skips the field entirely.
+    // Confirm the bridge skips absent personality fields entirely.
     const override = {
       ...cfg,
       personality: undefined,

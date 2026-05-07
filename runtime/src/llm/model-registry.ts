@@ -15,6 +15,7 @@ import {
   type ResolvedModelMetadata,
 } from "./model-metadata.js";
 import { resolveRegisteredModelCatalogEntry } from "./registry/model-catalog.js";
+import { modelSupportsPersonality } from "../context/personality-spec-instructions.js";
 import {
   DEFAULT_MODEL_COSTS,
   DEFAULT_UNKNOWN_MODEL_COST,
@@ -152,6 +153,10 @@ export function modelRegistryEntryToModelInfo(
     truncationPolicy: "off",
     supportsToolUse: entry.capabilities.supportsToolUse,
     supportsParallelToolCalls: catalog?.supportsParallelToolCalls ?? false,
+    ...(catalog?.modelMessages !== undefined
+      ? { modelMessages: catalog.modelMessages }
+      : {}),
+    supportsPersonality: modelSupportsPersonality(catalog?.modelMessages),
     visibility,
     showInPicker: visibility === "list",
     usedFallbackModelMetadata: entry.metadata.usedFallbackModelMetadata,

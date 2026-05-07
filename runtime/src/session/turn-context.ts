@@ -19,6 +19,11 @@
 import type { LLMProvider } from "../llm/types.js";
 import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { normalizePersonality } from "../context/personality-spec-instructions.js";
+import type {
+  ModelMessages,
+  Personality,
+} from "../context/personality-spec-instructions.js";
 import type {
   BlockedRequestObserver,
   NetworkPolicyDecider,
@@ -71,6 +76,8 @@ export interface ModelInfo {
   readonly truncationPolicy: TruncationPolicy;
   readonly supportsToolUse?: boolean;
   readonly supportsParallelToolCalls?: boolean;
+  readonly modelMessages?: ModelMessages;
+  readonly supportsPersonality?: boolean;
   readonly visibility?: "list" | "hide" | "none";
   readonly showInPicker?: boolean;
   /** Whether the metadata came from a fallback (warn user — see agenc runtime 594-606). */
@@ -100,8 +107,7 @@ export interface CollaborationMode {
   readonly developerInstructions?: string;
 }
 
-/** agenc runtime `Personality`. T10 (config) lands real impl. */
-export type Personality = string;
+export type { Personality } from "../context/personality-spec-instructions.js";
 
 /** agenc runtime `Constrained<T>` value carrier with current + allowed-set. */
 export interface Constrained<T> {
@@ -787,7 +793,7 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
     fileSystemSandboxPolicy: ctx.fileSystemSandboxPolicy,
     model: ctx.modelInfo.slug,
     modelProviderId: ctx.modelProviderId,
-    personality: ctx.personality,
+    personality: normalizePersonality(ctx.personality ?? ctx.config.personality),
     collaborationMode: ctx.collaborationMode,
     realtimeActive: ctx.realtimeActive,
     effort: ctx.reasoningEffort,

@@ -3,10 +3,16 @@
  * provider-neutral registry.
  *
  * Shape difference from upstream:
- *   - The donor catalog includes prompt/personality text. AgenC stores only
- *     executable model metadata here; prompts remain owned by the prompt layer.
+ *   - AgenC keeps full prompt text in the prompt layer. This catalog carries
+ *     only the per-model personality template surface needed to splice the
+ *     current prompt into model-specific instructions.
  */
 
+import {
+  BASE_INSTRUCTIONS_PLACEHOLDER,
+  PERSONALITY_PLACEHOLDER,
+  type ModelMessages,
+} from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
@@ -25,6 +31,7 @@ export interface RegisteredModelCatalogEntry {
   readonly supportsStructuredOutput: boolean;
   readonly supportsSearchTool: boolean;
   readonly supportsVerbosity: boolean;
+  readonly modelMessages?: ModelMessages;
   readonly webSearchToolType: ModelWebSearchToolType;
   readonly supportsReasoningSummaries: boolean;
   readonly defaultReasoningSummary: ReasoningSummary;
@@ -64,6 +71,17 @@ const TEXT_IMAGE_MODALITIES = Object.freeze([
 ] as const satisfies readonly ModelInputModality[]);
 const FAST_SPEED_TIER = Object.freeze(["fast"] as const);
 const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
+const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
+  instructionsTemplate:
+    `${PERSONALITY_PLACEHOLDER}\n\n${BASE_INSTRUCTIONS_PLACEHOLDER}`,
+  instructionsVariables: Object.freeze({
+    personalityDefault: "",
+    personalityFriendly:
+      "You optimize for team morale and being a supportive teammate as much as code quality.",
+    personalityPragmatic:
+      "You are a deeply pragmatic, effective software engineer.",
+  }),
+});
 
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
@@ -79,6 +97,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsStructuredOutput: true,
       supportsSearchTool: true,
       supportsVerbosity: true,
+      modelMessages: OPENAI_PERSONALITY_MESSAGES,
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
@@ -100,6 +119,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsStructuredOutput: true,
       supportsSearchTool: true,
       supportsVerbosity: true,
+      modelMessages: OPENAI_PERSONALITY_MESSAGES,
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
@@ -121,6 +141,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsStructuredOutput: true,
       supportsSearchTool: true,
       supportsVerbosity: true,
+      modelMessages: OPENAI_PERSONALITY_MESSAGES,
       webSearchToolType: "text_and_image",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
@@ -142,6 +163,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsStructuredOutput: true,
       supportsSearchTool: true,
       supportsVerbosity: true,
+      modelMessages: OPENAI_PERSONALITY_MESSAGES,
       webSearchToolType: "text",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
@@ -163,6 +185,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsStructuredOutput: true,
       supportsSearchTool: true,
       supportsVerbosity: true,
+      modelMessages: OPENAI_PERSONALITY_MESSAGES,
       webSearchToolType: "text",
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "auto",

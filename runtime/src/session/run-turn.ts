@@ -78,6 +78,14 @@ import {
   realtimeStartWithInstructionsMessage,
 } from "../conversation/realtime/instructions/messages.js";
 import {
+  getModelInstructions,
+  modelSupportsPersonality,
+  normalizePersonality,
+  personalityMessageForModel,
+  personalitySpecInstructionMessage,
+  type Personality,
+} from "../context/personality-spec-instructions.js";
+import {
   streamModel,
   StreamModelError,
   type StreamModelRequestContract,
@@ -1321,18 +1329,19 @@ function buildSeedMessages(
   return { system, prior, user };
 }
 
-interface RealtimeUpdatePreviousTurnSettings {
+interface ContextualUpdatePreviousTurnSettings {
   readonly realtimeActive?: boolean;
+  readonly personality?: Personality;
 }
 
 function readRealtimeUpdateBaseline(session: Session): {
   readonly previousContextItem?: TurnContextItem;
-  readonly previousTurnSettings?: RealtimeUpdatePreviousTurnSettings;
+  readonly previousTurnSettings?: ContextualUpdatePreviousTurnSettings;
 } {
   const peek = (session.state as unknown as {
     unsafePeek?: () => {
       readonly referenceContextItem?: TurnContextItem;
-      readonly previousTurnSettings?: RealtimeUpdatePreviousTurnSettings;
+      readonly previousTurnSettings?: ContextualUpdatePreviousTurnSettings;
     };
   }).unsafePeek?.();
   return {
@@ -1347,7 +1356,7 @@ function readRealtimeUpdateBaseline(session: Session): {
 
 function buildRealtimeInstructionUpdateMessage(
   previousContextItem: TurnContextItem | undefined,
-  previousTurnSettings: RealtimeUpdatePreviousTurnSettings | undefined,
+  previousTurnSettings: ContextualUpdatePreviousTurnSettings | undefined,
   ctx: TurnContext,
 ): LLMMessage | undefined {
   const previousRealtimeActive =
@@ -1365,6 +1374,43 @@ function buildRealtimeInstructionUpdateMessage(
       : realtimeStartInstructionMessage();
   }
   return undefined;
+}
+
+function buildPersonalitySpecUpdateMessage(
+  previousContextItem: TurnContextItem | undefined,
+  previousTurnSettings: ContextualUpdatePreviousTurnSettings | undefined,
+  ctx: TurnContext,
+): LLMMessage | undefined {
+  if (ctx.features?.enabled?.("personality") === false) return undefined;
+  const hasPrevious =
+    previousContextItem !== undefined || previousTurnSettings !== undefined;
+  if (!hasPrevious) return undefined;
+  const personality = resolveTurnPersonality(ctx);
+  if (personality === undefined || personality === "none") return undefined;
+  if (!modelSupportsPersonality(ctx.modelInfo.modelMessages)) return undefined;
+  const previousPersonality = normalizePersonality(
+    previousContextItem?.personality ?? previousTurnSettings?.personality,
+  );
+  if (previousPersonality === personality) return undefined;
+  const message = personalityMessageForModel(ctx.modelInfo, personality);
+  return message !== undefined && message.length > 0
+    ? personalitySpecInstructionMessage(message)
+    : undefined;
+}
+
+function resolveTurnPersonality(ctx: TurnContext): Personality | undefined {
+  return normalizePersonality(ctx.personality ?? ctx.config.personality);
+}
+
+function resolveModelInstructionsForTurn(
+  ctx: TurnContext,
+  baseInstructions: string,
+): string {
+  return getModelInstructions({
+    modelInfo: ctx.modelInfo,
+    baseInstructions,
+    personality: resolveTurnPersonality(ctx),
+  });
 }
 
 function realtimeStartInstructionsOverride(ctx: TurnContext): string | undefined {
@@ -2851,10 +2897,16 @@ async function* runTurnKernelInner(
       .baseInstructions === "string"
       ? (ctx as TurnContext & { baseInstructions: string }).baseInstructions
       : undefined;
+  const rawSystemPrompt =
+    opts.systemPrompt !== undefined ? opts.systemPrompt : ctxBaseInstructions;
+  const effectiveSystemPrompt =
+    rawSystemPrompt !== undefined
+      ? resolveModelInstructionsForTurn(ctx, rawSystemPrompt)
+      : undefined;
   const { system, prior, user } = buildSeedMessages(
-    opts.systemPrompt !== undefined || ctxBaseInstructions === undefined
-      ? opts
-      : { ...opts, systemPrompt: ctxBaseInstructions },
+    effectiveSystemPrompt !== undefined
+      ? { ...opts, systemPrompt: effectiveSystemPrompt }
+      : opts,
     userContent,
   );
   const priorExisting = system ? [system, ...prior] : prior;
@@ -2864,9 +2916,19 @@ async function* runTurnKernelInner(
     realtimeBaseline.previousTurnSettings,
     ctx,
   );
-  const priorFull = realtimeInstructionUpdate
-    ? [...priorExisting, realtimeInstructionUpdate]
-    : priorExisting;
+  const personalityInstructionUpdate = buildPersonalitySpecUpdateMessage(
+    realtimeBaseline.previousContextItem,
+    realtimeBaseline.previousTurnSettings,
+    ctx,
+  );
+  const contextualInstructionUpdates = [
+    realtimeInstructionUpdate,
+    personalityInstructionUpdate,
+  ].filter((message): message is LLMMessage => message !== undefined);
+  const priorFull =
+    contextualInstructionUpdates.length > 0
+      ? [...priorExisting, ...contextualInstructionUpdates]
+      : priorExisting;
   const durableHistoryStartIndex = system ? 1 : 0;
 
   let state: TurnState = buildInitialTurnState(ctx, user, {
@@ -2901,6 +2963,7 @@ async function* runTurnKernelInner(
     persistNewResponseItems();
     const durableHistory = state.messages.slice(durableHistoryStartIndex);
     const autoCompactTokenLimit = getAutoCompactTokenLimit(ctx);
+    const resolvedPersonality = resolveTurnPersonality(ctx);
     await session.state.with((sessionState) => {
       sessionState.history = durableHistory.map((message) => ({
         ...message,
@@ -2915,6 +2978,9 @@ async function* runTurnKernelInner(
         model: ctx.modelInfo.slug,
         ...(ctx.realtimeActive !== undefined
           ? { realtimeActive: ctx.realtimeActive }
+          : {}),
+        ...(resolvedPersonality !== undefined
+          ? { personality: resolvedPersonality }
           : {}),
         ...(autoCompactTokenLimit !== undefined
           ? { autoCompactTokenLimit }

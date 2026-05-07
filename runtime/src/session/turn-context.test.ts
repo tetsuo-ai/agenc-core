@@ -502,7 +502,7 @@ describe("AgenC turn-builder helpers", () => {
       modelReasoningEffort: "low",
       modelReasoningSummary: "none",
       serviceTier: "base-tier",
-      personality: "base-personality",
+      personality: "friendly",
       approvalsReviewer: "base-reviewer",
       permissions: {
         ...mkConfig().permissions,
@@ -525,7 +525,7 @@ describe("AgenC turn-builder helpers", () => {
         collaborationMode: { model: "test-model", reasoningEffort: "high" },
         modelReasoningSummary: "detailed",
         serviceTier: "priority",
-        personality: "session-personality",
+        personality: "pragmatic",
         approvalsReviewer: "session-reviewer",
         originalConfigDoNotUse: originalConfig,
       },
@@ -537,7 +537,7 @@ describe("AgenC turn-builder helpers", () => {
     expect(snap.modelReasoningEffort).toBe("high");
     expect(snap.modelReasoningSummary).toBe("detailed");
     expect(snap.serviceTier).toBe("priority");
-    expect(snap.personality).toBe("session-personality");
+    expect(snap.personality).toBe("pragmatic");
     expect(snap.approvalsReviewer).toBe("session-reviewer");
     expect(snap.permissions.allowLoginShell).toBe(false);
     expect(session.config.permissions.allowLoginShell).toBe(true);

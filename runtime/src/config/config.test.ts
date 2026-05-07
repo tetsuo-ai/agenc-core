@@ -1918,7 +1918,7 @@ describe("profiles: resolveProfile", () => {
           model: "grok-4-fast",
           approval_policy: "never",
           reasoning_effort: "low",
-          personality: "fast",
+          personality: "friendly",
           web_search: true,
         },
         strict: {
@@ -1940,7 +1940,7 @@ describe("profiles: resolveProfile", () => {
     expect(out.model).toBe("grok-4-fast");
     expect(out.approval_policy).toBe("never");
     expect(out.reasoning_effort).toBe("low");
-    expect(out.personality).toBe("fast");
+    expect(out.personality).toBe("friendly");
     expect(out.tools_config?.web_search).toBe(true);
   });
 

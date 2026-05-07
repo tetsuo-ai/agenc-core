@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultConfig } from "../../config/schema.js";
+import {
+  getModelInstructions,
+} from "../../context/personality-spec-instructions.js";
 import { buildPrompt } from "../../session/run-turn.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { StaticModelsManager } from "../models-manager.js";
@@ -205,6 +208,22 @@ describe("LLM registry", () => {
       visibility: "hide",
       priority: 29,
     });
+    const personalityModel = entries.find(
+      (entry) => entry.model === "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+    );
+    expect(personalityModel?.modelMessages?.instructionsVariables).toMatchObject({
+      personalityFriendly:
+        "You optimize for team morale and being a supportive teammate as much as code quality.",
+      personalityPragmatic:
+        "You are a deeply pragmatic, effective software engineer.",
+    });
+    expect(
+      getModelInstructions({
+        modelInfo: personalityModel ?? {},
+        baseInstructions: "base",
+        personality: "pragmatic",
+      }),
+    ).toBe("You are a deeply pragmatic, effective software engineer.\n\nbase");
   });
 
   it("feeds catalog parallel-tool metadata into prompt shaping", async () => {
@@ -225,6 +244,7 @@ describe("LLM registry", () => {
     );
 
     expect(prompt.parallelToolCalls).toBe(true);
+    expect(modelInfo.supportsPersonality).toBe(true);
   });
 
   it("exposes model capability hints from the bundled catalog", () => {
