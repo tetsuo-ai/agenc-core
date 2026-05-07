@@ -26,7 +26,7 @@ import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAgenCAIOAuthTokens,
 } from '../../utils/auth.js'
-import { clearMemoryFileCaches } from '../../utils/agencmd.js'
+import { clearMemoryFileCaches } from '../../memory/agencmd.js'
 import { getMemoryPath } from '../../utils/config.js'
 import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
 import { classifyAxiosError } from '../../utils/errors.js'

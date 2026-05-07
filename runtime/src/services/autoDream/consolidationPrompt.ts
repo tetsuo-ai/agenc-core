@@ -5,7 +5,7 @@ import {
   DIR_EXISTS_GUIDANCE,
   ENTRYPOINT_NAME,
   MAX_ENTRYPOINT_LINES,
-} from '../../memdir/memdir.js'
+} from '../../memory/memdir.js'
 
 export function buildConsolidationPrompt(
   memoryRoot: string,

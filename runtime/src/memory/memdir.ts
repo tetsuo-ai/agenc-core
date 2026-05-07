@@ -1,13 +1,24 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+/**
+ * Ports the upstream `src/memdir/memdir.ts` prompt flow onto AgenC memory layers.
+ *
+ * AgenC keeps the upstream typed-memory prompt and truncation behavior, then
+ * makes the D-13 layers explicit: global durable memory, project memory and
+ * instructions, and session-only in-conversation state.
+ */
 import { feature } from 'bun:bundle'
 import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
+import {
+  getAutoMemPath,
+  getGlobalMemoryPath,
+  getProjectInstructionPath,
+  getProjectMemoryPath,
+  isAutoMemoryEnabled,
+} from './paths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
-  ? (require('./teamMemPaths.js') as typeof import('./teamMemPaths.js'))
+  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
   : null
 
 import { getKairosActive, getOriginalCwd } from '../bootstrap/state.js'
@@ -31,7 +42,7 @@ import {
   TYPES_SECTION_INDIVIDUAL,
   WHAT_NOT_TO_SAVE_SECTION,
   WHEN_TO_ACCESS_SECTION,
-} from './memoryTypes.js'
+} from './types.js'
 
 export const ENTRYPOINT_NAME = 'MEMORY.md'
 export const MAX_ENTRYPOINT_LINES = 200
@@ -106,7 +117,7 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPrompts = feature('TEAMMEM')
-  ? (require('./teamMemPrompts.js') as typeof import('./teamMemPrompts.js'))
+  ? (require('../memdir/teamMemPrompts.js') as typeof import('../memdir/teamMemPrompts.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -186,6 +197,39 @@ function logMemoryDirCounts(
   )
 }
 
+export function buildSessionMemoryLayerLines(): string[] {
+  return [
+    '### Session memory',
+    '',
+    'Session memory is the in-conversation state for the current thread: user messages, assistant replies, tool results, plans, and tasks. It is already visible in the active conversation and should not be copied into durable memory unless it will still matter in future conversations.',
+    '',
+  ]
+}
+
+export function buildMemoryLayerLines(projectMemoryDir = getProjectMemoryPath()): string[] {
+  return [
+    '## Memory layers',
+    '',
+    `- Global memory: durable user-level memory shared across projects at \`${getGlobalMemoryPath()}\`.`,
+    `- Project memory: durable project-level memory at \`${projectMemoryDir}\` plus project instructions from \`${getProjectInstructionPath()}\`.`,
+    '- Session memory: in-conversation state for this current thread. Use plans, tasks, and normal conversation context for information that only matters during this session.',
+    '',
+  ]
+}
+
+export function buildMemorySaveDestinationLines(
+  projectMemoryDir = getProjectMemoryPath(),
+): string[] {
+  return [
+    '## Where to save memories',
+    '',
+    `- Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${getGlobalMemoryPath()}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a global memory topic file.`,
+    `- Save project-level memories (repo-specific decisions, workflow context, project references not derivable from code) in project memory at \`${projectMemoryDir}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a project memory topic file.`,
+    '- Do not save session-only information to durable memory unless it will matter in future conversations.',
+    '',
+  ]
+}
+
 /**
  * Build the typed-memory behavioral instructions (without MEMORY.md content).
  * Constrains memories to a closed four-type taxonomy (user / feedback / project /
@@ -204,11 +248,15 @@ export function buildMemoryLines(
   extraGuidelines?: string[],
   skipIndex = false,
 ): string[] {
+  const isAutoMemory = displayName === AUTO_MEM_DISPLAY_NAME
+  const scopedSaveDestination = isAutoMemory
+    ? ' in the appropriate global or project memory directory'
+    : ''
   const howToSave = skipIndex
     ? [
         '## How to save memories',
         '',
-        'Write each memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
+        `Write each memory to its own file${scopedSaveDestination} (e.g., \`user_role.md\`, \`feedback_testing.md\`) using this frontmatter format:`,
         '',
         ...MEMORY_FRONTMATTER_EXAMPLE,
         '',
@@ -222,11 +270,13 @@ export function buildMemoryLines(
         '',
         'Saving a memory is a two-step process:',
         '',
-        '**Step 1** — write the memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
+        `**Step 1** — write the memory to its own file${scopedSaveDestination} (e.g., \`user_role.md\`, \`feedback_testing.md\`) using this frontmatter format:`,
         '',
         ...MEMORY_FRONTMATTER_EXAMPLE,
         '',
-        `**Step 2** — add a pointer to that file in \`${ENTRYPOINT_NAME}\`. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`,
+        isAutoMemory
+          ? `**Step 2** — add a pointer to that file in that same directory's \`${ENTRYPOINT_NAME}\` index. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`
+          : `**Step 2** — add a pointer to that file in \`${ENTRYPOINT_NAME}\`. \`${ENTRYPOINT_NAME}\` is an index, not a memory — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. It has no frontmatter. Never write memory content directly into \`${ENTRYPOINT_NAME}\`.`,
         '',
         `- \`${ENTRYPOINT_NAME}\` is always loaded into your conversation context — lines after ${MAX_ENTRYPOINT_LINES} will be truncated, so keep the index concise`,
         '- Keep the name, description, and type fields in memory files up-to-date with the content',
@@ -238,8 +288,16 @@ export function buildMemoryLines(
   const lines: string[] = [
     `# ${displayName}`,
     '',
-    `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`,
+    ...(isAutoMemory
+      ? [
+          `You have persistent, file-based memory directories: global memory at \`${getGlobalMemoryPath()}\` and project memory at \`${memoryDir}\`. ${DIRS_EXIST_GUIDANCE}`,
+        ]
+      : [
+          `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`,
+        ]),
     '',
+    ...(isAutoMemory ? buildMemoryLayerLines(memoryDir) : []),
+    ...(isAutoMemory ? buildMemorySaveDestinationLines(memoryDir) : []),
     "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
     '',
     'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
@@ -450,6 +508,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
   if (feature('TEAMMEM')) {
     if (teamMemPaths!.isTeamMemoryEnabled()) {
       const autoDir = getAutoMemPath()
+      const globalDir = getGlobalMemoryPath()
       const teamDir = teamMemPaths!.getTeamMemPath()
       // Harness guarantees these directories exist so the model can write
       // without checking. The prompt text reflects this ("already exists").
@@ -458,7 +517,12 @@ export async function loadMemoryPrompt(): Promise<string | null> {
       // creates the auto dir as a side effect. If the team dir ever moves
       // out from under the auto dir, add a second ensureMemoryDirExists call
       // for autoDir here.
+      await ensureMemoryDirExists(globalDir)
       await ensureMemoryDirExists(teamDir)
+      logMemoryDirCounts(globalDir, {
+        memory_type:
+          'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
       logMemoryDirCounts(autoDir, {
         memory_type:
           'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -476,9 +540,15 @@ export async function loadMemoryPrompt(): Promise<string | null> {
 
   if (autoEnabled) {
     const autoDir = getAutoMemPath()
+    const globalDir = getGlobalMemoryPath()
     // Harness guarantees the directory exists so the model can write without
     // checking. The prompt text reflects this ("already exists").
+    await ensureMemoryDirExists(globalDir)
     await ensureMemoryDirExists(autoDir)
+    logMemoryDirCounts(globalDir, {
+      memory_type:
+        'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
     logMemoryDirCounts(autoDir, {
       memory_type:
         'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

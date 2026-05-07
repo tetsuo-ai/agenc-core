@@ -10,7 +10,7 @@ import {
   PDF_MAX_PAGES_PER_READ,
 } from '../../constants/apiLimits.js'
 import { hasBinaryExtension } from '../../constants/files.js'
-import { memoryFreshnessNote } from '../../memdir/memoryAge.js'
+import { memoryFreshnessNote } from '../../memory/age.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logEvent } from '../../services/analytics/index.js'
 import {
@@ -51,7 +51,7 @@ import {
 } from '../../utils/imageResizer.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
-import { isAutoMemFile } from '../../utils/memoryFileDetection.js'
+import { isAutoMemFile } from '../../memory/detection.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getCanonicalName, getMainLoopModel } from '../../utils/model/model.js'
 import {

@@ -1,18 +1,22 @@
+/**
+ * Ports the upstream `src/utils/memoryFileDetection.ts` helpers onto AgenC's
+ * explicit memory subsystem paths.
+ */
 import { feature } from 'bun:bundle'
 import { normalize, posix, win32 } from 'path'
 import {
   getAutoMemPath,
+  isDurableMemoryPath,
   getMemoryBaseDir,
   isAutoMemoryEnabled,
-  isAutoMemPath,
-} from '../memdir/paths.js'
+} from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import { isAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { getAgenCConfigHomeDir } from '../utils/envUtils.js'
 import {
   posixPathToWindowsPath,
   windowsPathToPosixPath,
-} from './windowsPaths.js'
+} from '../utils/windowsPaths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
@@ -85,7 +89,7 @@ export function detectSessionPatternType(
  */
 export function isAutoMemFile(filePath: string): boolean {
   if (isAutoMemoryEnabled()) {
-    return isAutoMemPath(filePath)
+    return isDurableMemoryPath(filePath)
   }
   return false
 }

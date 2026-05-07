@@ -9,7 +9,7 @@ import { getOriginalCwd } from '../../bootstrap/state.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { getAutoMemPath, isAutoMemoryEnabled } from '../../memdir/paths.js';
+import { getAutoMemPath, isAutoMemoryEnabled } from '../../memory/paths.js';
 import * as teamMemPathsModule from '../../memdir/teamMemPaths.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { isAutoDreamEnabled } from '../../services/autoDream/config.js';
@@ -17,7 +17,7 @@ import { readLastConsolidatedAt } from '../../services/autoDream/consolidationLo
 import { useAppState } from '../../state/AppState.js';
 import { getAgentMemoryDir } from '../../tools/AgentTool/agentMemory.js';
 import { openPath } from '../../utils/browser.js';
-import { getMemoryFiles, type MemoryFileInfo } from '../../utils/agencmd.js';
+import { getMemoryFiles, type MemoryFileInfo } from '../../memory/agencmd.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatRelativeTimeAgo } from '../../utils/format.js';

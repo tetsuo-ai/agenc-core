@@ -6,7 +6,11 @@ import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
 import { homedir, tmpdir } from 'os'
 import { join, normalize, posix, sep } from 'path'
-import { hasAutoMemPathOverride, isAutoMemPath } from 'src/memdir/paths.js'
+import {
+  hasAutoMemPathOverride,
+  isAutoMemPath,
+  isGlobalMemoryPath,
+} from 'src/memory/paths.js'
 import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,
@@ -1581,13 +1585,16 @@ export function checkEditableInternalPath(
   // so it gets NO special permission treatment here — writes go through normal
   // permission flow (step 5 → ask). SDK callers who want silent memory should
   // pass an allow rule for the override path.
-  if (!hasAutoMemPathOverride() && isAutoMemPath(normalizedPath)) {
+  if (
+    !hasAutoMemPathOverride() &&
+    (isAutoMemPath(normalizedPath) || isGlobalMemoryPath(normalizedPath))
+  ) {
     return {
       behavior: 'allow',
       updatedInput: input,
       decisionReason: {
         type: 'other',
-        reason: 'auto memory files are allowed for writing',
+        reason: 'durable memory files are allowed for writing',
       },
     }
   }
@@ -1725,13 +1732,13 @@ export function checkReadableInternalPath(
   }
 
   // Memdir directory (persistent memory for cross-session learning)
-  if (isAutoMemPath(normalizedPath)) {
+  if (isAutoMemPath(normalizedPath) || isGlobalMemoryPath(normalizedPath)) {
     return {
       behavior: 'allow',
       updatedInput: input,
       decisionReason: {
         type: 'other',
-        reason: 'auto memory files are allowed for reading',
+        reason: 'durable memory files are allowed for reading',
       },
     }
   }

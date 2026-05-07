@@ -27,7 +27,7 @@ import { Dialog } from '../design-system/Dialog';
 import { Select } from '../CustomSelect/select';
 import { OutputStylePicker } from '../OutputStylePicker';
 import { LanguagePicker } from '../LanguagePicker';
-import { getExternalAgenCMdIncludes, getMemoryFiles, hasExternalAgenCMdIncludes } from '../../../utils/agencmd.js'; // branding-scan: allow pending service/module rename // upstream-import: keep target is owned by another Z-PURGE item
+import { getExternalAgenCMdIncludes, getMemoryFiles, hasExternalAgenCMdIncludes } from '../../../memory/agencmd.js'; // branding-scan: allow pending service/module rename // upstream-import: keep target is owned by another Z-PURGE item
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';

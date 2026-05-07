@@ -9,7 +9,7 @@ import {
   filterInjectedMemoryFiles,
   getAgenCMds,
   getMemoryFiles,
-} from './utils/agencmd.js'
+} from './memory/agencmd.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
 import { execFileNoThrow } from './utils/execFileNoThrow.js'

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 
-import type { MemoryFileInfo } from '../../utils/agencmd.js'
+import type { MemoryFileInfo } from '../../memory/agencmd.js'
 import { getProjectMemoryPathForSelector } from './memoryFileSelectorPaths.js'
 
 function projectFile(path: string): MemoryFileInfo {

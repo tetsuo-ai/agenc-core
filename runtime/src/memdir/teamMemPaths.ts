@@ -4,7 +4,7 @@ import { lstat, realpath } from 'fs/promises'
 import { dirname, join, resolve, sep } from 'path'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getErrnoCode } from '../utils/errors.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
+import { getAutoMemPath, isAutoMemoryEnabled } from '../memory/paths.js'
 
 /**
  * Error thrown when a path validation detects a traversal or injection attempt.

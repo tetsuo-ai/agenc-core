@@ -6,7 +6,7 @@ import { MemoryFileSelector } from '../../components/memory/MemoryFileSelector.j
 import { getRelativeMemoryPath } from '../../components/memory/MemoryUpdateNotification.js';
 import { Box, Link, Text } from '../../ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import { clearMemoryFileCaches, getMemoryFiles } from '../../utils/agencmd.js';
+import { clearMemoryFileCaches, getMemoryFiles } from '../../memory/agencmd.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
 import { getErrnoCode } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';

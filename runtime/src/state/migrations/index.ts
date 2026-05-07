@@ -9,6 +9,7 @@ import { sessionAgentLinksSchemaMigration } from "./007_session_agent_links_sche
 import { toolOutputRotationSchemaMigration } from "./008_tool_output_rotation_schema.js";
 import { agentRunMetadataSchemaMigration } from "./009_agent_run_metadata_schema.js";
 import { toolRecoveryCategorySchemaMigration } from "./010_tool_recovery_category_schema.js";
+import { memoryPipelineSchemaMigration } from "./011_memory_pipeline_schema.js";
 import type { SqlMigration } from "./types.js";
 
 /**
@@ -25,6 +26,7 @@ export const STATE_DB_MIGRATIONS: readonly SqlMigration[] = [
   toolOutputRotationSchemaMigration,
   agentRunMetadataSchemaMigration,
   toolRecoveryCategorySchemaMigration,
+  memoryPipelineSchemaMigration,
 ];
 
 export const LOGS_DB_MIGRATIONS: readonly SqlMigration[] = [

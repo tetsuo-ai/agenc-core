@@ -4,18 +4,27 @@ import { describe, expect, it } from "vitest";
 
 const root = resolve(process.cwd(), "..");
 
-describe("memdir memory contract", () => {
-  it("keeps every mapped memdir runtime file live", () => {
+describe("memory subsystem contract", () => {
+  it("keeps MM-01 memory runtime files in the owned memory directory", () => {
     for (const rel of [
-      "runtime/src/memdir/memoryAge.ts",
+      "runtime/src/memory/age.ts",
+      "runtime/src/memory/agencmd.ts",
+      "runtime/src/memory/detection.ts",
+      "runtime/src/memory/find-relevant.ts",
+      "runtime/src/memory/memdir.ts",
+      "runtime/src/memory/paths.ts",
+      "runtime/src/memory/scan.ts",
+      "runtime/src/memory/store.ts",
+      "runtime/src/memory/types.ts",
+    ]) {
+      expect(existsSync(resolve(root, rel)), rel).toBe(true);
+    }
+  });
+
+  it("keeps only deferred team memory files in the old memdir boundary", () => {
+    for (const rel of [
       "runtime/src/memdir/teamMemPrompts.ts",
-      "runtime/src/memdir/findRelevantMemories.ts",
-      "runtime/src/memdir/paths.ts",
-      "runtime/src/memdir/memoryScan.test.ts",
-      "runtime/src/memdir/memdir.ts",
-      "runtime/src/memdir/memoryTypes.ts",
       "runtime/src/memdir/teamMemPaths.ts",
-      "runtime/src/memdir/memoryScan.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }

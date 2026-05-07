@@ -1,4 +1,7 @@
 /**
+ * Ports the upstream `src/memdir/memoryTypes.ts` taxonomy onto AgenC's memory
+ * frontmatter rules.
+ *
  * Memory type taxonomy.
  *
  * Memories are constrained to four types capturing context NOT derivable
