@@ -1,10 +1,8 @@
 /**
- * `/copy` — export conversation text for copying.
+ * `/copy` — copy conversation text to the system clipboard.
  *
- * The command intentionally avoids owning platform clipboard behavior.
- * Its runtime contract is transcript export: produce stable plain text
- * from `SessionState.history` so CLI/TUI callers can render or copy it
- * without a second compatibility command path.
+ * Produces stable plain text from `SessionState.history`, writes it through
+ * AgenC's native/OSC clipboard path, and returns a compact confirmation.
  *
  * @module
  */
@@ -15,6 +13,11 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import {
+  getClipboardPath,
+  setClipboard,
+  type ClipboardPath,
+} from "../tui/ink/termio/osc.js";
 
 type CopyTarget = "latest" | "all" | "assistant" | "user";
 
@@ -22,6 +25,20 @@ export interface CopyableMessage {
   readonly role: string;
   readonly text: string;
 }
+
+export interface CopyClipboardDeps {
+  readonly getClipboardPath: () => ClipboardPath;
+  readonly setClipboard: (text: string) => Promise<string>;
+  readonly writeSequence: (sequence: string) => void;
+}
+
+const DEFAULT_CLIPBOARD_DEPS: CopyClipboardDeps = {
+  getClipboardPath,
+  setClipboard,
+  writeSequence: (sequence) => {
+    process.stdout.write(sequence);
+  },
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -129,28 +146,67 @@ export function formatCopyExport(
     .join("\n\n");
 }
 
+function lineCount(text: string): number {
+  return text.length === 0 ? 0 : text.split("\n").length;
+}
+
+function formatCopyConfirmation(
+  text: string,
+  path: ClipboardPath,
+): string {
+  const lines = lineCount(text);
+  const characters = text.length === 1 ? "character" : "characters";
+  const lineLabel = lines === 1 ? "line" : "lines";
+  const size = `${text.length} ${characters}, ${lines} ${lineLabel}`;
+  switch (path) {
+    case "native":
+      return `Copied to clipboard (${size}).`;
+    case "tmux-buffer":
+      return `Copied to tmux buffer (${size}); paste with tmux prefix + ].`;
+    case "osc52":
+      return `Sent to clipboard via OSC 52 (${size}); paste support depends on terminal settings.`;
+  }
+}
+
+export async function copyTextToClipboard(
+  text: string,
+  deps: CopyClipboardDeps = DEFAULT_CLIPBOARD_DEPS,
+): Promise<string> {
+  const path = deps.getClipboardPath();
+  const sequence = await deps.setClipboard(text);
+  if (sequence.length > 0) deps.writeSequence(sequence);
+  return formatCopyConfirmation(text, path);
+}
+
+export async function runCopy(
+  ctx: SlashCommandContext,
+  deps: CopyClipboardDeps = DEFAULT_CLIPBOARD_DEPS,
+): Promise<SlashCommandResult> {
+  const target = parseTarget(ctx.argsRaw);
+  if (target === null) {
+    return {
+      kind: "error",
+      message: "Usage: /copy [latest|all|assistant|user]",
+    };
+  }
+
+  const state = ctx.session.state.unsafePeek() as { history?: unknown[] };
+  const messages = collectCopyableMessages(state.history ?? []);
+  const selected = selectMessages(messages, target);
+  if (selected.length === 0) {
+    return { kind: "error", message: "No copyable transcript text found." };
+  }
+
+  const text = formatCopyExport(selected);
+  return { kind: "text", text: await copyTextToClipboard(text, deps) };
+}
+
 export const copyCommand: SlashCommand = {
   name: "copy",
-  description: "Export the latest message or transcript text for copying",
+  description: "Copy the latest message or transcript text to the clipboard",
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
-      const target = parseTarget(ctx.argsRaw);
-      if (target === null) {
-        return {
-          kind: "error",
-          message: "Usage: /copy [latest|all|assistant|user]",
-        };
-      }
-
-      const state = ctx.session.state.unsafePeek() as { history?: unknown[] };
-      const messages = collectCopyableMessages(state.history ?? []);
-      const selected = selectMessages(messages, target);
-      if (selected.length === 0) {
-        return { kind: "error", message: "No copyable transcript text found." };
-      }
-      return { kind: "text", text: formatCopyExport(selected) };
-    }),
+    safeExecute(() => runCopy(ctx)),
 };
 
 export default copyCommand;

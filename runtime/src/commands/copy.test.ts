@@ -1,15 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import copyCommand, {
+import {
   collectCopyableMessages,
+  copyTextToClipboard,
   formatCopyExport,
+  runCopy,
+  type CopyClipboardDeps,
 } from "./copy.js";
 import type { Session } from "../session/session.js";
+import type { ClipboardPath } from "../tui/ink/termio/osc.js";
 
 function stubSession(history: unknown[]): Session {
   return {
     state: { unsafePeek: () => ({ history }) },
   } as unknown as Session;
+}
+
+function clipboardDeps(
+  path: ClipboardPath = "native",
+  sequence = "\x1b]52;c;YW5zd2Vy\x07",
+): CopyClipboardDeps {
+  return {
+    getClipboardPath: vi.fn(() => path),
+    setClipboard: vi.fn(async () => sequence),
+    writeSequence: vi.fn(),
+  };
 }
 
 describe("copyCommand", () => {
@@ -32,7 +47,8 @@ describe("copyCommand", () => {
   });
 
   it("defaults to the latest assistant message", async () => {
-    const result = await copyCommand.execute({
+    const deps = clipboardDeps("osc52");
+    const result = await runCopy({
       session: stubSession([
         { role: "user", content: "first" },
         { role: "assistant", content: "answer" },
@@ -41,12 +57,21 @@ describe("copyCommand", () => {
       argsRaw: "",
       cwd: "/tmp/ws",
       home: "/home/test",
-    });
-    expect(result).toEqual({ kind: "text", text: "answer" });
+    }, deps);
+
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toBe(
+        "Sent to clipboard via OSC 52 (6 characters, 1 line); paste support depends on terminal settings.",
+      );
+    }
+    expect(deps.setClipboard).toHaveBeenCalledWith("answer");
+    expect(deps.writeSequence).toHaveBeenCalledWith("\x1b]52;c;YW5zd2Vy\x07");
   });
 
   it("exports the full transcript when requested", async () => {
-    const result = await copyCommand.execute({
+    const deps = clipboardDeps();
+    const result = await runCopy({
       session: stubSession([
         { role: "user", content: "question" },
         { role: "assistant", content: "answer" },
@@ -54,21 +79,38 @@ describe("copyCommand", () => {
       argsRaw: "all",
       cwd: "/tmp/ws",
       home: "/home/test",
-    });
+    }, deps);
+
     expect(result.kind).toBe("text");
     if (result.kind === "text") {
-      expect(result.text).toBe("USER:\nquestion\n\nASSISTANT:\nanswer");
+      expect(result.text).toBe("Copied to clipboard (33 characters, 5 lines).");
     }
+    expect(deps.setClipboard).toHaveBeenCalledWith(
+      "USER:\nquestion\n\nASSISTANT:\nanswer",
+    );
   });
 
   it("reports usage for unknown targets", async () => {
-    const result = await copyCommand.execute({
+    const deps = clipboardDeps();
+    const result = await runCopy({
       session: stubSession([]),
       argsRaw: "clipboard",
       cwd: "/tmp/ws",
       home: "/home/test",
-    });
+    }, deps);
+
     expect(result.kind).toBe("error");
+    expect(deps.setClipboard).not.toHaveBeenCalled();
+    expect(deps.writeSequence).not.toHaveBeenCalled();
+  });
+
+  it("does not write an empty clipboard control sequence", async () => {
+    const deps = clipboardDeps("native", "");
+    await expect(copyTextToClipboard("answer", deps)).resolves.toBe(
+      "Copied to clipboard (6 characters, 1 line).",
+    );
+    expect(deps.setClipboard).toHaveBeenCalledWith("answer");
+    expect(deps.writeSequence).not.toHaveBeenCalled();
   });
 
   it("formats multiple messages with role labels", () => {
