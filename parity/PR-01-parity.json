@@ -90,7 +90,7 @@
   ],
   "intentionalReductions": [
     "Product-specific help, feedback, docs-map, model-launch, internal-user, and experimental feature-gate branches are not carried because AgenC has separate owned surfaces or no live subsystem for them.",
-    "Hook, proactive, brief, token-budget, skill-discovery, and embedded-search prompt branches are not revived as inert placeholders.",
+    "Hook, proactive, brief, skill-discovery, and embedded-search prompt branches are not revived as inert placeholders.",
     "Provider-specific model-family recommendations are left to provider adapters and configuration instead of hard-coded system prompt text.",
     "Compact summarizer compatibility keeps a local helper in runtime/src/session/_deps/system-prompt.ts; the primary runtime prompt module owns shared prompt content and precedence behavior."
   ],

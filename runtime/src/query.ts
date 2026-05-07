@@ -110,7 +110,7 @@ import {
   getTurnOutputTokens,
   incrementBudgetContinuationCount,
 } from './bootstrap/state.js'
-import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
+import { createBudgetTracker, checkTokenBudget } from './conversation/token-budget.js'
 import { count } from './utils/array.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
@@ -192,7 +192,7 @@ export type QueryParams = {
   maxTurns?: number
   skipCacheWrite?: boolean
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
-  // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
+  // Distinct from the +500k token-budget auto-continue feature. `total` is the
   // budget for the whole agentic turn; `remaining` is computed per iteration
   // from cumulative API usage. See configureTaskBudgetParams in anthropic.ts.
   taskBudget?: { total: number }

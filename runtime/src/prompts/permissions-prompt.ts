@@ -1,6 +1,8 @@
 /**
  * Permissions / sandbox prompt-injection.
  *
+ * This file is the permissionsInstructions source for prompt assembly.
+ *
  * The approval-policy and sandbox-mode text blocks are kept as exported
  * string constants with whitespace, casing, and leading spaces preserved. A
  * small selector combines the right pair into a single dynamic system-prompt
