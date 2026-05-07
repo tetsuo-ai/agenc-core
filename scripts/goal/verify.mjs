@@ -5471,10 +5471,53 @@ async function promptGates(item) {
     return;
   }
   if (id === "PR-08") {
-    // Per-mode prompt variants.
-    const found = grepRepo("planMode|defaultMode|acceptEdits|byMode", "runtime/src/prompts");
-    if (!found) failGate("PR-08: per-mode prompt variant not referenced");
-    pass("PR-08: per-mode prompt variant referenced");
+    const requiredSymbols = [
+      ["runtime/src/services/extractMemories/prompts.ts", "buildExtractAutoOnlyPrompt"],
+      ["runtime/src/services/extractMemories/prompts.ts", "../../memdir/memory-types.js"],
+      ["runtime/src/services/extractMemories/prompts.ts", "model-visible messages"],
+      ["runtime/src/services/extractMemories/prompts.test.ts", "memory extraction prompt"],
+      ["runtime/src/memdir/memory-types.ts", "TYPES_SECTION_INDIVIDUAL"],
+      ["runtime/src/memdir/memory-types.ts", "WHAT_NOT_TO_SAVE_SECTION"],
+      ["runtime/src/memdir/memory-types.ts", "MEMORY_FRONTMATTER_EXAMPLE"],
+      ["runtime/src/memdir/memory-types.ts", "parseMemoryType"],
+      ["runtime/src/memdir/memory.contract.test.ts", "memory-types.ts"],
+      ["runtime/src/memory/PARITY.md", "PR-08 extraction-prompt"],
+      ["parity/PR-08-parity.json", "memory-extraction-prompt"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const file = path.join(root, rel);
+      if (!existsSync(file)) failGate(`PR-08: ${rel} missing`);
+      const source = readFileSync(file, "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`PR-08: ${symbol} missing from ${rel}`);
+      }
+    }
+    const promptSource = readFileSync(
+      path.join(root, "runtime/src/services/extractMemories/prompts.ts"),
+      "utf8",
+    );
+    if (!promptSource.includes("MEMORY.md` is an index")) {
+      failGate("PR-08: extraction prompt must describe MEMORY.md as an index");
+    }
+    const taxonomySource = readFileSync(
+      path.join(root, "runtime/src/memdir/memory-types.ts"),
+      "utf8",
+    );
+    if (/\b[a-z0-9-]+\.internal\b/iu.test(taxonomySource) || /https?:\/\//iu.test(taxonomySource)) {
+      failGate("PR-08: memory taxonomy examples must use URNs or plain labels, not invented domains");
+    }
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/services/extractMemories/prompts.test.ts",
+      "src/services/extractMemories/extractMemories.test.ts",
+      "src/memdir/memory.contract.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("PR-08 targeted Vitest suite failed");
+    pass("PR-08: memory extraction prompt and taxonomy verified");
     return;
   }
   if (id === "PR-09") {
