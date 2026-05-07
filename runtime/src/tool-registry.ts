@@ -579,11 +579,17 @@ export function buildToolRegistry(
   // registered. The canonical delegation surface is the TL-22 spawn_agent
   // tool; this registry entry only preserves its plain-string argument field.
   const spawnAgentToolName = "spawn_agent";
+  // SkillTool-style invocation is exposed as the model-facing `Skill` tool.
+  // Preserve raw string dispatch so `arguments: "commit"` maps to `{ skill }`.
+  // TL-13's SkillCreate half is a skill-file lifecycle concern; the registry
+  // owns the invocation surface that loads those files into a turn.
+  const skillToolInvocationName = "Skill";
   const modelFacingStringArgumentFieldCandidates = {
     [modelFacingProviderNativeSurface.webFetch]: "url",
     [modelFacingProviderNativeSurface.legacyWebFetch]: "url",
     [modelFacingProviderNativeSurface.webSearch]: "query",
     [spawnAgentToolName]: "message",
+    [skillToolInvocationName]: "skill",
     NotebookRead: "notebook_path",
     NotebookEdit: "notebook_path",
     [modelFacingTaskSurface.taskGet]: "taskId",

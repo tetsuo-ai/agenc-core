@@ -6,6 +6,7 @@ import { buildToolRegistry } from "./tool-registry.js";
 import { createModelFacingTools } from "./bin/model-facing-tools.js";
 import { PermissionModeRegistry } from "./permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
+import type { Session } from "./session/session.js";
 import {
   clearExitPlanModeApprovalsForTest,
   recordExitPlanModeApproval,
@@ -17,6 +18,49 @@ import { createTaskTools } from "./tools/tasks/index.js";
 afterEach(() => {
   clearExitPlanModeApprovalsForTest();
 });
+
+function createSkillSession(
+  recordInvokedSkill: ReturnType<typeof vi.fn> = vi.fn(),
+): Session {
+  return {
+    conversationId: "session-test",
+    config: { cwd: process.cwd() },
+    services: {
+      configStore: {
+        current: () => ({}),
+      },
+      skillsManager: {
+        skillsForConfig: async () => ({
+          invokedSkills: [],
+          availableSkills: [
+            {
+              name: "demo-skill",
+              description: "Demo skill",
+              path: join(tmpdir(), "demo-skill", "SKILL.md"),
+              root: join(tmpdir(), "demo-skill"),
+              scope: "user",
+            },
+          ],
+        }),
+        renderSkill: async ({ name, args }: { name: string; args?: string }) =>
+          name === "demo-skill"
+            ? {
+                skill: {
+                  name: "demo-skill",
+                  description: "Demo skill",
+                  path: join(tmpdir(), "demo-skill", "SKILL.md"),
+                  root: join(tmpdir(), "demo-skill"),
+                  scope: "user",
+                  allowedTools: [],
+                },
+                content: `Demo content${args ? ` ${args}` : ""}`,
+              }
+            : null,
+        recordInvokedSkill,
+      },
+    },
+  } as unknown as Session;
+}
 
 describe("T7 tool-registry ConcurrencyClass tagging", () => {
   test("read-only fs tools get SharedRead + isReadOnly=true", () => {
@@ -677,6 +721,48 @@ describe("tool-registry dynamic and deferred catalog", () => {
         additionalProperties: false,
       }),
     });
+  });
+
+  test("SkillTool invocation is registered as the model-facing Skill surface", async () => {
+    const recordInvokedSkill = vi.fn();
+    const session = createSkillSession(recordInvokedSkill);
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: createModelFacingTools({
+        workspaceRoot: "/tmp",
+        getSession: () => session,
+      }),
+    });
+    const registeredNames = registry.tools.map((tool) => tool.name);
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    const skillTool = registry.tools.find((tool) => tool.name === "Skill");
+
+    expect(registeredNames).toContain("Skill");
+    expect(visibleNames).toContain("Skill");
+    expect(skillTool).toMatchObject({
+      recoveryCategory: "side-effecting",
+      metadata: expect.objectContaining({ family: "skill" }),
+      inputSchema: expect.objectContaining({
+        properties: expect.objectContaining({
+          skill: expect.objectContaining({ type: "string" }),
+          args: expect.objectContaining({ type: "string" }),
+        }),
+        additionalProperties: false,
+      }),
+    });
+
+    const result = await registry.dispatch({
+      id: "skill-raw-string",
+      name: "Skill",
+      arguments: "demo-skill",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("<command-name>demo-skill</command-name>");
+    expect(result.content).toContain("Demo content");
+    expect(recordInvokedSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ skillName: "demo-skill" }),
+    );
   });
 
   test("spawn_agent dispatch maps string arguments and rejects retired AgentTool aliases", async () => {
