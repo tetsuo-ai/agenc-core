@@ -32,6 +32,8 @@ const providerProbe = {
     initialState: unknown;
     onChangeAppState: unknown;
   }>,
+  globalKeybindingProps: [] as Array<Record<string, unknown>>,
+  messageProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
     clearBuffer(): void;
     resetHistory(): void;
@@ -264,11 +266,27 @@ vi.mock("../keybindings/KeybindingProviderSetup.js", async () => {
   };
 });
 
+vi.mock("../hooks/useGlobalKeybindings.js", async () => {
+  const React = await import("react");
+  return {
+    GlobalKeybindingHandlers: (props: Record<string, unknown>) => {
+      providerProbe.globalKeybindingProps.push(props);
+      return React.createElement(React.Fragment, null);
+    },
+  };
+});
+
 vi.mock("./Messages.js", async () => {
   const React = await import("react");
   return {
-    Messages: ({ messages }: { messages: readonly unknown[] }) =>
-      React.createElement("ink-text", null, `messages:${messages.length}`),
+    Messages: (props: { messages: readonly unknown[] } & Record<string, unknown>) => {
+      providerProbe.messageProps.push(props);
+      return React.createElement(
+        "ink-text",
+        null,
+        `messages:${props.messages.length}`,
+      );
+    },
   };
 });
 
@@ -502,6 +520,59 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         vimMode: "INSERT",
         setVimMode: expect.any(Function),
       }),
+    );
+  });
+
+  test("mounts global keybindings against the live transcript state", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    providerProbe.globalKeybindingProps.length = 0;
+    providerProbe.messageProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        expect(providerProbe.globalKeybindingProps.at(-1)).toEqual(
+          expect.objectContaining({
+            screen: "prompt",
+            setScreen: expect.any(Function),
+            showAllInTranscript: false,
+            setShowAllInTranscript: expect.any(Function),
+            messageCount: 0,
+          }),
+        );
+        expect(providerProbe.messageProps.at(-1)).toEqual(
+          expect.objectContaining({
+            screen: "prompt",
+            verbose: false,
+            showAllInTranscript: false,
+          }),
+        );
+
+        const handlerProps = providerProbe.globalKeybindingProps.at(-1)!;
+        (handlerProps.setScreen as (next: "transcript") => void)("transcript");
+        (handlerProps.setShowAllInTranscript as (next: boolean) => void)(true);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.globalKeybindingProps.at(-1)).toEqual(
+          expect.objectContaining({
+            screen: "transcript",
+            showAllInTranscript: true,
+          }),
+        );
+        expect(providerProbe.messageProps.at(-1)).toEqual(
+          expect.objectContaining({
+            screen: "transcript",
+            verbose: true,
+            showAllInTranscript: true,
+            hidePastThinking: true,
+          }),
+        );
+      },
     );
   });
 

@@ -2863,6 +2863,7 @@ const itemGates = {
   MM: memoryGates,
   WP: webPortalGates,
   IDE: ideExtensionGates,
+  GAP: gapGates,
   Z: cleanupGates,
   ZC: cleanupGates,
   FW: subsystemDirGates("file-watcher", "runtime/src/file-watcher/"),
@@ -6442,6 +6443,74 @@ function assertAgenCPortalMobileStatusContract() {
 // Generic gate factory: subsystem must exist as a real directory under runtime/src,
 // have at least one production module, and at least one test file. Used for FW/RT/SE/SK
 // prefixes that previously had no gate at all.
+async function gapGates(item) {
+  if (item.title.includes("Mount GlobalKeybindingHandlers")) {
+    assertGapTuiGlobalKeybindingHandlers();
+    return;
+  }
+  failGate(
+    `GAP item "${item.title}" has no specific gate branch. ` +
+      `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
+  );
+}
+
+function assertGapTuiGlobalKeybindingHandlers() {
+  const appRel = "runtime/src/tui/components/App.tsx";
+  const testRel = "runtime/src/tui/components/App.render.test.tsx";
+  const appPath = path.join(root, appRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(appPath)) failGate(`GAP-TUI-01: missing ${appRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-01: missing ${testRel}`);
+
+  const app = readFileSync(appPath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const requiredAppEvidence = [
+    [
+      "imports GlobalKeybindingHandlers",
+      /import\s+\{\s*GlobalKeybindingHandlers\s*\}\s+from\s+["']\.\.\/hooks\/useGlobalKeybindings\.js["']/,
+    ],
+    ["tracks prompt/transcript screen state", /useState<["']prompt["']\s*\|\s*["']transcript["']>\(["']prompt["']\)/],
+    ["tracks transcript show-all state", /\[showAllInTranscript,\s*setShowAllInTranscript\]\s*=\s*useState\(false\)/],
+    ["mounts GlobalKeybindingHandlers", /<GlobalKeybindingHandlers\b/],
+    ["passes setScreen to the handlers", /setScreen=\{setScreen/],
+    ["passes setShowAllInTranscript to the handlers", /setShowAllInTranscript=\{setShowAllInTranscript\}/],
+    ["passes transcript message count", /messageCount=\{transcript\.messages\.length\}/],
+    ["passes live screen to Messages", /screen=\{screen/],
+    ["makes transcript mode verbose", /verbose=\{screen\s*===\s*["']transcript["']\}/],
+    ["passes showAllInTranscript to Messages", /showAllInTranscript=\{showAllInTranscript\}/],
+  ];
+  const missingAppEvidence = requiredAppEvidence
+    .filter(([, pattern]) => !pattern.test(app))
+    .map(([label]) => label);
+  if (missingAppEvidence.length > 0) {
+    failGate(`GAP-TUI-01 App wiring evidence missing:\n  - ${missingAppEvidence.join("\n  - ")}`);
+  }
+
+  const requiredTestEvidence = [
+    "mounts global keybindings against the live transcript state",
+    "providerProbe.globalKeybindingProps",
+    "handlerProps.setScreen",
+    'screen: "transcript"',
+    "hidePastThinking: true",
+  ];
+  const missingTestEvidence = requiredTestEvidence.filter((needle) => !test.includes(needle));
+  if (missingTestEvidence.length > 0) {
+    failGate(`GAP-TUI-01 regression test evidence missing:\n  - ${missingTestEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-01: live App global keybinding evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/tui/components/App.render.test.tsx",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-01 targeted App render test failed");
+  }
+  pass("GAP-TUI-01 targeted App render test passed");
+}
+
 function subsystemDirGates(label, dir) {
   return async function gate(item) {
     const full = path.join(root, dir);

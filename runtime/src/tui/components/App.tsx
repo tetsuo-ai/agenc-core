@@ -10,6 +10,7 @@ import { Messages } from "./Messages.js";
 import PromptInput from "./PromptInput/PromptInput.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
+import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import {
   type AppState,
   AppStateProvider,
@@ -872,6 +873,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [showBashesDialog, setShowBashesDialog] = useState<string | boolean>(false);
   const [isSearchingHistory, setIsSearchingHistory] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [screen, setScreen] = useState<"prompt" | "transcript">("prompt");
+  const [showAllInTranscript, setShowAllInTranscript] = useState(false);
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
   const [toolPermissionContext, setToolPermissionContext] =
@@ -1039,6 +1042,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   return (
     <Box flexDirection="column" width="100%">
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
+      {!onboarding.active ? (
+        <GlobalKeybindingHandlers
+          screen={screen as any}
+          setScreen={setScreen as any}
+          showAllInTranscript={showAllInTranscript}
+          setShowAllInTranscript={setShowAllInTranscript}
+          messageCount={transcript.messages.length}
+        />
+      ) : null}
       {onboarding.active ? (
         <Onboarding
           state={onboarding.state}
@@ -1051,17 +1063,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           messages={transcript.messages as any[]}
           tools={tools as any}
           commands={commands as unknown as Command[]}
-          verbose={false}
+          verbose={screen === "transcript"}
           toolJSX={toolJSX as any}
           toolUseConfirmQueue={toolUseConfirmQueue as never[]}
           inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
           isMessageSelectorVisible={false}
           conversationId={props.session.conversationId}
-          screen={"prompt" as any}
+          screen={screen as any}
           streamingToolUses={transcript.streamingToolUses}
+          showAllInTranscript={showAllInTranscript}
           isLoading={transcript.isStreaming}
           streamingText={transcript.streamingText}
-          hidePastThinking={false}
+          hidePastThinking={screen === "transcript"}
         />
       )}
       {!onboarding.active ? (
