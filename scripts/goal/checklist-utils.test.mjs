@@ -146,6 +146,7 @@ const reviewSource = readFileSync(new URL("./review.mjs", import.meta.url), "utf
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 const purgeScanSource = readFileSync(new URL("./purge-scans.mjs", import.meta.url), "utf8");
 const knipConfig = JSON.parse(readFileSync(new URL("../../.knip.json", import.meta.url), "utf8"));
+const tsPruneIgnoreSource = readFileSync(new URL("../../.ts-prune-ignore", import.meta.url), "utf8");
 const zFinalAllowlistEvidence = JSON.parse(readFileSync(new URL("../../docs/z-final-allowlist-evidence.json", import.meta.url), "utf8"));
 const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
 const runtimeTsconfigSource = readFileSync(new URL("../../runtime/tsconfig.json", import.meta.url), "utf8");
@@ -368,7 +369,8 @@ assert(
 );
 assert(
   "Z-FINAL allowlist evidence documents generated cleanup baselines",
-  zFinalAllowlistEvidence.tsPrune?.ignorePatternCount === 6204 &&
+  zFinalAllowlistEvidence.tsPrune?.ignorePatternCount ===
+    tsPruneIgnoreSource.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("#")).length &&
     zFinalAllowlistEvidence.knip?.ignoredRuntimeFileCount === runtimeKnipConfig.ignoreFiles.length &&
     zFinalAllowlistEvidence.knip?.ignoredIssueFileCount === Object.keys(knipConfig.ignoreIssues).length &&
     zFinalAllowlistEvidence.tsPrune?.command.includes("ts-prune@0.10.3") &&

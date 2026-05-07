@@ -7,6 +7,18 @@
     "runtime/package.json": [
       "dependencies"
     ],
+    "runtime/src/memdir/teamMemPaths.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/components/memory/MemoryFileSelector.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/memory/selector-options.ts": [
+      "types"
+    ],
     "runtime/src/tools/Tool.ts": [
       "types"
     ],

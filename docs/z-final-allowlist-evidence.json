@@ -4,8 +4,8 @@
   "tsPrune": {
     "command": "npx --yes --package ts-prune@0.10.3 ts-prune --error -p runtime/tsconfig.json",
     "ignoreFile": ".ts-prune-ignore",
-    "ignorePatternCount": 6204,
-    "sha256": "b4e4b6fb8d66f023abca8a8f42c30e21acd85f6c96a5bdbc3a0a7063e5d6050b",
+    "ignorePatternCount": 6217,
+    "sha256": "463aa5f00e2cec71fec21cef3d9a668419a03d769627809006b87301e9930098",
     "rationale": "Each non-comment ignore line is an anchored regular expression for one current ts-prune output line. The gate filters only those exact lines, so a new unused export line fails unless the allowlist is deliberately updated."
   },
   "knip": {
@@ -23,8 +23,8 @@
       "runtime/tests/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
     ],
     "ignoredRuntimeFileCount": 439,
-    "ignoredIssueFileCount": 1190,
-    "sha256": "82c439709f4b8bd93c34f3905df55dd5d39d98ccdbd9f25004a6634235a6cd30",
+    "ignoredIssueFileCount": 1194,
+    "sha256": "6d1d8c6b5487dcf7eedbd39ef81e838028b036ab5d93ceefa446382c1fb9e540",
     "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles and ignoreIssues entries are generated from the current narrowed Knip report for known retained command, prompt, public API, test-support, and moved-source surfaces; new files or issue files outside those lists fail gate 4."
   }
 }
