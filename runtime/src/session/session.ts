@@ -64,7 +64,7 @@ import type {
   AuthSubscriptionTier,
 } from "../auth/backend.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
-import type { BudgetTracker } from "../llm/token-budget.js";
+import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";

@@ -6,7 +6,7 @@ import { AsyncLock } from "../utils/async-lock.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { TurnTimingState } from "../session/turn-context.js";
 import { buildInitialTurnState } from "../session/turn-state.js";
-import { BudgetTracker } from "../llm/token-budget.js";
+import { BudgetTracker } from "../conversation/token-budget.js";
 import {
   AGENC_TURN_TTFT_DURATION_METRIC,
   resetAgencTelemetryClient,
