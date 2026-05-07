@@ -32,6 +32,7 @@ import { normalizeExternalText, readTextFile } from "./_deps/file-read.js";
 import {
   DEFAULT_PROJECT_DOC_MAX_BYTES,
   DEFAULT_PROJECT_ROOT_MARKERS,
+  findProjectRoot,
   loadProjectInstructionChain,
   type ProjectInstructionChainEntry,
   type ProjectInstructionsConfig,
@@ -575,7 +576,13 @@ export async function loadTieredInstructions(
 
   // Local tier — `<projectRoot>/AGENC.local.md` if a project root was
   // found, otherwise `<cwd>/AGENC.local.md`.
-  const projectRootDir = projectChain[0]?.rootDir;
+  const discoveredProjectRoot =
+    projectChain[0]?.rootDir ??
+    (await findProjectRoot(
+      opts.cwd,
+      opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
+    ))?.rootDir;
+  const projectRootDir = discoveredProjectRoot;
   const localBase = projectRootDir ?? opts.cwd;
   const localPath = join(localBase, LOCAL_INSTRUCTION_FILENAME);
   const local = await loadTier(

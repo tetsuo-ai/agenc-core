@@ -16,11 +16,22 @@ import { stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
 import { readTextFile } from "./_deps/file-read.js";
+import {
+  AGENTS_PROJECT_INSTRUCTION_FILE,
+  CLAUDE_PROJECT_INSTRUCTION_FILE,
+  FALLBACK_PROJECT_INSTRUCTION_FILE,
+  FALLBACK_PROJECT_INSTRUCTION_FILES,
+  getProjectInstructionFilePaths,
+  PRIMARY_PROJECT_INSTRUCTION_FILE,
+} from "../utils/projectInstructions.js";
 
-/**
- * Primary filename scanned for AgenC project instructions.
- */
-export const PRIMARY_PROJECT_INSTRUCTION_FILE = "AGENC.md";
+export {
+  AGENTS_PROJECT_INSTRUCTION_FILE,
+  CLAUDE_PROJECT_INSTRUCTION_FILE,
+  FALLBACK_PROJECT_INSTRUCTION_FILE,
+  FALLBACK_PROJECT_INSTRUCTION_FILES,
+  PRIMARY_PROJECT_INSTRUCTION_FILE,
+};
 
 /**
  * Preferred per-checkout override. Not committed; shadows AGENC.md in
@@ -105,11 +116,6 @@ export type ProjectInstructionChainEntry = ProjectInstructions;
 const TRUNCATION_MARKER =
   "\n\n<!-- [truncated by project_doc_max_bytes] -->\n";
 
-const PROJECT_INSTRUCTION_CANDIDATES = [
-  OVERRIDE_PROJECT_INSTRUCTION_FILE,
-  PRIMARY_PROJECT_INSTRUCTION_FILE,
-] as const;
-
 async function pathExists(p: string): Promise<boolean> {
   try {
     await stat(p);
@@ -151,6 +157,8 @@ export async function findProjectRoot(
  * Resolve the preferred instruction file in a directory. Order:
  *   1. `AGENC.override.md`
  *   2. `AGENC.md`
+ *   3. `AGENTS.md`
+ *   4. `CLAUDE.md`
  * Returns `null` if no usable regular text file exists.
  */
 export async function resolveInstructionFile(dir: string): Promise<string | null> {
@@ -160,8 +168,10 @@ export async function resolveInstructionFile(dir: string): Promise<string | null
 async function readInstructionCandidate(
   dir: string,
 ): Promise<{ path: string; content: string } | null> {
-  for (const name of PROJECT_INSTRUCTION_CANDIDATES) {
-    const full = join(dir, name);
+  for (const full of [
+    join(dir, OVERRIDE_PROJECT_INSTRUCTION_FILE),
+    ...getProjectInstructionFilePaths(dir),
+  ]) {
     try {
       const stats = await stat(full);
       if (!stats.isFile()) {

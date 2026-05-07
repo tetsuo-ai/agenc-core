@@ -9,7 +9,7 @@
  *
  * 1. Managed memory (eg. /etc/agenc-code/AGENC.md) - Global instructions for all users
  * 2. User memory (~/.agenc/AGENC.md) - Private global instructions for all projects
- * 3. Project memory (AGENTS.md or fallback AGENC.md, plus .agenc/AGENC.md and .agenc/rules/*.md in project roots) - Instructions checked into the codebase
+ * 3. Project memory (AGENC.md, with AGENTS.md/CLAUDE.md fallback, plus .agenc/AGENC.md and .agenc/rules/*.md in project roots) - Instructions checked into the codebase
  * 4. Local memory (AGENC.local.md in project roots) - Private project-specific instructions
  *
  * Files are loaded in reverse order of priority, i.e. the latest files are highest priority
@@ -19,7 +19,7 @@
  * - User memory is loaded from the user's home directory
  * - Project and Local files are discovered by traversing from the current directory up to root
  * - Files closer to the current directory have higher priority (loaded later)
- * - AGENTS.md is preferred for root project instructions; AGENC.md is only used when AGENTS.md is absent
+ * - AGENC.md is preferred for root project instructions; AGENTS.md and CLAUDE.md are fallback compatibility inputs
  * - .agenc/AGENC.md and all .md files in .agenc/rules/ are checked in each directory for Project memory
  *
  * Memory @include directive:
@@ -101,6 +101,14 @@ const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 let hasLoggedInitialLoad = false
+
+function isRegularInstructionFile(filePath: string): boolean {
+  try {
+    return getFsImplementation().statSync(filePath).isFile()
+  } catch {
+    return false
+  }
+}
 
 const MEMORY_INSTRUCTION_PROMPT =
   'Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
@@ -884,7 +892,7 @@ export const getMemoryFiles = memoize(
     // When running from a git worktree nested inside its main repo (e.g.,
     // .agenc/worktrees/<name>/ from `agenc -w`), the upward walk passes
     // through both the worktree root and the main repo root. Both contain
-    // checked-in files like AGENTS.md/AGENC.md and .agenc/rules/*.md, so the same
+    // checked-in files like AGENC.md/AGENTS.md and .agenc/rules/*.md, so the same
     // content gets loaded twice. Skip Project-type (checked-in) files from
     // directories above the worktree but within the main repo — the worktree
     // already has its own checkout. AGENC.local.md is gitignored so it only
@@ -908,11 +916,12 @@ export const getMemoryFiles = memoize(
         pathInWorkingPath(dir, canonicalRoot) &&
         !pathInWorkingPath(dir, gitRoot)
 
-      // Try reading the root project instruction file (AGENTS.md first, otherwise AGENC.md)
+      // Try reading the root project instruction file (AGENC.md first, then compatibility fallbacks)
       if (isSettingSourceEnabled('projectSettings') && !skipProject) {
         const projectPath = getProjectInstructionFilePath(
           dir,
           getFsImplementation().existsSync,
+          isRegularInstructionFile,
         )
         result.push(
           ...(await processMemoryFile(
@@ -972,6 +981,7 @@ export const getMemoryFiles = memoize(
         const projectPath = getProjectInstructionFilePath(
           dir,
           getFsImplementation().existsSync,
+          isRegularInstructionFile,
         )
         result.push(
           ...(await processMemoryFile(
@@ -1314,11 +1324,12 @@ export async function getMemoryFilesForNestedDirectory(
 ): Promise<MemoryFileInfo[]> {
   const result: MemoryFileInfo[] = []
 
-  // Process project memory files (AGENTS.md first, otherwise AGENC.md, plus .agenc/AGENC.md)
+  // Process project memory files (AGENC.md first, then compatibility fallbacks, plus .agenc/AGENC.md)
   if (isSettingSourceEnabled('projectSettings')) {
     const projectPath = getProjectInstructionFilePath(
       dir,
       getFsImplementation().existsSync,
+      isRegularInstructionFile,
     )
     result.push(
       ...(await processMemoryFile(
@@ -1494,7 +1505,7 @@ export async function shouldShowAgenCMdExternalIncludesWarning(): Promise<boolea
 }
 
 /**
- * Check if a file path is a memory file (AGENTS.md, AGENC.md, AGENC.local.md, or .agenc/rules/*.md)
+ * Check if a file path is a memory file (AGENC.md, AGENTS.md, CLAUDE.md, AGENC.local.md, or .agenc/rules/*.md)
  */
 export function isMemoryFilePath(filePath: string): boolean {
   const name = basename(filePath)
