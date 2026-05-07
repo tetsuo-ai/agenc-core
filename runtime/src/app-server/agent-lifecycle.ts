@@ -987,17 +987,19 @@ export class AgenCDaemonAgentManager {
     readonly streamId: string;
     readonly acceptedAt: string;
     readonly displayUserMessage?: string | null;
+    readonly methodName?: "message.send" | "message.stream";
   }): Promise<void> {
+    const methodName = params.methodName ?? "message.stream";
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
-        "message.stream requires a daemon session manager",
+        `${methodName} requires a daemon session manager`,
       );
     }
     if (this.#runner?.submitAgentMessage === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
-        "message.stream requires a background runner",
+        `${methodName} requires a background runner`,
       );
     }
 

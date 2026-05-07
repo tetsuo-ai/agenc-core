@@ -18,6 +18,13 @@ import {
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
+  createAgenCPortalAgentCreateRequest,
+  createAgenCPortalAgentListRequest,
+  createAgenCPortalAgentStopRequest,
+  createAgenCPortalDaemonInitializeRequest,
+} from "../app-server-protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type {
   AgenCBackgroundAgentSnapshot,
@@ -2631,6 +2638,575 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     expect(startAgent).not.toHaveBeenCalled();
+  });
+
+  it("dispatches portal session attach and message.send through JSON-RPC", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_portal"]),
+      createAttachmentId: sequence(["attachment_portal"]),
+      now: sequence([
+        "2026-05-01T12:10:00.000Z",
+        "2026-05-01T12:10:01.000Z",
+      ]),
+    });
+    const submitted: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_portal",
+        startedAt: "2026-05-01T12:10:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async (agentId, params) => {
+        submitted.push({ agentId, params });
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:10:00.250Z"]),
+      runner,
+      sessionManager: sessions,
+    });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+      clientMultiplexer,
+      sessionManager: sessions,
+      now: sequence(["2026-05-01T12:10:02.000Z"]),
+    });
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "init",
+        method: "initialize",
+        params: { protocolVersion: "1.0.0", clientName: "portal-test" },
+      }),
+    ).resolves.toMatchObject({ result: { type: "initialized" } });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "create",
+        method: "agent.create",
+        params: { objective: "answer from the portal" },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        agentId: "agent_portal",
+        sessionId: "session_portal",
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "sessions",
+        method: "session.list",
+        params: { agentId: "agent_portal", limit: 10 },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        sessions: [
+          {
+            agentId: "agent_portal",
+            sessionId: "session_portal",
+          },
+        ],
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach",
+        method: "session.attach",
+        params: { sessionId: "session_portal", clientId: "portal-ui" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "attach",
+      result: {
+        sessionId: "session_portal",
+        attachmentId: "attachment_portal",
+        attachedAt: "2026-05-01T12:10:01.000Z",
+        clientId: "portal-ui",
+        activeAttachmentIds: ["attachment_portal"],
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "send",
+        method: "message.send",
+        params: {
+          sessionId: "session_portal",
+          content: "Continue from the portal",
+          clientMessageId: "portal-message-1",
+          metadata: { displayUserMessage: "Continue from the portal" },
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "send",
+      result: {
+        messageId: "portal-message-1",
+        acceptedAt: "2026-05-01T12:10:02.000Z",
+      },
+    });
+    expect(submitted).toEqual([
+      {
+        agentId: "agent_portal",
+        params: {
+          sessionId: "session_portal",
+          content: "Continue from the portal",
+          originalContent: "Continue from the portal",
+          displayUserMessage: "Continue from the portal",
+          messageId: "portal-message-1",
+          streamId: "portal-message-1",
+          acceptedAt: "2026-05-01T12:10:02.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("dispatches portal background agent dashboard list/start/stop through JSON-RPC", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_dashboard"]),
+      now: sequence([
+        "2026-05-01T12:15:01.000Z",
+        "2026-05-01T12:15:03.000Z",
+      ]),
+    });
+    const starts: AgenCBackgroundAgentStartParams[] = [];
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async (params) => {
+        starts.push(params);
+        return {
+          agentId: "agent_dashboard",
+          startedAt: "2026-05-01T12:15:00.500Z",
+          status: "running",
+        };
+      },
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:15:00.000Z",
+        "2026-05-01T12:15:02.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+
+    await expect(
+      connection.dispatch(createAgenCPortalDaemonInitializeRequest()),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "initialize",
+      result: {
+        type: "initialized",
+        protocolVersion: "1.0.0",
+      },
+    });
+    expect(connection.initializeState?.clientCapabilities).toEqual(
+      AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
+    );
+    await expect(
+      connection.dispatch(createAgenCPortalAgentListRequest({ limit: 5 })),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "agent.list",
+      result: {
+        agents: [],
+      },
+    });
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentCreateRequest(
+          {
+            objective: "  index queued work  ",
+            cwd: "/workspace",
+            unattendedAllow: ["FileRead"],
+            metadata: { source: "portal.dashboard" },
+          },
+          "start-background",
+        ),
+      ),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "start-background",
+      result: {
+        agentId: "agent_dashboard",
+        sessionId: "session_dashboard",
+        objective: "index queued work",
+        status: "running",
+        cwd: "/workspace",
+        activeSessionIds: ["session_dashboard"],
+        metadata: {
+          source: "portal.dashboard",
+          unattendedAllow: ["FileRead"],
+          unattendedDeny: [],
+        },
+      },
+    });
+    expect(starts).toEqual([
+      {
+        objective: "index queued work",
+        cwd: "/workspace",
+        metadata: {
+          source: "portal.dashboard",
+          unattendedAllow: ["FileRead"],
+          unattendedDeny: [],
+        },
+        unattendedAllow: ["FileRead"],
+        unattendedDeny: [],
+      },
+    ]);
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentListRequest({ limit: 5 }, "list-background"),
+      ),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "list-background",
+      result: {
+        agents: [
+          {
+            agentId: "agent_dashboard",
+            objective: "index queued work",
+            status: "running",
+            activeSessionIds: ["session_dashboard"],
+          },
+        ],
+      },
+    });
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentStopRequest(
+          "agent_dashboard",
+          "portal dashboard stop",
+          "stop-background",
+        ),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "stop-background",
+      result: {
+        agentId: "agent_dashboard",
+        stopped: true,
+      },
+    });
+    expect(stopAgent).toHaveBeenCalledWith(
+      "agent_dashboard",
+      "portal dashboard stop",
+    );
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentListRequest({ limit: 5 }, "list-after-stop"),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "list-after-stop",
+      result: {
+        agents: [],
+      },
+    });
+  });
+
+  it("validates WP-04 dispatcher params and message.send errors", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_edge"]),
+      now: sequence(["2026-05-01T12:20:00.000Z"]),
+    });
+    const submitted: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_edge",
+        startedAt: "2026-05-01T12:20:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async (agentId, params) => {
+        submitted.push({ agentId, params });
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:20:00.250Z"]),
+      runner,
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+      sessionManager: sessions,
+      now: sequence([
+        "2026-05-01T12:20:02.000Z",
+        "2026-05-01T12:20:03.000Z",
+      ]),
+    });
+    const connection = dispatcher.createConnection();
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "portal-test" },
+    });
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "create",
+      method: "agent.create",
+      params: { objective: "validate portal actions" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-session-list",
+        method: "session.list",
+        params: { limit: "many" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-session-list",
+      error: {
+        code: -32602,
+        message: "session.list param 'limit' must be a number",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-session-attach",
+        method: "session.attach",
+        params: { clientId: "portal-ui" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-session-attach",
+      error: {
+        code: -32602,
+        message: "session.attach requires sessionId",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "structured-send",
+        method: "message.send",
+        params: {
+          sessionId: "session_edge",
+          content: [
+            { type: "text", text: "inspect" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/portal.png" },
+            },
+          ],
+          clientMessageId: "portal-structured",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "structured-send",
+      result: {
+        messageId: "portal-structured",
+        acceptedAt: "2026-05-01T12:20:02.000Z",
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-display",
+        method: "message.send",
+        params: {
+          sessionId: "session_edge",
+          content: "continue",
+          clientMessageId: "portal-bad-display",
+          metadata: { displayUserMessage: 42 },
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-display",
+      error: {
+        code: -32602,
+        message:
+          "message.send metadata 'displayUserMessage' must be a string or null",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    expect(submitted).toEqual([
+      {
+        agentId: "agent_edge",
+        params: {
+          sessionId: "session_edge",
+          content: [
+            { type: "text", text: "inspect" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/portal.png" },
+            },
+          ],
+          originalContent: [
+            { type: "text", text: "inspect" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/portal.png" },
+            },
+          ],
+          messageId: "portal-structured",
+          streamId: "portal-structured",
+          acceptedAt: "2026-05-01T12:20:02.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("reports message.send service availability with message.send errors", async () => {
+    const noSessionManager = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    }).createConnection();
+    await noSessionManager.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init-no-session-manager",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "portal-test" },
+    });
+    await expect(
+      noSessionManager.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "send-no-session-manager",
+        method: "message.send",
+        params: { sessionId: "session_missing", content: "continue" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "send-no-session-manager",
+      error: {
+        code: -32602,
+        message: "message.send requires a daemon session manager",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+
+    const sessions = new AgenCDaemonSessionManager();
+    const noRunner = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ sessionManager: sessions }),
+      sessionManager: sessions,
+    }).createConnection();
+    await noRunner.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init-no-runner",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "portal-test" },
+    });
+    await expect(
+      noRunner.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "send-no-runner",
+        method: "message.send",
+        params: { sessionId: "session_missing", content: "continue" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "send-no-runner",
+      error: {
+        code: -32602,
+        message: "message.send requires a background runner",
+        data: { code: "BACKGROUND_RUNNER_UNAVAILABLE" },
+      },
+    });
+  });
+
+  it("cleans up portal client registration after failed session.attach", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_after_failure", "session_second"]),
+      createAttachmentId: sequence([
+        "attachment_after_failure",
+        "attachment_second",
+      ]),
+      now: sequence([
+        "2026-05-01T12:30:00.000Z",
+        "2026-05-01T12:30:01.000Z",
+        "2026-05-01T12:30:02.000Z",
+        "2026-05-01T12:30:03.000Z",
+      ]),
+    });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      clientMultiplexer,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "portal-test" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach-missing",
+        method: "session.attach",
+        params: {
+          sessionId: "session_missing",
+          clientId: "portal-tab",
+        },
+      }),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "attach-missing",
+      error: {
+        message: "AgenC daemon session not found: session_missing",
+      },
+    });
+
+    await sessions.createSession({ agentId: "agent_cleanup" });
+    await sessions.createSession({ agentId: "agent_cleanup" });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach-after-cleanup",
+        method: "session.attach",
+        params: {
+          sessionId: "session_after_failure",
+          clientId: "portal-tab",
+        },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        sessionId: "session_after_failure",
+        attachmentId: "attachment_after_failure",
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach-same-connection",
+        method: "session.attach",
+        params: {
+          sessionId: "session_second",
+          clientId: "portal-tab",
+        },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        sessionId: "session_second",
+        attachmentId: "attachment_second",
+      },
+    });
   });
 
   it("routes daemon tool approval decisions to the background runner", async () => {

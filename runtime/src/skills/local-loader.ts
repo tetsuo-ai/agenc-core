@@ -1,4 +1,3 @@
-import { watch, type FSWatcher } from "node:fs";
 import {
   mkdir,
   open,
@@ -23,10 +22,16 @@ import {
 import { load as loadYaml } from "js-yaml";
 
 import type { AgenCConfig } from "../config/schema.js";
+import { FileWatcher } from "../file-watcher/index.js";
 import { discoverPluginSkillRoots as discoverLoadedPluginSkillRoots } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
+import {
+  createSkillChangeDetector,
+  skillChangeDetector,
+  type SkillChangeDetector,
+} from "./change-detector.js";
 
 export type LocalSkillScope =
   | "user"
@@ -108,6 +113,12 @@ export interface LocalSkillsServiceOptions {
   readonly agencHome: string;
   readonly workspaceRoot: string;
   readonly config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">;
+  readonly fileWatcher?: FileWatcher;
+  readonly skillChangeDetector?: SkillChangeDetector;
+  readonly skillChangeEventSink?: Pick<SkillChangeDetector, "notify">;
+  readonly watcherDebounceMs?: number;
+  readonly watcherClearRuntimeCaches?: boolean;
+  readonly watcherRunConfigChangeHooks?: boolean;
   readonly env?: Partial<
     Pick<NodeJS.ProcessEnv, "HOME" | "AGENC_MANAGED_HOME">
   >;
@@ -320,6 +331,34 @@ export async function discoverSkillRoots(
     deduped.set(rootKey(normalized), normalized);
   }
   return [...deduped.values()];
+}
+
+export async function discoverSkillWatchRoots(
+  options: LocalSkillsServiceOptions,
+): Promise<readonly string[]> {
+  const home = options.env?.HOME ?? homedir();
+  const defaultAgencHome = home ? join(home, ".agenc") : "";
+  const agencHome = normalizeExistingCandidate(options.agencHome);
+  const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
+  const managedHome = options.env?.AGENC_MANAGED_HOME;
+  const roots = [
+    ...projectDirsUpToHome(workspaceRoot, "skills", home),
+    ...projectDirsUpToHome(workspaceRoot, "commands", home),
+    join(agencHome, "skills"),
+    join(agencHome, "commands"),
+    ...(defaultAgencHome.length > 0 ? [join(defaultAgencHome, "skills")] : []),
+    ...(managedHome && managedHome.length > 0
+      ? [join(managedHome, ".agenc", "skills")]
+      : []),
+    ...(await discoverLoadedPluginSkillRoots({
+      agencHome,
+      workspaceRoot,
+      config: options.config,
+    })),
+  ];
+  return unique(roots.map(normalizeExistingCandidate)).sort((a, b) =>
+    a.localeCompare(b),
+  );
 }
 
 async function readDirEntries(path: string) {
@@ -1025,25 +1064,6 @@ function extractActivePaths(input: unknown, fsArg: unknown): string[] {
     .filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
-function startSkillWatchers(
-  roots: readonly string[],
-  onChange: () => void,
-): readonly FSWatcher[] {
-  const watchers: FSWatcher[] = [];
-  for (const root of roots) {
-    try {
-      const watcher = watch(root, { recursive: process.platform !== "linux" }, () => {
-        onChange();
-      });
-      watchers.push(watcher);
-    } catch {
-      // Skill watching is best-effort. Missing platform support should not
-      // break session startup or skill loading.
-    }
-  }
-  return watchers;
-}
-
 export function createLocalSkillsServices(
   options: LocalSkillsServiceOptions,
 ): Pick<
@@ -1056,8 +1076,11 @@ export function createLocalSkillsServices(
   } | null = null;
   let lastPluginConfig: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined =
     options.config;
+  let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
   let activePaths = new Set<string>();
-  let watchers: readonly FSWatcher[] = [];
+  let watcherStarted = false;
+  const detector = options.skillChangeDetector ?? createSkillChangeDetector();
+  const eventSink = options.skillChangeEventSink ?? skillChangeDetector;
   const load = (
     config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">,
   ): Promise<LocalSkillsSnapshot> => {
@@ -1074,6 +1097,41 @@ export function createLocalSkillsServices(
   const clear = () => {
     cache = null;
   };
+  const startWatcher = () => {
+    if (watcherStarted) return Promise.resolve();
+    watcherStarted = true;
+    watchedPluginConfigKey = JSON.stringify(lastPluginConfig ?? null);
+    return detector.initialize({
+      fileWatcher: options.fileWatcher,
+      getWatchRoots: async () => {
+        return discoverSkillWatchRoots({
+          ...options,
+          config: lastPluginConfig,
+        });
+      },
+      onReload: clear,
+      ...(detector !== eventSink ? { forwardTo: eventSink } : {}),
+      ...(options.watcherDebounceMs !== undefined
+        ? { debounceMs: options.watcherDebounceMs }
+        : {}),
+      ...(options.watcherClearRuntimeCaches !== undefined
+        ? { clearRuntimeCaches: options.watcherClearRuntimeCaches }
+        : {}),
+      ...(options.watcherRunConfigChangeHooks !== undefined
+        ? { runConfigChangeHooks: options.watcherRunConfigChangeHooks }
+        : {}),
+    }).catch(() => {
+      watcherStarted = false;
+    });
+  };
+  const restartWatcherIfPluginConfigChanged = async () => {
+    if (!watcherStarted) return;
+    const nextKey = JSON.stringify(lastPluginConfig ?? null);
+    if (nextKey === watchedPluginConfigKey) return;
+    await detector.dispose();
+    watcherStarted = false;
+    await startWatcher();
+  };
 
   const skillsManager = {
     async skillsForConfig(
@@ -1084,6 +1142,7 @@ export function createLocalSkillsServices(
         activePaths.add(path);
       }
       lastPluginConfig = pluginConfigView(input) ?? options.config;
+      await restartWatcherIfPluginConfigChanged();
       const snapshot = await load(lastPluginConfig);
       return {
         invokedSkills: [...getInvokedSkillsForAgent().keys()],
@@ -1137,13 +1196,11 @@ export function createLocalSkillsServices(
     },
     skillsWatcher: {
       start: () => {
-        if (watchers.length > 0) return;
-        void discoverSkillRoots(options).then((roots) => {
-          watchers = startSkillWatchers(
-            roots.map((root) => root.path),
-            clear,
-          );
-        });
+        return startWatcher();
+      },
+      stop: async () => {
+        watcherStarted = false;
+        await detector.dispose();
       },
     },
   };

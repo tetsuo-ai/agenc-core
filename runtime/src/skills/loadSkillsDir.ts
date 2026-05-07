@@ -55,7 +55,6 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../utils/markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../utils/model/model.js'
-import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
 import type { SettingSource } from '../utils/settings/constants.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
 import { getManagedFilePath } from '../utils/settings/managedPath.js'
@@ -372,6 +371,9 @@ export function createSkillCommand({
       // shell commands (!`…` / ```! … ```) from their markdown body.
       // ${AGENC_SKILL_DIR} is meaningless for MCP skills anyway.
       if (loadedFrom !== 'mcp') {
+        const { executeShellCommandsInPrompt } = await import(
+          '../utils/promptShellExecution.js'
+        )
         finalContent = await executeShellCommandsInPrompt(
           finalContent,
           {

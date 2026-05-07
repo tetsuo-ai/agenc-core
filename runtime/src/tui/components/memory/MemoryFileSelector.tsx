@@ -22,7 +22,7 @@ import {
   getMemoryFiles,
   getProjectMemoryPathForSelector,
   type MemoryFileInfo,
-} from '../../../memory/project-memory.js'; // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../memory/index.js';
 import { getAgenCConfigHomeDir } from '../../../utils/envUtils';
 import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatRelativeTimeAgo } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item

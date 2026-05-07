@@ -164,14 +164,29 @@ function legacySlashContext(
   const services = session.services as Record<string, unknown>;
   const configStore =
     legacyContext.configStore ?? services.configStore;
+  const getAppState = legacyContext.getAppState;
   const setAppState = legacyContext.setAppState;
-  const appState = isRecord(legacyContext.appState)
+  const appStateBridge = isRecord(legacyContext.appState)
     ? (legacyContext.appState as SlashCommandAppStateBridge)
-    : typeof setAppState === "function"
+    : undefined;
+  const appState =
+    appStateBridge !== undefined ||
+    typeof getAppState === "function" ||
+    typeof setAppState === "function"
       ? {
-          setAppState: setAppState as unknown as (
-            updater: (prev: unknown) => unknown,
-          ) => void,
+          ...(appStateBridge ?? {}),
+          ...(typeof getAppState === "function" &&
+          appStateBridge?.getAppState === undefined
+            ? { getAppState: getAppState as () => unknown }
+            : {}),
+          ...(typeof setAppState === "function" &&
+          appStateBridge?.setAppState === undefined
+            ? {
+                setAppState: setAppState as unknown as (
+                  updater: (prev: unknown) => unknown,
+                ) => void,
+              }
+            : {}),
         }
       : undefined;
 

@@ -7,7 +7,7 @@ import { MemoryFileSelector } from '../../tui/components/memory/MemoryFileSelect
 import { getRelativeMemoryPath } from '../../tui/components/memory/MemoryUpdateNotification.js';
 import { Box, Link, Text } from '../../tui/ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import { clearMemoryFileCaches, getMemoryFiles } from '../../memory/project-memory.js';
+import { clearMemoryFileCaches, getMemoryFiles } from '../../memory/index.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
 import { getErrnoCode } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';

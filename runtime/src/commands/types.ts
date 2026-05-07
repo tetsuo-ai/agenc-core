@@ -27,6 +27,8 @@ import type { ConfigStore } from "../config/store.js";
  * `commands/model/model.tsx:59-63`.
  */
 export interface SlashCommandAppStateBridge {
+  /** Read the live TUI app state for commands that report runtime surfaces. */
+  readonly getAppState?: () => unknown;
   /** Update the model slug shown in the status bar. */
   readonly setModel?: (model: string) => void;
   /** Update the live TUI app state for commands that refresh runtime surfaces. */

@@ -38,15 +38,6 @@ import {
 } from './tasks.js'
 import { getPlanFilePath, getPlan } from './plans.js'
 import { getConnectedIdeName } from './ide.js'
-import {
-  filterInjectedMemoryFiles,
-  getManagedAndUserConditionalRules,
-  getMemoryFiles,
-  getMemoryFilesForNestedDirectory,
-  getConditionalRulesForCwdLevelDirectory,
-  isMemoryMention,
-  type MemoryFileInfo,
-} from '../memory/project-memory.js'
 import { dirname, parse, relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../tui/state/selectors.js'
@@ -232,13 +223,18 @@ import { getLocalISODate } from '../constants/common.js'
 import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
-import { findRelevantMemories } from '../memory/find-relevant.js'
-import { memoryAge, memoryFreshnessText } from '../memory/age.js'
 import {
+  findRelevantMemories,
+  formatRelevantMemoryHeader,
+  getConditionalRulesForCwdLevelDirectory,
   getAutoMemPath,
   getGlobalMemoryPath,
+  getManagedAndUserConditionalRules,
+  getMemoryFilesForNestedDirectory,
   isAutoMemoryEnabled,
-} from '../memory/paths.js'
+  isMemoryMention,
+  type MemoryFileInfo,
+} from '../memory/index.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
   readUnreadMessages,
@@ -2336,10 +2332,7 @@ export async function readMemoriesForSurfacing(
  * can fall back for resumed sessions where the stored header is missing.
  */
 export function memoryHeader(path: string, mtimeMs: number): string {
-  const staleness = memoryFreshnessText(mtimeMs)
-  return staleness
-    ? `${staleness}\n\nMemory: ${path}:`
-    : `Memory (saved ${memoryAge(mtimeMs)}): ${path}:`
+  return formatRelevantMemoryHeader(path, mtimeMs)
 }
 
 /**

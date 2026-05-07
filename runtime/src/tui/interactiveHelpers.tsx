@@ -18,7 +18,7 @@ import { handleMcpjsonServerApprovals } from '../services/mcpServerApproval.js';
 import { AppStateProvider } from './state/AppState.js';
 import { onChangeAppState } from './state/onChangeAppState.js';
 import { normalizeApiKeyForConfig } from '../utils/authPortable.js';
-import { getExternalAgenCMdIncludes, getMemoryFiles, shouldShowAgenCMdExternalIncludesWarning } from '../memory/project-memory.js';
+import { getExternalAgenCMdIncludes, getMemoryFiles, shouldShowAgenCMdExternalIncludesWarning } from '../memory/index.js';
 import { checkHasTrustDialogAccepted, getCustomApiKeyStatus, getGlobalConfig, saveGlobalConfig } from '../utils/config.js';
 import { updateDeepLinkTerminalPreference } from '../utils/deepLink/terminalPreference.js';
 import { isEnvTruthy, isRunningOnHomespace } from '../utils/envUtils.js';
