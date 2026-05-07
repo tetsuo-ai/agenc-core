@@ -13,6 +13,7 @@ vi.mock('../tools.js', () => ({}))
 vi.mock('src/tools.js', () => ({}))
 
 import {
+  detectSessionFileType,
   detectSessionPatternType,
   getProjectMemoryPathForSelector,
   isMemoryFilePath,
@@ -93,5 +94,26 @@ describe('project-memory API', () => {
     expect(detectSessionPatternType('session-memory/*.md')).toBe(
       'session_memory',
     )
+  })
+
+  it('classifies session files through the canonical detector', () => {
+    const oldConfigDir = process.env.AGENC_CONFIG_DIR
+    process.env.AGENC_CONFIG_DIR = '/tmp/agenc-test-config'
+    try {
+      expect(
+        detectSessionFileType(
+          '/tmp/agenc-test-config/session-memory/summary.md',
+        ),
+      ).toBe('session_memory')
+      expect(
+        detectSessionFileType('/tmp/agenc-test-config/projects/repo/turn.jsonl'),
+      ).toBe('session_transcript')
+      expect(detectSessionFileType('/tmp/other/session-memory/summary.md')).toBe(
+        null,
+      )
+    } finally {
+      if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
+      else process.env.AGENC_CONFIG_DIR = oldConfigDir
+    }
   })
 })
