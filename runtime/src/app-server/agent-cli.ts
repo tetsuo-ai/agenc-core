@@ -80,6 +80,7 @@ export interface AgenCJsonLineDaemonRequestClient {
 }
 
 export interface AgenCJsonLineDaemonTuiClient extends AgenCJsonLineDaemonRequestClient {
+  subscribeToNotifications(cb: (event: JsonObject) => void): () => void;
   subscribeToSessionEvents(
     sessionId: string,
     cb: (event: JsonObject) => void,
@@ -123,6 +124,8 @@ export interface AgenCJsonLineDaemonClientOptions {
 
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
+const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
+const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -576,12 +579,14 @@ function connectPersistentDaemonClient(
       {
         readonly resolve: (value: unknown) => void;
         readonly reject: (error: Error) => void;
+        readonly timeout: ReturnType<typeof setTimeout>;
       }
     >();
     const sessionListeners = new Map<
       string,
       Set<(event: JsonObject) => void>
     >();
+    const notificationListeners = new Set<(event: JsonObject) => void>();
     const bufferedSessionEvents = new Map<string, JsonObject[]>();
     const connectionStateListeners = new Set<
       (state: {
@@ -606,6 +611,7 @@ function connectPersistentDaemonClient(
 
     const failPending = (error: Error) => {
       for (const waiter of pending.values()) {
+        clearTimeout(waiter.timeout);
         waiter.reject(error);
       }
       pending.clear();
@@ -640,9 +646,22 @@ function connectPersistentDaemonClient(
           params,
         };
         return new Promise<unknown>((requestResolve, requestReject) => {
+          const requestTimeout = setTimeout(() => {
+            pending.delete(id);
+            requestReject(
+              new Error(`Timed out waiting for daemon response to ${method}`),
+            );
+          }, timeoutMs);
           pending.set(id, {
-            resolve: requestResolve,
-            reject: requestReject,
+            resolve: (value) => {
+              clearTimeout(requestTimeout);
+              requestResolve(value);
+            },
+            reject: (error) => {
+              clearTimeout(requestTimeout);
+              requestReject(error);
+            },
+            timeout: requestTimeout,
           });
           socket.write(`${JSON.stringify(request)}\n`);
         }) as Promise<AgenCDaemonResultByMethod[typeof method]>;
@@ -662,6 +681,12 @@ function connectPersistentDaemonClient(
         return () => {
           listeners?.delete(cb);
           if (listeners?.size === 0) sessionListeners.delete(sessionId);
+        };
+      },
+      subscribeToNotifications: (cb) => {
+        notificationListeners.add(cb);
+        return () => {
+          notificationListeners.delete(cb);
         };
       },
       getConnectionState: () => connectionState,
@@ -687,12 +712,26 @@ function connectPersistentDaemonClient(
         const line = buffer.slice(0, newlineIndex).trim();
         buffer = buffer.slice(newlineIndex + 1);
         if (line.length > 0) {
-          handlePersistentDaemonMessage(
-            line,
-            pending,
-            sessionListeners,
-            bufferedSessionEvents,
-          );
+          try {
+            handlePersistentDaemonMessage(
+              line,
+              pending,
+              sessionListeners,
+              bufferedSessionEvents,
+              notificationListeners,
+            );
+          } catch (error) {
+            const parseError =
+              error instanceof Error ? error : new Error(String(error));
+            setConnectionState({
+              status: "disconnected",
+              message: parseError.message,
+            });
+            failPending(parseError);
+            closed = true;
+            socket.destroy(parseError);
+            return;
+          }
         }
         newlineIndex = buffer.indexOf("\n");
       }
@@ -730,10 +769,12 @@ function handlePersistentDaemonMessage(
     {
       readonly resolve: (value: unknown) => void;
       readonly reject: (error: Error) => void;
+      readonly timeout: ReturnType<typeof setTimeout>;
     }
   >,
   sessionListeners: Map<string, Set<(event: JsonObject) => void>>,
   bufferedSessionEvents: Map<string, JsonObject[]>,
+  notificationListeners: Set<(event: JsonObject) => void>,
 ): void {
   const message = JSON.parse(line) as JsonValue;
   if (!isJsonObject(message)) return;
@@ -741,6 +782,7 @@ function handlePersistentDaemonMessage(
     const waiter = pending.get(message.id);
     if (waiter === undefined) return;
     pending.delete(message.id);
+    clearTimeout(waiter.timeout);
     const response = message as AgenCDaemonResponse;
     if (isErrorResponse(response)) {
       waiter.reject(new Error(response.error.message));
@@ -750,17 +792,54 @@ function handlePersistentDaemonMessage(
     return;
   }
 
+  for (const listener of notificationListeners) {
+    notifyDaemonListener(listener, message);
+  }
+
   const sessionId = daemonEventSessionId(message);
   if (sessionId === null) return;
   const listeners = sessionListeners.get(sessionId);
   if (listeners === undefined || listeners.size === 0) {
-    const buffered = bufferedSessionEvents.get(sessionId) ?? [];
+    const buffered = getBoundedBufferedSessionEvents(
+      bufferedSessionEvents,
+      sessionId,
+    );
     buffered.push(message);
+    while (buffered.length > MAX_BUFFERED_SESSION_EVENTS_PER_SESSION) {
+      buffered.shift();
+    }
     bufferedSessionEvents.set(sessionId, buffered);
     return;
   }
   for (const listener of listeners) {
-    listener(message);
+    notifyDaemonListener(listener, message);
+  }
+}
+
+function getBoundedBufferedSessionEvents(
+  bufferedSessionEvents: Map<string, JsonObject[]>,
+  sessionId: string,
+): JsonObject[] {
+  const existing = bufferedSessionEvents.get(sessionId);
+  if (existing !== undefined) return existing;
+  while (bufferedSessionEvents.size >= MAX_BUFFERED_SESSION_EVENT_SESSIONS) {
+    const oldestSessionId = bufferedSessionEvents.keys().next().value;
+    if (typeof oldestSessionId !== "string") break;
+    bufferedSessionEvents.delete(oldestSessionId);
+  }
+  const next: JsonObject[] = [];
+  bufferedSessionEvents.set(sessionId, next);
+  return next;
+}
+
+function notifyDaemonListener(
+  listener: (event: JsonObject) => void,
+  event: JsonObject,
+): void {
+  try {
+    listener(event);
+  } catch {
+    // Listener failures must not poison JSON-RPC parsing or disconnect the socket.
   }
 }
 

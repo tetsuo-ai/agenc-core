@@ -126,6 +126,114 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
+  test("interleaves realtime transcript completions and item notifications with surrounding text transcript", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "text-before",
+        msg: {
+          type: "agent_message",
+          payload: { message: "Before voice" },
+        },
+      },
+      {
+        id: "rt-user",
+        type: "realtime_transcript_done",
+        payload: {
+          role: "user",
+          text: "spoken request",
+        },
+      },
+      {
+        id: "rt-item",
+        type: "realtime_item_added",
+        payload: {
+          item: { type: "message", id: "item_1" },
+        },
+      },
+      {
+        id: "rt-assistant",
+        type: "realtime_transcript_done",
+        payload: {
+          role: "assistant",
+          text: "spoken response",
+        },
+      },
+      {
+        id: "rt-error",
+        type: "realtime_error",
+        payload: {
+          message: "voice failed",
+        },
+      },
+      {
+        id: "rt-closed",
+        type: "realtime_closed",
+        payload: {
+          reason: "requested",
+        },
+      },
+    ]);
+
+    expect(
+      transcript.messages.map((message) =>
+        message.type === "system"
+          ? message.content
+          : message.message.content,
+      ),
+    ).toEqual([
+      [{ type: "text", text: "Before voice" }],
+      "spoken request",
+      "Realtime item: message item_1",
+      [{ type: "text", text: "spoken response" }],
+      "voice failed",
+      "Realtime closed: requested",
+    ]);
+  });
+
+  test("keeps realtime transcript events separate from ordinary streaming text", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "turn",
+        msg: { type: "turn_started", payload: { turnId: "t1" } },
+      },
+      {
+        id: "text-delta-1",
+        msg: { type: "agent_message_delta", payload: { delta: "text " } },
+      },
+      {
+        id: "rt-delta",
+        type: "realtime_transcript_delta",
+        payload: { role: "assistant", delta: "voice preview" },
+      },
+      {
+        id: "rt-done",
+        type: "realtime_transcript_done",
+        payload: { role: "assistant", text: "voice final" },
+      },
+      {
+        id: "rt-error",
+        type: "realtime_error",
+        payload: { message: "voice failed" },
+      },
+      {
+        id: "text-delta-2",
+        msg: { type: "agent_message_delta", payload: { delta: "stream" } },
+      },
+    ]);
+
+    expect(transcript.streamingText).toBe("text stream");
+    expect(
+      transcript.messages.map((message) =>
+        message.type === "system"
+          ? message.content
+          : message.message.content,
+      ),
+    ).toEqual([
+      [{ type: "text", text: "voice final" }],
+      "voice failed",
+    ]);
+  });
+
   test("maps tool calls and AgenC agent events to renderable tool rows", () => {
     const transcript = adaptTranscriptEvents([
       {

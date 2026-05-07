@@ -142,8 +142,10 @@ function createClient(): AgenCDaemonTuiClient & {
   connectionState: AgenCDaemonConnectionState | null;
   emitConnection(state: AgenCDaemonConnectionState): void;
   emit(sessionId: string, event: JsonObject): void;
+  emitNotification(event: JsonObject): void;
 } {
   const listeners = new Map<string, Set<(event: JsonObject) => void>>();
+  const notificationListeners = new Set<(event: JsonObject) => void>();
   const connectionListeners = new Set<
     (state: AgenCDaemonConnectionState) => void
   >();
@@ -172,6 +174,12 @@ function createClient(): AgenCDaemonTuiClient & {
         sessionListeners?.delete(cb);
       };
     },
+    subscribeToNotifications: (cb) => {
+      notificationListeners.add(cb);
+      return () => {
+        notificationListeners.delete(cb);
+      };
+    },
     getConnectionState() {
       return this.connectionState;
     },
@@ -189,6 +197,11 @@ function createClient(): AgenCDaemonTuiClient & {
     },
     emit: (sessionId, event) => {
       for (const listener of listeners.get(sessionId) ?? []) {
+        listener(event);
+      }
+    },
+    emitNotification: (event) => {
+      for (const listener of notificationListeners) {
         listener(event);
       }
     },
@@ -280,6 +293,190 @@ describe("AgenC TUI daemon session adapter", () => {
         sessionId: "session_1",
         content: "run tests",
       },
+    });
+  });
+
+  it("exposes realtime controls that route through the daemon thread RPC surface", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      realtimeThreadId: "agent_1",
+      realtimeAudioCaptureFactory: async () => ({ stop: vi.fn() }),
+    });
+
+    await session.realtime.start({ transport: "websocket", outputModality: "text" });
+    await session.realtime.appendText("voice text");
+    await session.realtime.appendAudio({
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+    });
+    await session.realtime.stop();
+
+    expect(client.requests).toEqual([
+      {
+        method: "thread/realtime/start",
+        params: {
+          threadId: "agent_1",
+          transport: { type: "websocket" },
+          realtimeSessionId: null,
+          prompt: null,
+          outputModality: "text",
+          voice: null,
+        },
+      },
+      {
+        method: "thread/realtime/appendText",
+        params: {
+          threadId: "agent_1",
+          text: "voice text",
+        },
+      },
+      {
+        method: "thread/realtime/appendAudio",
+        params: {
+          threadId: "agent_1",
+          audio: {
+            data: "AAAA",
+            sampleRate: 24000,
+            numChannels: 1,
+          },
+        },
+      },
+      {
+        method: "thread/realtime/stop",
+        params: { threadId: "agent_1" },
+      },
+    ]);
+  });
+
+  it("maps realtime JSON-RPC notifications into subscribed TUI transcript events", async () => {
+    const client = createClient();
+    const realtimeAudioPlayer = {
+      enqueue: vi.fn(),
+      close: vi.fn(),
+    };
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      realtimeThreadId: "agent_1",
+      realtimeAudioPlayer,
+    });
+    const received: JsonObject[] = [];
+    const unsubscribe = session.subscribeToEvents((event) => {
+      received.push(event as JsonObject);
+    });
+
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/started",
+      params: {
+        threadId: "other_agent",
+        realtimeSessionId: "rt_other",
+        version: "v2",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/started",
+      params: {
+        eventId: "rt_started_1",
+        threadId: "agent_1",
+        realtimeSessionId: "rt_1",
+        version: "v2",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/transcript/done",
+      params: {
+        threadId: "agent_1",
+        role: "user",
+        text: "hello by voice",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/transcript/delta",
+      params: {
+        threadId: "agent_1",
+        role: "assistant",
+        delta: "partial",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/itemAdded",
+      params: {
+        threadId: "agent_1",
+        item: { type: "message", id: "item_1" },
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/outputAudio/delta",
+      params: {
+        threadId: "agent_1",
+        audio: {
+          data: "AAAA",
+          sampleRate: 24000,
+          numChannels: 1,
+        },
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/sdp",
+      params: {
+        threadId: "agent_1",
+        sdp: "answer-sdp",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/closed",
+      params: {
+        threadId: "agent_1",
+        reason: "requested",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/error",
+      params: {
+        threadId: "agent_1",
+        message: "transport failed",
+      },
+    });
+    unsubscribe();
+
+    expect(received.map((event) => event.type)).toEqual([
+      "realtime_started",
+      "realtime_transcript_done",
+      "realtime_transcript_delta",
+      "realtime_item_added",
+      "realtime_output_audio_delta",
+      "realtime_sdp",
+      "realtime_closed",
+      "realtime_error",
+    ]);
+    expect(received[0]?.id).toBe("rt_started_1");
+    expect(realtimeAudioPlayer.enqueue).toHaveBeenCalledWith({
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+      samplesPerChannel: null,
+      itemId: null,
+    });
+    expect(session.realtime.getState()).toMatchObject({
+      phase: "inactive",
+      realtimeSessionId: null,
+      errorBanner: "transport failed",
     });
   });
 

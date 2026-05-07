@@ -11,6 +11,7 @@ import type {
   RequestUserInputEvent,
 } from "../../elicitation/types.js";
 import type { AgenCBridgeSession } from "../session-types.js";
+import type { AgenCRealtimeTuiControls } from "../realtime/controller.js";
 import type { McpFormPending, McpUrlPending, PendingElicitation } from "./App.js";
 
 if (process.versions.bun !== undefined) {
@@ -431,6 +432,21 @@ function createSession(): AgenCBridgeSession {
   };
 }
 
+function createRealtimeControls(): AgenCRealtimeTuiControls {
+  return {
+    start: vi.fn(async () => {}),
+    stop: vi.fn(async () => {}),
+    appendText: vi.fn(async () => {}),
+    appendAudio: vi.fn(async () => {}),
+    setMuted: vi.fn(),
+    setPushToTalk: vi.fn(),
+    setPushToTalkHeld: vi.fn(),
+    getState: vi.fn(),
+    subscribe: vi.fn(),
+    handleTranscriptEvent: vi.fn(),
+  } as unknown as AgenCRealtimeTuiControls;
+}
+
 describeWithVitestMocks("AgenCTuiApp render smoke", () => {
   test("App wrapper preserves provider wiring", async () => {
     const { App } = await import("./App.js");
@@ -535,6 +551,48 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
+  });
+
+  test("routes realtime composer commands before ordinary session submit", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const realtime = createRealtimeControls();
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      realtime,
+      submit,
+    };
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    providerProbe.promptSubmits.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const onSubmit = providerProbe.promptSubmits.at(-1);
+        expect(onSubmit).toBeDefined();
+
+        await onSubmit!("/realtime webrtc", helpers);
+
+        expect(realtime.start).toHaveBeenCalledWith({ transport: "webrtc" });
+        expect(submit).not.toHaveBeenCalled();
+        expect(helpers.clearBuffer).toHaveBeenCalledTimes(1);
+        expect(helpers.resetHistory).toHaveBeenCalledTimes(1);
+        expect(helpers.setCursorOffset).toHaveBeenCalledWith(0);
+
+        await onSubmit!("ordinary message", helpers);
+
+        expect(submit).toHaveBeenCalledTimes(1);
+        expect(submit).toHaveBeenCalledWith("ordinary message");
+      },
+    );
   });
 
   test("skips first-run onboarding after completion is persisted", async () => {

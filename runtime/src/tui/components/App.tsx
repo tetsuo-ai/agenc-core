@@ -40,6 +40,9 @@ import { defaultConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
+import { executeRealtimeComposerCommand } from "../realtime/commands.js";
+import { RealtimePanel } from "../realtime/RealtimePanel.js";
+import { useRealtimeState } from "../realtime/useRealtimeState.js";
 import {
   AgenCPermissionOverlay as PermissionOverlay,
   buildToolUseConfirmQueue,
@@ -901,6 +904,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     props.session,
     props.initialUserMessages ?? [],
   );
+  const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
   const setModel = useCallback(
     (next: string) => {
@@ -1060,6 +1064,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           hidePastThinking={false}
         />
       )}
+      {!onboarding.active ? (
+        <RealtimePanel state={realtimeState} />
+      ) : null}
       {!onboarding.active && toolJSX !== null ? (
         <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
@@ -1106,6 +1113,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         getToolUseContext={getToolUseContext}
         onSubmit={async (value, helpers) => {
           if (await onboarding.submit(value)) {
+            helpers.clearBuffer();
+            helpers.resetHistory();
+            helpers.setCursorOffset(0);
+            return;
+          }
+          if (
+            await executeRealtimeComposerCommand(props.session.realtime, value)
+          ) {
             helpers.clearBuffer();
             helpers.resetHistory();
             helpers.setCursorOffset(0);
