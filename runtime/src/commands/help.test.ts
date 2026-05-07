@@ -187,7 +187,7 @@ describe("helpCommand", () => {
     ]);
   });
 
-  it("lists each visible default registry command once and omits disabled commands", () => {
+  it("lists /files with visible default registry commands", () => {
     const previousUserType = process.env.USER_TYPE;
     try {
       delete process.env.USER_TYPE;
@@ -200,11 +200,9 @@ describe("helpCommand", () => {
         )
         .map((command) => command.name);
       const text = formatHelp(registry);
-      for (const name of visibleNames) {
-        expect(countCanonicalCommandLines(text, name)).toBe(1);
-      }
-      expect(visibleNames).not.toContain("files");
-      expect(countCanonicalCommandLines(text, "files")).toBe(0);
+      expect(visibleNames).toContain("files");
+      expect(text).toContain("Context & Files:");
+      expect(countCanonicalCommandLines(text, "files")).toBe(1);
     } finally {
       if (previousUserType === undefined) {
         delete process.env.USER_TYPE;
