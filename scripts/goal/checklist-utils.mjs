@@ -23,7 +23,7 @@ const STATUS_SKIPPED = "[-]";
 // Title body uses lazy `.+?` so single `*` chars inside titles (e.g.
 // "T-* leaf", "console.* calls", "**bold-inside-title**") don't break
 // parsing. The lazy quantifier still terminates at the first `**`.
-const ITEM_RE = /^- \[(.)\] \*\*([A-Z]+-[A-Za-z0-9]+)\b\s*(.+?)\*\*(.*)$/;
+const ITEM_RE = /^- \[(.)\] \*\*([A-Z]+(?:-[A-Za-z0-9]+)+)\b\s*(.+?)\*\*(.*)$/;
 const HEADING_RE = /^#{1,6}\s/;
 const PHASE_HEADING_RE = /^##\s/;
 const DEPENDS_RE = /\*\*Depends:\*\*\s*([^.]+)\./i;
@@ -130,7 +130,7 @@ function parseDepends(body) {
   return m[1]
     .split(/[,\s]+/)
     .map((s) => s.trim().replace(/\.+$/, ""))
-    .filter((s) => /^[A-Z]+-[A-Za-z0-9]+$/.test(s));
+    .filter((s) => /^[A-Z]+(?:-[A-Za-z0-9]+)+$/.test(s));
 }
 
 function parseDoneCriteria(body) {
