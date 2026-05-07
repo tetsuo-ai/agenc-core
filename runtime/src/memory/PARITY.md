@@ -24,15 +24,16 @@ Primary source anchors:
 
 This directory owns the MM-01 memory subsystem:
 - `paths.ts` resolves the D-13 global, project, and compatibility memory paths.
+- `privacy.ts` owns memory file scoping, memory-targeting command detection,
+  and local secret screening before team-memory writes or uploads.
 - `memdir.ts` builds the typed memory prompt, entrypoint truncation, and explicit three-layer guidance.
 - `global-store.ts` composes the global memory path, prompt, scan, and manifest primitives into the user-level global store surface.
 - `extraction-triggers.ts` owns model-visible ranges, main-agent/env gates, direct-write skip detection, and eligible-turn cadence for background memory extraction.
 - `session/` owns session-scoped notes extraction, prompt generation, path resolution, and compact/read helpers.
 - `types.ts`, `scan.ts`, `age.ts`, and `find-relevant.ts` provide memory taxonomy, scanning, freshness, and recall selection.
 - `agencmd.ts` owns full AGENC.md discovery with includes and rules. It is the only temporary strictness boundary in this directory.
-- `detection.ts` classifies memory files and memory-targeting shell patterns.
 - `project-memory.ts` is the strict project-memory API that consolidates the
-  project-instruction loader, selector path, detection helpers, and @memory
+  project-instruction loader, selector path, privacy helpers, and @memory
   mention syntax for callers.
 - `store.ts` ports the stage1/phase2 memory pipeline state facade onto AgenC's SQLite driver.
 
@@ -45,3 +46,6 @@ Deferred boundary:
   canonical recall and memory-prompt taxonomy surface.
 - `runtime/src/memdir/teamMemPaths.ts` remains outside this directory because team sync is skipped by the checklist.
 - `runtime/src/memdir/teamMemPrompts.ts` remains outside this directory, but its prompt text now imports the owned memory primitives here so TEAMMEM still preserves D-13 global/project/session guidance.
+- `runtime/src/services/teamMemorySync/` remains the team sync transport
+  boundary. It imports memory-owned privacy screening instead of owning scanner
+  logic.
