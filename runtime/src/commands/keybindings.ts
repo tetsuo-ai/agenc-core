@@ -2,8 +2,8 @@
  * `/keybindings` — open `keybindings.json` in AgenC home.
  *
  * If the file is missing, scaffold the default bindings before opening
- * it. Actual editor launch uses `child_process.spawn` with inherited
- * stdio so the user sees the real editor UI; when `$EDITOR` is unset
+ * it. Terminal editors use Ink's terminal handoff before receiving stdio;
+ * GUI editors are detached from the TUI's stdio. When `$EDITOR` is unset
  * we fall back to `nano`.
  *
  * The default file uses AgenC's live keybinding schema, which mirrors
@@ -13,10 +13,16 @@
  * @module
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import {
+  classifyGuiEditor,
+  editorExecutableAvailable,
+  splitEditorCommand,
+} from "../utils/editor.js";
+import { getInkInstance } from "../tui/ink/instances.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -110,12 +116,72 @@ export interface KeybindingsDeps {
   ensureFile: (file: string) => Promise<boolean>;
 }
 
-function defaultSpawnEditor(editor: string, file: string): Promise<number> {
+interface KeybindingsInkHandoff {
+  enterAlternateScreen(): void;
+  exitAlternateScreen(): void;
+}
+
+interface SpawnKeybindingsEditorDeps {
+  spawnProcess?: (
+    command: string,
+    args: readonly string[],
+    options: SpawnOptions,
+  ) => ChildProcess;
+  getInk?: () => KeybindingsInkHandoff | undefined;
+  isEditorAvailable?: (base: string) => boolean;
+}
+
+function waitForEditorExit(child: ChildProcess): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(editor, [file], { stdio: "inherit" });
     child.on("error", () => resolve(-1));
     child.on("close", (code) => resolve(code ?? 0));
   });
+}
+
+function waitForGuiEditorLaunch(child: ChildProcess): Promise<number> {
+  return new Promise((resolve) => {
+    child.on("error", () => resolve(-1));
+    child.on("spawn", () => {
+      child.unref();
+      resolve(0);
+    });
+  });
+}
+
+export async function spawnKeybindingsEditor(
+  editor: string,
+  file: string,
+  deps: SpawnKeybindingsEditorDeps = {},
+): Promise<number> {
+  const { base, editorArgs } = splitEditorCommand(editor);
+  const isAvailable = deps.isEditorAvailable ?? editorExecutableAvailable;
+  if (!isAvailable(base)) return -1;
+
+  const args = [...editorArgs, file];
+  const spawnProcess = deps.spawnProcess ?? spawn;
+  const guiEditor = classifyGuiEditor(editor) !== undefined;
+  if (guiEditor) {
+    try {
+      const child = spawnProcess(base, args, {
+        detached: true,
+        stdio: "ignore",
+      });
+      return await waitForGuiEditorLaunch(child);
+    } catch {
+      return -1;
+    }
+  }
+
+  const ink = deps.getInk?.() ?? getInkInstance();
+  ink?.enterAlternateScreen();
+  try {
+    const child = spawnProcess(base, args, { stdio: "inherit" });
+    return await waitForEditorExit(child);
+  } catch {
+    return -1;
+  } finally {
+    ink?.exitAlternateScreen();
+  }
 }
 
 async function defaultEnsureFile(file: string): Promise<boolean> {
@@ -133,7 +199,7 @@ export async function runKeybindings(
   agencHome: string,
   _argsRaw: string,
   deps: KeybindingsDeps = {
-    spawnEditor: defaultSpawnEditor,
+    spawnEditor: spawnKeybindingsEditor,
     ensureFile: defaultEnsureFile,
   },
 ): Promise<SlashCommandResult> {

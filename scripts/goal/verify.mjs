@@ -151,6 +151,15 @@ const ITEM_EVIDENCE = {
       { pattern: "isHistoryClearedEvent", scope: "runtime/src/tui/session-transcript.ts" },
     ],
   },
+  "GAP-TUI-04": {
+    files: ["runtime/src/commands/keybindings.ts"],
+    tests: ["runtime/src/commands/keybindings.test.ts"],
+    grepPresent: [
+      { pattern: "spawnKeybindingsEditor", scope: "runtime/src/commands/keybindings.ts" },
+      { pattern: "enterAlternateScreen", scope: "runtime/src/commands/keybindings.ts" },
+      { pattern: "stdio:\\s*[\"']ignore[\"']", scope: "runtime/src/commands/keybindings.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6489,6 +6498,10 @@ async function gapGates(item) {
     assertGapTuiClearHistoryEvent();
     return;
   }
+  if (item.title.includes("/keybindings: don't spawn editor")) {
+    assertGapTuiKeybindingsEditorHandoff();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -6931,6 +6944,70 @@ function assertGapTuiClearHistoryEvent() {
     failGate("GAP-TUI-03 targeted clear/transcript tests failed");
   }
   pass("GAP-TUI-03 targeted clear/transcript tests passed");
+}
+
+function assertGapTuiKeybindingsEditorHandoff() {
+  const sourceRel = "runtime/src/commands/keybindings.ts";
+  const testRel = "runtime/src/commands/keybindings.test.ts";
+  const sourcePath = path.join(root, sourceRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(sourcePath)) failGate(`GAP-TUI-04: missing ${sourceRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-04: missing ${testRel}`);
+
+  const source = readFileSync(sourcePath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const missingEvidence = [
+    [
+      "exports an Ink-aware keybindings editor launcher",
+      /export\s+async\s+function\s+spawnKeybindingsEditor/,
+      source,
+    ],
+    [
+      "terminal editor path enters Ink handoff before inherited stdio",
+      /enterAlternateScreen\(\)[\s\S]*spawnProcess\(base,\s*args,\s*\{\s*stdio:\s*["']inherit["']\s*\}\)/,
+      source,
+    ],
+    [
+      "terminal editor path always exits Ink handoff",
+      /finally\s*\{[\s\S]*exitAlternateScreen\(\)/,
+      source,
+    ],
+    [
+      "GUI editor path detaches from stdio",
+      /detached:\s*true[\s\S]*stdio:\s*["']ignore["']/,
+      source,
+    ],
+    [
+      "test covers terminal editor Ink handoff",
+      /hands terminal editors the terminal only after pausing Ink/,
+      test,
+    ],
+    [
+      "test covers GUI editor stdio isolation",
+      /launches GUI editors detached from the TUI stdio/,
+      test,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-04 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/spawn\(editor,\s*\[\s*file\s*\],\s*\{\s*stdio:\s*["']inherit["']/.test(source)) {
+    failGate("GAP-TUI-04: keybindings must not spawn(editor, [file], { stdio: 'inherit' }) directly");
+  }
+
+  pass("GAP-TUI-04: keybindings editor handoff evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/keybindings.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-04 targeted keybindings test failed");
+  }
+  pass("GAP-TUI-04 targeted keybindings test passed");
 }
 
 function subsystemDirGates(label, dir) {
