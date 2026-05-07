@@ -50,19 +50,61 @@ export function classifyGuiEditor(editor: string): string | undefined {
   return GUI_EDITORS.find(g => base.includes(g))
 }
 
-function splitEditorCommand(editor: string): {
+export function splitEditorCommand(editor: string): {
   base: string
   editorArgs: string[]
 } {
-  const parts = editor.trim().split(/\s+/).filter(Boolean)
-  const base = parts[0] ?? editor
+  const parts: string[] = []
+  let current = ''
+  let quote: '"' | "'" | null = null
+  let escaping = false
+
+  for (const char of editor.trim()) {
+    if (escaping) {
+      current += char
+      escaping = false
+      continue
+    }
+    if (char === '\\') {
+      escaping = true
+      continue
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = null
+      } else {
+        current += char
+      }
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        parts.push(current)
+        current = ''
+      }
+      continue
+    }
+    current += char
+  }
+
+  if (escaping) current += '\\'
+  if (current) parts.push(current)
+  const base = parts[0] ?? editor.trim()
   return {
     base,
     editorArgs: parts.slice(1),
   }
 }
 
-function editorExecutableAvailable(base: string): boolean {
+export function editorExecutableAvailable(
+  base: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === 'win32') return true
   return isCommandAvailable(base)
 }
 

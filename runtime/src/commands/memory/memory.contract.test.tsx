@@ -239,6 +239,28 @@ describe("memory command contract", () => {
     }
   });
 
+  it("preserves the Windows editor availability bypass and parses quoted editor commands", async () => {
+    const { editorExecutableAvailable, splitEditorCommand } = await import(
+      "../../utils/editor.js"
+    );
+
+    expect(editorExecutableAvailable("definitely-missing-editor", "win32")).toBe(
+      true,
+    );
+    expect(
+      splitEditorCommand(
+        '"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" --wait --reuse-window',
+      ),
+    ).toEqual({
+      base: "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+      editorArgs: ["--wait", "--reuse-window"],
+    });
+    expect(splitEditorCommand("code --wait")).toEqual({
+      base: "code",
+      editorArgs: ["--wait"],
+    });
+  });
+
   it("keeps sibling path prefixes absolute in memory update notices", () => {
     expect(
       getRelativeMemoryPathForRoots(

@@ -267,11 +267,15 @@ reviewArgs.push("-");
 // branding-scan: allow real binary name of the reviewer CLI
 const isClaudeModel = /^claude-/.test(requestedModel);
 const reviewerBinary = isClaudeModel ? "claude" : "codex";
+// branding-scan: allow real binary names of reviewer CLIs
+// Drop --bare so the reviewer CLI uses the operator's existing
+// OAuth/keychain auth from interactive login. With --bare set, the
+// reviewer requires ANTHROPIC_API_KEY explicitly; without it, the
+// spawned subprocess inherits the user's logged-in session.
 const reviewerArgv = isClaudeModel
   ? [
       "--print",
       "--output-format", "text",
-      "--bare",
       "--allow-dangerously-skip-permissions",
       "--model", requestedModel,
     ]

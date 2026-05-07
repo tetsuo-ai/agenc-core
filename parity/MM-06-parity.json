@@ -61,7 +61,8 @@
         "Existing files are preserved when writeFile with flag wx reports EEXIST.",
         "EDITOR/VISUAL hints identify the active editor source.",
         "Shell metacharacters in memory file paths are passed as a single file path to the editor launcher.",
-        "Unavailable or failing editors report an error instead of a false success."
+        "Unavailable or failing editors report an error instead of a false success.",
+        "Quoted editor executable paths and Windows editor availability bypasses are preserved."
       ],
       "tests": [
         "runtime/src/commands/memory/memory.contract.test.tsx"
