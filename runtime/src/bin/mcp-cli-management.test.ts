@@ -349,6 +349,37 @@ describe("AgenC MCP management CLI parsing", () => {
     expect(output().stdout).not.toContain("Bearer token");
   });
 
+  test("mcp add rejects malformed callback ports before writing config", async () => {
+    for (const [index, badPort] of ["123abc", "0", "-1", "65536"].entries()) {
+      const { io, output } = captureIo();
+
+      await expect(
+        runAgenCMcpCli(
+          {
+            kind: "management",
+            argv: [
+              "add",
+              "--transport",
+              "http",
+              "--callback-port",
+              badPort,
+              `docs${index}`,
+              "https://agenc.tech/mcp",
+            ],
+          },
+          { io },
+        ),
+      ).resolves.toBe(1);
+
+      expect(output().stderr).toContain(
+        "Error: --callback-port must be a valid TCP port",
+      );
+    }
+
+    await expect(readFile(join(agencHome, "config.toml"), "utf8")).rejects
+      .toThrow();
+  });
+
   test("mcp add validates xaa before writing config", async () => {
     const { io, output } = captureIo();
 
