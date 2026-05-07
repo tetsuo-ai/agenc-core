@@ -638,6 +638,8 @@ export function buildBootstrapSessionServices(
   });
   const fileThreadStore = new FileThreadStore({
     cwd: opts.workspaceRoot,
+    agencHome: opts.agencHome,
+    defaultModelProviderId: opts.providerName,
     projectRootMarkers: opts.configStore.current().project_root_markers,
   });
   const threadNameStore = new BootstrapThreadNameStore(fileThreadStore);
