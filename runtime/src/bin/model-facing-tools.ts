@@ -976,7 +976,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         "id_column",
         "output_csv_path",
         "max_concurrency",
-        "max_workers",
         "max_runtime_seconds",
         "output_schema",
       ]),
@@ -1007,8 +1006,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const csvPath = stringValue(args.csv_path)!;
     const idColumn = stringValue(args.id_column);
     const outputCsvPath = stringValue(args.output_csv_path);
-    const maxConcurrency =
-      numberValue(args.max_concurrency) ?? numberValue(args.max_workers);
+    const maxConcurrency = numberValue(args.max_concurrency);
     const maxRuntimeSeconds = numberValue(args.max_runtime_seconds);
     const outputSchema =
       typeof args.output_schema === "object" &&
@@ -1208,10 +1206,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
             type: "number",
             description:
               "Maximum concurrent workers for this job. Defaults to 16.",
-          },
-          max_workers: {
-            type: "string",
-            description: "Alias for max_concurrency. Set to 1 to run sequentially.",
           },
           max_runtime_seconds: {
             type: "number",

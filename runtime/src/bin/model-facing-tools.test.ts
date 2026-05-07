@@ -410,6 +410,39 @@ describe("model-facing tools", () => {
     });
   });
 
+  it("uses max_concurrency as the sole CSV agent worker-count parameter", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    });
+    const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
+    const properties = (
+      spawn.inputSchema as { properties: Record<string, unknown> }
+    ).properties;
+
+    expect(properties.max_concurrency).toMatchObject({ type: "number" });
+    expect(properties).not.toHaveProperty("max_workers");
+
+    const accepted = await spawn.execute({
+      csv_path: "input.csv",
+      instruction: "process {value}",
+      max_concurrency: 2,
+    });
+    expect(JSON.parse(accepted.content).error).toBe(
+      "tool invoked before session was initialized",
+    );
+
+    const rejected = await spawn.execute({
+      csv_path: "input.csv",
+      instruction: "process {value}",
+      max_workers: "2",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      "unknown field `max_workers`",
+    );
+  });
+
   it("returns LSP diagnostics for one file without draining other pending diagnostics", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-"));
     try {

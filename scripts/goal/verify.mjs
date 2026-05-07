@@ -6468,10 +6468,60 @@ async function gapGates(item) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
   }
+  if (item.title.includes("spawn_agents_on_csv parameter ambiguity")) {
+    assertGapToolsSpawnAgentsOnCsvWorkerParameter();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapToolsSpawnAgentsOnCsvWorkerParameter() {
+  const toolRel = "runtime/src/bin/model-facing-tools.ts";
+  const testRel = "runtime/src/bin/model-facing-tools.test.ts";
+  const toolPath = path.join(root, toolRel);
+  const testPath = path.join(root, testRel);
+  for (const rel of [toolRel, testRel]) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-TOOLS-02: missing required evidence file ${rel}`);
+    }
+  }
+
+  const tool = readFileSync(toolPath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+
+  if (!/const\s+maxConcurrency\s*=\s*numberValue\(args\.max_concurrency\)/.test(tool)) {
+    failGate("GAP-TOOLS-02: spawn_agents_on_csv must read worker count from max_concurrency only");
+  }
+  if (/\bmax_workers\b/.test(tool)) {
+    failGate("GAP-TOOLS-02: max_workers must not remain in the model-facing tool contract");
+  }
+
+  const requiredTestEvidence = [
+    "uses max_concurrency as the sole CSV agent worker-count parameter",
+    "not.toHaveProperty(\"max_workers\")",
+    "unknown field `max_workers`",
+    "tool invoked before session was initialized",
+  ];
+  const missingTestEvidence = requiredTestEvidence.filter((needle) => !test.includes(needle));
+  if (missingTestEvidence.length > 0) {
+    failGate(`GAP-TOOLS-02 regression test evidence missing:\n  - ${missingTestEvidence.join("\n  - ")}`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/bin/model-facing-tools.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-02 targeted model-facing tool tests failed");
+  }
+
+  pass("GAP-TOOLS-02: spawn_agents_on_csv uses a single worker-count parameter");
 }
 
 function assertGapToolsSyntheticOutputToolValidation() {
