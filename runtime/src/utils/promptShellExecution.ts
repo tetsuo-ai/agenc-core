@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto'
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { Tool, ToolUseContext } from '../tools/Tool.js'
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-import { BashTool } from '../tools/BashTool/BashTool.js'
+import { CanonicalBashTool } from '../tools/canonicalToolSurface.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, MalformedCommandError, ShellError } from './errors.js'
 import type { FrontmatterShell } from './frontmatterParser.js'
@@ -29,7 +29,7 @@ type PromptShellTool = Tool & {
   call(
     input: { command: string },
     context: ToolUseContext,
-  ): Promise<{ data: ShellOut }>
+  ): Promise<{ data: unknown }>
 }
 
 import { isPowerShellToolEnabled } from './shell/shellToolUtils.js'
@@ -53,6 +53,50 @@ const getPowerShellTool = (() => {
   }
 })()
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+function normalizeShellToolData(data: unknown): {
+  readonly toolData: unknown
+  readonly shellOut: ShellOut
+} {
+  const record = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : {}
+  const metadata = record.metadata &&
+    typeof record.metadata === 'object' &&
+    !Array.isArray(record.metadata)
+    ? record.metadata as Record<string, unknown>
+    : {}
+  const stdout = typeof metadata.stdout === 'string'
+    ? metadata.stdout
+    : typeof record.stdout === 'string'
+      ? record.stdout
+      : typeof record.content === 'string'
+        ? record.content
+        : typeof data === 'string'
+          ? data
+          : ''
+  const stderr = typeof metadata.stderr === 'string'
+    ? metadata.stderr
+    : typeof record.stderr === 'string'
+      ? record.stderr
+      : ''
+  const interrupted =
+    typeof record.interrupted === 'boolean' ? record.interrupted : false
+  const isError =
+    record.isError === true || metadata.isError === true
+  const canonicalData =
+    typeof record.content === 'string' || record.metadata !== undefined
+      ? {
+          content: typeof record.content === 'string' ? record.content : stdout,
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          ...(isError ? { isError: true } : {}),
+        }
+      : undefined
+  return {
+    toolData: canonicalData ?? { stdout, stderr, interrupted },
+    shellOut: { stdout, stderr, interrupted },
+  }
+}
 
 // Pattern for code blocks: ```! command ```
 const BLOCK_PATTERN = /```!\s*\n?([\s\S]*?)\n?```/g
@@ -89,7 +133,7 @@ export async function executeShellCommandsInPrompt(
   const shellTool: PromptShellTool =
     shell === 'powershell' && isPowerShellToolEnabled()
       ? getPowerShellTool()
-      : BashTool
+      : CanonicalBashTool as PromptShellTool
 
   // INLINE_PATTERN's lookbehind is ~100x slower than BLOCK_PATTERN on large
   // skill content (265µs vs 2µs @ 17KB). 93% of skills have no !` at all,
@@ -122,15 +166,11 @@ export async function executeShellCommandsInPrompt(
           }
 
           const { data } = await shellTool.call({ command }, context)
-          const normalizedData = {
-            ...data,
-            stdout: typeof data.stdout === 'string' ? data.stdout : '',
-            stderr: typeof data.stderr === 'string' ? data.stderr : '',
-          }
+          const { toolData, shellOut } = normalizeShellToolData(data)
           // Reuse the same persistence flow as regular Bash tool calls
           const toolResultBlock = await processToolResultBlock(
             shellTool,
-            normalizedData,
+            toolData,
             randomUUID(),
           )
           // Extract the string content from the block
@@ -138,8 +178,8 @@ export async function executeShellCommandsInPrompt(
             typeof toolResultBlock.content === 'string'
               ? toolResultBlock.content
               : formatBashOutput(
-                  normalizedData.stdout,
-                  normalizedData.stderr,
+                  shellOut.stdout,
+                  shellOut.stderr,
                 )
           // Function replacer — String.replace interprets $$, $&, $`, $' in
           // the replacement string even with a string search pattern. Shell

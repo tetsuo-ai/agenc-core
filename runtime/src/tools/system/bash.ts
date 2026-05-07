@@ -33,6 +33,8 @@ import {
 import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { bashToolHasPermission } from "../../permissions/bash.js";
+import type { PermissionResult } from "../../permissions/types.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
   extractAgenCCodeHints,
@@ -787,6 +789,60 @@ export function isCommandAllowed(
   return { allowed: true };
 }
 
+function bashRuleCandidate(input: Record<string, unknown>): {
+  readonly command: string;
+  readonly firstWord: string | null;
+} | undefined {
+  if (typeof input.command !== "string" || input.command.trim().length === 0) {
+    return undefined;
+  }
+  const command = input.command.trim();
+  const args = Array.isArray(input.args)
+    ? input.args.filter((arg): arg is string => typeof arg === "string")
+    : undefined;
+  const rendered = args === undefined ? command : [command, ...args].join(" ");
+  return { command: rendered, firstWord: command.split(/\s+/u)[0] ?? null };
+}
+
+async function bashContentRulePermission(
+  input: Record<string, unknown>,
+  context: Parameters<NonNullable<Tool["checkPermissions"]>>[1],
+): Promise<PermissionResult> {
+  const candidate = bashRuleCandidate(input);
+  if (candidate === undefined) {
+    return { behavior: "passthrough", message: "Run shell command" };
+  }
+  return bashToolHasPermission(
+    {
+      command: candidate.command,
+      ...(typeof input.description === "string"
+        ? { description: input.description }
+        : {}),
+      ...(input.dangerouslyDisableSandbox === true
+        ? { dangerouslyDisableSandbox: true }
+        : {}),
+    },
+    {
+      ...context,
+      getAppState: () => {
+        const appState = context.getAppState();
+        const toolPermissionContext = context.toolPermissionContext
+          ? context.toolPermissionContext(appState)
+          : appState.toolPermissionContext;
+        const autoAllowBashIfSandboxed =
+          (context as { readonly autoAllowBashIfSandboxed?: boolean })
+            .autoAllowBashIfSandboxed === true;
+        return {
+          ...appState,
+          toolPermissionContext: autoAllowBashIfSandboxed
+            ? { ...toolPermissionContext, autoAllowBashIfSandboxed: true }
+            : toolPermissionContext,
+        };
+      },
+    },
+  );
+}
+
 /**
  * Create the system.bash tool.
  *
@@ -866,6 +922,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
         },
       },
       required: ["command"],
+    },
+
+    checkPermissions(input, context) {
+      return bashContentRulePermission(input as Record<string, unknown>, context);
     },
 
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {

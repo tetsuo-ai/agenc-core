@@ -19,13 +19,15 @@ import {
 } from 'src/services/analytics/index.js'
 import { prefetchAllMcpResources } from 'src/services/mcp/client.js'
 import type { ScopedMcpServerConfig } from 'src/services/mcp/types.js'
-import { BashTool } from 'src/tools/BashTool/BashTool.js'
-import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
+import {
+  CanonicalBashTool as BashTool,
+  CanonicalFileEditTool as FileEditTool,
+  CanonicalFileWriteTool as FileWriteTool,
+} from 'src/tools/canonicalToolSurface.js'
 import {
   normalizeFileEditInput,
   stripTrailingWhitespace,
 } from 'src/tools/FileEditTool/utils.js'
-import { FileWriteTool } from 'src/tools/FileWriteTool/FileWriteTool.js'
 import { getTools } from 'src/tools.js'
 import type { AgentId } from 'src/types/ids.js'
 import type { z } from 'zod/v4'

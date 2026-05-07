@@ -11,12 +11,8 @@ import {
   type ToolUseContext,
   type ToolPermissionContext,
 } from '../tools/Tool.js'
-import {
-  FileReadTool,
-  MaxFileReadTokenExceededError,
-  type Output as FileReadToolOutput,
-  readImageWithTokenBudget,
-} from '../tools/FileReadTool/FileReadTool.js'
+import { CanonicalFileReadTool } from '../tools/canonicalToolSurface.js'
+import { SESSION_ALLOWED_ROOTS_ARG } from '../tools/system/filesystem.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
@@ -299,7 +295,7 @@ export const VERIFY_PLAN_REMINDER_CONFIG = {
 export type FileAttachment = {
   type: 'file'
   filename: string
-  content: FileReadToolOutput
+  content: unknown
   /**
    * Whether the file was truncated due to size limits
    */
@@ -327,7 +323,7 @@ export type PDFReferenceAttachment = {
 export type AlreadyReadFileAttachment = {
   type: 'already_read_file'
   filename: string
-  content: FileReadToolOutput
+  content: unknown
   /**
    * Whether the file was truncated due to size limits
    */
@@ -457,11 +453,11 @@ export type Attachment =
       filename: string
       snippet: string
     }
-  | {
-      type: 'edited_image_file'
-      filename: string
-      content: FileReadToolOutput
-    }
+    | {
+        type: 'edited_image_file'
+        filename: string
+        content: unknown
+      }
   | {
       type: 'directory'
       path: string
@@ -2064,6 +2060,75 @@ async function processMcpResourceAttachments(
   ) as Attachment[]
 }
 
+async function callCanonicalFileReadTool(
+  input: Record<string, unknown>,
+  toolUseContext: ToolUseContext,
+): Promise<unknown> {
+  const filePath = typeof input.file_path === 'string'
+    ? expandPath(input.file_path)
+    : undefined
+  const callInput = filePath
+    ? {
+        ...input,
+        [SESSION_ALLOWED_ROOTS_ARG]: [
+          dirname(filePath),
+        ],
+      }
+    : input
+  const result = await CanonicalFileReadTool.call(
+    callInput,
+    toolUseContext,
+    undefined,
+    undefined,
+  )
+  if (
+    result.data &&
+    typeof result.data === 'object' &&
+    !Array.isArray(result.data) &&
+    (result.data as Record<string, unknown>).isError === true
+  ) {
+    const content = (result.data as Record<string, unknown>).content
+    throw new Error(typeof content === 'string' ? content : 'FileRead failed')
+  }
+  return result.data
+}
+
+function canonicalFileReadHasImage(content: unknown): boolean {
+  if (content === null || typeof content !== 'object' || Array.isArray(content)) {
+    return false
+  }
+  const record = content as Record<string, unknown>
+  const metadata =
+    record.metadata &&
+    typeof record.metadata === 'object' &&
+    !Array.isArray(record.metadata)
+      ? record.metadata as Record<string, unknown>
+      : {}
+  if (
+    typeof metadata.mediaType === 'string' &&
+    metadata.mediaType.startsWith('image/')
+  ) {
+    return true
+  }
+  return Array.isArray(record.contentItems) &&
+    record.contentItems.some(item =>
+      item &&
+      typeof item === 'object' &&
+      !Array.isArray(item) &&
+      (item as Record<string, unknown>).type === 'input_image',
+    )
+}
+
+function isCanonicalFileReadSizeError(error: unknown): boolean {
+  if (error instanceof FileTooLargeError) return true
+  const message = error instanceof Error ? error.message : String(error)
+  return (
+    message.includes('exceeds maximum allowed tokens') ||
+    message.includes('exceeds the text-read limit') ||
+    message.includes('exceeds maximum allowed size')
+  )
+}
+
 export async function getChangedFiles(
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
@@ -2094,23 +2159,33 @@ export async function getChangedFiles(
           return null
         }
 
-        const fileInput = { file_path: normalizedPath }
-
-        // Validate file path is valid
-        const isValid = await FileReadTool.validateInput(
-          fileInput,
+        const content = await callCanonicalFileReadTool(
+          { file_path: normalizedPath },
           toolUseContext,
         )
-        if (!isValid.result) {
-          return null
+
+        if (canonicalFileReadHasImage(content)) {
+          return {
+            type: 'edited_image_file' as const,
+            filename: normalizedPath,
+            content,
+          }
         }
 
-        const result = await FileReadTool.call(fileInput, toolUseContext)
-        // Extract only the changed section
-        if (result.data.type === 'text') {
+        // Extract only the changed section. The canonical FileRead result is
+        // line-numbered for model display, so read the raw text after the
+        // canonical tool succeeds to keep diffs unnumbered.
+        try {
+          const current = await readFileInRange(
+            normalizedPath,
+            0,
+            undefined,
+            undefined,
+            toolUseContext.abortController.signal,
+          )
           const snippet = getSnippetForTwoFileDiff(
             fileState.content,
-            result.data.file.content,
+            current.content,
           )
 
           // File was touched but not modified
@@ -2123,24 +2198,9 @@ export async function getChangedFiles(
             filename: normalizedPath,
             snippet,
           }
-        }
-
-        // For non-text files (images), apply the same token limit logic as FileReadTool
-        if (result.data.type === 'image') {
-          try {
-            const data = await readImageWithTokenBudget(normalizedPath)
-            return {
-              type: 'edited_image_file' as const,
-              filename: normalizedPath,
-              content: data,
-            }
-          } catch (compressionError) {
-            logError(compressionError)
-            logEvent('tengu_watched_file_compression_failed', {
-              file: normalizedPath,
-            } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-            return null
-          }
+        } catch (diffError) {
+          logError(diffError)
+          return null
         }
 
         // notebook / pdf / parts — no diff representation; explicitly
@@ -3180,13 +3240,16 @@ export async function generateFileAttachment(
           offset: offset ?? 1,
           limit: MAX_LINES_TO_READ,
         }
-        const result = await FileReadTool.call(truncatedInput, toolUseContext)
+        const content = await callCanonicalFileReadTool(
+          truncatedInput,
+          toolUseContext,
+        )
         logEvent(successEventName, {})
 
         return {
           type: 'file' as const,
           filename,
-          content: result.data,
+          content,
           truncated: true,
           displayPath: relative(getCwd(), filename),
         }
@@ -3196,26 +3259,17 @@ export async function generateFileAttachment(
       }
     }
 
-    // Validate file path is valid
-    const isValid = await FileReadTool.validateInput(fileInput, toolUseContext)
-    if (!isValid.result) {
-      return null
-    }
-
     try {
-      const result = await FileReadTool.call(fileInput, toolUseContext)
+      const content = await callCanonicalFileReadTool(fileInput, toolUseContext)
       logEvent(successEventName, {})
       return {
         type: 'file',
         filename,
-        content: result.data,
+        content,
         displayPath: relative(getCwd(), filename),
       }
     } catch (error) {
-      if (
-        error instanceof MaxFileReadTokenExceededError ||
-        error instanceof FileTooLargeError
-      ) {
+      if (isCanonicalFileReadSizeError(error)) {
         return await readTruncatedFile()
       }
       throw error

@@ -5,13 +5,16 @@ import { processBashCommand } from "./processBashCommand.js";
 const mocks = vi.hoisted(() => ({
   bashCall: vi.fn(async () => ({
     data: {
-      stdout: "ok",
-      stderr: "",
+      content: "ok",
+      metadata: {
+        stdout: "ok",
+        stderr: "",
+      },
     },
   })),
   logEvent: vi.fn(),
-  processToolResultBlock: vi.fn(async (_tool: unknown, data: { stdout: string }) => ({
-    content: data.stdout,
+  processToolResultBlock: vi.fn(async (_tool: unknown, data: { content?: string }) => ({
+    content: data.content,
   })),
 }));
 
@@ -23,9 +26,15 @@ vi.mock("../../services/analytics/index.js", () => ({
   logEvent: mocks.logEvent,
 }));
 
-vi.mock("../../tools/BashTool/BashTool.js", () => ({
-  BashTool: {
+vi.mock("../../tools/canonicalToolSurface.js", () => ({
+  CanonicalBashTool: {
     call: mocks.bashCall,
+  },
+}));
+
+vi.mock("../../tools/PowerShellTool/PowerShellTool.js", () => ({
+  PowerShellTool: {
+    call: vi.fn(),
   },
 }));
 
@@ -66,6 +75,7 @@ vi.mock("../../utils/shell/resolveDefaultShell.js", () => ({
 vi.mock("../../utils/shell/shellToolUtils.js", () => ({
   getPowerShellTool: vi.fn(() => null),
   isPowerShellToolEnabled: vi.fn(() => false),
+  SHELL_TOOL_NAMES: ["system.bash"],
 }));
 
 vi.mock("../../utils/toolResultStorage.js", () => ({
@@ -95,8 +105,6 @@ describe("processBashCommand", () => {
     expect(mocks.bashCall).toHaveBeenCalledWith(
       {
         command: "echo ok",
-        dangerouslyDisableSandbox: true,
-        _dangerouslyDisableSandboxApproved: true,
       },
       expect.any(Object),
       undefined,
@@ -111,5 +119,40 @@ describe("processBashCommand", () => {
     expect(mocks.logEvent).toHaveBeenCalledWith("agenc_input_bash", {
       powershell: false,
     });
+  });
+
+  it("passes failed canonical Bash results through the tool-result mapper", async () => {
+    mocks.bashCall.mockResolvedValueOnce({
+      data: {
+        content: "failed",
+        isError: true,
+        metadata: {
+          stdout: "",
+          stderr: "bad",
+        },
+      },
+    });
+    const setToolJSX = vi.fn();
+
+    const result = await processBashCommand(
+      "false",
+      [],
+      [],
+      { options: { verbose: false } } as never,
+      setToolJSX,
+    );
+
+    expect(mocks.processToolResultBlock).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        content: "failed",
+        isError: true,
+      }),
+      expect.any(String),
+    );
+    expect(result.shouldQuery).toBe(false);
+    expect(JSON.stringify(result.messages)).toContain(
+      "<bash-stdout>failed</bash-stdout><bash-stderr>bad</bash-stderr>",
+    );
   });
 });

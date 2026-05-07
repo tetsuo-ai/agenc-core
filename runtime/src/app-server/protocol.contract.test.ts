@@ -289,7 +289,7 @@ describe("AgenC daemon protocol surface", () => {
           objective: "Inspect daemon status",
           cwd: "/workspace",
           model: "grok-4",
-          unattendedAllow: ["FileRead", "system.grep"],
+          unattendedAllow: ["FileRead", "Grep"],
           unattendedDeny: ["exec_command"],
         },
       },

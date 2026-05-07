@@ -258,8 +258,6 @@ export function isReadOnlyFilesystemTool(name: string): boolean {
     name === "system.stat" ||
     name === "Glob" ||
     name === "Grep" ||
-    name === "system.glob" ||
-    name === "system.grep" ||
     name === "system.findFiles"
   );
 }

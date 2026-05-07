@@ -150,7 +150,7 @@ describe("AgenC delegate background-agent runner", () => {
         cwd: "/workspace",
         model: "grok-4",
         metadata: { ticket: "F-06a" },
-        unattendedAllow: ["FileRead", "system.grep"],
+        unattendedAllow: ["FileRead", "Grep"],
         unattendedDeny: ["exec_command"],
       }),
     ).resolves.toEqual({
@@ -187,7 +187,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionUpdates[0]).toMatchObject({
       mode: "unattended",
       unattendedPolicy: {
-        allowlist: ["FileRead", "system.grep"],
+        allowlist: ["FileRead", "Grep"],
         denylist: ["exec_command"],
       },
     });

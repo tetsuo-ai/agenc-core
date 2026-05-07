@@ -140,8 +140,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("Glob");
     expect(registeredNames).toContain("Grep");
     expect(registeredNames).toContain("apply_patch");
-    expect(registeredNames).toContain("system.grep");
-    expect(registeredNames).toContain("system.glob");
     expect(registeredNames).toContain("system.gitStatus");
     expect(registeredNames).toContain("system.symbolSearch");
     expect(registeredNames).toContain("system.repoInventory");
@@ -157,6 +155,19 @@ describe("tool-registry dynamic and deferred catalog", () => {
     // surface is AgenC-owned, so the only checklist tool we
     // ship is `TodoWrite`.
     expect(registeredNames).not.toContain("update_plan");
+    for (const legacyAlias of [
+      "Read",
+      "Bash",
+      "FileEdit",
+      "FileWrite",
+      "FileReadTool",
+      "FileEditTool",
+      "FileWriteTool",
+      "system.grep",
+      "system.glob",
+    ]) {
+      expect(registeredNames).not.toContain(legacyAlias);
+    }
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toContain("exec_command");
@@ -175,11 +186,22 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("Glob");
     expect(visibleNames).toContain("Grep");
     expect(visibleNames).not.toContain("apply_patch");
-    expect(visibleNames).not.toContain("system.grep");
-    expect(visibleNames).not.toContain("system.glob");
     expect(visibleNames).not.toContain("system.gitStatus");
     expect(visibleNames).not.toContain("system.symbolSearch");
     expect(visibleNames).not.toContain("system.repoInventory");
+    for (const legacyAlias of [
+      "Read",
+      "Bash",
+      "FileEdit",
+      "FileWrite",
+      "FileReadTool",
+      "FileEditTool",
+      "FileWriteTool",
+      "system.grep",
+      "system.glob",
+    ]) {
+      expect(visibleNames).not.toContain(legacyAlias);
+    }
   });
 
   test("AskUserQuestion is marked as an interactive planning tool", () => {
@@ -646,8 +668,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const resultNames = body.results.map((entry) => entry.name);
     expect(resultNames).toContain("exec_command");
     expect(resultNames).toContain("MultiEdit");
+    expect(resultNames).toContain("Glob");
     expect(resultNames).toContain("Grep");
     expect(resultNames).not.toContain("system.grep");
+    expect(resultNames).not.toContain("system.glob");
     expect(body.results.every((entry) => entry.advertised)).toBe(true);
   });
 
@@ -721,6 +745,54 @@ describe("tool-registry dynamic and deferred catalog", () => {
         additionalProperties: false,
       }),
     });
+  });
+
+  test("NotebookEdit is registered only through the model-facing surface", () => {
+    const baseRegistry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    expect(baseRegistry.tools.map((tool) => tool.name)).not.toContain(
+      "NotebookEdit",
+    );
+
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: createModelFacingTools({
+        workspaceRoot: "/tmp",
+        getSession: () => null,
+      }),
+    });
+    const registeredNames = registry.tools.map((tool) => tool.name);
+    const notebookEditTools = registry.tools.filter(
+      (tool) => tool.name === "NotebookEdit",
+    );
+
+    expect(notebookEditTools).toHaveLength(1);
+    expect(notebookEditTools[0]).toMatchObject({
+      requiresApproval: true,
+      recoveryCategory: "side-effecting",
+      metadata: expect.objectContaining({
+        family: "coding",
+        source: "builtin",
+        deferred: true,
+        mutating: true,
+      }),
+      inputSchema: expect.objectContaining({
+        required: ["notebook_path"],
+        additionalProperties: false,
+      }),
+    });
+    for (const legacyAlias of [
+      "Read",
+      "Bash",
+      "FileEdit",
+      "FileWrite",
+      "FileReadTool",
+      "FileEditTool",
+      "FileWriteTool",
+      "system.grep",
+      "system.glob",
+    ]) {
+      expect(registeredNames).not.toContain(legacyAlias);
+    }
   });
 
   test("SkillTool invocation is registered as the model-facing Skill surface", async () => {
