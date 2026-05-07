@@ -1,4 +1,4 @@
-import { execaSync } from 'execa'
+import { execaSync, type ExecaSyncReturnValue } from 'execa'
 import { join } from 'path'
 import { getAgenCConfigHomeDir } from '../envUtils.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
@@ -37,9 +37,8 @@ function shouldUseLegacyPasswordVault(): boolean {
 function runPowerShell(
   script: string,
   options?: { input?: string },
-): ReturnType<typeof execaSync> | null {
+): ExecaSyncReturnValue | null {
   try {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
     return execaSync('powershell.exe', ['-Command', script], {
       input: options?.input,
       reject: false,
@@ -50,10 +49,9 @@ function runPowerShell(
 }
 
 function getFailureWarning(
-  result: ReturnType<typeof execaSync> | null,
+  result: ExecaSyncReturnValue | null,
   fallback: string,
 ): string {
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
   const stderr = result?.stderr?.trim()
   if (stderr) {
     return stderr
@@ -88,7 +86,6 @@ function readLegacyPasswordVault(): SecureStorageData | null {
   const result = runPowerShell(script)
   if (result?.exitCode === 0 && result.stdout) {
     try {
-      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
       return jsonParse(result.stdout)
     } catch {
       return null
@@ -139,7 +136,6 @@ export const windowsCredentialStorage: SecureStorage = {
     const result = runPowerShell(script)
     if (result?.exitCode === 0 && result.stdout) {
       try {
-        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
         return jsonParse(result.stdout)
       } catch {
         return readLegacyPasswordVault()

@@ -40,7 +40,7 @@ export type ReasoningEffort =
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 
-export type Personality = "default" | "concise" | "careful" | "fast";
+export type Personality = "none" | "friendly" | "pragmatic";
 
 export type WebSearchMode = "auto" | "always" | "never";
 
@@ -668,7 +668,6 @@ export function defaultConfig(): AgenCConfig {
     }) as SandboxConfig,
     reasoning_effort: "medium" as ReasoningEffort,
     approvals_reviewer: "user" as ApprovalsReviewer,
-    personality: "default" as Personality,
     agent_max_threads: 4,
     agent_max_depth: 1,
     auth: Object.freeze({

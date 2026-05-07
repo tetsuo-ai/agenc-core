@@ -80,6 +80,7 @@ import { resolveAgencHome as resolveAgencHomeFromEnv, resolveWorkspace as resolv
 import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
+import { maybeMigratePersonality } from "../personality/migration.js";
 import type { ResolvedProviderSettings } from "../config/resolve-provider.js";
 import type {
   AuthBackend,
@@ -820,19 +821,6 @@ export async function bootstrapLocalRuntimeSession(
     env,
   });
   await configStore.reload();
-  const startup = resolveStartupSelection({
-    config: configStore.current(),
-    env,
-    argv,
-  });
-  const cli = readStartupCliFlags(argv);
-  const autonomousModeEnabled =
-    cli.autonomousMode === true || startup.config.autonomous_mode === true;
-  const conversationId =
-    options.conversationId ?? `conv-${Date.now().toString(36)}`;
-  const resumeConversation =
-    options.conversationId !== undefined && options.resumeConversation !== false;
-
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
   const configMigrations = await runStartupConfigMigrations({
@@ -843,6 +831,39 @@ export async function bootstrapLocalRuntimeSession(
   if (configMigrations.wrote) {
     await configStore.reload();
   }
+  let startup = resolveStartupSelection({
+    config: configStore.current(),
+    env,
+    argv,
+  });
+  const personalityMigrationStatus = await maybeMigratePersonality({
+    agencHome,
+    config: configStore.current(),
+    cwd: workspaceRoot,
+    defaultModelProviderId: startup.provider,
+    ...(startup.profileName !== undefined
+      ? { activeProfileName: startup.profileName }
+      : {}),
+    ...(startup.config.project_root_markers !== undefined
+      ? { projectRootMarkers: startup.config.project_root_markers }
+      : {}),
+  });
+  if (personalityMigrationStatus === "Applied") {
+    await configStore.reload();
+    startup = resolveStartupSelection({
+      config: configStore.current(),
+      env,
+      argv,
+    });
+  }
+  const cli = readStartupCliFlags(argv);
+  const autonomousModeEnabled =
+    cli.autonomousMode === true || startup.config.autonomous_mode === true;
+  const conversationId =
+    options.conversationId ?? `conv-${Date.now().toString(36)}`;
+  const resumeConversation =
+    options.conversationId !== undefined && options.resumeConversation !== false;
+
   const projectTrust = resolveProjectTrustStateSync({
     agencHome,
     env,

@@ -1,0 +1,129 @@
+{
+  "item": "PR-10",
+  "status": "implemented",
+  "contractName": "personality-one-shot-migration",
+  "scope": "AgenC runs a one-shot startup migration that sets pragmatic personality only for existing users without explicit personality configuration.",
+  "sourceRoot": "local CX runtime donor checkout",
+  "targetRoot": "..",
+  "sourceCommit": "fbdbc6b2fea7522e9fc1fc87d88168b945507ad4",
+  "sourceFiles": [
+    "core/src/personality_migration.rs",
+    "core/src/personality_migration_tests.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/personality/migration.ts",
+    "runtime/src/config/edit.ts",
+    "runtime/package.json",
+    "runtime/src/bin/bootstrap.ts",
+    "runtime/src/bin/bootstrap-services.ts",
+    "runtime/src/utils/execFileNoThrowPortable.ts",
+    "runtime/src/utils/secureStorage/windowsCredentialStorage.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/personality/migration.test.ts",
+    "runtime/src/bin/bootstrap.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "marker-idempotence",
+      "sourceFiles": ["core/src/personality_migration.rs"],
+      "targetFiles": ["runtime/src/personality/migration.ts"],
+      "requiredBehaviors": [
+        "AgenC checks `.personality_migration` under the resolved AgenC home before any other migration work.",
+        "An existing marker returns `SkippedMarker` and does not write config.",
+        "Marker creation uses create-new semantics and writes exactly `v1\\n`; an already-created marker is treated as success."
+      ],
+      "edgeCases": [
+        "Skipped explicit-personality and no-session paths still create the marker.",
+        "The marker file is mode 0600 when the host honors file modes."
+      ],
+      "tests": ["runtime/src/personality/migration.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "explicit-personality-skip",
+      "sourceFiles": ["core/src/personality_migration.rs"],
+      "targetFiles": ["runtime/src/personality/migration.ts"],
+      "requiredBehaviors": [
+        "A top-level configured personality returns `SkippedExplicitPersonality` and preserves the existing value.",
+        "The active startup profile's configured personality also returns `SkippedExplicitPersonality`."
+      ],
+      "edgeCases": [
+        "Profile personalities are checked before recorded session lookup.",
+        "The skip path does not create a new top-level personality setting."
+      ],
+      "tests": ["runtime/src/personality/migration.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "recorded-session-detection",
+      "sourceFiles": ["core/src/personality_migration.rs"],
+      "targetFiles": ["runtime/src/personality/migration.ts"],
+      "requiredBehaviors": [
+        "AgenC lists active threads first and archived threads second using the resolved default provider.",
+        "No matching active or archived thread returns `SkippedNoSessions` and writes only the marker.",
+        "A recorded active or archived thread applies the migration."
+      ],
+      "edgeCases": [
+        "Threads recorded under a different provider do not trigger migration.",
+        "AgenC uses the current project thread store because sessions are project-scoped."
+      ],
+      "tests": ["runtime/src/personality/migration.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "config-edit-application",
+      "sourceFiles": ["core/src/personality_migration.rs"],
+      "targetFiles": [
+        "runtime/src/personality/migration.ts",
+        "runtime/src/config/edit.ts"
+      ],
+      "requiredBehaviors": [
+        "The applied path writes `personality = \"pragmatic\"` through AgenC's config edit builder.",
+        "Legacy JSON config is routed through existing config-file migrations before the edit is written to current TOML config.",
+        "The written config includes the current config file version and round-trips through AgenC's TOML parser."
+      ],
+      "edgeCases": [
+        "Unsafe config migration skips block edits instead of overwriting ambiguous config.",
+        "Existing explicit personality values are never overwritten."
+      ],
+      "tests": ["runtime/src/personality/migration.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "startup-hook",
+      "sourceFiles": ["core/src/personality_migration.rs"],
+      "targetFiles": [
+        "runtime/src/bin/bootstrap.ts",
+        "runtime/src/bin/bootstrap-services.ts"
+      ],
+      "requiredBehaviors": [
+        "Bootstrap runs config file migrations, then personality migration, then reloads config before resolving the first turn context when personality migration applies.",
+        "The startup provider/profile selection used for session detection matches the config/profile/env/CLI startup selection.",
+        "The first constructed turn context observes the migrated pragmatic personality."
+      ],
+      "edgeCases": [
+        "No-session and explicit-personality statuses do not force an unnecessary config reload.",
+        "Bootstrap thread-store fallback provider uses the resolved startup provider for legacy records."
+      ],
+      "tests": ["runtime/src/bin/bootstrap.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "verification-lock",
+      "sourceFiles": ["core/src/personality_migration.rs"],
+      "targetFiles": ["scripts/goal/verify.mjs"],
+      "requiredBehaviors": [
+        "The PR-10 verifier requires the migration module, config edit builder, bootstrap hook, parity matrix, and targeted tests.",
+        "The PR-10 verifier runs the focused migration and bootstrap tests."
+      ],
+      "edgeCases": [
+        "Verify fails if the startup hook no longer calls the migration before turn context construction.",
+        "Verify fails if the marker or status names drift."
+      ],
+      "tests": ["scripts/goal/verify.mjs"],
+      "status": "required"
+    }
+  ]
+}

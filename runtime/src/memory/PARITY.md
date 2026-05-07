@@ -29,4 +29,5 @@ Pipeline activation:
 - MM-01 owns the SQLite schema and `MemoryStore` lease/selection facade. The background producer/consumer loop that schedules stage1 extraction, runs phase2 consolidation, and injects consolidated output is intentionally left to later memory persistence/consolidation checklist items. Until then, runtime callers use the file-backed global and project durable memory paths directly.
 
 Deferred boundary:
-- `runtime/src/memdir/teamMemPaths.ts` and `runtime/src/memdir/teamMemPrompts.ts` remain outside this directory because team sync is skipped by the checklist. They import the owned memory primitives here.
+- `runtime/src/memdir/teamMemPaths.ts` remains outside this directory because team sync is skipped by the checklist.
+- `runtime/src/memdir/teamMemPrompts.ts` remains outside this directory, but its prompt text now imports the owned memory primitives here so TEAMMEM still preserves D-13 global/project/session guidance.

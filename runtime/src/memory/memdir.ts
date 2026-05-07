@@ -16,11 +16,6 @@ import {
   isAutoMemoryEnabled,
 } from './paths.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPaths = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPaths.js') as typeof import('../memdir/teamMemPaths.js'))
-  : null
-
 import { getKairosActive, getOriginalCwd } from '../bootstrap/state.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -115,12 +110,6 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
   }
 }
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemPrompts = feature('TEAMMEM')
-  ? (require('../memdir/teamMemPrompts.js') as typeof import('../memdir/teamMemPrompts.js'))
-  : null
-/* eslint-enable @typescript-eslint/no-require-imports */
-
 /**
  * Shared guidance text appended to each memory directory prompt line.
  * Shipped because AgenC was burning turns on `ls`/`mkdir -p` before writing.
@@ -129,7 +118,7 @@ const teamMemPrompts = feature('TEAMMEM')
 export const DIR_EXISTS_GUIDANCE =
   'This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).'
 export const DIRS_EXIST_GUIDANCE =
-  'Both directories already exist — write to them directly with the Write tool (do not run mkdir or check for their existence).'
+  'These directories already exist — write to them directly with the Write tool (do not run mkdir or check for their existence).'
 
 /**
  * Ensure a memory directory exists. Idempotent — called from loadMemoryPrompt
@@ -237,7 +226,7 @@ export function buildMemorySaveDestinationLines(
  * patterns, architecture, git history) is explicitly excluded.
  *
  * Individual-only variant: no `## Memory scope` section, no <scope> tags
- * in type blocks, and team/private qualifiers stripped from examples.
+ * in type blocks, and team/global/project qualifiers stripped from examples.
  *
  * Used by both buildMemoryPrompt (agent memory, includes content) and
  * loadMemoryPrompt (system prompt, content injected via user context instead).
@@ -320,7 +309,11 @@ export function buildMemoryLines(
     '',
   ]
 
-  lines.push(...buildSearchingPastContextSection(memoryDir))
+  lines.push(
+    ...buildSearchingPastContextSection(
+      isAutoMemory ? [getGlobalMemoryPath(), memoryDir] : memoryDir,
+    ),
+  )
 
   return lines
 }
@@ -384,22 +377,36 @@ export function buildMemoryPrompt(params: {
  * files + MEMORY.md. MEMORY.md is still loaded into context (via agencmd.ts)
  * as the distilled index — this prompt only changes where NEW memories go.
  */
-function buildAssistantDailyLogPrompt(skipIndex = false): string {
-  const memoryDir = getAutoMemPath()
+export function buildAssistantDailyLogPrompt(skipIndex = false): string {
+  const projectMemoryDir = getAutoMemPath()
+  const globalMemoryDir = getGlobalMemoryPath()
   // Describe the path as a pattern rather than inlining today's literal path:
   // this prompt is cached by systemPromptSection('memory', ...) and NOT
   // invalidated on date change. The model derives the current date from the
   // date_change attachment (appended at the tail on midnight rollover) rather
   // than the user-context message — the latter is intentionally left stale to
   // preserve the prompt cache prefix across midnight.
-  const logPathPattern = join(memoryDir, 'logs', 'YYYY', 'MM', 'YYYY-MM-DD.md')
+  const logPathPattern = join(
+    projectMemoryDir,
+    'logs',
+    'YYYY',
+    'MM',
+    'YYYY-MM-DD.md',
+  )
 
   const lines: string[] = [
     '# auto memory',
     '',
-    `You have a persistent, file-based memory system found at: \`${memoryDir}\``,
+    `You have persistent, file-based memory directories: global memory at \`${globalMemoryDir}\` and project memory at \`${projectMemoryDir}\`. ${DIRS_EXIST_GUIDANCE}`,
     '',
-    "This session is long-lived. As you work, record anything worth remembering by **appending** to today's daily log file:",
+    ...buildMemoryLayerLines(projectMemoryDir),
+    '## Where to save memories',
+    '',
+    `- Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${globalMemoryDir}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a global memory topic file.`,
+    `- Save project-level memories (repo-specific decisions, workflow context, project references not derivable from code) by appending to today's project daily log at \`${logPathPattern}\`. A nightly process distills project logs into project \`${ENTRYPOINT_NAME}\` and topic files; do not edit the project \`${ENTRYPOINT_NAME}\` directly in daily-log mode.`,
+    '- Do not save session-only information to durable memory unless it will matter in future conversations.',
+    '',
+    "This session is long-lived. As you work, record project-level information worth remembering by **appending** to today's daily log file:",
     '',
     `\`${logPathPattern}\``,
     '',
@@ -407,12 +414,12 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
     '',
     'Write each entry as a short timestamped bullet. Create the file (and parent directories) on first write if it does not exist. Do not rewrite or reorganize the log — it is append-only. A separate nightly process distills these logs into `MEMORY.md` and topic files.',
     '',
-    '## What to log',
-    '- User corrections and preferences ("use bun, not npm"; "stop summarizing diffs")',
-    '- Facts about the user, their role, or their goals',
+    '## What to append to the project daily log',
+    '- Corrections and preferences that apply to this working directory ("use bun for this repo"; "integration tests here must hit the real database")',
     '- Project context that is not derivable from the code (deadlines, incidents, decisions and their rationale)',
     '- Pointers to external systems (dashboards, Linear projects, Slack channels)',
-    '- Anything the user explicitly asks you to remember',
+    '- Anything the user explicitly asks you to remember about this project',
+    '- If the user explicitly asks you to remember a user-level preference or cross-project fact, save it to global memory instead of the project daily log.',
     '',
     ...WHAT_NOT_TO_SAVE_SECTION,
     '',
@@ -420,10 +427,10 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
       ? []
       : [
           `## ${ENTRYPOINT_NAME}`,
-          `\`${ENTRYPOINT_NAME}\` is the distilled index (maintained nightly from your logs) and is loaded into your context automatically. Read it for orientation, but do not edit it directly — record new information in today's log instead.`,
+          `The project \`${ENTRYPOINT_NAME}\` is the distilled index maintained nightly from project logs and is loaded into your context automatically. Read it for orientation, but do not edit the project index directly — record new project information in today's log instead. Global memory has its own \`${ENTRYPOINT_NAME}\`; update the global index when you save global user-level topic files.`,
           '',
         ]),
-    ...buildSearchingPastContextSection(memoryDir),
+    ...buildSearchingPastContextSection([globalMemoryDir, projectMemoryDir]),
   ]
 
   return lines.join('\n')
@@ -432,20 +439,37 @@ function buildAssistantDailyLogPrompt(skipIndex = false): string {
 /**
  * Build the "Searching past context" section if the feature gate is enabled.
  */
-export function buildSearchingPastContextSection(autoMemDir: string): string[] {
+export function buildSearchingPastContextSection(
+  durableMemoryDirs: string | readonly string[],
+): string[] {
   if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_coral_fern', false)) {
     return []
   }
   const projectDir = getProjectDir(getOriginalCwd())
+  const memoryDirs = Array.from(
+    new Set(
+      (Array.isArray(durableMemoryDirs)
+        ? durableMemoryDirs
+        : [durableMemoryDirs]
+      ).filter(Boolean),
+    ),
+  )
   // Ant-native builds alias grep to embedded ugrep and remove the dedicated
   // Grep tool, so give the model a real shell invocation there.
   // In REPL mode, both Grep and Bash are hidden from direct use — the model
   // calls them from inside REPL scripts, so the grep shell form is what it
   // will write in the script anyway.
   const embedded = hasEmbeddedSearchTools() || isReplModeEnabled()
-  const memSearch = embedded
-    ? `grep -rn "<search term>" ${autoMemDir} --include="*.md"`
-    : `${GREP_TOOL_NAME} with pattern="<search term>" path="${autoMemDir}" glob="*.md"`
+  const memSearches = embedded
+    ? [
+        `grep -rn "<search term>" ${memoryDirs
+          .map(quoteShellPath)
+          .join(' ')} --include="*.md"`,
+      ]
+    : memoryDirs.map(
+        dir =>
+          `${GREP_TOOL_NAME} with pattern="<search term>" path="${dir}" glob="*.md"`,
+      )
   const transcriptSearch = embedded
     ? `grep -rn "<search term>" ${projectDir}/ --include="*.jsonl"`
     : `${GREP_TOOL_NAME} with pattern="<search term>" path="${projectDir}/" glob="*.jsonl"`
@@ -453,9 +477,9 @@ export function buildSearchingPastContextSection(autoMemDir: string): string[] {
     '## Searching past context',
     '',
     'When looking for past context:',
-    '1. Search topic files in your memory directory:',
+    '1. Search topic files in your durable memory directories:',
     '```',
-    memSearch,
+    ...memSearches,
     '```',
     '2. Session transcript logs (last resort — large files, slow):',
     '```',
@@ -464,6 +488,10 @@ export function buildSearchingPastContextSection(autoMemDir: string): string[] {
     'Use narrow search terms (error messages, file paths, function names) rather than broad keywords.',
     '',
   ]
+}
+
+function quoteShellPath(path: string): string {
+  return `'${path.replace(/'/g, "'\\''")}'`
 }
 
 /**
@@ -506,10 +534,12 @@ export async function loadMemoryPrompt(): Promise<string | null> {
       : undefined
 
   if (feature('TEAMMEM')) {
-    if (teamMemPaths!.isTeamMemoryEnabled()) {
+    const teamMemPaths = await import('../memdir/teamMemPaths.js')
+    if (teamMemPaths.isTeamMemoryEnabled()) {
+      const teamMemPrompts = await import('../memdir/teamMemPrompts.js')
       const autoDir = getAutoMemPath()
       const globalDir = getGlobalMemoryPath()
-      const teamDir = teamMemPaths!.getTeamMemPath()
+      const teamDir = teamMemPaths.getTeamMemPath()
       // Harness guarantees these directories exist so the model can write
       // without checking. The prompt text reflects this ("already exists").
       // Only creating teamDir is sufficient: getTeamMemPath() is defined as
@@ -531,7 +561,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
         memory_type:
           'team' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
-      return teamMemPrompts!.buildCombinedMemoryPrompt(
+      return teamMemPrompts.buildCombinedMemoryPrompt(
         extraGuidelines,
         skipIndex,
       )

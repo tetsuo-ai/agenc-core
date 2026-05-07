@@ -57,6 +57,8 @@ import {
   getAutoMemEntrypoint,
   getGlobalMemoryEntrypoint,
   isAutoMemoryEnabled,
+  isGlobalMemoryPath,
+  isProjectMemoryPath,
 } from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
@@ -1065,6 +1067,12 @@ export const getMemoryFiles = memoize(
 
     if (!hasLoggedInitialLoad) {
       hasLoggedInitialLoad = true
+      const globalAutoMemCount = result.filter(
+        f => f.type === 'AutoMem' && isGlobalMemoryPath(f.path),
+      ).length
+      const projectAutoMemCount = result.filter(
+        f => f.type === 'AutoMem' && isProjectMemoryPath(f.path),
+      ).length
       logEvent('tengu_agencmd__initial_load', {
         file_count: result.length,
         total_content_length: totalContentLength,
@@ -1073,6 +1081,8 @@ export const getMemoryFiles = memoize(
         local_count: typeCounts['Local'] ?? 0,
         managed_count: typeCounts['Managed'] ?? 0,
         automem_count: typeCounts['AutoMem'] ?? 0,
+        global_automem_count: globalAutoMemCount,
+        project_automem_count: projectAutoMemCount,
         ...(feature('TEAMMEM')
           ? { teammem_count: typeCounts['TeamMem'] ?? 0 }
           : {}),
@@ -1211,11 +1221,11 @@ export const getAgenCMds = (
           ? ' (project instructions, checked into the codebase)'
           : file.type === 'Local'
             ? " (user's private project instructions, not checked in)"
-            : feature('TEAMMEM') && file.type === 'TeamMem'
-              ? ' (shared team memory, synced across the organization)'
-              : file.type === 'AutoMem'
-                ? " (user's auto-memory, persists across conversations)"
-                : " (user's private global instructions for all projects)"
+              : feature('TEAMMEM') && file.type === 'TeamMem'
+                ? ' (shared team memory, synced across the organization)'
+                : file.type === 'AutoMem'
+                  ? getAutoMemDescription(file.path)
+                  : " (user's private global instructions for all projects)"
 
       const content = file.content.trim()
       if (feature('TEAMMEM') && file.type === 'TeamMem') {
@@ -1233,6 +1243,16 @@ export const getAgenCMds = (
   }
 
   return `${MEMORY_INSTRUCTION_PROMPT}\n\n${memories.join('\n\n')}`
+}
+
+function getAutoMemDescription(path: string): string {
+  if (isGlobalMemoryPath(path)) {
+    return ' (global user memory, persists across projects and conversations)'
+  }
+  if (isProjectMemoryPath(path)) {
+    return ' (project memory, persists for this working directory)'
+  }
+  return ' (durable memory, persists across conversations)'
 }
 
 /**

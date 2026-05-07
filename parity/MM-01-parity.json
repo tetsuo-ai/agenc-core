@@ -26,6 +26,7 @@
     "runtime/src/memory/detection.ts",
     "runtime/src/memory/find-relevant.ts",
     "runtime/src/memory/memdir.ts",
+    "runtime/src/memdir/teamMemPrompts.ts",
     "runtime/src/memory/paths.ts",
     "runtime/src/memory/scan.ts",
     "runtime/src/memory/store.ts",
@@ -36,6 +37,7 @@
   ],
   "testFiles": [
     "runtime/src/memory/memdir.test.ts",
+    "runtime/src/memory/memdir.feature-flags.test.ts",
     "runtime/src/memory/paths.test.ts",
     "runtime/src/memory/scan.test.ts",
     "runtime/src/memory/store.test.ts",
@@ -75,7 +77,8 @@
         "long lines trip the byte warning"
       ],
       "tests": [
-        "runtime/src/memory/memdir.test.ts"
+        "runtime/src/memory/memdir.test.ts",
+        "runtime/src/memory/memdir.feature-flags.test.ts"
       ],
       "status": "required"
     },
