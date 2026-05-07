@@ -102,10 +102,8 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../agencAiLimits.js' // branding-scan: allow existing upstream provider-limit module path
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
-/* eslint-disable @typescript-eslint/no-require-imports */
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('../../utils/permissions/autoModeState.js') as typeof import('../../utils/permissions/autoModeState.js'))
-  : null
+import * as autoModeStateModuleLive from '../../utils/permissions/autoModeState.js'
+const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? autoModeStateModuleLive : null
 
 import { feature } from 'bun:bundle'
 import type { ClientOptions } from '@anthropic-ai/sdk'

@@ -8,6 +8,7 @@
 import { feature } from 'bun:bundle'
 import { registerHookCallbacks } from '../bootstrap/state.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
+import * as teamMemWatcherModule from '../services/teamMemorySync/watcher.js'
 import type { HookInput, HookJSONOutput } from '../entrypoints/agentSdkTypes.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -33,9 +34,7 @@ import {
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
-const teamMemWatcher = feature('TEAMMEM')
-  ? (require('../services/teamMemorySync/watcher.js') as typeof import('../services/teamMemorySync/watcher.js'))
-  : null
+const teamMemWatcher = feature('TEAMMEM') ? teamMemWatcherModule : null
 const memoryShapeTelemetry = feature('MEMORY_SHAPE_TELEMETRY')
   ? (require('../memdir/memoryShapeTelemetry.js') as typeof import('../memdir/memoryShapeTelemetry.js'))
   : null

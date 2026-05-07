@@ -31,11 +31,10 @@ import {
   isMemoryDirectory,
   isShellCommandTargetingMemory,
 } from '../memory/index.js'
+import * as teamMemOpsModule from './teamMemoryOps.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemOps = feature('TEAMMEM')
-  ? (require('./teamMemoryOps.js') as typeof import('./teamMemoryOps.js'))
-  : null
+const teamMemOps = feature('TEAMMEM') ? teamMemOpsModule : null
 const SNIP_TOOL_NAME = feature('HISTORY_SNIP')
   ? (
       require('../tools/SnipTool/prompt.js') as typeof import('../tools/SnipTool/prompt.js')
