@@ -28,7 +28,7 @@ import {
 
 describe("AgenC portal protocol contract", () => {
   it("pins the workspace portal protocol version", () => {
-    expect(AGENC_PORTAL_PROTOCOL_VERSION).toBe("0.3.0");
+    expect(AGENC_PORTAL_PROTOCOL_VERSION).toBe("0.4.0");
   });
 
   it("exposes only daemon methods that exist in the shared protocol", () => {
@@ -58,6 +58,7 @@ describe("AgenC portal protocol contract", () => {
   it("declares dashboard, auth, and workspace capabilities needed by the sibling portal repo", () => {
     expect(AGENC_PORTAL_CLIENT_CAPABILITIES).toEqual([
       "portal.dashboard.read",
+      "portal.mobile.status.read",
       "portal.auth.read",
       "portal.auth.login",
       "portal.auth.logout",
@@ -68,6 +69,7 @@ describe("AgenC portal protocol contract", () => {
     ]);
     expect(AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS).toEqual({
       "portal.dashboard.read": true,
+      "portal.mobile.status.read": true,
       "portal.auth.read": true,
       "portal.auth.login": true,
       "portal.auth.logout": true,
@@ -234,6 +236,22 @@ describe("AgenC portal protocol contract", () => {
           updatedAt: "2026-05-06T00:00:00.000Z",
         },
       ],
+      backgroundAgents: {
+        agents: [
+          {
+            agentId: "agent-1",
+            objective: "Finish WP-01",
+            status: "running",
+            activeSessionId: "session-1",
+            updatedAt: "2026-05-06T00:00:00.000Z",
+          },
+        ],
+        nextCursor: null,
+        starting: false,
+        stoppingAgentIds: [],
+        error: null,
+        updatedAt: "2026-05-06T00:00:00.000Z",
+      },
       transcript: {
         agentId: "agent-1",
         transcript: "user\tContinue",

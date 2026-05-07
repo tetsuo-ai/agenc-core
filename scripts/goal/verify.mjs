@@ -351,6 +351,30 @@ const ITEM_EVIDENCE = {
       "runtime/src/app-server-protocol/portal-auth.contract.test.ts",
     ],
   },
+  "WP-06": {
+    files: [
+      "runtime/src/app-server-protocol/index.ts",
+      "runtime/src/app-server-protocol/portal.contract.test.ts",
+      "runtime/src/app-server-protocol/portal-mobile.contract.test.ts",
+      "runtime/src/index.ts",
+      "parity/WP-06-parity.json",
+      "parity/WP-06-mobile-status-fixture.json",
+      "scripts/goal/verify.mjs",
+    ],
+    grepPresent: [
+      { pattern: "portal\\.mobile\\.status\\.read", scope: "runtime/src/app-server-protocol/index.ts" },
+      { pattern: "AgenCPortalMobileStatusSnapshot", scope: "runtime/src/app-server-protocol/index.ts" },
+      { pattern: "createAgenCPortalMobileStatusSnapshot", scope: "runtime/src/app-server-protocol/index.ts" },
+      { pattern: "does not expose desktop workspace, auth identity, or transcript fields", scope: "runtime/src/app-server-protocol/portal-mobile.contract.test.ts" },
+      { pattern: "mobile-read-only-status-contract", scope: "parity/WP-06-parity.json" },
+      { pattern: "agent-error", scope: "parity/WP-06-mobile-status-fixture.json" },
+      { pattern: "assertAgenCPortalMobileStatusContract", scope: "scripts/goal/verify.mjs" },
+    ],
+    tests: [
+      "runtime/src/app-server-protocol/portal.contract.test.ts",
+      "runtime/src/app-server-protocol/portal-mobile.contract.test.ts",
+    ],
+  },
   "MG-05": {
     files: [
       "package.json",
@@ -6151,6 +6175,10 @@ function isExportedFromSource(source, symbol) {
 }
 
 async function webPortalGates(item) {
+  if (id === "WP-06") {
+    assertAgenCPortalMobileStatusContract();
+    return;
+  }
   if (id === "WP-03") {
     assertAgenCPortalAuthIntegration();
     return;
@@ -6240,6 +6268,136 @@ function assertAgenCPortalAuthIntegration() {
   }
 
   pass("WP-03: portal auth contract and sibling repo self-test passed");
+}
+
+function assertAgenCPortalMobileStatusContract() {
+  const requiredFiles = [
+    "runtime/src/app-server-protocol/index.ts",
+    "runtime/src/app-server-protocol/portal.contract.test.ts",
+    "runtime/src/app-server-protocol/portal-mobile.contract.test.ts",
+    "runtime/src/index.ts",
+    "parity/WP-06-parity.json",
+    "parity/WP-06-mobile-status-fixture.json",
+  ];
+  const missing = requiredFiles.filter((rel) => !existsSync(path.join(root, rel)));
+  if (missing.length > 0) {
+    failGate(
+      `WP-06: mobile portal status contract missing file(s):\n  ${missing.join("\n  ")}`,
+    );
+  }
+
+  const protocolSource = readFileSync(
+    path.join(root, "runtime/src/app-server-protocol/index.ts"),
+    "utf8",
+  );
+  const portalContractSource = readFileSync(
+    path.join(root, "runtime/src/app-server-protocol/portal.contract.test.ts"),
+    "utf8",
+  );
+  const mobileContractSource = readFileSync(
+    path.join(root, "runtime/src/app-server-protocol/portal-mobile.contract.test.ts"),
+    "utf8",
+  );
+  const paritySource = readFileSync(
+    path.join(root, "parity/WP-06-parity.json"),
+    "utf8",
+  );
+  const fixtureSource = readFileSync(
+    path.join(root, "parity/WP-06-mobile-status-fixture.json"),
+    "utf8",
+  );
+  const barrelSource = readFileSync(path.join(root, "runtime/src/index.ts"), "utf8");
+  const requiredMarkers = [
+    [protocolSource, 'AGENC_PORTAL_PROTOCOL_VERSION = "0.4.0"'],
+    [protocolSource, "portal.mobile.status.read"],
+    [protocolSource, "AgenCPortalMobileStatusSnapshot"],
+    [protocolSource, "createAgenCPortalMobileStatusSnapshot"],
+    [portalContractSource, 'expect(AGENC_PORTAL_PROTOCOL_VERSION).toBe("0.4.0")'],
+    [mobileContractSource, "does not expose desktop workspace, auth identity, or transcript fields"],
+    [mobileContractSource, "matches the shared sibling portal parity fixture exactly"],
+    [mobileContractSource, "1970-01-01T00:00:00.000Z"],
+    [barrelSource, "createAgenCPortalMobileStatusSnapshot"],
+    [paritySource, "mobile-read-only-status-contract"],
+    [paritySource, "read-only phone check-in panel in the sibling portal"],
+    [fixtureSource, "agent-error"],
+  ];
+  const missingMarkers = requiredMarkers
+    .filter(([source, marker]) => !source.includes(marker))
+    .map(([, marker]) => marker);
+  if (missingMarkers.length > 0) {
+    failGate(
+      `WP-06: mobile portal status contract missing marker(s): ${missingMarkers.join(", ")}`,
+    );
+  }
+
+  const portalRepo = path.resolve(mainCheckoutRoot(), "..", "agenc-portal");
+  const requiredPortalFiles = [
+    "README.md",
+    "src/daemon-connection.js",
+    "src/main.js",
+    "src/styles.css",
+    "scripts/check-scaffold.mjs",
+  ];
+  const missingPortalFiles = requiredPortalFiles.filter(
+    (rel) => !existsSync(path.join(portalRepo, rel)),
+  );
+  if (missingPortalFiles.length > 0) {
+    failGate(
+      `WP-06: agenc-portal mobile status view missing file(s):\n  ${missingPortalFiles.join("\n  ")}`,
+    );
+  }
+
+  const portalDaemonConnection = readFileSync(
+    path.join(portalRepo, "src/daemon-connection.js"),
+    "utf8",
+  );
+  const portalMain = readFileSync(path.join(portalRepo, "src/main.js"), "utf8");
+  const portalStyles = readFileSync(path.join(portalRepo, "src/styles.css"), "utf8");
+  const portalTest = readFileSync(
+    path.join(portalRepo, "scripts/check-scaffold.mjs"),
+    "utf8",
+  );
+  const portalReadme = readFileSync(path.join(portalRepo, "README.md"), "utf8");
+  const requiredPortalMarkers = [
+    [portalDaemonConnection, "portal.mobile.status.read"],
+    [portalDaemonConnection, "createAgenCPortalMobileStatusSnapshot"],
+    [portalMain, "renderMobileStatus"],
+    [portalMain, "Mobile Check-In"],
+    [portalStyles, "mobile-status-panel"],
+    [portalTest, "mobile status view must be read-only"],
+    [portalTest, "portal mobile status projection must match the shared WP-06 core fixture"],
+    [portalTest, "portal initialize request must advertise mobile status read capability"],
+    [portalReadme, "mobile check-in panel"],
+  ];
+  const missingPortalMarkers = requiredPortalMarkers
+    .filter(([source, marker]) => !source.includes(marker))
+    .map(([, marker]) => marker);
+  if (missingPortalMarkers.length > 0) {
+    failGate(
+      `WP-06: agenc-portal mobile status view missing marker(s): ${missingPortalMarkers.join(", ")}`,
+    );
+  }
+
+  const portalTestRun = run("npm", ["test"], { cwd: portalRepo, silent: true });
+  if (portalTestRun.status !== 0) {
+    failGate(
+      `WP-06: agenc-portal mobile status self-test failed:\n${portalTestRun.stderr || portalTestRun.stdout}`,
+    );
+  }
+
+  const runtimeTestRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/app-server-protocol/portal.contract.test.ts",
+    "src/app-server-protocol/portal-mobile.contract.test.ts",
+  ]);
+  if (runtimeTestRun.status !== 0) {
+    failGate("WP-06: targeted portal mobile contract tests failed");
+  }
+
+  pass("WP-06: portal mobile status contract and sibling view passed");
 }
 
 // Generic gate factory: subsystem must exist as a real directory under runtime/src,
