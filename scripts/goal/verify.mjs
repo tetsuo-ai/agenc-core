@@ -179,6 +179,24 @@ const ITEM_EVIDENCE = {
       { pattern: "Copied to clipboard|Sent to clipboard via OSC 52", scope: "runtime/src/commands/copy.ts" },
     ],
   },
+  "GAP-TUI-07": {
+    files: [
+      "runtime/src/commands/reload-plugins.ts",
+      "runtime/src/commands/registry.ts",
+      "runtime/src/commands/dispatcher.ts",
+      "runtime/src/commands/types.ts",
+    ],
+    tests: [
+      "runtime/src/commands/command-surface.test.ts",
+      "runtime/src/commands/registry.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "replaceDynamicCommands", scope: "runtime/src/commands/registry.ts" },
+      { pattern: "commandRegistry", scope: "runtime/src/commands/dispatcher.ts" },
+      { pattern: "refreshDispatcherPluginCommands", scope: "runtime/src/commands/reload-plugins.ts" },
+      { pattern: "pluginCommandToSlashCommand", scope: "runtime/src/commands/reload-plugins.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6529,6 +6547,10 @@ async function gapGates(item) {
     assertGapTuiCopyWritesClipboard();
     return;
   }
+  if (item.title.includes("/reload-plugins: reload the live dispatcher registry")) {
+    assertGapTuiReloadPluginsRefreshesDispatcherRegistry();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7178,6 +7200,97 @@ function assertGapTuiCopyWritesClipboard() {
     failGate("GAP-TUI-06 targeted copy test failed");
   }
   pass("GAP-TUI-06 targeted copy test passed");
+}
+
+function assertGapTuiReloadPluginsRefreshesDispatcherRegistry() {
+  const rels = {
+    reload: "runtime/src/commands/reload-plugins.ts",
+    registry: "runtime/src/commands/registry.ts",
+    dispatcher: "runtime/src/commands/dispatcher.ts",
+    types: "runtime/src/commands/types.ts",
+    surfaceTest: "runtime/src/commands/command-surface.test.ts",
+    registryTest: "runtime/src/commands/registry.test.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-07: missing ${rel}`);
+  }
+
+  const reload = readFileSync(path.join(root, rels.reload), "utf8");
+  const registry = readFileSync(path.join(root, rels.registry), "utf8");
+  const dispatcher = readFileSync(path.join(root, rels.dispatcher), "utf8");
+  const types = readFileSync(path.join(root, rels.types), "utf8");
+  const surfaceTest = readFileSync(path.join(root, rels.surfaceTest), "utf8");
+  const registryTest = readFileSync(path.join(root, rels.registryTest), "utf8");
+  const missingEvidence = [
+    [
+      "slash command context exposes the live registry",
+      /readonly\s+commandRegistry\?:\s*CommandRegistry/,
+      types,
+    ],
+    [
+      "dispatcher passes the active registry into command context",
+      /commandRegistry:\s*registry/,
+      dispatcher,
+    ],
+    [
+      "registry supports dynamic command replacement",
+      /replaceDynamicCommands\(\s*source:\s*string/,
+      registry,
+    ],
+    [
+      "registry replacement tracks prior dynamic registrations",
+      /dynamicRegistrations/,
+      registry,
+    ],
+    [
+      "reload command projects plugin commands into slash commands",
+      /function\s+pluginCommandToSlashCommand/,
+      reload,
+    ],
+    [
+      "reload command replaces the live plugin registry surface",
+      /registry\.replaceDynamicCommands\(\s*["']plugins["']/,
+      reload,
+    ],
+    [
+      "reload command applies dispatcher registry refresh after plugin refresh",
+      /refreshDispatcherPluginCommands\(ctx,\s*result\)/,
+      reload,
+    ],
+    [
+      "surface test dispatches a plugin command after reload",
+      /reloads plugin commands into the live dispatcher registry/,
+      surfaceTest,
+    ],
+    [
+      "surface test verifies stale plugin command removal",
+      /registry\.find\(["']sample:hello["']\)\)\.toBeUndefined/,
+      surfaceTest,
+    ],
+    [
+      "registry test covers atomic dynamic replacement",
+      /keeps the previous dynamic source when replacement collides/,
+      registryTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-07 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-07: reload dispatcher registry evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/command-surface.test.ts",
+    "src/commands/registry.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-07 targeted reload registry tests failed");
+  }
+  pass("GAP-TUI-07 targeted reload registry tests passed");
 }
 
 function subsystemDirGates(label, dir) {
