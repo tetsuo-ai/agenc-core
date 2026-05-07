@@ -90,7 +90,53 @@ type MCPOAuthFlowErrorReason =
   | 'token_exchange_failed'
   | 'unknown'
 
-const MAX_LOCK_RETRIES = 5
+const MAX_LOCK_RETRIES = 30
+
+async function acquireMcpRefreshLock(
+  serverName: string,
+  serverKey: string,
+): Promise<() => Promise<void>> {
+  const agencDir = getAgenCConfigHomeDir()
+  await mkdir(agencDir, { recursive: true })
+  const sanitizedKey = serverKey.replace(/[^a-zA-Z0-9]/g, '_')
+  const lockfilePath = join(agencDir, `mcp-refresh-${sanitizedKey}.lock`)
+
+  for (let retry = 0; retry < MAX_LOCK_RETRIES; retry++) {
+    try {
+      logMCPDebug(
+        serverName,
+        `Acquiring refresh lock (attempt ${retry + 1})`,
+      )
+      const release = await lockfile.lock(lockfilePath, {
+        realpath: false,
+        onCompromised: () => {
+          logMCPDebug(serverName, `Refresh lock was compromised`)
+        },
+      })
+      logMCPDebug(serverName, `Acquired refresh lock`)
+      return release
+    } catch (e: unknown) {
+      const code = getErrnoCode(e)
+      if (code === 'ELOCKED') {
+        logMCPDebug(
+          serverName,
+          `Refresh lock held by another process, waiting (attempt ${retry + 1}/${MAX_LOCK_RETRIES})`,
+        )
+        await sleep(1000 + Math.random() * 1000)
+        continue
+      }
+      logMCPDebug(
+        serverName,
+        `Failed to acquire refresh lock: ${code}`,
+      )
+      throw e
+    }
+  }
+
+  throw new Error(
+    `Could not acquire MCP refresh lock after ${MAX_LOCK_RETRIES} retries`,
+  )
+}
 
 /**
  * OAuth query parameters that should be redacted from logs.
@@ -926,7 +972,7 @@ export async function performMCPOAuthFlow(
   // If the IdP id_token isn't cached, this pops the browser once at the IdP
   // (shared across all XAA servers for that issuer). Subsequent servers hit
   // the cache and are silent. Tokens land in the same keychain slot, so the
-  // rest of CC's transport wiring (AgenCAuthProvider.tokens() in client.ts)
+  // rest of AgenC's transport wiring (AgenCAuthProvider.tokens() in client.ts)
   // works unchanged.
   //
   // No silent fallback: if `oauth.xaa` is set, XAA is the only path. We
@@ -1603,7 +1649,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
-    // Cross-process token changes (another CC instance refreshed or invalidated)
+    // Cross-process token changes (another AgenC instance refreshed or invalidated)
     // are picked up via the keychain cache TTL (see macOsKeychainStorage.ts).
     // In-process writes already invalidate the cache via storage.update().
     // We do NOT clearKeychainCache() here — tokens() is called by the MCP SDK's
@@ -1800,60 +1846,80 @@ export class AgenCAuthProvider implements OAuthClientProvider {
    * No browser.
    *
    * Returns undefined if the id_token is gone from cache — caller treats this
-   * as needs-interactive-reauth (transport will 401, CC surfaces it).
+   * as needs-interactive-reauth (transport will 401, AgenC surfaces it).
    *
    * On exchange failure, clears the id_token cache so the next interactive
    * auth does a fresh IdP login (the cached id_token is likely stale/revoked).
    *
-   * Follow-up(xaa-ga): add cross-process lockfile before GA. `_refreshInProgress`
-   * only dedupes within one process — two CC instances with expiring tokens
-   * both fire the full 4-request XAA chain and race on storage.update().
-   * Unlike inc-4829 the id_token is not single-use so both access_tokens
-   * stay valid (wasted round-trips + keychain write race, not brickage),
-   * but this is the shape AGENC.md flags under "Token/auth caching across
-   * process boundaries". Mirror refreshAuthorization()'s lockfile pattern.
+   * Uses the same per-server cross-process refresh lock as normal OAuth
+   * refresh. `_refreshInProgress` dedupes within one process; the lock
+   * closes the keychain write race across concurrent AgenC processes.
    */
   private async xaaRefresh(): Promise<OAuthTokens | undefined> {
     const idp = getXaaIdpSettings()
     if (!idp) return undefined // config was removed mid-session
 
-    const idToken = getCachedIdpIdToken(idp.issuer)
-    if (!idToken) {
-      logMCPDebug(
-        this.serverName,
-        'XAA: id_token not cached, needs interactive re-auth',
-      )
-      return undefined
-    }
-
-    const clientId = this.serverConfig.oauth?.clientId
-    const clientConfig = getMcpClientConfig(this.serverName, this.serverConfig)
-    if (!clientId || !clientConfig?.clientSecret) {
-      logMCPDebug(
-        this.serverName,
-        'XAA: missing clientId or clientSecret in config — skipping silent refresh',
-      )
-      return undefined // shouldn't happen if `mcp add` was correct
-    }
-
-    const idpClientSecret = getIdpClientSecret(idp.issuer)
-
-    // Discover IdP token endpoint. Could cache (fetchCache.ts already
-    // caches /.well-known/ requests), but OIDC metadata is cheap + idempotent.
-    // xaaRefresh is the silent tokens() path — soft-fail to undefined so the
-    // caller falls through to needs-authentication instead of throwing mid-connect.
-    let oidc
-    try {
-      oidc = await discoverOidc(idp.issuer)
-    } catch (e) {
-      logMCPDebug(
-        this.serverName,
-        `XAA: OIDC discovery failed in silent refresh: ${errorMessage(e)}`,
-      )
-      return undefined
-    }
+    const serverKey = getServerKey(this.serverName, this.serverConfig)
+    const release = await acquireMcpRefreshLock(this.serverName, serverKey)
 
     try {
+      clearKeychainCache()
+      const storage = getSecureStorage()
+      const existingData = storage.read() || {}
+      const tokenData = existingData.mcpOAuth?.[serverKey]
+      if (tokenData) {
+        const expiresIn = (tokenData.expiresAt - Date.now()) / 1000
+        if (expiresIn > 300) {
+          logMCPDebug(
+            this.serverName,
+            `Another process already refreshed XAA tokens (expires in ${Math.floor(expiresIn)}s)`,
+          )
+          return {
+            access_token: tokenData.accessToken,
+            refresh_token: tokenData.refreshToken,
+            expires_in: expiresIn,
+            scope: tokenData.scope,
+            token_type: 'Bearer',
+          }
+        }
+      }
+
+      const idToken = getCachedIdpIdToken(idp.issuer)
+      if (!idToken) {
+        logMCPDebug(
+          this.serverName,
+          'XAA: id_token not cached, needs interactive re-auth',
+        )
+        return undefined
+      }
+
+      const clientId = this.serverConfig.oauth?.clientId
+      const clientConfig = getMcpClientConfig(this.serverName, this.serverConfig)
+      if (!clientId || !clientConfig?.clientSecret) {
+        logMCPDebug(
+          this.serverName,
+          'XAA: missing clientId or clientSecret in config — skipping silent refresh',
+        )
+        return undefined // shouldn't happen if `mcp add` was correct
+      }
+
+      const idpClientSecret = getIdpClientSecret(idp.issuer)
+
+      // Discover IdP token endpoint. Could cache (fetchCache.ts already
+      // caches /.well-known/ requests), but OIDC metadata is cheap + idempotent.
+      // xaaRefresh is the silent tokens() path — soft-fail to undefined so the
+      // caller falls through to needs-authentication instead of throwing mid-connect.
+      let oidc
+      try {
+        oidc = await discoverOidc(idp.issuer)
+      } catch (e) {
+        logMCPDebug(
+          this.serverName,
+          `XAA: OIDC discovery failed in silent refresh: ${errorMessage(e)}`,
+        )
+        return undefined
+      }
+
       const tokens = await performCrossAppAccess(
         this.serverConfig.url,
         {
@@ -1871,14 +1937,12 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       // only spreads existing data; if no prior performMCPXaaAuth ran,
       // revokeServerTokens would later read tokenData.clientId as undefined
       // and send a client_id-less RFC 7009 request that strict ASes reject.
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
-      const serverKey = getServerKey(this.serverName, this.serverConfig)
-      const prev = existingData.mcpOAuth?.[serverKey]
+      const latestData = storage.read() || {}
+      const prev = latestData.mcpOAuth?.[serverKey]
       storage.update({
-        ...existingData,
+        ...latestData,
         mcpOAuth: {
-          ...existingData.mcpOAuth,
+          ...latestData.mcpOAuth,
           [serverKey]: {
             ...prev,
             serverName: this.serverName,
@@ -1911,6 +1975,15 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         )
       }
       throw e
+    } finally {
+      if (release) {
+        try {
+          await release()
+          logMCPDebug(this.serverName, `Released refresh lock`)
+        } catch {
+          logMCPDebug(this.serverName, `Failed to release refresh lock`)
+        }
+      }
     }
   }
 
@@ -2152,49 +2225,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     refreshToken: string,
   ): Promise<OAuthTokens | undefined> {
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-    const agencDir = getAgenCConfigHomeDir()
-    await mkdir(agencDir, { recursive: true })
-    const sanitizedKey = serverKey.replace(/[^a-zA-Z0-9]/g, '_')
-    const lockfilePath = join(agencDir, `mcp-refresh-${sanitizedKey}.lock`)
-
-    let release: (() => Promise<void>) | undefined
-    for (let retry = 0; retry < MAX_LOCK_RETRIES; retry++) {
-      try {
-        logMCPDebug(
-          this.serverName,
-          `Acquiring refresh lock (attempt ${retry + 1})`,
-        )
-        release = await lockfile.lock(lockfilePath, {
-          realpath: false,
-          onCompromised: () => {
-            logMCPDebug(this.serverName, `Refresh lock was compromised`)
-          },
-        })
-        logMCPDebug(this.serverName, `Acquired refresh lock`)
-        break
-      } catch (e: unknown) {
-        const code = getErrnoCode(e)
-        if (code === 'ELOCKED') {
-          logMCPDebug(
-            this.serverName,
-            `Refresh lock held by another process, waiting (attempt ${retry + 1}/${MAX_LOCK_RETRIES})`,
-          )
-          await sleep(1000 + Math.random() * 1000)
-          continue
-        }
-        logMCPDebug(
-          this.serverName,
-          `Failed to acquire refresh lock: ${code}, proceeding without lock`,
-        )
-        break
-      }
-    }
-    if (!release) {
-      logMCPDebug(
-        this.serverName,
-        `Could not acquire refresh lock after ${MAX_LOCK_RETRIES} retries, proceeding without lock`,
-      )
-    }
+    const release = await acquireMcpRefreshLock(this.serverName, serverKey)
 
     try {
       // Re-read tokens after acquiring lock — another process may have refreshed
