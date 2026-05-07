@@ -12,7 +12,12 @@
 import { randomUUID } from "node:crypto";
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
-import { getCompactPrompt, getCompactUserSummaryMessage } from "./prompt.js";
+import {
+  getCompactPrompt,
+  getCompactUserSummaryMessage,
+  getPartialCompactPrompt,
+  type PartialCompactDirection,
+} from "./prompt.js";
 import {
   estimateMessagesTokens,
   messageText,
@@ -201,13 +206,108 @@ export function partialCompactConversation(
   return [...prefix, ...messages.slice(suffixStart)];
 }
 
+export async function partialCompactConversationAsync(
+  messages: readonly RuntimeMessage[],
+  selectedIndex: number,
+  context: CompactContext,
+  options: {
+    readonly direction: PartialCompactDirection;
+    readonly feedback?: string;
+    readonly signal?: AbortSignal;
+  },
+): Promise<CompactionResult> {
+  if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= messages.length) {
+    throw new Error("Selected message is outside the compactable history");
+  }
+  throwIfAborted(options.signal);
+  const normalizedMessages = stripImagesFromMessages(messages);
+  const preCompactTokenCount = estimateMessagesTokens(normalizedMessages, context);
+  const messagesToSummarize =
+    options.direction === "up_to"
+      ? normalizedMessages.slice(0, selectedIndex)
+      : normalizedMessages.slice(selectedIndex);
+  const messagesToKeep =
+    options.direction === "up_to"
+      ? normalizedMessages.slice(selectedIndex)
+      : normalizedMessages.slice(0, selectedIndex);
+  const hasMessagesToSummarize = messagesToSummarize.length > 0;
+  const summary = hasMessagesToSummarize
+    ? await summarizeMessagesWithPrompt(
+        messagesToSummarize,
+        context,
+        getPartialCompactPrompt(options.feedback, options.direction),
+        options.signal,
+      )
+    : "No earlier messages to summarize.";
+  throwIfAborted(options.signal);
+  const boundaryMarker = createRuntimeMessage(
+    "user",
+    `<compact>Conversation partially compacted at ${new Date().toISOString()}</compact>`,
+    true,
+  );
+  const summaryMessage = createRuntimeMessage(
+    "user",
+    getCompactUserSummaryMessage(summary, false, undefined, true),
+    true,
+  );
+  const attachments = await context.deps?.createAttachments?.(
+    normalizedMessages,
+    context,
+  ) ?? [];
+  const hookResults = await context.deps?.createHookResults?.(
+    summary,
+    context,
+  ) ?? [];
+  const summaryMessages =
+    options.direction === "up_to" ? [summaryMessage] : [];
+  const orderedMessagesToKeep =
+    options.direction === "up_to"
+      ? messagesToKeep
+      : [...messagesToKeep, summaryMessage];
+  const postCompactTokenCount = estimateMessagesTokens(
+    [
+      boundaryMarker,
+      ...summaryMessages,
+      ...orderedMessagesToKeep,
+      ...attachments,
+      ...hookResults,
+    ],
+    context,
+  );
+  return {
+    boundaryMarker,
+    summaryMessages,
+    messagesToKeep: orderedMessagesToKeep,
+    attachments,
+    hookResults,
+    userDisplayMessage: "Conversation summarized",
+    preCompactTokenCount,
+    postCompactTokenCount,
+    truePostCompactTokenCount: postCompactTokenCount,
+  };
+}
+
 async function summarizeMessages(
   messages: readonly RuntimeMessage[],
   context: CompactContext,
   customInstructions: string,
 ): Promise<string> {
+  return summarizeMessagesWithPrompt(
+    messages,
+    context,
+    getCompactPrompt(customInstructions),
+    context.abortController?.signal,
+  );
+}
+
+async function summarizeMessagesWithPrompt(
+  messages: readonly RuntimeMessage[],
+  context: CompactContext,
+  compactPrompt: string,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  throwIfAborted(signal);
   const transcript = boundTranscript(messages.map(formatForSummary).join("\n\n"));
-  const compactPrompt = getCompactPrompt(customInstructions);
   const fallback = fallbackSummary(transcript);
   const provider = context.provider;
   if (!provider) return fallback;
@@ -224,14 +324,22 @@ async function summarizeMessages(
           context.options?.maxOutputTokens ?? SUMMARY_MAX_OUTPUT_TOKENS,
           SUMMARY_MAX_OUTPUT_TOKENS,
         ),
-        signal: context.abortController?.signal,
+        signal: signal ?? context.abortController?.signal,
       },
     );
+    throwIfAborted(signal);
     const text = response.content.trim();
     return text.length > 0 ? text : fallback;
-  } catch {
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof Error && error.name === "AbortError") throw error;
     return fallback;
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  throw new Error("Partial compaction aborted");
 }
 
 function chooseKeepCount(messages: readonly RuntimeMessage[]): number {

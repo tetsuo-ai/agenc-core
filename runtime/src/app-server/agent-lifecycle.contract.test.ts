@@ -3271,6 +3271,267 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("dispatches internal TUI partial compaction through JSON-RPC to daemon-owned history", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_rpc_compact",
+      agentId: "agent_rpc_compact",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const partialCompactFromMessage = vi.fn(async () => ({
+      sessionId: "session_rpc_compact",
+      ok: true,
+      eventAlreadyEmitted: true,
+      message: "Conversation summarized",
+    }));
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        partialCompactFromMessage,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_rpc_compact",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_rpc_compact"],
+      runtimeAvailable: true,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init-partial-compact",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "tui-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "partial-compact-session",
+        method: "session.partialCompactFromMessage",
+        params: {
+          sessionId: "session_rpc_compact",
+          messageOrdinal: 1,
+          direction: "from",
+          feedback: "keep decisions",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "partial-compact-session",
+      result: {
+        sessionId: "session_rpc_compact",
+        ok: true,
+        eventAlreadyEmitted: true,
+        message: "Conversation summarized",
+      },
+    });
+    expect(partialCompactFromMessage).toHaveBeenCalledWith(
+      "agent_rpc_compact",
+      {
+        sessionId: "session_rpc_compact",
+        messageOrdinal: 1,
+        direction: "from",
+        feedback: "keep decisions",
+        signal: expect.any(AbortSignal),
+      },
+    );
+  });
+
+  it("dispatches internal TUI conversation rewind through JSON-RPC to daemon-owned history", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_rpc_rewind",
+      agentId: "agent_rpc_rewind",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const rewindConversationToMessage = vi.fn(async () => ({
+      sessionId: "session_rpc_rewind",
+      ok: true,
+      eventAlreadyEmitted: true,
+      message: "Conversation rewound",
+    }));
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        rewindConversationToMessage,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_rpc_rewind",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_rpc_rewind"],
+      runtimeAvailable: true,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init-rewind",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "tui-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "rewind-session",
+        method: "session.rewindConversationToMessage",
+        params: {
+          sessionId: "session_rpc_rewind",
+          messageOrdinal: 1,
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "rewind-session",
+      result: {
+        sessionId: "session_rpc_rewind",
+        ok: true,
+        eventAlreadyEmitted: true,
+        message: "Conversation rewound",
+      },
+    });
+    expect(rewindConversationToMessage).toHaveBeenCalledWith(
+      "agent_rpc_rewind",
+      {
+        sessionId: "session_rpc_rewind",
+        messageOrdinal: 1,
+      },
+    );
+  });
+
+  it("cancels internal TUI partial compaction through request.cancel", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_rpc_compact_cancel",
+      agentId: "agent_rpc_compact_cancel",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const compactStarted = createDeferred();
+    let observedSignal: AbortSignal | undefined;
+    const partialCompactFromMessage = vi.fn(async (_agentId, params) => {
+      observedSignal = params.signal;
+      compactStarted.resolve(undefined);
+      await new Promise<void>((resolve) => {
+        if (params.signal?.aborted === true) {
+          resolve();
+          return;
+        }
+        params.signal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+      return {
+        sessionId: params.sessionId,
+        ok: false,
+        eventAlreadyEmitted: false,
+        code: "ABORTED",
+        message: "Conversation summarization was cancelled.",
+      };
+    });
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        partialCompactFromMessage,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_rpc_compact_cancel",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_rpc_compact_cancel"],
+      runtimeAvailable: true,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init-partial-compact-cancel",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "tui-test" },
+    });
+
+    const compacting = connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "partial-compact-cancel",
+      method: "session.partialCompactFromMessage",
+      params: {
+        sessionId: "session_rpc_compact_cancel",
+        messageOrdinal: 0,
+        direction: "from",
+      },
+    });
+    await compactStarted.promise;
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "cancel-partial-compact",
+        method: "request.cancel",
+        params: {
+          requestId: "partial-compact-cancel",
+          reason: "selector closed",
+        },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        requestId: "partial-compact-cancel",
+        cancelled: true,
+        reason: "selector closed",
+      },
+    });
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(observedSignal?.reason).toBe("selector closed");
+    await expect(compacting).resolves.toMatchObject({
+      error: {
+        code: -32000,
+        data: {
+          code: "REQUEST_CANCELLED",
+          requestId: "partial-compact-cancel",
+          reason: "selector closed",
+        },
+      },
+    });
+  });
+
   it("cleans up portal client registration after failed session.attach", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_after_failure", "session_second"]),

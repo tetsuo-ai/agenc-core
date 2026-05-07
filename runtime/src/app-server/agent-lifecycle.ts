@@ -36,6 +36,10 @@ import type {
   PermissionListResult,
   SessionClearParams,
   SessionClearResult,
+  SessionPartialCompactFromMessageParams,
+  SessionPartialCompactFromMessageResult,
+  SessionRewindConversationToMessageParams,
+  SessionRewindConversationToMessageResult,
   SessionSummary,
   ToolApproveParams,
   ToolCancelParams,
@@ -1013,6 +1017,60 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async partialCompactFromMessage(
+    params: SessionPartialCompactFromMessageParams,
+    signal?: AbortSignal,
+  ): Promise<SessionPartialCompactFromMessageResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.partialCompactFromMessage requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.partialCompactFromMessage === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.partialCompactFromMessage requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowPartialCompact: true },
+    );
+    return await this.#runner.partialCompactFromMessage(agentId, {
+      sessionId: params.sessionId,
+      messageOrdinal: params.messageOrdinal,
+      direction: params.direction,
+      ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  async rewindConversationToMessage(
+    params: SessionRewindConversationToMessageParams,
+  ): Promise<SessionRewindConversationToMessageResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.rewindConversationToMessage requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.rewindConversationToMessage === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.rewindConversationToMessage requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowConversationRewind: true },
+    );
+    return await this.#runner.rewindConversationToMessage(agentId, {
+      sessionId: params.sessionId,
+      messageOrdinal: params.messageOrdinal,
+    });
+  }
+
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -1180,6 +1238,8 @@ export class AgenCDaemonAgentManager {
       readonly allowClearSession?: boolean;
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
+      readonly allowPartialCompact?: boolean;
+      readonly allowConversationRewind?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -1201,12 +1261,20 @@ export class AgenCDaemonAgentManager {
     const hasPermissionListRunner =
       options.allowListPermissions === true &&
       this.#runner?.listPermissions !== undefined;
+    const hasPartialCompactRunner =
+      options.allowPartialCompact === true &&
+      this.#runner?.partialCompactFromMessage !== undefined;
+    const hasConversationRewindRunner =
+      options.allowConversationRewind === true &&
+      this.#runner?.rewindConversationToMessage !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
       !hasElicitationRunner &&
       !hasClearSessionRunner &&
-      !hasPermissionListRunner
+      !hasPermissionListRunner &&
+      !hasPartialCompactRunner &&
+      !hasConversationRewindRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",

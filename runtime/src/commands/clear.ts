@@ -89,6 +89,11 @@ function hasActiveTurn(session: Session): boolean {
  * verify behaviour without going through `safeExecute`.
  */
 export async function clearSession(session: Session): Promise<void> {
+  if (hasActiveTurn(session)) {
+    throw new Error(
+      "Cannot clear right now: a turn is currently in flight; wait for it to complete before running /clear.",
+    );
+  }
   const clearable = session as unknown as ClearableSessionShape;
   if (typeof clearable.clearDaemonSession === "function") {
     await clearable.clearDaemonSession();

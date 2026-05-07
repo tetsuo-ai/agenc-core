@@ -96,6 +96,7 @@ import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
 import type { CompactedItem, ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
+import { llmMessageToResponseItem } from "./message-history-conversion.js";
 import {
   modelContextWindow,
   TurnTimingState,
@@ -507,7 +508,11 @@ type AgenCRuntimeMessage = Omit<
   readonly originalRole?: AgenCMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
-  readonly toolCalls?: readonly { readonly id: string; readonly name: string }[];
+  readonly toolCalls?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments?: string;
+  }[];
   readonly phase?: string;
   readonly type?: string;
   readonly message?: {
@@ -881,6 +886,7 @@ function toAgenCRuntimeMessages(
             toolCalls: message.toolCalls.map((call) => ({
               id: call.id,
               name: call.name,
+              arguments: call.arguments,
             })),
           }
         : {}),
@@ -1571,16 +1577,7 @@ function isAutoCompactEnabledForNotices(): boolean {
 }
 
 function toResponseItem(message: LLMMessage): ResponseItem {
-  return {
-    role: message.role,
-    content:
-      typeof message.content === "string"
-        ? message.content
-        : message.content.map((part) => ({ ...part })),
-    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
-    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.phase !== undefined ? { phase: message.phase } : {}),
-  };
+  return llmMessageToResponseItem(message);
 }
 
 function terminalToStopReason(

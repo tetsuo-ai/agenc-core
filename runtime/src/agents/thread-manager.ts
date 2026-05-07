@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
-import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import type { LLMContentPart } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
+import { responseItemToLlmMessage as responseItemToLlmHistoryMessage } from "../session/message-history-conversion.js";
 import { threadConfigSnapshot } from "../session/turn-context.js";
 import type { InterAgentCommunication } from "./mailbox.js";
 import type { AgentStatus } from "./status.js";
@@ -199,7 +200,7 @@ export class AgenCThread implements ManagedThread {
     this.live.messages.splice(
       0,
       this.live.messages.length,
-      ...history.map(responseItemToLlmMessage),
+      ...history.map(responseItemToLlmHistoryMessage),
     );
   }
 
@@ -672,21 +673,6 @@ function userInputDisplayText(input: string | readonly LLMContentPart[]): string
     })
     .filter((part) => part.length > 0)
     .join("\n");
-}
-
-function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
-  return {
-    role: item.role,
-    content:
-      typeof item.content === "string"
-        ? item.content
-        : (item.content.map((part) => ({ ...part })) as LLMContentPart[]),
-    ...(item.phase !== undefined
-      ? { phase: item.phase as LLMMessage["phase"] }
-      : {}),
-    ...(item.toolCallId !== undefined ? { toolCallId: item.toolCallId } : {}),
-    ...(item.toolName !== undefined ? { toolName: item.toolName } : {}),
-  };
 }
 
 async function shutdownWithTimeout(

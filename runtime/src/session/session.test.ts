@@ -63,6 +63,7 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import type { AuthBackend } from "../auth/backend.js";
+import { clearSession } from "../commands/clear.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -1278,5 +1279,202 @@ describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
       } as unknown as TurnContext;
       expect(isPlanMode(ctx)).toBe(false);
     }
+  });
+});
+
+describe("Session.partialCompactFromMessage", () => {
+  it("commits a durable replacement history and returns a history_replaced event", async () => {
+    const appendRollout = vi.fn();
+    const session = buildSession({
+      services: {
+        provider: {
+          ...mkProvider(),
+          chat: vi.fn(async () => ({
+            content: "recent summary",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          })),
+        },
+      },
+    });
+    session.rolloutStore = {
+      isDegraded: false,
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "keep this" },
+        {
+          role: "assistant",
+          content: "assistant kept",
+          toolCalls: [{ id: "call-1", name: "Read", arguments: "{\"path\":\"a\"}" }],
+        },
+        { role: "user", content: "summarize from here" },
+        { role: "assistant", content: "assistant summarized" },
+      ];
+    });
+
+    const result = await session.partialCompactFromMessage({
+      messageOrdinal: 1,
+      direction: "from",
+      feedback: "keep decisions",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.event.type).toBe("history_replaced");
+    expect(result.event.payload.messages.length).toBeGreaterThan(0);
+    expect(appendRollout).toHaveBeenCalledOnce();
+    expect(appendRollout.mock.calls[0]?.[0]).toMatchObject({
+      type: "compacted",
+      payload: {
+        replacementHistory: expect.arrayContaining([
+          expect.objectContaining({
+            role: "assistant",
+            toolCalls: [
+              { id: "call-1", name: "Read", arguments: "{\"path\":\"a\"}" },
+            ],
+          }),
+        ]),
+      },
+    });
+    const history = session.snapshotHistoryMessages();
+    expect(history[0]?.role).toBe("user");
+    expect(history[0]?.content).toEqual(expect.stringContaining("<compact>"));
+    expect(history.some((message) => message.content === "summarize from here"))
+      .toBe(false);
+  });
+
+  it("installs an active compact task while provider summarization is running", async () => {
+    let resolveChat!: (value: Awaited<ReturnType<LLMProvider["chat"]>>) => void;
+    let markStarted!: () => void;
+    const chatStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const session = buildSession({
+      services: {
+        provider: {
+          ...mkProvider(),
+          chat: vi.fn(
+            () =>
+              new Promise<Awaited<ReturnType<LLMProvider["chat"]>>>((resolve) => {
+                resolveChat = resolve;
+                markStarted();
+              }),
+          ),
+        },
+      },
+    });
+    session.rolloutStore = {
+      isDegraded: false,
+      appendRollout: vi.fn(),
+    } as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "summarize this" },
+        { role: "assistant", content: "assistant text" },
+      ];
+    });
+
+    const compacting = session.partialCompactFromMessage({
+      messageOrdinal: 0,
+      direction: "from",
+    });
+    await chatStarted;
+
+    expect(session.activeTurn.unsafePeek()?.tasks.values().next().value?.kind)
+      .toBe("compact");
+    await expect(clearSession(session)).rejects.toThrow("Cannot clear right now");
+    resolveChat({
+      content: "summary",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "test-model",
+      finishReason: "stop",
+    });
+    await expect(compacting).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe("Session.rewindConversationToMessage", () => {
+  it("commits a durable replacement history before the selected active message", async () => {
+    const appendRollout = vi.fn();
+    const session = buildSession();
+    session.rolloutStore = {
+      isDegraded: false,
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "first prompt" },
+        { role: "assistant", content: "first answer" },
+        { role: "user", content: "rewind target" },
+        { role: "assistant", content: "discarded answer" },
+      ];
+    });
+
+    const result = await session.rewindConversationToMessage({
+      messageOrdinal: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.event.type).toBe("history_replaced");
+    expect(result.event.payload.reason).toBe("rewind");
+    expect(appendRollout).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "compacted",
+        payload: expect.objectContaining({
+          message: "Conversation rewound",
+          replacementHistory: [
+            { role: "user", content: "first prompt" },
+            { role: "assistant", content: "first answer" },
+          ],
+        }),
+      }),
+      { durable: true },
+    );
+    expect(session.snapshotHistoryMessages()).toEqual([
+      { role: "user", content: "first prompt" },
+      { role: "assistant", content: "first answer" },
+    ]);
+  });
+
+  it("does not count compact boundary or summary messages as selectable", async () => {
+    const appendRollout = vi.fn();
+    const session = buildSession();
+    session.rolloutStore = {
+      isDegraded: false,
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+    await session.state.with((state) => {
+      state.history = [
+        { role: "user", content: "<compact>Conversation compacted</compact>" },
+        {
+          role: "user",
+          content:
+            "This session is being continued from a previous conversation that ran out of context. Summary.",
+        },
+        { role: "user", content: "active target" },
+        { role: "assistant", content: "discarded answer" },
+      ];
+    });
+
+    const result = await session.rewindConversationToMessage({
+      messageOrdinal: 0,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(session.snapshotHistoryMessages()).toEqual([
+      { role: "user", content: "<compact>Conversation compacted</compact>" },
+      {
+        role: "user",
+        content:
+          "This session is being continued from a previous conversation that ran out of context. Summary.",
+      },
+    ]);
   });
 });

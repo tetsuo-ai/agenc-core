@@ -9,6 +9,7 @@ import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
 import type { CompactedItem, ResponseItem } from "../session/rollout-item.js";
 import type { Session } from "../session/session.js";
+import { llmMessageToResponseItem } from "../session/message-history-conversion.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { modelContextWindow } from "../session/turn-context.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -376,7 +377,11 @@ type AgenCRuntimeMessage = Omit<
   readonly originalRole?: AgenCMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
-  readonly toolCalls?: readonly { readonly id: string; readonly name: string }[];
+  readonly toolCalls?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments?: string;
+  }[];
   readonly phase?: string;
   readonly type?: string;
   readonly message?: {
@@ -537,13 +542,7 @@ function toAgenCMessage(message: LLMMessage): AgenCMessage {
 }
 
 function toResponseItem(message: LLMMessage): ResponseItem {
-  return {
-    role: message.role,
-    content: cloneContent(message.content),
-    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
-    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-    ...(message.phase !== undefined ? { phase: message.phase } : {}),
-  };
+  return llmMessageToResponseItem(message);
 }
 
 function buildCompactedRolloutPayload(params: {
@@ -753,6 +752,7 @@ function toAgenCRuntimeMessages(
             toolCalls: message.toolCalls.map((call) => ({
               id: call.id,
               name: call.name,
+              arguments: call.arguments,
             })),
           }
         : {}),

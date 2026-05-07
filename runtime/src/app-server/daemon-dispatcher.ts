@@ -36,7 +36,7 @@ import {
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
-  isAgenCDaemonMethod,
+  isAgenCDaemonKnownMethod,
   JSON_RPC_VERSION,
   type AgentAttachParams,
   type AgentCreateParams,
@@ -46,6 +46,7 @@ import {
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
+  type AgenCDaemonKnownMethod,
   type AgenCDaemonResponse,
   type AgenCDaemonResultByMethod,
   type CommandExecResizeParams,
@@ -65,6 +66,8 @@ import {
   type SessionAttachResult,
   type SessionClearParams,
   type SessionListParams,
+  type SessionPartialCompactFromMessageParams,
+  type SessionRewindConversationToMessageParams,
   type ThreadRealtimeAppendAudioParams,
   type ThreadRealtimeAppendTextParams,
   type ThreadRealtimeListVoicesParams,
@@ -121,6 +124,8 @@ export interface AgenCDaemonDispatcherOptions {
     | "createAgent"
     | "denyTool"
     | "clearSessionHistory"
+    | "partialCompactFromMessage"
+    | "rewindConversationToMessage"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -170,6 +175,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "createAgent"
     | "denyTool"
     | "clearSessionHistory"
+    | "partialCompactFromMessage"
+    | "rewindConversationToMessage"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -269,7 +276,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     if (id === null) {
       return errorResponse(id, -32600, "missing daemon request id");
     }
-    if (!isAgenCDaemonMethod(message.method)) {
+    if (!isAgenCDaemonKnownMethod(message.method)) {
       return errorResponse(
         id,
         -32601,
@@ -348,10 +355,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     }
   }
 
-  async #dispatchKnownMethod<Method extends AgenCDaemonMethod>(
+  async #dispatchKnownMethod(
     connection: AgenCDaemonJsonRpcConnection,
     id: RequestId,
-    method: Method,
+    method: AgenCDaemonKnownMethod,
     params: JsonObject,
     signal: AbortSignal,
   ): Promise<AgenCDaemonResponse> {
@@ -403,6 +410,21 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.clearSessionHistory(
             validateSessionClearParams(params),
+          ),
+        );
+      case "session.partialCompactFromMessage":
+        return successResponse(
+          id,
+          await this.#agentManager.partialCompactFromMessage(
+            validateSessionPartialCompactFromMessageParams(params),
+            signal,
+          ),
+        );
+      case "session.rewindConversationToMessage":
+        return successResponse(
+          id,
+          await this.#agentManager.rewindConversationToMessage(
+            validateSessionRewindConversationToMessageParams(params),
           ),
         );
       case "message.send":
@@ -889,8 +911,12 @@ class AgenCDaemonRequestCancelledError extends Error {
 
 const INERT_ABORT_SIGNAL = new AbortController().signal;
 
-function methodSupportsRequestCancellation(method: AgenCDaemonMethod): boolean {
-  return method === "fs.fuzzy_search" || method === "commandExec.start";
+function methodSupportsRequestCancellation(method: AgenCDaemonKnownMethod): boolean {
+  return (
+    method === "fs.fuzzy_search" ||
+    method === "commandExec.start" ||
+    method === "session.partialCompactFromMessage"
+  );
 }
 
 function objectParams(params: unknown): JsonObject {
@@ -1112,6 +1138,64 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   });
   validateRequiredString(validated, "session.clear", "sessionId");
   return validated as SessionClearParams;
+}
+
+function validateSessionPartialCompactFromMessageParams(
+  params: JsonObject,
+): SessionPartialCompactFromMessageParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.partialCompactFromMessage",
+    stringFields: ["sessionId", "direction", "feedback"],
+    numberFields: ["messageOrdinal"],
+  });
+  validateRequiredString(
+    validated,
+    "session.partialCompactFromMessage",
+    "sessionId",
+  );
+  if (
+    validated.direction !== "from" &&
+    validated.direction !== "up_to"
+  ) {
+    throw invalidParams(
+      "session.partialCompactFromMessage direction must be from or up_to",
+    );
+  }
+  if (
+    typeof validated.messageOrdinal !== "number" ||
+    !Number.isInteger(validated.messageOrdinal) ||
+    validated.messageOrdinal < 0
+  ) {
+    throw invalidParams(
+      "session.partialCompactFromMessage messageOrdinal must be a non-negative integer",
+    );
+  }
+  return validated as SessionPartialCompactFromMessageParams;
+}
+
+function validateSessionRewindConversationToMessageParams(
+  params: JsonObject,
+): SessionRewindConversationToMessageParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.rewindConversationToMessage",
+    stringFields: ["sessionId"],
+    numberFields: ["messageOrdinal"],
+  });
+  validateRequiredString(
+    validated,
+    "session.rewindConversationToMessage",
+    "sessionId",
+  );
+  if (
+    typeof validated.messageOrdinal !== "number" ||
+    !Number.isInteger(validated.messageOrdinal) ||
+    validated.messageOrdinal < 0
+  ) {
+    throw invalidParams(
+      "session.rewindConversationToMessage messageOrdinal must be a non-negative integer",
+    );
+  }
+  return validated as SessionRewindConversationToMessageParams;
 }
 
 function validateMessageSendParams(params: JsonObject): MessageSendParams {

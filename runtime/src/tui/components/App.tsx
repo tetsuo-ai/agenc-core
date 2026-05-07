@@ -2,13 +2,18 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { FpsMetricsProvider } from "../context/fpsMetrics.js";
+import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../context/stats.js";
 import { onChangeAppState } from "../state/onChangeAppState.js";
 import type { FpsMetrics } from "../../utils/fpsTracker.js";
 import { Messages } from "./Messages.js";
-import { MessageSelector } from "./MessageSelector.js";
+import {
+  MessageSelector,
+  selectableUserMessagesFilter,
+} from "./MessageSelector.js";
+import { ExitFlow } from "./ExitFlow.js";
 import PromptInput from "./PromptInput/PromptInput.js";
+import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
@@ -58,7 +63,17 @@ import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import type { Command } from "../../commands.js";
 import type { AgentDefinition } from "../../tools/AgentTool/loadAgentsDir.js";
 import type { VimMode } from "../../types/textInputTypes.js";
-import type { AgenCTuiProps } from "../session-types.js";
+import {
+  installCompactProgressControls,
+  type AgenCTuiProps,
+} from "../session-types.js";
+import { useCostSummary } from "../../cost/hook.js";
+import { getTotalCost } from "../../cost/tracker.js";
+import { logEvent } from "../../services/analytics/index.js";
+import { hasConsoleBillingAccess } from "../../utils/billing.js";
+import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
+import { fileHistoryRewind } from "../../utils/fileHistory.js";
+import { getCurrentWorktreeSession } from "../../utils/worktree.js";
 import {
   Onboarding,
   type FirstRunOnboardingState,
@@ -546,9 +561,12 @@ export function installElicitationResolvers(
     pending: PendingElicitation,
     signal: AbortSignal | undefined,
     response: RequestUserInputResponse | McpElicitationResponse | null,
-  ): void => {
-    if (signal === undefined) return;
+  ): (() => void) => {
+    if (signal === undefined) return () => {};
+    let done = false;
     const abort = (): void => {
+      if (done) return;
+      done = true;
       const result = queue.cancel(pending);
       if (result.handled) {
         publish(result.current);
@@ -561,46 +579,65 @@ export function installElicitationResolvers(
     };
     if (signal.aborted) {
       abort();
-      return;
+      return () => {};
     }
     signal.addEventListener("abort", abort, { once: true });
+    return () => {
+      if (done) return;
+      done = true;
+      signal.removeEventListener("abort", abort);
+    };
   };
   const previousUser = session.services.requestUserInputResolver;
   const previousMcp = session.services.mcpElicitationResolver;
   session.services.requestUserInputResolver = {
     request(event, signal) {
       return new Promise<RequestUserInputResponse | null>((resolve) => {
+        let detachAbort = () => {};
+        const resolveAndDetach = (value: RequestUserInputResponse | null): void => {
+          detachAbort();
+          resolve(value);
+        };
         const pending: UserPending = {
           kind: "user",
           request: event,
-          resolve,
+          resolve: resolveAndDetach,
           answers: {},
           index: 0,
         };
         publish(queue.enqueue(pending));
-        attachAbort(pending, signal, null);
+        detachAbort = attachAbort(pending, signal, null);
       });
     },
   };
   session.services.mcpElicitationResolver = {
     request(event, signal) {
       return new Promise<McpElicitationResponse | null>((resolve) => {
+        let detachAbort = () => {};
+        const resolveAndDetach = (value: McpElicitationResponse | null): void => {
+          detachAbort();
+          resolve(value);
+        };
         if (event.request.mode === "url") {
-          const pending: McpUrlPending = { kind: "mcp-url", request: event, resolve };
+          const pending: McpUrlPending = {
+            kind: "mcp-url",
+            request: event,
+            resolve: resolveAndDetach,
+          };
           publish(queue.enqueue(pending));
-          attachAbort(pending, signal, null);
+          detachAbort = attachAbort(pending, signal, null);
           return;
         }
         const pending: McpFormPending = {
           kind: "mcp-form",
           request: event,
-          resolve,
+          resolve: resolveAndDetach,
           fields: Object.keys(event.request.requestedSchema.properties),
           content: {},
           index: 0,
         };
         publish(queue.enqueue(pending));
-        attachAbort(pending, signal, null);
+        detachAbort = attachAbort(pending, signal, null);
       });
     },
   };
@@ -842,6 +879,29 @@ function restoreComposerText(message: any): { text: string; mode: "bash" | "prom
   return { text: trimmed, mode: "prompt" };
 }
 
+const CONVERSATION_ACTION_BUSY_MESSAGE =
+  "Conversation actions are available after the current turn finishes.";
+
+function hasActiveConversationTurn(session: any): boolean {
+  return typeof session?.activeTurn?.unsafePeek === "function" &&
+    session.activeTurn.unsafePeek() !== null;
+}
+
+function isCompactProgressEvent(event: unknown): event is {
+  readonly type: "hooks_start" | "compact_start" | "compact_end";
+  readonly hookType?: "pre_compact" | "post_compact" | "session_start";
+} {
+  if (!event || typeof event !== "object") return false;
+  const type = (event as { readonly type?: unknown }).type;
+  return type === "hooks_start" || type === "compact_start" || type === "compact_end";
+}
+
+function compactHookLabel(hookType: unknown): string {
+  if (hookType === "pre_compact") return "Running PreCompact hooks";
+  if (hookType === "post_compact") return "Running PostCompact hooks";
+  return "Running SessionStart hooks";
+}
+
 const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
 const TITLE_STATIC_PREFIX = "✳";
 const TITLE_ANIMATION_INTERVAL_MS = 960;
@@ -900,6 +960,7 @@ function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
 
 function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const { exit } = useApp();
+  useCostSummary(useFpsMetrics());
   const [input, setInput] = useState(props.initialComposerText ?? "");
   const [mode, setMode] = useState<any>("prompt");
   const [stashedPrompt, setStashedPrompt] = useState<any>(undefined);
@@ -912,6 +973,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [screen, setScreen] = useState<"prompt" | "transcript">("prompt");
   const [showAllInTranscript, setShowAllInTranscript] = useState(false);
   const [isMessageSelectorVisible, setIsMessageSelectorVisible] = useState(false);
+  const [selectorNotice, setSelectorNotice] = useState<string | null>(null);
+  const summarizeAbortRef = useRef<AbortController | null>(null);
+  const [exitFlow, setExitFlow] = useState<React.ReactNode>(null);
+  const [haveShownCostDialog, setHaveShownCostDialog] = useState(
+    () => getGlobalConfig().hasAcknowledgedCostThreshold === true,
+  );
+  const [showCostDialog, setShowCostDialog] = useState(false);
+  const [compactProgress, setCompactProgress] = useState({
+    status: "idle",
+    label: null as string | null,
+    responseLength: 0,
+  });
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
   const [toolPermissionContext, setToolPermissionContext] =
@@ -1075,21 +1148,206 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     elicitation.prompt === null &&
     toolJSX === null &&
     !onboarding.active;
+  useEffect(() => {
+    if (haveShownCostDialog || showCostDialog) return;
+    if (getTotalCost() < 5) return;
+    logEvent("tengu_cost_threshold_reached", {});
+    setHaveShownCostDialog(true);
+    if (hasConsoleBillingAccess()) {
+      setShowCostDialog(true);
+    }
+  }, [transcript.messages, haveShownCostDialog, showCostDialog]);
+  const setCompactStreamMode = useCallback((mode: "requesting" | "responding" | null) => {
+    if (mode === null) return;
+    setCompactProgress((prev) =>
+      prev.status === "idle" ? prev : { ...prev, streamMode: mode },
+    );
+  }, []);
+  const setCompactResponseLength = useCallback((updater: (length: number) => number) => {
+    setCompactProgress((prev) => ({
+      ...prev,
+      responseLength: updater(prev.responseLength),
+    }));
+  }, []);
+  const handleCompactProgress = useCallback((event: unknown) => {
+    if (!isCompactProgressEvent(event)) return;
+    if (event.type === "hooks_start") {
+      setCompactProgress({
+        status: "hooks",
+        label: compactHookLabel(event.hookType),
+        responseLength: 0,
+      });
+      return;
+    }
+    if (event.type === "compact_start") {
+      setCompactProgress({
+        status: "compacting",
+        label: "Compacting conversation",
+        responseLength: 0,
+      });
+      return;
+    }
+    setCompactProgress({
+      status: "idle",
+      label: null,
+      responseLength: 0,
+    });
+  }, []);
+  const setCompactSDKStatus = useCallback((status: "compacting" | null) => {
+    if (status === null) {
+      setCompactProgress({
+        status: "idle",
+        label: null,
+        responseLength: 0,
+      });
+    }
+  }, []);
+  useEffect(
+    () =>
+      installCompactProgressControls(props.session, {
+        setStreamMode: setCompactStreamMode,
+        setResponseLength: setCompactResponseLength,
+        onCompactProgress: handleCompactProgress,
+        setSDKStatus: setCompactSDKStatus,
+      }),
+    [
+      props.session,
+      setCompactStreamMode,
+      setCompactResponseLength,
+      handleCompactProgress,
+      setCompactSDKStatus,
+    ],
+  );
   const handleShowMessageSelector = useCallback(() => {
     if (onboarding.active) return;
+    setSelectorNotice(null);
     setIsMessageSelectorVisible((visible) => !visible);
   }, [onboarding.active]);
   const handleCloseMessageSelector = useCallback(() => {
+    summarizeAbortRef.current?.abort("message-selector-closed");
+    summarizeAbortRef.current = null;
     setIsMessageSelectorVisible(false);
   }, []);
-  const handleRestoreMessage = useCallback(async (message: any) => {
-    const restored = restoreComposerText(message);
-    if (restored === null) return;
-    setInput(restored.text);
-    setMode(restored.mode);
+  useEffect(() => {
+    return () => {
+      summarizeAbortRef.current?.abort("app-unmounted");
+      summarizeAbortRef.current = null;
+    };
   }, []);
-  const handleUnavailableSelectorAction = useCallback(async () => {
-    throw new Error("This rewind action is unavailable in the live TUI shell.");
+  const handleRestoreMessage = useCallback(async (message: any) => {
+    if (transcript.isStreaming || hasActiveConversationTurn(props.session)) {
+      setSelectorNotice(CONVERSATION_ACTION_BUSY_MESSAGE);
+      throw new Error(CONVERSATION_ACTION_BUSY_MESSAGE);
+    }
+    if (props.session.rewindConversationToMessage === undefined) {
+      throw new Error("Conversation rewind is not supported by this session.");
+    }
+    const selectableMessages =
+      (transcript.messages as any[]).filter(selectableUserMessagesFilter as any);
+    const messageOrdinal = selectableMessages.indexOf(message);
+    if (messageOrdinal === -1) {
+      throw new Error("The selected message is no longer available.");
+    }
+    const result = await props.session.rewindConversationToMessage({
+      messageOrdinal,
+    });
+    if (!result.ok) {
+      setSelectorNotice(result.message);
+      throw new Error(result.message);
+    }
+    if (!result.eventAlreadyEmitted && result.event !== undefined) {
+      props.session.emitPhaseEvent?.(result.event as never);
+    }
+    const restored = restoreComposerText(message);
+    if (restored !== null) {
+      setInput(restored.text);
+      setMode(restored.mode);
+    }
+    setSelectorNotice(result.displayText ?? "Conversation rewound");
+  }, [props.session, transcript.isStreaming, transcript.messages]);
+  const handleRestoreCode = useCallback(async (message: any) => {
+    await fileHistoryRewind((updater) => {
+      setAppState((prev) => ({
+        ...prev,
+        fileHistory: updater(prev.fileHistory),
+      }));
+    }, message.uuid);
+  }, [setAppState]);
+  const handleSummarize = useCallback(async (
+    message: any,
+    feedback?: string,
+    direction: "from" | "up_to" = "from",
+  ) => {
+    if (transcript.isStreaming || hasActiveConversationTurn(props.session)) {
+      setSelectorNotice(CONVERSATION_ACTION_BUSY_MESSAGE);
+      throw new Error(CONVERSATION_ACTION_BUSY_MESSAGE);
+    }
+    if (props.session.partialCompactFromMessage === undefined) {
+      throw new Error("Conversation summarization is not supported by this session.");
+    }
+    const selectableMessages =
+      (transcript.messages as any[]).filter(selectableUserMessagesFilter as any);
+    const messageOrdinal = selectableMessages.indexOf(message);
+    if (messageOrdinal === -1) {
+      throw new Error("The selected message is no longer available.");
+    }
+    summarizeAbortRef.current?.abort("message-selector-replaced");
+    const abortController = new AbortController();
+    summarizeAbortRef.current = abortController;
+    let result;
+    try {
+      result = await props.session.partialCompactFromMessage({
+        messageOrdinal,
+        direction,
+        ...(feedback !== undefined ? { feedback } : {}),
+        signal: abortController.signal,
+      });
+    } finally {
+      if (summarizeAbortRef.current === abortController) {
+        summarizeAbortRef.current = null;
+      }
+    }
+    if (!result.ok) {
+      setSelectorNotice(result.message);
+      throw new Error(result.message);
+    }
+    if (!result.eventAlreadyEmitted && result.event !== undefined) {
+      props.session.emitPhaseEvent?.(result.event as never);
+    }
+    if (direction === "from") {
+      const restored = restoreComposerText(message);
+      if (restored !== null) {
+        setInput(restored.text);
+        setMode(restored.mode);
+      }
+    }
+    setSelectorNotice(result.displayText ?? "Conversation summarized");
+  }, [props.session, transcript.isStreaming, transcript.messages]);
+  const handleExit = useCallback(() => {
+    if (getCurrentWorktreeSession() !== null) {
+      setExitFlow(
+        <ExitFlow
+          showWorktree={true}
+          onDone={() => {
+            setExitFlow(null);
+          }}
+          onCancel={() => {
+            setExitFlow(null);
+          }}
+        />,
+      );
+      return;
+    }
+    exit();
+  }, [exit]);
+  const handleCostThresholdDone = useCallback(() => {
+    setShowCostDialog(false);
+    setHaveShownCostDialog(true);
+    saveGlobalConfig((current) => ({
+      ...current,
+      hasAcknowledgedCostThreshold: true,
+    }));
+    logEvent("tengu_cost_threshold_acknowledged", {});
   }, []);
 
   return (
@@ -1133,6 +1391,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {!onboarding.active ? (
         <RealtimePanel state={realtimeState} />
       ) : null}
+      {!onboarding.active && compactProgress.status !== "idle" ? (
+        <Box flexDirection="row" width="100%">
+          <Text dimColor>
+            {compactProgress.label ?? "Compacting conversation"}
+          </Text>
+          {compactProgress.responseLength > 0 ? (
+            <Text dimColor>{` · ${compactProgress.responseLength} chars`}</Text>
+          ) : null}
+        </Box>
+      ) : null}
       {!onboarding.active && toolJSX !== null ? (
         <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
@@ -1147,17 +1415,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {!onboarding.active ? (
         <ElicitationOverlay prompt={elicitation.prompt} />
       ) : null}
+      {!onboarding.active && showCostDialog ? (
+        <CostThresholdDialog onDone={handleCostThresholdDone} />
+      ) : null}
+      {!onboarding.active ? exitFlow : null}
       {!onboarding.active && isMessageSelectorVisible ? (
         <MessageSelector
           messages={transcript.messages as any[]}
-          onPreRestore={() => {
-            props.session.abortTerminal?.("message-selector-restore");
-          }}
+          onPreRestore={() => {}}
           onRestoreMessage={handleRestoreMessage}
-          onRestoreCode={handleUnavailableSelectorAction}
-          onSummarize={handleUnavailableSelectorAction as any}
+          onRestoreCode={handleRestoreCode}
+          onSummarize={handleSummarize}
           onClose={handleCloseMessageSelector}
         />
+      ) : null}
+      {!onboarding.active && selectorNotice !== null ? (
+        <Text color="warning" wrap="truncate">{selectorNotice}</Text>
       ) : null}
       {onboarding.active || !isMessageSelectorVisible ? (
         <PromptInput
@@ -1189,7 +1462,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           setVimMode={setVimMode}
           showBashesDialog={showBashesDialog}
           setShowBashesDialog={setShowBashesDialog}
-          onExit={exit}
+          onExit={handleExit}
           getToolUseContext={getToolUseContext}
           onSubmit={async (value, helpers) => {
             if (await onboarding.submit(value)) {

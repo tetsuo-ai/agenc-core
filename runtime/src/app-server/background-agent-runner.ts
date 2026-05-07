@@ -80,6 +80,9 @@ import type {
   JsonValue,
   MessageContent,
   PermissionListResult,
+  SessionPartialCompactFromMessageParams,
+  SessionPartialCompactFromMessageResult,
+  SessionRewindConversationToMessageResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
@@ -169,6 +172,19 @@ export interface AgenCBackgroundAgentClearSessionParams {
   readonly clearedAt: string;
 }
 
+export interface AgenCBackgroundAgentPartialCompactParams {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+  readonly direction: SessionPartialCompactFromMessageParams["direction"];
+  readonly feedback?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface AgenCBackgroundAgentConversationRewindParams {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+}
+
 export interface AgenCBackgroundAgentToolDecisionParams {
   readonly requestId: string;
   readonly decision: ReviewDecision;
@@ -205,6 +221,14 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentClearSessionParams,
   ): Promise<void>;
+  partialCompactFromMessage?(
+    agentId: string,
+    params: AgenCBackgroundAgentPartialCompactParams,
+  ): Promise<SessionPartialCompactFromMessageResult>;
+  rewindConversationToMessage?(
+    agentId: string,
+    params: AgenCBackgroundAgentConversationRewindParams,
+  ): Promise<SessionRewindConversationToMessageResult>;
   resolveToolDecision?(
     agentId: string,
     params: AgenCBackgroundAgentToolDecisionParams,
@@ -732,6 +756,75 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         timestamp: Number.isFinite(clearedAtMs) ? clearedAtMs : Date.now(),
       },
     });
+  }
+
+  async partialCompactFromMessage(
+    agentId: string,
+    params: AgenCBackgroundAgentPartialCompactParams,
+  ): Promise<SessionPartialCompactFromMessageResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const compact = active.bootstrap.session.partialCompactFromMessage;
+    if (compact === undefined) {
+      throw new Error("session.partialCompactFromMessage is not available");
+    }
+    const result = await compact.call(active.bootstrap.session, {
+      messageOrdinal: params.messageOrdinal,
+      direction: params.direction,
+      ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    });
+    if (result.ok && result.event !== undefined) {
+      await this.#emitOrBufferEvent(active, result.event as never);
+      return {
+        sessionId: params.sessionId,
+        ok: true,
+        eventAlreadyEmitted: true,
+        event: result.event as unknown as JsonObject,
+      };
+    }
+    return {
+      sessionId: params.sessionId,
+      ok: false,
+      eventAlreadyEmitted: true,
+      code: result.ok ? "NO_EVENT" : result.code,
+      message: result.ok ? "No replacement event was produced." : result.message,
+    };
+  }
+
+  async rewindConversationToMessage(
+    agentId: string,
+    params: AgenCBackgroundAgentConversationRewindParams,
+  ): Promise<SessionRewindConversationToMessageResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const rewind = active.bootstrap.session.rewindConversationToMessage;
+    if (rewind === undefined) {
+      throw new Error("session.rewindConversationToMessage is not available");
+    }
+    const result = await rewind.call(active.bootstrap.session, {
+      messageOrdinal: params.messageOrdinal,
+    });
+    if (result.ok && result.event !== undefined) {
+      await this.#emitOrBufferEvent(active, result.event as never);
+      return {
+        sessionId: params.sessionId,
+        ok: true,
+        eventAlreadyEmitted: true,
+        event: result.event as unknown as JsonObject,
+      };
+    }
+    return {
+      sessionId: params.sessionId,
+      ok: false,
+      eventAlreadyEmitted: true,
+      code: result.ok ? "NO_EVENT" : result.code,
+      message: result.ok ? "No replacement event was produced." : result.message,
+    };
   }
 
   async resolveToolDecision(

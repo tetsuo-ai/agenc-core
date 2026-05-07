@@ -5,6 +5,10 @@ import { useEffect, useMemo, useReducer } from "react";
 
 import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
 import type { Event } from "../session/event-log.js";
+import type {
+  HistoryReplacedEvent,
+  RuntimeTranscriptMessage,
+} from "../session/transcript-replacement.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
 
@@ -280,6 +284,14 @@ function unwrap(event: SessionTranscriptEvent): {
 
 function isHistoryClearedEvent(event: SessionTranscriptEvent): boolean {
   return unwrap(event).type === "history_cleared";
+}
+
+function isHistoryReplacedEvent(event: SessionTranscriptEvent): boolean {
+  return unwrap(event).type === "history_replaced";
+}
+
+function isTranscriptResetEvent(event: SessionTranscriptEvent): boolean {
+  return isHistoryClearedEvent(event) || isHistoryReplacedEvent(event);
 }
 
 function payloadRecord(payload: unknown): Record<string, unknown> {
@@ -703,6 +715,25 @@ export function adaptTranscriptEvents(
         lastAssistantText = "";
         isStreaming = false;
         break;
+      case "history_replaced": {
+        out.length = 0;
+        seen.clear();
+        seen.add(event.key);
+        openTools.clear();
+        toolNames.clear();
+        runningToolNames.clear();
+        streamingToolUses.length = 0;
+        streamingText = "";
+        realtimeStreamingText = "";
+        currentTurnId = null;
+        lastAssistantText = "";
+        isStreaming = false;
+        const replacement = (payload as HistoryReplacedEvent["payload"]).messages;
+        if (Array.isArray(replacement)) {
+          out.push(...(replacement as readonly RuntimeTranscriptMessage[]));
+        }
+        break;
+      }
       case "turn_start":
       case "turn_started":
         isStreaming = true;
@@ -1054,7 +1085,7 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       const events: SessionTranscriptEvent[] = [];
       for (const event of action.events) {
         const key = eventKey(event);
-        if (isHistoryClearedEvent(event)) {
+        if (isTranscriptResetEvent(event)) {
           keys.clear();
           events.length = 0;
           keys.add(key);
@@ -1069,7 +1100,8 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
     }
     case "append": {
       const key = eventKey(action.event);
-      if (isHistoryClearedEvent(action.event)) {
+      if (isTranscriptResetEvent(action.event)) {
+        if (state.keys.has(key)) return state;
         return {
           events: [action.event],
           keys: new Set([key]),
