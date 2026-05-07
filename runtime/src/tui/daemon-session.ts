@@ -36,6 +36,7 @@ import type {
   RealtimeAudioPlayer,
   StartRealtimeAudioCapture,
 } from "./realtime/audio.js";
+import type { AgenCCompactProgressControls } from "./session-types.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -53,7 +54,7 @@ export interface AgenCDaemonConnectionState extends JsonObject {
   readonly message?: string;
 }
 
-export interface AgenCTuiBridgeSession {
+export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
   readonly services: {
     approvalResolver?: ApprovalResolver;

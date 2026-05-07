@@ -197,6 +197,29 @@ const ITEM_EVIDENCE = {
       { pattern: "pluginCommandToSlashCommand", scope: "runtime/src/commands/reload-plugins.ts" },
     ],
   },
+  "GAP-TUI-08": {
+    files: [
+      "runtime/src/commands/session-compact.ts",
+      "runtime/src/services/compact/compact.ts",
+      "runtime/src/services/compact/types.ts",
+      "runtime/src/tui/screens/REPL.tsx",
+      "runtime/src/tui/session-types.ts",
+      "runtime/src/tui/daemon-session.ts",
+    ],
+    tests: [
+      "runtime/tests/slash-compact.contract.test.ts",
+      "runtime/src/services/compact/compact.test.ts",
+      "runtime/src/tui/daemon-session.contract.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "installCompactProgressControls", scope: "runtime/src/tui/session-types.ts" },
+      { pattern: "installCompactProgressControls\\(session", scope: "runtime/src/tui/screens/REPL.tsx" },
+      { pattern: "compact_start", scope: "runtime/src/services/compact/compact.ts" },
+      { pattern: "compact_end", scope: "runtime/src/services/compact/compact.ts" },
+      { pattern: "onCompactProgress", scope: "runtime/tests/slash-compact.contract.test.ts" },
+      { pattern: "setSDKStatus", scope: "runtime/tests/slash-compact.contract.test.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6551,6 +6574,10 @@ async function gapGates(item) {
     assertGapTuiReloadPluginsRefreshesDispatcherRegistry();
     return;
   }
+  if (item.title.includes("/compact: wire progress hooks on daemon-backed Session")) {
+    assertGapTuiCompactProgressControls();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7291,6 +7318,120 @@ function assertGapTuiReloadPluginsRefreshesDispatcherRegistry() {
     failGate("GAP-TUI-07 targeted reload registry tests failed");
   }
   pass("GAP-TUI-07 targeted reload registry tests passed");
+}
+
+function assertGapTuiCompactProgressControls() {
+  const rels = {
+    compact: "runtime/src/commands/session-compact.ts",
+    compactService: "runtime/src/services/compact/compact.ts",
+    compactTypes: "runtime/src/services/compact/types.ts",
+    repl: "runtime/src/tui/screens/REPL.tsx",
+    sessionTypes: "runtime/src/tui/session-types.ts",
+    daemonSession: "runtime/src/tui/daemon-session.ts",
+    slashTest: "runtime/tests/slash-compact.contract.test.ts",
+    serviceTest: "runtime/src/services/compact/compact.test.ts",
+    daemonTest: "runtime/src/tui/daemon-session.contract.test.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-08: missing ${rel}`);
+  }
+
+  const compact = readFileSync(path.join(root, rels.compact), "utf8");
+  const compactService = readFileSync(path.join(root, rels.compactService), "utf8");
+  const compactTypes = readFileSync(path.join(root, rels.compactTypes), "utf8");
+  const repl = readFileSync(path.join(root, rels.repl), "utf8");
+  const sessionTypes = readFileSync(path.join(root, rels.sessionTypes), "utf8");
+  const daemonSession = readFileSync(path.join(root, rels.daemonSession), "utf8");
+  const slashTest = readFileSync(path.join(root, rels.slashTest), "utf8");
+  const serviceTest = readFileSync(path.join(root, rels.serviceTest), "utf8");
+  const daemonTest = readFileSync(path.join(root, rels.daemonTest), "utf8");
+  const missingEvidence = [
+    [
+      "compact command reads progress callbacks from the session surface",
+      /surface\.setStreamMode[\s\S]*surface\.onCompactProgress[\s\S]*surface\.setSDKStatus/,
+      compact,
+    ],
+    [
+      "compact service context type exposes progress callbacks",
+      /setStreamMode\?[\s\S]*onCompactProgress\?[\s\S]*type\s+CompactProgressEvent/,
+      compactTypes,
+    ],
+    [
+      "compact service owns compact progress lifecycle",
+      /onCompactProgress\?\.\(\{\s*type:\s*["']hooks_start["'][\s\S]*setSDKStatus\?\.\(["']compacting["']\)[\s\S]*onCompactProgress\?\.\(\{\s*type:\s*["']compact_start["']\s*\}\)/,
+      compactService,
+    ],
+    [
+      "compact service clears compact status in a finally block",
+      /finally\s*\{[\s\S]*onCompactProgress\?\.\(\{\s*type:\s*["']compact_end["']\s*\}\)[\s\S]*setSDKStatus\?\.\(null\)/,
+      compactService,
+    ],
+    [
+      "TUI session contract defines compact progress controls",
+      /interface\s+AgenCCompactProgressControls/,
+      sessionTypes,
+    ],
+    [
+      "TUI session contract exports compact control installer",
+      /export\s+function\s+installCompactProgressControls/,
+      sessionTypes,
+    ],
+    [
+      "daemon session type carries compact progress controls",
+      /interface\s+AgenCTuiBridgeSession\s+extends\s+AgenCCompactProgressControls/,
+      daemonSession,
+    ],
+    [
+      "REPL installs compact progress controls on the live session",
+      /installCompactProgressControls\(session,\s*\{[\s\S]*setStreamMode[\s\S]*setResponseLength[\s\S]*onCompactProgress[\s\S]*setSDKStatus:\s*setCompactSDKStatus/,
+      repl,
+    ],
+    [
+      "REPL reuses the same compact progress handler in command context",
+      /setStreamMode,\s*\n\s*onCompactProgress,\s*\n\s*setInProgressToolUseIDs/,
+      repl,
+    ],
+    [
+      "slash compact test asserts an exact single progress lifecycle",
+      /compactLifecycle[\s\S]*toEqual\(\[[\s\S]*hooks_start[\s\S]*compact_start[\s\S]*compact_end[\s\S]*sdk_status["'],\s*status:\s*null/,
+      slashTest,
+    ],
+    [
+      "compact service test asserts cleanup failure clears status",
+      /clears status on cleanup failure[\s\S]*rejects\.toThrow\(["']cleanup failed["']\)[\s\S]*setSDKStatus\.mock\.calls/,
+      serviceTest,
+    ],
+    [
+      "daemon session test covers compact control publish and restore",
+      /publishes daemon-backed session compact controls and restores previous values/,
+      daemonTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-08 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/toolUseContext\.onCompactProgress\(\{\s*type:\s*["']compact_(?:start|end)["']/.test(compact)) {
+    failGate("GAP-TUI-08: session compact command must not emit duplicate compact lifecycle events");
+  }
+  if (/toolUseContext\.setSDKStatus\(["']compacting["']\)/.test(compact)) {
+    failGate("GAP-TUI-08: session compact command must delegate compact status lifecycle to the compact service");
+  }
+
+  pass("GAP-TUI-08: compact progress control evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "tests/slash-compact.contract.test.ts",
+    "src/services/compact/compact.test.ts",
+    "src/tui/daemon-session.contract.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-08 targeted compact progress tests failed");
+  }
+  pass("GAP-TUI-08 targeted compact progress tests passed");
 }
 
 function subsystemDirGates(label, dir) {
