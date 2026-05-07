@@ -8,5 +8,5 @@ Primary source anchors:
 
 This directory owns the MM-06 TUI memory command port:
 - `index.ts` exposes `/memory` as a local JSX command for the interactive TUI.
-- `memory.tsx` creates missing user/project memory files, opens the selected file in the editor, and reports the editor/source hint.
+- `memory.tsx` creates missing user/project memory files, opens the selected file through the argv-safe editor launcher, and reports the editor/source hint or launch failure.
 - `slash.ts` gives dispatcher/headless callers a non-throwing fallback instead of trying to render the Ink dialog.

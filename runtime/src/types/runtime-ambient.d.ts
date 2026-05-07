@@ -49,6 +49,31 @@ declare module "src/services/mcp/types.js" {
   export type ConfigScope = string;
 }
 
+declare module "cross-spawn" {
+  import type {
+    ChildProcess,
+    SpawnOptions,
+    SpawnSyncOptions,
+    SpawnSyncReturns,
+  } from "child_process";
+
+  type CrossSpawn = {
+    (
+      command: string,
+      args?: readonly string[],
+      options?: SpawnOptions,
+    ): ChildProcess;
+    sync(
+      command: string,
+      args?: readonly string[],
+      options?: SpawnSyncOptions,
+    ): SpawnSyncReturns<Buffer>;
+  };
+
+  const crossSpawn: CrossSpawn;
+  export default crossSpawn;
+}
+
 interface ObjectConstructor {
   entries<T>(o: Partial<Record<string, T[]>>): [string, T[]][];
 }

@@ -18,8 +18,12 @@
     "runtime/src/commands/memory/memory.tsx",
     "runtime/src/commands/memory/slash.ts",
     "runtime/src/commands/memory/PARITY.md",
+    "runtime/src/types/runtime-ambient.d.ts",
+    "runtime/src/utils/editor.ts",
     "runtime/src/tui/components/memory/MemoryFileSelector.tsx",
     "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx",
+    "runtime/src/tui/components/memory/path-format.ts",
+    "runtime/src/tui/components/memory/selector-options.ts",
     "runtime/src/tui/components/memory/PARITY.md"
   ],
   "testFiles": [
@@ -50,11 +54,14 @@
       "requiredBehaviors": [
         "The command clears and primes memory-file caches before rendering the selector.",
         "Selecting a memory file creates the parent config directory/file when needed, opens the editor, and reports a relative display path.",
+        "Selected memory paths are opened through the argv-safe external editor launcher instead of a shell-string command.",
         "The Learn more link uses the AgenC-owned documentation domain."
       ],
       "edgeCases": [
         "Existing files are preserved when writeFile with flag wx reports EEXIST.",
-        "EDITOR/VISUAL hints identify the active editor source."
+        "EDITOR/VISUAL hints identify the active editor source.",
+        "Shell metacharacters in memory file paths are passed as a single file path to the editor launcher.",
+        "Unavailable or failing editors report an error instead of a false success."
       ],
       "tests": [
         "runtime/src/commands/memory/memory.contract.test.tsx"
@@ -68,7 +75,9 @@
       "requiredBehaviors": [
         "The selector lists existing memory files plus missing user/project memory entries.",
         "Project memory path selection uses the MM-03 project-memory API instead of a duplicated selector-path module.",
-        "Auto-memory folders and feature-gated team memory remain folder-open options."
+        "Auto-memory folders and feature-gated team memory remain folder-open options.",
+        "The selector consumes a stable primed memory-files thenable so React Suspense does not see a fresh Promise on every render.",
+        "Pure selector-option construction remains testable without rendering the full TUI tree."
       ],
       "edgeCases": [
         "Nested imported files keep indentation and imported/dynamic descriptions.",
@@ -83,7 +92,7 @@
     {
       "id": "MM-06-04",
       "source": "src/components/memory/MemoryUpdateNotification.tsx",
-      "target": "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx",
+      "target": "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx + runtime/src/tui/components/memory/path-format.ts",
       "requiredBehaviors": [
         "The update notification displays the shortest useful path relative to HOME or cwd.",
         "The notice points users back to /memory for edits."
