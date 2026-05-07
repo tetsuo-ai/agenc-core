@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -1029,15 +1029,15 @@ export async function buildStartupEnvFromProfile(options?: {
 
   const profileManagedEnv = processEnv.AGENC_PROVIDER_PROFILE_ENV_APPLIED === '1'
 
-  // The legacy single-profile file (~/.agenc-profile.json) is a
+  // The compatibility single-profile file (~/.agenc-profile.json) is a
   // first-run / fallback mechanism. The newer plural provider-profile
   // system (`/provider` presets + activeProviderProfileId in config) is
   // applied earlier in the bootstrap via applyActiveProviderProfileFromConfig
   // and signals completion with AGENC_PROVIDER_PROFILE_ENV_APPLIED=1.
   //
   // If the plural system has already set env, trust it — do NOT overlay the
-  // legacy file. addProviderProfile() does not sync the legacy file, so a
-  // stale legacy file (e.g. openai defaults from an earlier manual setup)
+  // compatibility file. addProviderProfile() does not sync the compatibility file, so a
+  // stale compatibility file (e.g. openai defaults from an earlier manual setup)
   // would otherwise overwrite the correct plural env and surface as the
   // "banner shows gpt-4o / api.openai.com even though my saved profile is
   // Moonshot" bug.

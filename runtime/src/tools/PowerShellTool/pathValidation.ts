@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * PowerShell-specific path validation for command arguments.
  *
@@ -1594,7 +1594,7 @@ function checkPathConstraintsForStatement(
   //   - New-PSDrive root mapping (arbitrary filesystem root)
   //   - Conditional/loop statements where cd may or may not execute
   //   - Error cases where the cd target can't be statically determined
-  // For now we take the conservative approach of requiring manual approval.
+  // currently we take the conservative approach of requiring manual approval.
   //
   // Unlike BashTool which gates on `operationType !== 'read'`, we also block
   // READS (finding #27): `Set-Location ~; Get-Content ./.ssh/id_rsa` bypasses

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { PureComponent, type ReactNode } from 'react';
 import { updateLastInteractionTime } from '../../../bootstrap/state.js';
 import { stopCapturingEarlyInput } from '../../../utils/earlyInput.js';
@@ -85,7 +85,7 @@ type Props = {
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter;
   // Dispatch a keyboard event through the DOM tree. Called for each
-  // parsed key alongside the legacy EventEmitter path.
+  // parsed key alongside the compatibility EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void;
 };
 
@@ -118,7 +118,7 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE;
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null;
-  // Default to readable-mode stdin (legacy Ink behavior). The data-mode path
+  // Default to readable-mode stdin (compatibility Ink behavior). The data-mode path
   // is kept as an explicit opt-in because some terminals can enter a state
   // where startup input appears frozen when data mode is the default.
   stdinMode: 'readable' | 'data' = process.env.AGENC_USE_DATA_STDIN === '1' || process.env.AGENC_USE_READABLE_STDIN === '0' ? 'data' : 'readable';

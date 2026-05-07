@@ -25,7 +25,7 @@ export type MemoryType = (typeof MEMORY_TYPES)[number]
 
 /**
  * Parse a raw frontmatter value into a MemoryType.
- * Invalid or missing values return undefined — legacy files without a
+ * Invalid or missing values return undefined — compatibility files without a
  * `type:` field keep working, files with any types degrade gracefully.
  */
 export function parseMemoryType(raw: any): MemoryType | undefined {

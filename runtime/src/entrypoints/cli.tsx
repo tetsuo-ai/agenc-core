@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import {
   applyProfileEnvToProcessEnv,
@@ -208,7 +208,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Fast-path for `agenc remote-control` (also accepts legacy remote/sync/bridge aliases):
+  // Fast-path for `agenc remote-control` (also accepts compatibility remote/sync/bridge aliases):
   // serve local machine as bridge environment.
   // feature() must stay inline for build-time dead code elimination;
   // isBridgeEnabled() checks the runtime GrowthBook gate.

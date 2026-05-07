@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   type AnsiCode,
   ansiCodesToString,
@@ -821,7 +821,7 @@ function needsWidthCompensation(char: string): boolean {
   const cp = char.codePointAt(0)
   if (cp === undefined) return false
   // U+1FA70-U+1FAFF: Symbols and Pictographs Extended-A (Unicode 12.0-15.0)
-  // U+1FB00-U+1FBFF: Symbols for Legacy Computing (Unicode 13.0)
+  // U+1FB00-U+1FBFF: Symbols for Compatibility Computing (Unicode 13.0)
   if ((cp >= 0x1fa70 && cp <= 0x1faff) || (cp >= 0x1fb00 && cp <= 0x1fbff)) {
     return true
   }

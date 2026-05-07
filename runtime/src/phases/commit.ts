@@ -2,7 +2,7 @@
  * Phase 6 — Commit.
  *
  * Mirrors agenc `query.ts:1192-1465` (iteration tail) + 1643-1836
- * (terminal commit). Responsibilities per TODO.MD T5-B line 974:
+ * (terminal commit). Responsibilities per Follow-up.MD T5-B line 974:
  *
  *   1. **Append history** — ensure all iteration outputs (assistant
  *      message, tool results, attachments) are in `state.messages`.

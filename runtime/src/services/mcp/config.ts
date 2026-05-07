@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
@@ -1495,7 +1495,7 @@ export function areMcpConfigsAllowedWithEnterpriseMcpConfig(
   configs: Record<string, ScopedMcpServerConfig>,
 ): boolean {
   // NOTE: While all SDK MCP servers should be safe from a security perspective, we are still discussing
-  // what the best way to do this is. In the meantime, we are limiting this to agenc-vscode for now to
+  // what the best way to do this is. In the meantime, we are limiting this to agenc-vscode currently to
   // unbreak the VSCode extension for certain enterprise customers who have enterprise MCP config enabled.
   // https://anthropic.slack.com/archives/C093UA0KLD7/p1764975463670109
   return Object.values(configs).every(

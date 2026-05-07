@@ -1,7 +1,7 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Attributes } from '@opentelemetry/api'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from 'src/bootstrap/state.js'
 import { getOauthAccountInfo } from './auth.js'
 import { getOrCreateUserID } from './config.js'
@@ -41,7 +41,7 @@ export function getTelemetryAttributes(): Attributes {
     attributes['session.id'] = sessionId
   }
   if (shouldIncludeAttribute('OTEL_METRICS_INCLUDE_VERSION')) {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     attributes['app.version'] = MACRO.VERSION
   }
 

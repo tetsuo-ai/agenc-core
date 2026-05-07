@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { getPluginErrorMessage, type PluginError } from '../../types/plugin.js';
 export function formatErrorMessage(error: PluginError): string {
   switch (error.type) {

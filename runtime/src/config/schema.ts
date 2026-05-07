@@ -338,7 +338,7 @@ export interface TuiConfig {
  * ConfigStore-backed `permissions` block acts as a session-transient
  * overlay or a TOML-side mirror of the same shape.
  *
- * TODO T11-closeout: reconcile ConfigStore.permissions vs settings-file
+ * Follow-up T11-closeout: reconcile ConfigStore.permissions vs settings-file
  * permissions precedence (evaluator currently prefers settings-file
  * sources; top-level config block is reserved for overlays).
  */

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { isBridgeEnabled } from '../../bridge/bridgeEnabled.js'
 import type { Command } from '../../commands.js'

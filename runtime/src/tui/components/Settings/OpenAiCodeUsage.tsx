@@ -5,11 +5,11 @@ import { useTerminalSize } from '../../hooks/useTerminalSize'
 import { Box, Text } from '../../ink.js'
 import { useKeybinding } from '../../keybindings/useKeybinding.js'
 import {
-  buildCodexUsageRows,
-  fetchCodexUsage,
-  formatCodexPlanType,
-  type CodexUsageData,
-  type CodexUsageRow,
+  buildCodexUsageRows as buildOpenAiCodeUsageRows, // branding-scan: allow provider API name
+  fetchCodexUsage as fetchOpenAiCodeUsage, // branding-scan: allow provider API name
+  formatCodexPlanType as formatOpenAiCodePlanType, // branding-scan: allow provider API name
+  type CodexUsageData as OpenAiCodeUsageData, // branding-scan: allow provider API name
+  type CodexUsageRow as OpenAiCodeUsageRow, // branding-scan: allow provider API name
 } from '../../../services/api/openAiCodeUsage.js'
 import { formatResetText } from '../../../utils/format' // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
@@ -17,19 +17,19 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint'
 import { Byline } from '../design-system/Byline'
 import { ProgressBar } from '../design-system/ProgressBar'
 
-type CodexUsageLimitBarProps = {
+type OpenAiCodeUsageLimitBarProps = {
   label: string
   usedPercent: number
   resetsAt?: string
   maxWidth: number
 }
 
-function CodexUsageLimitBar({
+function OpenAiCodeUsageLimitBar({
   label,
   usedPercent,
   resetsAt,
   maxWidth,
-}: CodexUsageLimitBarProps): React.ReactNode {
+}: OpenAiCodeUsageLimitBarProps): React.ReactNode {
   const normalizedUsedPercent = Math.max(0, Math.min(100, usedPercent))
   const usedText = `${Math.floor(normalizedUsedPercent)}% used`
   const resetText = resetsAt
@@ -76,10 +76,10 @@ function CodexUsageLimitBar({
   )
 }
 
-function CodexUsageTextRow({
+function OpenAiCodeUsageTextRow({
   label,
   value,
-}: Extract<CodexUsageRow, { kind: 'text' }>): React.ReactNode {
+}: Extract<OpenAiCodeUsageRow, { kind: 'text' }>): React.ReactNode {
   if (!value) {
     return <Text bold>{label}</Text>
   }
@@ -92,8 +92,8 @@ function CodexUsageTextRow({
   )
 }
 
-export function CodexUsage(): React.ReactNode {
-  const [usage, setUsage] = useState<CodexUsageData | null>(null)
+export function OpenAiCodeUsage(): React.ReactNode {
+  const [usage, setUsage] = useState<OpenAiCodeUsageData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const { columns } = useTerminalSize()
@@ -105,10 +105,10 @@ export function CodexUsage(): React.ReactNode {
     setError(null)
 
     try {
-      setUsage(await fetchCodexUsage())
+      setUsage(await fetchOpenAiCodeUsage())
     } catch (err) {
       logError(err as Error)
-      setError(err instanceof Error ? err.message : 'Failed to load Codex usage')
+      setError(err instanceof Error ? err.message : 'Failed to load code usage')
     } finally {
       setIsLoading(false)
     }
@@ -156,7 +156,7 @@ export function CodexUsage(): React.ReactNode {
   if (!usage) {
     return (
       <Box flexDirection="column" gap={1}>
-        <Text dimColor>Loading Codex usage data…</Text>
+        <Text dimColor>Loading code usage data…</Text>
         <Text dimColor>
           <ConfigurableShortcutHint
             action="confirm:no"
@@ -169,20 +169,20 @@ export function CodexUsage(): React.ReactNode {
     )
   }
 
-  const rows = buildCodexUsageRows(usage.snapshots)
-  const planType = formatCodexPlanType(usage.planType)
+  const rows = buildOpenAiCodeUsageRows(usage.snapshots)
+  const planType = formatOpenAiCodePlanType(usage.planType)
 
   return (
     <Box flexDirection="column" gap={1} width="100%">
       {planType ? <Text dimColor>Plan: {planType}</Text> : null}
 
       {rows.length === 0 ? (
-        <Text dimColor>Codex usage data is not available for this account.</Text>
+        <Text dimColor>Code usage data is not available for this account.</Text>
       ) : null}
 
       {rows.map((row, index) =>
         row.kind === 'window' ? (
-          <CodexUsageLimitBar
+          <OpenAiCodeUsageLimitBar
             key={`${row.label}-${index}`}
             label={row.label}
             usedPercent={row.usedPercent}
@@ -190,7 +190,7 @@ export function CodexUsage(): React.ReactNode {
             maxWidth={maxWidth}
           />
         ) : (
-          <CodexUsageTextRow
+          <OpenAiCodeUsageTextRow
             key={`${row.label}-${index}`}
             label={row.label}
             value={row.value}

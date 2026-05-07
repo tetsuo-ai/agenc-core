@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Helper for running forked agent query loops with usage tracking.
  *

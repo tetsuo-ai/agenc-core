@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // CCR session polling for /ultraplan. Waits for an approved ExitPlanMode
 // tool_result, then extracts the plan text. Uses pollRemoteSessionEvents
 // (shared with RemoteAgentTask) for pagination + typed SDKMessage[].
@@ -10,9 +10,9 @@ import type {
   ToolResultBlockParam,
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { SDKMessage } from '../../entrypoints/agentSdkTypes.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../tools/ExitPlanModeTool/constants.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { sleep } from '../sleep.js'

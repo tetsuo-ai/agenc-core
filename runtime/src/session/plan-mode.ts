@@ -9,14 +9,14 @@
  *
  * T11 Wave 2 (Agent C): `isPlanMode` now consults the real
  * `PermissionMode` via `turnContext.sessionConfiguration?.permissionContext`
- * first, falling back to the legacy `collaborationMode.model === "plan"`
+ * first, falling back to the compatibility `collaborationMode.model === "plan"`
  * gate so existing callers keep working.
  *
  * T12 Wave 4-C: `startPlanItem` / `pushPlanDelta` /
  * `completePlanItemWithText` now emit typed `plan_started` /
  * `plan_delta` / `plan_item_completed` EventMsg variants alongside the
- * legacy `[plan:...]`-prefixed `agent_message`/`agent_message_delta`
- * events. The legacy emits are retained as a back-compat pass-through
+ * compatibility `[plan:...]`-prefixed `agent_message`/`agent_message_delta`
+ * events. The compatibility emits are retained as a back-compat pass-through
  * for callers that were observing the pre-T12 surface (e.g. rollouts,
  * non-TUI sidecars) — TUI consumers should filter on the new typed
  * variants. `emitPlanExited` is a new helper the `ExitPlanMode` tool
@@ -40,7 +40,7 @@
  *
  * The event surface extends the AgenC EventMsg union with dedicated
  * `plan_started` / `plan_delta` / `plan_item_completed` / `plan_exited`
- * variants (T12 Wave 4-C). The legacy `[plan:...]`-prefixed
+ * variants (T12 Wave 4-C). The compatibility `[plan:...]`-prefixed
  * `agent_message_delta` / `agent_message` emits are retained as a
  * back-compat pass-through so pre-T12 consumers (rollouts, non-TUI
  * sidecars) keep seeing the stream boundary.
@@ -345,7 +345,7 @@ function startPlanItem(
     });
   }
 
-  // Legacy `[plan:…]` prefix — retained for pre-T12 consumers so
+  // Compatibility `[plan:…]` prefix — retained for pre-T12 consumers so
   // rollouts still see the stream boundary.
   emitLegacyPlanSignal(session, {
     type: "agent_message_delta",
@@ -381,7 +381,7 @@ function pushPlanDelta(
     });
   }
 
-  // Legacy `agent_message_delta` pass-through for pre-T12 consumers.
+  // Compatibility `agent_message_delta` pass-through for pre-T12 consumers.
   emitLegacyPlanSignal(session, {
     type: "agent_message_delta",
     payload: { delta },
@@ -417,7 +417,7 @@ function completePlanItemWithText(
     });
   }
 
-  // Legacy `[plan:…] <text>` agent_message pass-through.
+  // Compatibility `[plan:…] <text>` agent_message pass-through.
   emitLegacyPlanSignal(session, {
     type: "agent_message",
     payload: { message: `[plan:${planItemId}] ${text}` },
@@ -428,8 +428,8 @@ function completePlanItemWithText(
  * Emit a `plan_exited` EventMsg (T12 Wave 4-C). Invoked by the
  * `ExitPlanMode` tool and the `/plan` slash-command leave path so TUI
  * consumers can close the plan-progress surface. Pre-T12 consumers see
- * no legacy counterpart here — the `warning:mode_exited_plan` event
- * the tool already emits covers the legacy signal.
+ * no compatibility counterpart here — the `warning:mode_exited_plan` event
+ * the tool already emits covers the compatibility signal.
  */
 export function emitPlanExited(session: Session, ctx: TurnContext): void {
   const maybeEmit = (session as unknown as {

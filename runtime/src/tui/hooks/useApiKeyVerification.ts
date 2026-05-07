@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useState } from 'react'
 import { getIsNonInteractiveSession } from '../../bootstrap/state'
 import { verifyApiKey } from '../../services/api/anthropic' // branding-scan: allow upstream mirror import path pending purge

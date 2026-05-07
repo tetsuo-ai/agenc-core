@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import { BackgroundTasksDialog } from '../../tui/components/tasks/BackgroundTasksDialog.js';

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import chalk from 'chalk';
 import { randomBytes } from 'crypto';
 import { copyFile, mkdir, readFile, writeFile } from 'fs/promises';

@@ -7,7 +7,7 @@
  * discriminant (matching agenc runtime's serde `tag="type" content="payload"`
  * shape). One RolloutItem per line.
  *
- * On-disk legacy aliases accepted for backward compatibility:
+ * On-disk compatibility aliases accepted for backward compatibility:
  *   - `task_started`  → `turn_started`
  *   - `task_complete` → `turn_complete`
  *
@@ -123,7 +123,7 @@ export const KNOWN_ROLLOUT_TYPES = Object.freeze(
 );
 
 /**
- * Legacy-alias remapping read on deserialization so older rollouts
+ * Compatibility-alias remapping read on deserialization so older rollouts
  * from earlier AgenC versions still parse. agenc runtime retained `task_*`
  * aliases for the same reason.
  */
@@ -154,7 +154,7 @@ export function serializeRolloutItem(item: RolloutItem): string {
  * blank lines. Throws on malformed JSON; callers handle with
  * I-24 truncation-on-corrupt-tail logic.
  *
- * Applies legacy aliases on the embedded event_msg variant
+ * Applies compatibility aliases on the embedded event_msg variant
  * (task_started → turn_started, etc).
  *
  * I-26: unknown top-level types are wrapped in the `unknown` shim

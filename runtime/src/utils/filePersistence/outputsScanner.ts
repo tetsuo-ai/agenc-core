@@ -66,7 +66,7 @@ export async function findModifiedFiles(
   // Use recursive flag to get all entries in one call
   let entries: Awaited<ReturnType<typeof fs.readdir>>
   try {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     entries = await fs.readdir(outputsDir, {
       withFileTypes: true,
       recursive: true,
@@ -85,7 +85,7 @@ export async function findModifiedFiles(
     if (entry.isFile()) {
       // entry.parentPath is available in Node 20+, fallback to entry.path for older versions
       const parentPath = getEntryParentPath(entry, outputsDir)
-      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       filePaths.push(path.join(parentPath, entry.name))
     }
   }

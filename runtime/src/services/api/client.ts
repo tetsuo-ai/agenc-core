@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import ProviderSdk, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
 import {
@@ -289,7 +289,7 @@ export async function getproviderClient({
       importRuntimeModule('@anthropic-ai/vertex-sdk'),
       importRuntimeModule('google-auth-library'),
     ])
-    // TODO: Cache either GoogleAuth instance or AuthClient to improve performance
+    // Follow-up: Cache either GoogleAuth instance or AuthClient to improve performance
     // Currently we create a new GoogleAuth instance for every getproviderClient() call
     // This could cause repeated authentication flows and metadata server checks
     // However, caching needs careful handling of:

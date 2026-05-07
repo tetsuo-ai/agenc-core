@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';

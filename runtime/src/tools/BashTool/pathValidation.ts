@@ -641,7 +641,7 @@ function validateCommandPaths(
   // - Special cd targets (cd ~, cd -, cd with no args)
   // - Multiple cd commands in sequence
   // - Error cases where cd target cannot be determined
-  // For now, we take the conservative approach of requiring manual approval.
+  // currently, we take the conservative approach of requiring manual approval.
   if (compoundCommandHasCd && operationType !== 'read') {
     return {
       behavior: 'ask',
@@ -1275,7 +1275,7 @@ export function stripWrappersFromArgv(argv: string[]): string[] {
       a = a.slice(i + 1)
     } else if (a[0] === 'nice') {
       // SECURITY (PR #21503 round 3): mirror checkSemantics — handle bare
-      // `nice cmd` and legacy `nice -N cmd`, not just `nice -n N cmd`.
+      // `nice cmd` and compatibility `nice -N cmd`, not just `nice -n N cmd`.
       // Previously only `-n N` was stripped: `nice rm /outside` →
       // baseCmd='nice' → passthrough → /outside never path-validated.
       if (a[1] === '-n' && a[2] && /^-?\d+$/.test(a[2]))

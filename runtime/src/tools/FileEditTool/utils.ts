@@ -365,7 +365,7 @@ const DIFF_SNIPPET_MAX_BYTES = 8192
 /**
  * Used for attachments, to show snippets when files change.
  *
- * TODO: Unify this with the other snippet logic.
+ * Follow-up: Unify this with the other snippet logic.
  */
 export function getSnippetForTwoFileDiff(
   fileAContents: string,

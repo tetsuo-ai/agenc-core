@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { z } from 'zod/v4'
@@ -320,7 +320,7 @@ function suggestionForPrefix(prefix: string): PermissionUpdate[] {
 }
 
 /**
- * Extract prefix from legacy :* syntax (e.g., "npm:*" -> "npm")
+ * Extract prefix from compatibility :* syntax (e.g., "npm:*" -> "npm")
  * Delegates to shared implementation.
  */
 export const permissionRuleExtractPrefix = sharedPermissionRuleExtractPrefix
@@ -521,7 +521,7 @@ export function stripSafeWrappers(command: string): string {
     // SECURITY: keep in sync with checkSemantics wrapper-strip (ast.ts
     // ~:1990-2080) AND stripWrappersFromArgv (pathValidation.ts ~:1260).
     // Previously this pattern REQUIRED `-n N`; checkSemantics already handled
-    // bare `nice` and legacy `-N`. Asymmetry meant checkSemantics exposed the
+    // bare `nice` and compatibility `-N`. Asymmetry meant checkSemantics exposed the
     // wrapped command to semantic checks but deny-rule matching and the cd+git
     // gate saw the wrapper name. `nice rm -rf /` with Bash(rm:*) deny became
     // ask instead of deny; `cd evil && nice git status` skipped the bare-repo
@@ -1049,7 +1049,7 @@ export const bashToolCheckPermission = (
   // 2. Find all matching rules (prefix or exact)
   // SECURITY FIX: Check Bash deny/ask rules BEFORE path constraints to prevent bypass
   // via absolute paths outside the project directory (HackerOne report)
-  // When AST-parsed, the subcommand is already atomic — skip the legacy
+  // When AST-parsed, the subcommand is already atomic — skip the compatibility
   // splitCommand re-check that misparses mid-word # as compound.
   const { matchingDenyRules, matchingAskRules, matchingAllowRules } =
     matchingRulesForInput(input, toolPermissionContext, 'prefix', {
@@ -1189,7 +1189,7 @@ export async function checkCommandAndSuggestRules(
 
   // 3. Ask for permission if command injection is detected. Skip when the
   // AST parse already succeeded — tree-sitter has verified there are no
-  // hidden substitutions or structural tricks, so the legacy regex-based
+  // hidden substitutions or structural tricks, so the compatibility regex-based
   // validators (backslash-escaped operators, etc.) would only add FPs.
   if (
     !astParseSucceeded &&
@@ -1651,7 +1651,7 @@ export async function bashToolHasPermission(
   // we need to decide whether splitCommand's output can be trusted.
   //
   // When tree-sitter WASM is unavailable OR the injection check is disabled
-  // via env var, we fall back to the old path (legacy gate at ~1370 runs).
+  // via env var, we fall back to the old path (compatibility gate at ~1370 runs).
   const injectionCheckDisabled = isEnvTruthy(
     process.env.AGENC_DISABLE_COMMAND_INJECTION_CHECK,
   )
@@ -1676,8 +1676,8 @@ export async function bashToolHasPermission(
   let shadowLegacySubs: string[] | undefined
 
   // Shadow-test tree-sitter: record its verdict, then force parse-unavailable
-  // so the legacy path stays authoritative. parseCommand stays gated on
-  // TREE_SITTER_BASH (not SHADOW) so legacy internals remain pure regex.
+  // so the compatibility path stays authoritative. parseCommand stays gated on
+  // TREE_SITTER_BASH (not SHADOW) so compatibility internals remain pure regex.
   // One event per bash call captures both divergence AND unavailability
   // reasons; module-load failures are separately covered by the
   // session-scoped tengu_tree_sitter_load event.
@@ -1710,7 +1710,7 @@ export async function bashToolHasPermission(
       killswitchOff: !shadowEnabled,
       cmdOverLength: input.command.length > 10000,
     })
-    // Always force legacy — shadow mode is observational only.
+    // Always force compatibility — shadow mode is observational only.
     astResult = { kind: 'parse-unavailable' }
     astRoot = null
   }
@@ -1782,9 +1782,9 @@ export async function bashToolHasPermission(
     astCommands = astResult.commands
   }
 
-  // Legacy shell-quote pre-check. Only reached on 'parse-unavailable'
+  // Compatibility shell-quote pre-check. Only reached on 'parse-unavailable'
   // (tree-sitter not loaded OR TREE_SITTER_BASH feature gated off). Falls
-  // through to the full legacy path below.
+  // through to the full compatibility path below.
   if (astResult.kind === 'parse-unavailable') {
     logForDebugging(
       'bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path',
@@ -1977,7 +1977,7 @@ export async function bashToolHasPermission(
       // validated structure (backticks/$() in redirect targets would have
       // returned too-complex). Matches gating at ~1481, ~1706, ~1755.
       // Avoids FP: `find -exec {} \; | grep x` tripping on backslash-;.
-      // bashCommandIsSafe runs the full legacy regex battery (~20 patterns) —
+      // bashCommandIsSafe runs the full compatibility regex battery (~20 patterns) —
       // only call it when we'll actually use the result.
       const safetyResult =
         astSubcommands === null
@@ -2055,7 +2055,7 @@ export async function bashToolHasPermission(
     return commandOperatorResult
   }
 
-  // SECURITY: Legacy misparsing gate. Only runs when the tree-sitter module
+  // SECURITY: Compatibility misparsing gate. Only runs when the tree-sitter module
   // is not loaded. Timeout/abort is fail-closed via too-complex (returned
   // early above), not routed here. When the AST parse succeeded,
   // astSubcommands is non-null and we've already validated structure; this
@@ -2136,7 +2136,7 @@ export async function bashToolHasPermission(
     cwdMingw,
   )
 
-  // CC-643: Cap subcommand fanout. Only the legacy splitCommand path can
+  // CC-643: Cap subcommand fanout. Only the compatibility splitCommand path can
   // explode — the AST path returns a bounded list (astSubcommands !== null)
   // or short-circuits to 'too-complex' for structures it can't represent.
   if (
@@ -2319,7 +2319,7 @@ export async function bashToolHasPermission(
   // command — but only if no command injection is possible. When the AST
   // parse succeeded, each subcommand is already known-safe (no hidden
   // substitutions, no structural tricks); the per-subcommand re-check is
-  // redundant. When on the legacy path, re-run bashCommandIsSafeAsync per sub.
+  // redundant. When on the compatibility path, re-run bashCommandIsSafeAsync per sub.
   let hasPossibleCommandInjection = false
   if (
     astSubcommands === null &&

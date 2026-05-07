@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'

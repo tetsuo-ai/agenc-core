@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'; import * as React from 'react';
 import type { Message, ProgressMessage } from 'src/types/message.js';
 import { extractTag } from 'src/utils/messages.js';

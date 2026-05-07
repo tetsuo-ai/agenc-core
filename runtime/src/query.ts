@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import type {
   ToolResultBlockParam,
@@ -592,7 +592,7 @@ async function* queryLoop(
       }
     }
 
-    //TODO: no need to set toolUseContext.messages during set-up since it is updated here
+    //Follow-up: no need to set toolUseContext.messages during set-up since it is updated here
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
@@ -818,7 +818,7 @@ async function* queryLoop(
               }
             }
             // Backfill tool_use inputs on a cloned message before yield so
-            // SDK stream output and transcript serialization see legacy/derived
+            // SDK stream output and transcript serialization see compatibility/derived
             // fields. The original `message` is left untouched for
             // assistantMessages.push below — it flows back to the API and
             // mutating it would break prompt caching (byte mismatch).

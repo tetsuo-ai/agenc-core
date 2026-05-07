@@ -241,7 +241,7 @@ async function executeBYOCPersistence(
 
 /**
  * Execute Cloud (1P) mode persistence.
- * TODO: Read file_id from xattr on output files. xattr-based file IDs are
+ * Follow-up: Read file_id from xattr on output files. xattr-based file IDs are
  * currently being added for 1P environments.
  */
 function executeCloudPersistence(): FilesPersistedEventData {

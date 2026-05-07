@@ -1,7 +1,7 @@
 import type {
   ComputerUseHostAdapter,
   Logger,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '@ant/computer-use-mcp/types'
 import { format } from 'util'
 import { logForDebugging } from 'src/utils/debug.js'

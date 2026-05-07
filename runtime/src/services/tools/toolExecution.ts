@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
@@ -174,7 +174,7 @@ export function classifyToolError(error: unknown): string {
 /**
  * Map a rule's origin to the documented OTel `source` vocabulary, matching
  * the interactive path's semantics (permissionLogging.ts:81): session-scoped
- * grants are temporary, on-disk grants are permanent, and user-authored
+ * grants are short-lived, on-disk grants are permanent, and user-authored
  * denies are user_reject regardless of persistence. Everything the user
  * didn't write (cliArg, policySettings, projectSettings, flagSettings) is
  * config.
@@ -502,7 +502,7 @@ function streamedCheckPermissionsAndCallTool(
   mcpServerType: McpServerType,
   mcpServerBaseUrl: ReturnType<typeof getLoggingSafeMcpBaseUrl>,
 ): AsyncIterable<MessageUpdateLazy> {
-  // This is a bit of a hack to get progress events and final results
+  // This is a bit of a workaround to get progress events and final results
   // into a single async iterable.
   //
   // Ideally the progress reporting and tool call reporting would
@@ -804,7 +804,7 @@ async function checkPermissionsAndCallTool(
     processedInput = rest as typeof processedInput
   }
 
-  // Backfill legacy/derived fields on a shallow clone so hooks/canUseTool see
+  // Backfill compatibility/derived fields on a shallow clone so hooks/canUseTool see
   // them without affecting tool.call(). SendMessageTool adds fields; file
   // tools overwrite file_path with expandPath — that mutation must not reach
   // call() because tool results embed the input path verbatim (e.g. "File

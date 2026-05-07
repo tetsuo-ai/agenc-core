@@ -3,7 +3,7 @@
  *
  * Wraps the upstream `@modelcontextprotocol/sdk` `SSEClientTransport`
  * so AgenC callers never import the SDK directly. The SDK's SSE
- * transport is the "legacy" MCP transport (pre-Streamable HTTP), but
+ * transport is the "compatibility" MCP transport (pre-Streamable HTTP), but
  * plenty of deployed servers still speak it, so we keep it supported.
  *
  * Transport contract:

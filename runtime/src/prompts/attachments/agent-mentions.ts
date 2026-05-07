@@ -7,7 +7,7 @@
  * per unique reference that resolves to an active agent definition.
  *
  * Supports both formats AgenC accepts at `:2822-2848`:
- *   1. `@agent-<type>` (legacy/manual typing)
+ *   1. `@agent-<type>` (compatibility/manual typing)
  *   2. `@"<type> (agent)"` (autocomplete-selected)
  *
  * Mentions of unknown agent types are dropped — matches AgenC's
@@ -51,7 +51,7 @@ function readActiveAgentTypes(sessionKey: object): ReadonlySet<string> {
 
 /** Match `@"<type> (agent)"` autocomplete form. */
 const QUOTED_AGENT_RE = /(^|\s)@"([\w:.@-]+) \(agent\)"/g;
-/** Match `@agent-<type>` legacy form. */
+/** Match `@agent-<type>` compatibility form. */
 const UNQUOTED_AGENT_RE = /(^|\s)@(agent-[\w:.@-]+)/g;
 
 /**

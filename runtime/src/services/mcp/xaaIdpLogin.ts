@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * XAA IdP Login — acquires an OIDC id_token from an enterprise IdP via the
  * standard authorization_code + PKCE flow, then caches it by IdP issuer.

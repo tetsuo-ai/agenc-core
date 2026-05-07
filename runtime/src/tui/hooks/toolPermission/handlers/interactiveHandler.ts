@@ -330,7 +330,7 @@ function handleInteractivePermission(
       // message formatting for its platform (Telegram markdown, iMessage
       // rich text, Discord embed). CC sends the RAW parts; server composes.
       // The old callTool('send_message', {text,content,message}) triple-key
-      // hack is gone — no more guessing which arg name each plugin takes.
+      // workaround is gone — no more guessing which arg name each plugin takes.
       const params: ChannelPermissionRequestParams = {
         request_id: channelRequestId,
         tool_name: ctx.tool.name,

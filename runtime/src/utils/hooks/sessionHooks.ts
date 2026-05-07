@@ -63,7 +63,7 @@ export type SessionHooksState = Map<string, SessionStore>
 
 /**
  * Add a command or prompt hook to the session.
- * Session hooks are temporary, in-memory only, and cleared when session ends.
+ * Session hooks are short-lived, in-memory only, and cleared when session ends.
  */
 export function addSessionHook(
   setAppState: (updater: (prev: AppState) => AppState) => void,

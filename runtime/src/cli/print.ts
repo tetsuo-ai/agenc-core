@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { feature } from 'bun:bundle'
 import { readFile, stat } from 'fs/promises'
@@ -1137,7 +1137,6 @@ function runHeadlessStreaming(
 
   // Messages for internal tracking, directly mutated by ask(). These messages
   // include Assistant, User, Attachment, and Progress messages.
-  // TODO: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
 
   // Seed the readFileState cache from the transcript (content the model saw,
@@ -1869,8 +1868,6 @@ function runHeadlessStreaming(
     idleTimeout.stop()
 
     headlessProfilerCheckpoint('run_entry')
-    // TODO(custom-tool-refactor): Should move to the init message, like browser
-
     await updateSdkMcp()
     headlessProfilerCheckpoint('after_updateSdkMcp')
 
@@ -1926,7 +1923,7 @@ function runHeadlessStreaming(
       // Extract command processing into a named function for the do-while pattern.
       // Drains the queue, batching consecutive prompt-mode commands into one
       // ask() call so messages that queued up during a long turn coalesce
-      // into a single follow-up turn instead of N separate turns.
+      // into a single subsequent turn instead of N separate turns.
       const drainCommandQueue = async () => {
         while ((command = dequeue(isMainThread))) {
           if (
@@ -2908,7 +2905,7 @@ function runHeadlessStreaming(
             void run()
           }
         } else if (message.request.subtype === 'set_permission_mode') {
-          const m = message.request // for typescript (TODO: use readonly types to avoid this)
+          const m = message.request
           setAppState(prev => ({
             ...prev,
             toolPermissionContext: handleSetPermissionMode(

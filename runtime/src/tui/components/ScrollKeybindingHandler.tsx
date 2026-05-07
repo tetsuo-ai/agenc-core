@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { type RefObject, useEffect, useRef } from 'react';
 import { useNotifications } from '../context/notifications';
 import { useCopyOnSelect, useSelectionBgColor } from '../hooks/useCopyOnSelect';
@@ -466,7 +466,7 @@ export function ScrollKeybindingHandler({
     'scroll:lineUp': () => {
       // Wheel: scrollBy accumulates into pendingScrollDelta, drained async
       // by the renderer. captureScrolledRows can't read the outgoing rows
-      // before they leave (drain is non-deterministic). Clear for now.
+      // before they leave (drain is non-deterministic). Clear currently.
       selection.clearSelection();
       const s_2 = scrollRef.current;
       // Return false (not consumed) when the ScrollBox content fits —
@@ -567,7 +567,7 @@ export function ScrollKeybindingHandler({
   //   ctrl+f → chat:killAgents moved to ctrl+x ctrl+k; no conflict
   //   g/G → printable chars: no prompt to eat them, no vim/sticky gate needed
   //
-  // TODO(search): `/`, n/N — build on Richard Kim's d94b07add4 (branch
+  // Follow-up(search): `/`, n/N — build on Richard Kim's d94b07add4 (branch
   // agenc/jump-recent-message-CEPcq). getItemY Yoga-walk + computeOrigin +
   // anchorY already solve scroll-to-index. jumpToPrevTurn is the n/N
   // template. Single-shot via OVERSCAN_ROWS=80; two-phase was tried and
@@ -585,7 +585,7 @@ export function ScrollKeybindingHandler({
 
   // Esc clears selection; any other keystroke also clears it (matches
   // native terminal behavior where selection disappears on input).
-  // Ctrl+C copies when a selection exists — needed on legacy terminals
+  // Ctrl+C copies when a selection exists — needed on compatibility terminals
   // where ctrl+shift+c sends the same byte (\x03, shift is lost) and
   // cmd+c never reaches the pty (terminal intercepts it for Edit > Copy).
   // Handled via raw useInput so we can conditionally consume: Esc/Ctrl+C
@@ -890,7 +890,7 @@ export type ModalPagerAction = 'lineUp' | 'lineDown' | 'halfPageUp' | 'halfPageD
  *
  * ctrl+u/d/b/f are the less-lineage bindings. g/G are bare letters (only
  * safe when no prompt is mounted). G arrives as input='G' shift=false on
- * legacy terminals, or input='g' shift=true on kitty-protocol terminals.
+ * compatibility terminals, or input='g' shift=true on kitty-protocol terminals.
  * Lowercase g needs the !shift guard so it doesn't also match kitty-G.
  *
  * Key-repeat: stdin coalesces held-down printables into one multi-char
@@ -936,7 +936,7 @@ export function modalPagerAction(input: string, key: Pick<Key, 'ctrl' | 'meta' |
   // Bare letters. Key-repeat batches: only act on uniform runs.
   const c = input[0];
   if (!c || input !== c.repeat(input.length)) return null;
-  // kitty sends G as input='g' shift=true; legacy as 'G' shift=false.
+  // kitty sends G as input='g' shift=true; compatibility as 'G' shift=false.
   // Check BEFORE the shift-gate so both hit 'bottom'.
   if (c === 'G' || c === 'g' && key.shift) return 'bottom';
   if (key.shift) return null;

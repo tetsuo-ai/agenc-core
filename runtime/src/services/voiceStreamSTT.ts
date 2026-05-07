@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // provider voice_stream speech-to-text client for push-to-talk.
 //
 // Only reachable in ant builds (gated by feature('VOICE_MODE') in useVoice.ts import).
@@ -264,7 +264,7 @@ export async function connectVoiceStream(
           clearTimeout(noDataTimer)
           resolveFinalize = null
           cancelNoDataTimer = null
-          // Legacy Deepgram can leave an interim in lastTranscriptText
+          // Compatibility Deepgram can leave an interim in lastTranscriptText
           // with no TranscriptEndpoint (websocket_manager.py sends
           // TranscriptChunk and TranscriptEndpoint as independent
           // channel items). All resolve triggers must promote it;

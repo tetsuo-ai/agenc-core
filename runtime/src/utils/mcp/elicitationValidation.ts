@@ -38,7 +38,7 @@ const STRING_FORMATS = {
 }
 
 /**
- * Check if schema is a single-select enum (either legacy `enum` format or new `oneOf` format)
+ * Check if schema is a single-select enum (either compatibility `enum` format or new `oneOf` format)
  */
 export const isEnumSchema = (
   schema: PrimitiveSchemaDefinition,
@@ -99,7 +99,7 @@ export function getMultiSelectLabel(
 }
 
 /**
- * Get enum values from EnumSchema (handles both legacy `enum` and new `oneOf` formats)
+ * Get enum values from EnumSchema (handles both compatibility `enum` and new `oneOf` formats)
  */
 export function getEnumValues(schema: EnumSchema): string[] {
   if ('oneOf' in schema) {

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import memoize from 'lodash-es/memoize.js'
 import { refreshAndGetAwsCredentials } from '../auth.js'
 import { getAWSRegion, isEnvTruthy } from '../envUtils.js'

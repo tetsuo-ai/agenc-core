@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { StdoutMessage } from 'src/entrypoints/sdk/controlTypes.js'
 import { CCRClient } from '../cli/transports/ccrClient.js'
 import type { HybridTransport } from '../cli/transports/HybridTransport.js'
@@ -164,7 +164,7 @@ export async function createV2ReplTransport(opts: {
 
   // Auth header builder. If getAuthToken is provided, read from it
   // (per-instance, multi-session safe). Otherwise write ingressToken to
-  // the process-wide env var (legacy single-session path — CCRClient's
+  // the process-wide env var (compatibility single-session path — CCRClient's
   // default getAuthHeaders reads it via getSessionIngressAuthHeaders).
   let getAuthHeaders: (() => Record<string, string>) | undefined
   if (getAuthToken) {

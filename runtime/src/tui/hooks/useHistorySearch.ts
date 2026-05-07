@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -272,7 +272,7 @@ export function useHistorySearch(
   // Backward-compat bridge: PromptInput doesn't yet wire handleKeyDown to
   // <Box onKeyDown>. Subscribe via useInput and adapt InputEvent →
   // KeyboardEvent until the consumer is migrated (separate PR).
-  // TODO(onKeyDown-migration): remove once PromptInput passes handleKeyDown.
+  // Follow-up(onKeyDown-migration): remove once PromptInput passes handleKeyDown.
   useInput(
     (_input, _key, event) => {
       handleKeyDown(new KeyboardEvent(event.keypress))

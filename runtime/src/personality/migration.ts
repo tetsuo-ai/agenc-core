@@ -3,7 +3,7 @@
  * config editing, thread-store listing, and startup bootstrap primitives.
  *
  * Shape difference from upstream:
- *   - AgenC persists current config as `config.toml`; legacy `config.json`
+ *   - AgenC persists current config as `config.toml`; compatibility `config.json`
  *     is migrated through the existing config edit path before writing.
  *   - AgenC threads are scoped to the resolved project directory, so the
  *     caller provides the startup cwd and project-root markers.

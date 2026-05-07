@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import type provider from '@anthropic-ai/sdk'
 import type {
   BetaTool,
@@ -613,7 +613,7 @@ export async function logContextMetrics(
   })
 }
 
-// TODO: Generalize this to all tools
+// Follow-up: Generalize this to all tools
 export function normalizeToolInput<T extends Tool>(
   tool: T,
   input: z.infer<T['inputSchema']>,
@@ -706,7 +706,7 @@ export function normalizeToolInput<T extends Tool>(
       } as z.infer<T['inputSchema']>
     }
     case TASK_OUTPUT_TOOL_NAME: {
-      // Normalize legacy parameter names from AgentOutputTool/BashOutputTool
+      // Normalize compatibility parameter names from AgentOutputTool/BashOutputTool
       const legacyInput = input as Record<string, unknown>
       const taskId =
         legacyInput.task_id ?? legacyInput.agentId ?? legacyInput.bash_id

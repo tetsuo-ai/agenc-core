@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures'
 import * as React from 'react'
 import { DEFAULT_CODEX_BASE_URL } from '../../services/api/providerConfig'
@@ -57,7 +57,7 @@ import {
 } from './CustomSelect/select'
 import { Pane } from './design-system/Pane'
 import TextInput from './TextInput'
-import { useCodexOAuthFlow } from './useCodexOAuthFlow'
+import { useOpenAiCodeOAuthFlow } from './useOpenAiCodeOAuthFlow'
 
 export type ProviderManagerResult = {
   action: 'saved' | 'cancelled' | 'activated'
@@ -362,7 +362,7 @@ function CodexOAuthSetup({
   }, [onConfigured])
   useKeybinding('confirm:no', onBack, [onBack])
 
-  const status = useCodexOAuthFlow({
+  const status = useOpenAiCodeOAuthFlow({
     onAuthenticated: handleAuthenticated,
   })
 
@@ -1321,7 +1321,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
     const canUseCodexOAuth = !isBareMode()
     // Providers sorted alphabetically by label. `Custom` is pinned to the end
     // because it's the catch-all / escape hatch — users scanning the list
-    // should always find known providers first. `Skip for now` (first-run
+    // should always find known providers first. `Skip currently` (first-run
     // only) comes last, after Custom.
     const options = [
       {

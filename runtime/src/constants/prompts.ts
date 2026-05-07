@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { type as osType, version as osVersion, release as osRelease } from 'os'
 import { env } from '../utils/env.js'
@@ -794,7 +794,7 @@ export async function enhanceSystemPromptWithEnvDetails(
 
 /**
  * Returns instructions for using the scratchpad directory if enabled.
- * The scratchpad is a per-session directory where AgenC can write temporary files.
+ * The scratchpad is a per-session directory where AgenC can write short-lived files.
  */
 export function getScratchpadInstructions(): string | null {
   if (!isScratchpadEnabled()) {

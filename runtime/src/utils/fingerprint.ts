@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash } from 'crypto'
 import type { AssistantMessage, UserMessage } from '../types/message.js'
 
@@ -80,6 +80,6 @@ export function computeFingerprintFromMessages(
   messages: (UserMessage | AssistantMessage)[],
 ): string {
   const firstMessageText = extractFirstMessageText(messages)
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   return computeFingerprint(firstMessageText, MACRO.VERSION)
 }

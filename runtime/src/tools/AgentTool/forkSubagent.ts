@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { randomUUID } from 'crypto'
@@ -151,7 +151,7 @@ export function buildForkedMessages(
   }))
 
   // Build a single user message: all placeholder tool_results + the per-child directive
-  // TODO(smoosh): this text sibling creates a [tool_result, text] pattern on the wire
+  // Follow-up(smoosh): this text sibling creates a [tool_result, text] pattern on the wire
   // (renders as </function_results>\n\nHuman:<text>). One-off per-child construction,
   // not a repeated teacher, so low-priority. If we ever care, use smooshIntoToolResult
   // from src/utils/messages.ts to fold the directive into the last tool_result.content.

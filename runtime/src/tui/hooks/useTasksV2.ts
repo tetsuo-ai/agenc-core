@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { type FSWatcher, watch } from 'fs'
 import { useEffect, useSyncExternalStore } from 'react'
 import { useAppState, useSetAppState } from '../state/AppState.js'

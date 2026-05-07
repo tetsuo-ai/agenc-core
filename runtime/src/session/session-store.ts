@@ -528,7 +528,7 @@ export class SessionLock {
       }
       return null;
     } catch {
-      // Legacy lockfile format (pre-I-23-hardening): bare PID on a
+      // Compatibility lockfile format (pre-I-23-hardening): bare PID on a
       // single line. Parse best-effort so migrations don't strand a
       // session directory.
       const pid = Number.parseInt(raw, 10);

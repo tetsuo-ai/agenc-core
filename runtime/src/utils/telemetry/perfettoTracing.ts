@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Perfetto Tracing for AgenC (Ant-only)
  *
@@ -28,7 +28,7 @@ import { feature } from 'bun:bundle'
 import { mkdirSync, writeFileSync } from 'fs'
 import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -354,7 +354,7 @@ function emitProcessMetadata(agentInfo: AgentInfo): void {
     args: { name: agentInfo.agentName },
   })
 
-  // Thread name (same as process for now)
+  // Thread name (same as process currently)
   metadataEvents.push({
     name: 'thread_name',
     cat: '__metadata',

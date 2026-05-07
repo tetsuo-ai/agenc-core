@@ -126,7 +126,7 @@ export async function refreshOverageCreditGrantCache(): Promise<void> {
  */
 export function formatGrantAmount(info: OverageCreditGrantInfo): string | null {
   if (info.amount_minor_units == null || !info.currency) return null
-  // For now only USD; backend may expand later
+  // currently only USD; backend may expand later
   if (info.currency.toUpperCase() === 'USD') {
     const dollars = info.amount_minor_units / 100
     return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`

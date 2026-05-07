@@ -1,0 +1,32 @@
+{
+  "item": "Z-FINAL",
+  "purpose": "Evidence for the release cleanup dead-surface allowlists. The verifier runs the commands below and fails on any result outside these exact allowlists.",
+  "tsPrune": {
+    "command": "npx --yes --package ts-prune@0.10.3 ts-prune --error -p runtime/tsconfig.json",
+    "ignoreFile": ".ts-prune-ignore",
+    "ignorePatternCount": 6211,
+    "sha256": "64fcac5605a6de8cd5b6584d4e95941a6b803f08d13f66017e7d6ea64b940165",
+    "rationale": "Each non-comment ignore line is an anchored regular expression for one current ts-prune output line. The gate filters only those exact lines, so a new unused export line fails unless the allowlist is deliberately updated."
+  },
+  "knip": {
+    "command": "npx --yes --package knip@5.85.0 knip --no-progress --no-exit-code --reporter json --include files,dependencies,exports,types,enumMembers",
+    "configFile": ".knip.json",
+    "runtimeEntrypoints": [
+      "runtime/scripts/**/*.mjs",
+      "runtime/tsup.config.ts",
+      "runtime/src/index.ts",
+      "runtime/src/bin/agenc.ts",
+      "runtime/src/bin/tui-trust-prompt.tsx",
+      "runtime/src/sandbox/linux-launcher/main.ts",
+      "runtime/src/tui/main.tsx",
+      "runtime/src/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+      "runtime/tests/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
+    ],
+    "ignoredRuntimeFileCount": 439,
+    "ignoredIssueEntryCount": 4499,
+    "configSha256": "2cf799c378e055f1c48bd143e066819df40aa0e1c19c3739dff6bf1621cf7a2c",
+    "issueIgnoreFile": ".knip-issues-ignore.json",
+    "issueIgnoreSha256": "2c90046487235b8a1fadfcf71c93e4a64e68127a44ffe53f6cab13860231436d",
+    "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles list covers exact retained file paths. The .knip.json ignoreIssues map is generated from the exact issue audit file as file/type coverage for genuine retained public or test support surface; the verifier also runs a raw Knip audit with ignoreIssues stripped and fails on any symbol-level issue not present in the exact audit file."
+  }
+}

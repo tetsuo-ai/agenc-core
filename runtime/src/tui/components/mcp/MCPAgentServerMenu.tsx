@@ -62,7 +62,7 @@ export function MCPAgentServerMenu({
     const controller = new AbortController();
     authAbortControllerRef.current = controller;
     try {
-      // Create a temporary config for OAuth
+      // Create a short-lived config for OAuth
       const tempConfig = {
         type: agentServer.transport as 'http' | 'sse',
         url: agentServer.url

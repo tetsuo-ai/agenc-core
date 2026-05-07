@@ -1,8 +1,8 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures'
 import memoize from 'lodash-es/memoize.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getOutputStyleDirStyles } from '../outputStyles/loadOutputStylesDir.js'
 import type { OutputStyle } from '../utils/config.js'
 import { getCwd } from '../utils/cwd.js'
@@ -73,7 +73,7 @@ In order to encourage learning, ask the human to contribute 2-10 line code piece
 - Business logic with multiple valid approaches  
 - Key algorithms or interface definitions
 
-**TodoList Integration**: If using a TodoList for the overall task, include a specific todo item like "Request human input on [specific decision]" when planning to request human input. This ensures proper task tracking. Note: TodoList is not required for all tasks.
+**TodoList Integration**: If using a TodoList for the overall task, include a specific Follow-up item like "Request human input on [specific decision]" when planning to request human input. This ensures proper task tracking. Note: TodoList is not required for all tasks.
 
 Example TodoList flow:
    ✓ "Set up component structure with placeholder for logic"
@@ -149,15 +149,15 @@ export const getAllOutputStyles = memoize(async function getAllOutputStyles(
   }
 
   const managedStyles = customStyles.filter(
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     style => style.source === 'policySettings',
   )
   const userStyles = customStyles.filter(
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     style => style.source === 'userSettings',
   )
   const projectStyles = customStyles.filter(
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     style => style.source === 'projectSettings',
   )
 

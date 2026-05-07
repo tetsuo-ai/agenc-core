@@ -1,10 +1,10 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { SdkWorkflowProgress } from '../types/tools.js'
 
 type TaskStartedEvent = {

@@ -1,7 +1,7 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { basename, dirname, isAbsolute, join, sep } from 'path'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolPermissionContext } from '../tools/Tool.js'
 import { isEnvTruthy } from './envUtils.js'
 import {

@@ -14,7 +14,7 @@ export function getManagedPluginNames(): Set<string> | null {
   const names = new Set<string>()
   for (const [pluginId, value] of Object.entries(enabledPlugins)) {
     // Only plugin@marketplace boolean entries (true OR false) are
-    // protected. Legacy owner/repo array form is not.
+    // protected. Compatibility owner/repo array form is not.
     if (typeof value !== 'boolean' || !pluginId.includes('@')) {
       continue
     }

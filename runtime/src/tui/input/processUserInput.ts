@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
@@ -229,7 +229,7 @@ export async function processUserInput({
       return {
         messages: [
           ...blockingContextMessages,
-          // TODO: Make this an attachment message
+          // Follow-up: Make this an attachment message
           createSystemMessage(
             `${blockingMessage}\n\nOriginal prompt: ${inputMessage}`,
             'warning',
@@ -255,7 +255,7 @@ export async function processUserInput({
       return result
     }
 
-    // TODO: Clean this up
+    // Follow-up: Clean this up
     if (hookResult.message) {
       switch (hookResult.message.attachment.type) {
         case 'hook_success':

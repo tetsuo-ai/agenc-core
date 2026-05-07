@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import type { UUID } from 'crypto';
 import figures from 'figures';
@@ -187,7 +187,7 @@ export function ExitPlanModePermissionRequest({
   const imageAttachments = Object.values(pastedContents).filter(c => c.type === 'image');
   const hasImages = imageAttachments.length > 0;
 
-  // TODO: Delete the branch after moving to V2
+  // Follow-up: Delete the branch after moving to V2
   // Use tool name to detect V2 instead of checking input.plan, because PR #10394
   // injects plan content into input.plan for hooks/SDK, which broke the old detection
   // (see issue #10878)

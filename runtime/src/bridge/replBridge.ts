@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { randomUUID } from 'crypto'
 import {
@@ -2079,7 +2079,7 @@ async function startWorkPollLoop({
 
             // On auth_failed or fatal, backoff before polling to avoid a
             // tight poll+heartbeat loop. Fall through to the shared sleep
-            // below — it's the same capacitySignal-wrapped sleep the legacy
+            // below — it's the same capacitySignal-wrapped sleep the compatibility
             // path uses, and both need the suspension-overrun check.
             if (!needsBackoff) {
               if (exitReason === 'poll_due') {
@@ -2093,7 +2093,7 @@ async function startWorkPollLoop({
               continue
             }
           }
-          // At-capacity sleep — reached by both the legacy path (heartbeat
+          // At-capacity sleep — reached by both the compatibility path (heartbeat
           // disabled) and the heartbeat-backoff path (needsBackoff=true).
           // Merged so the suspension detector covers both; previously the
           // backoff path had no overrun check and could go straight back

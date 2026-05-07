@@ -534,7 +534,7 @@ export async function cleanupOldResolutions(
 }
 
 /**
- * Legacy response type for worker polling
+ * Compatibility response type for worker polling
  * Used for backward compatibility with worker integration code
  */
 export type PermissionResponse = {

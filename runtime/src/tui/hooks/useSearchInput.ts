@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useState } from 'react'
 import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until consumers wire handleKeyDown to <Box onKeyDown>
@@ -354,7 +354,7 @@ export function useSearchInput({
   // Backward-compat bridge: existing consumers don't yet wire handleKeyDown
   // to <Box onKeyDown>. Subscribe via useInput and adapt InputEvent →
   // KeyboardEvent until all 11 call sites are migrated (separate PRs).
-  // TODO(onKeyDown-migration): remove once all consumers pass handleKeyDown.
+  // Follow-up(onKeyDown-migration): remove once all consumers pass handleKeyDown.
   useInput(
     (_input, _key, event) => {
       handleKeyDown(new KeyboardEvent(event.keypress))

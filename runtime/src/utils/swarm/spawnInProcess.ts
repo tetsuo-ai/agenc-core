@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * In-process teammate spawning
  *
@@ -16,17 +16,17 @@
  */
 
 import sample from 'lodash-es/sample.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../bootstrap/state.js'
 import { getSpinnerVerbs } from '../../constants/spinnerVerbs.js'
 import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js'
 import type { AppState } from '../../tui/state/AppState.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { createTaskStateBase, generateTaskId } from '../../tasks/Task.js'
 import type {
   InProcessTeammateTaskState,
   TeammateIdentity,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../tasks/InProcessTeammateTask/types.js'
 import { createAbortController } from '../abortController.js'
 import { formatAgentId } from '../agentId.js'
@@ -267,7 +267,7 @@ export function killInProcessTeammate(
     killed = true
 
     // Call pending idle callbacks to unblock any waiters (e.g., engine.waitForIdle)
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     teammateTask.onIdleCallbacks?.forEach(cb => cb())
 
     // Remove from teamContext.teammates using the agentId

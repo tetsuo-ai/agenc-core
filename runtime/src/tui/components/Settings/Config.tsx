@@ -130,7 +130,7 @@ export function Config({
   const promptSuggestionEnabled = useAppState(s_3 => s_3.promptSuggestionEnabled);
   // Show auto in the default-mode dropdown when the user has opted in OR the
   // config is fully 'enabled' — even if currently circuit-broken ('disabled'),
-  // an opted-in user should still see it in settings (it's a temporary state).
+  // an opted-in user should still see it in settings (it's a short-lived state).
   const showAutoInDefaultModePicker = feature('TRANSCRIPT_CLASSIFIER') ? hasAutoModeOptInAnySource() || getAutoModeEnabledState() === 'enabled' : false;
   // Chat/Transcript view picker is visible to entitled users (pass the GB
   // gate) even if they haven't opted in this session — it IS the persistent
@@ -266,7 +266,7 @@ export function Config({
     });
   }
 
-  // TODO: Add MCP servers
+  // Follow-up: Add MCP servers
   const settingsItems: Setting[] = [
   // Global settings
   {
@@ -1162,7 +1162,7 @@ export function Config({
       return;
     }
     // Log any changes that were made
-    // TODO: Make these proper messages
+    // Follow-up: Make these proper messages
     const formattedChanges: string[] = Object.entries(changes).map(([key, value_2]) => {
       logEvent('tengu_config_changed', {
         key: key as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

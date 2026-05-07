@@ -815,7 +815,7 @@ export interface CostSidecarOpts {
   /**
    * Project directory for cross-session persistence. When set, the
    * sidecar loads/saves `cost-totals.json` under this directory. When
-   * unset, the sidecar is in-memory only (legacy behavior, tests).
+   * unset, the sidecar is in-memory only (compatibility behavior, tests).
    */
   readonly projectDir?: string;
   /** Session id stamped onto the per-session record on save. */

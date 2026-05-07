@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';

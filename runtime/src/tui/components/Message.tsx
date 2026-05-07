@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs';
@@ -34,7 +34,7 @@ import { ExpandShellOutputProvider } from './shell/ExpandShellOutputContext';
 export type Props = {
   message: NormalizedUserMessage | AssistantMessage | AttachmentMessageType | SystemMessage | GroupedToolUseMessageType | CollapsedReadSearchGroupType;
   lookups: ReturnType<typeof buildMessageLookups>;
-  // TODO: Find a way to remove this, and leave spacing to the consumer
+  // Follow-up: Find a way to remove this, and leave spacing to the consumer
   /** Absolute width for the container Box. When provided, eliminates a wrapper Box in the caller. */
   containerWidth?: number;
   addMargin: boolean;

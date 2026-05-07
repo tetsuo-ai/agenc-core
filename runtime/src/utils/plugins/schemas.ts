@@ -1,9 +1,9 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { z } from 'zod/v4'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { HooksSchema } from '../../schemas/hooks.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { McpServerConfigSchema } from '../../services/mcp/types.js'
 import { lazySchema } from '../lazySchema.js'
 
@@ -431,7 +431,7 @@ export const CommandMetadataSchema = lazySchema(() =>
 const PluginManifestCommandsSchema = lazySchema(() =>
   z.object({
     commands: z.union([
-      // TODO (future work): allow globs?
+      // Follow-up (future work): allow globs?
       RelativeCommandPath().describe(
         'Path to additional command file or skill directory (in addition to those in the commands/ directory, if it exists), relative to the plugin root',
       ),
@@ -462,7 +462,7 @@ const PluginManifestCommandsSchema = lazySchema(() =>
 const PluginManifestAgentsSchema = lazySchema(() =>
   z.object({
     agents: z.union([
-      // TODO (future work): allow globs?
+      // Follow-up (future work): allow globs?
       RelativeMarkdownPath().describe(
         'Path to additional agent file (in addition to those in the agents/ directory, if it exists), relative to the plugin root',
       ),
@@ -1157,8 +1157,8 @@ export const PluginSourceSchema = lazySchema(() =>
         'Plugin located in a subdirectory of a larger repository (monorepo). ' +
           'Only the specified subdirectory is materialized; the rest of the repo is not downloaded.',
       ),
-    // TODO (future work) gist
-    // TODO (future work) single file?
+    // Follow-up (future work) gist
+    // Follow-up (future work) single file?
   ]),
 )
 

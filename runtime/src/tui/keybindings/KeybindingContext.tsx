@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, type RefObject, useContext, useLayoutEffect, useMemo } from 'react';
 import type { Key } from '../ink.js';
@@ -204,7 +204,7 @@ export function useOptionalKeybindingContext() {
  *
  * When a context is registered, its keybindings take precedence over Global bindings.
  * This allows context-specific bindings (like ThemePicker's ctrl+t) to override
- * global bindings (like the todo toggle) when the context is active.
+ * global bindings (like the Follow-up toggle) when the context is active.
  *
  * @example
  * ```tsx

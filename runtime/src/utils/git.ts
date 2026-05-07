@@ -299,7 +299,7 @@ export function normalizeGitRemoteUrl(url: string): string | null {
     const path = urlMatch[2]
 
     // CCR git proxy URLs use format:
-    //   Legacy:  http://...@127.0.0.1:PORT/git/owner/repo       (github.com assumed)
+    //   Compatibility:  http://...@127.0.0.1:PORT/git/owner/repo       (github.com assumed)
     //   GHE:     http://...@127.0.0.1:PORT/git/ghe.host/owner/repo (host encoded in path)
     // Strip the /git/ prefix. If the first segment contains a dot, it's a
     // hostname (GitHub org names cannot contain dots). Otherwise assume github.com.
@@ -310,7 +310,7 @@ export function normalizeGitRemoteUrl(url: string): string | null {
       if (segments.length >= 3 && segments[0]!.includes('.')) {
         return proxyPath.toLowerCase()
       }
-      // 2 segments → owner/repo (legacy format, assume github.com)
+      // 2 segments → owner/repo (compatibility format, assume github.com)
       return `github.com/${proxyPath}`.toLowerCase()
     }
 

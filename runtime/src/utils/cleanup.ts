@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as fs from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -433,7 +433,7 @@ export async function cleanupOldDebugLogs(): Promise<CleanupResult> {
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 
 /**
- * Clean up old npm cache entries for legacy first-party packages.
+ * Clean up old npm cache entries for compatibility first-party packages.
  * This helps reduce disk usage since we publish many dev versions per day.
  * Only runs once per day for native-install users.
  */
@@ -468,7 +468,7 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
     const cacache = await import('cacache')
     const cutoff = startTime - ONE_DAY_MS
 
-    // Stream index entries and collect all legacy package entries.
+    // Stream index entries and collect all compatibility package entries.
     // Previous implementation used cacache.verify() which does a full
     // integrity check + GC of the ENTIRE cache — O(all content blobs).
     // On large caches this took 60+ seconds and blocked the event loop.
@@ -478,7 +478,7 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
       key: string
       time: number
     }>) {
-      if (entry.key.includes('@anthropic-ai/agenc-')) { // branding-scan: allow legacy package cache prefix
+      if (entry.key.includes('@anthropic-ai/agenc-')) { // branding-scan: allow compatibility package cache prefix
         anthropicEntries.push({ key: entry.key, time: entry.time })
       }
     }

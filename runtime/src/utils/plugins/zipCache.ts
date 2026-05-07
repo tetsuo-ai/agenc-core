@@ -220,7 +220,7 @@ export async function createZipFromDirectory(
   const visited = new Set<string>()
   await collectFilesForZip(sourceDir, '', files, visited)
 
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { zipSync } = await import('fflate')
   const zipData = zipSync(files, { level: 6 })
   logForDebugging(

@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url)
 
 export function parseYaml(input: string): unknown {
   if (typeof Bun !== 'undefined') {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     return Bun.YAML.parse(input)
   }
   return (require('js-yaml') as { load: typeof loadYaml }).load(input)

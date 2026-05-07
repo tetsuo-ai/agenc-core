@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../../ink.js';
@@ -289,7 +289,7 @@ function SpinnerWithVerbInner({
         </Box> : nextTask || effectiveTip || budgetText ?
     // IMPORTANT: we need this width="100%" to avoid an Ink bug where the
     // tip gets duplicated over and over while the spinner is running if
-    // the terminal is very small. TODO: fix this in Ink.
+    // the terminal is very small. Follow-up: fix this in Ink.
     <Box width="100%" flexDirection="column">
           {budgetText && <MessageResponse>
               <Text dimColor>{budgetText}</Text>

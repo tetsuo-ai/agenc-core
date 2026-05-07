@@ -19,7 +19,7 @@ import type { Tool } from "./_deps/tools-types.js";
  *
  * Supports transport modes selected by `transport`:
  *   - `"stdio"` (default): spawn a child process via `command` + `args`.
- *   - `"sse"`: connect to a remote server over legacy SSE at `endpoint`.
+ *   - `"sse"`: connect to a remote server over compatibility SSE at `endpoint`.
  *   - `"http"`: connect over the Streamable HTTP transport at `endpoint`.
  *   - `"websocket"` / `"ws"`: connect to a remote WebSocket endpoint.
  */

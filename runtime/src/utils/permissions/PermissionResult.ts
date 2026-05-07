@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 export type {
   PermissionAllowDecision,
   PermissionAskDecision,
@@ -8,10 +8,10 @@ export type {
   PermissionDenyDecision,
   PermissionMetadata,
   PermissionResult,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../types/permissions.js'
 
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { PermissionResult } from '../../types/permissions.js'
 
 // Helper function to get the appropriate prose description for rule behavior

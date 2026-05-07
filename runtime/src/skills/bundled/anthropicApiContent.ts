@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // Content for the agenc-api bundled skill.
 // Each .md file is inlined as a string at build time via Bun's text loader.
 
@@ -34,7 +34,7 @@ import typescriptAgenCApiToolUse from './agenc-api/typescript/agenc-api/tool-use
 // placeholders in the .md files at runtime before the skill prompt is sent.
 // After updating these constants, manually update the two files that still hardcode models:
 //   - agenc-api/SKILL.md (Current Models pricing table)
-//   - agenc-api/shared/models.md (full model catalog with legacy versions and alias mappings)
+//   - agenc-api/shared/models.md (full model catalog with compatibility versions and alias mappings)
 export const SKILL_MODEL_VARS = {
   OPUS_ID: 'claude-opus-4-6',
   OPUS_NAME: 'AgenC Opus 4.6',

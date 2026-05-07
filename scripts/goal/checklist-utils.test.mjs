@@ -10,6 +10,15 @@
 import process from "node:process";
 import { readFileSync } from "node:fs";
 import { readChecklist, parseItems, findItem, checkDependencies, statusName, STATUS, findGitWorktreeEntry, parseGitWorktreePorcelain } from "./checklist-utils.mjs";
+import {
+  collectKnipIssueTypesByFile,
+  collectKnipUnusedIssueEntries,
+  findStaleKnipIssueIgnores,
+  findUnignoredKnipIssues,
+  normalizeKnipIssueIgnoreEntries,
+  stripKnipIssueAllowlists,
+} from "./knip-issue-audit.mjs";
+import { collectIncompleteZFinalPredecessors } from "./z-final-contracts.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -47,6 +56,57 @@ assert(
   "parses multi-segment dependencies",
   gapTools01?.dependsOn.includes("GAP-TUI-02"),
   `deps=${gapTools01?.dependsOn.join(",")}`,
+);
+
+const zFinalPredecessorFixture = parseItems([
+  "- [x] **Z-01 Done predecessor** — Body.",
+  "- [-] **Z-02 Skipped predecessor** — Body.",
+  "- [x] **Z-FINAL Final cleanup** — Body. **Depends:** Z-01 Z-02.",
+].join("\n"));
+assert(
+  "Z-FINAL predecessor contract treats skipped as incomplete",
+  collectIncompleteZFinalPredecessors(zFinalPredecessorFixture).map((item) => item.id).join(",") === "Z-02",
+);
+
+const knipReportFixture = {
+  issues: [
+    {
+      file: "runtime/src/example.ts",
+      exports: [{ name: "usedPublicSurface" }],
+      types: [{ name: "HiddenType" }],
+    },
+  ],
+};
+const knipIssueEntriesFixture = collectKnipUnusedIssueEntries(knipReportFixture);
+const knipIgnoreEntriesFixture = normalizeKnipIssueIgnoreEntries([
+  { file: "runtime/src/example.ts", type: "exports", name: "usedPublicSurface" },
+]);
+assert(
+  "Knip exact audit detects unignored symbols inside allowlisted files",
+  findUnignoredKnipIssues(knipIssueEntriesFixture, knipIgnoreEntriesFixture)
+    .some((entry) => entry.name === "HiddenType"),
+);
+assert(
+  "Knip exact audit detects stale exact entries",
+  findStaleKnipIssueIgnores(
+    normalizeKnipIssueIgnoreEntries([{ file: "runtime/src/example.ts", type: "exports", name: "staleName" }]),
+    knipIssueEntriesFixture,
+  ).length === 1,
+);
+assert(
+  "Knip issue type coverage is derived from exact entries",
+  JSON.stringify(collectKnipIssueTypesByFile(knipIssueEntriesFixture)) ===
+    JSON.stringify({ "runtime/src/example.ts": ["exports", "types"] }),
+);
+assert(
+  "raw Knip audit config strips configured issue allowlists",
+  (() => {
+    const stripped = stripKnipIssueAllowlists({
+      ignoreIssues: { "runtime/src/example.ts": ["exports"] },
+      workspaces: { runtime: { ignoreIssues: { "runtime/src/example.ts": ["types"] } } },
+    });
+    return !stripped.ignoreIssues && !stripped.workspaces.runtime.ignoreIssues;
+  })(),
 );
 
 // Items have required fields.
@@ -164,9 +224,18 @@ const verifySource = readFileSync(new URL("./verify.mjs", import.meta.url), "utf
 const reviewSource = readFileSync(new URL("./review.mjs", import.meta.url), "utf8");
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 const purgeScanSource = readFileSync(new URL("./purge-scans.mjs", import.meta.url), "utf8");
+const knipConfig = JSON.parse(readFileSync(new URL("../../.knip.json", import.meta.url), "utf8"));
+const knipIssueIgnore = JSON.parse(readFileSync(new URL("../../.knip-issues-ignore.json", import.meta.url), "utf8"));
+const tsPruneIgnoreSource = readFileSync(new URL("../../.ts-prune-ignore", import.meta.url), "utf8");
+const zFinalAllowlistEvidence = JSON.parse(readFileSync(new URL("../../docs/z-final-allowlist-evidence.json", import.meta.url), "utf8"));
 const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
 const runtimeTsconfigSource = readFileSync(new URL("../../runtime/tsconfig.json", import.meta.url), "utf8");
 const runtimeTsupConfigSource = readFileSync(new URL("../../runtime/tsup.config.ts", import.meta.url), "utf8");
+const outputStylesSource = readFileSync(new URL("../../runtime/src/constants/outputStyles.ts", import.meta.url), "utf8");
+const todoWritePromptSource = readFileSync(new URL("../../runtime/src/tools/TodoWriteTool/prompt.ts", import.meta.url), "utf8");
+const mcpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp/mcp.tsx", import.meta.url), "utf8");
+const mcpXaaIdpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp/xaaIdpCommand.ts", import.meta.url), "utf8");
+const cliPrintSource = readFileSync(new URL("../../runtime/src/cli/print.ts", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
   /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
@@ -183,12 +252,20 @@ assert(
   "complete.mjs can recover a same-item in-flight journal after merge",
   /async function recoverMatchingInFlightJournal/.test(completeSource) &&
     /const mergeCommit = mergeCommitForJournal\(journal\);/.test(completeSource) &&
-    /writeCompletionMarker\(mergeCommit\);/.test(completeSource),
+    /writeOrSkipCompletionMarker\(mergeCommit\);/.test(completeSource),
 );
 assert(
   "complete.mjs keeps foreign in-flight journals fail-closed",
   /Foreign journals still fail closed/.test(completeSource) &&
     /failIfInFlightJournalsFound\(\);/.test(completeSource),
+);
+assert(
+  "complete.mjs treats Z-FINAL as marker directory cleanup",
+  completeSource.includes('if (id === "Z-FINAL")') &&
+    completeSource.includes("Z-FINAL skips writing a new .goal-completed marker") &&
+    completeSource.includes("Z-FINAL skips checklist flip because PORT_CHECKLIST.md is removed by final cleanup") &&
+    completeSource.includes("rmSync(markerDir(), { recursive: true, force: true })") &&
+    completeSource.includes("Final cleanup removed the checklist workflow artifacts"),
 );
 
 const singleLineForwardFn = extractRegexFromSource(shimBehaviorSource, "SINGLE_LINE_FORWARD_FN_RE");
@@ -266,7 +343,7 @@ assert(
 );
 
 const zPurgecGateStart = verifySource.indexOf('if (id === "Z-PURGEC")');
-const zPurgecGateEnd = verifySource.indexOf('if (id === "Z-PURGEFINAL")');
+const zPurgecGateEnd = verifySource.indexOf('if (id === "Z-PURGEFINAL"', zPurgecGateStart);
 const zPurgecGateSource = zPurgecGateStart === -1 || zPurgecGateEnd === -1
   ? ""
   : verifySource.slice(zPurgecGateStart, zPurgecGateEnd);
@@ -315,6 +392,102 @@ assert(
   reviewSource.includes("Z-PURGEFINAL is the final purge-state marker") &&
     reviewSource.includes("root npm test command is not the completion gate") &&
     reviewSource.includes("Do reject if verify.mjs Z-PURGEFINAL fails"),
+);
+assert(
+  "review.mjs large changed-source manifests require the hash shortcut",
+  reviewSource.includes("const filesReviewedInstruction = changedSourceFilesForReview.length > 200") &&
+    reviewSource.includes("ALL_CHANGED_SOURCE_FILES_SHA256: ${changedSourceFilesHash}") &&
+    reviewSource.includes("do not enumerate all ${changedSourceFilesForReview.length} paths") &&
+    !reviewSource.includes("You may use the shortcut"),
+);
+assert(
+  "review.mjs requires explicit none for pass sections",
+  reviewSource.includes("Security/supply-chain: none") &&
+    reviewSource.includes("Performance/resource-leak: none") &&
+    reviewSource.includes("Do not leave this header empty") &&
+    reviewSource.includes("hasProseFinding"),
+);
+const zFinalTsPruneGateSource = extractFunctionSource(verifySource, "assertZFinalTsPruneClean");
+assert(
+  "verify.mjs Z-FINAL runs ts-prune against runtime tsconfig",
+  verifySource.includes('const Z_FINAL_TS_PRUNE_PROJECT = "runtime/tsconfig.json";') &&
+    /"ts-prune",\s*"--error",\s*"-p",\s*Z_FINAL_TS_PRUNE_PROJECT/.test(zFinalTsPruneGateSource),
+);
+assert(
+  "verify.mjs Z-FINAL filters ts-prune through explicit ignore file",
+  verifySource.includes('const Z_FINAL_TS_PRUNE_IGNORE_REL = ".ts-prune-ignore";') &&
+    zFinalTsPruneGateSource.includes("readZFinalTsPruneIgnorePatterns()") &&
+    zFinalTsPruneGateSource.includes("collectUnignoredTsPruneLines("),
+);
+const zFinalGateSource = extractFunctionSource(verifySource, "assertZFinalEndState");
+const runtimeKnipConfig = knipConfig.workspaces?.runtime ?? {};
+assert(
+  "verify.mjs Z-FINAL scans main checkout completion markers",
+  verifySource.includes("assertZFinalPredecessorsDone()") &&
+    verifySource.includes("candidate.dependsOn.includes(\"Z-FINAL\")") &&
+    verifySource.includes("collectIncompleteZFinalPredecessors(items)") &&
+    zFinalGateSource.includes("mainCheckoutRoot()") &&
+    zFinalGateSource.includes("collectZFinalGoalCompletedDirs(mainCheckoutRoot(), \"main\")") &&
+    zFinalGateSource.includes("worktree or main checkout"),
+);
+assert(
+  "verify.mjs Z-FINAL pins ts-prune and knip invocations",
+  zFinalTsPruneGateSource.includes("ts-prune@0.10.3") &&
+    verifySource.includes("knip@5.85.0") &&
+    verifySource.includes("files,dependencies,exports,types,enumMembers") &&
+    verifySource.includes('const Z_FINAL_KNIP_CONFIG_REL = ".knip.json";') &&
+    verifySource.includes('const Z_FINAL_KNIP_ISSUE_IGNORE_REL = ".knip-issues-ignore.json";') &&
+    verifySource.includes("collectKnipUnusedIssueEntries") &&
+    verifySource.includes("stripKnipIssueAllowlists") &&
+    verifySource.includes("raw knip audit") &&
+    verifySource.includes("stale issue ignore"),
+);
+assert(
+  ".knip.json uses real runtime entrypoints instead of all source as entry",
+  Array.isArray(runtimeKnipConfig.entry) &&
+    runtimeKnipConfig.entry.includes("src/index.ts") &&
+    runtimeKnipConfig.entry.includes("src/bin/agenc.ts") &&
+    runtimeKnipConfig.entry.includes("src/tui/main.tsx") &&
+    !runtimeKnipConfig.entry.some((entry) => entry.includes("src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}")),
+);
+assert(
+  ".knip.json carries explicit runtime allowlists",
+  Array.isArray(runtimeKnipConfig.ignoreFiles) &&
+    runtimeKnipConfig.ignoreFiles.length > 100 &&
+    JSON.stringify(knipConfig.ignoreIssues) ===
+      JSON.stringify(collectKnipIssueTypesByFile(normalizeKnipIssueIgnoreEntries(knipIssueIgnore.entries))) &&
+    Array.isArray(knipIssueIgnore.entries) &&
+    knipIssueIgnore.entries.some((entry) => entry.file?.startsWith("runtime/src/")),
+);
+assert(
+  "Z-FINAL allowlist evidence documents generated cleanup baselines",
+  zFinalAllowlistEvidence.tsPrune?.ignorePatternCount ===
+    tsPruneIgnoreSource.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("#")).length &&
+    zFinalAllowlistEvidence.knip?.ignoredRuntimeFileCount === runtimeKnipConfig.ignoreFiles.length &&
+    zFinalAllowlistEvidence.knip?.ignoredIssueEntryCount === knipIssueIgnore.entries.length &&
+    zFinalAllowlistEvidence.tsPrune?.command.includes("ts-prune@0.10.3") &&
+    zFinalAllowlistEvidence.knip?.command.includes("knip@5.85.0"),
+);
+assert(
+  "Learn-by-Doing prompt still points at TODO(human)",
+  outputStylesSource.includes("TODO(human)") &&
+    !outputStylesSource.includes("Follow-up(human)"),
+);
+assert(
+  "TodoWrite prompt keeps todo-list terminology",
+  todoWritePromptSource.includes("Creates todo list with specific items") &&
+  todoWritePromptSource.includes("Creates todo list with items like") &&
+    !todoWritePromptSource.includes("Follow-up list"),
+);
+assert(
+  "reviewer-cited renamed debt comments stay removed",
+  !/Follow-up|follow-up|workaround|WORKAROUND/.test(
+    [
+      mcpCommandSource,
+      mcpXaaIdpCommandSource,
+      cliPrintSource,
+    ].join("\n"),
+  ),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

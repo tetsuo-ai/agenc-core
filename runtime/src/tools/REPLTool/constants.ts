@@ -12,7 +12,7 @@ export const REPL_TOOL_NAME = 'REPL'
 
 /**
  * REPL mode is default-on for ants in the interactive CLI (opt out with
- * AGENC_REPL=0). The legacy AGENC_REPL_MODE=1 also forces it on.
+ * AGENC_REPL=0). The compatibility AGENC_REPL_MODE=1 also forces it on.
  *
  * SDK entrypoints (sdk-ts, sdk-py, sdk-cli) are NOT defaulted on — SDK
  * consumers script direct tool calls (Bash, Read, etc.) and REPL mode

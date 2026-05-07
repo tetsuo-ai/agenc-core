@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { MailboxProvider } from '../context/mailbox.js';
@@ -13,7 +13,7 @@ import { createStore } from './store.js';
 
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
 
-// TODO: Remove these re-exports once all callers import directly from the
+// Follow-up: Remove these re-exports once all callers import directly from the
 // paired AppStateStore module. Kept for back-compat during migration so .ts
 // callers can incrementally move off the .tsx import and stop pulling React.
 export { type AppState, type AppStateStore, type CompletionBoundary, getDefaultAppState, IDLE_SPECULATION_STATE, type SpeculationResult, type SpeculationState } from './AppStateStore.js';

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   Base64ImageSource,
   ImageBlockParam,
@@ -10,13 +10,13 @@ import {
   IMAGE_MAX_WIDTH,
   IMAGE_TARGET_RAW_SIZE,
 } from '../constants/apiLimits.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../services/analytics/index.js'
 import {
   getImageProcessor,
   type SharpFunction,
   type SharpInstance,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../tools/FileReadTool/imageProcessor.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from './errors.js'

@@ -62,7 +62,7 @@ export const DEFAULT_PROJECT_DOC_MAX_BYTES = 2 * 1024 * 1024;
 /**
  * Local runtime config for project-instruction discovery.
  *
- * TODO(T10-D config/schema): replace with `AgenCConfig.projectRootMarkers`
+ * Follow-up(T10-D config/schema): replace with `AgenCConfig.projectRootMarkers`
  * + `AgenCConfig.projectDocMaxBytes` once `runtime/src/config/schema.ts`
  * lands (Group D). Until then, this interface defines the surface this
  * module consumes.

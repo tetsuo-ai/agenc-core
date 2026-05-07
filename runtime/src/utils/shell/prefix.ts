@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared command prefix extraction using Haiku LLM
  *
@@ -11,15 +11,15 @@
 
 import chalk from 'chalk'
 import type { QuerySource } from '../../constants/querySource.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/anthropic.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { startsWithApiErrorPrefix } from '../../services/api/errors.js'
 import { memoizeWithLRU } from '../memoize.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -254,7 +254,7 @@ async function getCommandPrefixImpl(
       typeof response.message.content === 'string'
         ? response.message.content
         : Array.isArray(response.message.content)
-          // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+          // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
           ? (response.message.content.find(_ => _.type === 'text')?.text ??
             'none')
           : 'none'

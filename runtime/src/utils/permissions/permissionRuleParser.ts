@@ -1,10 +1,10 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { TASK_OUTPUT_TOOL_NAME } from '../../tools/TaskOutputTool/constants.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { TASK_STOP_TOOL_NAME } from '../../tools/TaskStopTool/prompt.js'
 import type { PermissionRuleValue } from './PermissionRule.js'
 
@@ -19,7 +19,7 @@ const BRIEF_TOOL_NAME: string | null =
     : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-// Maps legacy tool names to their current canonical names.
+// Maps compatibility tool names to their current canonical names.
 // When a tool is renamed, add old → new here so permission rules,
 // hooks, and persisted wire names resolve to the canonical name.
 const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {

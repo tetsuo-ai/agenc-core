@@ -1,14 +1,7 @@
 /**
- * branding-scan: allow donor source citation for the S-06 parity record
- * Ports openclaude `src/services/MagicDocs/magicDocs.ts` onto AgenC's
- * first-class file tools and subagent runner.
- *
- * Shape differences from upstream:
- *   - `FileRead` results are plain AgenC tool envelopes, so the service
- *     tracks tagged markdown from the file-read listener and reads the
- *     current bytes directly when the background update runs.
- *   - The background updater seeds the child session's read-before-edit
- *     state before running an Edit-only subagent.
+ * Maintains Magic Docs through AgenC file tools and a background subagent.
+ * File reads are tracked through the session listener so the updater can
+ * seed read-before-edit state before applying the generated edit.
  */
 
 import { readFile, stat } from "node:fs/promises";

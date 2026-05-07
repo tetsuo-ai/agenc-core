@@ -2278,7 +2278,7 @@ export async function bridgeMain(args: string[]): Promise<void> {
   // - explicit --spawn flag: use that value directly (does not persist)
   // - saved ProjectConfig.remoteControlSpawnMode: set by first-run dialog or `w`
   // - default with gate on: same-dir (persistent multi-session, shared cwd)
-  // - default with gate off: single-session (unchanged legacy behavior)
+  // - default with gate off: single-session (unchanged compatibility behavior)
   // Track how spawn mode was determined, for rollout analytics.
   type SpawnModeSource = 'resume' | 'flag' | 'saved' | 'gate_default'
   let spawnModeSource: SpawnModeSource

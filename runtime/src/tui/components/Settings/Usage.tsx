@@ -16,7 +16,7 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
 import { Byline } from '../design-system/Byline';
 import { ProgressBar } from '../design-system/ProgressBar';
 import { isEligibleForOverageCreditGrant, OverageCreditUpsell } from '../LogoV2/OverageCreditUpsell';
-import { CodexUsage } from './CodexUsage'; // branding-scan: allow provider-specific usage component name
+import { OpenAiCodeUsage } from './OpenAiCodeUsage'; // branding-scan: allow provider-specific usage component name
 import { MiniMaxUsage } from './MiniMaxUsage';
 import { UnsupportedUsage } from './UnsupportedUsage';
 type LimitBarProps = {
@@ -270,7 +270,7 @@ function AnthropicUsage(): React.ReactNode {
 export function Usage(): React.ReactNode {
   const provider = getAPIProvider();
   if (provider === 'codex') { // branding-scan: allow provider id
-    return <CodexUsage />; // branding-scan: allow provider-specific usage component name
+    return <OpenAiCodeUsage />; // branding-scan: allow provider-specific usage component name
   }
   if (provider === 'minimax') {
     return <MiniMaxUsage />;

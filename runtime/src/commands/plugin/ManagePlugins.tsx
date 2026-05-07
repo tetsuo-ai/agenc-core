@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures';
 import type { Dirent } from 'fs';
 import * as fs from 'fs/promises';
@@ -546,7 +546,7 @@ export function ManagePlugins({
       }
     }
 
-    // Build plugin items (unsorted for now)
+    // Build plugin items (unsorted currently)
     type PluginWithChildren = {
       item: UnifiedInstalledItem & {
         type: 'plugin';

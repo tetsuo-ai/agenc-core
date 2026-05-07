@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Session Tracing for AgenC using OpenTelemetry (BETA)
  *
@@ -15,7 +15,7 @@
 import { feature } from 'bun:bundle'
 import { context as otelContext, type Span, trace } from '@opentelemetry/api'
 import { AsyncLocalStorage } from 'async_hooks'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
@@ -351,7 +351,7 @@ export function startLLMRequestSpan(
  *   to ensure responses are attached to the correct request. Without it, responses may be
  *   incorrectly attached to whichever span happens to be "last" in the activeSpans map.
  *
- *   If not provided, falls back to finding the most recent llm_request span (legacy behavior).
+ *   If not provided, falls back to finding the most recent llm_request span (compatibility behavior).
  */
 export function endLLMRequestSpan(
   span?: Span,
@@ -386,7 +386,7 @@ export function endLLMRequestSpan(
     const spanId = getSpanId(span)
     llmSpanContext = activeSpans.get(spanId)?.deref()
   } else {
-    // Legacy fallback: find the most recent llm_request span
+    // Compatibility fallback: find the most recent llm_request span
     // WARNING: This can cause mismatched responses when multiple requests are in flight
     llmSpanContext = Array.from(activeSpans.values())
       .findLast(r => {

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Manages plugin installation metadata stored in installed_plugins.json
  *
@@ -42,7 +42,7 @@ type InstalledPluginsMapV2 = Record<string, PluginInstallationEntry[]>
 // Type for persistable scopes (excludes 'flag' which is session-only)
 export type PersistableScope = Exclude<PluginScope, never> // All scopes are persistable in the schema
 
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { getCwd } from '../cwd.js'
 import { getHeadForDir } from '../git/gitFilesystem.js'
@@ -83,7 +83,7 @@ export function getInstalledPluginsFilePath(): string {
 }
 
 /**
- * Get the path to the legacy installed_plugins_v2.json file.
+ * Get the path to the compatibility installed_plugins_v2.json file.
  * Used only during migration to consolidate into single file.
  */
 export function getInstalledPluginsV2FilePath(): string {
@@ -111,7 +111,7 @@ export function clearInstalledPluginsCache(): void {
  * This consolidates the V1/V2 dual-file system into a single file:
  * 1. If installed_plugins_v2.json exists: copy to installed_plugins.json (version=2), delete V2 file
  * 2. If only installed_plugins.json exists with version=1: convert to version=2 in-place
- * 3. Clean up legacy non-versioned cache directories
+ * 3. Clean up compatibility non-versioned cache directories
  *
  * This migration runs once per session at startup.
  */
@@ -131,7 +131,7 @@ export function migrateToSinglePluginFile(): void {
       logForDebugging(
         `Renamed installed_plugins_v2.json to installed_plugins.json`,
       )
-      // Clean up legacy cache directories
+      // Clean up compatibility cache directories
       const v2Data = loadInstalledPluginsV2()
       cleanupLegacyCache(v2Data)
       migrationCompleted = true
@@ -167,7 +167,7 @@ export function migrateToSinglePluginFile(): void {
         `Converted installed_plugins.json from V1 to V2 format (${Object.keys(v1Data.plugins).length} plugins)`,
       )
 
-      // Clean up legacy cache directories
+      // Clean up compatibility cache directories
       cleanupLegacyCache(v2Data)
     }
     // If version=2, already in correct format, no action needed
@@ -185,12 +185,12 @@ export function migrateToSinglePluginFile(): void {
 }
 
 /**
- * Clean up legacy non-versioned cache directories.
+ * Clean up compatibility non-versioned cache directories.
  *
- * Legacy cache structure: ~/.agenc/plugins/cache/{plugin-name}/
+ * Compatibility cache structure: ~/.agenc/plugins/cache/{plugin-name}/
  * Versioned cache structure: ~/.agenc/plugins/cache/{marketplace}/{plugin}/{version}/
  *
- * This function removes legacy directories that are not referenced by any installation.
+ * This function removes compatibility directories that are not referenced by any installation.
  */
 function cleanupLegacyCache(v2Data: InstalledPluginsFileV2): void {
   const fs = getFsImplementation()
@@ -216,7 +216,7 @@ function cleanupLegacyCache(v2Data: InstalledPluginsFileV2): void {
       const entryPath = join(cachePath, entry)
 
       // Check if this is a versioned cache (marketplace dir with plugin/version subdirs)
-      // or a legacy cache (flat plugin directory)
+      // or a compatibility cache (flat plugin directory)
       const subEntries = fs.readdirSync(entryPath)
       const hasVersionedStructure = subEntries.some(subDirent => {
         if (!subDirent.isDirectory()) return false
@@ -231,7 +231,7 @@ function cleanupLegacyCache(v2Data: InstalledPluginsFileV2): void {
         continue
       }
 
-      // This is a legacy flat cache directory
+      // This is a compatibility flat cache directory
       // Check if it's referenced by any installation
       if (!referencedPaths.has(entryPath)) {
         // Not referenced - safe to delete
@@ -390,7 +390,7 @@ function saveInstalledPluginsV2(data: InstalledPluginsFileV2): void {
       `Saved ${Object.keys(data.plugins).length} installed plugins to ${filePath}`,
     )
   } catch (error) {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     const _errorMsg = errorMessage(error)
     logError(toError(error))
     throw error
@@ -716,7 +716,7 @@ export function resetInMemoryState(): void {
  * @returns Promise that resolves when initialization is complete
  */
 export async function initializeVersionedPlugins(): Promise<void> {
-  // Step 1: Migrate to single file format (consolidates V1/V2 files, cleans up legacy cache)
+  // Step 1: Migrate to single file format (consolidates V1/V2 files, cleans up compatibility cache)
   migrateToSinglePluginFile()
 
   // Step 2: Sync enabledPlugins from settings.json to installed_plugins.json

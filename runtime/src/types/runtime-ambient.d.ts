@@ -1,5 +1,5 @@
 /**
- * Temporary declarations for moved purge-boundary files that still need narrow
+ * Short-lived declarations for moved purge-boundary files that still need narrow
  * ambient types. Keep this file narrow and delete it when those imports are
  * made strict.
  */

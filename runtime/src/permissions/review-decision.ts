@@ -21,7 +21,7 @@
  *     wave can swap in a real schema without touching callers.
  *   - `network_policy_amendment` carries the host rule the user chose
  *     to persist (allow/deny). The AgenC network-approval tranche will
- *     land the full resolver; for now this only needs to round-trip.
+ *     land the full resolver; currently this only needs to round-trip.
  *   - `to_opaque_string()` lives here (as `reviewDecisionOpaqueString`)
  *     so telemetry stays stable across call sites.
  *
