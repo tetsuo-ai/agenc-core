@@ -68,8 +68,6 @@ import {
   type SessionOpts,
   type SessionServices,
 } from "../session/session.js";
-import { RolloutStore } from "../session/rollout-store.js";
-import { FileThreadStore } from "../thread-store/store.js";
 import type {
   Config,
   ManagedFeatures,
@@ -352,65 +350,6 @@ function personalityDeveloperTexts(messages: readonly LLMMessage[]): string[] {
   );
 }
 
-function writeRecordedThreadForBootstrap(params: {
-  readonly agencHome: string;
-  readonly workspace: string;
-  readonly provider: string;
-}): void {
-  const previous = process.env.AGENC_HOME;
-  process.env.AGENC_HOME = params.agencHome;
-  try {
-    const rolloutStore = new RolloutStore({
-      cwd: params.workspace,
-      sessionId: "personality-bootstrap-prior-thread",
-      agencVersion: "0.2.0",
-      autoStartScheduler: false,
-    });
-    rolloutStore.open({
-      sessionId: "personality-bootstrap-prior-thread",
-      timestamp: new Date().toISOString(),
-      cwd: params.workspace,
-      originator: "personality-contract-test",
-      agencVersion: "0.2.0",
-      model: OPENAI_PERSONALITY_MODEL,
-      modelProvider: params.provider,
-    });
-    const threadStore = new FileThreadStore({
-      cwd: params.workspace,
-      agencHome: params.agencHome,
-      defaultModelProviderId: params.provider,
-    });
-    try {
-      threadStore.createThread({
-        threadId: "personality-bootstrap-prior-thread",
-        rolloutStore,
-        cwd: params.workspace,
-        model: OPENAI_PERSONALITY_MODEL,
-        modelProvider: params.provider,
-      });
-      threadStore.appendItems({
-        threadId: "personality-bootstrap-prior-thread",
-        items: [
-          {
-            type: "response_item",
-            payload: { role: "user", content: "previous session" },
-          },
-        ],
-      });
-      threadStore.shutdownThread("personality-bootstrap-prior-thread");
-    } finally {
-      threadStore.close();
-      rolloutStore.close();
-    }
-  } finally {
-    if (previous === undefined) {
-      delete process.env.AGENC_HOME;
-    } else {
-      process.env.AGENC_HOME = previous;
-    }
-  }
-}
-
 describe("personality contract", () => {
   test("personality_does_not_mutate_base_instructions_without_template", () => {
     const baseInstructions = "plain base instructions";
@@ -483,6 +422,7 @@ describe("personality contract", () => {
     }));
 
     const instructionsText = messageText(seenMessages[0]![0]!);
+    expect(instructionsText).toContain(BASE_INSTRUCTIONS);
     expect(instructionsText).not.toContain(LOCAL_FRIENDLY_TEMPLATE);
     expect(instructionsText).not.toContain(LOCAL_PRAGMATIC_TEMPLATE);
     expect(instructionsText).not.toContain(PERSONALITY_PLACEHOLDER);
@@ -496,11 +436,6 @@ describe("personality contract", () => {
       agencHome: home,
       cwd: workspace,
       env: { HOME: home },
-    });
-    writeRecordedThreadForBootstrap({
-      agencHome: home,
-      workspace,
-      provider: "openai",
     });
 
     const { provider, seenMessages } = mkProviderRecorder();
@@ -521,7 +456,7 @@ describe("personality contract", () => {
       },
     });
     try {
-      expect(boot.config.personality).toBe("pragmatic");
+      expect(boot.config.personality).toBeUndefined();
 
       await drain(boot.session.runTurn("hello", {
         ctx: boot.ctx,
@@ -545,12 +480,29 @@ describe("personality contract", () => {
       ctx: mkCtx({ modelMessages }),
       systemPrompt: BASE_INSTRUCTIONS,
     }));
-    await drain(session.runTurn("hello", {
+    await drain(session.runTurn("change style", {
       ctx: mkCtx({ personality: "friendly", modelMessages }),
       systemPrompt: BASE_INSTRUCTIONS,
     }));
 
-    const personalityText = personalityDeveloperTexts(seenMessages[1] ?? [])[0];
+    const secondRequest = seenMessages[1] ?? [];
+    const personalityTexts = personalityDeveloperTexts(secondRequest);
+    const personalityText = personalityTexts[0];
+    const developerIndex = secondRequest.findIndex(
+      (message) =>
+        message.role === "developer" &&
+        messageText(message).includes(PERSONALITY_SPEC_START_MARKER),
+    );
+    const userIndex = secondRequest.findIndex(
+      (message) =>
+        message.role === "user" && messageText(message) === "change style",
+    );
+
+    expect(personalityTexts).toHaveLength(1);
+    expect(developerIndex).toBeGreaterThanOrEqual(0);
+    expect(userIndex).toBeGreaterThanOrEqual(0);
+    expect(developerIndex).toBeLessThan(userIndex);
+    expect(developerIndex).toBe(userIndex - 1);
     expect(personalityText).toContain(
       "The user has requested a new communication style.",
     );

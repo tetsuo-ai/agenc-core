@@ -2093,6 +2093,7 @@ const ITEM_EVIDENCE = {
   },
   "PR-11": {
     files: [
+      "runtime/src/llm/registry/model-catalog.ts",
       "runtime/src/personality/personality.contract.test.ts",
       "runtime/src/personality/personality-migration.contract.test.ts",
       "parity/PR-11-parity.json",
@@ -2111,6 +2112,7 @@ const ITEM_EVIDENCE = {
       { pattern: "skips_when_marker_exists", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
       { pattern: "skips_when_personality_explicit", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
       { pattern: "skips_when_no_sessions", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
+      { pattern: "personalityDefault: OPENAI_PRAGMATIC_PERSONALITY", scope: "runtime/src/llm/registry/model-catalog.ts" },
       { pattern: "personality-integration-contract", scope: "parity/PR-11-parity.json" },
     ],
     tests: [
@@ -5541,6 +5543,7 @@ async function promptGates(item) {
   }
   if (id === "PR-11") {
     const requiredFiles = [
+      "runtime/src/llm/registry/model-catalog.ts",
       "runtime/src/personality/personality.contract.test.ts",
       "runtime/src/personality/personality-migration.contract.test.ts",
       "parity/PR-11-parity.json",
@@ -5590,6 +5593,9 @@ async function promptGates(item) {
     }
     if (!grepRepo("bootstrapLocalRuntimeSession", personalityTest)) {
       failGate("PR-11: default pragmatic contract must exercise startup bootstrap");
+    }
+    if (!grepRepo("personalityDefault: OPENAI_PRAGMATIC_PERSONALITY", "runtime/src/llm/registry/model-catalog.ts")) {
+      failGate("PR-11: model catalog default personality must be pragmatic");
     }
     if (!grepRepo("MARKER_CONTENTS = \"v1\\\\n\"", migrationTest)) {
       failGate("PR-11: migration contract must lock marker file contents");

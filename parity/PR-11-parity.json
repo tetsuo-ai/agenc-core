@@ -11,6 +11,7 @@
     "core/tests/suite/personality_migration.rs"
   ],
   "targetFiles": [
+    "runtime/src/llm/registry/model-catalog.ts",
     "runtime/src/personality/personality.contract.test.ts",
     "runtime/src/personality/personality-migration.contract.test.ts",
     "scripts/goal/verify.mjs"
@@ -100,11 +101,11 @@
       "source": "core/tests/suite/personality.rs::default_personality_is_pragmatic_without_config_toml",
       "target": "runtime/src/personality/personality.contract.test.ts",
       "requiredBehaviors": [
-        "A startup with prior sessions and no current config file applies the one-shot pragmatic personality migration.",
-        "The first turn after bootstrap sends pragmatic template text to the provider."
+        "A startup with no current config file and no explicit personality keeps config personality unset.",
+        "The first turn after bootstrap still sends pragmatic template text to the provider through model default personality metadata."
       ],
       "edgeCases": [
-        "The prior recorded session is under the selected provider so migration is eligible before the turn context is constructed."
+        "No prior recorded session is required for the default pragmatic first-turn instructions."
       ],
       "tests": ["runtime/src/personality/personality.contract.test.ts"],
       "commands": ["npm test -- src/personality/personality.contract.test.ts"],
