@@ -27,7 +27,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { InitializeParams } from "../protocol/index.js";
+import type { InitializeParams, JsonObject } from "../protocol/index.js";
 import type { AuthDaemonSocketIdentity } from "../../auth/backend.js";
 
 export const AGENC_DAEMON_COOKIE_BYTES = 32;
@@ -61,6 +61,18 @@ export class AgenCDaemonCookieAuthenticator {
     return this.verifyInitializeParams(params)
       ? createAgenCDaemonCookieIdentity()
       : null;
+  }
+
+  authenticateInitializeMessage(
+    message: JsonObject,
+  ): AuthDaemonSocketIdentity | null {
+    if (message.method !== "initialize" || !isJsonObject(message.params)) {
+      return null;
+    }
+    const authCookie = message.params.authCookie;
+    return this.authenticateInitializeParams({
+      authCookie: typeof authCookie === "string" ? authCookie : undefined,
+    });
   }
 }
 
@@ -133,6 +145,10 @@ export function normalizeAgenCDaemonCookie(
 ): string | null {
   const trimmed = cookie?.trim();
   return trimmed === undefined || trimmed.length === 0 ? null : trimmed;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function assertRegularCookiePath(cookiePath: string): Promise<void> {

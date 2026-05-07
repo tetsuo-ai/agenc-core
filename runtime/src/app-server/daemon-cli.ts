@@ -148,6 +148,7 @@ export interface RunAgenCDaemonCliOptions {
   readonly beforeDaemonReady?: () => void | Promise<void>;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly snapshotPeriodicIntervalMs?: number;
+  readonly socketAcceptAuthenticationTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
 }
 
@@ -375,6 +376,8 @@ async function runAgenCDaemonAction(
         beforeDaemonReady: options.beforeDaemonReady,
         runner: options.runner,
         snapshotPeriodicIntervalMs: options.snapshotPeriodicIntervalMs,
+        socketAcceptAuthenticationTimeoutMs:
+          options.socketAcceptAuthenticationTimeoutMs,
       });
   }
 }
@@ -461,6 +464,7 @@ async function runAgenCDaemonForeground(
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly snapshotPeriodicIntervalMs?: number;
+    readonly socketAcceptAuthenticationTimeoutMs?: number;
   } = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -721,6 +725,12 @@ async function runAgenCDaemonForeground(
   };
   const socketServer = new AgenCUnixSocketServer({
     socketPath,
+    acceptAuthenticator: (message) =>
+      cookieAuthenticator.authenticateInitializeMessage(message) !== null,
+    acceptAuthenticationTimeoutMs: options.socketAcceptAuthenticationTimeoutMs,
+    onAuthenticationFailed: async (message, context) => {
+      await context.send(daemonConnectionAuthenticationFailedResponse(message));
+    },
     onMessage: async (message, context) => {
       if (shuttingDown) {
         await context.send(daemonShuttingDownResponse(message));
@@ -1888,6 +1898,20 @@ function daemonShuttingDownResponse(message: JsonObject): JsonObject {
     error: {
       code: -32000,
       message: "AgenC daemon is shutting down",
+    },
+  };
+}
+
+function daemonConnectionAuthenticationFailedResponse(
+  message: JsonObject,
+): JsonObject {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    ...(message.id !== undefined ? { id: message.id } : {}),
+    error: {
+      code: -32000,
+      message: "daemon connection authentication failed",
+      data: { code: "CONNECTION_AUTHENTICATION_FAILED" },
     },
   };
 }

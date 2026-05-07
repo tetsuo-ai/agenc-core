@@ -25,6 +25,7 @@ import { AgenCStdioTransport, writeJsonLine } from "./stdio.js";
 
 export const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
 export const AGENC_DAEMON_SOCKET_MODE = 0o600;
+export const AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS = 5000;
 
 export function defaultAgenCDaemonSocketPath(homeDir = homedir()): string {
   return join(homeDir, ".agenc", "daemon.sock");
@@ -39,6 +40,15 @@ export interface AgenCUnixSocketMessageContext {
 export interface AgenCUnixSocketServerOptions {
   readonly socketPath?: string;
   readonly homeDir?: string;
+  readonly acceptAuthenticator?: (
+    message: JsonObject,
+    context: AgenCUnixSocketMessageContext,
+  ) => boolean | Promise<boolean>;
+  readonly acceptAuthenticationTimeoutMs?: number;
+  readonly onAuthenticationFailed?: (
+    message: JsonObject,
+    context: AgenCUnixSocketMessageContext,
+  ) => void | Promise<void>;
   readonly onMessage: (
     message: JsonObject,
     context: AgenCUnixSocketMessageContext,
@@ -129,6 +139,15 @@ export class AgenCUnixSocketServer {
   #acceptConnection(socket: Socket): void {
     const connectionId = this.#nextConnectionId;
     this.#nextConnectionId += 1;
+    let accepted = this.#options.acceptAuthenticator === undefined;
+    let closingUnauthenticated = false;
+    let authenticationTimeout: NodeJS.Timeout | undefined;
+    const clearAuthenticationTimeout = (): void => {
+      if (authenticationTimeout !== undefined) {
+        clearTimeout(authenticationTimeout);
+        authenticationTimeout = undefined;
+      }
+    };
 
     const context: AgenCUnixSocketMessageContext = {
       connectionId,
@@ -140,13 +159,48 @@ export class AgenCUnixSocketServer {
     const transport = new AgenCStdioTransport({
       input: socket,
       output: socket,
-      onMessage: (message) => this.#options.onMessage(message, context),
+      onMessage: async (message) => {
+        if (!accepted) {
+          if (closingUnauthenticated) return;
+          let authenticated = false;
+          try {
+            authenticated =
+              (await this.#options.acceptAuthenticator?.(message, context)) ===
+              true;
+          } catch (error) {
+            clearAuthenticationTimeout();
+            this.#options.onError?.(asNodeError(error), connectionId);
+            socket.destroy();
+            return;
+          }
+          if (!authenticated) {
+            closingUnauthenticated = true;
+            clearAuthenticationTimeout();
+            try {
+              await this.#options.onAuthenticationFailed?.(message, context);
+            } finally {
+              socket.end();
+            }
+            return;
+          }
+          accepted = true;
+          clearAuthenticationTimeout();
+        }
+        await this.#options.onMessage(message, context);
+      },
       onError: (error) => this.#options.onError?.(error, connectionId),
       onClose: () => this.#connections.delete(connectionId),
     });
 
     this.#connections.set(connectionId, { socket, transport });
+    if (!accepted) {
+      authenticationTimeout = setTimeout(() => {
+        closingUnauthenticated = true;
+        socket.destroy();
+      }, this.#options.acceptAuthenticationTimeoutMs ?? AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS);
+    }
     socket.once("close", () => {
+      clearAuthenticationTimeout();
       this.#connections.delete(connectionId);
       this.#options.onConnectionClosed?.(connectionId);
     });
