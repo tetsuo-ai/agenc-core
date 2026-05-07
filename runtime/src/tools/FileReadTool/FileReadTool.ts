@@ -9,7 +9,7 @@ import {
   PDF_MAX_PAGES_PER_READ,
 } from '../../constants/apiLimits.js'
 import { hasBinaryExtension } from '../../constants/files.js'
-import { memoryFreshnessNote } from '../../memory/age.js'
+import { memoryFreshnessNote } from '../../memory/index.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logEvent } from '../../services/analytics/index.js'
 import {
@@ -53,7 +53,7 @@ import { logError } from '../../utils/log.js'
 import {
   detectSessionFileType,
   isAutoMemFile,
-} from '../../memory/project-memory.js'
+} from '../../memory/index.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getCanonicalName, getMainLoopModel } from '../../utils/model/model.js'
 import {

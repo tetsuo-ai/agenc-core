@@ -1,0 +1,195 @@
+{
+  "options": {
+    "now": "2026-05-06T12:00:00.000Z",
+    "maxAgents": 3,
+    "maxSessions": 2
+  },
+  "dashboard": {
+    "protocolVersion": "0.4.0",
+    "connection": {
+      "kind": "local-daemon",
+      "label": "Local daemon",
+      "endpoint": "ws://127.0.0.1:7766/"
+    },
+    "connectionState": {
+      "status": "connected",
+      "target": {
+        "kind": "local-daemon",
+        "label": "Local daemon",
+        "endpoint": "ws://127.0.0.1:7766/"
+      },
+      "initialized": true,
+      "error": "connection-secret",
+      "updatedAt": "2026-05-06T11:00:00.000Z"
+    },
+    "auth": {
+      "authenticated": true,
+      "provider": "local",
+      "identity": {
+        "accountId": "sensitive-account",
+        "email": "urn:agenc:test:sensitive-identity"
+      },
+      "error": null,
+      "updatedAt": "2026-05-06T11:00:00.000Z"
+    },
+    "sessions": [
+      {
+        "sessionId": "session-wait",
+        "agentId": "agent-running",
+        "title": "Needs input",
+        "cwd": "/private/wait",
+        "status": "waiting",
+        "updatedAt": "2026-05-06T10:30:00.000Z"
+      },
+      {
+        "sessionId": "session-run",
+        "agentId": "agent-idle",
+        "title": "Running session",
+        "cwd": "/private/run",
+        "status": "running",
+        "updatedAt": "2026-05-06T10:00:00.000Z"
+      }
+    ],
+    "agents": [
+      {
+        "agentId": "agent-idle",
+        "objective": "Foreground idle",
+        "status": "idle",
+        "activeSessionId": "session-run",
+        "updatedAt": "2026-05-06T09:00:00.000Z"
+      },
+      {
+        "agentId": "agent-running",
+        "objective": "Foreground running",
+        "status": "running",
+        "activeSessionId": "session-wait",
+        "updatedAt": "2026-05-06T10:45:00.000Z"
+      }
+    ],
+    "backgroundAgents": {
+      "agents": [
+        {
+          "agentId": "agent-error",
+          "objective": "Background failed check",
+          "status": "error",
+          "activeSessionId": null,
+          "updatedAt": "2026-05-06T11:30:00.000Z"
+        },
+        {
+          "agentId": "agent-idle",
+          "objective": "Background duplicate should not win",
+          "status": "running",
+          "activeSessionId": null,
+          "updatedAt": "2026-05-06T11:45:00.000Z"
+        }
+      ],
+      "nextCursor": "cursor-secret",
+      "starting": false,
+      "stoppingAgentIds": [],
+      "error": "background-secret",
+      "updatedAt": "2026-05-06T11:30:00.000Z"
+    },
+    "transcript": {
+      "agentId": "agent-running",
+      "transcript": "full transcript secret",
+      "sessions": [
+        {
+          "sessionId": "session-wait",
+          "itemCount": 7,
+          "transcript": "nested transcript secret",
+          "rolloutPath": "/private/rollout",
+          "source": "internal-source"
+        }
+      ],
+      "updatedAt": "2026-05-06T10:50:00.000Z"
+    },
+    "composer": {
+      "sessionId": "session-wait",
+      "draft": "draft secret",
+      "sending": false,
+      "lastMessageId": "message-secret",
+      "error": null
+    }
+  },
+  "expected": {
+    "protocolVersion": "0.4.0",
+    "generatedAt": "2026-05-06T12:00:00.000Z",
+    "connection": {
+      "status": "connected",
+      "initialized": true
+    },
+    "auth": {
+      "authenticated": true
+    },
+    "counts": {
+      "totalAgents": 3,
+      "totalSessions": 2,
+      "attentionAgents": 2,
+      "attentionSessions": 1,
+      "agents": {
+        "idle": 1,
+        "running": 1,
+        "stopping": 0,
+        "stopped": 0,
+        "error": 1
+      },
+      "sessions": {
+        "idle": 0,
+        "running": 1,
+        "waiting": 1,
+        "stopped": 0
+      }
+    },
+    "agents": [
+      {
+        "agentId": "agent-error",
+        "objective": "Background failed check",
+        "status": "error",
+        "activeSessionId": null,
+        "sessionTitle": null,
+        "needsAttention": true,
+        "updatedAt": "2026-05-06T11:30:00.000Z"
+      },
+      {
+        "agentId": "agent-running",
+        "objective": "Foreground running",
+        "status": "running",
+        "activeSessionId": "session-wait",
+        "sessionTitle": "Needs input",
+        "needsAttention": true,
+        "updatedAt": "2026-05-06T10:45:00.000Z"
+      },
+      {
+        "agentId": "agent-idle",
+        "objective": "Foreground idle",
+        "status": "idle",
+        "activeSessionId": "session-run",
+        "sessionTitle": "Running session",
+        "needsAttention": false,
+        "updatedAt": "2026-05-06T09:00:00.000Z"
+      }
+    ],
+    "sessions": [
+      {
+        "sessionId": "session-wait",
+        "agentId": "agent-running",
+        "title": "Needs input",
+        "status": "waiting",
+        "needsAttention": true,
+        "updatedAt": "2026-05-06T10:30:00.000Z"
+      },
+      {
+        "sessionId": "session-run",
+        "agentId": "agent-idle",
+        "title": "Running session",
+        "status": "running",
+        "needsAttention": false,
+        "updatedAt": "2026-05-06T10:00:00.000Z"
+      }
+    ],
+    "truncated": {
+      "agents": false,
+      "sessions": false
+    }
+  }
+}

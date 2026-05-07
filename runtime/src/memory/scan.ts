@@ -38,7 +38,7 @@ const FRONTMATTER_READ_CONCURRENCY = 8
  */
 export async function scanMemoryFiles(
   memoryDir: string,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<MemoryHeader[]> {
   try {
     const candidates = await collectMemoryMarkdownFiles(memoryDir, signal)
@@ -65,7 +65,7 @@ export async function scanMemoryFiles(
 
 async function collectMemoryMarkdownFiles(
   memoryDir: string,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const results: string[] = []
   const pending: Array<{ dir: string; relativeDir: string; depth: number }> = [
@@ -73,7 +73,7 @@ async function collectMemoryMarkdownFiles(
   ]
 
   while (pending.length > 0) {
-    if (signal.aborted) break
+    if (signal?.aborted) break
     const current = pending.shift()!
     let entries
     try {
@@ -83,7 +83,7 @@ async function collectMemoryMarkdownFiles(
     }
 
     for (const entry of entries) {
-      if (signal.aborted) break
+      if (signal?.aborted) break
       const relativePath = current.relativeDir
         ? join(current.relativeDir, entry.name)
         : entry.name
@@ -113,14 +113,14 @@ async function collectMemoryMarkdownFiles(
 async function selectNewestMemoryFiles(
   memoryDir: string,
   candidates: readonly string[],
-  signal: AbortSignal,
+  signal: AbortSignal | undefined,
   limit: number,
 ): Promise<string[]> {
   const rows = await mapWithConcurrency(
     candidates,
     FRONTMATTER_READ_CONCURRENCY,
     async relativePath => {
-      if (signal.aborted) return null
+      if (signal?.aborted) return null
       try {
         const info = await stat(join(memoryDir, relativePath))
         if (!info.isFile()) return null
@@ -142,7 +142,7 @@ async function selectNewestMemoryFiles(
 async function readMemoryHeader(
   memoryDir: string,
   relativePath: string,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<MemoryHeader | null> {
   try {
     const filePath = join(memoryDir, relativePath)

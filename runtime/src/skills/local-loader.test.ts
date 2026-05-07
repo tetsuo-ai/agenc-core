@@ -2,11 +2,14 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { FileWatcher } from "../file-watcher/index.js";
+import { createSkillChangeDetector } from "./change-detector.js";
 import {
   clearInvokedSkills,
   createLocalSkillsServices,
+  discoverSkillWatchRoots,
   discoverDynamicSkillDirsForPaths,
   discoverSkillRoots,
   formatSkillListingWithinBudget,
@@ -39,6 +42,12 @@ function writeCommand(root: string, rel: string, body?: string): string {
       `---\ndescription: ${rel} description\n---\n# ${rel}\nUse command.\n`,
   );
   return file;
+}
+
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe("local skills loader", () => {
@@ -286,6 +295,217 @@ All=$ARGUMENTS
     expect(pluginView.effectiveSkillRoots()).toEqual([
       join(agencHome, "plugins", "tools", "skills"),
     ]);
+  });
+
+  it("invalidates the snapshot when the skill watcher sees a file change", async () => {
+    vi.useFakeTimers();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const skillRoot = join(workspaceRoot, ".agenc", "skills");
+    writeSkill(skillRoot, "initial");
+    const watcher = FileWatcher.noop();
+    const detector = createSkillChangeDetector();
+
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      fileWatcher: watcher,
+      skillChangeDetector: detector,
+      skillChangeEventSink: createSkillChangeDetector(),
+      watcherDebounceMs: 1,
+      watcherClearRuntimeCaches: false,
+      watcherRunConfigChangeHooks: false,
+      env: {},
+    });
+
+    try {
+      await expect(services.skillsManager.resolveSkill?.("late")).resolves.toBeNull();
+      await services.skillsWatcher.start();
+      expect(watcher.watchCountsForTest(skillRoot)).toMatchObject({ recursive: 1 });
+      const changedFile = writeSkill(skillRoot, "late");
+      await watcher.sendPathsForTest([changedFile]);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      await expect(services.skillsManager.resolveSkill?.("late"))
+        .resolves.toMatchObject({ name: "late" });
+    } finally {
+      await services.skillsWatcher.stop?.();
+      await detector.resetForTesting();
+      vi.useRealTimers();
+    }
+  });
+
+  it("watches missing skill roots and reloads when the first skill appears", async () => {
+    vi.useFakeTimers();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const missingSkillRoot = join(workspaceRoot, ".agenc", "skills");
+    const watcher = FileWatcher.noop();
+    const detector = createSkillChangeDetector();
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      fileWatcher: watcher,
+      skillChangeDetector: detector,
+      skillChangeEventSink: createSkillChangeDetector(),
+      watcherDebounceMs: 1,
+      watcherClearRuntimeCaches: false,
+      watcherRunConfigChangeHooks: false,
+      env: {},
+    });
+
+    try {
+      await expect(services.skillsManager.resolveSkill?.("late")).resolves.toBeNull();
+      await services.skillsWatcher.start();
+      expect(await discoverSkillWatchRoots({
+        agencHome,
+        workspaceRoot,
+        env: {},
+      })).toContain(missingSkillRoot);
+      expect(watcher.watchCountsForTest(workspaceRoot)?.nonRecursive)
+        .toBeGreaterThan(0);
+
+      const changedFile = writeSkill(missingSkillRoot, "late");
+      await watcher.sendPathsForTest([changedFile]);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      await expect(services.skillsManager.resolveSkill?.("late"))
+        .resolves.toMatchObject({ name: "late" });
+    } finally {
+      await services.skillsWatcher.stop?.();
+      await detector.resetForTesting();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps service cache invalidation independent across watcher lifecycles", async () => {
+    vi.useFakeTimers();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const skillRoot = join(workspaceRoot, ".agenc", "skills");
+    writeSkill(skillRoot, "initial");
+    const watcher = FileWatcher.noop();
+    const sink = createSkillChangeDetector();
+    const firstDetector = createSkillChangeDetector();
+    const secondDetector = createSkillChangeDetector();
+    const first = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      fileWatcher: watcher,
+      skillChangeDetector: firstDetector,
+      skillChangeEventSink: sink,
+      watcherDebounceMs: 1,
+      watcherClearRuntimeCaches: false,
+      watcherRunConfigChangeHooks: false,
+      env: {},
+    });
+    const second = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      fileWatcher: watcher,
+      skillChangeDetector: secondDetector,
+      skillChangeEventSink: sink,
+      watcherDebounceMs: 1,
+      watcherClearRuntimeCaches: false,
+      watcherRunConfigChangeHooks: false,
+      env: {},
+    });
+
+    try {
+      await expect(first.skillsManager.resolveSkill?.("late")).resolves.toBeNull();
+      await expect(second.skillsManager.resolveSkill?.("late")).resolves.toBeNull();
+      await first.skillsWatcher.start();
+      await second.skillsWatcher.start();
+
+      const lateFile = writeSkill(skillRoot, "late");
+      await watcher.sendPathsForTest([lateFile]);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      await expect(first.skillsManager.resolveSkill?.("late"))
+        .resolves.toMatchObject({ name: "late" });
+      await expect(second.skillsManager.resolveSkill?.("late"))
+        .resolves.toMatchObject({ name: "late" });
+
+      await first.skillsWatcher.stop?.();
+      await expect(second.skillsManager.resolveSkill?.("later")).resolves.toBeNull();
+      const laterFile = writeSkill(skillRoot, "later");
+      await watcher.sendPathsForTest([laterFile]);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      await expect(second.skillsManager.resolveSkill?.("later"))
+        .resolves.toMatchObject({ name: "later" });
+    } finally {
+      await first.skillsWatcher.stop?.();
+      await second.skillsWatcher.stop?.();
+      await firstDetector.resetForTesting();
+      await secondDetector.resetForTesting();
+      await sink.resetForTesting();
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts watcher roots when per-call plugin config changes", async () => {
+    vi.useFakeTimers();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const pluginRoot = join(workspaceRoot, "vendor", "configured", "skills");
+    writeSkill(pluginRoot, "plugin-initial");
+    const watcher = FileWatcher.noop();
+    const detector = createSkillChangeDetector();
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      fileWatcher: watcher,
+      skillChangeDetector: detector,
+      skillChangeEventSink: createSkillChangeDetector(),
+      watcherDebounceMs: 1,
+      watcherClearRuntimeCaches: false,
+      watcherRunConfigChangeHooks: false,
+      env: {},
+    });
+    const pluginConfig = {
+      plugins: {
+        enabled: true,
+        plugins: {
+          configured: { path: "vendor/configured" },
+        },
+      },
+    };
+
+    try {
+      await services.skillsWatcher.start();
+      expect(watcher.watchCountsForTest(pluginRoot)).toBeNull();
+      const loaded = await services.skillsManager.skillsForConfig(pluginConfig, null);
+      expect(loaded.availableSkills?.map((skill) => skill.name)).toContain(
+        "plugin-initial",
+      );
+      expect(watcher.watchCountsForTest(pluginRoot)).toMatchObject({
+        recursive: 1,
+      });
+      await expect(services.skillsManager.resolveSkill?.("plugin-late"))
+        .resolves.toBeNull();
+
+      const changedFile = writeSkill(pluginRoot, "plugin-late");
+      await watcher.sendPathsForTest([changedFile]);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+
+      await expect(services.skillsManager.resolveSkill?.("plugin-late"))
+        .resolves.toMatchObject({ name: "plugin-late" });
+    } finally {
+      await services.skillsWatcher.stop?.();
+      await detector.resetForTesting();
+      vi.useRealTimers();
+    }
   });
 
   it("loads configured plugin skills from per-call config and invalidates the snapshot", async () => {

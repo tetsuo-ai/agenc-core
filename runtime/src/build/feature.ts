@@ -12,7 +12,7 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
   WEB_BROWSER_TOOL: false,
   CHICAGO_MCP: false,
   COWORKER_TYPE_TELEMETRY: false,
-  MCP_SKILLS: false,
+  MCP_SKILLS: true,
   REACTIVE_COMPACT: false,
   HISTORY_SNIP: false,
 

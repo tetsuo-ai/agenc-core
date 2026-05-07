@@ -18,7 +18,11 @@ import {
   sanitizePathForProjectKey,
   validateAutoMemoryDirectoryPath,
 } from "./memory-paths.js";
-import { formatMemoryManifest, scanMemoryFiles } from "./memory-scan.js";
+import { formatMemoryManifest, scanMemoryFiles } from "../../memory/index.js";
+
+vi.mock("bun:bundle", () => ({ feature: () => false }));
+vi.mock("../../tools.js", () => ({}));
+vi.mock("src/tools.js", () => ({}));
 
 const defaultSession = {} as Session;
 

@@ -684,6 +684,7 @@ async function runAgenCDaemonForeground(
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
+    sessionManager,
     commandExec,
     authBackend: authStartup.authBackend,
     health,

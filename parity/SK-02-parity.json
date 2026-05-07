@@ -1,0 +1,83 @@
+{
+  "contractName": "sk-02-skill-change-detector-hot-reload",
+  "scope": "Skill and command root change detection for cache invalidation and subscriber-driven hot reload.",
+  "sourceRoot": "/home/tetsuo/git/\u006fpenclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/utils/skills/skillChangeDetector.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/skills/change-detector.ts",
+    "runtime/src/skills/local-loader.ts",
+    "runtime/src/session/bootstrap.ts",
+    "runtime/src/session/session.ts",
+    "runtime/src/bin/bootstrap-services.ts",
+    "runtime/src/cli/print.ts",
+    "runtime/src/tui/hooks/useSkillsChange.ts"
+  ],
+  "testFiles": [
+    "runtime/src/skills/change-detector.test.ts",
+    "runtime/src/skills/local-loader.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "file-watcher-based-root-watch",
+      "source": "src/utils/skills/skillChangeDetector.ts",
+      "target": "runtime/src/skills/change-detector.ts",
+      "requiredBehaviors": [
+        "watches discovered skill and command roots recursively through AgenC's shared FileWatcher",
+        "debounces bursts of file notifications into one reload batch",
+        "ignores repository metadata changes below .git directories"
+      ],
+      "edgeCases": [
+        "missing roots are still registered through FileWatcher's existing-ancestor fallback so first-skill creation hot-reloads",
+        "dispose closes the subscription and stops later reloads",
+        "duplicate notifications in one debounce window are coalesced before reload"
+      ],
+      "tests": [
+        "runtime/src/skills/change-detector.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "hook-gated-cache-refresh",
+      "source": "src/utils/skills/skillChangeDetector.ts",
+      "target": "runtime/src/skills/change-detector.ts",
+      "requiredBehaviors": [
+        "runs ConfigChange hooks once per reload batch with the first changed path as representative input",
+        "suppresses cache invalidation and listener notification when a hook blocks the batch",
+        "clears skill and command cache state before notifying live subscribers"
+      ],
+      "edgeCases": [
+        "hook failures remain contained by the existing hook executor contract",
+        "runtime cache imports are best-effort so hot reload cannot crash an active session",
+        "runtime skill-announcement and command caches clear before live subscribers are notified"
+      ],
+      "tests": [
+        "runtime/src/skills/change-detector.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "session-wiring",
+      "source": "src/utils/skills/skillChangeDetector.ts",
+      "target": "runtime/src/skills/local-loader.ts",
+      "requiredBehaviors": [
+        "starts the skills watcher after SessionConfigured has been emitted",
+        "invalidates the local skills snapshot when watched roots change",
+        "exposes the existing skillChangeDetector.subscribe surface to CLI and TUI command refresh callers"
+      ],
+      "edgeCases": [
+        "start is idempotent for a session service",
+        "shutdown can stop the watcher without requiring process exit",
+        "multiple local skill services keep independent cache invalidation and stopping one service does not dispose another",
+        "plugin roots introduced through per-call config are re-registered for hot reload"
+      ],
+      "tests": [
+        "runtime/src/skills/local-loader.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

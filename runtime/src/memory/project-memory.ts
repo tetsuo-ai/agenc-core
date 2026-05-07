@@ -53,7 +53,7 @@ export {
   isShellCommandTargetingMemory,
   memoryScopeForPath,
   type MemoryScope,
-} from './detection.js'
+} from './privacy.js'
 
 export const MEMORY_MENTION_SYNTAX = '@memory'
 export const MEMORY_MENTION_ALIASES = ['@memory', '@memories'] as const

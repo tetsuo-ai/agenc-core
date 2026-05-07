@@ -403,9 +403,10 @@ export async function runStartupPrewarm(
  *      and reconstruct resume history at the same point upstream
  *      does the thread-persistence future.
  *   5. Emit `SessionConfigured` — the terminal bootstrap event.
- *   6. Call `onAfterSessionConfigured(session)` if provided. This is
- *      where `bin/bootstrap.ts` starts sidecars and the live MCP
- *      connection manager, matching upstream agenc runtime ordering at
+ *   6. Start the skills watcher, then call
+ *      `onAfterSessionConfigured(session)` if provided. This is where
+ *      `bin/bootstrap.ts` starts sidecars and the live MCP connection
+ *      manager, matching upstream agenc runtime ordering at
  *      `session.rs:856-908`.
  *   7. Schedule the startup prewarm. Runs in the background; any
  *      error is swallowed.
@@ -484,13 +485,12 @@ export async function bootstrapSession(
       : opts.sessionConfigured;
   emitSessionConfigured(session, sessionConfiguredPayload);
 
-  // 6. Post-emit caller hook — sidecar start + live MCP connection
-  //    manager init. Upstream agenc runtime ordering
-  //    (`agenc-rs/core/src/session/session.rs:856-908`) starts the
-  //    watcher/skills listener and the real `McpConnectionManager::new()`
-  //    AFTER the SessionConfigured dispatch; the gut bin path mirrors
-  //    that by doing its `sidecarManager.start()` and
-  //    `session.startMcpManager(mcpManager)` inside this hook.
+  // 6. Post-emit startup — skill watcher first, then caller hook for
+  //    sidecar start + live MCP connection manager init. Upstream
+  //    agenc runtime ordering (`agenc-rs/core/src/session/session.rs:856-908`)
+  //    starts the watcher/skills listener and the real
+  //    `McpConnectionManager::new()` AFTER the SessionConfigured dispatch.
+  await patchedServices.skillsWatcher?.start?.();
   if (opts.onAfterSessionConfigured) {
     await opts.onAfterSessionConfigured(session);
   }

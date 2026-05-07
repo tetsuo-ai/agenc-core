@@ -59,7 +59,7 @@ import { getAgenCCodeUserAgent } from '../../utils/userAgent.js'
 import { logEvent } from '../analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../analytics/metadata.js'
 import { getRetryDelay } from '../api/withRetry.js'
-import { scanForSecrets } from './secretScanner.js'
+import { scanForSecrets } from '../../memory/index.js'
 import {
   type SkippedSecretFile,
   TeamMemoryDataSchema,
@@ -566,7 +566,7 @@ async function uploadTeamMemory(
  * (not uploaded) and collected in skippedSecrets so the caller can
  * warn the user.
  */
-async function readLocalTeamMemory(maxEntries: number | null): Promise<{
+export async function readLocalTeamMemory(maxEntries: number | null): Promise<{
   entries: Record<string, string>
   skippedSecrets: SkippedSecretFile[]
 }> {
@@ -852,7 +852,7 @@ export async function pullTeamMemory(
 
   const filesWritten = await writeRemoteEntriesToLocal(entries)
   if (filesWritten > 0) {
-    const { clearMemoryFileCaches } = await import('../../memory/project-memory.js')
+    const { clearMemoryFileCaches } = await import('../../memory/index.js')
     clearMemoryFileCaches()
   }
   logForDebugging(`team-memory-sync: pulled ${filesWritten} files`, {

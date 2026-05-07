@@ -1,6 +1,6 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { Command } from '../../commands.js'
-import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/paths.js'
+import { isAutoMemoryEnabled, getAutoMemPath } from '../../memory/index.js'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import { buildConsolidationPrompt } from '../../services/autoDream/consolidationPrompt.js'

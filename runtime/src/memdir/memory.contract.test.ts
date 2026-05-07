@@ -9,7 +9,7 @@ describe("memory subsystem contract", () => {
     for (const rel of [
       "runtime/src/memory/age.ts",
       "runtime/src/memory/agencmd.ts",
-      "runtime/src/memory/detection.ts",
+      "runtime/src/memory/privacy.ts",
       "runtime/src/memory/find-relevant.ts",
       "runtime/src/memory/memdir.ts",
       "runtime/src/memory/paths.ts",

@@ -817,6 +817,7 @@ export function buildBootstrapSessionServices(
     },
     shutdown: async () => {
       unsubscribeHooksConfig();
+      await skillsServices.skillsWatcher.stop?.();
       await shutdownBootstrapLspServers();
       hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();

@@ -562,7 +562,8 @@ export interface SkillsManager {
   discoverSkillDirsForPaths?(paths: readonly string[]): Promise<readonly string[]>;
 }
 export interface SkillsWatcher {
-  start(): void;
+  start(): void | Promise<void>;
+  stop?(): void | Promise<void>;
 }
 export interface PluginsManager {
   pluginsForConfig(config: unknown): Promise<{ effectiveSkillRoots(): unknown }>;
