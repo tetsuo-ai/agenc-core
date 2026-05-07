@@ -1,5 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
@@ -10,6 +16,9 @@ import {
   loadProjectInstructions,
   resolveInstructionFile,
 } from "./project-instructions.js";
+
+const POSIX = platform() !== "win32";
+const posixTest = POSIX ? test : test.skip;
 
 describe("project-instructions (T10-B)", () => {
   let root = "";
@@ -70,6 +79,17 @@ describe("project-instructions (T10-B)", () => {
     expect(p).toBeNull();
   });
 
+  test("resolveInstructionFile skips non-regular override files and falls back to AGENC.md", async () => {
+    const dir = join(root, "d");
+    mkdirSync(dir);
+    mkdirSync(join(dir, "AGENC.override.md"));
+    writeFileSync(join(dir, "AGENC.md"), "base");
+
+    const p = await resolveInstructionFile(dir);
+
+    expect(p).toBe(join(dir, "AGENC.md"));
+  });
+
   test("loadProjectInstructions reads AGENC.md from the project root", async () => {
     const repoRoot = join(root, "proj");
     const cwd = join(repoRoot, "nested");
@@ -84,6 +104,69 @@ describe("project-instructions (T10-B)", () => {
     expect(res!.rootMarkerFound).toBe("package.json");
     expect(res!.rootDir).toBe(repoRoot);
   });
+
+  test("loadProjectInstructions returns the closest instruction file when nested docs exist", async () => {
+    const repoRoot = join(root, "proj");
+    const pkgDir = join(repoRoot, "packages", "worker");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
+
+    const res = await loadProjectInstructions({ cwd: pkgDir });
+
+    expect(res!.path).toBe(join(pkgDir, "AGENC.md"));
+    expect(res!.content).toBe("PKG");
+  });
+
+  test("loadProjectInstructions keeps the closest file when an outer document exceeds the byte budget", async () => {
+    const repoRoot = join(root, "proj");
+    const pkgDir = join(repoRoot, "packages", "worker");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT-".repeat(100));
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
+
+    const res = await loadProjectInstructions({
+      cwd: pkgDir,
+      projectDocMaxBytes: 10,
+    });
+
+    expect(res!.path).toBe(join(pkgDir, "AGENC.md"));
+    expect(res!.content).toBe("PKG");
+    expect(res!.truncated).toBe(false);
+  });
+
+  test("loadProjectInstructions falls back to an outer document when the closest instruction is non-regular", async () => {
+    const repoRoot = join(root, "proj");
+    const pkgDir = join(repoRoot, "packages", "worker");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
+    mkdirSync(join(pkgDir, "AGENC.md"));
+
+    const res = await loadProjectInstructions({ cwd: pkgDir });
+
+    expect(res!.path).toBe(join(repoRoot, "AGENC.md"));
+    expect(res!.content).toBe("ROOT");
+  });
+
+  posixTest(
+    "loadProjectInstructions falls back to an outer document when the closest instruction cannot be read",
+    async () => {
+      const repoRoot = join(root, "proj");
+      const pkgDir = join(repoRoot, "packages", "worker");
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(repoRoot, "package.json"), "{}");
+      writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
+      symlinkSync(join(pkgDir, "missing.md"), join(pkgDir, "AGENC.md"));
+
+      const res = await loadProjectInstructions({ cwd: pkgDir });
+
+      expect(res!.path).toBe(join(repoRoot, "AGENC.md"));
+      expect(res!.content).toBe("ROOT");
+    },
+  );
 
   test("loadProjectInstructions prefers AGENC.override.md", async () => {
     const repoRoot = join(root, "proj");
@@ -110,6 +193,36 @@ describe("project-instructions (T10-B)", () => {
     // 100 bytes kept + marker appended.
     expect(res!.content.startsWith("x".repeat(100))).toBe(true);
     expect(res!.content).toContain("truncated by project_doc_max_bytes");
+  });
+
+  test("loadProjectInstructions and loadProjectInstructionChain truncate at a UTF-8 code point boundary", async () => {
+    const repoRoot = join(root, "proj");
+    const leafDir = join(repoRoot, "nested");
+    mkdirSync(leafDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "A🙂B");
+    writeFileSync(join(leafDir, "AGENC.md"), "C🙂D");
+
+    const singular = await loadProjectInstructions({
+      cwd: repoRoot,
+      projectDocMaxBytes: 3,
+    });
+    expect(singular!.truncated).toBe(true);
+    expect(singular!.content).toBe(
+      "A\n\n<!-- [truncated by project_doc_max_bytes] -->\n",
+    );
+    expect(singular!.content).not.toContain("\uFFFD");
+
+    const chain = await loadProjectInstructionChain({
+      cwd: leafDir,
+      projectDocMaxBytes: 3,
+    });
+    expect(chain).toHaveLength(1);
+    expect(chain[0]!.truncated).toBe(true);
+    expect(chain[0]!.content).toBe(
+      "A\n\n<!-- [truncated by project_doc_max_bytes] -->\n",
+    );
+    expect(chain[0]!.content).not.toContain("\uFFFD");
   });
 
   test("loadProjectInstructions falls back to cwd when no marker is found", async () => {

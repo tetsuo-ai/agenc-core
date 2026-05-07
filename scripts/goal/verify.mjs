@@ -2124,7 +2124,26 @@ const ITEM_EVIDENCE = {
     files: [{ globUnder: "runtime/src/install-context", matching: /\.tsx?$/, minCount: 1 }],
   },
   "PR-02": {
-    grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
+    files: [
+      "runtime/src/prompts/agenc-md.ts",
+      "runtime/src/prompts/project-instructions.ts",
+      "runtime/src/prompts/agenc-md.test.ts",
+      "runtime/src/prompts/project-instructions.test.ts",
+      "parity/PR-02-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "loadTieredInstructions", scope: "runtime/src/prompts/agenc-md.ts" },
+      { pattern: "resolveIncludes", scope: "runtime/src/prompts/agenc-md.ts" },
+      { pattern: "loadProjectInstructionChain", scope: "runtime/src/prompts/project-instructions.ts" },
+      { pattern: "outer document exceeds the byte budget", scope: "runtime/src/prompts/project-instructions.test.ts" },
+      { pattern: "project-instruction-tiering", scope: "parity/PR-02-parity.json" },
+    ],
+    tests: [
+      "runtime/src/prompts/agenc-md.test.ts",
+      "runtime/src/prompts/project-instructions.test.ts",
+      "runtime/src/prompts/system-prompt.test.ts",
+      "runtime/src/conversation/multi-turn-context.contract.test.ts",
+    ],
   },
   "PR-06": {
     files: [
@@ -5393,6 +5412,26 @@ async function promptGates(item) {
   if (id === "PR-02") {
     const found = grepRepo("AGENC\\.md", "runtime/src/prompts");
     if (!found) failGate("AGENC.md inclusion not referenced in runtime/src/prompts/");
+    if (!grepRepo("outer document exceeds the byte budget", "runtime/src/prompts/project-instructions.test.ts")) {
+      failGate("PR-02: closest-file byte-budget regression test missing");
+    }
+    if (!grepRepo("UTF-8 code point boundary", "runtime/src/prompts/project-instructions.test.ts")) {
+      failGate("PR-02: multibyte truncation regression test missing");
+    }
+    const vitest = run(
+      "npm",
+      [
+        "test",
+        "--",
+        "src/prompts/agenc-md.test.ts",
+        "src/prompts/project-instructions.test.ts",
+        "src/prompts/system-prompt.test.ts",
+        "src/conversation/multi-turn-context.contract.test.ts",
+      ],
+      { cwd: path.join(root, "runtime") },
+    );
+    if (vitest.status !== 0) failGate("PR-02 targeted prompt tests failed");
+    pass("PR-02 targeted prompt tests passed");
     pass("AGENC.md inclusion present");
     return;
   }
