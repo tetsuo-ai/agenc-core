@@ -1,9 +1,9 @@
 /**
- * `/init` — create `<cwd>/AGENC.md` from the AgenC init template.
+ * `/init` — ask the model to create `<cwd>/AGENC.md`.
  *
- * Mirrors agenc runtime TUI `/init` behaviour with AgenC naming: writes a
- * contributor-guide scaffold to `AGENC.md` at the current project root. If the file
- * already exists we skip to avoid overwriting user content.
+ * Sends the contributor-guide instructions through the normal prompt turn so
+ * the model can inspect the repository and write a project-specific guide.
+ * If the file already exists we skip to avoid overwriting user content.
  *
  * Template source resolution order:
  *   1. If `AGENC_INIT_TEMPLATE_PATH` env is set and readable, use it.
@@ -14,7 +14,6 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   safeExecute,
@@ -24,7 +23,7 @@ import {
 } from "./types.js";
 
 /**
- * AgenC-neutralized contributor-guide scaffold. Kept inline so the
+ * AgenC-neutralized contributor-guide prompt. Kept inline so the
  * command works regardless of deployment layout. Matches the structure
  * of agenc runtime's `prompt_for_init_command.md` (contributor guide outline)
  * but strips runtime-specific phrasing.
@@ -88,9 +87,22 @@ export function resolveInitTemplate(): string {
   return INIT_TEMPLATE;
 }
 
+export function buildInitPrompt(
+  cwd: string,
+  target: string,
+  promptTemplate = resolveInitTemplate(),
+): string {
+  return `${promptTemplate.trim()}
+
+Repository root: ${cwd}
+Target file: ${target}
+
+Inspect the repository before writing. Use the available file and search tools to identify real project commands, structure, and conventions. Write the final Markdown guide to ${target}. Do not write these instructions or a prompt template into the file.`;
+}
+
 export const initCommand: SlashCommand = {
   name: "init",
-  description: "Scaffold an AGENC.md contributor guide in the current directory",
+  description: "Generate an AGENC.md contributor guide in the current directory",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const target = join(ctx.cwd, INIT_TARGET_FILENAME);
@@ -100,9 +112,7 @@ export const initCommand: SlashCommand = {
           text: "AGENC.md already exists — skipping /init to avoid overwriting.",
         };
       }
-      const body = resolveInitTemplate();
-      await writeFile(target, body, "utf8");
-      return { kind: "text", text: `Created ${target}` };
+      return { kind: "prompt", content: buildInitPrompt(ctx.cwd, target) };
     }),
 };
 
