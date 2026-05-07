@@ -53,6 +53,10 @@ import {
 import {
   startsWithRealtimeConversationOpenTag,
 } from "../conversation/realtime/instructions/markers.js";
+import {
+  startsWithPersonalitySpecOpenTag,
+  type Personality,
+} from "../context/personality-spec-instructions.js";
 
 /**
  * Verbatim port of agenc runtime `core/templates/compact/summary_prefix.md`
@@ -88,6 +92,7 @@ function isSummaryMessage(text: string): boolean {
 export interface PreviousTurnSettings {
   readonly model: string;
   readonly realtimeActive?: boolean;
+  readonly personality?: Personality;
 }
 
 export interface RolloutReconstruction {
@@ -272,7 +277,10 @@ function isContextualUserContent(
 }
 
 function isContextualDeveloperText(text: string): boolean {
-  return startsWithRealtimeConversationOpenTag(text);
+  return (
+    startsWithRealtimeConversationOpenTag(text) ||
+    startsWithPersonalitySpecOpenTag(text)
+  );
 }
 
 function isTextLikeDeveloperFragment(
@@ -494,6 +502,9 @@ export function reconstructFromRollout(
             model: item.payload.model,
             ...(item.payload.realtimeActive !== undefined
               ? { realtimeActive: item.payload.realtimeActive }
+              : {}),
+            ...(item.payload.personality !== undefined
+              ? { personality: item.payload.personality }
               : {}),
           };
           active.previousTurnSettings = next;

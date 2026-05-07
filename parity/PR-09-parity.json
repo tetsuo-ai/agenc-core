@@ -1,0 +1,151 @@
+{
+  "item": "PR-09",
+  "status": "implemented",
+  "contractName": "personality-spec-developer-fragment",
+  "scope": "AgenC resolves model-owned friendly/pragmatic personality templates and emits the marked developer fragment only for real personality changes.",
+  "sourceRoot": "local CX runtime donor checkout",
+  "targetRoot": "..",
+  "sourceCommit": "fbdbc6b2fea7522e9fc1fc87d88168b945507ad4",
+  "sourceFiles": [
+    "core/src/context/personality_spec_instructions.rs",
+    "protocol/src/openai_models.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/context/personality-spec-instructions.ts",
+    "runtime/src/config/schema.ts",
+    "runtime/src/llm/registry/model-catalog.ts",
+    "runtime/src/llm/registry/features.ts",
+    "runtime/src/llm/model-registry.ts",
+    "runtime/src/session/turn-context.ts",
+    "runtime/src/session/event-log.ts",
+    "runtime/src/session/rollout-reconstruction.ts",
+    "runtime/src/session/session.ts",
+    "runtime/src/session/run-turn.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/context/personality-spec-instructions.test.ts",
+    "runtime/src/llm/registry/registry.test.ts",
+    "runtime/src/session/run-turn.test.ts",
+    "runtime/src/session/rollout-reconstruction.test.ts",
+    "runtime/src/config/config.test.ts",
+    "runtime/src/bin/agenc.test.ts",
+    "runtime/src/session/turn-context.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "marked-developer-fragment",
+      "sourceFiles": ["core/src/context/personality_spec_instructions.rs"],
+      "targetFiles": ["runtime/src/context/personality-spec-instructions.ts"],
+      "requiredBehaviors": [
+        "AgenC renders personality updates as developer-role messages wrapped in the `<personality_spec>` marker pair.",
+        "The rendered body preserves the upstream preamble and places the resolved template text after the newline."
+      ],
+      "edgeCases": [
+        "Text-part developer messages carrying personality markers are treated as contextual messages during rollback trimming.",
+        "The `none` personality never resolves to a developer update message."
+      ],
+      "tests": [
+        "runtime/src/context/personality-spec-instructions.test.ts",
+        "runtime/src/session/rollout-reconstruction.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "personality-enum",
+      "sourceFiles": ["protocol/src/openai_models.rs"],
+      "targetFiles": [
+        "runtime/src/config/schema.ts",
+        "runtime/src/session/turn-context.ts",
+        "runtime/src/session/event-log.ts"
+      ],
+      "requiredBehaviors": [
+        "The AgenC config/session personality type accepts only `none`, `friendly`, and `pragmatic`.",
+        "Built-in default config does not pin a personality before the one-shot migration item runs."
+      ],
+      "edgeCases": [
+        "Profile overrides and CLI bootstrap propagation still preserve explicit friendly/pragmatic values.",
+        "Turn-context snapshots continue to serialize personality through the rollout event shape."
+      ],
+      "tests": [
+        "runtime/src/config/config.test.ts",
+        "runtime/src/bin/agenc.test.ts",
+        "runtime/src/session/turn-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "model-template-resolution",
+      "sourceFiles": ["protocol/src/openai_models.rs"],
+      "targetFiles": [
+        "runtime/src/context/personality-spec-instructions.ts",
+        "runtime/src/llm/registry/model-catalog.ts",
+        "runtime/src/llm/model-registry.ts"
+      ],
+      "requiredBehaviors": [
+        "Model catalog entries may advertise complete personality template variables.",
+        "ModelInfo carries the template metadata and support bit into turn construction.",
+        "Instruction assembly replaces the personality placeholder and preserves the live AgenC base prompt through the base-instructions placeholder."
+      ],
+      "edgeCases": [
+        "Incomplete template variables do not advertise support.",
+        "Missing personality leaves the live base prompt unchanged.",
+        "`none` strips the personality text rather than producing an update fragment."
+      ],
+      "tests": [
+        "runtime/src/context/personality-spec-instructions.test.ts",
+        "runtime/src/llm/registry/registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "per-turn-update-conditions",
+      "sourceFiles": [
+        "core/src/context/personality_spec_instructions.rs",
+        "protocol/src/openai_models.rs"
+      ],
+      "targetFiles": [
+        "runtime/src/session/run-turn.ts",
+        "runtime/src/session/session.ts",
+        "runtime/src/session/rollout-reconstruction.ts"
+      ],
+      "requiredBehaviors": [
+        "Run-turn inserts the personality developer fragment before the current user turn only when a prior turn exists, the current personality differs from the previous personality, the current personality is not `none`, and the model resolves a non-empty template.",
+        "Initial turns bake personality into the system prompt when a model template is present instead of duplicating that template as a developer update.",
+        "Previous-turn settings persist personality so resume/fork replay can suppress duplicate update messages."
+      ],
+      "edgeCases": [
+        "Unchanged personality does not add a fragment.",
+        "`none` does not add a fragment.",
+        "Models without personality template metadata do not add a fragment.",
+        "The stable realtime contextual update ordering remains intact."
+      ],
+      "tests": [
+        "runtime/src/session/run-turn.test.ts",
+        "runtime/src/session/rollout-reconstruction.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "verification-lock",
+      "sourceFiles": [],
+      "targetFiles": ["scripts/goal/verify.mjs"],
+      "requiredBehaviors": [
+        "The PR-09 goal gate verifies the new personality helper, config enum, model catalog metadata, run-turn wiring, parity artifact, and focused test suite."
+      ],
+      "edgeCases": [
+        "The gate rejects the stale generic PR prompt fallback for this item."
+      ],
+      "tests": ["node scripts/goal/verify.mjs PR-09"],
+      "status": "required"
+    }
+  ],
+  "intentionalReductions": [
+    "Remote model metadata ingestion is not part of PR-09; remote template contract suites are reserved for PR-11.",
+    "The one-shot pragmatic migration and startup marker handling are reserved for PR-10."
+  ],
+  "outOfScope": [
+    "Personality selection UI changes.",
+    "Persistent config migration from legacy personality names."
+  ]
+}

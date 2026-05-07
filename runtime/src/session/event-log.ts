@@ -24,6 +24,7 @@ import type { AgentStatus } from "../agents/status.js";
 import type {
   CollaborationMode,
   FileSystemSandboxPolicy,
+  Personality,
   TruncationPolicy,
 } from "./turn-context.js";
 import type {
@@ -416,7 +417,7 @@ export interface TurnContextItem {
   readonly fileSystemSandboxPolicy?: FileSystemSandboxPolicy;
   readonly model: string;
   readonly modelProviderId?: string;
-  readonly personality?: string;
+  readonly personality?: Personality;
   readonly collaborationMode?: CollaborationMode;
   readonly realtimeActive?: boolean;
   readonly effort?: string;

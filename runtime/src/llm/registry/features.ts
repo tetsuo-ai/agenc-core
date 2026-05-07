@@ -261,7 +261,14 @@ export const AGENC_FEATURE_SPECS: readonly AgenCFeatureSpec[] = Object.freeze([
     stage: "stable",
     defaultEnabled: true,
   },
-  { key: "personality", stage: "stable", defaultEnabled: true },
+  {
+    key: "personality",
+    stage: "stable",
+    defaultEnabled: true,
+    menuName: "Personality",
+    menuDescription:
+      "Apply model-specific friendly or pragmatic instruction templates when the selected model advertises them.",
+  },
   { key: "artifact", stage: "under_development", defaultEnabled: false },
   { key: "fast_mode", stage: "stable", defaultEnabled: true },
   {

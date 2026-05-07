@@ -95,6 +95,12 @@ import {
 import {
   REALTIME_CONVERSATION_OPEN_TAG,
 } from "../conversation/realtime/instructions/markers.js";
+import {
+  BASE_INSTRUCTIONS_PLACEHOLDER,
+  PERSONALITY_PLACEHOLDER,
+  PERSONALITY_SPEC_START_MARKER,
+  type ModelMessages,
+} from "../context/personality-spec-instructions.js";
 
 afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
@@ -279,6 +285,18 @@ function mkRegistry(): ToolRegistry {
   } as unknown as ToolRegistry;
 }
 
+function mkPersonalityModelMessages(): ModelMessages {
+  return {
+    instructionsTemplate:
+      `${PERSONALITY_PLACEHOLDER}\n\n${BASE_INSTRUCTIONS_PLACEHOLDER}`,
+    instructionsVariables: {
+      personalityDefault: "",
+      personalityFriendly: "friendly template",
+      personalityPragmatic: "pragmatic template",
+    },
+  };
+}
+
 function mkSession(opts: {
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
@@ -309,6 +327,7 @@ function mkSession(opts: {
     previousTurnSettings?: {
       model?: string;
       realtimeActive?: boolean;
+      personality?: "none" | "friendly" | "pragmatic";
       contextWindow?: number;
       modelInfo?: { contextWindow?: number };
     };
@@ -327,6 +346,7 @@ function mkSession(opts: {
     previousTurnSettings?: {
       model?: string;
       realtimeActive?: boolean;
+      personality?: "none" | "friendly" | "pragmatic";
       contextWindow?: number;
       modelInfo?: { contextWindow?: number };
     };
@@ -1175,6 +1195,267 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       role: "user",
       content: "continued voice",
     });
+  });
+
+  test("bakes personality template into first-turn system prompt without developer update", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "answer" });
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "answer",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    const ctx = {
+      ...mkCtx(),
+      personality: "pragmatic",
+      modelInfo: {
+        ...mkModelInfo(),
+        modelMessages: mkPersonalityModelMessages(),
+        supportsPersonality: true,
+      },
+    } as TurnContext;
+
+    await drain(session.runTurn("hello", {
+      ctx,
+      systemPrompt: "base instructions",
+    }));
+
+    expect(seenMessages[0]?.[0]).toEqual({
+      role: "system",
+      content: "pragmatic template\n\nbase instructions",
+    });
+    expect(
+      (seenMessages[0] ?? []).some((message) => message.role === "developer"),
+    ).toBe(false);
+    expect(getState().previousTurnSettings?.personality).toBe("pragmatic");
+  });
+
+  test("injects personality developer instructions when personality changes after a prior turn", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "answer" });
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "answer",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    const state = getState();
+    state.referenceContextItem = {
+      model: "test-model",
+      personality: "pragmatic",
+    };
+    const ctx = {
+      ...mkCtx(),
+      personality: "friendly",
+      modelInfo: {
+        ...mkModelInfo(),
+        modelMessages: mkPersonalityModelMessages(),
+        supportsPersonality: true,
+      },
+    } as TurnContext;
+
+    await drain(session.runTurn("change style", { ctx }));
+
+    const firstRequest = seenMessages[0] ?? [];
+    const developerIndex = firstRequest.findIndex(
+      (message) => message.role === "developer",
+    );
+    const userIndex = firstRequest.findIndex(
+      (message) => message.role === "user" && message.content === "change style",
+    );
+    expect(developerIndex).toBeGreaterThanOrEqual(0);
+    expect(developerIndex).toBeLessThan(userIndex);
+    expect(testMessageText(firstRequest[developerIndex]!)).toContain(
+      PERSONALITY_SPEC_START_MARKER,
+    );
+    expect(testMessageText(firstRequest[developerIndex]!)).toContain(
+      "friendly template",
+    );
+
+    const persisted = getState().history as LLMMessage[];
+    expect(
+      persisted.some(
+        (message) =>
+          message.role === "developer" &&
+          testMessageText(message).includes(PERSONALITY_SPEC_START_MARKER),
+      ),
+    ).toBe(true);
+    expect(getState().previousTurnSettings?.personality).toBe("friendly");
+  });
+
+  test("skips personality developer instructions for unchanged, none, and unsupported templates", async () => {
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly previous?: "none" | "friendly" | "pragmatic";
+      readonly current?: "none" | "friendly" | "pragmatic";
+      readonly modelMessages?: ModelMessages;
+    }> = [
+      {
+        name: "unchanged",
+        previous: "friendly",
+        current: "friendly",
+        modelMessages: mkPersonalityModelMessages(),
+      },
+      {
+        name: "none",
+        previous: "friendly",
+        current: "none",
+        modelMessages: mkPersonalityModelMessages(),
+      },
+      {
+        name: "unsupported",
+        previous: "pragmatic",
+        current: "friendly",
+      },
+      {
+        name: "empty-template",
+        previous: "pragmatic",
+        current: "friendly",
+        modelMessages: {
+          ...mkPersonalityModelMessages(),
+          instructionsVariables: {
+            personalityDefault: "",
+            personalityFriendly: "",
+            personalityPragmatic: "pragmatic template",
+          },
+        },
+      },
+      {
+        name: "incomplete-template",
+        previous: "pragmatic",
+        current: "friendly",
+        modelMessages: {
+          ...mkPersonalityModelMessages(),
+          instructionsVariables: {
+            personalityDefault: "",
+            personalityFriendly: "friendly template",
+          },
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const seenMessages: LLMMessage[][] = [];
+      const provider = mkProvider({ content: testCase.name });
+      provider.chatStream = async (messages) => {
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        return {
+          content: testCase.name,
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      };
+      const { session, getState } = mkSession({
+        provider,
+        registry: mkRegistry(),
+      });
+      getState().referenceContextItem = {
+        model: "test-model",
+        ...(testCase.previous !== undefined
+          ? { personality: testCase.previous }
+          : {}),
+      };
+      const ctx = {
+        ...mkCtx(),
+        ...(testCase.current !== undefined
+          ? { personality: testCase.current }
+          : {}),
+        modelInfo: {
+          ...mkModelInfo(),
+          ...(testCase.modelMessages !== undefined
+            ? {
+              modelMessages: testCase.modelMessages,
+              supportsPersonality: true,
+            }
+            : {}),
+        },
+      } as TurnContext;
+
+      await drain(session.runTurn(`case ${testCase.name}`, { ctx }));
+
+      expect(
+        (seenMessages[0] ?? []).some(
+          (message) =>
+            message.role === "developer" &&
+            testMessageText(message).includes(PERSONALITY_SPEC_START_MARKER),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  test("persists config personality fallback and suppresses unchanged follow-up injection", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const provider = mkProvider({ content: "answer" });
+    provider.chatStream = async (messages) => {
+      seenMessages.push(messages.map((message) => ({ ...message })));
+      return {
+        content: "answer",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    };
+    const { session, events, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+    const baseCtx = mkCtx();
+    const ctx = {
+      ...baseCtx,
+      config: {
+        ...(baseCtx.config as object),
+        personality: "friendly",
+      },
+      modelInfo: {
+        ...mkModelInfo(),
+        modelMessages: mkPersonalityModelMessages(),
+        supportsPersonality: true,
+      },
+    } as TurnContext;
+
+    await drain(session.runTurn("first style", { ctx }));
+
+    expect(getState().previousTurnSettings?.personality).toBe("friendly");
+    expect(getState().referenceContextItem?.personality).toBe("friendly");
+    const firstTurnContext = events.find(
+      (event) => event.msg.type === "turn_context",
+    );
+    expect(
+      firstTurnContext?.msg.type === "turn_context"
+        ? firstTurnContext.msg.payload.personality
+        : undefined,
+    ).toBe("friendly");
+
+    await drain(session.runTurn("second style", { ctx }));
+
+    expect(
+      (seenMessages[1] ?? []).some(
+        (message) =>
+          message.role === "developer" &&
+          testMessageText(message).includes(PERSONALITY_SPEC_START_MARKER),
+      ),
+    ).toBe(false);
+    expect(getState().previousTurnSettings?.personality).toBe("friendly");
   });
 
   test("emits token_count after streamModel completes", async () => {

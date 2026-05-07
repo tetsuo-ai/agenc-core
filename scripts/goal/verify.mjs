@@ -2036,6 +2036,34 @@ const ITEM_EVIDENCE = {
       "runtime/src/llm/wire/responses-xai.test.ts",
     ],
   },
+  "PR-09": {
+    files: [
+      "runtime/src/context/personality-spec-instructions.ts",
+      "runtime/src/context/personality-spec-instructions.test.ts",
+      "runtime/src/llm/registry/model-catalog.ts",
+      "runtime/src/llm/model-registry.ts",
+      "runtime/src/session/run-turn.ts",
+      "runtime/src/session/run-turn.test.ts",
+      "runtime/src/session/rollout-reconstruction.ts",
+      "runtime/src/session/rollout-reconstruction.test.ts",
+      "parity/PR-09-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "PERSONALITY_SPEC_START_MARKER", scope: "runtime/src/context/personality-spec-instructions.ts" },
+      { pattern: "renderPersonalitySpecBody", scope: "runtime/src/context/personality-spec-instructions.ts" },
+      { pattern: "modelMessages: OPENAI_PERSONALITY_MESSAGES", scope: "runtime/src/llm/registry/model-catalog.ts" },
+      { pattern: "modelSupportsPersonality", scope: "runtime/src/llm/model-registry.ts" },
+      { pattern: "buildPersonalitySpecUpdateMessage", scope: "runtime/src/session/run-turn.ts" },
+      { pattern: "export type Personality = \"none\" \\| \"friendly\" \\| \"pragmatic\"", scope: "runtime/src/config/schema.ts" },
+      { pattern: "personality-spec-developer-fragment", scope: "parity/PR-09-parity.json" },
+    ],
+    tests: [
+      "runtime/src/context/personality-spec-instructions.test.ts",
+      "runtime/src/llm/registry/registry.test.ts",
+      "runtime/src/session/run-turn.test.ts",
+      "runtime/src/session/rollout-reconstruction.test.ts",
+    ],
+  },
   "MM-06": {
     grepPresent: [{ pattern: "agenc memory", scope: "runtime/src" }],
   },
@@ -5324,6 +5352,69 @@ async function promptGates(item) {
     const found = grepRepo("planMode|defaultMode|acceptEdits|byMode", "runtime/src/prompts");
     if (!found) failGate("PR-08: per-mode prompt variant not referenced");
     pass("PR-08: per-mode prompt variant referenced");
+    return;
+  }
+  if (id === "PR-09") {
+    const requiredFiles = [
+      "runtime/src/context/personality-spec-instructions.ts",
+      "runtime/src/context/personality-spec-instructions.test.ts",
+      "runtime/src/llm/registry/model-catalog.ts",
+      "runtime/src/llm/model-registry.ts",
+      "runtime/src/session/run-turn.ts",
+      "runtime/src/session/run-turn.test.ts",
+      "runtime/src/session/rollout-reconstruction.ts",
+      "runtime/src/session/rollout-reconstruction.test.ts",
+      "parity/PR-09-parity.json",
+    ];
+    for (const file of requiredFiles) {
+      if (!existsSync(path.join(root, file))) {
+        failGate(`PR-09: required personality file missing: ${file}`);
+      }
+    }
+    if (!grepRepo("renderPersonalitySpecBody", "runtime/src/context/personality-spec-instructions.ts")) {
+      failGate("PR-09: personality body renderer missing");
+    }
+    if (!grepRepo("personalitySpecInstructionMessage", "runtime/src/context/personality-spec-instructions.ts")) {
+      failGate("PR-09: developer message builder missing");
+    }
+    if (!grepRepo("modelMessages: OPENAI_PERSONALITY_MESSAGES", "runtime/src/llm/registry/model-catalog.ts")) {
+      failGate("PR-09: model catalog personality template metadata missing");
+    }
+    if (!grepRepo("modelSupportsPersonality", "runtime/src/llm/model-registry.ts")) {
+      failGate("PR-09: model registry personality support bit missing");
+    }
+    if (!grepRepo("buildPersonalitySpecUpdateMessage", "runtime/src/session/run-turn.ts")) {
+      failGate("PR-09: run-turn personality update injection missing");
+    }
+    if (!grepRepo("modelSupportsPersonality\\(ctx\\.modelInfo\\.modelMessages\\)", "runtime/src/session/run-turn.ts")) {
+      failGate("PR-09: personality update injection must require complete model support");
+    }
+    if (!grepRepo("message\\.length > 0", "runtime/src/session/run-turn.ts")) {
+      failGate("PR-09: personality update injection must filter empty templates");
+    }
+    if (!grepRepo("empty-template", "runtime/src/session/run-turn.test.ts")) {
+      failGate("PR-09: empty personality template regression test missing");
+    }
+    if (!grepRepo("incomplete-template", "runtime/src/session/run-turn.test.ts")) {
+      failGate("PR-09: incomplete personality template regression test missing");
+    }
+    if (!grepRepo("export type Personality = \"none\" \\| \"friendly\" \\| \"pragmatic\"", "runtime/src/config/schema.ts")) {
+      failGate("PR-09: config personality enum has not been replaced");
+    }
+    if (!grepRepo("personality-spec-developer-fragment", "parity/PR-09-parity.json")) {
+      failGate("PR-09: parity matrix missing personality contract");
+    }
+    const vitest = run("npm", [
+      "test",
+      "--",
+      "src/context/personality-spec-instructions.test.ts",
+      "src/llm/registry/registry.test.ts",
+      "src/session/run-turn.test.ts",
+      "src/session/rollout-reconstruction.test.ts",
+    ], { cwd: path.join(root, "runtime") });
+    if (vitest.status !== 0) failGate("PR-09 targeted Vitest suite failed");
+    pass("PR-09 targeted Vitest suite passed");
+    pass("PR-09: personality template and developer fragment behavior present");
     return;
   }
   failGate(

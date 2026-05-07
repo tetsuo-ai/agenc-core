@@ -13,6 +13,10 @@ import {
   REALTIME_CONVERSATION_CLOSE_TAG,
   REALTIME_CONVERSATION_OPEN_TAG,
 } from "../conversation/realtime/instructions/markers.js";
+import {
+  PERSONALITY_SPEC_END_MARKER,
+  PERSONALITY_SPEC_START_MARKER,
+} from "../context/personality-spec-instructions.js";
 
 describe("rollout-reconstruction", () => {
   test("replays response_items into history", () => {
@@ -272,9 +276,17 @@ describe("rollout-reconstruction", () => {
 
   test("thread rollback trims realtime developer context without counting it as a user turn", () => {
     const realtimeDeveloper = `${REALTIME_CONVERSATION_OPEN_TAG}\nstarted\n${REALTIME_CONVERSATION_CLOSE_TAG}`;
+    const personalityDeveloper = `${PERSONALITY_SPEC_START_MARKER}style${PERSONALITY_SPEC_END_MARKER}`;
     const items: RolloutItem[] = [
       { type: "response_item", payload: { role: "user", content: "real-u1" } },
       { type: "response_item", payload: { role: "assistant", content: "a1" } },
+      {
+        type: "response_item",
+        payload: {
+          role: "developer",
+          content: [{ type: "input_text", text: personalityDeveloper }],
+        },
+      },
       {
         type: "response_item",
         payload: {
@@ -343,7 +355,7 @@ describe("rollout-reconstruction", () => {
     expect(r.state.lastTurnContext).toBeUndefined();
   });
 
-  test("realtimeActive flows from turn_context into previousTurnSettings", () => {
+  test("contextual settings flow from turn_context into previousTurnSettings", () => {
     const items: RolloutItem[] = [
       {
         type: "event_msg",
@@ -362,6 +374,7 @@ describe("rollout-reconstruction", () => {
           sandboxPolicy: "workspace-write",
           model: "grok-4",
           realtimeActive: true,
+          personality: "friendly",
         } as unknown as import("./event-log.js").TurnContextItem,
       },
       { type: "response_item", payload: { role: "user", content: "hi" } },
@@ -378,6 +391,7 @@ describe("rollout-reconstruction", () => {
     expect(r.previousTurnSettings).toBeDefined();
     expect(r.previousTurnSettings?.model).toBe("grok-4");
     expect(r.previousTurnSettings?.realtimeActive).toBe(true);
+    expect(r.previousTurnSettings?.personality).toBe("friendly");
   });
 
   test("legacy compacted (no replacementHistory) rebuilds history via buildCompactedHistory", () => {
