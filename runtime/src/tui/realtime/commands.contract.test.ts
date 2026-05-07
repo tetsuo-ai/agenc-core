@@ -49,7 +49,7 @@ describe("AgenC realtime composer commands", () => {
     expect(parseRealtimeComposerCommand("/realtime unknown")).toBeNull();
   });
 
-  test("executes realtime composer controls and consumes commands without controls", async () => {
+  test("executes realtime composer controls and leaves commands unhandled without controls", async () => {
     const controls = createControls();
 
     await expect(

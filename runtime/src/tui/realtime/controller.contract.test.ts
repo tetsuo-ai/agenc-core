@@ -76,10 +76,11 @@ describe("AgenC realtime TUI controller", () => {
   test("routes websocket start, text, audio, and stop through daemon RPC", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
+    const emitted: JsonObject[] = [];
     const controls = createRealtimeTuiControls({
       threadId: "agent_1",
       client,
-      emitEvent: () => {},
+      emitEvent: (event) => emitted.push(event),
       startAudioCapture: createNoopAudioCapture(),
       audioPlayer,
     });
@@ -97,6 +98,9 @@ describe("AgenC realtime TUI controller", () => {
       phase: "inactive",
       closedBanner: "Realtime closed: requested",
     });
+    expect(emitted.some((event) => event.type === "realtime_closed")).toBe(
+      false,
+    );
 
     expect(client.requests).toEqual([
       {
@@ -200,6 +204,40 @@ describe("AgenC realtime TUI controller", () => {
 
     await controls.stop();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  test("serializes overlapping start and stop lifecycle operations", async () => {
+    const client = createClient();
+    let releaseCapture: (() => void) | null = null;
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      startAudioCapture: async () => {
+        await new Promise<void>((resolve) => {
+          releaseCapture = resolve;
+        });
+        return { stop: vi.fn() };
+      },
+    });
+
+    const start = controls.start({ transport: "websocket" });
+    const stop = controls.stop();
+    await waitFor(
+      () =>
+        client.requests.some(
+          (request) => request.method === "thread/realtime/start",
+        ),
+      "daemon start before queued stop",
+    );
+    releaseCapture?.();
+    await Promise.all([start, stop]);
+
+    expect(client.requests.map((request) => request.method)).toEqual([
+      "thread/realtime/start",
+      "thread/realtime/stop",
+    ]);
+    expect(controls.getState().phase).toBe("inactive");
   });
 
   test("closes WebRTC and surfaces an error when provider SDP is rejected", async () => {
@@ -419,6 +457,26 @@ describe("AgenC realtime TUI controller", () => {
     expect(audioPlayer.enqueued).toEqual([
       { ...audio, samplesPerChannel: null, itemId: null },
     ]);
+  });
+
+  test("ignores stale started notifications after a stopped session", async () => {
+    const client = createClient();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+    });
+
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "stale" },
+    });
+
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      realtimeSessionId: null,
+      transport: null,
+    });
   });
 
   test("surfaces stop RPC failures after local WebRTC cleanup", async () => {

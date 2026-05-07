@@ -577,6 +577,7 @@ function connectPersistentDaemonClient(
       {
         readonly resolve: (value: unknown) => void;
         readonly reject: (error: Error) => void;
+        readonly timeout: ReturnType<typeof setTimeout>;
       }
     >();
     const sessionListeners = new Map<
@@ -608,6 +609,7 @@ function connectPersistentDaemonClient(
 
     const failPending = (error: Error) => {
       for (const waiter of pending.values()) {
+        clearTimeout(waiter.timeout);
         waiter.reject(error);
       }
       pending.clear();
@@ -642,9 +644,22 @@ function connectPersistentDaemonClient(
           params,
         };
         return new Promise<unknown>((requestResolve, requestReject) => {
+          const requestTimeout = setTimeout(() => {
+            pending.delete(id);
+            requestReject(
+              new Error(`Timed out waiting for daemon response to ${method}`),
+            );
+          }, timeoutMs);
           pending.set(id, {
-            resolve: requestResolve,
-            reject: requestReject,
+            resolve: (value) => {
+              clearTimeout(requestTimeout);
+              requestResolve(value);
+            },
+            reject: (error) => {
+              clearTimeout(requestTimeout);
+              requestReject(error);
+            },
+            timeout: requestTimeout,
           });
           socket.write(`${JSON.stringify(request)}\n`);
         }) as Promise<AgenCDaemonResultByMethod[typeof method]>;
@@ -695,13 +710,26 @@ function connectPersistentDaemonClient(
         const line = buffer.slice(0, newlineIndex).trim();
         buffer = buffer.slice(newlineIndex + 1);
         if (line.length > 0) {
-          handlePersistentDaemonMessage(
-            line,
-            pending,
-            sessionListeners,
-            bufferedSessionEvents,
-            notificationListeners,
-          );
+          try {
+            handlePersistentDaemonMessage(
+              line,
+              pending,
+              sessionListeners,
+              bufferedSessionEvents,
+              notificationListeners,
+            );
+          } catch (error) {
+            const parseError =
+              error instanceof Error ? error : new Error(String(error));
+            setConnectionState({
+              status: "disconnected",
+              message: parseError.message,
+            });
+            failPending(parseError);
+            closed = true;
+            socket.destroy(parseError);
+            return;
+          }
         }
         newlineIndex = buffer.indexOf("\n");
       }
@@ -739,6 +767,7 @@ function handlePersistentDaemonMessage(
     {
       readonly resolve: (value: unknown) => void;
       readonly reject: (error: Error) => void;
+      readonly timeout: ReturnType<typeof setTimeout>;
     }
   >,
   sessionListeners: Map<string, Set<(event: JsonObject) => void>>,
@@ -751,6 +780,7 @@ function handlePersistentDaemonMessage(
     const waiter = pending.get(message.id);
     if (waiter === undefined) return;
     pending.delete(message.id);
+    clearTimeout(waiter.timeout);
     const response = message as AgenCDaemonResponse;
     if (isErrorResponse(response)) {
       waiter.reject(new Error(response.error.message));

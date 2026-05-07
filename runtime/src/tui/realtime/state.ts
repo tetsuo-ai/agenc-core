@@ -124,6 +124,7 @@ export function reduceRealtimeTuiState(
         errorBanner: event.message,
       };
     case "started":
+      if (state.phase !== "starting") return state;
       return {
         ...state,
         phase: state.transport === "webrtc" ? "starting" : "active",

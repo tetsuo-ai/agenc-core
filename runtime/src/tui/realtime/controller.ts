@@ -87,6 +87,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   #webRtc: StartedRealtimeWebrtcSession | null = null;
   #audioCapture: RealtimeAudioCaptureSession | null = null;
   #eventSequence = 0;
+  #lifecycleOperation: Promise<void> = Promise.resolve();
 
   constructor(options: CreateRealtimeTuiControlsOptions) {
     this.#threadId = options.threadId;
@@ -100,6 +101,20 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   }
 
   async start(options: RealtimeStartOptions = {}): Promise<void> {
+    await this.#runLifecycleOperation(() => this.#start(options));
+  }
+
+  async stop(): Promise<void> {
+    await this.#runLifecycleOperation(() => this.#stop());
+  }
+
+  async #runLifecycleOperation(operation: () => Promise<void>): Promise<void> {
+    const next = this.#lifecycleOperation.then(operation, operation);
+    this.#lifecycleOperation = next.catch(() => {});
+    await next;
+  }
+
+  async #start(options: RealtimeStartOptions = {}): Promise<void> {
     if (this.#state.phase === "starting" || this.#state.phase === "active") {
       return;
     }
@@ -139,7 +154,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     }
   }
 
-  async stop(): Promise<void> {
+  async #stop(): Promise<void> {
     if (this.#state.phase === "inactive") return;
     this.#dispatch({ type: "stop_requested" });
     await this.#stopAudioCapture();
@@ -154,10 +169,6 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       } satisfies ThreadRealtimeStopParams);
       this.#audioPlayer.close();
       this.#dispatch({ type: "closed", reason: "requested" });
-      this.#emitLocal("realtime_closed", {
-        threadId: this.#threadId,
-        reason: "requested",
-      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.#dispatch({ type: "error", message });

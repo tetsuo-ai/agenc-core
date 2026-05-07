@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -1124,6 +1125,96 @@ autostart = false
       ]);
     } finally {
       unsubscribe();
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("disconnects persistent TUI clients on malformed daemon JSON lines", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-bad-json-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) return;
+        const line = buffer.slice(0, newline);
+        const message = JSON.parse(line) as { readonly id: number };
+        socket.write(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          })}\n`,
+        );
+        socket.write("{bad-json\n");
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(socketPath, resolve);
+    });
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "bad-json-cookie",
+      timeoutMs: 200,
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(client.getConnectionState()).toMatchObject({
+        status: "disconnected",
+      });
+      expect(client.getConnectionState().message).toContain("JSON");
+    } finally {
+      await client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("times out persistent daemon requests that never receive responses", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-request-timeout-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "timeout-cookie",
+      timeoutMs: 50,
+    });
+    try {
+      await expect(
+        client.request("thread/realtime/start", {
+          threadId: "agent_timeout",
+          transport: { type: "websocket" },
+          outputModality: "audio",
+        }),
+      ).rejects.toThrow(
+        "Timed out waiting for daemon response to thread/realtime/start",
+      );
+    } finally {
       await client.close();
       await server.close();
       await rm(dir, { recursive: true, force: true });
