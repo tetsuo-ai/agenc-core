@@ -9,7 +9,7 @@ import {
 } from '../../commands.js'
 import { onGrowthBookRefresh } from '../../services/analytics/growthbook'
 import { logError } from '../../utils/log' // upstream-import: keep target is owned by another Z-PURGE item
-import { skillChangeDetector } from '../../utils/skills/skillChangeDetector' // upstream-import: keep target is owned by another Z-PURGE item
+import { skillChangeDetector } from '../../skills/change-detector'
 
 /**
  * Keep the commands list fresh across two triggers:
