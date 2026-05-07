@@ -24,9 +24,9 @@
     ],
     "ignoredRuntimeFileCount": 439,
     "ignoredIssueEntryCount": 4499,
-    "configSha256": "49f08f56fef130860ee7a4e18c3e6726bffeedb06d844ba076a8dcf9838b9f22",
+    "configSha256": "2cf799c378e055f1c48bd143e066819df40aa0e1c19c3739dff6bf1621cf7a2c",
     "issueIgnoreFile": ".knip-issues-ignore.json",
     "issueIgnoreSha256": "2c90046487235b8a1fadfcf71c93e4a64e68127a44ffe53f6cab13860231436d",
-    "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles list covers exact retained file paths. The issue ignore file is generated from the current narrowed Knip report as exact file/type/name entries; new unused symbols or dependency entries outside that list fail gate 4."
+    "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles list covers exact retained file paths. The .knip.json ignoreIssues map is generated from the exact issue audit file as file/type coverage for genuine retained public or test support surface; the verifier also runs a raw Knip audit with ignoreIssues stripped and fails on any symbol-level issue not present in the exact audit file."
   }
 }

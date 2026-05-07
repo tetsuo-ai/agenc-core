@@ -547,5 +547,9 @@ releaseMergeLock();
 removeCompletionMarkerDirForFinalItem();
 
 process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
-process.stdout.write(`${DIM}This is ONE iteration of the loop, not goal completion. The goal is the entire checklist. Continue: cd /home/tetsuo/git/AgenC/agenc-core && node scripts/goal/next.mjs${RESET}\n`);
+if (id === "Z-FINAL") {
+  process.stdout.write(`${DIM}Final cleanup removed the checklist workflow artifacts; inspect main for the release-clean tree.${RESET}\n`);
+} else {
+  process.stdout.write(`${DIM}This is ONE iteration of the loop, not goal completion. The goal is the entire checklist. Continue: cd /home/tetsuo/git/AgenC/agenc-core && node scripts/goal/next.mjs${RESET}\n`);
+}
 process.exit(0);
