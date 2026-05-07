@@ -366,7 +366,7 @@ export function ExitPlanModePermissionRequest({
       // Set initial message - REPL will handle context clear and fresh query
       // Add verification instruction if the feature is enabled
       // Dead code elimination: AGENC_VERIFY_PLAN='false' in external builds, so === 'true' check allows Bun to eliminate the string
-      const verificationInstruction = undefined === 'true' ? `\n\nIMPORTANT: When you have finished implementing the plan, you MUST call the "VerifyPlanExecution" tool directly (NOT the ${AGENT_TOOL_NAME} tool or an agent) to trigger background verification.` : '';
+      const verificationInstruction = undefined === 'true' ? `\n\nIMPORTANT: When you have finished implementing the plan, verify the plan directly (NOT via the ${AGENT_TOOL_NAME} tool or an agent) before continuing.` : '';
 
       // Capture the transcript path before context is cleared (session ID will be regenerated)
       const transcriptPath = getTranscriptPath();
