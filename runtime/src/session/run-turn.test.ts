@@ -83,7 +83,7 @@ import { StreamingToolExecutor as LiveStreamingToolExecutor } from "../phases/_d
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
-import { BudgetTracker } from "../llm/token-budget.js";
+import { BudgetTracker } from "../conversation/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {

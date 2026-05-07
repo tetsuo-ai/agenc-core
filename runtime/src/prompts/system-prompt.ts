@@ -46,12 +46,15 @@ import {
   AUTONOMOUS_TICK_TAG,
   isAutonomousModeEnabled,
 } from "../session/autonomous-mode.js";
+import { feature } from "bun:bundle";
+import { getTokenBudgetPromptSection } from "../conversation/token-budget.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
 import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
+  systemPromptSection,
   type SystemPromptSection,
 } from "./sections.js";
 
@@ -731,6 +734,14 @@ export async function assembleSystemPrompt(
       () => getScratchpadSection(opts.scratchpadDir),
       "scratchpad availability is session-specific",
     ),
+    ...(feature("TOKEN_BUDGET")
+      ? [
+          systemPromptSection(
+            "token_budget",
+            () => getTokenBudgetPromptSection(),
+          ),
+        ]
+      : []),
   ];
 
   const resolved = await resolveSystemPromptSections(dynamicDecls);

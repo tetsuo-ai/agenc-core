@@ -96,7 +96,7 @@ import { writeToMailbox } from '../../../utils/teammateMailbox.js';
 import type { TextHighlight } from '../../../utils/textHighlighting.js';
 import type { Theme } from '../../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../../utils/thinking.js';
-import { findTokenBudgetPositions } from '../../../utils/tokenBudget.js';
+import { findTokenBudgetPositions } from '../../../conversation/token-budget.js';
 import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../../utils/ultraplan/keyword.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';

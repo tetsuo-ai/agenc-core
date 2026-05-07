@@ -64,6 +64,7 @@ import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/compact/cachedMicrocompact.js'
 import { getAntModelOverrideConfig } from '../utils/model/antModels.js'
+import { getTokenBudgetPromptSection } from '../conversation/token-budget.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -546,8 +547,7 @@ ${CYBER_RISK_INSTRUCTION}`,
           // budget-continuation paths don't see attachments (#21577).
           systemPromptSection(
             'token_budget',
-            () =>
-              'When the user specifies a token target (e.g., "+500k", "spend 2M tokens", "use 1B tokens"), your output token count will be shown each turn. Keep working until you approach the target \u2014 plan your work to fill it productively. The target is a hard minimum, not a suggestion. If you stop early, the system will automatically continue you.',
+            () => getTokenBudgetPromptSection(),
           ),
         ]
       : []),

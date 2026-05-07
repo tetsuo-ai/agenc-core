@@ -14,7 +14,7 @@
  *     but as a plain process listener so the runtime can install or skip
  *     it without depending on React.
  *   - Emit `token_budget_exceeded` warnings via the session-level
- *     BudgetTracker (integrates with llm/token-budget.ts per I-22).
+ *     BudgetTracker (integrates with conversation/token-budget.ts per I-22).
  *
  * @module
  */
@@ -22,7 +22,7 @@
 import { join } from "node:path";
 import { promises as fsp } from "node:fs";
 import { monotonicMs } from "./_deps/utils.js";
-import type { BudgetTracker } from "../llm/token-budget.js";
+import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 

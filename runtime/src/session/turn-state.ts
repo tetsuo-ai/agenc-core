@@ -19,7 +19,7 @@
  */
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
-import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../llm/token-budget.js";
+import type { TokenBudgetDecision as BoundaryTokenBudgetDecision } from "../conversation/token-budget.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import type { TurnContext } from "./turn-context.js";
 import {
@@ -206,7 +206,7 @@ export interface ToolUseBlock {
 
 /**
  * Turn-state view of a token-budget continuation decision (I-22).
- * `llm/token-budget.ts` owns the boundary decision; the phase ladder carries
+ * `conversation/token-budget.ts` owns the boundary decision; the phase ladder carries
  * a compact `kind/reason` envelope so recovery can inject the continuation
  * nudge without depending on the tracker instance.
  */

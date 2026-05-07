@@ -5,7 +5,7 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import { spawnSync } from 'child_process';
 import { snapshotOutputTokensForTurn, getCurrentTurnTokenBudget, getTurnOutputTokens, getBudgetContinuationCount, getTotalInputTokens } from '../../bootstrap/state.js';
-import { parseTokenBudget } from '../../utils/tokenBudget.js';
+import { parseTokenBudget } from '../../conversation/token-budget.js';
 import { count } from '../../utils/array.js';
 import { dirname, join } from 'path';
 import { tmpdir } from 'os';

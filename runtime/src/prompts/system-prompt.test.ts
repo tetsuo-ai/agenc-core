@@ -492,6 +492,31 @@ describe("assembleSystemPrompt", () => {
     expect(sections[0]).toContain("AgenC");
     expect(sections[1]).toBe(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(sections[2]).toContain("# Environment");
+    expect(sections.join("\n")).not.toContain("token target");
+  });
+
+  test("token budget guidance is post-boundary in the normal prompt", async () => {
+    const { text, sections } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      envForSimpleMode: {},
+    });
+
+    expect(text).toContain('When the user specifies a token target');
+    expect(text).toContain("+500k");
+    expect(text).toContain("hard minimum");
+
+    const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(
+      sections
+        .slice(0, boundaryIdx)
+        .some((s) => s.includes("token target")),
+    ).toBe(false);
+    expect(
+      sections
+        .slice(boundaryIdx + 1)
+        .some((s) => s.includes("token target")),
+    ).toBe(true);
   });
 
   test("legacy system.agent.delegate does not add subagent prompt prose", async () => {
