@@ -169,6 +169,16 @@ const ITEM_EVIDENCE = {
       { pattern: "Do not write these instructions", scope: "runtime/src/commands/init.ts" },
     ],
   },
+  "GAP-TUI-06": {
+    files: ["runtime/src/commands/copy.ts"],
+    tests: ["runtime/src/commands/copy.test.ts"],
+    grepPresent: [
+      { pattern: "copyTextToClipboard", scope: "runtime/src/commands/copy.ts" },
+      { pattern: "setClipboard", scope: "runtime/src/commands/copy.ts" },
+      { pattern: "writeSequence", scope: "runtime/src/commands/copy.ts" },
+      { pattern: "Copied to clipboard|Sent to clipboard via OSC 52", scope: "runtime/src/commands/copy.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6515,6 +6525,10 @@ async function gapGates(item) {
     assertGapTuiInitGeneratesViaModel();
     return;
   }
+  if (item.title.includes("/copy: actually copy to system clipboard")) {
+    assertGapTuiCopyWritesClipboard();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7085,6 +7099,85 @@ function assertGapTuiInitGeneratesViaModel() {
     failGate("GAP-TUI-05 targeted init test failed");
   }
   pass("GAP-TUI-05 targeted init test passed");
+}
+
+function assertGapTuiCopyWritesClipboard() {
+  const sourceRel = "runtime/src/commands/copy.ts";
+  const testRel = "runtime/src/commands/copy.test.ts";
+  const sourcePath = path.join(root, sourceRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(sourcePath)) failGate(`GAP-TUI-06: missing ${sourceRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-06: missing ${testRel}`);
+
+  const source = readFileSync(sourcePath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const missingEvidence = [
+    [
+      "copy command imports the terminal clipboard transport",
+      /from\s+["']\.\.\/tui\/ink\/termio\/osc\.js["']/,
+      source,
+    ],
+    [
+      "copy command exposes an injectable clipboard writer",
+      /export\s+async\s+function\s+copyTextToClipboard/,
+      source,
+    ],
+    [
+      "copy helper writes selected text through the clipboard transport",
+      /deps\.setClipboard\(text\)/,
+      source,
+    ],
+    [
+      "copy helper emits returned OSC control sequence when needed",
+      /deps\.writeSequence\(sequence\)/,
+      source,
+    ],
+    [
+      "slash command returns clipboard confirmation after writing",
+      /return\s*\{\s*kind:\s*["']text["']\s*,\s*text:\s*await\s+copyTextToClipboard\(text,\s*deps\)\s*\}/,
+      source,
+    ],
+    [
+      "copy tests assert latest-message clipboard payload",
+      /setClipboard\)\.toHaveBeenCalledWith\(["']answer["']\)/,
+      test,
+    ],
+    [
+      "copy tests assert transcript clipboard payload",
+      /setClipboard\)\.toHaveBeenCalledWith\(\s*["']USER:\\nquestion\\n\\nASSISTANT:\\nanswer["']/,
+      test,
+    ],
+    [
+      "copy tests assert returned terminal sequence write",
+      /writeSequence\)\.toHaveBeenCalledWith/,
+      test,
+    ],
+    [
+      "copy tests assert empty terminal sequences are not written",
+      /writeSequence\)\.not\.toHaveBeenCalled/,
+      test,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-06 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/return\s*\{\s*kind:\s*["']text["']\s*,\s*text:\s*formatCopyExport\(/.test(source)) {
+    failGate("GAP-TUI-06: /copy must not return transcript text without writing the clipboard");
+  }
+
+  pass("GAP-TUI-06: copy clipboard evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/copy.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-06 targeted copy test failed");
+  }
+  pass("GAP-TUI-06 targeted copy test passed");
 }
 
 function subsystemDirGates(label, dir) {
