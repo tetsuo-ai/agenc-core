@@ -23,6 +23,7 @@
     "runtime/src/app-server-protocol/portal.contract.test.ts",
     "runtime/src/app-server-protocol/portal-auth.contract.test.ts",
     "runtime/src/index.ts",
+    "runtime/src/utils/secureStorage/windowsCredentialStorage.ts",
     "scripts/goal/verify.mjs",
     "scripts/goal/review.mjs",
     "agenc-portal/src/daemon-connection.js",
@@ -89,5 +90,15 @@
     "WP-03 does not introduce a hosted portal backend; local and remote portal connections still target daemon JSON-RPC endpoints from WP-02.",
     "The browser portal intentionally does not persist AuthBackend tokens. The daemon owns token persistence and the portal renders only redacted whoami identity state.",
     "Session and agent mutation workflows remain owned by WP-04 and WP-05."
+  ],
+  "mergeResolutions": [
+    {
+      "context": "main integrated MM-01 while WP-03 was in progress and introduced a type-only execa import that is not exported by the installed execa version.",
+      "resolution": "Kept the merged Windows secure-storage DPAPI behavior and replaced the invalid external type import with the local result shape this file actually reads.",
+      "validation": [
+        "npm run typecheck",
+        "node scripts/goal/verify.mjs WP-03"
+      ]
+    }
   ]
 }
