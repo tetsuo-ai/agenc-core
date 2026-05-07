@@ -262,6 +262,21 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc daemon", scope: "scripts/goal/verify.mjs" },
     ],
   },
+  "MG-05": {
+    files: [
+      "package.json",
+      "runtime/package.json",
+      "scripts/goal/verify.mjs",
+    ],
+    grepPresent: [
+      { pattern: "\"daemon\": \"node bin/agenc daemon start --foreground\"", scope: "runtime/package.json" },
+      { pattern: "\"daemon:status\": \"node bin/agenc daemon status\"", scope: "runtime/package.json" },
+      { pattern: "\"start\": \"node bin/agenc\"", scope: "runtime/package.json" },
+      { pattern: "\"daemon\": \"npm --workspace=@tetsuo-ai/runtime run daemon\"", scope: "package.json" },
+      { pattern: "\"daemon:status\": \"npm --workspace=@tetsuo-ai/runtime run daemon:status\"", scope: "package.json" },
+      { pattern: "\"start\": \"npm --workspace=@tetsuo-ai/runtime run start\"", scope: "package.json" },
+    ],
+  },
   "IDE-02": {
     files: [
       "runtime/src/app-server-protocol/ide-extension.ts",
@@ -4735,10 +4750,33 @@ async function migrationGates(item) {
     return;
   }
   if (id === "MG-05") {
-    // Wrapper update for daemon autostart.
-    const found = grepRepo("daemon.autostart", "runtime/src/config");
-    if (!found) failGate("MG-05: 'daemon.autostart' config flag not referenced under runtime/src/config/");
-    pass("MG-05: daemon.autostart wired");
+    const rootPkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+    const runtimePkg = JSON.parse(readFileSync(path.join(root, "runtime/package.json"), "utf8"));
+    const expectedRootScripts = {
+      daemon: "npm --workspace=@tetsuo-ai/runtime run daemon",
+      "daemon:status": "npm --workspace=@tetsuo-ai/runtime run daemon:status",
+      start: "npm --workspace=@tetsuo-ai/runtime run start",
+    };
+    const expectedRuntimeScripts = {
+      daemon: "node bin/agenc daemon start --foreground",
+      "daemon:status": "node bin/agenc daemon status",
+      start: "node bin/agenc",
+    };
+    const failures = [];
+    for (const [name, expected] of Object.entries(expectedRuntimeScripts)) {
+      if (runtimePkg.scripts?.[name] !== expected) {
+        failures.push(`runtime/package.json scripts.${name} must be ${JSON.stringify(expected)}`);
+      }
+    }
+    for (const [name, expected] of Object.entries(expectedRootScripts)) {
+      if (rootPkg.scripts?.[name] !== expected) {
+        failures.push(`package.json scripts.${name} must be ${JSON.stringify(expected)}`);
+      }
+    }
+    if (failures.length > 0) {
+      failGate(`MG-05: daemon-driven package script surface mismatch:\n  - ${failures.join("\n  - ")}`);
+    }
+    pass("MG-05: runtime and root package daemon/start scripts present");
     return;
   }
   if (id === "MG-06") {
