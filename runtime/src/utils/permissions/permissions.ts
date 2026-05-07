@@ -56,14 +56,13 @@ import {
   type PermissionRuleFromEditableSettings,
   shouldAllowManagedPermissionRulesOnly,
 } from './permissionsLoader.js'
-import * as classifierDecisionModuleLive from './classifierDecision.js'
-import * as autoModeStateModuleLive from './autoModeState.js'
 
+/* eslint-disable @typescript-eslint/no-require-imports */
 const classifierDecisionModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? classifierDecisionModuleLive
+  ? (require('./classifierDecision.js') as typeof import('./classifierDecision.js'))
   : null
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? autoModeStateModuleLive
+  ? (require('./autoModeState.js') as typeof import('./autoModeState.js'))
   : null
 
 import { addToTurnClassifierDuration } from '../../bootstrap/state.js'
@@ -87,6 +86,7 @@ import {
   DONT_ASK_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
+/* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonStringify } from '../slowOperations.js'
 import {
   createDenialTrackingState,

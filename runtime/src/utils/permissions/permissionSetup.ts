@@ -31,9 +31,11 @@ import {
 import { parseToolListFromCLI } from './toolListParser.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
 import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
-import * as autoModeStateModuleLive from './autoModeState.js'
 
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? autoModeStateModuleLive : null
+/* eslint-disable @typescript-eslint/no-require-imports */
+const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
+  ? (require('./autoModeState.js') as typeof import('./autoModeState.js'))
+  : null
 
 import { resolve } from 'path'
 import {
