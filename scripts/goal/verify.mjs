@@ -280,7 +280,6 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/components/MessageSelector.tsx",
       "runtime/src/tui/components/message-selector-filter.ts",
       "runtime/src/tui/components/MessageSelector.filter.test.ts",
-      "runtime/src/tui/components/PromptInput/Notifications.tsx",
       "runtime/src/session/session.ts",
       "runtime/src/session/session.test.ts",
       "runtime/src/session/message-history-conversion.ts",
@@ -293,8 +292,9 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/daemon-session.contract.test.ts",
       "runtime/src/app-server/agent-cli.ts",
       "runtime/src/app-server/protocol/index.ts",
-      "runtime/src/app-server/protocol/schema.json",
       "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+      "runtime/src/commands/clear.ts",
+      "runtime/src/commands/clear.test.ts",
       "scripts/goal/verify.mjs",
     ],
     tests: [
@@ -306,6 +306,7 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/components/MessageSelector.filter.test.ts",
       "runtime/src/app-server/protocol.contract.test.ts",
       "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+      "runtime/src/commands/clear.test.ts",
     ],
     grepPresent: [
       { pattern: "useCostSummary\\(useFpsMetrics\\(\\)\\)", scope: "runtime/src/tui/components/App.tsx" },
@@ -327,10 +328,11 @@ const ITEM_EVIDENCE = {
       { pattern: "session\\.partialCompactFromMessage", scope: "runtime/src/app-server/protocol/index.ts" },
       { pattern: "session\\.rewindConversationToMessage", scope: "runtime/src/app-server/protocol/index.ts" },
       { pattern: "matches the session selector by rejecting empty visible user text", scope: "runtime/src/tui/components/MessageSelector.filter.test.ts" },
-      { pattern: "TokenWarning", scope: "runtime/src/tui/components/PromptInput/Notifications.tsx" },
       { pattern: "installs compact progress controls and restores them on unmount", scope: "runtime/src/tui/components/App.render.test.tsx" },
       { pattern: "routes exit through worktree ExitFlow", scope: "runtime/src/tui/components/App.render.test.tsx" },
       { pattern: "wires MessageSelector code restore, conversation rewind, and partial summarize", scope: "runtime/src/tui/components/App.render.test.tsx" },
+      { pattern: "blocks MessageSelector conversation actions while a turn is active", scope: "runtime/src/tui/components/App.render.test.tsx" },
+      { pattern: "refuses to clear while a turn is in flight", scope: "runtime/src/commands/clear.test.ts" },
     ],
     grepNotPresent: [
       { pattern: "This rewind action is unavailable in the live TUI shell", scope: "runtime/src/tui/components/App.tsx" },
@@ -8600,7 +8602,7 @@ function assertGapTuiAppShellReconciled() {
     appTest: "runtime/src/tui/components/App.render.test.tsx",
     selectorFilter: "runtime/src/tui/components/message-selector-filter.ts",
     selectorFilterTest: "runtime/src/tui/components/MessageSelector.filter.test.ts",
-    notifications: "runtime/src/tui/components/PromptInput/Notifications.tsx",
+    selector: "runtime/src/tui/components/MessageSelector.tsx",
     session: "runtime/src/session/session.ts",
     sessionTest: "runtime/src/session/session.test.ts",
     compact: "runtime/src/services/compact/compact.ts",
@@ -8609,6 +8611,7 @@ function assertGapTuiAppShellReconciled() {
     transcriptTest: "runtime/src/tui/parity/session-transcript.test.ts",
     protocol: "runtime/src/app-server/protocol/index.ts",
     agentLifecycle: "runtime/src/app-server/agent-lifecycle.ts",
+    clearTest: "runtime/src/commands/clear.test.ts",
   };
   for (const rel of Object.values(rels)) {
     if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-12: missing ${rel}`);
@@ -8616,9 +8619,9 @@ function assertGapTuiAppShellReconciled() {
 
   const app = readFileSync(path.join(root, rels.app), "utf8");
   const appTest = readFileSync(path.join(root, rels.appTest), "utf8");
+  const selector = readFileSync(path.join(root, rels.selector), "utf8");
   const selectorFilter = readFileSync(path.join(root, rels.selectorFilter), "utf8");
   const selectorFilterTest = readFileSync(path.join(root, rels.selectorFilterTest), "utf8");
-  const notifications = readFileSync(path.join(root, rels.notifications), "utf8");
   const session = readFileSync(path.join(root, rels.session), "utf8");
   const sessionTest = readFileSync(path.join(root, rels.sessionTest), "utf8");
   const compact = readFileSync(path.join(root, rels.compact), "utf8");
@@ -8627,6 +8630,7 @@ function assertGapTuiAppShellReconciled() {
   const transcriptTest = readFileSync(path.join(root, rels.transcriptTest), "utf8");
   const protocol = readFileSync(path.join(root, rels.protocol), "utf8");
   const agentLifecycle = readFileSync(path.join(root, rels.agentLifecycle), "utf8");
+  const clearTest = readFileSync(path.join(root, rels.clearTest), "utf8");
 
   if (/This rewind action is unavailable in the live TUI shell/.test(app)) {
     failGate("GAP-TUI-12: old MessageSelector throwing fallback remains in App.tsx");
@@ -8687,6 +8691,11 @@ function assertGapTuiAppShellReconciled() {
     [
       "App rewinds conversation through the session replacement surface",
       /const\s+handleRestoreMessage\s*=\s*useCallback[\s\S]*props\.session\.rewindConversationToMessage[\s\S]*messageOrdinal[\s\S]*emitPhaseEvent\?\./,
+      app,
+    ],
+    [
+      "App blocks conversation actions while a turn is active",
+      /CONVERSATION_ACTION_BUSY_MESSAGE[\s\S]*hasActiveConversationTurn[\s\S]*handleRestoreMessage[\s\S]*transcript\.isStreaming[\s\S]*handleSummarize[\s\S]*transcript\.isStreaming/,
       app,
     ],
     [
@@ -8756,13 +8765,13 @@ function assertGapTuiAppShellReconciled() {
     ],
     [
       "Daemon protocol declares session partial compaction as an internal TUI method",
-      /AGENC_DAEMON_INTERNAL_METHODS[\s\S]*["']session\.partialCompactFromMessage["'][\s\S]*["']session\.rewindConversationToMessage["'][\s\S]*SessionPartialCompactFromMessageParams[\s\S]*SessionRewindConversationToMessageParams[\s\S]*SessionPartialCompactFromMessageResult[\s\S]*SessionRewindConversationToMessageResult/,
+      /AGENC_DAEMON_INTERNAL_METHODS[\s\S]*["']session\.partialCompactFromMessage["'][\s\S]*["']session\.rewindConversationToMessage["'][\s\S]*AGENC_DAEMON_INTERNAL_METHOD_SPECS[\s\S]*SessionPartialCompactFromMessageParams[\s\S]*SessionRewindConversationToMessageParams[\s\S]*SessionPartialCompactFromMessageResult[\s\S]*SessionRewindConversationToMessageResult[\s\S]*AgenCDaemonInternalResultByMethod/,
       protocol,
     ],
     [
-      "TokenWarning remains owned by PromptInput notifications using live messages/model",
-      /import\s+\{\s*TokenWarning\s*\}[\s\S]*tokenCountFromLastAPIResponse\(messagesForTokenCount\)[\s\S]*<TokenWarning\s+tokenUsage=\{tokenUsage\}\s+model=\{mainLoopModel\}/,
-      notifications,
+      "MessageSelector exposes both partial summarize directions",
+      /value:\s*'summarize'[\s\S]*value:\s*'summarize_up_to'[\s\S]*label:\s*'Summarize up to here'/,
+      selector,
     ],
     [
       "test covers compact controls install/cleanup",
@@ -8782,6 +8791,16 @@ function assertGapTuiAppShellReconciled() {
     [
       "test covers code restore, conversation rewind, and partial summarize",
       /wires MessageSelector code restore, conversation rewind, and partial summarize[\s\S]*fileHistoryRewind[\s\S]*rewindConversationToMessage[\s\S]*partialCompactFromMessage[\s\S]*expect\(session\.clearDaemonSession\)\.not\.toHaveBeenCalled/,
+      appTest,
+    ],
+    [
+      "test covers active-turn selector action rejection",
+      /blocks MessageSelector conversation actions while a turn is active[\s\S]*activeTurn[\s\S]*onRestoreMessage[\s\S]*onSummarize[\s\S]*not\.toHaveBeenCalled/,
+      appTest,
+    ],
+    [
+      "test covers elicitation abort-listener cleanup on normal completion",
+      /removes direct user-input abort listeners after normal completion[\s\S]*removeEventListener[\s\S]*listeners\.size\)\.toBe\(0\)/,
       appTest,
     ],
     [
@@ -8825,6 +8844,11 @@ function assertGapTuiAppShellReconciled() {
       selectorFilterTest,
     ],
     [
+      "selector tests cover summarize-up-to reachability",
+      /keeps summarize-up-to reachable in the live selector options[\s\S]*summarize_up_to/,
+      selectorFilterTest,
+    ],
+    [
       "daemon session test covers the internal partial compaction RPC",
       /partially compacts daemon-owned session history through the internal TUI RPC[\s\S]*session\.partialCompactFromMessage[\s\S]*messageOrdinal:\s*2/,
       readFileSync(path.join(root, "runtime/src/tui/daemon-session.contract.test.ts"), "utf8"),
@@ -8851,6 +8875,16 @@ function assertGapTuiAppShellReconciled() {
       ].join("\n"),
     ],
     [
+      "protocol tests cover internal method specs and result map",
+      /expectedInternalMethods[\s\S]*AGENC_DAEMON_INTERNAL_METHOD_SPECS[\s\S]*AgenCDaemonInternalResultByMethod/,
+      readFileSync(path.join(root, "runtime/src/app-server/protocol.contract.test.ts"), "utf8"),
+    ],
+    [
+      "clear command tests cover active turn rejection",
+      /refuses to clear while a turn is in flight[\s\S]*activeTurn[\s\S]*in flight/,
+      clearTest,
+    ],
+    [
       "agent lifecycle test covers internal partial compaction cancellation",
       /cancels internal TUI partial compaction through request\.cancel[\s\S]*REQUEST_CANCELLED[\s\S]*selector closed/,
       readFileSync(path.join(root, "runtime/src/app-server/agent-lifecycle.contract.test.ts"), "utf8"),
@@ -8875,6 +8909,7 @@ function assertGapTuiAppShellReconciled() {
     "src/tui/components/MessageSelector.filter.test.ts",
     "src/app-server/protocol.contract.test.ts",
     "src/app-server/agent-lifecycle.contract.test.ts",
+    "src/commands/clear.test.ts",
   ]);
   if (vitest.status !== 0) {
     failGate("GAP-TUI-12 targeted App shell tests failed");

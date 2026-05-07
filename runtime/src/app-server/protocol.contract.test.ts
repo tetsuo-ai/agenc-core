@@ -9,13 +9,17 @@ import {
   AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_METHOD_SPECS,
+  AGENC_DAEMON_INTERNAL_METHODS,
+  AGENC_DAEMON_INTERNAL_METHOD_SPECS,
   AGENC_DAEMON_NOTIFICATION_METHODS,
   AGENC_DAEMON_NOTIFICATION_SPECS,
   JSON_RPC_VERSION,
   isAgenCDaemonMethod,
+  isAgenCDaemonKnownMethod,
   isAgenCDaemonNotificationMethod,
   type AgenCDaemonRequest,
   type AgenCDaemonNotification,
+  type AgenCDaemonInternalResultByMethod,
 } from "./protocol/index.js";
 
 interface ProtocolSchema {
@@ -111,6 +115,11 @@ const expectedNotifications = [
   "thread/realtime/closed",
 ] as const;
 
+const expectedInternalMethods = [
+  "session.partialCompactFromMessage",
+  "session.rewindConversationToMessage",
+] as const;
+
 function readProtocolSchema(): ProtocolSchema {
   return JSON.parse(
     readFileSync(new URL("./protocol/schema.json", import.meta.url), "utf8"),
@@ -182,6 +191,10 @@ describe("AgenC daemon protocol surface", () => {
   it("exports the exact initial daemon method list", () => {
     expect(AGENC_DAEMON_METHODS).toEqual(expectedMethods);
     expect(Object.keys(AGENC_DAEMON_METHOD_SPECS)).toEqual(expectedMethods);
+    expect(AGENC_DAEMON_INTERNAL_METHODS).toEqual(expectedInternalMethods);
+    expect(Object.keys(AGENC_DAEMON_INTERNAL_METHOD_SPECS)).toEqual(
+      expectedInternalMethods,
+    );
     expect(AGENC_DAEMON_NOTIFICATION_METHODS).toEqual(expectedNotifications);
     expect(Object.keys(AGENC_DAEMON_NOTIFICATION_SPECS)).toEqual(
       expectedNotifications,
@@ -193,6 +206,15 @@ describe("AgenC daemon protocol surface", () => {
         "client-to-server",
       );
       expect(isAgenCDaemonMethod(method)).toBe(true);
+      expect(isAgenCDaemonKnownMethod(method)).toBe(true);
+    }
+    for (const method of expectedInternalMethods) {
+      expect(AGENC_DAEMON_INTERNAL_METHOD_SPECS[method].method).toBe(method);
+      expect(AGENC_DAEMON_INTERNAL_METHOD_SPECS[method].direction).toBe(
+        "client-to-server",
+      );
+      expect(isAgenCDaemonMethod(method)).toBe(false);
+      expect(isAgenCDaemonKnownMethod(method)).toBe(true);
     }
     for (const method of expectedNotifications) {
       expect(AGENC_DAEMON_NOTIFICATION_SPECS[method].method).toBe(method);
@@ -204,9 +226,28 @@ describe("AgenC daemon protocol surface", () => {
 
     expect(isAgenCDaemonMethod("thread/start")).toBe(false);
     expect(isAgenCDaemonMethod("account/login/start")).toBe(false);
+    expect(isAgenCDaemonKnownMethod("session.unknownInternal")).toBe(false);
     expect(isAgenCDaemonNotificationMethod("command/exec/outputDelta")).toBe(
       false,
     );
+  });
+
+  it("keeps internal TUI method result contracts typed", () => {
+    const partial: AgenCDaemonInternalResultByMethod["session.partialCompactFromMessage"] = {
+      sessionId: "session_contract",
+      ok: true,
+      eventAlreadyEmitted: true,
+    };
+    const rewind: AgenCDaemonInternalResultByMethod["session.rewindConversationToMessage"] = {
+      sessionId: "session_contract",
+      ok: false,
+      eventAlreadyEmitted: false,
+      code: "MESSAGE_NOT_FOUND",
+      message: "missing",
+    };
+
+    expect(partial.ok).toBe(true);
+    expect(rewind.message).toBe("missing");
   });
 
   it("publishes a schema with the same method list and package target", () => {

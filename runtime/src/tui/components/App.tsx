@@ -561,9 +561,12 @@ export function installElicitationResolvers(
     pending: PendingElicitation,
     signal: AbortSignal | undefined,
     response: RequestUserInputResponse | McpElicitationResponse | null,
-  ): void => {
-    if (signal === undefined) return;
+  ): (() => void) => {
+    if (signal === undefined) return () => {};
+    let done = false;
     const abort = (): void => {
+      if (done) return;
+      done = true;
       const result = queue.cancel(pending);
       if (result.handled) {
         publish(result.current);
@@ -576,46 +579,65 @@ export function installElicitationResolvers(
     };
     if (signal.aborted) {
       abort();
-      return;
+      return () => {};
     }
     signal.addEventListener("abort", abort, { once: true });
+    return () => {
+      if (done) return;
+      done = true;
+      signal.removeEventListener("abort", abort);
+    };
   };
   const previousUser = session.services.requestUserInputResolver;
   const previousMcp = session.services.mcpElicitationResolver;
   session.services.requestUserInputResolver = {
     request(event, signal) {
       return new Promise<RequestUserInputResponse | null>((resolve) => {
+        let detachAbort = () => {};
+        const resolveAndDetach = (value: RequestUserInputResponse | null): void => {
+          detachAbort();
+          resolve(value);
+        };
         const pending: UserPending = {
           kind: "user",
           request: event,
-          resolve,
+          resolve: resolveAndDetach,
           answers: {},
           index: 0,
         };
         publish(queue.enqueue(pending));
-        attachAbort(pending, signal, null);
+        detachAbort = attachAbort(pending, signal, null);
       });
     },
   };
   session.services.mcpElicitationResolver = {
     request(event, signal) {
       return new Promise<McpElicitationResponse | null>((resolve) => {
+        let detachAbort = () => {};
+        const resolveAndDetach = (value: McpElicitationResponse | null): void => {
+          detachAbort();
+          resolve(value);
+        };
         if (event.request.mode === "url") {
-          const pending: McpUrlPending = { kind: "mcp-url", request: event, resolve };
+          const pending: McpUrlPending = {
+            kind: "mcp-url",
+            request: event,
+            resolve: resolveAndDetach,
+          };
           publish(queue.enqueue(pending));
-          attachAbort(pending, signal, null);
+          detachAbort = attachAbort(pending, signal, null);
           return;
         }
         const pending: McpFormPending = {
           kind: "mcp-form",
           request: event,
-          resolve,
+          resolve: resolveAndDetach,
           fields: Object.keys(event.request.requestedSchema.properties),
           content: {},
           index: 0,
         };
         publish(queue.enqueue(pending));
-        attachAbort(pending, signal, null);
+        detachAbort = attachAbort(pending, signal, null);
       });
     },
   };
@@ -855,6 +877,14 @@ function restoreComposerText(message: any): { text: string; mode: "bash" | "prom
     return { text: `${command} ${args}`.trim(), mode: "prompt" };
   }
   return { text: trimmed, mode: "prompt" };
+}
+
+const CONVERSATION_ACTION_BUSY_MESSAGE =
+  "Conversation actions are available after the current turn finishes.";
+
+function hasActiveConversationTurn(session: any): boolean {
+  return typeof session?.activeTurn?.unsafePeek === "function" &&
+    session.activeTurn.unsafePeek() !== null;
 }
 
 function isCompactProgressEvent(event: unknown): event is {
@@ -1205,6 +1235,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     };
   }, []);
   const handleRestoreMessage = useCallback(async (message: any) => {
+    if (transcript.isStreaming || hasActiveConversationTurn(props.session)) {
+      setSelectorNotice(CONVERSATION_ACTION_BUSY_MESSAGE);
+      throw new Error(CONVERSATION_ACTION_BUSY_MESSAGE);
+    }
     if (props.session.rewindConversationToMessage === undefined) {
       throw new Error("Conversation rewind is not supported by this session.");
     }
@@ -1230,7 +1264,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       setMode(restored.mode);
     }
     setSelectorNotice(result.displayText ?? "Conversation rewound");
-  }, [props.session, transcript.messages]);
+  }, [props.session, transcript.isStreaming, transcript.messages]);
   const handleRestoreCode = useCallback(async (message: any) => {
     await fileHistoryRewind((updater) => {
       setAppState((prev) => ({
@@ -1244,6 +1278,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     feedback?: string,
     direction: "from" | "up_to" = "from",
   ) => {
+    if (transcript.isStreaming || hasActiveConversationTurn(props.session)) {
+      setSelectorNotice(CONVERSATION_ACTION_BUSY_MESSAGE);
+      throw new Error(CONVERSATION_ACTION_BUSY_MESSAGE);
+    }
     if (props.session.partialCompactFromMessage === undefined) {
       throw new Error("Conversation summarization is not supported by this session.");
     }
@@ -1284,7 +1322,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
     }
     setSelectorNotice(result.displayText ?? "Conversation summarized");
-  }, [props.session, transcript.messages]);
+  }, [props.session, transcript.isStreaming, transcript.messages]);
   const handleExit = useCallback(() => {
     if (getCurrentWorktreeSession() !== null) {
       setExitFlow(
@@ -1384,9 +1422,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {!onboarding.active && isMessageSelectorVisible ? (
         <MessageSelector
           messages={transcript.messages as any[]}
-          onPreRestore={() => {
-            props.session.abortTerminal?.("message-selector-restore");
-          }}
+          onPreRestore={() => {}}
           onRestoreMessage={handleRestoreMessage}
           onRestoreCode={handleRestoreCode}
           onSummarize={handleSummarize}

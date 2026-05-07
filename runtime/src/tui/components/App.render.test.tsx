@@ -1008,6 +1008,62 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("blocks MessageSelector conversation actions while a turn is active", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      activeTurn: {
+        unsafePeek: () => ({ turnId: "active-turn" }),
+      },
+      rewindConversationToMessage: vi.fn(async () => ({
+        ok: true,
+        sessionId: "conversation-app-smoke",
+        eventAlreadyEmitted: true,
+      })),
+      partialCompactFromMessage: vi.fn(async () => ({
+        ok: true,
+        sessionId: "conversation-app-smoke",
+        eventAlreadyEmitted: true,
+        displayText: "Conversation summarized",
+      })),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+        initialUserMessages={[{ role: "user", content: "busy turn" }]}
+      />,
+      async ({ output }) => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (promptProps.onMessageActionsEnter as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        const selectorProps = providerProbe.messageSelectorProps.at(-1)!;
+        const selectedMessage = (selectorProps.messages as unknown[])[0]!;
+        await expect(
+          (selectorProps.onRestoreMessage as (
+            message: unknown,
+          ) => Promise<void>)(selectedMessage),
+        ).rejects.toThrow(/current turn/);
+        await expect(
+          (selectorProps.onSummarize as (
+            message: unknown,
+            feedback?: string,
+            direction?: "from" | "up_to",
+          ) => Promise<void>)(selectedMessage, undefined, "up_to"),
+        ).rejects.toThrow(/current turn/);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(session.rewindConversationToMessage).not.toHaveBeenCalled();
+        expect(session.partialCompactFromMessage).not.toHaveBeenCalled();
+        expect(output()).toMatch(/current[\s\S]*turn[\s\S]*finishes/);
+      },
+    );
+  });
+
   test("renders first-run onboarding before the normal transcript when enabled", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = createSession();
@@ -1392,6 +1448,41 @@ describeWithVitestMocks("elicitation TUI renderer", () => {
 
     await expect(pending).resolves.toBeNull();
     expect(prompted.at(-1)).toBeNull();
+    controller.cleanup();
+  });
+
+  test("removes direct user-input abort listeners after normal completion", async () => {
+    const session = createRendererSession();
+    const listeners = new Set<() => void>();
+    const signal = {
+      aborted: false,
+      addEventListener: vi.fn((_event: string, listener: () => void) => {
+        listeners.add(listener);
+      }),
+      removeEventListener: vi.fn((_event: string, listener: () => void) => {
+        listeners.delete(listener);
+      }),
+    } as unknown as AbortSignal;
+    const controller = installElicitationResolvers(session, () => {});
+
+    const pending = session.services.requestUserInputResolver!.request(
+      userRequest("settled"),
+      signal,
+    );
+    expect(listeners.size).toBe(1);
+
+    expect(controller.submit("done")).toBe(true);
+
+    await expect(pending).resolves.toEqual({
+      answers: {
+        choice: { answers: ["done"] },
+      },
+    });
+    expect(signal.removeEventListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function),
+    );
+    expect(listeners.size).toBe(0);
     controller.cleanup();
   });
 

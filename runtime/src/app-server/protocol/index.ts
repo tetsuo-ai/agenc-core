@@ -119,6 +119,16 @@ export interface AgenCDaemonMethodSpec<
   readonly description: string;
 }
 
+export interface AgenCDaemonInternalMethodSpec<
+  Method extends AgenCDaemonInternalMethod = AgenCDaemonInternalMethod,
+> {
+  readonly method: Method;
+  readonly direction: "client-to-server";
+  readonly params: "required";
+  readonly result: "object";
+  readonly description: string;
+}
+
 export interface AgenCDaemonNotificationSpec<
   Method extends AgenCDaemonNotificationMethod = AgenCDaemonNotificationMethod,
 > {
@@ -131,6 +141,14 @@ export interface AgenCDaemonNotificationSpec<
 function defineMethodSpecs<
   const Spec extends {
     readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
+  },
+>(spec: Spec): Spec {
+  return spec;
+}
+
+function defineInternalMethodSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonInternalMethod]: AgenCDaemonInternalMethodSpec<Method>;
   },
 >(spec: Spec): Spec {
   return spec;
@@ -399,6 +417,25 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
   },
 });
 
+export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
+  "session.partialCompactFromMessage": {
+    method: "session.partialCompactFromMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to summarize a selected range of daemon-owned session history.",
+  },
+  "session.rewindConversationToMessage": {
+    method: "session.rewindConversationToMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to rewind daemon-owned session history before a selected prompt.",
+  },
+});
+
 export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
   "commandExec.outputDelta": {
     method: "commandExec.outputDelta",
@@ -511,7 +548,10 @@ export function isAgenCDaemonKnownMethod(
 ): value is AgenCDaemonKnownMethod {
   return (
     isAgenCDaemonMethod(value) ||
-    (AGENC_DAEMON_INTERNAL_METHODS as readonly string[]).includes(value)
+    Object.prototype.hasOwnProperty.call(
+      AGENC_DAEMON_INTERNAL_METHOD_SPECS,
+      value,
+    )
   );
 }
 
@@ -1425,6 +1465,15 @@ export interface AgenCDaemonResultByMethod {
   readonly "auth.whoami": AuthWhoamiResult;
   readonly "auth.logout": AuthLogoutResult;
 }
+
+export interface AgenCDaemonInternalResultByMethod {
+  readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
+  readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
+}
+
+export type AgenCDaemonKnownResultByMethod =
+  AgenCDaemonResultByMethod &
+  AgenCDaemonInternalResultByMethod;
 
 export type AgenCDaemonSuccessResponse<
   Method extends AgenCDaemonMethod = AgenCDaemonMethod,

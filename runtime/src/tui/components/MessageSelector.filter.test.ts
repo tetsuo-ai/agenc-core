@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 vi.mock("bun:bundle", () => ({
   feature: () => false,
@@ -47,5 +48,12 @@ describe("selectableUserMessagesFilter", () => {
         ) as never,
       ),
     ).toBe(false);
+  });
+
+  it("keeps summarize-up-to reachable in the live selector options", () => {
+    const source = readFileSync(new URL("./MessageSelector.tsx", import.meta.url), "utf8");
+
+    expect(source).toMatch(/value:\s*'summarize_up_to'[\s\S]*label:\s*'Summarize up to here'/);
+    expect(source).not.toContain(`if ("external" === 'ant')`);
   });
 });
