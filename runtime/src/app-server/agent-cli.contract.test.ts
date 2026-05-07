@@ -1131,6 +1131,119 @@ autostart = false
     }
   });
 
+  it("keeps persistent TUI clients connected when notification listeners throw", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-listener-throw-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+          return;
+        }
+        if (message.method === "thread/realtime/start") {
+          await context.send({
+            jsonrpc: "2.0",
+            method: "thread/realtime/started",
+            params: {
+              threadId: "agent_listener",
+              realtimeSessionId: "rt_1",
+            },
+          });
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {},
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "listener-throw-cookie",
+    });
+    const unsubscribe = client.subscribeToNotifications(() => {
+      throw new Error("listener failed");
+    });
+    try {
+      await expect(
+        client.request("thread/realtime/start", {
+          threadId: "agent_listener",
+          transport: { type: "websocket" },
+          outputModality: "audio",
+        }),
+      ).resolves.toEqual({});
+      expect(client.getConnectionState()).toEqual({ status: "connected" });
+    } finally {
+      unsubscribe();
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds buffered session events before a TUI subscriber attaches", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-buffer-cap-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method !== "initialize") return;
+        await context.send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            type: "initialized",
+            protocolVersion: "1.0.0",
+            capabilities: {},
+          },
+        });
+        for (let index = 0; index < 25; index += 1) {
+          await context.send({
+            jsonrpc: "2.0",
+            method: "event.session_event",
+            sessionId: "session_buffered",
+            params: { index },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "buffer-cap-cookie",
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const replayed: JsonObject[] = [];
+      const unsubscribe = client.subscribeToSessionEvents(
+        "session_buffered",
+        (event) => {
+          replayed.push(event);
+        },
+      );
+      unsubscribe();
+      expect(replayed).toHaveLength(20);
+      expect(replayed[0]?.params).toEqual({ index: 5 });
+      expect(replayed.at(-1)?.params).toEqual({ index: 24 });
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("disconnects persistent TUI clients on malformed daemon JSON lines", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-agent-bad-json-"));
     const socketPath = join(dir, "daemon.sock");

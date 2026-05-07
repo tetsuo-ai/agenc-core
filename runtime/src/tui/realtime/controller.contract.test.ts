@@ -366,7 +366,10 @@ describe("AgenC realtime TUI controller", () => {
     await waitFor(
       () =>
         close.mock.calls.length === 1 &&
-        controls.getState().errorBanner === "bad sdp",
+        controls.getState().errorBanner === "bad sdp" &&
+        client.requests.some(
+          (request) => request.method === "thread/realtime/stop",
+        ),
       "SDP rejection cleanup",
     );
     expect(emitted.at(-1)).toMatchObject({
@@ -489,6 +492,62 @@ describe("AgenC realtime TUI controller", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  test("stops capture and daemon realtime when captured audio append fails", async () => {
+    const requests: Array<{
+      readonly method: AgenCDaemonMethod;
+      readonly params?: JsonObject;
+    }> = [];
+    const client = {
+      requests,
+      async request<Method extends AgenCDaemonMethod>(
+        method: Method,
+        params?: JsonObject,
+      ): Promise<AgenCDaemonResultByMethod[Method]> {
+        requests.push({ method, params });
+        if (method === "thread/realtime/appendAudio") {
+          throw new Error("append failed");
+        }
+        return {} as AgenCDaemonResultByMethod[Method];
+      },
+    };
+    const audioPlayer = createAudioPlayer();
+    const emitted: JsonObject[] = [];
+    let callbacks: RealtimeAudioCaptureCallbacks | null = null;
+    const stop = vi.fn();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async (nextCallbacks) => {
+        callbacks = nextCallbacks;
+        return { stop };
+      },
+      audioPlayer,
+    });
+
+    await controls.start({ transport: "websocket" });
+    callbacks?.onAudio({
+      data: "BBBB",
+      sampleRate: 16000,
+      numChannels: 1,
+    });
+
+    await waitFor(
+      () =>
+        controls.getState().errorBanner === "append failed" &&
+        requests.some((request) => request.method === "thread/realtime/stop"),
+      "append failure cleanup",
+    );
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(audioPlayer.close).toHaveBeenCalledTimes(1);
+    expect(emitted.at(-1)).toMatchObject({
+      type: "realtime_error",
+      payload: { threadId: "agent_1", message: "append failed" },
+    });
+    await controls.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   test("stops daemon realtime if websocket capture fails after daemon start", async () => {
     const client = createClient();
     const emitted: JsonObject[] = [];
@@ -584,6 +643,45 @@ describe("AgenC realtime TUI controller", () => {
       { ...audio, samplesPerChannel: null, itemId: null },
     ]);
   });
+
+  test.each([
+    [
+      "realtime_error",
+      { message: "remote failed" },
+      { phase: "inactive", errorBanner: "remote failed" },
+    ],
+    [
+      "realtime_closed",
+      { reason: "remote closed" },
+      {
+        phase: "inactive",
+        errorBanner: null,
+        closedBanner: "Realtime closed: remote closed",
+      },
+    ],
+  ])(
+    "guards audio player close failures during remote %s notifications",
+    (type, payload, expectedState) => {
+      const client = createClient();
+      const audioPlayer = {
+        enqueue: vi.fn(),
+        close: vi.fn(() => {
+          throw new Error("close failed");
+        }),
+      };
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: () => {},
+        audioPlayer,
+      });
+
+      expect(() => {
+        controls.handleTranscriptEvent({ type, payload });
+      }).not.toThrow();
+      expect(controls.getState()).toMatchObject(expectedState);
+    },
+  );
 
   test("ignores stale started notifications after a stopped session", async () => {
     const client = createClient();

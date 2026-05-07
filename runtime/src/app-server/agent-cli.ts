@@ -124,6 +124,8 @@ export interface AgenCJsonLineDaemonClientOptions {
 
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
+const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
+const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -791,20 +793,53 @@ function handlePersistentDaemonMessage(
   }
 
   for (const listener of notificationListeners) {
-    listener(message);
+    notifyDaemonListener(listener, message);
   }
 
   const sessionId = daemonEventSessionId(message);
   if (sessionId === null) return;
   const listeners = sessionListeners.get(sessionId);
   if (listeners === undefined || listeners.size === 0) {
-    const buffered = bufferedSessionEvents.get(sessionId) ?? [];
+    const buffered = getBoundedBufferedSessionEvents(
+      bufferedSessionEvents,
+      sessionId,
+    );
     buffered.push(message);
+    while (buffered.length > MAX_BUFFERED_SESSION_EVENTS_PER_SESSION) {
+      buffered.shift();
+    }
     bufferedSessionEvents.set(sessionId, buffered);
     return;
   }
   for (const listener of listeners) {
-    listener(message);
+    notifyDaemonListener(listener, message);
+  }
+}
+
+function getBoundedBufferedSessionEvents(
+  bufferedSessionEvents: Map<string, JsonObject[]>,
+  sessionId: string,
+): JsonObject[] {
+  const existing = bufferedSessionEvents.get(sessionId);
+  if (existing !== undefined) return existing;
+  while (bufferedSessionEvents.size >= MAX_BUFFERED_SESSION_EVENT_SESSIONS) {
+    const oldestSessionId = bufferedSessionEvents.keys().next().value;
+    if (typeof oldestSessionId !== "string") break;
+    bufferedSessionEvents.delete(oldestSessionId);
+  }
+  const next: JsonObject[] = [];
+  bufferedSessionEvents.set(sessionId, next);
+  return next;
+}
+
+function notifyDaemonListener(
+  listener: (event: JsonObject) => void,
+  event: JsonObject,
+): void {
+  try {
+    listener(event);
+  } catch {
+    // Listener failures must not poison JSON-RPC parsing or disconnect the socket.
   }
 }
 

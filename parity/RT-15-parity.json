@@ -5,6 +5,7 @@
   "sourceRoot": "local CX runtime donor checkout",
   "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
   "sourceFiles": ["tui/src/chatwidget/realtime.rs"],
+  "targetPathNote": "The checklist's donor-branded realtime directory is intentionally implemented at runtime/src/tui/realtime/ because new donor-named directories in AgenC-owned code are hard-rejected.",
   "targetFiles": [
     "runtime/src/tui/realtime/state.ts",
     "runtime/src/tui/realtime/audio.ts",

@@ -313,7 +313,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       case "realtime_error":
         void this.#stopAudioCapture().catch(() => {});
         this.#closeActiveWebrtc();
-        this.#audioPlayer.close();
+        this.#closeAudioPlayerBestEffort();
         this.#dispatch({
           type: "error",
           message:
@@ -325,7 +325,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       case "realtime_closed":
         void this.#stopAudioCapture().catch(() => {});
         this.#closeActiveWebrtc();
-        this.#audioPlayer.close();
+        this.#closeAudioPlayerBestEffort();
         this.#dispatch({
           type: "closed",
           reason: typeof payload.reason === "string" ? payload.reason : null,
@@ -404,11 +404,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         this.#webRtc = null;
         void this.#closeWebrtc(started).catch(() => {});
       }
-      try {
-        this.#audioPlayer.close();
-      } catch {
-        // The microphone error is the actionable failure; close remains best-effort.
-      }
+      this.#closeAudioPlayerBestEffort();
       void this.#requestDaemonStop();
       this.#surfaceRealtimeError(error, "Realtime microphone state failed");
     });
@@ -418,12 +414,35 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     return this.#state.phase === "starting" || this.#state.phase === "active";
   }
 
+  async #handleRealtimeInputFailure(
+    error: unknown,
+    fallback: string,
+  ): Promise<void> {
+    if (this.#state.requestedClose || this.#state.phase === "inactive") return;
+    await this.#stopAudioCapture().catch(() => {});
+    this.#closeActiveWebrtc();
+    this.#closeAudioPlayerBestEffort();
+    this.#surfaceRealtimeError(error, fallback);
+    await this.#requestDaemonStop();
+  }
+
+  #closeAudioPlayerBestEffort(): void {
+    try {
+      this.#audioPlayer.close();
+    } catch {
+      // Audio output cleanup must not tear down daemon notification handling.
+    }
+  }
+
   async #startWebsocketAudioCapture(): Promise<void> {
     await this.#stopAudioCapture();
     this.#audioCapture = await this.#startAudioCapture({
       onAudio: (audio) => {
         void this.appendAudio(audio).catch((error) => {
-          this.#surfaceRealtimeError(error, "Realtime audio append failed");
+          void this.#handleRealtimeInputFailure(
+            error,
+            "Realtime audio append failed",
+          );
         });
       },
       onLevel: (peak) => {
@@ -448,7 +467,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   ): Promise<void> {
     if (this.#state.requestedClose || this.#state.phase === "inactive") return;
     await this.#stopAudioCapture().catch(() => {});
-    this.#audioPlayer.close();
+    this.#closeAudioPlayerBestEffort();
     if (kind === "error") {
       this.#surfaceRealtimeError(message, "Realtime audio capture failed");
     } else {
@@ -484,7 +503,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     } catch (error) {
       if (this.#webRtc === started) this.#webRtc = null;
       await this.#closeWebrtc(started).catch(() => {});
+      this.#closeAudioPlayerBestEffort();
       this.#surfaceRealtimeError(error, "Realtime SDP failed");
+      await this.#requestDaemonStop();
     }
   }
 
