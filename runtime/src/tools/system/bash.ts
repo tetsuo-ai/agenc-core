@@ -33,6 +33,8 @@ import {
 import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { bashToolHasPermission } from "../../permissions/bash.js";
+import type { PermissionResult } from "../../permissions/types.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 import {
   extractAgenCCodeHints,
@@ -313,6 +315,7 @@ function runSpawnedCommand(params: {
   readonly shellMode: boolean;
   readonly cleanupPath?: string;
   readonly signal?: AbortSignal;
+  readonly onProgress?: ToolExecutionInjectedArgs["__onProgress"];
 }): Promise<ToolResult> {
   return new Promise<ToolResult>((resolve) => {
     let resolved = false;
@@ -355,9 +358,19 @@ function runSpawnedCommand(params: {
     child.stdout!.on("data", (chunk: Buffer) => {
       // I-78: push raw bytes; decode once at flush.
       stdoutChunks.push(chunk);
+      params.onProgress?.({
+        chunk: chunk.toString("utf8"),
+        stream: "stdout",
+        ...(child.pid !== undefined ? { processId: child.pid } : {}),
+      });
     });
     child.stderr!.on("data", (chunk: Buffer) => {
       stderrChunks.push(chunk);
+      params.onProgress?.({
+        chunk: chunk.toString("utf8"),
+        stream: "stderr",
+        ...(child.pid !== undefined ? { processId: child.pid } : {}),
+      });
     });
 
     const timer = setTimeout(() => {
@@ -787,6 +800,55 @@ export function isCommandAllowed(
   return { allowed: true };
 }
 
+function bashRuleCandidate(input: Record<string, unknown>): {
+  readonly command: string;
+  readonly firstWord: string | null;
+} | undefined {
+  if (typeof input.command !== "string" || input.command.trim().length === 0) {
+    return undefined;
+  }
+  const command = input.command.trim();
+  const args = Array.isArray(input.args)
+    ? input.args.filter((arg): arg is string => typeof arg === "string")
+    : undefined;
+  const rendered = args === undefined ? command : [command, ...args].join(" ");
+  return { command: rendered, firstWord: command.split(/\s+/u)[0] ?? null };
+}
+
+async function bashContentRulePermission(
+  input: Record<string, unknown>,
+  context: Parameters<NonNullable<Tool["checkPermissions"]>>[1],
+): Promise<PermissionResult> {
+  const candidate = bashRuleCandidate(input);
+  if (candidate === undefined) {
+    return { behavior: "passthrough", message: "Run shell command" };
+  }
+  return bashToolHasPermission(
+    {
+      command: candidate.command,
+      ...(typeof input.description === "string"
+        ? { description: input.description }
+        : {}),
+      ...(input.dangerouslyDisableSandbox === true
+        ? { dangerouslyDisableSandbox: true }
+        : {}),
+    },
+    {
+      ...context,
+      getAppState: () => {
+        const appState = context.getAppState();
+        const toolPermissionContext = context.toolPermissionContext
+          ? context.toolPermissionContext(appState)
+          : appState.toolPermissionContext;
+        return {
+          ...appState,
+          toolPermissionContext,
+        };
+      },
+    },
+  );
+}
+
 /**
  * Create the system.bash tool.
  *
@@ -868,9 +930,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
       required: ["command"],
     },
 
+    checkPermissions(input, context) {
+      return bashContentRulePermission(input as Record<string, unknown>, context);
+    },
+
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const input = rawArgs as unknown as BashToolInput & ToolExecutionInjectedArgs;
       const abortSignal = input.__abortSignal;
+      const onProgress = input.__onProgress;
 
       // Validate command
       if (
@@ -1156,6 +1223,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           shellMode: true,
           cleanupPath: scriptPath,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
         }).then(emitEnd);
       }
 
@@ -1174,6 +1242,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataArgs: execArgs,
           shellMode: false,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
         }).then(emitEnd);
       }
 

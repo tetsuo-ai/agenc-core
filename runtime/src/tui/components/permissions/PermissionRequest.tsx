@@ -9,13 +9,6 @@ import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { AnyObject, Tool, ToolUseContext } from '../../../tools/Tool.js';
 import { AskUserQuestionTool } from '../../../tools/ask-user-question/tui-tool.js';
-import { BashTool } from '../../../tools/BashTool/BashTool.js';
-import { FileEditTool } from '../../../tools/FileEditTool/FileEditTool.js';
-import { FileReadTool } from '../../../tools/FileReadTool/FileReadTool.js';
-import { FileWriteTool } from '../../../tools/FileWriteTool/FileWriteTool.js';
-import { GlobTool } from '../../../tools/GlobTool/GlobTool.js';
-import { GrepTool } from '../../../tools/GrepTool/GrepTool.js';
-import { NotebookEditTool } from '../../../tools/NotebookEditTool/NotebookEditTool.js';
 import { PowerShellTool } from '../../../tools/PowerShellTool/PowerShellTool.js';
 import { SkillTool } from '../../../tools/SkillTool/SkillTool.js';
 import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
@@ -60,24 +53,28 @@ import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import type { WorkerBadgeProps } from './WorkerBadge.js';
 function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionRequestProps> {
-  if (tool.name === 'Edit' || tool.name === 'MultiEdit') {
-    return FileEditPermissionRequest;
+  switch (tool.name) {
+    case 'Edit':
+    case 'MultiEdit':
+      return FileEditPermissionRequest;
+    case 'Write':
+      return FileWritePermissionRequest;
+    case 'system.bash':
+      return BashPermissionRequest;
+    case 'NotebookEdit':
+      return NotebookEditPermissionRequest;
+    case 'Glob':
+    case 'Grep':
+    case 'FileRead':
+      return FilesystemPermissionRequest;
   }
   switch (tool) {
-    case FileEditTool:
-      return FileEditPermissionRequest;
-    case FileWriteTool:
-      return FileWritePermissionRequest;
-    case BashTool:
-      return BashPermissionRequest;
     case PowerShellTool:
       return PowerShellPermissionRequest;
     case ReviewArtifactTool:
       return ReviewArtifactPermissionRequest ?? FallbackPermissionRequest;
     case WebFetchTool:
       return WebFetchPermissionRequest;
-    case NotebookEditTool:
-      return NotebookEditPermissionRequest;
     case ExitPlanModeV2Tool:
       return ExitPlanModePermissionRequest;
     case EnterPlanModeTool:
@@ -90,10 +87,6 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return WorkflowPermissionRequest ?? FallbackPermissionRequest;
     case MonitorTool:
       return MonitorPermissionRequest ?? FallbackPermissionRequest;
-    case GlobTool:
-    case GrepTool:
-    case FileReadTool:
-      return FilesystemPermissionRequest;
     default:
       return FallbackPermissionRequest;
   }

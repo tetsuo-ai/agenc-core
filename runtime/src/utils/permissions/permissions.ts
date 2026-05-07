@@ -8,6 +8,7 @@ import {
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../tools/Tool.js'
+import { toolNameAliases } from '../../permissions/rules.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
@@ -247,8 +248,8 @@ function toolMatchesRule(
   // builtins should not match their MCP replacements.
   const nameForRuleMatch = getToolNameForPermissionCheck(tool)
 
-  // Direct tool name match
-  if (rule.ruleValue.toolName === nameForRuleMatch) {
+  // Direct tool name match, including renamed builtin aliases.
+  if (toolNameAliases(nameForRuleMatch).includes(rule.ruleValue.toolName)) {
     return true
   }
 

@@ -363,7 +363,7 @@ function buildRipgrepArgs(opts: RipgrepOptions): string[] {
   if (opts.outputMode === "files_with_matches") {
     args.push("-l", "--sortr", "modified");
   } else if (opts.outputMode === "count") {
-    args.push("-c", "--with-filename");
+    args.push("-c", "--with-filename", "--sort", "path");
   } else {
     // content mode
     args.push(

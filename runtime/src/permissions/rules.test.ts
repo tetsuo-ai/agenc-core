@@ -258,6 +258,48 @@ describe("getAllowRules / getDenyRules / getAskRules", () => {
     expect(getDenyRuleForTool(ctx, "Read")).toBeNull();
     expect(getAskRuleForTool(ctx, "Bash")).toBeNull();
   });
+
+  test("renamed builtin tool rules match legacy and canonical names", () => {
+    const denyRead: PermissionRule = {
+      source: "userSettings",
+      ruleBehavior: "deny",
+      ruleValue: { toolName: "Read" },
+    };
+    const askEdit: PermissionRule = {
+      source: "userSettings",
+      ruleBehavior: "ask",
+      ruleValue: { toolName: "FileEdit" },
+    };
+    const allowWrite: PermissionRule = {
+      source: "userSettings",
+      ruleBehavior: "allow",
+      ruleValue: { toolName: "FileWrite" },
+    };
+    const denyGrep: PermissionRule = {
+      source: "userSettings",
+      ruleBehavior: "deny",
+      ruleValue: { toolName: "system.grep" },
+    };
+    const askGlob: PermissionRule = {
+      source: "userSettings",
+      ruleBehavior: "ask",
+      ruleValue: { toolName: "system.glob" },
+    };
+    const ctx = buildCtxWithRules([
+      denyRead,
+      askEdit,
+      allowWrite,
+      denyGrep,
+      askGlob,
+    ]);
+
+    expect(getDenyRuleForTool(ctx, "FileRead")?.source).toBe("userSettings");
+    expect(getAskRuleForTool(ctx, "Edit")?.source).toBe("userSettings");
+    expect(toolAlwaysAllowedRule(ctx, "Write")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "Read")?.source).toBe("userSettings");
+    expect(getDenyRuleForTool(ctx, "Grep")?.source).toBe("userSettings");
+    expect(getAskRuleForTool(ctx, "Glob")?.source).toBe("userSettings");
+  });
 });
 
 describe("getRuleByContentsForTool", () => {

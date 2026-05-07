@@ -6724,10 +6724,733 @@ async function gapGates(item) {
     assertGapToolsToolSearchRecoveryCategory();
     return;
   }
+  if (item.title.includes("Consolidate dual tool implementations")) {
+    assertGapToolsConsolidatedToolSurfaces();
+    return;
+  }
+  if (item.title.includes("Remove or implement null-stub tools")) {
+    assertGapToolsNullStubToolsRemoved();
+    return;
+  }
+  if (item.title.includes("Bridge config namespaces")) {
+    assertGapMcpBridgeConfigNamespaces();
+    return;
+  }
+  if (item.title.includes("Wire `agenc mcp` CLI subcommands")) {
+    assertGapMcpCliSubcommandsWired();
+    return;
+  }
+  if (item.title.includes("Expand /mcp slash command")) {
+    assertGapMcpSlashCommandExpanded();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapMcpSlashCommandExpanded() {
+  const commandRel = "runtime/src/commands/mcp.ts";
+  const commandSource = readFileSync(path.join(root, commandRel), "utf8");
+  const requiredCommandEvidence = [
+    "parseMcpArgs",
+    "collectMcpToolStatus",
+    "formatMcpToolStatus",
+    "reconnectServer",
+    "enableServer",
+    "disableServer",
+    "addServer",
+    "This does not edit config.toml",
+  ];
+  for (const needle of requiredCommandEvidence) {
+    if (!commandSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${commandRel} missing /mcp expansion evidence: ${needle}`);
+    }
+  }
+
+  const managerRel = "runtime/src/mcp-client/manager.ts";
+  const managerSource = readFileSync(path.join(root, managerRel), "utf8");
+  for (const needle of [
+    "async enableServer",
+    "async disableServer",
+    "async addServer",
+    "disconnectServer",
+  ]) {
+    if (!managerSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${managerRel} missing manager mutation evidence: ${needle}`);
+    }
+  }
+
+  const serviceRel = "runtime/src/session/mcp-startup.ts";
+  const serviceSource = readFileSync(path.join(root, serviceRel), "utf8");
+  for (const needle of [
+    "reconnectServer",
+    "enableServer",
+    "disableServer",
+    "addServer",
+    "getToolsByServer",
+  ]) {
+    if (!serviceSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${serviceRel} does not forward ${needle}`);
+    }
+  }
+
+  const testRel = "runtime/src/commands/mcp.test.ts";
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  for (const needle of [
+    "parses management subcommands and quoted add args",
+    "lists all MCP tools or tools for one server",
+    "sanitizes MCP tool output to one line per tool",
+    "reports reconnect, enable, and disable results",
+    "adds a stdio MCP server for the current session only",
+  ]) {
+    if (!testSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${testRel} missing slash command test: ${needle}`);
+    }
+  }
+
+  const managerTestRel = "runtime/src/mcp-client/manager.test.ts";
+  const managerTestSource = readFileSync(path.join(root, managerTestRel), "utf8");
+  for (const needle of [
+    "failed reconnect leaves the server disconnected",
+    "enables a configured disabled server and connects it",
+    "disables a configured server and disposes all live bridges",
+    "adds a session server and rejects duplicate or invalid names",
+    "rolls back a failed session add so the server name can be retried",
+  ]) {
+    if (!managerTestSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${managerTestRel} missing manager mutation test: ${needle}`);
+    }
+  }
+
+  const startupTestRel = "runtime/src/session/mcp-startup.test.ts";
+  const startupTestSource = readFileSync(path.join(root, startupTestRel), "utf8");
+  if (!startupTestSource.includes("forwards live slash command MCP manager controls")) {
+    failGate(`GAP-MCP-03: ${startupTestRel} missing session facade forwarding test`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/commands/mcp.test.ts",
+    "src/mcp-client/manager.test.ts",
+    "src/session/mcp-startup.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-03 targeted /mcp slash command tests failed");
+  }
+
+  pass("GAP-MCP-03: /mcp slash command manages live MCP servers and tools");
+}
+
+function assertGapMcpCliSubcommandsWired() {
+  const cliRel = "runtime/src/bin/mcp-cli.ts";
+  const cliSource = readFileSync(path.join(root, cliRel), "utf8");
+  const requiredCommands = [
+    "add",
+    "list",
+    "get",
+    "remove",
+    "add-json",
+    "add-from-agenc-desktop",
+    "reset-project-choices",
+    "doctor",
+  ];
+  for (const command of requiredCommands) {
+    if (!cliSource.includes(`"${command}"`)) {
+      failGate(`GAP-MCP-02: ${cliRel} does not recognize mcp ${command}`);
+    }
+  }
+  const requiredWiring = [
+    "runMcpAddCommand",
+    "mcpListHandler",
+    "mcpGetHandler",
+    "mcpRemoveHandler",
+    "mcpAddJsonHandler",
+    "mcpAddFromDesktopHandler",
+    "mcpResetChoicesHandler",
+    "mcpDoctorHandler",
+    "runMcpAddAction",
+    "kind: \"management\"",
+  ];
+  for (const needle of requiredWiring) {
+    if (!cliSource.includes(needle)) {
+      failGate(`GAP-MCP-02: ${cliRel} missing handler wiring evidence: ${needle}`);
+    }
+  }
+
+  const handlersRel = "runtime/src/cli/handlers/mcp.tsx";
+  const handlersSource = readFileSync(path.join(root, handlersRel), "utf8");
+  if (!/getMcpConfigsByScope\('user'\)/.test(handlersSource)) {
+    failGate("GAP-MCP-02: remove handler must find TOML-backed user MCP configs");
+  }
+  if (!/redactMcpDisplayValue/.test(handlersSource)) {
+    failGate("GAP-MCP-02: get handler must redact MCP header and env values");
+  }
+
+  const testRel = "runtime/src/bin/mcp-cli-management.test.ts";
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  if (!/recognizes non-serve management subcommands/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp-cli tests must cover non-serve subcommand parsing");
+  }
+  if (!/default mcp add writes to the live user config namespace/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp-cli tests must cover default add writing user config");
+  }
+  if (!/mcp add validates xaa before writing config/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp-cli tests must cover add-time xaa validation");
+  }
+  if (!/Authorization: <redacted>/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp add tests must cover header redaction");
+  }
+
+  const redactionTestRel = "runtime/src/cli/handlers/mcp-redaction.test.ts";
+  const redactionTestSource = readFileSync(path.join(root, redactionTestRel), "utf8");
+  if (!/mcp get redacts remote headers/.test(redactionTestSource)) {
+    failGate("GAP-MCP-02: mcp get tests must cover header redaction");
+  }
+  if (!/mcp get redacts stdio environment values/.test(redactionTestSource)) {
+    failGate("GAP-MCP-02: mcp get tests must cover env redaction");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/bin/mcp-cli-management.test.ts",
+    "src/cli/handlers/mcp-redaction.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-02 targeted MCP CLI wiring tests failed");
+  }
+
+  pass("GAP-MCP-02: agenc mcp non-serve subcommands are wired to handlers");
+}
+
+function assertGapMcpBridgeConfigNamespaces() {
+  const serviceConfigRel = "runtime/src/services/mcp/config.ts";
+  const serviceConfig = readFileSync(path.join(root, serviceConfigRel), "utf8");
+  if (!/addUserMcpServerToToml/.test(serviceConfig) || !/getUserMcpConfigsFromToml/.test(serviceConfig)) {
+    failGate("GAP-MCP-01: addMcpConfig/getMcpConfigsByScope must use canonical TOML user helpers");
+  }
+  if (/saveGlobalConfig/.test(serviceConfig)) {
+    failGate("GAP-MCP-01: user MCP config must not write legacy ~/.agenc.json via saveGlobalConfig");
+  }
+
+  const tomlConfigRel = "runtime/src/services/mcp/user-config-toml.ts";
+  const tomlConfig = readFileSync(path.join(root, tomlConfigRel), "utf8");
+  const requiredServiceEvidence = [
+    "AgenCConfigEditsBuilder",
+    "toCanonicalMcpServerConfig",
+    "mcp_servers",
+    "endpoint: url",
+    "getUserMcpConfigsFromToml",
+  ];
+  for (const needle of requiredServiceEvidence) {
+    if (!tomlConfig.includes(needle)) {
+      failGate(`GAP-MCP-01: ${tomlConfigRel} is missing canonical TOML evidence: ${needle}`);
+    }
+  }
+
+  const editRel = "runtime/src/config/edit.ts";
+  const editSource = readFileSync(path.join(root, editRel), "utf8");
+  if (!/setMcpServer\(/.test(editSource) || !/removeMcpServer\(/.test(editSource)) {
+    failGate("GAP-MCP-01: config.toml editor must expose MCP server edits");
+  }
+
+  const addCommandRel = "runtime/src/commands/mcp/addCommand.ts";
+  const addCommand = readFileSync(path.join(root, addCommandRel), "utf8");
+  if (!/Configuration scope \(user or project\)[\s\S]*'user'/.test(addCommand)) {
+    failGate("GAP-MCP-01: mcp add must default to live user config.toml scope");
+  }
+
+  const testRel = "runtime/src/services/mcp/config-toml-namespace.test.ts";
+  if (!existsSync(path.join(root, testRel))) {
+    failGate(`GAP-MCP-01: missing regression test ${testRel}`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/services/mcp/config-toml-namespace.test.ts",
+    "src/session/mcp-startup.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-01 targeted MCP config namespace tests failed");
+  }
+
+  pass("GAP-MCP-01: mcp add user config writes canonical config.toml mcp_servers");
+}
+
+function assertGapToolsNullStubToolsRemoved() {
+  const removedToolFiles = [
+    "runtime/src/tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.ts",
+    "runtime/src/tools/VerifyPlanExecutionTool/VerifyPlanExecutionTool.ts",
+    "runtime/src/tools/REPLTool/REPLTool.ts",
+    "runtime/src/tools/TungstenTool/TungstenTool.ts",
+    "runtime/src/tools/TungstenTool/TungstenLiveMonitor.ts",
+  ];
+  for (const rel of removedToolFiles) {
+    if (existsSync(path.join(root, rel))) {
+      failGate(`GAP-TOOLS-05: null-stub tool file still exists: ${rel}`);
+    }
+  }
+
+  const toolsSource = readFileSync(path.join(root, "runtime/src/tools.ts"), "utf8");
+  const forbiddenToolsEvidence = [
+    "const REPLTool = null",
+    "const SuggestBackgroundPRTool = null",
+    "VerifyPlanExecutionTool/VerifyPlanExecutionTool.js",
+    "SuggestBackgroundPRTool ?",
+    "VerifyPlanExecutionTool ?",
+    "REPLTool ?",
+  ];
+  const staleToolsEvidence = forbiddenToolsEvidence.filter((needle) =>
+    toolsSource.includes(needle),
+  );
+  if (staleToolsEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-05: runtime/src/tools.ts still references deleted null-stub tools:\n  - ${staleToolsEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const liveSources = [
+    "runtime/src/commands/clear/caches.ts",
+    "runtime/src/tui/components/agents/ToolSelector.tsx",
+    "runtime/src/tui/screens/REPL.tsx",
+    "runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx",
+  ];
+  const deletedImportPattern =
+    /tools\/(?:SuggestBackgroundPRTool\/SuggestBackgroundPRTool|VerifyPlanExecutionTool\/VerifyPlanExecutionTool|REPLTool\/REPLTool|TungstenTool\/(?:TungstenTool|TungstenLiveMonitor))(?:\.js)?(?=["';])/;
+  for (const rel of liveSources) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (deletedImportPattern.test(source)) {
+      failGate(`GAP-TOOLS-05: live source imports deleted null-stub tool in ${rel}`);
+    }
+  }
+
+  const nullStubScan = run("rg", [
+    "-n",
+    "-g",
+    "!*.test.ts",
+    "export\\s+(?:default\\s+null|const\\s+\\w+\\s*=\\s*null\\b)|const\\s+(?:REPLTool|SuggestBackgroundPRTool|VerifyPlanExecutionTool)\\s*=\\s*null\\b",
+    "runtime/src/tools",
+    "runtime/src/tools.ts",
+  ]);
+  if (nullStubScan.status === 0) {
+    failGate(`GAP-TOOLS-05: null-stub tool exports remain:\n${nullStubScan.stdout}`);
+  }
+  if (nullStubScan.status !== 1) {
+    failGate(`GAP-TOOLS-05: null-stub scan failed:\n${nullStubScan.stderr || nullStubScan.stdout}`);
+  }
+
+  const replConstants = readFileSync(
+    path.join(root, "runtime/src/tools/REPLTool/constants.ts"),
+    "utf8",
+  );
+  if (!/isReplModeEnabled\(\): boolean \{\s*return false\s*\}/s.test(replConstants)) {
+    failGate("GAP-TOOLS-05: REPL mode must stay disabled after deleting REPLTool");
+  }
+  const promptSource = readFileSync(
+    path.join(root, "runtime/src/constants/prompts.ts"),
+    "utf8",
+  );
+  if (/REPL_ONLY_TOOLS|isReplModeEnabled/.test(promptSource)) {
+    failGate("GAP-TOOLS-05: prompts must not describe REPL-only hidden tool behavior");
+  }
+  const oldAttachmentRenderer = readFileSync(
+    path.join(root, "runtime/src/utils/messages.ts"),
+    "utf8",
+  );
+  if (/VerifyPlanExecution/.test(oldAttachmentRenderer)) {
+    failGate("GAP-TOOLS-05: legacy attachment renderer must not request deleted VerifyPlanExecutionTool");
+  }
+  const planExitPermission = readFileSync(
+    path.join(root, "runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx"),
+    "utf8",
+  );
+  if (/VerifyPlanExecution/.test(planExitPermission)) {
+    failGate("GAP-TOOLS-05: plan-exit permission copy must not request deleted VerifyPlanExecutionTool");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tools/null-stub-tools.test.ts",
+    "src/tool-registry.test.ts",
+    "src/commands/clear.test.ts",
+    "src/prompts/attachments/messages.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-05 targeted null-stub removal tests failed");
+  }
+
+  pass("GAP-TOOLS-05: null-stub tool files and live registrations are removed");
+}
+
+function assertGapToolsConsolidatedToolSurfaces() {
+  const curatedDaemonProviderFiles = [
+    "runtime/src/tools/system/coding.ts",
+    "runtime/src/tool-registry.ts",
+    "runtime/src/llm/types.ts",
+    "runtime/src/tools/concurrency.ts",
+    "runtime/src/permissions/unattended-policy.ts",
+    "runtime/src/permissions/unattended-policy.test.ts",
+    "runtime/src/prompts/permissions-prompt.test.ts",
+    "runtime/src/tools/system/notebook-edit.ts",
+    "runtime/src/tui/input/processBashCommand.tsx",
+    "runtime/src/utils/promptShellExecution.ts",
+    "runtime/src/utils/attachments.ts",
+    "runtime/src/utils/messages.ts",
+    "runtime/src/tui/components/agents/ToolSelector.tsx",
+    "runtime/src/tui/components/permissions/PermissionRequest.tsx",
+    "runtime/src/app-server/agent-cli.contract.test.ts",
+    "runtime/src/app-server/background-agent-runner.contract.test.ts",
+    "runtime/src/app-server/protocol.contract.test.ts",
+    "runtime/src/agents/run-agent.test.ts",
+  ];
+  for (const rel of curatedDaemonProviderFiles) {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) {
+      failGate(`GAP-TOOLS-04: missing required evidence file ${rel}`);
+    }
+    const source = readFileSync(abs, "utf8");
+    if (/\bsystem\.(grep|glob)\b/.test(source)) {
+      failGate(`GAP-TOOLS-04: stale provider-facing search alias remains in ${rel}`);
+    }
+  }
+
+  const coding = readFileSync(
+    path.join(root, "runtime/src/tools/system/coding.ts"),
+    "utf8",
+  );
+  if (/name:\s*["']system\.(grep|glob)["']/.test(coding)) {
+    failGate("GAP-TOOLS-04: duplicate system.grep/system.glob tool implementation remains");
+  }
+  if (!/createGitAndRepoTools\(config\)/.test(coding) || !/createToolSearchTool\(config\)/.test(coding)) {
+    failGate("GAP-TOOLS-04: coding tools must still expose deferred discovery and code-intelligence tools");
+  }
+
+  const unattendedPolicy = readFileSync(
+    path.join(root, "runtime/src/permissions/unattended-policy.ts"),
+    "utf8",
+  );
+  if (!/grep:\s*["']Grep["']/.test(unattendedPolicy) || !/glob:\s*["']Glob["']/.test(unattendedPolicy)) {
+    failGate("GAP-TOOLS-04: unattended grep/glob aliases must normalize to canonical Grep/Glob");
+  }
+
+  const registryTestRel = "runtime/src/tool-registry.test.ts";
+  const registryTest = readFileSync(path.join(root, registryTestRel), "utf8");
+  const requiredRegistryEvidence = [
+    "NotebookEdit is registered only through the model-facing surface",
+    "expect(notebookEditTools).toHaveLength(1)",
+    "not.toContain(\"system.grep\")",
+    "not.toContain(\"system.glob\")",
+    "\"Read\"",
+    "\"Bash\"",
+    "\"FileEdit\"",
+    "\"FileWrite\"",
+    "\"FileReadTool\"",
+    "family: \"coding\"",
+    "deferred: true",
+  ];
+  const missingRegistryEvidence = requiredRegistryEvidence.filter(
+    (needle) => !registryTest.includes(needle),
+  );
+  if (missingRegistryEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 registry test evidence missing:\n  - ${missingRegistryEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const oldStackTestRel = "runtime/src/tools/tool-surface-consolidation.test.ts";
+  const oldStackTest = readFileSync(path.join(root, oldStackTestRel), "utf8");
+  const requiredOldStackEvidence = [
+    "base tools register canonical implementations for duplicated families",
+    "REPL primitive tools use the canonical search and file surfaces",
+    "CanonicalBashTool",
+    "CanonicalFileReadTool",
+    "CanonicalNotebookEditTool",
+    "not.toMatch",
+    "system.bash enforces command-specific permission rules",
+    "system.bash honors legacy Bash permission aliases with precedence",
+    "canonical Bash schema rejects unsupported legacy control fields",
+    "canonical Bash and daemon system.bash share execution behavior",
+    "canonical Bash failure marks tool_result as error",
+    "canonical Bash wrapper forwards system Bash progress updates",
+    "canonical Bash truncates large output without persisted-output recovery",
+    "canonical wrappers preserve search/read classification hooks",
+    "canonical file wrappers enforce session read-before-edit",
+    "file attachments read through canonical FileRead implementation",
+    "directory attachments render through canonical Bash implementation",
+    "canonical NotebookEdit uses shared session-backed implementation",
+    "canonical NotebookEdit prefers exact numeric cell IDs over index fallback",
+    "canonical NotebookEdit defaults sparse metadata language to python",
+    "canonical NotebookEdit defaults empty metadata language to python",
+    "canonical NotebookEdit delete does not require new_source",
+    "canonical Write, Grep, and Glob wrappers execute shared system tools",
+    "canonical result mapping preserves rich contentItems",
+    "legacy tool aliases resolve to canonical agent tools",
+    "file attachments truncate after canonical FileRead size errors",
+    "file attachments return null after canonical FileRead non-size errors",
+    "changed-file attachments stop after canonical FileRead errors",
+    "changed-file attachments skip canonical notebook and PDF media",
+    "changed-file attachments preserve standalone canonical image media",
+  ];
+  const missingOldStackEvidence = requiredOldStackEvidence.filter(
+    (needle) => !oldStackTest.includes(needle),
+  );
+  if (missingOldStackEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 old-stack test evidence missing:\n  - ${missingOldStackEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const evaluatorTestRel = "runtime/src/permissions/evaluator.test.ts";
+  const evaluatorTest = readFileSync(path.join(root, evaluatorTestRel), "utf8");
+  const requiredEvaluatorEvidence = [
+    "system.bash whole-tool ask does not auto-allow without sandbox execution",
+    "real system.bash remains ask-gated when sandbox auto-allow is requested",
+  ];
+  const missingEvaluatorEvidence = requiredEvaluatorEvidence.filter(
+    (needle) => !evaluatorTest.includes(needle),
+  );
+  if (missingEvaluatorEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 evaluator test evidence missing:\n  - ${missingEvaluatorEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const rootStackSources = [
+    "runtime/src/tools.ts",
+    "runtime/src/tools/REPLTool/primitiveTools.ts",
+  ];
+  for (const rel of rootStackSources) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (
+      /tools\/(?:BashTool|FileReadTool|FileEditTool|FileWriteTool|GrepTool|GlobTool|NotebookEditTool)\/(?:BashTool|FileReadTool|FileEditTool|FileWriteTool|GrepTool|GlobTool|NotebookEditTool)\.js/.test(source)
+    ) {
+      failGate(`GAP-TOOLS-04: old-stack entrypoint still imports duplicate implementation in ${rel}`);
+    }
+    if (!source.includes("canonicalToolSurface.js")) {
+      failGate(`GAP-TOOLS-04: old-stack entrypoint must register canonical tool surface in ${rel}`);
+    }
+  }
+
+  const canonicalSurface = readFileSync(
+    path.join(root, "runtime/src/tools/canonicalToolSurface.ts"),
+    "utf8",
+  );
+  const requiredCanonicalSurfaceEvidence = [
+    "createFileReadTool",
+    "createFileEditTool",
+    "createFileWriteTool",
+    "createGrepTool",
+    "createGlobTool",
+    "createSystemNotebookEditTool",
+    "SESSION_ID_ARG",
+    "contentItemsToToolResultBlocks",
+    "renderToolResultMessage",
+    "extractSearchText",
+    "name: \"system.bash\"",
+    "name: \"FileRead\"",
+  ];
+  const missingCanonicalSurfaceEvidence = requiredCanonicalSurfaceEvidence.filter(
+    (needle) => !canonicalSurface.includes(needle),
+  );
+  if (missingCanonicalSurfaceEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 canonical surface evidence missing:\n  - ${missingCanonicalSurfaceEvidence.join("\n  - ")}`,
+    );
+  }
+  const modelFacingTools = readFileSync(
+    path.join(root, "runtime/src/bin/model-facing-tools.ts"),
+    "utf8",
+  );
+  if (!modelFacingTools.includes("createSystemNotebookEditTool")) {
+    failGate("GAP-TOOLS-04: model-facing NotebookEdit must use the shared system implementation");
+  }
+  const oldExecutableImportSources = [
+    "runtime/src/tui/input/processBashCommand.tsx",
+    "runtime/src/utils/promptShellExecution.ts",
+    "runtime/src/utils/attachments.ts",
+    "runtime/src/utils/messages.ts",
+    "runtime/src/tui/components/agents/ToolSelector.tsx",
+    "runtime/src/tui/components/permissions/PermissionRequest.tsx",
+  ];
+  const oldExecutableImplementationImportPattern =
+    /tools\/(?:BashTool\/BashTool|FileReadTool\/FileReadTool|FileEditTool\/FileEditTool|FileWriteTool\/FileWriteTool|GrepTool\/GrepTool|GlobTool\/GlobTool|NotebookEditTool\/NotebookEditTool)(?:\.js)?(?=["';])/;
+  for (const rel of oldExecutableImportSources) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (oldExecutableImplementationImportPattern.test(source)) {
+      failGate(`GAP-TOOLS-04: live TUI/runtime path still imports an old executable tool implementation in ${rel}`);
+    }
+  }
+  const presentationOnlyOldExecutableImports = new Set([
+    "runtime/src/tui/components/BashModeProgress.tsx",
+    "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx",
+    "runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx",
+    "runtime/src/tui/components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/hooks.ts",
+  ]);
+  const oldExecutableImports = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    const rel = path.relative(root, abs);
+    if (!/\.(?:ts|tsx)$/.test(rel)) continue;
+    if (/(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.tsx?$/.test(rel) || rel.includes("/__tests__/")) continue;
+    const lines = readFileSync(abs, "utf8").split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+      const trimmed = lines[index].trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      if (!oldExecutableImplementationImportPattern.test(lines[index])) continue;
+      if (/^import\s+type\b/.test(trimmed)) continue;
+      if (presentationOnlyOldExecutableImports.has(rel)) continue;
+      oldExecutableImports.push(`${rel}:${index + 1}: ${trimmed}`);
+    }
+  }
+  if (oldExecutableImports.length > 0) {
+    failGate(
+      `GAP-TOOLS-04: live old duplicated tool implementation imports remain:\n  - ${oldExecutableImports.join("\n  - ")}`,
+    );
+  }
+  const oldExecutableCallPattern = /\b(?:BashTool|FileReadTool|FileEditTool|FileWriteTool|GrepTool|GlobTool|NotebookEditTool)\.call\s*\(/;
+  const oldExecutableCalls = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    const rel = path.relative(root, abs);
+    if (!/\.(?:ts|tsx)$/.test(rel)) continue;
+    if (/(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.tsx?$/.test(rel) || rel.includes("/__tests__/")) continue;
+    const lines = readFileSync(abs, "utf8").split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+      const trimmed = lines[index].trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      if (oldExecutableCallPattern.test(lines[index])) {
+        oldExecutableCalls.push(`${rel}:${index + 1}: ${trimmed}`);
+      }
+    }
+  }
+  if (oldExecutableCalls.length > 0) {
+    failGate(
+      `GAP-TOOLS-04: live old duplicated tool .call usage remains:\n  - ${oldExecutableCalls.join("\n  - ")}`,
+    );
+  }
+  const bashNameSource = readFileSync(
+    path.join(root, "runtime/src/tools/BashTool/toolName.ts"),
+    "utf8",
+  );
+  const readNameSource = readFileSync(
+    path.join(root, "runtime/src/tools/FileReadTool/prompt.ts"),
+    "utf8",
+  );
+  if (!/BASH_TOOL_NAME\s*=\s*["']system\.bash["']/.test(bashNameSource)) {
+    failGate("GAP-TOOLS-04: Bash tool-name constant must use system.bash");
+  }
+  if (!/FILE_READ_TOOL_NAME\s*=\s*["']FileRead["']/.test(readNameSource)) {
+    failGate("GAP-TOOLS-04: file-read tool-name constant must use FileRead");
+  }
+
+  const parityRel = "parity/GAP-TOOLS-04-parity.json";
+  const parityPath = path.join(root, parityRel);
+  if (!existsSync(parityPath)) {
+    failGate(`GAP-TOOLS-04: missing required evidence file ${parityRel}`);
+  }
+  let parity;
+  try {
+    parity = JSON.parse(readFileSync(parityPath, "utf8"));
+  } catch (error) {
+    failGate(`GAP-TOOLS-04: parity artifact is not valid JSON: ${error?.message || error}`);
+  }
+  const oldStack = parity?.oldStackConsolidation;
+  const canonical = parity?.daemonProviderContract?.canonicalSurfaces;
+  const removed = parity?.daemonProviderContract?.removedProviderSearchAliases;
+  if (
+    parity?.item !== "GAP-TOOLS-04" ||
+    parity?.status !== "implemented" ||
+    oldStack?.status !== "canonical-wrappers-registered" ||
+    oldStack?.canonicalOldInterfaceSurface !== "runtime/src/tools/canonicalToolSurface.ts" ||
+    !Array.isArray(oldStack?.entrypoints) ||
+    !oldStack.entrypoints.includes("runtime/src/tools.ts") ||
+    !oldStack.entrypoints.includes("runtime/src/tools/REPLTool/primitiveTools.ts") ||
+    !Array.isArray(canonical) ||
+    !canonical.includes("Grep") ||
+    !canonical.includes("Glob") ||
+    !canonical.includes("NotebookEdit") ||
+    !Array.isArray(removed) ||
+    !removed.includes("system.grep") ||
+    !removed.includes("system.glob")
+  ) {
+    failGate("GAP-TOOLS-04: parity artifact must record the canonical provider and old-stack surfaces");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tool-registry.test.ts",
+    "src/tools/system/grep.test.ts",
+    "src/tools/system/glob.test.ts",
+    "src/tools/tool-surface-consolidation.test.ts",
+    "src/permissions/evaluator.test.ts",
+    "src/permissions/rules.test.ts",
+    "src/permissions/unattended-policy.test.ts",
+    "src/prompts/permissions-prompt.test.ts",
+    "src/app-server/agent-cli.contract.test.ts",
+    "src/app-server/background-agent-runner.contract.test.ts",
+    "src/tui/parity/permission-request-routing.test.ts",
+    "src/tui/input/processBashCommand.test.tsx",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-04 targeted tool-surface consolidation tests failed");
+  }
+
+  const promptShellTest = run("bun", [
+    "test",
+    "runtime/src/utils/promptShellExecution.test.ts",
+  ]);
+  if (promptShellTest.status !== 0) {
+    failGate("GAP-TOOLS-04 prompt shell canonical Bash test failed");
+  }
+
+  const protocolVitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/app-server/protocol.contract.test.ts",
+    "-t",
+    "validates all request-bearing methods through the published schema",
+  ]);
+  if (protocolVitest.status !== 0) {
+    failGate("GAP-TOOLS-04 targeted daemon protocol validation test failed");
+  }
+
+  const agentVitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/agents/run-agent.test.ts",
+    "-t",
+    "tracks parent registry visibility when hidden coding tools are discovered later",
+  ]);
+  if (agentVitest.status !== 0) {
+    failGate("GAP-TOOLS-04 targeted subagent tool-filtering test failed");
+  }
+
+  pass("GAP-TOOLS-04: daemon/provider-facing tool surfaces are consolidated");
 }
 
 function assertGapToolsToolSearchRecoveryCategory() {

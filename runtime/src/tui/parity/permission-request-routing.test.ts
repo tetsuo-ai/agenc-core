@@ -16,17 +16,17 @@ import {
 } from "../components/permissions/PermissionRequest.js";
 
 const permissionMocks = vi.hoisted(() => {
-  const tool = (name: string) => ({ userFacingName: () => name });
+  const tool = (name: string) => ({ name, userFacingName: () => name });
   const component = () => function MockPermissionComponent() {
     return null;
   };
   return {
     AskUserQuestionTool: tool("AskUserQuestion"),
-    BashTool: tool("Bash"),
+    BashTool: tool("system.bash"),
     EnterPlanModeTool: tool(""),
     ExitPlanModeV2Tool: tool(""),
     FileEditTool: tool("Edit"),
-    FileReadTool: tool("Read"),
+    FileReadTool: tool("FileRead"),
     FileWriteTool: tool("Write"),
     GlobTool: tool("Glob"),
     GrepTool: tool("Grep"),

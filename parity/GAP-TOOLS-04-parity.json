@@ -1,0 +1,79 @@
+{
+  "item": "GAP-TOOLS-04",
+  "status": "implemented",
+  "decision": "The daemon/bootstrap provider-facing registry and the older REPL/query tool pool now expose one canonical surface per consolidated tool family.",
+  "daemonProviderContract": {
+    "canonicalSurfaces": [
+      "FileRead",
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "Grep",
+      "Glob",
+      "system.bash",
+      "NotebookEdit"
+    ],
+    "removedProviderSearchAliases": [
+      "system.grep",
+      "system.glob"
+    ],
+    "permissionAliasMigration": {
+      "grep": "Grep",
+      "glob": "Glob",
+      "Bash": "system.bash",
+      "Read": "FileRead",
+      "FileEdit": "Edit",
+      "FileWrite": "Write",
+      "system.grep": "Grep",
+      "system.glob": "Glob",
+      "explicitLegacyAllowlists": "Provider-facing system.grep/system.glob tools are removed, but existing unattended lists, agent specs, and permission rules using those names resolve through canonical Grep and Glob aliases. Old specs and permission rules for Bash, Read, FileEdit, and FileWrite are also resolved through canonical aliases."
+    },
+    "sharedNotebookEditImplementation": {
+      "systemTool": "runtime/src/tools/system/notebook-edit.ts",
+      "modelFacingFactory": "runtime/src/bin/model-facing-tools.ts",
+      "oldStackWrapper": "runtime/src/tools/canonicalToolSurface.ts"
+    },
+    "fileReadErrorBoundary": {
+      "status": "canonical-errors-preserved",
+      "reason": "Old attachment helpers translate canonical FileRead isError results back into their existing error paths, preserving large-file truncation and preventing changed-file raw reads after failed canonical reads. Changed-file attachment generation diffs only text reads, keeps standalone image reads as image attachments, and skips notebook/PDF media."
+    },
+    "bashBoundary": {
+      "status": "system-bash-shared",
+      "reason": "Old-stack CanonicalBashTool, daemon registry dispatch, prompt shell execution, direct TUI shell input, and directory attachment message rendering use the runtime system.bash implementation. Legacy unattended names and Bash permission-rule names normalize to system.bash. Failed system.bash results preserve tool_result is_error. system.bash remains ask-gated when sandbox auto-allow is requested because this runtime execution path is not the old sandbox executor. Unsupported legacy Bash control fields are rejected by the canonical wrapper schema instead of being ignored."
+    },
+    "liveOldStackCallers": {
+      "bashInput": "runtime/src/tui/input/processBashCommand.tsx",
+      "promptShell": "runtime/src/utils/promptShellExecution.ts",
+      "attachments": "runtime/src/utils/attachments.ts",
+      "attachmentMessages": "runtime/src/utils/messages.ts",
+      "toolSelector": "runtime/src/tui/components/agents/ToolSelector.tsx",
+      "permissionRouting": "runtime/src/tui/components/permissions/PermissionRequest.tsx"
+    }
+  },
+  "oldStackConsolidation": {
+    "status": "canonical-wrappers-registered",
+    "reason": "The older REPL/query entrypoints still use the old Tool interface, so they register canonical Tool-interface wrappers backed by the new system/model-facing implementations.",
+    "entrypoints": [
+      "runtime/src/tools.ts",
+      "runtime/src/tools/REPLTool/primitiveTools.ts",
+      "runtime/src/query/QueryEngine.ts",
+      "runtime/src/tui/screens/REPL.tsx",
+      "runtime/src/entrypoints/mcp.ts",
+      "runtime/src/utils/api.ts"
+    ],
+    "canonicalOldInterfaceSurface": "runtime/src/tools/canonicalToolSurface.ts",
+    "presentationOnlyOldModules": [
+      "runtime/src/tools/FileReadTool/",
+      "runtime/src/tools/FileEditTool/",
+      "runtime/src/tools/FileWriteTool/",
+      "runtime/src/tools/GrepTool/",
+      "runtime/src/tools/GlobTool/",
+      "runtime/src/tools/NotebookEditTool/"
+    ]
+  },
+  "verification": {
+    "registryTests": "runtime/src/tool-registry.test.ts",
+    "oldStackTests": "runtime/src/tools/tool-surface-consolidation.test.ts",
+    "providerGate": "scripts/goal/verify.mjs"
+  }
+}

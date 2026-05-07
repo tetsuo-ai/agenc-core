@@ -475,6 +475,12 @@ export interface McpManager {
   effectiveServers(config: unknown, auth: unknown): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
   refreshFromConfig?(config: unknown): Promise<McpRefreshResult>;
+  reconnectServer?(name: string): Promise<McpServerMutationResult>;
+  enableServer?(name: string): Promise<McpServerMutationResult>;
+  disableServer?(name: string): Promise<McpServerMutationResult>;
+  addServer?(config: McpSessionServerConfig): Promise<McpServerMutationResult>;
+  getTools?(): ReadonlyArray<McpSessionToolInfo>;
+  getToolsByServer?(name: string): ReadonlyArray<McpSessionToolInfo>;
   getResources?(): Promise<ReadonlyArray<unknown>>;
   getResourcesByServer?(name: string): Promise<ReadonlyArray<unknown>>;
   readResource?(namespacedName: string): Promise<unknown | null>;
@@ -501,6 +507,28 @@ export interface McpManager {
    * consumer as `getConnectedServers`.
    */
   getServerInstructions?(name: string): string | undefined;
+}
+
+export interface McpServerMutationResult {
+  readonly serverName: string;
+  readonly success: boolean;
+  readonly toolCount: number;
+  readonly error?: string;
+}
+
+export interface McpSessionServerConfig {
+  readonly name: string;
+  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly endpoint?: string;
+  readonly enabled?: boolean;
+  readonly required?: boolean;
+}
+
+export interface McpSessionToolInfo {
+  readonly name: string;
+  readonly description?: string;
 }
 
 export interface McpServerInfo {

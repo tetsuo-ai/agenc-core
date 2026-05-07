@@ -84,6 +84,8 @@ export interface MCPReconnectResult {
   readonly error?: string;
 }
 
+export type MCPServerMutationResult = MCPReconnectResult;
+
 export interface MCPElicitationHandlers {
   handleRequest(params: {
     readonly serverName: string;

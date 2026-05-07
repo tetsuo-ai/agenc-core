@@ -1072,7 +1072,7 @@ describe("runAgent", () => {
   });
 
   it("tracks parent registry visibility when hidden coding tools are discovered later", async () => {
-    const tools = ["system.searchTools", "system.grep"].map(mkNamedTool);
+    const tools = ["system.searchTools", "Grep"].map(mkNamedTool);
     let visibleNames = ["system.searchTools"];
     const registry = buildFilteredRegistry(
       {
@@ -1097,23 +1097,23 @@ describe("runAgent", () => {
       "system.searchTools",
     ]);
     await expect(
-      registry.dispatch({ id: "call-grep-before", name: "system.grep", arguments: "{}" }),
+      registry.dispatch({ id: "call-grep-before", name: "Grep", arguments: "{}" }),
     ).resolves.toMatchObject({
       isError: true,
       content: JSON.stringify({
-        error: "tool not allowed for subagent: system.grep",
+        error: "tool not allowed for subagent: Grep",
       }),
     });
 
-    visibleNames = ["system.searchTools", "system.grep"];
+    visibleNames = ["system.searchTools", "Grep"];
 
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toEqual([
       "system.searchTools",
-      "system.grep",
+      "Grep",
     ]);
     const result = await registry.dispatch({
       id: "call-grep-after",
-      name: "system.grep",
+      name: "Grep",
       arguments: "{}",
     });
     expect(result.isError).toBeUndefined();

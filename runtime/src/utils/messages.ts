@@ -113,14 +113,11 @@ import { PLAN_AGENT } from 'src/tools/AgentTool/built-in/planAgent.js'
 import { areExplorePlanAgentsEnabled } from 'src/tools/AgentTool/builtInAgents.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
-import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { ExitPlanModeV2Tool } from 'src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
-import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
 import {
   FILE_READ_TOOL_NAME,
   MAX_LINES_TO_READ,
 } from 'src/tools/FileReadTool/prompt.js'
-import { FileWriteTool } from 'src/tools/FileWriteTool/FileWriteTool.js'
 import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 import type { DeepImmutable } from 'src/types/utils.js'
@@ -141,9 +138,11 @@ import {
   toolMatchesName,
 } from '../tools/Tool.js'
 import {
-  FileReadTool,
-  type Output as FileReadToolOutput,
-} from '../tools/FileReadTool/FileReadTool.js'
+  CanonicalBashTool,
+  CanonicalFileEditTool,
+  CanonicalFileReadTool,
+  CanonicalFileWriteTool,
+} from '../tools/canonicalToolSurface.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
@@ -3224,8 +3223,8 @@ function getPlanModeV2Instructions(attachment: {
   const agentCount = getPlanModeV2AgentCount()
   const exploreAgentCount = getPlanModeV2ExploreAgentCount()
   const planFileInfo = attachment.planExists
-    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
-    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
+    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${CanonicalFileEditTool.name} tool.`
+    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${CanonicalFileWriteTool.name} tool.`
 
   const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
@@ -3328,8 +3327,8 @@ function getPlanModeInterviewInstructions(attachment: {
   planExists?: boolean
 }): UserMessage[] {
   const planFileInfo = attachment.planExists
-    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool.`
-    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool.`
+    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${CanonicalFileEditTool.name} tool.`
+    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${CanonicalFileWriteTool.name} tool.`
 
   const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
@@ -3404,8 +3403,8 @@ function getPlanModeV2SubAgentInstructions(attachment: {
   planExists: boolean
 }): UserMessage[] {
   const planFileInfo = attachment.planExists
-    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${FileEditTool.name} tool if you need to.`
-    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${FileWriteTool.name} tool if you need to.`
+    ? `A plan file already exists at ${attachment.planFilePath}. You can read it and make incremental edits using the ${CanonicalFileEditTool.name} tool if you need to.`
+    : `No plan file exists yet. You should create your plan at ${attachment.planFilePath} using the ${CanonicalFileWriteTool.name} tool if you need to.`
 
   const content = `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
 
@@ -3527,14 +3526,16 @@ Read the team config to discover your teammates' names. Check the task list peri
   switch (attachment.type) {
     case 'directory': {
       return wrapMessagesInSystemReminder([
-        createToolUseMessage(BashTool.name, {
+        createToolUseMessage(CanonicalBashTool.name, {
           command: `ls ${quote([attachment.path])}`,
-          description: `Lists files in ${attachment.path}`,
         }),
-        createToolResultMessage(BashTool, {
-          stdout: attachment.content,
-          stderr: '',
-          interrupted: false,
+        createToolResultMessage(CanonicalBashTool, {
+          content: attachment.content,
+          metadata: {
+            stdout: attachment.content,
+            stderr: '',
+            interrupted: false,
+          },
         }),
       ])
     }
@@ -3546,56 +3547,25 @@ Read the team config to discover your teammates' names. Check the task list peri
         }),
       ])
     case 'file': {
-      const fileContent = attachment.content as FileReadToolOutput
-      switch (fileContent.type) {
-        case 'image': {
-          return wrapMessagesInSystemReminder([
-            createToolUseMessage(FileReadTool.name, {
-              file_path: attachment.filename,
-            }),
-            createToolResultMessage(FileReadTool, fileContent),
-          ])
-        }
-        case 'text': {
-          return wrapMessagesInSystemReminder([
-            createToolUseMessage(FileReadTool.name, {
-              file_path: attachment.filename,
-            }),
-            createToolResultMessage(FileReadTool, fileContent),
-            ...(attachment.truncated
-              ? [
-                  createUserMessage({
-                    content: `Note: The file ${attachment.filename} was too large and has been truncated to the first ${MAX_LINES_TO_READ} lines. Don't tell the user about this truncation. Use ${FileReadTool.name} to read more of the file if you need.`,
-                    isMeta: true, // model-facing metadata only
-                  }),
-                ]
-              : []),
-          ])
-        }
-        case 'notebook': {
-          return wrapMessagesInSystemReminder([
-            createToolUseMessage(FileReadTool.name, {
-              file_path: attachment.filename,
-            }),
-            createToolResultMessage(FileReadTool, fileContent),
-          ])
-        }
-        case 'pdf': {
-          // PDFs are handled via supplementalContent in the tool result
-          return wrapMessagesInSystemReminder([
-            createToolUseMessage(FileReadTool.name, {
-              file_path: attachment.filename,
-            }),
-            createToolResultMessage(FileReadTool, fileContent),
-          ])
-        }
-      }
-      break
+      return wrapMessagesInSystemReminder([
+        createToolUseMessage(CanonicalFileReadTool.name, {
+          file_path: attachment.filename,
+        }),
+        createToolResultMessage(CanonicalFileReadTool, attachment.content),
+        ...(attachment.truncated
+          ? [
+              createUserMessage({
+                content: `Note: The file ${attachment.filename} was too large and has been truncated to the first ${MAX_LINES_TO_READ} lines. Don't tell the user about this truncation. Use ${CanonicalFileReadTool.name} to read more of the file if you need.`,
+                isMeta: true, // model-facing metadata only
+              }),
+            ]
+          : []),
+      ])
     }
     case 'compact_file_reference': {
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `Note: ${attachment.filename} was read before the last conversation was summarized, but the contents are too large to include. Use ${FileReadTool.name} tool if you need to access it.`,
+          content: `Note: ${attachment.filename} was read before the last conversation was summarized, but the contents are too large to include. Use ${CanonicalFileReadTool.name} tool if you need to access it.`,
           isMeta: true,
         }),
       ])
@@ -4247,13 +4217,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'verify_plan_reminder': {
-      // Dead code elimination: AGENC_VERIFY_PLAN='false' in external builds, so === 'true' check allows Bun to eliminate the string
-      /* eslint-disable-next-line custom-rules/no-process-env-top-level */
-      const toolName =
-        process.env.AGENC_VERIFY_PLAN === 'true'
-          ? 'VerifyPlanExecution'
-          : ''
-      const content = `You have completed implementing the plan. Please call the "${toolName}" tool directly (NOT the ${AGENT_TOOL_NAME} tool or an agent) to verify that all plan items were completed correctly.`
+      const content = `You have completed implementing the plan. Please verify directly (NOT via the ${AGENT_TOOL_NAME} tool or an agent) that all plan items were completed correctly.`
       return wrapMessagesInSystemReminder([
         createUserMessage({ content, isMeta: true }),
       ])

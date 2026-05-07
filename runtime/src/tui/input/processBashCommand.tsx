@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 import * as React from 'react';
 import { BashModeProgress } from '../components/BashModeProgress.js';
 import type { SetToolJSXFn } from '../../tools/Tool.js';
-import { BashTool } from '../../tools/BashTool/BashTool.js';
+import { CanonicalBashTool } from '../../tools/canonicalToolSurface.js';
 import { PowerShellTool } from '../../tools/PowerShellTool/PowerShellTool.js';
 import type { AttachmentMessage, SystemMessage, UserMessage } from '../../types/message.js';
 import type { ShellProgress } from '../../types/tools.js';
@@ -17,6 +17,31 @@ import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js';
 import { processToolResultBlock } from '../../utils/toolResultStorage.js';
 import { escapeXml } from '../../utils/xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
+
+function canonicalShellOut(data: unknown): {
+  stdout: string;
+  stderr: string;
+} {
+  const record = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : {};
+  const metadata = record.metadata &&
+    typeof record.metadata === 'object' &&
+    !Array.isArray(record.metadata)
+    ? record.metadata as Record<string, unknown>
+    : {};
+  return {
+    stdout: typeof metadata.stdout === 'string'
+      ? metadata.stdout
+      : typeof record.content === 'string'
+        ? record.content
+        : typeof data === 'string'
+          ? data
+          : '',
+    stderr: typeof metadata.stderr === 'string' ? metadata.stderr : ''
+  };
+}
+
 export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
@@ -68,39 +93,39 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       });
     };
 
-    // User-initiated `!` commands run outside sandbox when policy allows it.
-    // Bash requires an internal approval marker so model-controlled tool input
-    // cannot disable sandboxing by setting dangerouslyDisableSandbox directly.
-    // PS sandbox is Linux/macOS/WSL2 only — on Windows native, shouldUseSandbox()
-    // returns false regardless (unsupported platform).
-    const shellTool = usePowerShell ? PowerShellTool : BashTool;
+    const shellTool = usePowerShell ? PowerShellTool : CanonicalBashTool;
     const response = usePowerShell ? await PowerShellTool.call({
       command: inputString,
       dangerouslyDisableSandbox: true,
       _dangerouslyDisableSandboxApproved: true
-    }, bashModeContext, undefined, undefined, onProgress) : await BashTool.call({
-      command: inputString,
-      dangerouslyDisableSandbox: true,
-      _dangerouslyDisableSandboxApproved: true
+    }, bashModeContext, undefined, undefined, onProgress) : await CanonicalBashTool.call({
+      command: inputString
     }, bashModeContext, undefined, undefined, onProgress);
-    const data = response.data;
-    if (!data) {
+    const resultData = response.data;
+    if (!resultData) {
       throw new Error('No result received from shell command');
     }
-    const stderr = data.stderr;
+    const shellOut = usePowerShell
+      ? {
+          stdout: response.data.stdout,
+          stderr: response.data.stderr
+        }
+      : canonicalShellOut(resultData);
+    const stderr = shellOut.stderr;
     // Reuse the same formatting pipeline as inline !`cmd` bash (promptShellExecution)
-    // and model-initiated Bash. When BashTool.call() persists large output to disk,
-    // data.persistedOutputPath is set and the formatter wraps in <persisted-output>.
-    // Pass stderr:'' to keep it separate for the <bash-stderr> UI tag.
-    const mapped = await processToolResultBlock(shellTool, {
-      ...data,
+    // and model-initiated Bash. Canonical system.bash returns bounded output;
+    // if it truncates, metadata.truncated is set and the bounded content is
+    // surfaced directly. Pass stderr:'' to keep it separate for the
+    // <bash-stderr> UI tag.
+    const mapped = await processToolResultBlock(shellTool, usePowerShell ? {
+      ...response.data,
       stderr: ''
-    }, randomUUID());
+    } : resultData, randomUUID());
     // mapped.content may contain our own <persisted-output> wrapper (trusted
     // XML from buildLargeToolResultMessage). Escaping it would turn structural
     // tags into &lt;persisted-output&gt;, breaking the model's parse and
     // UserBashOutputMessage's extractTag. Escape the raw fallback only.
-    const stdout = typeof mapped.content === 'string' ? mapped.content : escapeXml(data.stdout);
+    const stdout = typeof mapped.content === 'string' ? mapped.content : escapeXml(shellOut.stdout);
     return {
       messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
         content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`
