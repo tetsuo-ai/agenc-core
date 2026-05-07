@@ -3548,7 +3548,6 @@
 ^runtime/src/commands/knowledge/knowledge\.ts:7 - call$
 ^runtime/src/commands/login/login\.tsx:39 - call$
 ^runtime/src/commands/logout/index\.ts:4 - default$
-^runtime/src/commands/mcp/index\.ts:12 - default$
 ^runtime/src/commands/memory/slash\.ts:17 - memorySlashCommand \(used in module\)$
 ^runtime/src/commands/mobile/index\.ts:11 - default$
 ^runtime/src/commands/onboard-github/onboard-github\.tsx:50 - shouldForceGithubRelogin \(used in module\)$

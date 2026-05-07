@@ -58,7 +58,6 @@
       "runtime/src/tools/REPLTool/primitiveTools.ts",
       "runtime/src/query/QueryEngine.ts",
       "runtime/src/tui/screens/REPL.tsx",
-      "runtime/src/entrypoints/mcp.ts",
       "runtime/src/utils/api.ts"
     ],
     "canonicalOldInterfaceSurface": "runtime/src/tools/canonicalToolSurface.ts",

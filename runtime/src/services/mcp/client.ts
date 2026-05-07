@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
@@ -158,7 +157,7 @@ export async function fetchMcpSkillsForConnectedClient(
   client: MCPServerConnection,
 ): Promise<Command[]> {
   const fetchMcpSkillsForClient = await getFetchMcpSkillsForClient()
-  return fetchMcpSkillsForClient?.(client) ?? []
+  return (fetchMcpSkillsForClient?.(client) ?? []) as unknown as Command[]
 }
 
 export function clearMcpSkillsForClientCache(name: string): void {
@@ -965,9 +964,10 @@ export const connectToServer = memoize(
           './InProcessTransport.js'
         )
         const context = createChromeContext(serverRef.env)
-        inProcessServer = createAgenCForChromeMcpServer(context)
+        const chromeMcpServer = createAgenCForChromeMcpServer(context)
+        inProcessServer = chromeMcpServer
         const [clientTransport, serverTransport] = createLinkedTransportPair()
-        await inProcessServer.connect(serverTransport)
+        await chromeMcpServer.connect(serverTransport)
         transport = clientTransport
         logMCPDebug(name, `In-process Chrome MCP server started`)
       } else if (
@@ -984,9 +984,10 @@ export const connectToServer = memoize(
         const { createLinkedTransportPair } = await import(
           './InProcessTransport.js'
         )
-        inProcessServer = await createComputerUseMcpServerForCli()
+        const computerUseMcpServer = await createComputerUseMcpServerForCli()
+        inProcessServer = computerUseMcpServer
         const [clientTransport, serverTransport] = createLinkedTransportPair()
-        await inProcessServer.connect(serverTransport)
+        await computerUseMcpServer.connect(serverTransport)
         transport = clientTransport
         logMCPDebug(name, `In-process Computer Use MCP server started`)
       } else if (serverRef.type === 'stdio' || !serverRef.type) {

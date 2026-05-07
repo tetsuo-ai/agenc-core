@@ -1,20 +1,19 @@
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import { Box, Text } from '../../ink.js';
-import { Byline } from '../design-system/Byline';
+import { Byline } from '../design-system/Byline.js';
 type Props = {
   serverToolsCount: number;
   serverPromptsCount: number;
   serverResourcesCount: number;
 };
-export function CapabilitiesSection(t0) {
+export function CapabilitiesSection(t0: Props) {
   const $ = _c(9);
   const {
     serverToolsCount,
     serverPromptsCount,
     serverResourcesCount
   } = t0;
-  let capabilities;
+  let capabilities: string[];
   if ($[0] !== serverPromptsCount || $[1] !== serverResourcesCount || $[2] !== serverToolsCount) {
     capabilities = [];
     if (serverToolsCount > 0) {
