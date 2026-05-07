@@ -50,4 +50,25 @@ describe("AgenC realtime audio helpers", () => {
 
     expect(spawnProcess).toHaveBeenCalledTimes(2);
   });
+
+  test.each([
+    ["malformed base64", { data: "not-base64!", sampleRate: 24000, numChannels: 1 }],
+    ["oversized base64", { data: "A".repeat(700_000), sampleRate: 24000, numChannels: 1 }],
+    ["NaN sample rate", { data: "AAAA", sampleRate: Number.NaN, numChannels: 1 }],
+    ["infinite sample rate", { data: "AAAA", sampleRate: Infinity, numChannels: 1 }],
+    ["zero sample rate", { data: "AAAA", sampleRate: 0, numChannels: 1 }],
+    ["negative sample rate", { data: "AAAA", sampleRate: -24000, numChannels: 1 }],
+    ["fractional sample rate", { data: "AAAA", sampleRate: 24000.5, numChannels: 1 }],
+    ["zero channels", { data: "AAAA", sampleRate: 24000, numChannels: 0 }],
+    ["negative channels", { data: "AAAA", sampleRate: 24000, numChannels: -1 }],
+    ["fractional channels", { data: "AAAA", sampleRate: 24000, numChannels: 1.5 }],
+    ["too many channels", { data: "AAAA", sampleRate: 24000, numChannels: 16 }],
+  ])("drops %s output audio before spawning playback", (_label, audio) => {
+    const spawnProcess = vi.fn<RealtimeAudioPlayerSpawn>(() => createChild());
+    const player = createProcessRealtimeAudioPlayer(spawnProcess);
+
+    player.enqueue(audio);
+
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
 });

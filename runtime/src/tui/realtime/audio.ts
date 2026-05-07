@@ -33,6 +33,11 @@ export type RealtimeAudioPlayerSpawn = (
 const INPUT_SAMPLE_RATE = 16_000;
 const INPUT_CHANNELS = 1;
 const MAX_OUTPUT_QUEUE_BYTES = 512 * 1024;
+const MAX_OUTPUT_ENCODED_BYTES = Math.ceil(MAX_OUTPUT_QUEUE_BYTES / 3) * 4;
+const MAX_OUTPUT_SAMPLE_RATE = 384_000;
+const MAX_OUTPUT_CHANNELS = 8;
+const BASE64_AUDIO_RE =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export async function startDefaultRealtimeAudioCapture(
   callbacks: RealtimeAudioCaptureCallbacks,
@@ -135,9 +140,11 @@ export function createProcessRealtimeAudioPlayer(
 
   return {
     enqueue(audio) {
+      const decoded = decodeRealtimeOutputAudioChunk(audio);
+      if (decoded === null) return;
       const nextFormat = {
-        sampleRate: audio.sampleRate,
-        numChannels: audio.numChannels,
+        sampleRate: decoded.sampleRate,
+        numChannels: decoded.numChannels,
       };
       if (
         child === null ||
@@ -171,10 +178,49 @@ export function createProcessRealtimeAudioPlayer(
         active?.stdin?.on("error", () => reset(active));
         active?.stdin?.on("close", () => reset(active));
       }
-      enqueueBuffer(Buffer.from(audio.data, "base64"));
+      enqueueBuffer(decoded.buffer);
     },
     close,
   };
+}
+
+function decodeRealtimeOutputAudioChunk(
+  audio: ThreadRealtimeAudioChunk,
+): {
+  readonly buffer: Buffer;
+  readonly sampleRate: number;
+  readonly numChannels: number;
+} | null {
+  if (!isValidOutputAudioFormat(audio.sampleRate, audio.numChannels)) {
+    return null;
+  }
+  if (
+    audio.data.length > MAX_OUTPUT_ENCODED_BYTES ||
+    !BASE64_AUDIO_RE.test(audio.data)
+  ) {
+    return null;
+  }
+  const buffer = Buffer.from(audio.data, "base64");
+  if (buffer.length > MAX_OUTPUT_QUEUE_BYTES) return null;
+  return {
+    buffer,
+    sampleRate: audio.sampleRate,
+    numChannels: audio.numChannels,
+  };
+}
+
+function isValidOutputAudioFormat(
+  sampleRate: number,
+  numChannels: number,
+): boolean {
+  return (
+    Number.isSafeInteger(sampleRate) &&
+    sampleRate > 0 &&
+    sampleRate <= MAX_OUTPUT_SAMPLE_RATE &&
+    Number.isSafeInteger(numChannels) &&
+    numChannels > 0 &&
+    numChannels <= MAX_OUTPUT_CHANNELS
+  );
 }
 
 export function pcmBufferToRealtimeAudioChunk(
