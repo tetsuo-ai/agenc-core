@@ -6754,6 +6754,10 @@ async function gapGates(item) {
     assertGapMcpDonorMirrorTierResolved();
     return;
   }
+  if (item.title.includes("Cross-process lockfile race in MCP auth refresh")) {
+    assertGapMcpXaaRefreshLock();
+    return;
+  }
   if (
     id === "GAP-DMN-01" ||
     item.title.includes("Route session.create / session.detach / session.terminate")
@@ -6765,6 +6769,67 @@ async function gapGates(item) {
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapMcpXaaRefreshLock() {
+  const authRel = "runtime/src/services/mcp/auth.ts";
+  const authSource = readFileSync(path.join(root, authRel), "utf8");
+  for (const needle of [
+    "async function acquireMcpRefreshLock",
+    "mcp-refresh-${sanitizedKey}.lock",
+    "const release = await acquireMcpRefreshLock(this.serverName, serverKey)",
+    "clearKeychainCache()",
+    "Another process already refreshed XAA tokens",
+  ]) {
+    if (!authSource.includes(needle)) {
+      failGate(`GAP-MCP-06: ${authRel} missing XAA refresh lock evidence: ${needle}`);
+    }
+  }
+
+  const lockCallCount = (
+    authSource.match(/acquireMcpRefreshLock\(this\.serverName, serverKey\)/g) ?? []
+  ).length;
+  if (lockCallCount < 2) {
+    failGate("GAP-MCP-06: normal OAuth refresh and XAA refresh must both use the shared lock helper");
+  }
+
+  if (authSource.includes("Follow-up(xaa-ga)")) {
+    failGate("GAP-MCP-06: stale XAA lock follow-up remains in auth.ts");
+  }
+  if (authSource.includes("proceeding without lock")) {
+    failGate("GAP-MCP-06: MCP refresh must not proceed without the cross-process lock");
+  }
+
+  const testRel = "runtime/src/services/mcp/auth-xaa-lock.test.ts";
+  if (!existsSync(path.join(root, testRel))) {
+    failGate(`GAP-MCP-06: missing regression test ${testRel}`);
+  }
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  for (const needle of [
+    "reuses tokens another process refreshed while waiting for the lock",
+    "serializes the XAA exchange and releases the refresh lock after storing tokens",
+    "does not start XAA exchange when the refresh lock stays contended",
+    "expect(mockPerformCrossAppAccess).not.toHaveBeenCalled()",
+    "expect(probes.release).toHaveBeenCalledOnce()",
+    "invocationCallOrder",
+  ]) {
+    if (!testSource.includes(needle)) {
+      failGate(`GAP-MCP-06: ${testRel} missing regression evidence: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/services/mcp/auth-xaa-lock.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-06 targeted XAA refresh lock tests failed");
+  }
+
+  pass("GAP-MCP-06: MCP XAA refresh is protected by the cross-process refresh lock");
 }
 
 function assertGapDmnSessionRoutes() {
