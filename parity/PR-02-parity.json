@@ -90,7 +90,8 @@
         "The chain loader still returns every project document in root-to-current-directory order for tiered assembly."
       ],
       "edgeCases": [
-        "Nested override files shadow same-directory base files without dropping outer project documents from the chain."
+        "Nested override files shadow same-directory base files without dropping outer project documents from the chain.",
+        "A large outer project document that exhausts the chain budget cannot prevent the singular loader from selecting the closest nested instruction file."
       ],
       "tests": [
         "runtime/src/prompts/project-instructions.test.ts",

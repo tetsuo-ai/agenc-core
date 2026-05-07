@@ -99,6 +99,24 @@ describe("project-instructions (T10-B)", () => {
     expect(res!.content).toBe("PKG");
   });
 
+  test("loadProjectInstructions keeps the closest file when an outer document exceeds the byte budget", async () => {
+    const repoRoot = join(root, "proj");
+    const pkgDir = join(repoRoot, "packages", "worker");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT-".repeat(100));
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
+
+    const res = await loadProjectInstructions({
+      cwd: pkgDir,
+      projectDocMaxBytes: 10,
+    });
+
+    expect(res!.path).toBe(join(pkgDir, "AGENC.md"));
+    expect(res!.content).toBe("PKG");
+    expect(res!.truncated).toBe(false);
+  });
+
   test("loadProjectInstructions prefers AGENC.override.md", async () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);

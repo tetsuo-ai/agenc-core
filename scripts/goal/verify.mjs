@@ -2108,7 +2108,7 @@ const ITEM_EVIDENCE = {
       { pattern: "loadTieredInstructions", scope: "runtime/src/prompts/agenc-md.ts" },
       { pattern: "resolveIncludes", scope: "runtime/src/prompts/agenc-md.ts" },
       { pattern: "loadProjectInstructionChain", scope: "runtime/src/prompts/project-instructions.ts" },
-      { pattern: "chain\\.at\\(-1\\)", scope: "runtime/src/prompts/project-instructions.ts" },
+      { pattern: "outer document exceeds the byte budget", scope: "runtime/src/prompts/project-instructions.test.ts" },
       { pattern: "project-instruction-tiering", scope: "parity/PR-02-parity.json" },
     ],
     tests: [
@@ -5383,8 +5383,8 @@ async function promptGates(item) {
   if (id === "PR-02") {
     const found = grepRepo("AGENC\\.md", "runtime/src/prompts");
     if (!found) failGate("AGENC.md inclusion not referenced in runtime/src/prompts/");
-    if (!grepRepo("chain\\.at\\(-1\\)", "runtime/src/prompts/project-instructions.ts")) {
-      failGate("PR-02: loadProjectInstructions must return the closest project instruction file");
+    if (!grepRepo("outer document exceeds the byte budget", "runtime/src/prompts/project-instructions.test.ts")) {
+      failGate("PR-02: closest-file byte-budget regression test missing");
     }
     const vitest = run(
       "npm",

@@ -5,9 +5,10 @@
  * Ports the ancestor-walk behavior from upstream runtimes while keeping
  * AgenC's product-specific instruction filenames.
  *
- * Returns the **single** closest project-root AGENC.md (plus its override
- * twin if present). Tiered discovery of multiple intermediate instruction files
- * is layered on top by `agenc-md.ts`'s project tier.
+ * Returns the **single** closest applicable AGENC.md (or same-directory
+ * override) between the current working directory and the discovered project
+ * root. Tiered discovery of multiple intermediate instruction files is
+ * layered on top by `agenc-md.ts`'s project tier.
  *
  * @module
  */
@@ -170,8 +171,54 @@ export async function resolveInstructionFile(dir: string): Promise<string | null
 export async function loadProjectInstructions(
   opts: LoadProjectInstructionsOptions,
 ): Promise<ProjectInstructions | null> {
-  const chain = await loadProjectInstructionChain(opts);
-  return chain.at(-1) ?? null;
+  const markers =
+    opts.projectRootMarkers !== undefined
+      ? opts.projectRootMarkers
+      : DEFAULT_PROJECT_ROOT_MARKERS;
+  const maxBytes =
+    typeof opts.projectDocMaxBytes === "number"
+      ? opts.projectDocMaxBytes
+      : DEFAULT_PROJECT_DOC_MAX_BYTES;
+
+  if (maxBytes === 0) {
+    return null;
+  }
+
+  const root = await findProjectRoot(opts.cwd, markers);
+  const effectiveRoot = root ?? {
+    rootDir: resolve(opts.cwd),
+    marker: "<cwd>",
+  };
+  let currentDir = resolve(opts.cwd);
+  const rootDir = resolve(effectiveRoot.rootDir);
+
+  while (true) {
+    const filePath = await resolveInstructionFile(currentDir);
+    if (filePath) {
+      try {
+        const rawContent = await readTextFile(filePath);
+        const truncated = truncateContentToBytes(rawContent, maxBytes);
+        return {
+          path: filePath,
+          content: truncated.content,
+          truncated: truncated.truncated,
+          rootMarkerFound: effectiveRoot.marker,
+          rootDir,
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    if (currentDir === rootDir) {
+      return null;
+    }
+    const parent = dirname(currentDir);
+    if (parent === currentDir) {
+      return null;
+    }
+    currentDir = parent;
+  }
 }
 
 function truncateContentToBytes(
