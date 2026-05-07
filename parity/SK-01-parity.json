@@ -84,11 +84,14 @@
       "requiredBehaviors": [
         "discovers skill:// MCP resources when a connected server exposes resources",
         "converts each skill resource into a model-invocable prompt command with loadedFrom mcp",
+        "follows MCP resource pagination up to the bounded per-server skill cap",
         "uses the shared MCP skill builder registry so MCP skills parse frontmatter and render with the same command shape as file skills"
       ],
       "edgeCases": [
         "non-skill resources are ignored",
+        "permission and execution-control frontmatter from remote resources is ignored",
         "a failed skill resource does not suppress other valid skills from the same server",
+        "duplicate normalized resource names resolve deterministically to the first command",
         "resource metadata supplies name and description fallbacks when frontmatter is sparse",
         "remote MCP skill markdown does not execute inline shell snippets during rendering"
       ],

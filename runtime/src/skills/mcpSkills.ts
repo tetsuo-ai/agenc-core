@@ -8,6 +8,7 @@ import { normalizeNameForMCP } from "../services/mcp/normalization.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
 import type { Command } from "../types/command.js";
 import { errorMessage } from "../utils/errors.js";
+import type { FrontmatterData } from "../utils/frontmatterParser.js";
 import { parseFrontmatter } from "../utils/frontmatterParser.js";
 import { logMCPError } from "../utils/log.js";
 import { memoizeWithLRU } from "../utils/memoize.js";
@@ -61,12 +62,32 @@ function commandNameForResource(serverName: string, resource: SkillResource): st
 async function listSkillResources(
   client: Extract<MCPServerConnection, { type: "connected" }>,
 ): Promise<readonly SkillResource[]> {
-  const result = await client.client.request(
-    { method: "resources/list" },
-    ListResourcesResultSchema,
-  );
-  const resources = Array.isArray(result.resources) ? result.resources : [];
-  return resources.filter(isSkillResource).slice(0, MAX_MCP_SKILLS_PER_SERVER);
+  const skillResources: SkillResource[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const result = await client.client.request(
+      {
+        method: "resources/list",
+        ...(cursor ? { params: { cursor } } : {}),
+      },
+      ListResourcesResultSchema,
+    );
+    const resources = Array.isArray(result.resources) ? result.resources : [];
+    for (const resource of resources) {
+      if (!isSkillResource(resource)) continue;
+      skillResources.push(resource);
+      if (skillResources.length >= MAX_MCP_SKILLS_PER_SERVER) {
+        return skillResources;
+      }
+    }
+    cursor =
+      typeof result.nextCursor === "string" && result.nextCursor.length > 0
+        ? result.nextCursor
+        : undefined;
+  } while (cursor);
+
+  return skillResources;
 }
 
 async function readSkillResourceText(
@@ -91,6 +112,27 @@ async function readSkillResourceText(
   return text;
 }
 
+function safeMcpFrontmatter(
+  frontmatter: FrontmatterData,
+): FrontmatterData {
+  const safe: FrontmatterData = {};
+  for (const key of [
+    "name",
+    "description",
+    "arguments",
+    "argument-hint",
+    "when_to_use",
+    "version",
+    "disable-model-invocation",
+    "user-invocable",
+  ]) {
+    if (frontmatter[key] !== undefined) {
+      safe[key] = frontmatter[key];
+    }
+  }
+  return safe;
+}
+
 async function createCommandFromResource(
   client: Extract<MCPServerConnection, { type: "connected" }>,
   resource: SkillResource,
@@ -100,14 +142,16 @@ async function createCommandFromResource(
 
   const { frontmatter, content } = parseFrontmatter(markdown, resource.uri);
   const commandName = commandNameForResource(client.name, resource);
+  const sanitizedFrontmatter = safeMcpFrontmatter(frontmatter);
   const displayName =
-    typeof frontmatter.name === "string" && frontmatter.name.trim().length > 0
-      ? frontmatter.name
+    typeof sanitizedFrontmatter.name === "string" &&
+    sanitizedFrontmatter.name.trim().length > 0
+      ? sanitizedFrontmatter.name.trim()
       : resource.name;
   const frontmatterWithResourceFallback = {
-    ...frontmatter,
+    ...sanitizedFrontmatter,
     ...(displayName ? { name: displayName } : {}),
-    ...(frontmatter.description === undefined && resource.description
+    ...(sanitizedFrontmatter.description === undefined && resource.description
       ? { description: resource.description }
       : {}),
   };
@@ -131,6 +175,27 @@ async function createCommandFromResource(
   return { ...command, isMcp: true };
 }
 
+function dedupeSkillResourcesByCommandName(
+  client: Extract<MCPServerConnection, { type: "connected" }>,
+  resources: readonly SkillResource[],
+): SkillResource[] {
+  const seen = new Set<string>();
+  const deduped: SkillResource[] = [];
+  for (const resource of resources) {
+    const commandName = commandNameForResource(client.name, resource);
+    if (seen.has(commandName)) {
+      logMCPError(
+        client.name,
+        `Skipped duplicate MCP skill resource ${resource.uri}: command ${commandName} already exists`,
+      );
+      continue;
+    }
+    seen.add(commandName);
+    deduped.push(resource);
+  }
+  return deduped;
+}
+
 export const fetchMcpSkillsForClient = memoizeWithLRU(
   async (client: MCPServerConnection): Promise<Command[]> => {
     if (client.type !== "connected" || !client.capabilities.resources) {
@@ -139,8 +204,9 @@ export const fetchMcpSkillsForClient = memoizeWithLRU(
 
     try {
       const resources = await listSkillResources(client);
+      const uniqueResources = dedupeSkillResourcesByCommandName(client, resources);
       const commands = await Promise.all(
-        resources.map(async (resource) => {
+        uniqueResources.map(async (resource) => {
           try {
             return await createCommandFromResource(client, resource);
           } catch (error) {
