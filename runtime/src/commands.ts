@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
+import btwLocalCommand from "./commands/btw/index.js";
 import memoryLocalCommand from "./commands/memory/index.js";
 import type {
   SlashCommand,
@@ -270,6 +271,7 @@ export function isCommandEnabled(cmd: CommandBase): boolean {
 
 let projectedCommandCache: Command[] | null = null;
 const LOCAL_JSX_COMMAND_OVERRIDES = new Map<string, Command>([
+  [btwLocalCommand.name, btwLocalCommand],
   [memoryLocalCommand.name, memoryLocalCommand],
 ]);
 const commandProviders = new Set<

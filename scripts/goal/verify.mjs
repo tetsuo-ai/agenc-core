@@ -220,6 +220,24 @@ const ITEM_EVIDENCE = {
       { pattern: "setSDKStatus", scope: "runtime/tests/slash-compact.contract.test.ts" },
     ],
   },
+  "GAP-TUI-09": {
+    files: [
+      "runtime/src/commands/registry.ts",
+      "runtime/src/commands.ts",
+      "runtime/src/commands/btw/index.ts",
+      "runtime/src/commands/btw/btw.tsx",
+    ],
+    tests: [
+      "runtime/src/commands/registry.test.ts",
+      "runtime/src/commands/tui-command-list.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "btwCommand", scope: "runtime/src/commands/registry.ts" },
+      { pattern: "btwLocalCommand", scope: "runtime/src/commands.ts" },
+      { pattern: "reg\\.has\\(\"btw\"\\)", scope: "runtime/src/commands/registry.test.ts" },
+      { pattern: "interactive local JSX descriptor for /btw", scope: "runtime/src/commands/tui-command-list.test.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6578,6 +6596,10 @@ async function gapGates(item) {
     assertGapTuiCompactProgressControls();
     return;
   }
+  if (item.title.includes("Register /btw in dispatcher")) {
+    assertGapTuiBtwRegisteredInDispatcher();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7432,6 +7454,75 @@ function assertGapTuiCompactProgressControls() {
     failGate("GAP-TUI-08 targeted compact progress tests failed");
   }
   pass("GAP-TUI-08 targeted compact progress tests passed");
+}
+
+function assertGapTuiBtwRegisteredInDispatcher() {
+  const rels = {
+    registry: "runtime/src/commands/registry.ts",
+    commands: "runtime/src/commands.ts",
+    registryTest: "runtime/src/commands/registry.test.ts",
+    tuiListTest: "runtime/src/commands/tui-command-list.test.ts",
+    btwIndex: "runtime/src/commands/btw/index.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-09: missing ${rel}`);
+  }
+
+  const registry = readFileSync(path.join(root, rels.registry), "utf8");
+  const commands = readFileSync(path.join(root, rels.commands), "utf8");
+  const registryTest = readFileSync(path.join(root, rels.registryTest), "utf8");
+  const tuiListTest = readFileSync(path.join(root, rels.tuiListTest), "utf8");
+  const btwIndex = readFileSync(path.join(root, rels.btwIndex), "utf8");
+  const missingEvidence = [
+    [
+      "/btw registry descriptor exists",
+      /const\s+btwCommand:\s+SlashCommand[\s\S]*name:\s*["']btw["'][\s\S]*immediate:\s*true/,
+      registry,
+    ],
+    [
+      "/btw is included in buildDefaultRegistry",
+      /CommandRegistry\.fromCommands\(\[[\s\S]*btwCommand[\s\S]*\]\)/,
+      registry,
+    ],
+    [
+      "/btw uses the existing local JSX command in the TUI command list",
+      /import\s+btwLocalCommand[\s\S]*LOCAL_JSX_COMMAND_OVERRIDES[\s\S]*btwLocalCommand\.name/,
+      commands,
+    ],
+    [
+      "/btw source stays local-jsx and immediate",
+      /type:\s*["']local-jsx["'][\s\S]*name:\s*["']btw["'][\s\S]*immediate:\s*true/,
+      btwIndex,
+    ],
+    [
+      "registry test asserts /btw lookup",
+      /reg\.has\(["']btw["']\)[\s\S]*reg\.find\(["']btw["']\)\?\.immediate/,
+      registryTest,
+    ],
+    [
+      "TUI command-list test asserts /btw local JSX projection",
+      /interactive local JSX descriptor for \/btw[\s\S]*btw\?\.type\)\.toBe\(["']local-jsx["']\)/,
+      tuiListTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-09 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-09: /btw dispatcher and TUI projection evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/registry.test.ts",
+    "src/commands/tui-command-list.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-09 targeted /btw registry tests failed");
+  }
+  pass("GAP-TUI-09 targeted /btw registry tests passed");
 }
 
 function subsystemDirGates(label, dir) {

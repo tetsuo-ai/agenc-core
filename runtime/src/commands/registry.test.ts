@@ -223,6 +223,8 @@ describe("buildDefaultRegistry()", () => {
 
   it("includes the post-T13 command surfaces", () => {
     const reg = buildDefaultRegistry();
+    expect(reg.has("btw")).toBe(true);
+    expect(reg.find("btw")?.immediate).toBe(true);
     expect(reg.has("copy")).toBe(true);
     expect(reg.has("mcp")).toBe(true);
     expect(reg.has("memory")).toBe(true);

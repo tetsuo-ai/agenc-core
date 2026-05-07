@@ -308,6 +308,16 @@ const exitWorktreeCommand: SlashCommand = {
   },
 };
 
+const btwCommand: SlashCommand = {
+  name: "btw",
+  description: "Ask a quick side question without interrupting the main conversation",
+  immediate: true,
+  execute: async () => ({
+    kind: "error",
+    message: "/btw is available in the interactive TUI.",
+  }),
+};
+
 /**
  * Build the default registry.
  *
@@ -330,6 +340,7 @@ export function buildDefaultRegistry(): CommandRegistry {
     statusCommand,
     initCommand,
     compactCommand,
+    btwCommand,
     copyCommand,
     mcpCommand,
     memoryCommand,
