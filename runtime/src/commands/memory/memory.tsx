@@ -1,65 +1,116 @@
-import { mkdir, writeFile } from 'fs/promises';
+import { mkdir as mkdirAsync, writeFile as writeFileAsync } from 'fs/promises';
+import { isAbsolute, relative } from 'path';
 import * as React from 'react';
-import type { CommandResultDisplay } from 'src/commands.js';
-import { Dialog } from '../../components/design-system/Dialog.js';
-import { MemoryFileSelector } from '../../components/memory/MemoryFileSelector.js';
-import { getRelativeMemoryPath } from '../../components/memory/MemoryUpdateNotification.js';
-import { Box, Link, Text } from '../../ink.js';
+import type { LocalJSXCommandOnDone } from '../../commands.js';
+import { Dialog } from '../../tui/components/design-system/Dialog.js';
+import {
+  clearMemoryFileSelectorCache,
+  MemoryFileSelector,
+  primeMemoryFileSelectorCache,
+} from '../../tui/components/memory/MemoryFileSelector.js';
+import { getRelativeMemoryPath } from '../../tui/components/memory/MemoryUpdateNotification.js';
+import { Box, Link, Text } from '../../tui/ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import { clearMemoryFileCaches, getMemoryFiles } from '../../memory/index.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
+import { openFileInExternalEditor } from '../../utils/editor.js';
 import { getErrnoCode } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';
-import { editFileInEditor } from '../../utils/promptEditor.js';
-function MemoryCommand({
-  onDone
-}: {
-  onDone: (result?: string, options?: {
-    display?: CommandResultDisplay;
-  }) => void;
-}): React.ReactNode {
-  const handleSelectMemoryFile = async (memoryPath: string) => {
-    try {
-      // Create agenc directory if it doesn't exist (idempotent with recursive)
-      if (memoryPath.includes(getAgenCConfigHomeDir())) {
-        await mkdir(getAgenCConfigHomeDir(), {
-          recursive: true
-        });
-      }
 
-      // Create file if it doesn't exist (wx flag fails if file exists,
-      // which we catch to preserve existing content)
-      try {
-        await writeFile(memoryPath, '', {
-          encoding: 'utf8',
-          flag: 'wx'
-        });
-      } catch (e: any) {
-        if (getErrnoCode(e) !== 'EEXIST') {
-          throw e;
-        }
-      }
-      await editFileInEditor(memoryPath);
+/**
+ * Ports the TUI source reference `src/commands/memory/memory.tsx` command body
+ * onto AgenC memory paths and TUI components.
+ *
+ * Why this lives here / shape difference from upstream:
+ *   - AgenC keeps project-memory routing in `runtime/src/memory/project-memory.ts`
+ *     and renders the selector from `runtime/src/tui/components/memory/`.
+ *
+ * Cross-cuts deliberately NOT carried:
+ *   - None; the selector owns its feature-gated folder shortcuts.
+ */
+type OpenMemoryFileDeps = {
+  mkdir: typeof mkdirAsync;
+  writeFile: typeof writeFileAsync;
+  openFileInExternalEditor: typeof openFileInExternalEditor;
+  getAgenCConfigHomeDir: typeof getAgenCConfigHomeDir;
+  getRelativeMemoryPath: typeof getRelativeMemoryPath;
+  logError: typeof logError;
+  env: NodeJS.ProcessEnv;
+};
 
-      // Determine which environment variable controls the editor
-      let editorSource = 'default';
-      let editorValue = '';
-      if (process.env.VISUAL) {
-        editorSource = '$VISUAL';
-        editorValue = process.env.VISUAL;
-      } else if (process.env.EDITOR) {
-        editorSource = '$EDITOR';
-        editorValue = process.env.EDITOR;
-      }
-      const editorInfo = editorSource !== 'default' ? `Using ${editorSource}="${editorValue}".` : '';
-      const editorHint = editorInfo ? `> ${editorInfo} To change editor, set $EDITOR or $VISUAL environment variable.` : `> To use a different editor, set the $EDITOR or $VISUAL environment variable.`;
-      onDone(`Opened memory file at ${getRelativeMemoryPath(memoryPath)}\n\n${editorHint}`, {
-        display: 'system'
-      });
-    } catch (error) {
-      logError(error);
-      onDone(`Error opening memory file: ${error}`);
+const defaultOpenMemoryFileDeps: OpenMemoryFileDeps = {
+  mkdir: mkdirAsync,
+  writeFile: writeFileAsync,
+  openFileInExternalEditor,
+  getAgenCConfigHomeDir,
+  getRelativeMemoryPath,
+  logError,
+  env: process.env,
+};
+
+function isPathAtOrInside(basePath: string, targetPath: string): boolean {
+  const relativePath = relative(basePath, targetPath);
+  return (
+    relativePath === '' ||
+    (!relativePath.startsWith('..') && !isAbsolute(relativePath))
+  );
+}
+
+function getEditorHint(env: NodeJS.ProcessEnv): string {
+  if (env.VISUAL) {
+    return `> Using $VISUAL="${env.VISUAL}". To change editor, set $EDITOR or $VISUAL environment variable.`;
+  }
+  if (env.EDITOR) {
+    return `> Using $EDITOR="${env.EDITOR}". To change editor, set $EDITOR or $VISUAL environment variable.`;
+  }
+  return '> To use a different editor, set the $EDITOR or $VISUAL environment variable.';
+}
+
+export async function openMemoryFile(
+  memoryPath: string,
+  onDone: LocalJSXCommandOnDone,
+  deps: Partial<OpenMemoryFileDeps> = {},
+): Promise<void> {
+  const resolvedDeps = { ...defaultOpenMemoryFileDeps, ...deps };
+  try {
+    const configHomeDir = resolvedDeps.getAgenCConfigHomeDir();
+    if (isPathAtOrInside(configHomeDir, memoryPath)) {
+      await resolvedDeps.mkdir(configHomeDir, { recursive: true });
     }
+
+    try {
+      await resolvedDeps.writeFile(memoryPath, '', {
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+    } catch (error: unknown) {
+      if (getErrnoCode(error) !== 'EEXIST') {
+        throw error;
+      }
+    }
+
+    const opened = resolvedDeps.openFileInExternalEditor(memoryPath);
+    if (!opened) {
+      onDone(`Error opening memory file: no external editor is available`);
+      return;
+    }
+    onDone(
+      `Opened memory file at ${resolvedDeps.getRelativeMemoryPath(memoryPath)}\n\n${getEditorHint(resolvedDeps.env)}`,
+      { display: 'system' },
+    );
+  } catch (error) {
+    resolvedDeps.logError(error);
+    onDone(`Error opening memory file: ${error}`);
+  }
+}
+
+function MemoryCommand({
+  onDone,
+}: {
+  onDone: LocalJSXCommandOnDone;
+}): React.ReactNode {
+  const handleSelectMemoryFile = (memoryPath: string): void => {
+    void openMemoryFile(memoryPath, onDone);
   };
   const handleCancel = () => {
     onDone('Cancelled memory editing', {
@@ -84,6 +135,9 @@ export const call: LocalJSXCommandCall = async onDone => {
   // Clear + prime before rendering — Suspense handles the unprimed case,
   // but awaiting here avoids a fallback flash on initial open.
   clearMemoryFileCaches();
-  await getMemoryFiles();
+  clearMemoryFileSelectorCache();
+  const memoryFilesPromise = getMemoryFiles();
+  primeMemoryFileSelectorCache(memoryFilesPromise);
+  await memoryFilesPromise;
   return <MemoryCommand onDone={onDone} />;
 };
