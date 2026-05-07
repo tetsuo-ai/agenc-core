@@ -1,6 +1,51 @@
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CommandRegistry, buildDefaultRegistry } from "./registry.js";
+const nodeRequire = createRequire(import.meta.url);
+const requireExtensions = nodeRequire.extensions as Record<
+  string,
+  (module: { exports: unknown }, filename: string) => void
+>;
+requireExtensions[".txt"] = (module, filename) => {
+  module.exports = readFileSync(filename, "utf8");
+};
+
+vi.mock("bun:bundle", () => ({
+  feature: () => false,
+}));
+vi.mock("../tools.js", () => ({}));
+vi.mock("src/tools.js", () => ({}));
+vi.mock("../utils/auth.js", () => ({
+  getSubscriptionType: () => undefined,
+  isOverageProvisioningAllowed: () => true,
+  getOauthAccountInfo: () => null,
+  hasAnthropicApiKeyAuth: () => false,
+  hasproviderApiKeyAuth: () => false,
+  isproviderAuthEnabled: () => false,
+  isAgenCAISubscriber: () => false,
+  isConsumerSubscriber: () => false,
+}));
+vi.mock("src/utils/auth.js", () => ({
+  getSubscriptionType: () => undefined,
+  isOverageProvisioningAllowed: () => true,
+  getOauthAccountInfo: () => null,
+  hasAnthropicApiKeyAuth: () => false,
+  hasproviderApiKeyAuth: () => false,
+  isproviderAuthEnabled: () => false,
+  isAgenCAISubscriber: () => false,
+  isConsumerSubscriber: () => false,
+}));
+vi.mock("../tools/ScheduleCronTool/CronCreateTool.js", () => ({ CronCreateTool: {} }));
+vi.mock("../tools/ScheduleCronTool/CronDeleteTool.js", () => ({ CronDeleteTool: {} }));
+vi.mock("../tools/ScheduleCronTool/CronListTool.js", () => ({ CronListTool: {} }));
+
+import {
+  CommandRegistry,
+  buildDefaultRegistry,
+  registeredLegacyCommandSurfaceSpecs,
+  registeredLegacyCommandSurfaceNames,
+} from "./registry.js";
 import type {
   SlashCommand,
   SlashCommandContext,
@@ -24,6 +69,31 @@ function mkCmd(
     (cmd as { userInvocable?: boolean }).userInvocable = userInvocable;
   }
   return cmd;
+}
+
+function resolveSpecValue<T>(value: T | (() => T)): T {
+  return typeof value === "function" ? (value as () => T)() : value;
+}
+
+type LegacySurfaceSpec = typeof registeredLegacyCommandSurfaceSpecs[number];
+
+async function loadSpecDescriptor(
+  spec: LegacySurfaceSpec,
+  modulePath: string,
+  exportName: string | undefined = spec.exportName,
+): Promise<unknown> {
+  const loaded = await import(modulePath) as Record<string, unknown>;
+  const exported = exportName === undefined ? loaded.default : loaded[exportName];
+  return spec.factory && typeof exported === "function" ? exported() : exported;
+}
+
+function expectDescriptorShape(
+  descriptor: unknown,
+  spec: LegacySurfaceSpec,
+): void {
+  expect(descriptor, `missing descriptor for /${spec.name}`).toBeTruthy();
+  expect((descriptor as { name?: unknown }).name).toBe(spec.name);
+  expect((descriptor as { type?: unknown }).type).toBe(spec.type);
 }
 
 describe("CommandRegistry — basic register/find/has", () => {
@@ -229,6 +299,136 @@ describe("buildDefaultRegistry()", () => {
     expect(reg.has("mcp")).toBe(true);
     expect(reg.has("memory")).toBe(true);
     expect(reg.has("skills")).toBe(true);
+  });
+
+  it("registers legacy command surfaces that still have executable modules", () => {
+    const reg = buildDefaultRegistry();
+    const names = registeredLegacyCommandSurfaceNames();
+    expect(names).toContain("agents");
+    expect(names).toContain("dream");
+    expect(names).toContain("voice");
+    for (const name of names) {
+      expect(reg.has(name)).toBe(true);
+    }
+    expect(reg.has("remote-control")).toBe(true);
+    expect(reg.has("rc")).toBe(true);
+    expect(reg.has("web-setup")).toBe(true);
+    expect(reg.has("terminal-setup")).toBe(true);
+  });
+
+  it("preserves registry metadata for every legacy command surface", () => {
+    const reg = buildDefaultRegistry();
+
+    for (const spec of registeredLegacyCommandSurfaceSpecs) {
+      if (spec.register === false) continue;
+      const command = reg.find(spec.name);
+      expect(command, `missing /${spec.name}`).toBeDefined();
+      expect(command?.description).toBe(resolveSpecValue(spec.description));
+      expect(command?.aliases).toEqual(spec.aliases);
+      expect(command?.supportsNonInteractive).toBe(spec.supportsNonInteractive);
+      expect((command as { isHidden?: boolean } | undefined)?.isHidden).toBe(
+        spec.isHidden === undefined ? undefined : resolveSpecValue(spec.isHidden),
+      );
+      expect(command?.immediate).toBe(
+        spec.immediate === undefined ? undefined : resolveSpecValue(spec.immediate),
+      );
+      expect(command?.userInvocable).toBe(spec.userInvocable);
+      expect(command?.isEnabled?.()).toBe(spec.isEnabled?.());
+    }
+  });
+
+  it("loads every shared legacy command descriptor export", async () => {
+    for (const spec of registeredLegacyCommandSurfaceSpecs) {
+      const registryDescriptor = await loadSpecDescriptor(spec, spec.modulePath);
+      expectDescriptorShape(registryDescriptor, spec);
+
+      const tuiModulePath = `../${spec.tuiModulePath.slice(2)}`;
+      const tuiDescriptor = await loadSpecDescriptor(spec, tuiModulePath);
+      expectDescriptorShape(tuiDescriptor, spec);
+
+      if (spec.nonInteractiveExportName !== undefined) {
+        const alternate = await loadSpecDescriptor(
+          spec,
+          spec.modulePath,
+          spec.nonInteractiveExportName,
+        );
+        expect((alternate as { name?: unknown }).name).toBe(spec.name);
+        expect((alternate as { type?: unknown }).type).toBe("local");
+      }
+    }
+  });
+
+  it("executes representable local legacy command surfaces through the registry", async () => {
+    const reg = buildDefaultRegistry();
+    const command = reg.find("rewind");
+    expect(command).toBeDefined();
+
+    const result = await command?.execute({
+      argsRaw: "",
+      cwd: "/tmp",
+      home: "/tmp",
+      session: {} as never,
+    });
+
+    expect(result).toEqual({
+      kind: "skip",
+    });
+  });
+
+  it("executes representable prompt legacy command surfaces through the registry", async () => {
+    const reg = buildDefaultRegistry();
+    const command = reg.find("pr-comments");
+    expect(command).toBeDefined();
+
+    const result = await command?.execute({
+      argsRaw: "123",
+      cwd: "/tmp",
+      home: "/tmp",
+      session: {} as never,
+    });
+
+    expect(result).toMatchObject({
+      kind: "prompt",
+      content: expect.stringContaining("fetch and display comments"),
+    });
+  });
+
+  it("does not dispatch prompt legacy commands that need interactive context", async () => {
+    const reg = buildDefaultRegistry();
+    for (const name of ["commit", "review"]) {
+      const command = reg.find(name);
+      expect(command).toBeDefined();
+
+      const result = await command?.execute({
+        argsRaw: "",
+        cwd: "/tmp",
+        home: "/tmp",
+        session: {} as never,
+      });
+
+      expect(result).toEqual({
+        kind: "error",
+        message: `/${name} requires the interactive prompt command surface.`,
+      });
+    }
+  });
+
+  it("documents that JSX-only legacy surfaces require the interactive TUI", async () => {
+    const reg = buildDefaultRegistry();
+    const command = reg.find("btw");
+    expect(command).toBeDefined();
+
+    const result = await command?.execute({
+      argsRaw: "question",
+      cwd: "/tmp",
+      home: "/tmp",
+      session: {} as never,
+    });
+
+    expect(result).toEqual({
+      kind: "error",
+      message: "/btw requires the interactive TUI command surface.",
+    });
   });
 
   it("returns the curated presentation order", () => {

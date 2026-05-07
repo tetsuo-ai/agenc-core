@@ -22,10 +22,12 @@
  * @module
  */
 
+import { feature } from "bun:bundle";
 import type {
   CommandRegistry as CommandRegistryInterface,
   SlashCommand,
 } from "./types.js";
+import type { Command, LocalCommandResult } from "../commands.js";
 import helpCommand from "./help.js";
 import statusCommand from "./status.js";
 import initCommand from "./init.js";
@@ -308,15 +310,487 @@ const exitWorktreeCommand: SlashCommand = {
   },
 };
 
-const btwCommand: SlashCommand = {
-  name: "btw",
-  description: "Ask a quick side question without interrupting the main conversation",
-  immediate: true,
-  execute: async () => ({
-    kind: "error",
-    message: "/btw is available in the interactive TUI.",
-  }),
+type DynamicValue<T> = T | (() => T);
+
+export type LegacyCommandSurfaceSpec = {
+  readonly name: string;
+  readonly description: DynamicValue<string>;
+  readonly type: "local" | "local-jsx" | "prompt";
+  readonly modulePath: string;
+  readonly tuiModulePath: string;
+  readonly exportName?: string;
+  readonly nonInteractiveExportName?: string;
+  readonly factory?: boolean;
+  readonly aliases?: readonly string[];
+  readonly immediate?: DynamicValue<boolean>;
+  readonly supportsNonInteractive?: boolean;
+  readonly isHidden?: DynamicValue<boolean>;
+  readonly isEnabled?: () => boolean;
+  readonly userInvocable?: boolean;
+  readonly argumentHint?: string;
+  readonly availability?: readonly string[];
+  readonly allowedTools?: readonly string[];
+  readonly contentLength?: number;
+  readonly progressMessage?: string;
+  readonly source?: string;
+  readonly dispatchPrompt?: boolean;
+  readonly register?: boolean;
 };
+
+function readDynamic<T>(value: DynamicValue<T>): T {
+  return typeof value === "function" ? (value as () => T)() : value;
+}
+
+function defineDynamicProperty<T extends object, K extends PropertyKey, V>(
+  target: T,
+  key: K,
+  value: DynamicValue<V> | undefined,
+): void {
+  if (value === undefined) return;
+  if (typeof value === "function") {
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: true,
+      get: value as () => V,
+    });
+  } else {
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: true,
+      value,
+    });
+  }
+}
+
+function memoizedModule<T>(load: () => T): () => T {
+  let loaded: T | undefined;
+  return () => {
+    loaded ??= load();
+    return loaded;
+  };
+}
+
+function isModuleNotFound(error: unknown): boolean {
+  return typeof error === "object" &&
+    error !== null &&
+    (
+      (error as { readonly code?: unknown }).code === "MODULE_NOT_FOUND" ||
+      (error as { readonly code?: unknown }).code === "ERR_MODULE_NOT_FOUND" ||
+      (error as { readonly code?: unknown }).code === "ERR_UNSUPPORTED_ESM_URL_SCHEME"
+    );
+}
+
+function canUsePredicateFallback(error: unknown): boolean {
+  return isModuleNotFound(error) &&
+    (process.env.NODE_ENV === "test" || process.env.VITEST === "true");
+}
+
+function readOptional<T>(read: () => T, fallback: T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (!canUsePredicateFallback(error)) throw error;
+    return fallback;
+  }
+}
+
+const loadBootstrapState = memoizedModule(
+  () => require("../bootstrap/state.js") as typeof import("../bootstrap/state.js"),
+);
+const loadBridgeEnabled = memoizedModule(
+  () => require("../bridge/bridgeEnabled.js") as typeof import("../bridge/bridgeEnabled.js"),
+);
+const loadMemoryPaths = memoizedModule(
+  () => require("../memory/paths.js") as typeof import("../memory/paths.js"),
+);
+const loadGrowthbook = memoizedModule(
+  () => require("../services/analytics/growthbook.js") as typeof import("../services/analytics/growthbook.js"),
+);
+const loadReferral = memoizedModule(
+  () => require("../services/api/referral.js") as typeof import("../services/api/referral.js"),
+);
+const loadPolicyLimits = memoizedModule(
+  () => require("../services/policyLimits/index.js") as typeof import("../services/policyLimits/index.js"),
+);
+const loadAuth = memoizedModule(
+  () => require("../utils/auth.js") as typeof import("../utils/auth.js"),
+);
+const loadEnv = memoizedModule(
+  () => require("../utils/env.js") as typeof import("../utils/env.js"),
+);
+const loadFastMode = memoizedModule(
+  () => require("../utils/fastMode.js") as typeof import("../utils/fastMode.js"),
+);
+const loadImmediateCommand = memoizedModule(
+  () => require("../utils/immediateCommand.js") as typeof import("../utils/immediateCommand.js"),
+);
+const loadPrivacyLevel = memoizedModule(
+  () => require("../utils/privacyLevel.js") as typeof import("../utils/privacyLevel.js"),
+);
+const loadVoiceModeEnabled = memoizedModule(
+  () => require("../tui/voice/voiceModeEnabled.js") as typeof import("../tui/voice/voiceModeEnabled.js"),
+);
+const loadUltrareviewEnabled = memoizedModule(
+  () => require("./review/ultrareviewEnabled.js") as typeof import("./review/ultrareviewEnabled.js"),
+);
+
+function getIsNonInteractiveSession(): boolean {
+  return readOptional(() => loadBootstrapState().getIsNonInteractiveSession(), false);
+}
+
+function getIsRemoteMode(): boolean {
+  return readOptional(() => loadBootstrapState().getIsRemoteMode(), false);
+}
+
+function isBridgeEnabled(): boolean {
+  return readOptional(() => loadBridgeEnabled().isBridgeEnabled(), false);
+}
+
+function isAutoMemoryEnabled(): boolean {
+  return readOptional(() => loadMemoryPaths().isAutoMemoryEnabled(), false);
+}
+
+function getFeatureValue_CACHED_MAY_BE_STALE<T>(name: string, fallback: T): T {
+  return readOptional(
+    () => loadGrowthbook().getFeatureValue_CACHED_MAY_BE_STALE(name, fallback),
+    fallback,
+  );
+}
+
+function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name: string): boolean {
+  return readOptional(
+    () => loadGrowthbook().checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name),
+    false,
+  );
+}
+
+function checkCachedPassesEligibility(): ReturnType<
+  typeof import("../services/api/referral.js").checkCachedPassesEligibility
+> {
+  return readOptional(
+    () => loadReferral().checkCachedPassesEligibility(),
+    { eligible: false, needsRefresh: false, hasCache: false },
+  );
+}
+
+function getCachedReferrerReward(): ReturnType<
+  typeof import("../services/api/referral.js").getCachedReferrerReward
+> {
+  return readOptional(() => loadReferral().getCachedReferrerReward(), null);
+}
+
+function isPolicyAllowed(policy: Parameters<
+  typeof import("../services/policyLimits/index.js").isPolicyAllowed
+>[0]): boolean {
+  return readOptional(() => loadPolicyLimits().isPolicyAllowed(policy), false);
+}
+
+function getSubscriptionType(): ReturnType<
+  typeof import("../utils/auth.js").getSubscriptionType
+> {
+  return readOptional(() => loadAuth().getSubscriptionType(), null);
+}
+
+function hasProviderApiKeyAuth(): boolean {
+  return readOptional(() => loadAuth().hasAnthropicApiKeyAuth(), false);
+}
+
+function isAgenCAISubscriber(): boolean {
+  return readOptional(() => loadAuth().isAgenCAISubscriber(), false);
+}
+
+function isConsumerSubscriber(): boolean {
+  return readOptional(() => loadAuth().isConsumerSubscriber(), false);
+}
+
+function isOverageProvisioningAllowed(): boolean {
+  return readOptional(() => loadAuth().isOverageProvisioningAllowed(), false);
+}
+
+function isEnvTruthy(envVar: string | boolean | undefined): boolean {
+  if (!envVar) return false;
+  if (typeof envVar === "boolean") return envVar;
+  return ["1", "true", "yes", "on"].includes(envVar.toLowerCase().trim());
+}
+
+function fastModeModelDisplay(): string {
+  return readOptional(() => loadFastMode().FAST_MODE_MODEL_DISPLAY, "Opus 4.6");
+}
+
+function isFastModeEnabled(): boolean {
+  return readOptional(() => loadFastMode().isFastModeEnabled(), false);
+}
+
+function shouldInferenceConfigCommandBeImmediate(): boolean {
+  return readOptional(
+    () => loadImmediateCommand().shouldInferenceConfigCommandBeImmediate(),
+    process.env.USER_TYPE === "ant",
+  );
+}
+
+function isEssentialTrafficOnly(): boolean {
+  return readOptional(() => loadPrivacyLevel().isEssentialTrafficOnly(), false);
+}
+
+function isVoiceGrowthBookEnabled(): boolean {
+  return readOptional(() => loadVoiceModeEnabled().isVoiceGrowthBookEnabled(), false);
+}
+
+function isVoiceModeEnabled(): boolean {
+  return readOptional(() => loadVoiceModeEnabled().isVoiceModeEnabled(), false);
+}
+
+function isUltrareviewEnabled(): boolean {
+  return readOptional(() => loadUltrareviewEnabled().isUltrareviewEnabled(), false);
+}
+
+function isDesktopSupportedPlatform(): boolean {
+  return process.platform === "darwin" ||
+    (process.platform === "win32" && process.arch === "x64");
+}
+
+function isBridgeCommandEnabled(): boolean {
+  return feature("BRIDGE_MODE") && isBridgeEnabled();
+}
+
+function isExtraUsageAllowed(): boolean {
+  if (isEnvTruthy(process.env.DISABLE_EXTRA_USAGE_COMMAND)) {
+    return false;
+  }
+  return isOverageProvisioningAllowed();
+}
+
+function sandboxDescription(): string {
+  return "Configure sandbox settings";
+}
+
+const NATIVE_CSIU_TERMINALS: Record<string, string> = {
+  ghostty: "Ghostty",
+  kitty: "Kitty",
+  "iTerm.app": "iTerm2",
+  WezTerm: "WezTerm",
+};
+
+const BUILD_USER_TYPE = "external" as string;
+
+function terminalSetupDescription(): string {
+  return readOptional(() => loadEnv().env.terminal, null) === "Apple_Terminal"
+    ? "Enable Option+Enter key binding for newlines and visual bell"
+    : "Install Shift+Enter key binding for newlines";
+}
+
+function terminalSetupHidden(): boolean {
+  const terminal = readOptional(() => loadEnv().env.terminal, null);
+  return terminal !== null && terminal in NATIVE_CSIU_TERMINALS;
+}
+
+function legacyCommandSurface(params: LegacyCommandSurfaceSpec): SlashCommand {
+  const command: SlashCommand & { readonly isHidden?: boolean } = {
+    name: params.name,
+    get description() {
+      return readDynamic(params.description);
+    },
+    ...(params.aliases !== undefined ? { aliases: params.aliases } : {}),
+    ...(params.supportsNonInteractive !== undefined
+      ? { supportsNonInteractive: params.supportsNonInteractive }
+      : {}),
+    ...(params.isEnabled !== undefined ? { isEnabled: params.isEnabled } : {}),
+    ...(params.userInvocable === false ? { userInvocable: false } : {}),
+    execute: async (ctx) => executeLegacyCommandSurface(params, ctx.argsRaw, ctx as never),
+  };
+  defineDynamicProperty(command, "immediate", params.immediate);
+  defineDynamicProperty(command, "isHidden", params.isHidden);
+  return command;
+}
+
+type LegacyCommandModule = {
+  readonly default?: unknown;
+  readonly [key: string]: unknown;
+};
+
+async function loadLegacyCommandSurface(
+  params: LegacyCommandSurfaceSpec,
+  exportName: string | undefined = params.exportName,
+): Promise<Command> {
+  const loaded = await import(params.modulePath) as LegacyCommandModule;
+  const exported = exportName === undefined
+    ? loaded.default
+    : loaded[exportName];
+  const descriptor = params.factory && typeof exported === "function"
+    ? exported()
+    : exported;
+  if (descriptor === undefined || descriptor === null) {
+    throw new Error(`/${params.name} did not export a command descriptor`);
+  }
+  return descriptor as Command;
+}
+
+function localResultToSlashResult(result: LocalCommandResult) {
+  switch (result.type) {
+    case "text":
+      return { kind: "text" as const, text: result.value };
+    case "compact":
+      return {
+        kind: "compact" as const,
+        text: result.displayText ?? "Conversation compacted",
+      };
+    case "skip":
+      return { kind: "skip" as const };
+  }
+}
+
+function promptBlocksToText(blocks: readonly unknown[]): string {
+  return blocks
+    .map(block => {
+      if (typeof block === "string") return block;
+      if (block && typeof block === "object" && "text" in block) {
+        const text = (block as { readonly text?: unknown }).text;
+        if (typeof text === "string") return text;
+      }
+      return JSON.stringify(block);
+    })
+    .filter((text): text is string => typeof text === "string" && text.length > 0)
+    .join("\n\n");
+}
+
+async function executeLegacyCommandSurface(
+  params: LegacyCommandSurfaceSpec,
+  argsRaw: string,
+  context: unknown,
+) {
+  if (params.type === "prompt" && params.dispatchPrompt !== true) {
+    return {
+      kind: "error" as const,
+      message: `/${params.name} requires the interactive prompt command surface.`,
+    };
+  }
+  const descriptor = await loadLegacyCommandSurface(params);
+  if (descriptor.type === "local-jsx" && params.nonInteractiveExportName) {
+    const alternate = await loadLegacyCommandSurface(
+      params,
+      params.nonInteractiveExportName,
+    );
+    if (alternate.type === "local" && alternate.isEnabled?.() !== false) {
+      const loaded = await alternate.load();
+      const result = await loaded.call(argsRaw, context as never);
+      return localResultToSlashResult(result);
+    }
+  }
+  if (descriptor.isEnabled?.() === false) {
+    return {
+      kind: "error" as const,
+      message: `/${params.name} is not available in this session.`,
+    };
+  }
+  if (descriptor.type === "local-jsx") {
+    return {
+      kind: "error" as const,
+      message: `/${params.name} requires the interactive TUI command surface.`,
+    };
+  }
+  if (descriptor.type === "local") {
+    const loaded = await descriptor.load();
+    const result = await loaded.call(argsRaw, context as never);
+    return localResultToSlashResult(result);
+  }
+  if (descriptor.getPromptForCommand === undefined) {
+    return {
+      kind: "error" as const,
+      message: `/${params.name} did not provide prompt content.`,
+    };
+  }
+  const blocks = await descriptor.getPromptForCommand(argsRaw, context as never);
+  return {
+    kind: "prompt" as const,
+    content: promptBlocksToText(blocks),
+  };
+}
+
+export const registeredLegacyCommandSurfaceSpecs = [
+  { name: "agents", type: "local-jsx", modulePath: "./agents/index.js", tuiModulePath: "./commands/agents/index.js", description: "Manage agent configurations" },
+  {
+    name: "branch",
+    type: "local-jsx",
+    modulePath: "./branch/index.js",
+    tuiModulePath: "./commands/branch/index.js",
+    description: "Create a branch of the current conversation at this point",
+    argumentHint: "[name]",
+  },
+  {
+    name: "remote-control",
+    type: "local-jsx",
+    modulePath: "./bridge/index.js",
+    tuiModulePath: "./commands/bridge/index.js",
+    aliases: ["rc"],
+    description: "Connect this terminal for remote-control sessions",
+    argumentHint: "[name]",
+    isEnabled: isBridgeCommandEnabled,
+    isHidden: () => !isBridgeCommandEnabled(),
+    immediate: true,
+  },
+  { name: "btw", type: "local-jsx", modulePath: "./btw/index.js", tuiModulePath: "./commands/btw/index.js", description: "Ask a quick side question without interrupting the main conversation", immediate: true, argumentHint: "<question>" },
+  { name: "buddy", type: "local-jsx", modulePath: "./buddy/index.js", tuiModulePath: "./commands/buddy/index.js", description: "Hatch, pet, and manage your AgenC companion", immediate: true, argumentHint: "[status|mute|unmute|help]" },
+  { name: "chrome", type: "local-jsx", modulePath: "./chrome/index.js", tuiModulePath: "./commands/chrome/index.js", description: "AgenC in Chrome (Beta) settings", availability: ["agenc-ai"], isEnabled: () => !getIsNonInteractiveSession() },
+  { name: "color", type: "local-jsx", modulePath: "./color/index.js", tuiModulePath: "./commands/color/index.js", description: "Set the prompt bar color for this session", immediate: true, argumentHint: "<color|default>" },
+  { name: "desktop", type: "local-jsx", modulePath: "./desktop/index.js", tuiModulePath: "./commands/desktop/index.js", aliases: ["app"], description: "Continue the current session in AgenC Desktop", availability: ["agenc-ai"], isEnabled: isDesktopSupportedPlatform, isHidden: () => !isDesktopSupportedPlatform() },
+  { name: "dream", type: "prompt", modulePath: "./dream/dream.js", tuiModulePath: "./commands/dream/dream.js", description: "Run memory consolidation \u2014 synthesize recent sessions into durable memories", isEnabled: () => isAutoMemoryEnabled(), progressMessage: "consolidating memories", contentLength: 0, source: "builtin" },
+  { name: "export", type: "local-jsx", modulePath: "./export/index.js", tuiModulePath: "./commands/export/index.js", description: "Export the current conversation to a file or clipboard", argumentHint: "[filename]" },
+  { name: "extra-usage", type: "local-jsx", modulePath: "./extra-usage/index.js", tuiModulePath: "./commands/extra-usage/index.js", exportName: "extraUsage", nonInteractiveExportName: "extraUsageNonInteractive", supportsNonInteractive: true, description: "Configure extra usage to keep working when limits are hit", isEnabled: () => isExtraUsageAllowed() && !getIsNonInteractiveSession() },
+  { name: "fast", type: "local-jsx", modulePath: "./fast/index.js", tuiModulePath: "./commands/fast/index.js", description: () => `Toggle fast mode (${fastModeModelDisplay()} only)`, availability: ["agenc-ai", "console"], isEnabled: () => isFastModeEnabled(), isHidden: () => !isFastModeEnabled(), argumentHint: "[on|off]", immediate: () => shouldInferenceConfigCommandBeImmediate() },
+  { name: "feedback", type: "local-jsx", modulePath: "./feedback/index.js", tuiModulePath: "./commands/feedback/index.js", aliases: ["bug"], description: "Submit feedback about AgenC", argumentHint: "[report]", isEnabled: () => !(isEnvTruthy(process.env.AGENC_USE_BEDROCK) || isEnvTruthy(process.env.AGENC_USE_VERTEX) || isEnvTruthy(process.env.AGENC_USE_FOUNDRY) || isEnvTruthy(process.env.DISABLE_FEEDBACK_COMMAND) || isEnvTruthy(process.env.DISABLE_BUG_COMMAND) || isEssentialTrafficOnly() || process.env.USER_TYPE === "ant" || !isPolicyAllowed("allow_product_feedback")) },
+  { name: "heapdump", type: "local", modulePath: "./heapdump/index.js", tuiModulePath: "./commands/heapdump/index.js", description: "Dump the JS heap to ~/Desktop", isHidden: true, supportsNonInteractive: true },
+  { name: "ide", type: "local-jsx", modulePath: "./ide/index.js", tuiModulePath: "./commands/ide/index.js", description: "Manage IDE integrations and show status", argumentHint: "[open]" },
+  { name: "knowledge", type: "local", modulePath: "./knowledge/index.js", tuiModulePath: "./commands/knowledge/index.js", description: "Manage native Knowledge Graph", supportsNonInteractive: true, argumentHint: "enable <yes|no> | clear | status | list" },
+  { name: "login", type: "local-jsx", modulePath: "./login/index.js", tuiModulePath: "./commands/login/index.js", factory: true, description: () => hasProviderApiKeyAuth() ? "Switch provider accounts" : "Sign in with your provider account", isEnabled: () => !isEnvTruthy(process.env.DISABLE_LOGIN_COMMAND) },
+  { name: "logout", type: "local-jsx", modulePath: "./logout/index.js", tuiModulePath: "./commands/logout/index.js", description: "Sign out from your provider account", isEnabled: () => !isEnvTruthy(process.env.DISABLE_LOGOUT_COMMAND) },
+  { name: "memory", type: "local-jsx", modulePath: "./memory/index.js", tuiModulePath: "./commands/memory/index.js", description: "Edit AgenC memory files", register: false },
+  { name: "mobile", type: "local-jsx", modulePath: "./mobile/index.js", tuiModulePath: "./commands/mobile/index.js", aliases: ["ios", "android"], description: "Show QR code to download the AgenC mobile app" },
+  { name: "output-style", type: "local-jsx", modulePath: "./output-style/index.js", tuiModulePath: "./commands/output-style/index.js", description: "Deprecated: use /config to change output style", isHidden: true },
+  { name: "passes", type: "local-jsx", modulePath: "./passes/index.js", tuiModulePath: "./commands/passes/index.js", description: () => getCachedReferrerReward() ? "Share a free week of AgenC with friends and earn extra usage" : "Share a free week of AgenC with friends", isHidden: () => { const { eligible, hasCache } = checkCachedPassesEligibility(); return !eligible || !hasCache; } },
+  { name: "pr-comments", type: "prompt", modulePath: "./pr_comments/index.js", tuiModulePath: "./commands/pr_comments/index.js", description: "Get comments from a GitHub pull request", progressMessage: "fetching PR comments", contentLength: 0, source: "builtin", dispatchPrompt: true },
+  { name: "privacy-settings", type: "local-jsx", modulePath: "./privacy-settings/index.js", tuiModulePath: "./commands/privacy-settings/index.js", description: "View and update your privacy settings", isEnabled: () => isConsumerSubscriber() },
+  { name: "rate-limit-options", type: "local-jsx", modulePath: "./rate-limit-options/index.js", tuiModulePath: "./commands/rate-limit-options/index.js", description: "Show options when rate limit is reached", isEnabled: () => isAgenCAISubscriber(), isHidden: true },
+  { name: "remote-env", type: "local-jsx", modulePath: "./remote-env/index.js", tuiModulePath: "./commands/remote-env/index.js", description: "Configure the default remote environment for teleport sessions", isEnabled: () => isAgenCAISubscriber() && isPolicyAllowed("allow_remote_sessions"), isHidden: () => !isAgenCAISubscriber() || !isPolicyAllowed("allow_remote_sessions") },
+  { name: "web-setup", type: "local-jsx", modulePath: "./remote-setup/index.js", tuiModulePath: "./commands/remote-setup/index.js", description: "Setup AgenC on the web (requires connecting your GitHub account)", availability: ["agenc-ai"], isEnabled: () => getFeatureValue_CACHED_MAY_BE_STALE("tengu_cobalt_lantern", false) && isPolicyAllowed("allow_remote_sessions"), isHidden: () => !isPolicyAllowed("allow_remote_sessions") },
+  { name: "rename", type: "local-jsx", modulePath: "./rename/index.js", tuiModulePath: "./commands/rename/index.js", description: "Rename the current conversation", immediate: true, argumentHint: "[name]" },
+  { name: "rewind", type: "local", modulePath: "./rewind/index.js", tuiModulePath: "./commands/rewind/index.js", aliases: ["checkpoint"], description: "Restore the code and/or conversation to a previous point", argumentHint: "", supportsNonInteractive: false },
+  { name: "sandbox", type: "local-jsx", modulePath: "./sandbox-toggle/index.js", tuiModulePath: "./commands/sandbox-toggle/index.js", description: sandboxDescription, isHidden: false, immediate: true, argumentHint: "exclude \"command pattern\"" },
+  { name: "session", type: "local-jsx", modulePath: "./session/index.js", tuiModulePath: "./commands/session/index.js", aliases: ["remote"], description: "Show remote session URL and QR code", isEnabled: () => getIsRemoteMode(), isHidden: () => !getIsRemoteMode() },
+  { name: "stickers", type: "local", modulePath: "./stickers/index.js", tuiModulePath: "./commands/stickers/index.js", description: "Order AgenC stickers", supportsNonInteractive: false },
+  { name: "tag", type: "local-jsx", modulePath: "./tag/index.js", tuiModulePath: "./commands/tag/index.js", description: "Toggle a searchable tag on the current session", isEnabled: () => process.env.USER_TYPE === "ant", argumentHint: "<tag-name>" },
+  { name: "tasks", type: "local-jsx", modulePath: "./tasks/index.js", tuiModulePath: "./commands/tasks/index.js", aliases: ["bashes"], description: "List and manage background tasks" },
+  { name: "terminal-setup", type: "local-jsx", modulePath: "./terminalSetup/index.js", tuiModulePath: "./commands/terminalSetup/index.js", description: terminalSetupDescription, isHidden: terminalSetupHidden },
+  { name: "theme", type: "local-jsx", modulePath: "./theme/index.js", tuiModulePath: "./commands/theme/index.js", description: "Change the theme" },
+  { name: "think-back", type: "local-jsx", modulePath: "./thinkback/index.js", tuiModulePath: "./commands/thinkback/index.js", description: "Your 2025 AgenC Year in Review", isEnabled: () => checkStatsigFeatureGate_CACHED_MAY_BE_STALE("tengu_thinkback") },
+  { name: "thinkback-play", type: "local", modulePath: "./thinkback-play/index.js", tuiModulePath: "./commands/thinkback-play/index.js", description: "Play the thinkback animation", isEnabled: () => checkStatsigFeatureGate_CACHED_MAY_BE_STALE("tengu_thinkback"), isHidden: true, supportsNonInteractive: false },
+  { name: "upgrade", type: "local-jsx", modulePath: "./upgrade/index.js", tuiModulePath: "./commands/upgrade/index.js", description: "Upgrade to Max for higher rate limits and more Opus", availability: ["agenc-ai"], isEnabled: () => !isEnvTruthy(process.env.DISABLE_UPGRADE_COMMAND) && getSubscriptionType() !== "enterprise" },
+  { name: "vim", type: "local", modulePath: "./vim/index.js", tuiModulePath: "./commands/vim/index.js", description: "Toggle between Vim and Normal editing modes", supportsNonInteractive: false },
+  { name: "voice", type: "local", modulePath: "./voice/index.js", tuiModulePath: "./commands/voice/index.js", description: "Toggle voice mode", availability: ["agenc-ai"], isEnabled: () => isVoiceGrowthBookEnabled(), isHidden: () => !isVoiceModeEnabled(), supportsNonInteractive: false },
+  { name: "install", type: "local-jsx", modulePath: "./install.js", tuiModulePath: "./commands/install.js", exportName: "install", description: "Install AgenC native build", argumentHint: "[options]" },
+  { name: "ultraplan", type: "local-jsx", modulePath: "./ultraplan.js", tuiModulePath: "./commands/ultraplan.js", description: "~10\u201330 min \u00b7 AgenC on the web drafts an advanced plan you can edit and approve. See https://agenc.tech/docs/en/agenc-code-on-the-web", argumentHint: "<prompt>", isEnabled: () => BUILD_USER_TYPE === "ant" },
+  { name: "commit", type: "prompt", modulePath: "./commit.js", tuiModulePath: "./commands/commit.js", description: "Create a git commit", progressMessage: "creating commit", allowedTools: ["Bash(git add:*)", "Bash(git status:*)", "Bash(git commit:*)"], contentLength: 0, source: "builtin" },
+  { name: "review", type: "prompt", modulePath: "./review.js", tuiModulePath: "./commands/review.js", description: "Review a pull request", progressMessage: "reviewing pull request", contentLength: 0, source: "builtin" },
+  { name: "ultrareview", type: "local-jsx", modulePath: "./review.js", tuiModulePath: "./commands/review.js", exportName: "ultrareview", description: "~10\u201320 min \u00b7 Finds and verifies bugs in your branch. Runs in AgenC on the web. See https://agenc.tech/docs/en/agenc-code-on-the-web", isEnabled: () => isUltrareviewEnabled() },
+] as const satisfies readonly LegacyCommandSurfaceSpec[];
+
+const legacyCommandSurfaces = (registeredLegacyCommandSurfaceSpecs as readonly LegacyCommandSurfaceSpec[]).map(
+  spec => spec.register === false ? null : legacyCommandSurface(spec),
+).filter(
+  (command): command is SlashCommand => command !== null,
+) satisfies readonly SlashCommand[];
+
+const legacyCommandNames = new Set(legacyCommandSurfaces.map(command => command.name));
+if (legacyCommandNames.size !== legacyCommandSurfaces.length) {
+  throw new Error("Duplicate legacy command surface registration");
+}
+
+const orphanedCommandSurfaceNames = legacyCommandSurfaces.map(
+  command => command.name,
+);
+
+export function registeredLegacyCommandSurfaceNames(): readonly string[] {
+  return orphanedCommandSurfaceNames;
+}
 
 /**
  * Build the default registry.
@@ -340,7 +814,7 @@ export function buildDefaultRegistry(): CommandRegistry {
     statusCommand,
     initCommand,
     compactCommand,
-    btwCommand,
+    ...legacyCommandSurfaces,
     copyCommand,
     mcpCommand,
     memoryCommand,

@@ -2,9 +2,10 @@ import type * as React from "react";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { buildDefaultRegistry } from "./commands/registry.js";
-import btwLocalCommand from "./commands/btw/index.js";
-import memoryLocalCommand from "./commands/memory/index.js";
+import {
+  buildDefaultRegistry,
+  registeredLegacyCommandSurfaceSpecs,
+} from "./commands/registry.js";
 import type {
   SlashCommand,
   SlashCommandAppStateBridge,
@@ -227,10 +228,14 @@ export function projectSlashCommand(cmd: SlashCommand): Command {
   return {
     type: "local",
     name: cmd.name,
-    description: cmd.description,
+    get description() {
+      return cmd.description;
+    },
     aliases: cmd.aliases ? [...cmd.aliases] : undefined,
     isEnabled: cmd.isEnabled,
-    immediate: cmd.immediate,
+    get immediate() {
+      return cmd.immediate;
+    },
     userInvocable: cmd.userInvocable,
     supportsNonInteractive: cmd.supportsNonInteractive ?? false,
     load: async () => {
@@ -270,10 +275,214 @@ export function isCommandEnabled(cmd: CommandBase): boolean {
 }
 
 let projectedCommandCache: Command[] | null = null;
-const LOCAL_JSX_COMMAND_OVERRIDES = new Map<string, Command>([
-  [btwLocalCommand.name, btwLocalCommand],
-  [memoryLocalCommand.name, memoryLocalCommand],
-]);
+
+type LazyCommandModule = {
+  readonly default?: unknown;
+  readonly [key: string]: unknown;
+};
+
+type LazyCommandParams = {
+  readonly name: string;
+  readonly description: string | (() => string);
+  readonly type: "local" | "local-jsx" | "prompt";
+  readonly modulePath: string;
+  readonly exportName?: string;
+  readonly aliases?: readonly string[];
+  readonly argumentHint?: string;
+  readonly immediate?: boolean | (() => boolean);
+  readonly supportsNonInteractive?: boolean;
+  readonly isHidden?: boolean | (() => boolean);
+  readonly isEnabled?: () => boolean;
+  readonly userInvocable?: boolean;
+  readonly availability?: readonly string[];
+  readonly allowedTools?: readonly string[];
+  readonly contentLength?: number;
+  readonly argNames?: readonly string[];
+  readonly model?: string;
+  readonly progressMessage?: string;
+  readonly source?: string;
+  readonly disableNonInteractive?: boolean;
+  readonly disableModelInvocation?: boolean;
+  readonly hasUserSpecifiedDescription?: boolean;
+  readonly whenToUse?: string;
+  readonly context?: string;
+  readonly agent?: string;
+  readonly effort?: string;
+  readonly shell?: "bash" | "powershell";
+  readonly factory?: boolean;
+};
+
+function readLazyDynamic<T>(value: T | (() => T)): T {
+  return typeof value === "function" ? (value as () => T)() : value;
+}
+
+function defineLazyDynamic<T extends object, K extends PropertyKey, V>(
+  target: T,
+  key: K,
+  value: V | (() => V) | undefined,
+): void {
+  if (value === undefined) return;
+  if (typeof value === "function") {
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: true,
+      get: value as () => V,
+    });
+  } else {
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: true,
+      value,
+    });
+  }
+}
+
+function withLazyDynamicMetadata<T extends CommandBase>(
+  command: T,
+  params: LazyCommandParams,
+): T {
+  Object.defineProperty(command, "description", {
+    enumerable: true,
+    configurable: true,
+    get: () => readLazyDynamic(params.description),
+  });
+  defineLazyDynamic(command, "immediate", params.immediate);
+  defineLazyDynamic(command, "isHidden", params.isHidden);
+  return command;
+}
+
+async function loadLegacyCommand(params: LazyCommandParams): Promise<Command> {
+  const loaded = await import(params.modulePath) as LazyCommandModule;
+  const exported = params.exportName === undefined
+    ? loaded.default
+    : loaded[params.exportName];
+  const command = params.factory && typeof exported === "function"
+    ? exported()
+    : exported;
+  if (command === undefined || command === null) {
+    throw new Error(`/${params.name} did not export a command descriptor`);
+  }
+  return command as Command;
+}
+
+function lazyCommand(params: LazyCommandParams): Command {
+  const base = {
+    name: params.name,
+    description: typeof params.description === "function" ? "" : params.description,
+    ...(params.aliases !== undefined ? { aliases: [...params.aliases] } : {}),
+    ...(params.argumentHint !== undefined ? { argumentHint: params.argumentHint } : {}),
+    ...(params.supportsNonInteractive !== undefined
+      ? { supportsNonInteractive: params.supportsNonInteractive }
+      : {}),
+    ...(params.isEnabled !== undefined ? { isEnabled: params.isEnabled } : {}),
+    ...(params.userInvocable !== undefined
+      ? { userInvocable: params.userInvocable }
+      : {}),
+    ...(params.availability !== undefined
+      ? { availability: [...params.availability] }
+      : {}),
+  };
+
+  if (params.type === "prompt") {
+    return withLazyDynamicMetadata({
+      ...base,
+      type: "prompt",
+      progressMessage: params.progressMessage ?? "running",
+      contentLength: params.contentLength ?? 0,
+      ...(params.argNames !== undefined ? { argNames: [...params.argNames] } : {}),
+      ...(params.allowedTools !== undefined
+        ? { allowedTools: [...params.allowedTools] }
+        : {}),
+      ...(params.model !== undefined ? { model: params.model } : {}),
+      source: params.source ?? "builtin",
+      ...(params.disableNonInteractive !== undefined
+        ? { disableNonInteractive: params.disableNonInteractive }
+        : {}),
+      ...(params.disableModelInvocation !== undefined
+        ? { disableModelInvocation: params.disableModelInvocation }
+        : {}),
+      ...(params.hasUserSpecifiedDescription !== undefined
+        ? { hasUserSpecifiedDescription: params.hasUserSpecifiedDescription }
+        : {}),
+      ...(params.whenToUse !== undefined ? { whenToUse: params.whenToUse } : {}),
+      ...(params.context !== undefined ? { context: params.context } : {}),
+      ...(params.agent !== undefined ? { agent: params.agent } : {}),
+      ...(params.effort !== undefined ? { effort: params.effort } : {}),
+      ...(params.shell !== undefined ? { shell: params.shell } : {}),
+      getPromptForCommand: async (args, context) => {
+        const command = await loadLegacyCommand(params);
+        if (command.type !== "prompt") {
+          throw new Error(`/${params.name} did not load a prompt command`);
+        }
+        const promptCommand = command as Extract<Command, { type: "prompt" }>;
+        if (promptCommand.getPromptForCommand === undefined) {
+          throw new Error(`/${params.name} loaded a prompt command without a prompt handler`);
+        }
+        return promptCommand.getPromptForCommand(args, context);
+      },
+    }, params);
+  }
+
+  if (params.type === "local") {
+    return withLazyDynamicMetadata({
+      ...base,
+      type: "local",
+      supportsNonInteractive: params.supportsNonInteractive ?? false,
+      load: async () => {
+        const command = await loadLegacyCommand(params);
+        if (command.type !== "local") {
+          throw new Error(`/${params.name} did not load a local command`);
+        }
+        return command.load();
+      },
+    }, params);
+  }
+
+  return withLazyDynamicMetadata({
+    ...base,
+    type: "local-jsx",
+    load: async () => {
+      const command = await loadLegacyCommand(params);
+      if (command.type !== "local-jsx") {
+        throw new Error(`/${params.name} did not load a local JSX command`);
+      }
+      return command.load();
+    },
+  }, params);
+}
+
+const installLocalCommand: Command = {
+  type: "local-jsx",
+  name: "install",
+  description: "Install AgenC native build",
+  argumentHint: "[options]",
+  load: async () => {
+    const { install } = await import("./commands/install.js");
+    return {
+      call: async (onDone, context, args) => {
+        const argv = args.trim().length > 0 ? args.trim().split(/\s+/) : [];
+        await install.call(onDone, context, argv);
+        return null;
+      },
+    };
+  },
+};
+
+let legacyCommandOverrideMapCache: Map<string, Command> | null = null;
+
+function legacyCommandOverrideMap(): Map<string, Command> {
+  if (legacyCommandOverrideMapCache === null) {
+    const overrides = registeredLegacyCommandSurfaceSpecs.map(spec =>
+      spec.name === "install"
+        ? installLocalCommand
+        : lazyCommand({ ...spec, modulePath: spec.tuiModulePath }),
+    );
+    legacyCommandOverrideMapCache = new Map(
+      overrides.map(command => [command.name, command]),
+    );
+  }
+  return legacyCommandOverrideMapCache;
+}
 const commandProviders = new Set<
   (cwd: string) => Promise<readonly Command[]> | readonly Command[]
 >();
@@ -284,8 +493,9 @@ const localSkillServicesByRoot = new Map<
 
 function builtInCommands(): readonly Command[] {
   projectedCommandCache ??= buildDefaultRegistry().list().map(projectSlashCommand);
+  const legacyOverrides = legacyCommandOverrideMap();
   return projectedCommandCache.map(
-    command => LOCAL_JSX_COMMAND_OVERRIDES.get(command.name) ?? command,
+    command => legacyOverrides.get(command.name) ?? command,
   );
 }
 
@@ -432,7 +642,7 @@ export function getCommandsSync(): Command[] {
 
 export function listTuiCommandList(): readonly Command[] {
   return getCommandsSync().filter(
-    cmd => cmd.userInvocable !== false && isCommandEnabled(cmd),
+    cmd => cmd.userInvocable !== false && cmd.isHidden !== true && isCommandEnabled(cmd),
   );
 }
 
@@ -505,15 +715,13 @@ export function getCommand(
   return command;
 }
 
-const builtInCommandNameSet = new Set(
-  getCommandsSync().flatMap(command => [
-    command.name,
-    ...(command.aliases ?? []),
-  ]),
-);
-
 export function builtInCommandNames(): Set<string> {
-  return builtInCommandNameSet;
+  return new Set(
+    getCommandsSync().flatMap(command => [
+      command.name,
+      ...(command.aliases ?? []),
+    ]),
+  );
 }
 
 const commandByName = (name: string): Command | undefined =>
@@ -549,11 +757,53 @@ function commandsForNames(names: ReadonlySet<string>): Set<Command> {
   );
 }
 
-export const REMOTE_SAFE_COMMANDS: Set<Command> = commandsForNames(
+class LazyCommandSet extends Set<Command> {
+  private materialized: Set<Command> | null = null;
+
+  constructor(private readonly names: ReadonlySet<string>) {
+    super();
+  }
+
+  private commands(): Set<Command> {
+    this.materialized ??= commandsForNames(this.names);
+    return this.materialized;
+  }
+
+  override has(command: Command): boolean {
+    return this.commands().has(command);
+  }
+
+  override get size(): number {
+    return this.commands().size;
+  }
+
+  override [Symbol.iterator](): SetIterator<Command> {
+    return this.commands()[Symbol.iterator]();
+  }
+
+  override values(): SetIterator<Command> {
+    return this.commands().values();
+  }
+
+  override entries(): SetIterator<[Command, Command]> {
+    return this.commands().entries();
+  }
+
+  override forEach(
+    callbackfn: (value: Command, value2: Command, set: Set<Command>) => void,
+    thisArg?: unknown,
+  ): void {
+    this.commands().forEach((value, value2) => {
+      callbackfn.call(thisArg, value, value2, this);
+    });
+  }
+}
+
+export const REMOTE_SAFE_COMMANDS: Set<Command> = new LazyCommandSet(
   REMOTE_SAFE_COMMAND_NAMES,
 );
 
-export const BRIDGE_SAFE_COMMANDS: Set<Command> = commandsForNames(
+export const BRIDGE_SAFE_COMMANDS: Set<Command> = new LazyCommandSet(
   BRIDGE_SAFE_COMMAND_NAMES,
 );
 
