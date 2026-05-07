@@ -6,6 +6,8 @@
  * WP-01 introduced this shared contract; WP-02 extends it with the browser
  * WebSocket connection defaults and initialize handshake used by the sibling
  * portal repository while the daemon protocol is still defined by agenc-core.
+ * WP-03 adds auth read/mutation methods that must reuse the daemon
+ * AuthBackend state instead of creating a portal-specific token store.
  */
 
 import {
@@ -14,8 +16,9 @@ import {
   type AgenCDaemonMethod,
   type InitializeParams,
 } from "../app-server/protocol/index.js";
+import type { AuthBackendKind, AuthIdentity } from "../auth/backend.js";
 
-export const AGENC_PORTAL_PROTOCOL_VERSION = "0.1.0" as const;
+export const AGENC_PORTAL_PROTOCOL_VERSION = "0.2.0" as const;
 export const AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT =
   "ws://127.0.0.1:7766/" as const;
 export const AGENC_PORTAL_DEFAULT_REMOTE_DAEMON_ENDPOINT =
@@ -27,6 +30,8 @@ export const AGENC_PORTAL_METHODS = [
   "health.ready",
   "health.stats",
   "auth.whoami",
+  "auth.login",
+  "auth.logout",
   "session.list",
   "session.attach",
   "agent.list",
@@ -37,6 +42,9 @@ export type AgenCPortalMethod = (typeof AGENC_PORTAL_METHODS)[number];
 
 export const AGENC_PORTAL_CLIENT_CAPABILITIES = [
   "portal.dashboard.read",
+  "portal.auth.read",
+  "portal.auth.login",
+  "portal.auth.logout",
   "portal.session.attach",
   "portal.agent.attach",
 ] as const;
@@ -46,9 +54,21 @@ export type AgenCPortalClientCapability =
 
 export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.dashboard.read": true,
+  "portal.auth.read": true,
+  "portal.auth.login": true,
+  "portal.auth.logout": true,
   "portal.session.attach": true,
   "portal.agent.attach": true,
 } as const satisfies Record<AgenCPortalClientCapability, true>;
+
+export const AGENC_PORTAL_AUTH_METHODS = [
+  "auth.whoami",
+  "auth.login",
+  "auth.logout",
+] as const satisfies readonly AgenCPortalMethod[];
+
+export type AgenCPortalAuthMethod =
+  (typeof AGENC_PORTAL_AUTH_METHODS)[number];
 
 export interface AgenCPortalDaemonInitializeRequest {
   readonly jsonrpc: typeof JSON_RPC_VERSION;
@@ -104,6 +124,14 @@ export interface AgenCPortalConnectionState {
   readonly updatedAt: string | null;
 }
 
+export interface AgenCPortalAuthState {
+  readonly authenticated: boolean;
+  readonly provider: AuthBackendKind | null;
+  readonly identity: AuthIdentity | null;
+  readonly error: string | null;
+  readonly updatedAt: string | null;
+}
+
 export interface AgenCPortalSessionSummary {
   readonly sessionId: string;
   readonly title: string;
@@ -124,6 +152,7 @@ export interface AgenCPortalDashboardSnapshot {
   readonly protocolVersion: typeof AGENC_PORTAL_PROTOCOL_VERSION;
   readonly connection: AgenCPortalConnectionTarget | null;
   readonly connectionState: AgenCPortalConnectionState;
+  readonly auth: AgenCPortalAuthState;
   readonly sessions: readonly AgenCPortalSessionSummary[];
   readonly agents: readonly AgenCPortalAgentSummary[];
 }
@@ -132,4 +161,10 @@ export function isAgenCPortalMethod(
   value: string,
 ): value is AgenCPortalMethod {
   return (AGENC_PORTAL_METHODS as readonly string[]).includes(value);
+}
+
+export function isAgenCPortalAuthMethod(
+  value: string,
+): value is AgenCPortalAuthMethod {
+  return (AGENC_PORTAL_AUTH_METHODS as readonly string[]).includes(value);
 }

@@ -8,6 +8,7 @@ import { isAgenCDaemonMethod } from "../app-server/protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITIES,
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
+  AGENC_PORTAL_AUTH_METHODS,
   AGENC_PORTAL_CONNECTION_STATUSES,
   AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST,
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -16,13 +17,14 @@ import {
   AGENC_PORTAL_METHODS,
   AGENC_PORTAL_PROTOCOL_VERSION,
   createAgenCPortalDaemonInitializeRequest,
+  isAgenCPortalAuthMethod,
   isAgenCPortalMethod,
   type AgenCPortalDashboardSnapshot,
 } from "./index.js";
 
 describe("AgenC portal protocol contract", () => {
   it("pins the initial portal protocol version", () => {
-    expect(AGENC_PORTAL_PROTOCOL_VERSION).toBe("0.1.0");
+    expect(AGENC_PORTAL_PROTOCOL_VERSION).toBe("0.2.0");
   });
 
   it("exposes only daemon methods that exist in the shared protocol", () => {
@@ -31,6 +33,8 @@ describe("AgenC portal protocol contract", () => {
       "health.ready",
       "health.stats",
       "auth.whoami",
+      "auth.login",
+      "auth.logout",
       "session.list",
       "session.attach",
       "agent.list",
@@ -44,17 +48,31 @@ describe("AgenC portal protocol contract", () => {
     expect(isAgenCPortalMethod("tool.approve")).toBe(false);
   });
 
-  it("declares dashboard capabilities needed by the sibling portal repo", () => {
+  it("declares dashboard and auth capabilities needed by the sibling portal repo", () => {
     expect(AGENC_PORTAL_CLIENT_CAPABILITIES).toEqual([
       "portal.dashboard.read",
+      "portal.auth.read",
+      "portal.auth.login",
+      "portal.auth.logout",
       "portal.session.attach",
       "portal.agent.attach",
     ]);
     expect(AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS).toEqual({
       "portal.dashboard.read": true,
+      "portal.auth.read": true,
+      "portal.auth.login": true,
+      "portal.auth.logout": true,
       "portal.session.attach": true,
       "portal.agent.attach": true,
     });
+    expect(AGENC_PORTAL_AUTH_METHODS).toEqual([
+      "auth.whoami",
+      "auth.login",
+      "auth.logout",
+    ]);
+    expect(AGENC_PORTAL_AUTH_METHODS.every(isAgenCPortalAuthMethod)).toBe(true);
+    expect(isAgenCPortalAuthMethod("auth.whoami")).toBe(true);
+    expect(isAgenCPortalAuthMethod("tool.approve")).toBe(false);
   });
 
   it("pins the websocket daemon connection defaults", () => {
@@ -125,6 +143,17 @@ describe("AgenC portal protocol contract", () => {
         error: null,
         updatedAt: "2026-05-06T00:00:00.000Z",
       },
+      auth: {
+        authenticated: true,
+        provider: "local",
+        identity: {
+          accountId: "local",
+          displayName: "Local AgenC user",
+          plan: "free",
+        },
+        error: null,
+        updatedAt: "2026-05-06T00:00:00.000Z",
+      },
       sessions: [
         {
           sessionId: "session-1",
@@ -148,5 +177,6 @@ describe("AgenC portal protocol contract", () => {
     expect(snapshot.sessions[0]?.status).toBe("waiting");
     expect(snapshot.agents[0]?.activeSessionId).toBe("session-1");
     expect(snapshot.connectionState.initialized).toBe(true);
+    expect(snapshot.auth.identity?.displayName).toBe("Local AgenC user");
   });
 });
