@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -21,12 +21,22 @@ describe("memory subsystem contract", () => {
     }
   });
 
-  it("keeps only deferred team memory files in the old memdir boundary", () => {
+  it("keeps only allowed production files in the old memdir boundary", () => {
     for (const rel of [
+      "runtime/src/memdir/memory-types.ts",
       "runtime/src/memdir/teamMemPrompts.ts",
       "runtime/src/memdir/teamMemPaths.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }
+    const productionFiles = readdirSync(resolve(root, "runtime/src/memdir"))
+      .filter((entry) => entry.endsWith(".ts"))
+      .filter((entry) => !entry.endsWith(".test.ts"))
+      .sort();
+    expect(productionFiles).toEqual([
+      "memory-types.ts",
+      "teamMemPaths.ts",
+      "teamMemPrompts.ts",
+    ]);
   });
 });
