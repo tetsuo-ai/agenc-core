@@ -45,7 +45,7 @@ import {
   getMemoryFilesForNestedDirectory,
   getConditionalRulesForCwdLevelDirectory,
   type MemoryFileInfo,
-} from './agencmd.js'
+} from '../memory/agencmd.js'
 import { dirname, parse, relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../tui/state/selectors.js'
@@ -231,9 +231,13 @@ import { getLocalISODate } from '../constants/common.js'
 import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
-import { findRelevantMemories } from '../memdir/findRelevantMemories.js'
-import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
+import { findRelevantMemories } from '../memory/find-relevant.js'
+import { memoryAge, memoryFreshnessText } from '../memory/age.js'
+import {
+  getAutoMemPath,
+  getGlobalMemoryPath,
+  isAutoMemoryEnabled,
+} from '../memory/paths.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
   readUnreadMessages,
@@ -2205,7 +2209,7 @@ async function getRelevantMemoryAttachments(
   alreadySurfaced: ReadonlySet<string>,
 ): Promise<Attachment[]> {
   // If an agent is @-mentioned, search only its memory dir (isolation).
-  // Otherwise search the auto-memory dir.
+  // Otherwise search both durable memory dirs: global first, then project.
   const memoryDirs = extractAgentMentions(input).flatMap(mention => {
     const agentType = mention.replace('agent-', '')
     const agentDef = agents.find(def => def.agentType === agentType)
@@ -2213,7 +2217,10 @@ async function getRelevantMemoryAttachments(
       ? [getAgentMemoryDir(agentType, agentDef.memory)]
       : []
   })
-  const dirs = memoryDirs.length > 0 ? memoryDirs : [getAutoMemPath()]
+  const dirs =
+    memoryDirs.length > 0
+      ? memoryDirs
+      : getDurableMemorySearchDirs()
 
   const allResults = await Promise.all(
     dirs.map(dir =>
@@ -4016,4 +4023,7 @@ function isFileReadDenied(
     'deny',
   )
   return denyRule !== null
+}
+export function getDurableMemorySearchDirs(): string[] {
+  return Array.from(new Set([getGlobalMemoryPath(), getAutoMemPath()]))
 }

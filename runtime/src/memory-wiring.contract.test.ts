@@ -1,8 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const root = resolve(process.cwd(), "..");
+const root = existsSync(resolve(process.cwd(), "runtime/src"))
+  ? resolve(process.cwd())
+  : resolve(process.cwd(), "..");
 
 describe("memory wiring contract", () => {
   it("removes the replaced custom memory files", () => {
@@ -27,4 +29,53 @@ describe("memory wiring contract", () => {
     expect(bootstrap).not.toContain("./memory-bootstrap.js");
     expect(agenc).not.toContain("../prompts/memory/index.js");
   });
+
+  it("routes MM-01 memory imports through runtime/src/memory", () => {
+    const offenders: string[] = [];
+    for (const file of listSourceFiles(resolve(root, "runtime/src"))) {
+      const rel = file.slice(root.length + 1);
+      if (
+        rel.startsWith("runtime/src/agenc/upstream/") ||
+        rel === "runtime/src/memdir/teamMemPaths.ts" ||
+        rel === "runtime/src/memdir/teamMemPrompts.ts"
+      ) {
+        continue;
+      }
+      const source = readFileSync(file, "utf8");
+      const oldOwnedImport =
+        /from ["'][^"']*(?:memdir\/(?:memdir|paths|memoryAge|memoryScan|memoryTypes|findRelevantMemories)|utils\/(?:agencmd|memoryFileDetection))/.test(
+          source,
+        ) ||
+        /import\(["'][^"']*(?:memdir\/(?:memdir|paths|memoryAge|memoryScan|memoryTypes|findRelevantMemories)|utils\/(?:agencmd|memoryFileDetection))/.test(
+          source,
+        );
+      if (oldOwnedImport) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("wires global durable memory into loading, recall, and permissions", () => {
+    const agencmd = readFileSync(resolve(root, "runtime/src/memory/agencmd.ts"), "utf8");
+    const attachments = readFileSync(resolve(root, "runtime/src/utils/attachments.ts"), "utf8");
+    const filesystem = readFileSync(resolve(root, "runtime/src/utils/permissions/filesystem.ts"), "utf8");
+
+    expect(agencmd).toContain("getGlobalMemoryEntrypoint");
+    expect(agencmd).toContain("globalMemEntry");
+    expect(attachments).toContain("getDurableMemorySearchDirs");
+    expect(attachments).toContain("getGlobalMemoryPath");
+    expect(filesystem).toContain("isGlobalMemoryPath");
+  });
 });
+
+function listSourceFiles(dir: string): string[] {
+  const result: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...listSourceFiles(full));
+    } else if (/\.(ts|tsx|mts|cts)$/.test(entry.name)) {
+      result.push(full);
+    }
+  }
+  return result;
+}

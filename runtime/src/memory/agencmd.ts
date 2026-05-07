@@ -1,6 +1,10 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 /**
+ * Ports the upstream project-instruction loader onto AgenC's AGENC.md memory
+ * surface.
+ *
+ * Temporary strictness boundary: this loader still touches several moved
+ * purge surfaces. The rest of `runtime/src/memory/*.ts` is strict.
+ *
  * Files are loaded in the following order:
  *
  * 1. Managed memory (eg. /etc/agenc-code/AGENC.md) - Global instructions for all users
@@ -42,53 +46,55 @@ import {
   relative,
   sep,
 } from 'path'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import picomatch from 'picomatch'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
-import { logEvent } from 'src/services/analytics/index.js'
+import { logEvent } from '../services/analytics/index.js'
 import {
   getAdditionalDirectoriesForAgenCMd,
   getOriginalCwd,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
-import { truncateEntrypointContent } from '../memdir/memdir.js'
-import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
+import { truncateEntrypointContent } from './memdir.js'
+import {
+  getAutoMemEntrypoint,
+  getGlobalMemoryEntrypoint,
+  isAutoMemoryEnabled,
+  isGlobalMemoryPath,
+  isProjectMemoryPath,
+} from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   getCurrentProjectConfig,
   getManagedAgenCRulesDir,
   getMemoryPath,
   getUserAgenCRulesDir,
-} from './config.js'
-import { logForDebugging } from 'src/utils/debug.js'
-import { logForDiagnosticsNoPII } from './diagLogs.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
-import { getErrnoCode } from './errors.js'
-import { normalizePathForComparison } from './file.js'
-import { cacheKeys, type FileStateCache } from './fileStateCache.js'
+} from '../utils/config.js'
+import { logForDebugging } from '../utils/debug.js'
+import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
+import { getAgenCConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
+import { getErrnoCode } from '../utils/errors.js'
+import { normalizePathForComparison } from '../utils/file.js'
+import { cacheKeys, type FileStateCache } from '../utils/fileStateCache.js'
 import {
   parseFrontmatter,
   splitPathInFrontmatter,
-} from './frontmatterParser.js'
-import { getFsImplementation, safeResolvePath } from './fsOperations.js'
-import { findCanonicalGitRoot, findGitRoot } from './git.js'
+} from '../utils/frontmatterParser.js'
+import { getFsImplementation, safeResolvePath } from '../utils/fsOperations.js'
+import { findCanonicalGitRoot, findGitRoot } from '../utils/git.js'
 import {
   executeInstructionsLoadedHooks,
   hasInstructionsLoadedHook,
   type InstructionsLoadReason,
   type InstructionsMemoryType,
-} from './hooks.js'
-import type { MemoryType } from './memory/types.js'
-import { expandPath } from './path.js'
-import { pathInWorkingPath } from './permissions/filesystem.js'
+} from '../utils/hooks.js'
+import type { MemoryType } from '../utils/memory/types.js'
+import { expandPath } from '../utils/path.js'
+import { pathInWorkingPath } from '../utils/permissions/filesystem.js'
 import {
   getProjectInstructionFilePath,
   isProjectInstructionFileName,
-} from './projectInstructions.js'
-import { isSettingSourceEnabled } from './settings/constants.js'
-import { getInitialSettings } from './settings/settings.js'
+} from '../utils/projectInstructions.js'
+import { isSettingSourceEnabled } from '../utils/settings/constants.js'
+import { getInitialSettings } from '../utils/settings/settings.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
@@ -1001,8 +1007,20 @@ export const getMemoryFiles = memoize(
       }
     }
 
-    // Memdir entrypoint (memory.md) - only if feature is on and file exists
+    // Durable memory entrypoints - only if feature is on and files exist.
     if (isAutoMemoryEnabled()) {
+      const { info: globalMemEntry } = await safelyReadMemoryFileAsync(
+        getGlobalMemoryEntrypoint(),
+        'AutoMem',
+      )
+      if (globalMemEntry) {
+        const normalizedPath = normalizePathForComparison(globalMemEntry.path)
+        if (!processedPaths.has(normalizedPath)) {
+          processedPaths.add(normalizedPath)
+          result.push(globalMemEntry)
+        }
+      }
+
       const { info: memdirEntry } = await safelyReadMemoryFileAsync(
         getAutoMemEntrypoint(),
         'AutoMem',
@@ -1049,6 +1067,12 @@ export const getMemoryFiles = memoize(
 
     if (!hasLoggedInitialLoad) {
       hasLoggedInitialLoad = true
+      const globalAutoMemCount = result.filter(
+        f => f.type === 'AutoMem' && isGlobalMemoryPath(f.path),
+      ).length
+      const projectAutoMemCount = result.filter(
+        f => f.type === 'AutoMem' && isProjectMemoryPath(f.path),
+      ).length
       logEvent('tengu_agencmd__initial_load', {
         file_count: result.length,
         total_content_length: totalContentLength,
@@ -1057,6 +1081,8 @@ export const getMemoryFiles = memoize(
         local_count: typeCounts['Local'] ?? 0,
         managed_count: typeCounts['Managed'] ?? 0,
         automem_count: typeCounts['AutoMem'] ?? 0,
+        global_automem_count: globalAutoMemCount,
+        project_automem_count: projectAutoMemCount,
         ...(feature('TEAMMEM')
           ? { teammem_count: typeCounts['TeamMem'] ?? 0 }
           : {}),
@@ -1195,11 +1221,11 @@ export const getAgenCMds = (
           ? ' (project instructions, checked into the codebase)'
           : file.type === 'Local'
             ? " (user's private project instructions, not checked in)"
-            : feature('TEAMMEM') && file.type === 'TeamMem'
-              ? ' (shared team memory, synced across the organization)'
-              : file.type === 'AutoMem'
-                ? " (user's auto-memory, persists across conversations)"
-                : " (user's private global instructions for all projects)"
+              : feature('TEAMMEM') && file.type === 'TeamMem'
+                ? ' (shared team memory, synced across the organization)'
+                : file.type === 'AutoMem'
+                  ? getAutoMemDescription(file.path)
+                  : " (user's private global instructions for all projects)"
 
       const content = file.content.trim()
       if (feature('TEAMMEM') && file.type === 'TeamMem') {
@@ -1217,6 +1243,16 @@ export const getAgenCMds = (
   }
 
   return `${MEMORY_INSTRUCTION_PROMPT}\n\n${memories.join('\n\n')}`
+}
+
+function getAutoMemDescription(path: string): string {
+  if (isGlobalMemoryPath(path)) {
+    return ' (global user memory, persists across projects and conversations)'
+  }
+  if (isProjectMemoryPath(path)) {
+    return ' (project memory, persists for this working directory)'
+  }
+  return ' (durable memory, persists across conversations)'
 }
 
 /**

@@ -7,7 +7,7 @@ const root = resolve(process.cwd(), "..");
 describe("memory utility contract", () => {
   it("has memory utility files in live utility paths", () => {
     for (const target of [
-      "runtime/src/utils/memoryFileDetection.ts",
+      "runtime/src/memory/detection.ts",
       "runtime/src/utils/memory/types.ts",
       "runtime/src/utils/memory/versions.ts",
     ]) {

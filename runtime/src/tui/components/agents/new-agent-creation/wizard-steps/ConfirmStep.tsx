@@ -3,7 +3,7 @@ import React, { type ReactNode } from 'react';
 import type { KeyboardEvent } from '../../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../ink.js';
 import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
-import { isAutoMemoryEnabled } from '../../../../../memdir/paths';
+import { isAutoMemoryEnabled } from '../../../../../memory/paths';
 import type { Tools } from '../../../../../tools/Tool';
 import { getMemoryScopeDisplay } from '../../../../../tools/AgentTool/agentMemory';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';

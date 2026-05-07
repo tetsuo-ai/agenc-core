@@ -198,6 +198,50 @@ const ITEM_EVIDENCE = {
       { pattern: "\\./textObjects\\.js", scope: "runtime/src/tui/vim" },
     ],
   },
+  "MM-01": {
+    files: [
+      "runtime/src/memory/PARITY.md",
+      "runtime/src/memory/age.ts",
+      "runtime/src/memory/agencmd.ts",
+      "runtime/src/memory/detection.ts",
+      "runtime/src/memory/find-relevant.ts",
+      "runtime/src/memory/memdir.ts",
+      "runtime/src/memory/paths.ts",
+      "runtime/src/memory/scan.ts",
+      "runtime/src/memory/store.ts",
+      "runtime/src/memory/types.ts",
+      "runtime/src/state/migrations/011_memory_pipeline_schema.ts",
+      "parity/MM-01-parity.json",
+    ],
+    filesAbsent: [
+      "runtime/src/memdir/memdir.ts",
+      "runtime/src/memdir/paths.ts",
+      "runtime/src/memdir/memoryAge.ts",
+      "runtime/src/memdir/memoryScan.ts",
+      "runtime/src/memdir/memoryTypes.ts",
+      "runtime/src/memdir/findRelevantMemories.ts",
+      "runtime/src/utils/agencmd.ts",
+      "runtime/src/utils/memoryFileDetection.ts",
+    ],
+    grepPresent: [
+      { pattern: "buildSessionMemoryLayerLines", scope: "runtime/src/memory/memdir.ts" },
+      { pattern: "getGlobalMemoryPath", scope: "runtime/src/memory/paths.ts" },
+      { pattern: "getProjectMemoryPath", scope: "runtime/src/memory/paths.ts" },
+      { pattern: "class MemoryStore", scope: "runtime/src/memory/store.ts" },
+      { pattern: "tryClaimStage1Job", scope: "runtime/src/memory/store.ts" },
+      { pattern: "tryClaimGlobalPhase2Job", scope: "runtime/src/memory/store.ts" },
+      { pattern: "memoryPipelineSchemaMigration", scope: "runtime/src/state/migrations/011_memory_pipeline_schema.ts" },
+    ],
+    tests: [
+      "runtime/src/memory/paths.test.ts",
+      "runtime/src/memory/memdir.test.ts",
+      "runtime/src/memory/scan.test.ts",
+      "runtime/src/memory/store.test.ts",
+      "runtime/src/memory-wiring.contract.test.ts",
+      "runtime/src/state/migrations.test.ts",
+    ],
+    runStrict: true,
+  },
   "RT-11": {
     files: [
       "runtime/src/conversation/realtime/instructions/markers.ts",
@@ -5666,10 +5710,72 @@ async function memoryGates(item) {
     return;
   }
   if (id === "MM-01") {
-    // Memory loader/registry.
-    const found = grepRepo("loadMemor|MemoryRegistry|loadMemdir|loadMemoryDir", "runtime/src");
-    if (!found) failGate("MM-01: memory-loader surface not found");
-    pass("MM-01: memory loader referenced");
+    const requiredSymbols = [
+      ["runtime/src/memory/paths.ts", "getGlobalMemoryPath"],
+      ["runtime/src/memory/paths.ts", "getProjectMemoryPath"],
+      ["runtime/src/memory/paths.ts", "isGlobalMemoryPath"],
+      ["runtime/src/memory/agencmd.ts", "getGlobalMemoryEntrypoint"],
+      ["runtime/src/utils/attachments.ts", "getDurableMemorySearchDirs"],
+      ["runtime/src/utils/attachments.ts", "getGlobalMemoryPath"],
+      ["runtime/src/utils/permissions/filesystem.ts", "isGlobalMemoryPath"],
+      ["runtime/src/memory/paths.ts", "getProjectInstructionPath"],
+      ["runtime/src/memory/memdir.ts", "buildSessionMemoryLayerLines"],
+      ["runtime/src/memory/memdir.ts", "buildMemorySaveDestinationLines"],
+      ["runtime/src/memory/memdir.ts", "buildAssistantDailyLogPrompt"],
+      ["runtime/src/memory/store.ts", "tryClaimStage1Job"],
+      ["runtime/src/memory/store.ts", "tryClaimGlobalPhase2Job"],
+      ["runtime/src/state/migrations/index.ts", "memoryPipelineSchemaMigration"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const source = readFileSync(path.join(root, rel), "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`MM-01: ${symbol} missing from ${rel}`);
+      }
+    }
+
+    const unchecked = walkFiles(dir)
+      .filter((f) => /\.(ts|tsx|mts|cts)$/.test(f))
+      .filter((f) => path.basename(f) !== "agencmd.ts")
+      .filter((f) => readFileSync(f, "utf8").startsWith("// @ts-nocheck"));
+    if (unchecked.length > 0) {
+      failGate(
+        `MM-01: only runtime/src/memory/agencmd.ts may keep a temporary ts-nocheck boundary:\n  ${unchecked.map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+
+    const oldOwnedImportPattern =
+      /(?:from\s+|import\s*\(\s*)["'][^"']*(?:memdir\/(?:memdir|paths|memoryAge|memoryScan|memoryTypes|findRelevantMemories)|utils\/(?:agencmd|memoryFileDetection))/;
+    const offenders = walkFiles(path.join(root, "runtime/src"))
+      .filter((f) => /\.(ts|tsx|mts|cts)$/.test(f))
+      .filter((f) => !f.split(path.sep).join("/").includes("/runtime/src/agenc/upstream/"))
+      .filter((f) => {
+        const rel = path.relative(root, f).split(path.sep).join("/");
+        return rel !== "runtime/src/memdir/teamMemPaths.ts" &&
+          rel !== "runtime/src/memdir/teamMemPrompts.ts";
+      })
+      .filter((f) => oldOwnedImportPattern.test(readFileSync(f, "utf8")));
+    if (offenders.length > 0) {
+      failGate(
+        `MM-01: old MM-01 memory import(s) remain:\n  ${offenders.slice(0, 20).map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/paths.test.ts",
+      "src/memory/memdir.test.ts",
+      "src/memory/memdir.feature-flags.test.ts",
+      "src/memory/scan.test.ts",
+      "src/memory/store.test.ts",
+      "src/memory-wiring.contract.test.ts",
+      "src/state/migrations.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-01 targeted Vitest suite failed");
+    pass("MM-01: three-layer memory subsystem and state pipeline verified");
     return;
   }
   if (id === "MM-02") {

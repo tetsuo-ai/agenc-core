@@ -1,6 +1,6 @@
 import { basename, join } from 'path'
 
-import type { MemoryFileInfo } from '../../../utils/agencmd.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
+import type { MemoryFileInfo } from '../../../memory/agencmd.js' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import {
   findProjectInstructionFilePathInAncestors,
   isProjectInstructionFileName,
