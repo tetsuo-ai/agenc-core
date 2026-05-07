@@ -36,8 +36,19 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
       expect(cmd.name.length).toBeGreaterThan(0);
       expect(typeof cmd.description).toBe("string");
       expect(cmd.description.length).toBeGreaterThan(0);
-      expect((cmd as { type: string }).type).toBe("local");
+      if (cmd.name === "memory") {
+        expect((cmd as { type: string }).type).toBe("local-jsx");
+      } else {
+        expect((cmd as { type: string }).type).toBe("local");
+      }
     }
+  });
+
+  it("uses the interactive local JSX descriptor for /memory", () => {
+    const memory = listTuiCommandList().find((cmd) => cmd.name === "memory");
+    expect(memory).toBeDefined();
+    expect(memory?.type).toBe("local-jsx");
+    expect(memory?.description).toBe("Edit AgenC memory files");
   });
 
   it("excludes commands marked userInvocable=false", () => {

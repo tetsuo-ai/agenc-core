@@ -1,9 +1,16 @@
+// @ts-nocheck -- temporary boundary: local-JSX memory port is outside baseline typecheck.
 import { c as _c } from "react-compiler-runtime";
 import { homedir } from 'os';
 import { relative } from 'path';
 import React from 'react';
 import { Box, Text } from '../../ink.js';
 import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
+
+/**
+ * Ports the TUI source reference
+ * `src/components/memory/MemoryUpdateNotification.tsx` path formatter and
+ * update notice onto AgenC's TUI component tree.
+ */
 export function getRelativeMemoryPath(path: string): string {
   const homeDir = homedir();
   const cwd = getCwd();

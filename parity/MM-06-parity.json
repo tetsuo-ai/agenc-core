@@ -1,0 +1,100 @@
+{
+  "contractName": "memory-cli-port",
+  "scope": "Port the interactive memory command and TUI memory selector into AgenC while preserving the headless slash-command fallback.",
+  "sourceRoot": "TUI/source reference",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/commands/memory/index.ts",
+    "src/commands/memory/memory.tsx",
+    "src/components/memory/MemoryFileSelector.tsx",
+    "src/components/memory/MemoryUpdateNotification.tsx",
+    "src/components/memory/memoryFileSelectorPaths.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/commands.ts",
+    "runtime/src/commands/registry.ts",
+    "runtime/src/commands/memory/index.ts",
+    "runtime/src/commands/memory/memory.tsx",
+    "runtime/src/commands/memory/slash.ts",
+    "runtime/src/commands/memory/PARITY.md",
+    "runtime/src/tui/components/memory/MemoryFileSelector.tsx",
+    "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx",
+    "runtime/src/tui/components/memory/PARITY.md"
+  ],
+  "testFiles": [
+    "runtime/src/commands/memory/memory.contract.test.tsx",
+    "runtime/src/commands/tui-command-list.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "MM-06-01",
+      "source": "src/commands/memory/index.ts",
+      "target": "runtime/src/commands/memory/index.ts",
+      "requiredBehaviors": [
+        "The interactive /memory command is a local JSX command that lazy-loads the memory editor body.",
+        "The TUI command list exposes the local JSX descriptor instead of the plain dispatcher projection."
+      ],
+      "edgeCases": [
+        "Headless/dispatcher callers still resolve /memory without throwing."
+      ],
+      "tests": [
+        "runtime/src/commands/memory/memory.contract.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-06-02",
+      "source": "src/commands/memory/memory.tsx",
+      "target": "runtime/src/commands/memory/memory.tsx",
+      "requiredBehaviors": [
+        "The command clears and primes memory-file caches before rendering the selector.",
+        "Selecting a memory file creates the parent config directory/file when needed, opens the editor, and reports a relative display path.",
+        "The Learn more link uses the AgenC-owned documentation domain."
+      ],
+      "edgeCases": [
+        "Existing files are preserved when writeFile with flag wx reports EEXIST.",
+        "EDITOR/VISUAL hints identify the active editor source."
+      ],
+      "tests": [
+        "runtime/src/commands/memory/memory.contract.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-06-03",
+      "source": "src/components/memory/MemoryFileSelector.tsx",
+      "target": "runtime/src/tui/components/memory/MemoryFileSelector.tsx",
+      "requiredBehaviors": [
+        "The selector lists existing memory files plus missing user/project memory entries.",
+        "Project memory path selection uses the MM-03 project-memory API instead of a duplicated selector-path module.",
+        "Auto-memory folders and feature-gated team memory remain folder-open options."
+      ],
+      "edgeCases": [
+        "Nested imported files keep indentation and imported/dynamic descriptions.",
+        "The last selected path is reused only when it is still present."
+      ],
+      "tests": [
+        "runtime/src/commands/memory/memory.contract.test.tsx",
+        "runtime/src/commands/tui-command-list.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-06-04",
+      "source": "src/components/memory/MemoryUpdateNotification.tsx",
+      "target": "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx",
+      "requiredBehaviors": [
+        "The update notification displays the shortest useful path relative to HOME or cwd.",
+        "The notice points users back to /memory for edits."
+      ],
+      "edgeCases": [
+        "Paths outside HOME and cwd remain absolute."
+      ],
+      "tests": [
+        "runtime/src/commands/memory/memory.contract.test.tsx"
+      ],
+      "status": "required"
+    }
+  ]
+}

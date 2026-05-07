@@ -44,7 +44,7 @@ import providerCommand from "./provider.js";
 import copyCommand from "./copy.js";
 import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
-import memoryCommand from "./memory/index.js";
+import memoryCommand from "./memory/slash.js";
 import cacheStatsCommand from "./cache-stats.js";
 import costCommand from "./cost.js";
 import doctorCommand from "./doctor/doctor.js";

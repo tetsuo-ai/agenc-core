@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
+import memoryLocalCommand from "./commands/memory/index.js";
 import type {
   SlashCommand,
   SlashCommandAppStateBridge,
@@ -253,6 +254,9 @@ export function isCommandEnabled(cmd: CommandBase): boolean {
 }
 
 let projectedCommandCache: Command[] | null = null;
+const LOCAL_JSX_COMMAND_OVERRIDES = new Map<string, Command>([
+  [memoryLocalCommand.name, memoryLocalCommand],
+]);
 const commandProviders = new Set<
   (cwd: string) => Promise<readonly Command[]> | readonly Command[]
 >();
@@ -263,7 +267,9 @@ const localSkillServicesByRoot = new Map<
 
 function builtInCommands(): readonly Command[] {
   projectedCommandCache ??= buildDefaultRegistry().list().map(projectSlashCommand);
-  return projectedCommandCache;
+  return projectedCommandCache.map(
+    command => LOCAL_JSX_COMMAND_OVERRIDES.get(command.name) ?? command,
+  );
 }
 
 export function registerCommandProvider(
