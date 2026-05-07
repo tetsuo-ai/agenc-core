@@ -50,7 +50,7 @@ async function execTmux(
     // command line to bash which eats `#` as a comment: `display-message -p
     // #{socket_path},#{pid}` below becomes `display-message -p ` → exit 1 →
     // we silently fall back to the guessed path and never learn the real
-    // server PID. Same root cause as TungstenTool/utils.ts:execTmuxCommand.
+    // server PID. Same root cause as earlier tmux command helpers.
     const result = await execFileNoThrow('wsl', ['-e', TMUX_COMMAND, ...args], {
       env: { ...process.env, WSL_UTF8: '1' },
       ...opts,
@@ -144,7 +144,7 @@ export function getAgenCTmuxEnv(): string | null {
  * This is checked once and cached for the lifetime of the process.
  *
  * When tmux is not available:
- * - TungstenTool (Tmux) will not work
+ * - tmux-backed terminal sessions will not work
  * - TeammateTool will not work (it uses tmux for pane management)
  * - Bash commands will run without tmux isolation
  */
@@ -181,7 +181,7 @@ export function isTmuxAvailable(): boolean {
 
 /**
  * Marks that the Tmux tool has been used at least once.
- * Called by TungstenTool before initialization.
+ * Called before tmux-backed terminal initialization.
  * After this is called, Shell.ts will initialize the socket for subsequent Bash commands.
  */
 export function markTmuxToolUsed(): void {
@@ -315,7 +315,7 @@ async function doInitialize(): Promise<void> {
 
   // Set AGENC_SKIP_PROMPT_HISTORY in the tmux GLOBAL environment (-g).
   // Without -g this would only apply to the 'base' session, and new sessions
-  // created by TungstenTool (e.g. 'test', 'verify') would not inherit it.
+  // created later (e.g. 'test', 'verify') would not inherit it.
   // Any AgenC instance spawned on this socket will inherit this env var,
   // preventing test/verification sessions from polluting the user's real
   // command history and --resume session list.
@@ -329,7 +329,7 @@ async function doInitialize(): Promise<void> {
   ])
 
   // Same WSL_INTEROP pin as the new-session -e above, but in the GLOBAL env
-  // so sessions created by TungstenTool inherit it too. The -e on new-session
+  // so sessions created later inherit it too. The -e on new-session
   // only covers the base session's initial shell; a later `new-session -s cc`
   // inherits the SERVER's env, which still holds the stale socket from the
   // wsl.exe that spawned it.

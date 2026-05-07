@@ -3973,7 +3973,7 @@ export function getVerifyPlanReminderTurnCount(messages: Message[]): number {
 }
 
 /**
- * Get verify plan reminder attachment if the model hasn't called VerifyPlanExecution yet.
+ * Get verify-plan reminder attachment while plan verification is still pending.
  */
 async function getVerifyPlanReminderAttachment(
   messages: Message[] | undefined,

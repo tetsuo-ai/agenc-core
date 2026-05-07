@@ -6659,10 +6659,122 @@ async function gapGates(item) {
     assertGapToolsConsolidatedToolSurfaces();
     return;
   }
+  if (item.title.includes("Remove or implement null-stub tools")) {
+    assertGapToolsNullStubToolsRemoved();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapToolsNullStubToolsRemoved() {
+  const removedToolFiles = [
+    "runtime/src/tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.ts",
+    "runtime/src/tools/VerifyPlanExecutionTool/VerifyPlanExecutionTool.ts",
+    "runtime/src/tools/REPLTool/REPLTool.ts",
+    "runtime/src/tools/TungstenTool/TungstenTool.ts",
+    "runtime/src/tools/TungstenTool/TungstenLiveMonitor.ts",
+  ];
+  for (const rel of removedToolFiles) {
+    if (existsSync(path.join(root, rel))) {
+      failGate(`GAP-TOOLS-05: null-stub tool file still exists: ${rel}`);
+    }
+  }
+
+  const toolsSource = readFileSync(path.join(root, "runtime/src/tools.ts"), "utf8");
+  const forbiddenToolsEvidence = [
+    "const REPLTool = null",
+    "const SuggestBackgroundPRTool = null",
+    "VerifyPlanExecutionTool/VerifyPlanExecutionTool.js",
+    "SuggestBackgroundPRTool ?",
+    "VerifyPlanExecutionTool ?",
+    "REPLTool ?",
+  ];
+  const staleToolsEvidence = forbiddenToolsEvidence.filter((needle) =>
+    toolsSource.includes(needle),
+  );
+  if (staleToolsEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-05: runtime/src/tools.ts still references deleted null-stub tools:\n  - ${staleToolsEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const liveSources = [
+    "runtime/src/commands/clear/caches.ts",
+    "runtime/src/tui/components/agents/ToolSelector.tsx",
+    "runtime/src/tui/screens/REPL.tsx",
+    "runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx",
+  ];
+  const deletedImportPattern =
+    /tools\/(?:SuggestBackgroundPRTool\/SuggestBackgroundPRTool|VerifyPlanExecutionTool\/VerifyPlanExecutionTool|REPLTool\/REPLTool|TungstenTool\/(?:TungstenTool|TungstenLiveMonitor))(?:\.js)?(?=["';])/;
+  for (const rel of liveSources) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (deletedImportPattern.test(source)) {
+      failGate(`GAP-TOOLS-05: live source imports deleted null-stub tool in ${rel}`);
+    }
+  }
+
+  const nullStubScan = run("rg", [
+    "-n",
+    "-g",
+    "!*.test.ts",
+    "export\\s+(?:default\\s+null|const\\s+\\w+\\s*=\\s*null\\b)|const\\s+(?:REPLTool|SuggestBackgroundPRTool|VerifyPlanExecutionTool)\\s*=\\s*null\\b",
+    "runtime/src/tools",
+    "runtime/src/tools.ts",
+  ]);
+  if (nullStubScan.status === 0) {
+    failGate(`GAP-TOOLS-05: null-stub tool exports remain:\n${nullStubScan.stdout}`);
+  }
+  if (nullStubScan.status !== 1) {
+    failGate(`GAP-TOOLS-05: null-stub scan failed:\n${nullStubScan.stderr || nullStubScan.stdout}`);
+  }
+
+  const replConstants = readFileSync(
+    path.join(root, "runtime/src/tools/REPLTool/constants.ts"),
+    "utf8",
+  );
+  if (!/isReplModeEnabled\(\): boolean \{\s*return false\s*\}/s.test(replConstants)) {
+    failGate("GAP-TOOLS-05: REPL mode must stay disabled after deleting REPLTool");
+  }
+  const promptSource = readFileSync(
+    path.join(root, "runtime/src/constants/prompts.ts"),
+    "utf8",
+  );
+  if (/REPL_ONLY_TOOLS|isReplModeEnabled/.test(promptSource)) {
+    failGate("GAP-TOOLS-05: prompts must not describe REPL-only hidden tool behavior");
+  }
+  const oldAttachmentRenderer = readFileSync(
+    path.join(root, "runtime/src/utils/messages.ts"),
+    "utf8",
+  );
+  if (/VerifyPlanExecution/.test(oldAttachmentRenderer)) {
+    failGate("GAP-TOOLS-05: legacy attachment renderer must not request deleted VerifyPlanExecutionTool");
+  }
+  const planExitPermission = readFileSync(
+    path.join(root, "runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx"),
+    "utf8",
+  );
+  if (/VerifyPlanExecution/.test(planExitPermission)) {
+    failGate("GAP-TOOLS-05: plan-exit permission copy must not request deleted VerifyPlanExecutionTool");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tools/null-stub-tools.test.ts",
+    "src/tool-registry.test.ts",
+    "src/commands/clear.test.ts",
+    "src/prompts/attachments/messages.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-05 targeted null-stub removal tests failed");
+  }
+
+  pass("GAP-TOOLS-05: null-stub tool files and live registrations are removed");
 }
 
 function assertGapToolsConsolidatedToolSurfaces() {
