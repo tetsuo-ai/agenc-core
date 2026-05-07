@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "npm@11.7.0",
   "workspaces": [
+    "packages/agenc",
     "runtime",
     "test-fixtures/plugin-kit-channel-adapter"
   ],

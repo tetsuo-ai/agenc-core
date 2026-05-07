@@ -1,0 +1,22 @@
+{
+  "name": "@tetsuo-ai/agenc",
+  "version": "0.2.0",
+  "description": "Public AgenC CLI launcher package",
+  "type": "module",
+  "bin": {
+    "agenc": "bin/agenc"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@tetsuo-ai/runtime": "file:../../runtime"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
