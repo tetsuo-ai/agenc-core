@@ -1067,6 +1067,96 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
+  it("foreground daemon injects SessionManager and listPermissions into dispatcher", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const permissionAgentIds: string[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_boot_injection",
+        startedAt: "2026-05-01T15:00:00.000Z",
+        status: "running",
+      }),
+      listPermissions: async (agentId) => {
+        permissionAgentIds.push(agentId);
+        return {
+          permissions: [
+            {
+              permissionId: "perm_boot_injection",
+              subject: agentId,
+              action: "tool.read",
+              scope: "agent",
+              grantedAt: "2026-05-01T15:00:01.000Z",
+            },
+          ],
+        };
+      },
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie,
+        timeoutMs: 1000,
+      });
+
+      const created = await client.request("agent.create", {
+        objective: "prove dispatcher boot injection",
+      });
+      expect(created.agentId).toBe("agent_boot_injection");
+      if (
+        typeof created.sessionId !== "string" ||
+        created.sessionId.length === 0
+      ) {
+        throw new Error("agent.create did not return a sessionId");
+      }
+
+      const sessionList = await client.request("session.list", {
+        agentId: created.agentId,
+      });
+      expect(sessionList.sessions).toHaveLength(1);
+      expect(sessionList.sessions[0].agentId).toBe(created.agentId);
+      expect(sessionList.sessions[0].sessionId).toBe(created.sessionId);
+
+      await expect(
+        client.request("permission.list", { agentId: created.agentId }),
+      ).resolves.toEqual({
+        permissions: [
+          {
+            permissionId: "perm_boot_injection",
+            subject: created.agentId,
+            action: "tool.read",
+            scope: "agent",
+            grantedAt: "2026-05-01T15:00:01.000Z",
+          },
+        ],
+      });
+      expect(permissionAgentIds).toEqual([created.agentId]);
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("foreground daemon does not advertise running after startup signal", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

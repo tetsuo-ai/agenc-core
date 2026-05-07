@@ -6766,6 +6766,13 @@ async function gapGates(item) {
     return;
   }
   if (
+    id === "GAP-DMN-02" ||
+    item.title.includes("Inject SessionManager / listPermissions on dispatcher boot")
+  ) {
+    assertGapDmnDispatcherBootInjection();
+    return;
+  }
+  if (
     id === "GAP-DMN-03" ||
     item.title.includes("Authenticate Unix socket connections at accept")
   ) {
@@ -6776,6 +6783,105 @@ async function gapGates(item) {
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapDmnDispatcherBootInjection() {
+  const cliRel = "runtime/src/app-server/daemon-cli.ts";
+  const cliSource = readFileSync(path.join(root, cliRel), "utf8");
+  const sessionManagerBlock = boundedSourceBlock(
+    cliSource,
+    "const sessionManager = new AgenCDaemonSessionManager",
+    "const clientMultiplexer = new AgenCDaemonClientMultiplexer",
+  );
+  const clientMultiplexerBlock = boundedSourceBlock(
+    cliSource,
+    "const clientMultiplexer = new AgenCDaemonClientMultiplexer",
+    "const commandExec = new AgenCCommandExecService",
+  );
+  const agentManagerBlock = boundedSourceBlock(
+    cliSource,
+    "const agentManager = new AgenCDaemonAgentManager",
+    "try {\n    snapshotPolicies.hydrateStartupRecovery",
+  );
+  const dispatcherBlock = boundedSourceBlock(
+    cliSource,
+    "const dispatcher = new AgenCDaemonJsonRpcDispatcher",
+    "const connections = new Map",
+  );
+  const missingBootEvidence = [
+    ["session manager uses thread store", sessionManagerBlock, "threadStore"],
+    ["client multiplexer receives session manager", clientMultiplexerBlock, "sessionManager"],
+    ["agent manager receives runner", agentManagerBlock, "runner"],
+    ["agent manager receives session manager", agentManagerBlock, "sessionManager"],
+    ["dispatcher receives agent manager", dispatcherBlock, "agentManager"],
+    ["dispatcher receives client multiplexer", dispatcherBlock, "clientMultiplexer"],
+    ["dispatcher receives session manager", dispatcherBlock, "sessionManager"],
+    ["dispatcher receives initialize authenticator", dispatcherBlock, "initializeAuthenticator"],
+  ].filter(([, source, needle]) => !source.includes(needle));
+  if (missingBootEvidence.length > 0) {
+    failGate(
+      `GAP-DMN-02 daemon boot injection evidence missing:\n  - ${missingBootEvidence
+        .map(([label]) => label)
+        .join("\n  - ")}`,
+    );
+  }
+
+  const dispatcherRel = "runtime/src/app-server/daemon-dispatcher.ts";
+  const dispatcherSource = readFileSync(path.join(root, dispatcherRel), "utf8");
+  for (const needle of [
+    "this.#sessionManager === undefined",
+    "daemon method is not implemented yet: session.list",
+    "this.#agentManager.listPermissions === undefined",
+    "daemon method is not implemented yet: permission.list",
+  ]) {
+    if (!dispatcherSource.includes(needle)) {
+      failGate(`GAP-DMN-02: ${dispatcherRel} missing guard evidence: ${needle}`);
+    }
+  }
+
+  const testRel = "runtime/src/app-server/daemon-cli.contract.test.ts";
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  for (const needle of [
+    "foreground daemon injects SessionManager and listPermissions into dispatcher",
+    "client.request(\"session.list\"",
+    "client.request(\"permission.list\"",
+    "permissionAgentIds",
+    "expect(sessionList.sessions).toHaveLength(1)",
+    "expect(sessionList.sessions[0].agentId).toBe(created.agentId)",
+    "expect(sessionList.sessions[0].sessionId).toBe(created.sessionId)",
+    "agent.create did not return a sessionId",
+  ]) {
+    if (!testSource.includes(needle)) {
+      failGate(`GAP-DMN-02: ${testRel} missing regression evidence: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/app-server/daemon-cli.contract.test.ts",
+    "-t",
+    "foreground daemon injects SessionManager and listPermissions into dispatcher",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-DMN-02 targeted daemon boot injection test failed");
+  }
+  pass("GAP-DMN-02 daemon boot injection evidence present");
+}
+
+function boundedSourceBlock(source, startNeedle, endNeedle) {
+  const start = source.indexOf(startNeedle);
+  if (start === -1) {
+    failGate(`source block start not found: ${startNeedle}`);
+  }
+  const end = source.indexOf(endNeedle, start + startNeedle.length);
+  if (end === -1) {
+    failGate(`source block end not found after ${startNeedle}: ${endNeedle}`);
+  }
+  return source.slice(start, end);
 }
 
 function assertGapDmnUnixSocketAcceptAuth() {
