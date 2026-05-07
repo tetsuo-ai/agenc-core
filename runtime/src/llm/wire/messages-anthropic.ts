@@ -24,10 +24,10 @@ import {
   prepareMessagesForWire,
   toAnthropicMessageContent,
   toAnthropicToolResultContent,
-  toAnthropicTools,
   withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
+import { toAnthropicTools } from "./tools.js";
 
 export interface AnthropicMessagesRequestOptions {
   readonly model: string;

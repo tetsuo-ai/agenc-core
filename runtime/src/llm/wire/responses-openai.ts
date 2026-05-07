@@ -31,6 +31,7 @@ import {
   withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
+import { toOpenAIResponsesTools } from "./tools.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -268,7 +269,8 @@ export function buildOpenAIResponsesRequest(
   if (instructions.length > 0) {
     body.instructions = instructions;
   }
-  if (input.tools.length > 0) body.tools = input.tools;
+  const tools = toOpenAIResponsesTools(input.tools);
+  if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
     body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
   }

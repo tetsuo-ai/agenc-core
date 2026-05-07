@@ -12,11 +12,11 @@
 import type {
   LLMChatOptions,
   LLMMessage,
-  LLMTool,
   LLMToolChoice,
 } from "../types.js";
 import { buildStructuredOutputTextFormat } from "../structured-output.js";
 import { documentFallbackText, readDocumentPayload } from "./shared.js";
+export { toXaiResponsesTools } from "./tools.js";
 
 export const XAI_ENCRYPTED_REASONING_INCLUDE =
   "reasoning.encrypted_content";
@@ -57,17 +57,6 @@ export function resolveXaiResponsesToolChoice(
   // xAI documents `required` as a first-class tool_choice mode. Preserve it
   // instead of tightening it into a named-function selection.
   return normalizeXaiResponsesToolChoice(toolChoice);
-}
-
-export function toXaiResponsesTools(
-  tools: readonly LLMTool[],
-): Record<string, unknown>[] {
-  return tools.map((tool) => ({
-    type: "function",
-    name: tool.function.name,
-    description: tool.function.description,
-    parameters: tool.function.parameters,
-  }));
 }
 
 export function buildXaiResponsesInputItems(
