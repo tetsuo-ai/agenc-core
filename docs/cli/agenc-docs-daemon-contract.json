@@ -1,0 +1,26 @@
+{
+  "item": "MG-07",
+  "siblingRepo": "agenc-docs",
+  "docsPath": "docs/cli/daemon.mdx",
+  "mergeCommit": "35a366c2fbc73fda2f84e2862422c9f4da677731",
+  "contentCommit": "d9faba9a9b37f3178f1a48fbb17ca624cdadfe52",
+  "contentSha256": "f30d2e5fb86f3b191301db12228f8760fc48e8ecd51fd2c37fce3d34b224b1fc",
+  "verification": [
+    {
+      "command": "node scripts/branding-scan.mjs docs/cli/daemon.mdx",
+      "status": "passed"
+    },
+    {
+      "command": "npm run prebuild",
+      "status": "passed",
+      "result": "Generated 31 pages and 5 reference pages with no tracked generated-file diff"
+    }
+  ],
+  "requiredTopics": [
+    "daemon lifecycle",
+    "environment variables",
+    "background-agent commands",
+    "systemd",
+    "launchd"
+  ]
+}

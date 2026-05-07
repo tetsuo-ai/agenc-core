@@ -17,6 +17,7 @@
 //      Skip with --skip-validate for iteration but never skip for completion.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -1799,6 +1800,25 @@ const ITEM_EVIDENCE = {
       { pattern: "\"@tetsuo-ai/runtime\": \"file:../../runtime\"", scope: "packages/agenc/package.json" },
     ],
     tests: ["packages/agenc/test/launcher.test.mjs"],
+  },
+  "MG-07": {
+    files: [
+      "packages/agenc/RELEASE_NOTES.md",
+      "docs/cli/agenc-docs-daemon-contract.json",
+    ],
+    grepPresent: [
+      { pattern: "Daemon-Backed CLI|daemon-backed CLI", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "agenc daemon start --foreground", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "agenc agent start", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "AGENC_DAEMON_AUTOSTART", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "AGENC_DAEMON_READY_TIMEOUT_MS", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "systemd", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "launchd", scope: "packages/agenc/RELEASE_NOTES.md" },
+      { pattern: "\"siblingRepo\": \"agenc-docs\"", scope: "docs/cli/agenc-docs-daemon-contract.json" },
+      { pattern: "\"docsPath\": \"docs/cli/daemon.mdx\"", scope: "docs/cli/agenc-docs-daemon-contract.json" },
+      { pattern: "\"npm run prebuild\"", scope: "docs/cli/agenc-docs-daemon-contract.json" },
+      { pattern: "\"contentSha256\"", scope: "docs/cli/agenc-docs-daemon-contract.json" },
+    ],
   },
   "CF-01": {
     grepPresent: [{ pattern: "auth\\.backend", scope: "runtime/src/config" }],
@@ -4832,6 +4852,106 @@ async function migrationGates(item) {
       failGate(`MG-06: public launcher package contract mismatch:\n  - ${failures.join("\n  - ")}`);
     }
     pass("MG-06: public launcher package autostarts and health-checks daemon");
+    return;
+  }
+  if (id === "MG-07") {
+    const releaseNotes = readFileSync(path.join(root, "packages/agenc/RELEASE_NOTES.md"), "utf8");
+    const docsContractPath = path.join(root, "docs/cli/agenc-docs-daemon-contract.json");
+    const docsContract = JSON.parse(readFileSync(docsContractPath, "utf8"));
+    const failures = [];
+    const requiredReleaseMarkers = [
+      "@tetsuo-ai/agenc",
+      "daemon.pid",
+      "daemon.cookie",
+      "AGENC_DAEMON_AUTOSTART",
+      "AGENC_DAEMON_READY_TIMEOUT_MS",
+      "AGENC_DAEMON_REQUEST_TIMEOUT_MS",
+      "agenc daemon start --foreground",
+      "agenc agent start",
+      "systemd",
+      "launchd",
+    ];
+    const requiredDocMarkers = [
+      "Daemon lifecycle",
+      "daemon.pid",
+      "daemon.sock",
+      "daemon.cookie",
+      "AGENC_HOME",
+      "AGENC_DAEMON_AUTOSTART",
+      "AGENC_DAEMON_READY_TIMEOUT_MS",
+      "AGENC_DAEMON_REQUEST_TIMEOUT_MS",
+      "agenc daemon status",
+      "agenc agent start",
+      "agenc agent list",
+      "agenc agent attach",
+      "agenc agent stop",
+      "agenc agent logs",
+      "packaging/systemd/agenc-daemon.service",
+      "packaging/launchd/dev.agenc.daemon.plist",
+      "ExecStart=/usr/bin/env agenc daemon start --foreground",
+    ];
+    for (const marker of requiredReleaseMarkers) {
+      if (!releaseNotes.includes(marker)) {
+        failures.push(`packages/agenc/RELEASE_NOTES.md missing ${marker}`);
+      }
+    }
+    if (docsContract.siblingRepo !== "agenc-docs") {
+      failures.push("docs contract siblingRepo must be agenc-docs");
+    }
+    if (docsContract.docsPath !== "docs/cli/daemon.mdx") {
+      failures.push("docs contract docsPath must be docs/cli/daemon.mdx");
+    }
+    if (!/^[0-9a-f]{40}$/.test(docsContract.mergeCommit ?? "")) {
+      failures.push("docs contract mergeCommit must be a full git SHA");
+    }
+    if (!/^[0-9a-f]{40}$/.test(docsContract.contentCommit ?? "")) {
+      failures.push("docs contract contentCommit must be a full git SHA");
+    }
+    if (!/^[0-9a-f]{64}$/.test(docsContract.contentSha256 ?? "")) {
+      failures.push("docs contract contentSha256 must be a full sha256 hex digest");
+    }
+    if (Object.prototype.hasOwnProperty.call(docsContract, "siblingRepoPath")) {
+      failures.push("docs contract must not store a machine-local siblingRepoPath");
+    }
+    const configuredDocsRoot = process.env.AGENC_DOCS_ROOT?.trim();
+    const siblingDocsRoot =
+      configuredDocsRoot && configuredDocsRoot.length > 0
+        ? configuredDocsRoot
+        : path.resolve(mainCheckoutRoot(), "..", docsContract.siblingRepo);
+    const docsPath = path.join(siblingDocsRoot, docsContract.docsPath ?? "");
+    if (!existsSync(docsPath)) {
+      failures.push(`agenc-docs daemon page missing at ${docsPath}`);
+    } else {
+      const daemonDocs = readFileSync(docsPath, "utf8");
+      const digest = createHash("sha256").update(daemonDocs).digest("hex");
+      if (digest !== docsContract.contentSha256) {
+        failures.push(`agenc-docs daemon page sha256 mismatch: ${digest}`);
+      }
+      for (const marker of requiredDocMarkers) {
+        if (!daemonDocs.includes(marker)) {
+          failures.push(`agenc-docs docs/cli/daemon.mdx missing ${marker}`);
+        }
+      }
+    }
+    const verification = Array.isArray(docsContract.verification)
+      ? docsContract.verification
+      : [];
+    for (const command of [
+      "node scripts/branding-scan.mjs docs/cli/daemon.mdx",
+      "npm run prebuild",
+    ]) {
+      if (
+        !verification.some(
+          (entry) => entry?.command === command && entry?.status === "passed",
+        )
+      ) {
+        failures.push(`docs contract missing passed verification: ${command}`);
+      }
+    }
+    if (failures.length > 0) {
+      failGate(`MG-07: daemon release notes/docs coverage mismatch:\n  - ${failures.join("\n  - ")}`);
+    }
+    pass("MG-07: daemon release notes and user docs cover lifecycle, env, agents, systemd, and launchd");
     return;
   }
   failGate(
