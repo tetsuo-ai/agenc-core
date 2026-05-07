@@ -15,6 +15,8 @@ import {
   AgenCDaemonCookieAuthenticator,
   AGENC_DAEMON_COOKIE_HEX_LENGTH,
   createAgenCDaemonCookieIdentity,
+  createAgenCDaemonPrivateSocketOwnerIdentity,
+  createAgenCDaemonPeerUidIdentity,
   ensureAgenCDaemonCookie,
   normalizeAgenCDaemonCookie,
   verifyAgenCDaemonCookie,
@@ -158,6 +160,17 @@ describe("AgenC daemon transport authentication", () => {
         params: { authCookie: "socket-cookie" },
       }),
     ).toBeNull();
+    expect(createAgenCDaemonPeerUidIdentity(1000)).toEqual({
+      transport: "daemon",
+      verifiedBy: "peerUid",
+      peerUid: 1000,
+    });
+    expect(createAgenCDaemonPrivateSocketOwnerIdentity(1000)).toEqual({
+      transport: "daemon",
+      verifiedBy: "privateSocketOwner",
+      peerUid: null,
+      privateSocketOwnerUid: 1000,
+    });
     expect(
       authenticator.verifyInitializeParams({ authCookie: "wrong-cookie" }),
     ).toBe(false);
