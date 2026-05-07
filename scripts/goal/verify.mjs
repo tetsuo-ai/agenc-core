@@ -5756,10 +5756,37 @@ async function memoryGates(item) {
     return;
   }
   if (id === "MM-02") {
-    // AGENC.md inclusion / per-repo memory.
-    const found = grepRepo("AGENC\\.md|agencMd|agencMemory", "runtime/src");
-    if (!found) failGate("MM-02: AGENC.md / agenc-memory surface not found");
-    pass("MM-02: AGENC.md inclusion referenced");
+    const requiredSymbols = [
+      ["runtime/src/memory/global-store.ts", "getGlobalMemoryStoreInfo"],
+      ["runtime/src/memory/global-store.ts", "ensureGlobalMemoryStore"],
+      ["runtime/src/memory/global-store.ts", "loadGlobalMemoryStorePrompt"],
+      ["runtime/src/memory/global-store.ts", "scanGlobalMemoryStore"],
+      ["runtime/src/memory/global-store.ts", "getGlobalMemoryStoreSnapshot"],
+      ["runtime/src/memory/global-store.test.ts", "global memory store"],
+      ["runtime/src/utils/yaml.ts", "createRequire"],
+      ["runtime/src/utils/yaml.ts", "js-yaml"],
+      ["parity/MM-02-parity.json", "global-memory-store"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const file = path.join(root, rel);
+      if (!existsSync(file)) failGate(`MM-02: ${rel} missing`);
+      const source = readFileSync(file, "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`MM-02: ${symbol} missing from ${rel}`);
+      }
+    }
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/global-store.test.ts",
+      "src/memory/scan.test.ts",
+      "src/memory/paths.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-02 targeted Vitest suite failed");
+    pass("MM-02: global memory store verified");
     return;
   }
   if (id === "MM-03") {
