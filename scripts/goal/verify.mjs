@@ -6472,10 +6472,59 @@ async function gapGates(item) {
     assertGapToolsSpawnAgentsOnCsvWorkerParameter();
     return;
   }
+  if (item.title.includes("tool-search recoveryCategory mis-marked")) {
+    assertGapToolsToolSearchRecoveryCategory();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapToolsToolSearchRecoveryCategory() {
+  const toolRel = "runtime/src/tools/system/tool-search.ts";
+  const testRel = "runtime/src/tools/system/tool-search.test.ts";
+  const toolPath = path.join(root, toolRel);
+  const testPath = path.join(root, testRel);
+  for (const rel of [toolRel, testRel]) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-TOOLS-03: missing required evidence file ${rel}`);
+    }
+  }
+
+  const tool = readFileSync(toolPath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  if (!/recoveryCategory:\s*["']side-effecting["']/.test(tool)) {
+    failGate("GAP-TOOLS-03: system.searchTools must be side-effecting");
+  }
+  if (!/config\.onDiscoverTools\?\.\(loaded\)/.test(tool)) {
+    failGate("GAP-TOOLS-03: expected discovery mutation hook is missing from system.searchTools");
+  }
+
+  const requiredTestEvidence = [
+    "is side-effecting because selected tools update advertised session state",
+    "selecting a deferred tool calls onDiscoverTools and reports it loaded",
+    "expect(tool.recoveryCategory).toBe(\"side-effecting\")",
+    "expect(discovered).toEqual([[\"system.deepTool\"]])",
+  ];
+  const missingTestEvidence = requiredTestEvidence.filter((needle) => !test.includes(needle));
+  if (missingTestEvidence.length > 0) {
+    failGate(`GAP-TOOLS-03 regression test evidence missing:\n  - ${missingTestEvidence.join("\n  - ")}`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tools/system/tool-search.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-03 targeted tool-search tests failed");
+  }
+
+  pass("GAP-TOOLS-03: system.searchTools recovery category matches discovery mutation");
 }
 
 function assertGapToolsSpawnAgentsOnCsvWorkerParameter() {
