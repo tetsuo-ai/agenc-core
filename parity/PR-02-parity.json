@@ -20,7 +20,6 @@
   "testFiles": [
     "runtime/src/prompts/agenc-md.test.ts",
     "runtime/src/prompts/project-instructions.test.ts",
-    "runtime/src/bin/agenc.test.ts",
     "runtime/src/conversation/multi-turn-context.contract.test.ts"
   ],
   "rows": [
@@ -75,7 +74,6 @@
         "Empty instruction content does not create an inert prompt section."
       ],
       "tests": [
-        "runtime/src/bin/agenc.test.ts",
         "runtime/src/prompts/system-prompt.test.ts",
         "runtime/src/conversation/multi-turn-context.contract.test.ts"
       ],

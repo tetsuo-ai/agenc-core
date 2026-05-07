@@ -195,6 +195,36 @@ describe("project-instructions (T10-B)", () => {
     expect(res!.content).toContain("truncated by project_doc_max_bytes");
   });
 
+  test("loadProjectInstructions and loadProjectInstructionChain truncate at a UTF-8 code point boundary", async () => {
+    const repoRoot = join(root, "proj");
+    const leafDir = join(repoRoot, "nested");
+    mkdirSync(leafDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "A🙂B");
+    writeFileSync(join(leafDir, "AGENC.md"), "C🙂D");
+
+    const singular = await loadProjectInstructions({
+      cwd: repoRoot,
+      projectDocMaxBytes: 3,
+    });
+    expect(singular!.truncated).toBe(true);
+    expect(singular!.content).toBe(
+      "A\n\n<!-- [truncated by project_doc_max_bytes] -->\n",
+    );
+    expect(singular!.content).not.toContain("\uFFFD");
+
+    const chain = await loadProjectInstructionChain({
+      cwd: leafDir,
+      projectDocMaxBytes: 3,
+    });
+    expect(chain).toHaveLength(1);
+    expect(chain[0]!.truncated).toBe(true);
+    expect(chain[0]!.content).toBe(
+      "A\n\n<!-- [truncated by project_doc_max_bytes] -->\n",
+    );
+    expect(chain[0]!.content).not.toContain("\uFFFD");
+  });
+
   test("loadProjectInstructions falls back to cwd when no marker is found", async () => {
     const cwd = join(root, "no-markers");
     mkdirSync(cwd, { recursive: true });

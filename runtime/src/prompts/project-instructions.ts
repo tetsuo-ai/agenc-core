@@ -254,11 +254,24 @@ function truncateContentToBytes(
   if (byteLen <= maxBytes) {
     return { content, truncated: false };
   }
-  const buf = Buffer.from(content, "utf8");
   return {
-    content: buf.subarray(0, maxBytes).toString("utf8") + TRUNCATION_MARKER,
+    content: truncateUtf8AtCodePointBoundary(content, maxBytes) + TRUNCATION_MARKER,
     truncated: true,
   };
+}
+
+function truncateUtf8AtCodePointBoundary(content: string, maxBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  for (const char of content) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (bytes + charBytes > maxBytes) {
+      break;
+    }
+    bytes += charBytes;
+    end += char.length;
+  }
+  return content.slice(0, end);
 }
 
 function directoriesFromRoot(rootDir: string, cwd: string): string[] {

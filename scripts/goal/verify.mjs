@@ -2138,7 +2138,6 @@ const ITEM_EVIDENCE = {
     tests: [
       "runtime/src/prompts/agenc-md.test.ts",
       "runtime/src/prompts/project-instructions.test.ts",
-      "runtime/src/bin/agenc.test.ts",
       "runtime/src/prompts/system-prompt.test.ts",
       "runtime/src/conversation/multi-turn-context.contract.test.ts",
     ],
@@ -5413,6 +5412,9 @@ async function promptGates(item) {
     if (!grepRepo("outer document exceeds the byte budget", "runtime/src/prompts/project-instructions.test.ts")) {
       failGate("PR-02: closest-file byte-budget regression test missing");
     }
+    if (!grepRepo("UTF-8 code point boundary", "runtime/src/prompts/project-instructions.test.ts")) {
+      failGate("PR-02: multibyte truncation regression test missing");
+    }
     const vitest = run(
       "npm",
       [
@@ -5420,7 +5422,6 @@ async function promptGates(item) {
         "--",
         "src/prompts/agenc-md.test.ts",
         "src/prompts/project-instructions.test.ts",
-        "src/bin/agenc.test.ts",
         "src/prompts/system-prompt.test.ts",
         "src/conversation/multi-turn-context.contract.test.ts",
       ],
