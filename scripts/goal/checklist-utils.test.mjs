@@ -146,9 +146,12 @@ const reviewSource = readFileSync(new URL("./review.mjs", import.meta.url), "utf
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 const purgeScanSource = readFileSync(new URL("./purge-scans.mjs", import.meta.url), "utf8");
 const knipConfig = JSON.parse(readFileSync(new URL("../../.knip.json", import.meta.url), "utf8"));
+const zFinalAllowlistEvidence = JSON.parse(readFileSync(new URL("../../docs/z-final-allowlist-evidence.json", import.meta.url), "utf8"));
 const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
 const runtimeTsconfigSource = readFileSync(new URL("../../runtime/tsconfig.json", import.meta.url), "utf8");
 const runtimeTsupConfigSource = readFileSync(new URL("../../runtime/tsup.config.ts", import.meta.url), "utf8");
+const outputStylesSource = readFileSync(new URL("../../runtime/src/constants/outputStyles.ts", import.meta.url), "utf8");
+const todoWritePromptSource = readFileSync(new URL("../../runtime/src/tools/TodoWriteTool/prompt.ts", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
   /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
@@ -176,6 +179,7 @@ assert(
   "complete.mjs treats Z-FINAL as marker directory cleanup",
   completeSource.includes('if (id === "Z-FINAL")') &&
     completeSource.includes("Z-FINAL skips writing a new .goal-completed marker") &&
+    completeSource.includes("Z-FINAL skips checklist flip because PORT_CHECKLIST.md is removed by final cleanup") &&
     completeSource.includes("rmSync(markerDir(), { recursive: true, force: true })"),
 );
 
@@ -334,6 +338,9 @@ const zFinalGateSource = extractFunctionSource(verifySource, "assertZFinalEndSta
 const runtimeKnipConfig = knipConfig.workspaces?.runtime ?? {};
 assert(
   "verify.mjs Z-FINAL scans main checkout completion markers",
+  verifySource.includes("assertZFinalPredecessorsDone()") &&
+    verifySource.includes("candidate.dependsOn.includes(\"Z-FINAL\")") &&
+    verifySource.includes("STATUS.SKIPPED") &&
   zFinalGateSource.includes("mainCheckoutRoot()") &&
     zFinalGateSource.includes("collectZFinalGoalCompletedDirs(mainCheckoutRoot(), \"main\")") &&
     zFinalGateSource.includes("worktree or main checkout"),
@@ -358,6 +365,25 @@ assert(
     runtimeKnipConfig.ignoreFiles.length > 100 &&
     knipConfig.ignoreIssues &&
     Object.keys(knipConfig.ignoreIssues).some((rel) => rel.startsWith("runtime/src/")),
+);
+assert(
+  "Z-FINAL allowlist evidence documents generated cleanup baselines",
+  zFinalAllowlistEvidence.tsPrune?.ignorePatternCount === 6204 &&
+    zFinalAllowlistEvidence.knip?.ignoredRuntimeFileCount === runtimeKnipConfig.ignoreFiles.length &&
+    zFinalAllowlistEvidence.knip?.ignoredIssueFileCount === Object.keys(knipConfig.ignoreIssues).length &&
+    zFinalAllowlistEvidence.tsPrune?.command.includes("ts-prune@0.10.3") &&
+    zFinalAllowlistEvidence.knip?.command.includes("knip@5.85.0"),
+);
+assert(
+  "Learn-by-Doing prompt still points at TODO(human)",
+  outputStylesSource.includes("TODO(human)") &&
+    !outputStylesSource.includes("Follow-up(human)"),
+);
+assert(
+  "TodoWrite prompt keeps todo-list terminology",
+  todoWritePromptSource.includes("Creates todo list with specific items") &&
+    todoWritePromptSource.includes("Creates todo list with items like") &&
+    !todoWritePromptSource.includes("Follow-up list"),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

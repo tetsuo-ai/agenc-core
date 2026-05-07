@@ -33,7 +33,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { findItem, parseItems, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
+import { findItem, parseItems, repoRoot, mainCheckoutRoot, STATUS, fail } from "./checklist-utils.mjs";
 import {
   RUNTIME_UPSTREAM_SCAN_PATHS,
   collectRuntimeUpstreamReferences,
@@ -9256,6 +9256,26 @@ async function cleanupGates(item) {
     pass(`Z-FINAL gate 3: ts-prune has zero unignored unused exports (${ignorePatterns.length} ignore pattern(s))`);
   }
 
+  function assertZFinalPredecessorsDone() {
+    const checklist = path.join(mainCheckoutRoot(), "PORT_CHECKLIST.md");
+    if (!existsSync(checklist)) {
+      failGate("Z-FINAL precondition: PORT_CHECKLIST.md is missing from the main checkout before final merge");
+    }
+    const items = parseItems(readFileSync(checklist, "utf8"));
+    const predecessors = items
+      .filter((candidate) => candidate.id !== "Z-FINAL" && /^(?:Z-|ZC-)/.test(candidate.id))
+      .filter((candidate) => !candidate.dependsOn.includes("Z-FINAL"));
+    const incomplete = predecessors
+      .filter((candidate) => ![STATUS.DONE, STATUS.SKIPPED].includes(candidate.statusToken));
+    if (incomplete.length > 0) {
+      failGate(
+        `Z-FINAL precondition: all predecessor Z-* and ZC-* items must be [x] or documented [-] before final cleanup:\n` +
+          incomplete.map((candidate) => `${candidate.statusToken} ${candidate.id} ${candidate.title}`).join("\n"),
+      );
+    }
+    pass(`Z-FINAL precondition: ${predecessors.length} predecessor Z/ZC item(s) are done or documented skipped`);
+  }
+
   function listRuntimeDirectories() {
     const runtimeSrc = path.join(root, "runtime/src");
     const out = [];
@@ -9411,6 +9431,8 @@ async function cleanupGates(item) {
   }
 
   function assertZFinalEndState() {
+    assertZFinalPredecessorsDone();
+
     runRequiredZFinalCommand(
       "Z-FINAL gate 1: runtime tsc has zero errors",
       "npx",

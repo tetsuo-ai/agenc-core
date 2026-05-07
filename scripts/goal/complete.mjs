@@ -249,6 +249,19 @@ function writeOrSkipCompletionMarker(mergedHead) {
   ok(`marker written: .goal-completed/${id}.json`);
 }
 
+async function flipChecklistOrSkipFinalItem() {
+  if (id === "Z-FINAL") {
+    ok("Z-FINAL skips checklist flip because PORT_CHECKLIST.md is removed by final cleanup");
+    return;
+  }
+  const flip = await setItemStatus(id, STATUS.DONE);
+  if (flip.changed) {
+    ok(`PORT_CHECKLIST.md updated`);
+  } else {
+    process.stderr.write(`${DIM}(no change to PORT_CHECKLIST.md row)${RESET}\n`);
+  }
+}
+
 async function recoverMatchingInFlightJournal(entry) {
   const journal = parseJournal(entry);
   if (journal.itemId !== id || journal.branch !== expected) {
@@ -290,12 +303,7 @@ async function recoverMatchingInFlightJournal(entry) {
   }
 
   writeOrSkipCompletionMarker(mergeCommit);
-  const flip = await setItemStatus(id, STATUS.DONE);
-  if (flip.changed) {
-    ok(`PORT_CHECKLIST.md updated`);
-  } else {
-    process.stderr.write(`${DIM}(no change to PORT_CHECKLIST.md row)${RESET}\n`);
-  }
+  await flipChecklistOrSkipFinalItem();
 
   try {
     unlinkSync(path.join(markerDir(), entry.file));
@@ -522,13 +530,7 @@ writeOrSkipCompletionMarker(
 // ---- step 8: flip checklist status -------------------------------------
 
 header("step 8 — flipping PORT_CHECKLIST.md row to [x]");
-const flip = await setItemStatus(id, STATUS.DONE);
-if (flip.changed) {
-  ok(`PORT_CHECKLIST.md updated`);
-  // The checklist is local-only (excluded from git); no commit needed.
-} else {
-  process.stderr.write(`${DIM}(no change to PORT_CHECKLIST.md row)${RESET}\n`);
-}
+await flipChecklistOrSkipFinalItem();
 
 // ---- step 9: clear in-flight journal -----------------------------------
 //

@@ -48,7 +48,7 @@ The assistant used the todo list because:
 User: Help me rename the function getCwd to getCurrentWorkingDirectory across my project
 Assistant: *Uses grep or search tools to locate all instances of getCwd in the codebase*
 I've found 15 instances of 'getCwd' across 8 different files.
-*Creates Follow-up list with specific items for each file that needs updating*
+*Creates todo list with specific items for each file that needs updating*
 
 <reasoning>
 The assistant used the todo list because:
@@ -77,7 +77,7 @@ The assistant used the todo list because:
 User: Can you help optimize my React application? It's rendering slowly and has performance issues.
 Assistant: *Reviews component structure, render patterns, state management, and data fetching*
 After analyzing your codebase, I've identified several performance issues.
-*Creates Follow-up list with items like: 1) Implementing memoization for expensive calculations in ProductList, 2) Adding virtualization for long lists in Dashboard, 3) Optimizing image loading in Gallery component, 4) Fixing state update loops in ShoppingCart, 5) Reviewing bundle size and implementing code splitting*
+*Creates todo list with items like: 1) Implementing memoization for expensive calculations in ProductList, 2) Adding virtualization for long lists in Dashboard, 3) Optimizing image loading in Gallery component, 4) Fixing state update loops in ShoppingCart, 5) Reviewing bundle size and implementing code splitting*
 Let's start by implementing memoization for the expensive calculations in your ProductList component.
 
 <reasoning>
