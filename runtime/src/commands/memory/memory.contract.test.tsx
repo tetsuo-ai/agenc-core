@@ -86,7 +86,7 @@ describe("memory command contract", () => {
     expect(source).toContain(
       "../../tui/components/memory/MemoryUpdateNotification.js",
     );
-    expect(source).toContain("../../memory/project-memory.js");
+    expect(source).toContain("../../memory/index.js");
     expect(source).toContain("https://agenc.tech/docs/en/memory");
     expect(source).not.toContain("../../components/memory/MemoryFileSelector.js");
   });
