@@ -17,7 +17,10 @@ import {
   AGENC_PORTAL_METHODS,
   AGENC_PORTAL_PROTOCOL_VERSION,
   createAgenCPortalAgentAttachRequest,
+  createAgenCPortalAgentCreateRequest,
+  createAgenCPortalAgentListRequest,
   createAgenCPortalAgentLogsRequest,
+  createAgenCPortalAgentStopRequest,
   createAgenCPortalDaemonInitializeRequest,
   createAgenCPortalMessageSendRequest,
   createAgenCPortalSessionAttachRequest,
@@ -41,8 +44,10 @@ describe("AgenC portal protocol contract", () => {
       "auth.logout",
       "session.list",
       "session.attach",
+      "agent.create",
       "agent.list",
       "agent.attach",
+      "agent.stop",
       "agent.logs",
       "message.send",
     ]);
@@ -51,11 +56,13 @@ describe("AgenC portal protocol contract", () => {
 
   it("guards portal method strings at runtime", () => {
     expect(isAgenCPortalMethod("agent.attach")).toBe(true);
+    expect(isAgenCPortalMethod("agent.create")).toBe(true);
+    expect(isAgenCPortalMethod("agent.stop")).toBe(true);
     expect(isAgenCPortalMethod("message.send")).toBe(true);
     expect(isAgenCPortalMethod("tool.approve")).toBe(false);
   });
 
-  it("declares dashboard, auth, and workspace capabilities needed by the sibling portal repo", () => {
+  it("declares dashboard, auth, and background workspace capabilities needed by the sibling portal repo", () => {
     expect(AGENC_PORTAL_CLIENT_CAPABILITIES).toEqual([
       "portal.dashboard.read",
       "portal.mobile.status.read",
@@ -63,7 +70,10 @@ describe("AgenC portal protocol contract", () => {
       "portal.auth.login",
       "portal.auth.logout",
       "portal.session.attach",
+      "portal.agent.list",
+      "portal.agent.start",
       "portal.agent.attach",
+      "portal.agent.stop",
       "portal.transcript.read",
       "portal.message.send",
     ]);
@@ -74,7 +84,10 @@ describe("AgenC portal protocol contract", () => {
       "portal.auth.login": true,
       "portal.auth.logout": true,
       "portal.session.attach": true,
+      "portal.agent.list": true,
+      "portal.agent.start": true,
       "portal.agent.attach": true,
+      "portal.agent.stop": true,
       "portal.transcript.read": true,
       "portal.message.send": true,
     });
@@ -138,6 +151,40 @@ describe("AgenC portal protocol contract", () => {
   });
 
   it("builds workspace requests for attach, transcripts, and messages", () => {
+    expect(createAgenCPortalAgentListRequest({ limit: 20 }, "list-1")).toEqual({
+      jsonrpc: "2.0",
+      id: "list-1",
+      method: "agent.list",
+      params: { limit: 20 },
+    });
+    expect(
+      createAgenCPortalAgentCreateRequest(
+        {
+          objective: "Run the background dashboard smoke test",
+          cwd: "/workspace",
+          initialContent: "Start from the portal dashboard",
+          unattendedAllow: ["FileRead"],
+          metadata: { source: "portal.dashboard" },
+        },
+        "start-1",
+      ),
+    ).toEqual({
+      jsonrpc: "2.0",
+      id: "start-1",
+      method: "agent.create",
+      params: {
+        objective: "Run the background dashboard smoke test",
+        cwd: "/workspace",
+        initialContent: "Start from the portal dashboard",
+        unattendedAllow: ["FileRead"],
+        metadata: { source: "portal.dashboard" },
+      },
+    });
+    expect(
+      createAgenCPortalAgentCreateRequest({
+        objective: "Start without optional metadata",
+      }).params,
+    ).not.toHaveProperty("metadata");
     expect(createAgenCPortalSessionAttachRequest("session-1")).toEqual({
       jsonrpc: "2.0",
       id: "session.attach",
@@ -163,6 +210,21 @@ describe("AgenC portal protocol contract", () => {
       id: "agent.logs",
       method: "agent.logs",
       params: { agentId: "agent-1" },
+    });
+    expect(
+      createAgenCPortalAgentStopRequest(
+        "agent-1",
+        "portal dashboard stop",
+        "stop-1",
+      ),
+    ).toEqual({
+      jsonrpc: "2.0",
+      id: "stop-1",
+      method: "agent.stop",
+      params: {
+        agentId: "agent-1",
+        reason: "portal dashboard stop",
+      },
     });
     expect(
       createAgenCPortalMessageSendRequest(
@@ -275,6 +337,8 @@ describe("AgenC portal protocol contract", () => {
 
     expect(snapshot.sessions[0]?.status).toBe("waiting");
     expect(snapshot.agents[0]?.activeSessionId).toBe("session-1");
+    expect(snapshot.backgroundAgents.agents[0]?.status).toBe("running");
+    expect(snapshot.backgroundAgents.stoppingAgentIds).toEqual([]);
     expect(snapshot.transcript?.sessions[0]?.itemCount).toBe(1);
     expect(snapshot.composer.sessionId).toBe("session-1");
     expect(snapshot.connectionState.initialized).toBe(true);
