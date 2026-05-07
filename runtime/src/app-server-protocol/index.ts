@@ -10,13 +10,19 @@
  * AuthBackend state instead of creating a portal-specific token store.
  * WP-04 adds the session/agent workspace controls for attaching, reading
  * agent transcripts, and sending messages through existing daemon methods.
+ * WP-05 adds dashboard controls for listing, starting, and stopping
+ * background agents through the same daemon JSON-RPC contract.
  */
 
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
+  type AgentCreateParams,
+  type AgentListParams,
+  type AgentStatus,
   type AgentAttachParams,
   type AgentLogsParams,
+  type AgentStopParams,
   type AgenCDaemonMethod,
   type AgenCDaemonRequestWithParams,
   type InitializeParams,
@@ -28,7 +34,7 @@ import {
 } from "../app-server/protocol/index.js";
 import type { AuthBackendKind, AuthIdentity } from "../auth/backend.js";
 
-export const AGENC_PORTAL_PROTOCOL_VERSION = "0.3.0" as const;
+export const AGENC_PORTAL_PROTOCOL_VERSION = "0.4.0" as const;
 export const AGENC_PORTAL_CLIENT_ID = "agenc-portal" as const;
 export const AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT =
   "ws://127.0.0.1:7766/" as const;
@@ -45,8 +51,10 @@ export const AGENC_PORTAL_METHODS = [
   "auth.logout",
   "session.list",
   "session.attach",
+  "agent.create",
   "agent.list",
   "agent.attach",
+  "agent.stop",
   "agent.logs",
   "message.send",
 ] as const satisfies readonly AgenCDaemonMethod[];
@@ -59,7 +67,10 @@ export const AGENC_PORTAL_CLIENT_CAPABILITIES = [
   "portal.auth.login",
   "portal.auth.logout",
   "portal.session.attach",
+  "portal.agent.list",
+  "portal.agent.start",
   "portal.agent.attach",
+  "portal.agent.stop",
   "portal.transcript.read",
   "portal.message.send",
 ] as const;
@@ -73,7 +84,10 @@ export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.auth.login": true,
   "portal.auth.logout": true,
   "portal.session.attach": true,
+  "portal.agent.list": true,
+  "portal.agent.start": true,
   "portal.agent.attach": true,
+  "portal.agent.stop": true,
   "portal.transcript.read": true,
   "portal.message.send": true,
 } as const satisfies Record<AgenCPortalClientCapability, true>;
@@ -86,6 +100,16 @@ export const AGENC_PORTAL_AUTH_METHODS = [
 
 export type AgenCPortalAuthMethod =
   (typeof AGENC_PORTAL_AUTH_METHODS)[number];
+
+export type AgenCPortalAgentCreateRequest = AgenCDaemonRequestWithParams<
+  "agent.create",
+  AgentCreateParams
+>;
+
+export type AgenCPortalAgentListRequest = AgenCDaemonRequestWithParams<
+  "agent.list",
+  AgentListParams
+>;
 
 export type AgenCPortalSessionAttachRequest = AgenCDaemonRequestWithParams<
   "session.attach",
@@ -102,10 +126,19 @@ export type AgenCPortalAgentLogsRequest = AgenCDaemonRequestWithParams<
   AgentLogsParams
 >;
 
+export type AgenCPortalAgentStopRequest = AgenCDaemonRequestWithParams<
+  "agent.stop",
+  AgentStopParams
+>;
+
 export type AgenCPortalMessageSendRequest = AgenCDaemonRequestWithParams<
   "message.send",
   MessageSendParams
 >;
+
+export interface AgenCPortalAgentStartOptions extends AgentCreateParams {
+  readonly objective: string;
+}
 
 export interface AgenCPortalMessageSendOptions {
   readonly sessionId: string;
@@ -144,6 +177,50 @@ export function createAgenCPortalDaemonInitializeRequest(
 export const AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST =
   createAgenCPortalDaemonInitializeRequest();
 
+export function createAgenCPortalAgentListRequest(
+  params: AgentListParams = {},
+  id: RequestId = "agent.list",
+): AgenCPortalAgentListRequest {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "agent.list",
+    params,
+  };
+}
+
+export function createAgenCPortalAgentCreateRequest(
+  options: AgenCPortalAgentStartOptions,
+  id: RequestId = "agent.create",
+): AgenCPortalAgentCreateRequest {
+  const params: AgentCreateParams = {
+    objective: options.objective,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.instructions !== undefined
+      ? { instructions: options.instructions }
+      : {}),
+    ...(options.initialContent !== undefined
+      ? { initialContent: options.initialContent }
+      : {}),
+    ...(options.unattendedAllow !== undefined
+      ? { unattendedAllow: options.unattendedAllow }
+      : {}),
+    ...(options.unattendedDeny !== undefined
+      ? { unattendedDeny: options.unattendedDeny }
+      : {}),
+    ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
+  };
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "agent.create",
+    params,
+  };
+}
+
 export function createAgenCPortalSessionAttachRequest(
   sessionId: string,
   clientId: string = AGENC_PORTAL_CLIENT_ID,
@@ -179,6 +256,22 @@ export function createAgenCPortalAgentLogsRequest(
     id,
     method: "agent.logs",
     params: { agentId },
+  };
+}
+
+export function createAgenCPortalAgentStopRequest(
+  agentId: string,
+  reason?: string,
+  id: RequestId = "agent.stop",
+): AgenCPortalAgentStopRequest {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "agent.stop",
+    params: {
+      agentId,
+      ...(reason !== undefined ? { reason } : {}),
+    },
   };
 }
 
@@ -246,7 +339,7 @@ export interface AgenCPortalSessionSummary {
 export interface AgenCPortalAgentSummary {
   readonly agentId: string;
   readonly objective: string;
-  readonly status: "queued" | "running" | "paused" | "stopped" | "failed";
+  readonly status: AgentStatus;
   readonly activeSessionId: string | null;
   readonly updatedAt: string;
 }
@@ -274,6 +367,15 @@ export interface AgenCPortalComposerState {
   readonly error: string | null;
 }
 
+export interface AgenCPortalBackgroundAgentDashboardState {
+  readonly agents: readonly AgenCPortalAgentSummary[];
+  readonly nextCursor: string | null;
+  readonly starting: boolean;
+  readonly stoppingAgentIds: readonly string[];
+  readonly error: string | null;
+  readonly updatedAt: string | null;
+}
+
 export interface AgenCPortalDashboardSnapshot {
   readonly protocolVersion: typeof AGENC_PORTAL_PROTOCOL_VERSION;
   readonly connection: AgenCPortalConnectionTarget | null;
@@ -281,6 +383,7 @@ export interface AgenCPortalDashboardSnapshot {
   readonly auth: AgenCPortalAuthState;
   readonly sessions: readonly AgenCPortalSessionSummary[];
   readonly agents: readonly AgenCPortalAgentSummary[];
+  readonly backgroundAgents: AgenCPortalBackgroundAgentDashboardState;
   readonly transcript: AgenCPortalTranscriptSnapshot | null;
   readonly composer: AgenCPortalComposerState;
 }
