@@ -1784,7 +1784,21 @@ const ITEM_EVIDENCE = {
     ],
   },
   "MG-06": {
-    grepPresent: [{ pattern: "autostart|spawnDaemon", scope: "packages/agenc" }],
+    files: [
+      "packages/agenc/package.json",
+      "packages/agenc/bin/agenc",
+      "packages/agenc/src/launcher.mjs",
+      "packages/agenc/test/launcher.test.mjs",
+    ],
+    grepPresent: [
+      { pattern: "autostart|spawnDaemon", scope: "packages/agenc/src/launcher.mjs" },
+      { pattern: "daemon\\.pid", scope: "packages/agenc/src/launcher.mjs" },
+      { pattern: "daemon\\.cookie", scope: "packages/agenc/src/launcher.mjs" },
+      { pattern: "AGENC_DAEMON_READY_TIMEOUT_MS", scope: "packages/agenc/src/launcher.mjs" },
+      { pattern: "AGENC_DAEMON_AUTOSTART", scope: "packages/agenc/src/launcher.mjs" },
+      { pattern: "\"@tetsuo-ai/runtime\": \"file:../../runtime\"", scope: "packages/agenc/package.json" },
+    ],
+    tests: ["packages/agenc/test/launcher.test.mjs"],
   },
   "CF-01": {
     grepPresent: [{ pattern: "auth\\.backend", scope: "runtime/src/config" }],
@@ -4780,16 +4794,44 @@ async function migrationGates(item) {
     return;
   }
   if (id === "MG-06") {
-    // Wrapper hand-off: npm wrapper invokes daemon path.
-    const wrapperRoot = path.resolve(root, "..");
-    const wrapperPkg = path.join(wrapperRoot, "packages/agenc/package.json");
+    // Public launcher hand-off: npm package invokes the daemon-backed runtime.
+    const wrapperPkg = path.join(root, "packages/agenc/package.json");
     if (!existsSync(wrapperPkg)) {
-      // No sibling wrapper checked out at this location — soft-pass with note.
-      process.stdout.write(`${YELLOW}!${RESET} MG-06: sibling wrapper at ${wrapperPkg} not found; cannot verify wrapper hand-off from agenc-core alone.\n`);
-      pass("MG-06: wrapper-hand-off check requires sibling agenc-core wrapper repo");
-      return;
+      failGate(`MG-06: public launcher package missing at ${wrapperPkg}`);
     }
-    pass("MG-06: sibling wrapper present");
+    const wrapper = JSON.parse(readFileSync(wrapperPkg, "utf8"));
+    const failures = [];
+    if (wrapper.name !== "@tetsuo-ai/agenc") {
+      failures.push("packages/agenc/package.json name must be @tetsuo-ai/agenc");
+    }
+    if (wrapper.bin?.agenc !== "bin/agenc") {
+      failures.push("packages/agenc/package.json bin.agenc must be bin/agenc");
+    }
+    if (wrapper.dependencies?.["@tetsuo-ai/runtime"] !== "file:../../runtime") {
+      failures.push("packages/agenc/package.json must depend on @tetsuo-ai/runtime via file:../../runtime");
+    }
+    const launcher = readFileSync(path.join(root, "packages/agenc/src/launcher.mjs"), "utf8");
+    for (const marker of [
+      "AGENC_DAEMON_AUTOSTART",
+      "AGENC_DAEMON_READY_TIMEOUT_MS",
+      "daemon.pid",
+      "daemon.cookie",
+      "spawnDaemon",
+      "waitForDaemonReady",
+      "resolveRuntimeBin",
+    ]) {
+      if (!launcher.includes(marker)) {
+        failures.push(`packages/agenc/src/launcher.mjs missing ${marker}`);
+      }
+    }
+    const tests = run("node", ["--test", "packages/agenc/test/launcher.test.mjs"]);
+    if (tests.status !== 0) {
+      failures.push("packages/agenc launcher tests failed");
+    }
+    if (failures.length > 0) {
+      failGate(`MG-06: public launcher package contract mismatch:\n  - ${failures.join("\n  - ")}`);
+    }
+    pass("MG-06: public launcher package autostarts and health-checks daemon");
     return;
   }
   failGate(
