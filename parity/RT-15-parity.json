@@ -1,0 +1,129 @@
+{
+  "contractName": "rt-15-realtime-tui-integration",
+  "itemId": "RT-15",
+  "status": "implemented",
+  "sourceRoot": "local CX runtime donor checkout",
+  "sourceCommit": "c8c30d9d75556ecbe94991af22380d2a4e9d6589",
+  "sourceFiles": ["tui/src/chatwidget/realtime.rs"],
+  "targetPathNote": "The checklist's donor-branded realtime directory is intentionally implemented at runtime/src/tui/realtime/ because new donor-named directories in AgenC-owned code are hard-rejected.",
+  "targetFiles": [
+    "runtime/src/tui/realtime/state.ts",
+    "runtime/src/tui/realtime/audio.ts",
+    "runtime/src/tui/realtime/controller.ts",
+    "runtime/src/tui/realtime/commands.ts",
+    "runtime/src/tui/realtime/useRealtimeState.ts",
+    "runtime/src/tui/realtime/RealtimePanel.tsx",
+    "runtime/src/tui/daemon-session.ts",
+    "runtime/src/tui/session-types.ts",
+    "runtime/src/tui/session-transcript.ts",
+    "runtime/src/tui/components/App.tsx",
+    "runtime/src/app-server/agent-cli.ts",
+    "runtime/src/conversation/realtime/webrtc/lib.ts",
+    "runtime/src/conversation/realtime/webrtc/native.ts"
+  ],
+  "tests": [
+    "runtime/src/tui/realtime/state.contract.test.ts",
+    "runtime/src/tui/realtime/audio.contract.test.ts",
+    "runtime/src/tui/realtime/commands.contract.test.ts",
+    "runtime/src/tui/realtime/controller.contract.test.ts",
+    "runtime/src/tui/realtime/panel.contract.test.tsx",
+    "runtime/src/tui/components/App.render.test.tsx",
+    "runtime/src/tui/daemon-session.contract.test.ts",
+    "runtime/src/app-server/agent-cli.contract.test.ts",
+    "runtime/src/conversation/realtime/webrtc/webrtc.contract.test.ts",
+    "runtime/src/tui/parity/session-transcript.test.ts"
+  ],
+  "parityMatrix": [
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/realtime/state.ts",
+      "coverage": [
+        "voice lifecycle phases track inactive, starting, active, stopping, plus error and closed terminal banners",
+        "requested-close, session id, transport, mute, push-to-talk, and local audio-level state are preserved",
+        "audio level meter normalizes realtime local peaks into stable terminal bar output",
+        "realtime item-added notifications are summarized for compact chat history rendering"
+      ],
+      "evidence": ["runtime/src/tui/realtime/state.contract.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/realtime/controller.ts",
+      "coverage": [
+        "start, stop, appendText, appendAudio, mute, and push-to-talk controls update TUI state",
+        "websocket starts route to thread/realtime/start and websocket append/stop calls route through the daemon client",
+        "websocket audio capture frames route to thread/realtime/appendAudio with mute and push-to-talk gating",
+        "webrtc starts create a local offer, apply provider SDP, forward local events, and keep microphone mute state in sync",
+        "provider realtime notifications update item previews, transcript previews, audio output, error banners, and close banners"
+      ],
+      "evidence": ["runtime/src/tui/realtime/controller.contract.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/realtime/audio.ts",
+      "coverage": [
+        "default microphone capture uses the existing local voice recording backend and converts PCM frames to realtime audio chunks",
+        "local input levels are converted to the TUI meter scale",
+        "output audio chunks enqueue into a process-backed raw PCM player when the platform has a playback command"
+      ],
+      "evidence": ["runtime/src/tui/realtime/controller.contract.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/daemon-session.ts",
+      "coverage": [
+        "daemon-backed TUI sessions expose realtime controls on the bridge session contract",
+        "connection-level JSON-RPC notifications from thread/realtime are subscribed once and filtered by realtime thread id",
+        "started, itemAdded, transcript, outputAudio, SDP, error, and closed notifications are mapped into local transcript events"
+      ],
+      "evidence": ["runtime/src/tui/daemon-session.contract.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/app-server/agent-cli.ts",
+      "coverage": [
+        "persistent daemon TUI clients can subscribe to JSON-RPC notifications outside request-response routing",
+        "notification subscribers receive realtime server-push events before session-specific dispatch"
+      ],
+      "evidence": ["runtime/src/app-server/agent-cli.contract.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/session-transcript.ts",
+      "coverage": [
+        "realtime transcript deltas and completed user or assistant turns interleave with surrounding text transcript events",
+        "realtime item-added, error, and closed notifications render as chat history cells in the adapter"
+      ],
+      "evidence": ["runtime/src/tui/parity/session-transcript.test.ts"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/realtime/RealtimePanel.tsx",
+      "coverage": [
+        "voice session phase, transport, session id, microphone state, push-to-talk state, and local audio meter render in the TUI",
+        "error and closed banners render when realtime notifications report failures or shutdown"
+      ],
+      "evidence": ["runtime/src/tui/realtime/panel.contract.test.tsx"]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/tui/components/App.tsx",
+      "coverage": [
+        "composer slash commands invoke realtime start, stop, mute, push-to-talk, and text append controls",
+        "the realtime panel stays subscribed to realtime session state while the main TUI is active"
+      ],
+      "evidence": [
+        "runtime/src/tui/realtime/controller.contract.test.ts",
+        "runtime/src/tui/realtime/panel.contract.test.tsx"
+      ]
+    },
+    {
+      "source": "tui/src/chatwidget/realtime.rs",
+      "target": "runtime/src/conversation/realtime/webrtc/lib.ts",
+      "coverage": [
+        "local WebRTC session handles expose microphone mute control needed by realtime TUI push-to-talk state",
+        "native WebRTC audio tracks are disabled and re-enabled when the realtime TUI toggles microphone state"
+      ],
+      "evidence": ["runtime/src/conversation/realtime/webrtc/webrtc.contract.test.ts"]
+    }
+  ]
+}

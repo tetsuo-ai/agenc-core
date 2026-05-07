@@ -21,6 +21,7 @@ import {
 const VALID_ANSWER_SDP = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
 
 class FakeAudioTrack implements RealtimeWebrtcMediaTrack {
+  enabled = true;
   stop = vi.fn();
 }
 
@@ -274,6 +275,11 @@ describe("RealtimeWebrtcSession", () => {
     });
     expect(started.handle.localAudioPeak().load()).toBe(audioLevelToPeak(0.5));
 
+    started.handle.setMicrophoneMuted(true);
+    expect(fixture.mediaStream.track.enabled).toBe(false);
+    started.handle.setMicrophoneMuted(false);
+    expect(fixture.mediaStream.track.enabled).toBe(true);
+
     await started.handle.close();
     await expect(nextEvent(started.events)).resolves.toEqual({
       type: "closed",
@@ -500,8 +506,8 @@ describe("RealtimeWebrtcSession", () => {
 describe("WebRTC audio level helpers", () => {
   test("converts and clamps audio levels to realtime peaks", () => {
     expect(audioLevelToPeak(-1)).toBe(0);
-    expect(audioLevelToPeak(0.5)).toBe(16_384);
-    expect(audioLevelToPeak(2)).toBe(32_767);
+    expect(audioLevelToPeak(0.5)).toBe(32_768);
+    expect(audioLevelToPeak(2)).toBe(65_535);
     expect(audioLevelToPeak(Number.NaN)).toBe(0);
   });
 

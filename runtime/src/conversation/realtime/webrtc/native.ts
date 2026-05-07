@@ -21,6 +21,7 @@ import {
 const DEFAULT_LOCAL_AUDIO_LEVEL_INTERVAL_MS = 200;
 
 export interface RealtimeWebrtcMediaTrack {
+  enabled?: boolean;
   stop?(): void;
 }
 
@@ -234,6 +235,12 @@ class NativeRealtimeWebrtcSessionHandle implements RealtimeWebrtcNativeSessionHa
     this.#closeAndFinish("closed");
   }
 
+  setMicrophoneMuted(muted: boolean): void {
+    for (const track of this.#mediaStream.getAudioTracks()) {
+      track.enabled = !muted;
+    }
+  }
+
   #startLocalAudioLevelTask(): void {
     if (this.#timer !== null || this.#intervalMs <= 0) return;
     this.#timer = this.#setInterval(() => {
@@ -424,7 +431,7 @@ export async function localAudioLevel(
 
 export function audioLevelToPeak(audioLevel: number): number {
   if (!Number.isFinite(audioLevel)) return 0;
-  return Math.round(Math.max(0, Math.min(1, audioLevel)) * 32_767);
+  return Math.round(Math.max(0, Math.min(1, audioLevel)) * 65_535);
 }
 
 function resolveRealtimeWebrtcRuntime(
