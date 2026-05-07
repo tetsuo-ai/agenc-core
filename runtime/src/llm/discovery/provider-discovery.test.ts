@@ -197,6 +197,38 @@ describe("provider discovery", () => {
     });
   });
 
+  it("requires both Bedrock access and secret credentials", async () => {
+    const missingSecret = await collectProviderAvailability({
+      authBackend: authBackend("local", "free"),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {
+        AWS_ACCESS_KEY_ID: "aws-access",
+      },
+    });
+    const usable = await collectProviderAvailability({
+      authBackend: authBackend("local", "free"),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {
+        AWS_BEDROCK_ACCESS_KEY_ID: "aws-access",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+    });
+
+    expect(byProvider(missingSecret.entries).get("amazon-bedrock")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
+      keyEnvVar: "AWS_ACCESS_KEY_ID",
+      detail: expect.stringContaining("AWS_SECRET_ACCESS_KEY"),
+    });
+    expect(byProvider(usable.entries).get("amazon-bedrock")).toMatchObject({
+      usable: true,
+      keyStatus: "present",
+      keyEnvVar: "AWS_BEDROCK_ACCESS_KEY_ID",
+    });
+  });
+
   it("formats the discovery report for the providers CLI", async () => {
     const report = await collectProviderAvailability({
       authBackend: authBackend("local", "free"),

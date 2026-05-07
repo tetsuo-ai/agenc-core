@@ -5,6 +5,7 @@ import { resolveProviderCapabilityEntry } from "./capabilities.js";
 import { StaticModelsManager } from "./models-manager.js";
 import { createProvider, readProviderIdentity, type ProviderName } from "./provider.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
+import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
@@ -421,6 +422,39 @@ function buildAnthropicPayload(
   };
 }
 
+function buildBedrockPayload(
+  parityCase: CanonicalPromptCase,
+): Record<string, unknown> {
+  const content: Array<Record<string, unknown>> = [];
+  if (parityCase.expected.content.length > 0) {
+    content.push({ text: parityCase.expected.content });
+  }
+  content.push(
+    ...parityCase.expected.toolCalls.map((toolCall, index) => ({
+      toolUse: {
+        toolUseId: `toolu_${parityCase.id}_${index}`,
+        name: toolCall.name,
+        input: JSON.parse(toolCall.arguments) as Record<string, unknown>,
+      },
+    })),
+  );
+  return {
+    output: {
+      message: {
+        role: "assistant",
+        content,
+      },
+    },
+    stopReason:
+      parityCase.expected.finishReason === "tool_calls" ? "tool_use" : "end_turn",
+    usage: {
+      inputTokens: BASE_USAGE.promptTokens,
+      outputTokens: BASE_USAGE.completionTokens,
+      totalTokens: BASE_USAGE.totalTokens,
+    },
+  };
+}
+
 function buildOllamaPayload(
   model: string,
   parityCase: CanonicalPromptCase,
@@ -677,6 +711,30 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
             fetchImpl,
           }),
         payload: buildChatCompletionsPayload("gemini-2.5-pro", parityCase),
+      }),
+  },
+  {
+    provider: "amazon-bedrock",
+    model: "amazon.nova-pro-v1:0",
+    env: {
+      AWS_BEDROCK_ACCESS_KEY_ID: undefined,
+      AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
+      AWS_BEDROCK_REGION: undefined,
+      AWS_ACCESS_KEY_ID: "bedrock-test",
+      AWS_SECRET_ACCESS_KEY: "bedrock-secret",
+    },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new BedrockProvider({
+            accessKeyId: "bedrock-test",
+            secretAccessKey: "bedrock-secret",
+            model: "amazon.nova-pro-v1:0",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+            now: () => new Date("2024-01-02T03:04:05Z"),
+          }),
+        payload: buildBedrockPayload(parityCase),
       }),
   },
 ];

@@ -57,6 +57,17 @@ export interface EnvSnapshot {
   readonly DEEPSEEK_BASE_URL?: string;
   readonly GEMINI_API_KEY?: string;
   readonly GEMINI_BASE_URL?: string;
+  readonly AWS_ACCESS_KEY_ID?: string;
+  readonly AWS_SECRET_ACCESS_KEY?: string;
+  readonly AWS_BEDROCK_ACCESS_KEY_ID?: string;
+  readonly AWS_BEDROCK_SECRET_ACCESS_KEY?: string;
+  readonly AWS_BEDROCK_BASE_URL?: string;
+  readonly AWS_BEDROCK_MODEL?: string;
+  readonly AWS_BEDROCK_REGION?: string;
+  readonly AWS_REGION?: string;
+  readonly AWS_DEFAULT_REGION?: string;
+  readonly AWS_BEDROCK_SESSION_TOKEN?: string;
+  readonly AWS_SESSION_TOKEN?: string;
   readonly HOME?: string;
   readonly [k: string]: string | undefined;
 }
@@ -155,6 +166,11 @@ export function resolveProviderApiKey(
       return readNonEmpty(e.DEEPSEEK_API_KEY);
     case "gemini":
       return readNonEmpty(e.GEMINI_API_KEY);
+    case "amazon-bedrock":
+      return (
+        readNonEmpty(e.AWS_BEDROCK_ACCESS_KEY_ID) ??
+        readNonEmpty(e.AWS_ACCESS_KEY_ID)
+      );
     default:
       return undefined;
   }
@@ -187,6 +203,8 @@ export function resolveProviderBaseURL(
       return readNonEmpty(e.DEEPSEEK_BASE_URL);
     case "gemini":
       return readNonEmpty(e.GEMINI_BASE_URL);
+    case "amazon-bedrock":
+      return readNonEmpty(e.AWS_BEDROCK_BASE_URL);
     default:
       return undefined;
   }
