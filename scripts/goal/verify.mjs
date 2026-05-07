@@ -6667,10 +6667,98 @@ async function gapGates(item) {
     assertGapMcpBridgeConfigNamespaces();
     return;
   }
+  if (item.title.includes("Wire `agenc mcp` CLI subcommands")) {
+    assertGapMcpCliSubcommandsWired();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapMcpCliSubcommandsWired() {
+  const cliRel = "runtime/src/bin/mcp-cli.ts";
+  const cliSource = readFileSync(path.join(root, cliRel), "utf8");
+  const requiredCommands = [
+    "add",
+    "list",
+    "get",
+    "remove",
+    "add-json",
+    "add-from-agenc-desktop",
+    "reset-project-choices",
+    "doctor",
+  ];
+  for (const command of requiredCommands) {
+    if (!cliSource.includes(`"${command}"`)) {
+      failGate(`GAP-MCP-02: ${cliRel} does not recognize mcp ${command}`);
+    }
+  }
+  const requiredWiring = [
+    "runMcpAddCommand",
+    "mcpListHandler",
+    "mcpGetHandler",
+    "mcpRemoveHandler",
+    "mcpAddJsonHandler",
+    "mcpAddFromDesktopHandler",
+    "mcpResetChoicesHandler",
+    "mcpDoctorHandler",
+    "runMcpAddAction",
+    "kind: \"management\"",
+  ];
+  for (const needle of requiredWiring) {
+    if (!cliSource.includes(needle)) {
+      failGate(`GAP-MCP-02: ${cliRel} missing handler wiring evidence: ${needle}`);
+    }
+  }
+
+  const handlersRel = "runtime/src/cli/handlers/mcp.tsx";
+  const handlersSource = readFileSync(path.join(root, handlersRel), "utf8");
+  if (!/getMcpConfigsByScope\('user'\)/.test(handlersSource)) {
+    failGate("GAP-MCP-02: remove handler must find TOML-backed user MCP configs");
+  }
+  if (!/redactMcpDisplayValue/.test(handlersSource)) {
+    failGate("GAP-MCP-02: get handler must redact MCP header and env values");
+  }
+
+  const testRel = "runtime/src/bin/mcp-cli-management.test.ts";
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  if (!/recognizes non-serve management subcommands/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp-cli tests must cover non-serve subcommand parsing");
+  }
+  if (!/default mcp add writes to the live user config namespace/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp-cli tests must cover default add writing user config");
+  }
+  if (!/mcp add validates xaa before writing config/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp-cli tests must cover add-time xaa validation");
+  }
+  if (!/Authorization: <redacted>/.test(testSource)) {
+    failGate("GAP-MCP-02: mcp add tests must cover header redaction");
+  }
+
+  const redactionTestRel = "runtime/src/cli/handlers/mcp-redaction.test.ts";
+  const redactionTestSource = readFileSync(path.join(root, redactionTestRel), "utf8");
+  if (!/mcp get redacts remote headers/.test(redactionTestSource)) {
+    failGate("GAP-MCP-02: mcp get tests must cover header redaction");
+  }
+  if (!/mcp get redacts stdio environment values/.test(redactionTestSource)) {
+    failGate("GAP-MCP-02: mcp get tests must cover env redaction");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/bin/mcp-cli-management.test.ts",
+    "src/cli/handlers/mcp-redaction.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-02 targeted MCP CLI wiring tests failed");
+  }
+
+  pass("GAP-MCP-02: agenc mcp non-serve subcommands are wired to handlers");
 }
 
 function assertGapMcpBridgeConfigNamespaces() {
