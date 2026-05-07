@@ -9124,7 +9124,7 @@ async function cleanupGates(item) {
   // silently no-op through the function with no checks fired.
   const knownZ = new Set([
     "Z-01", "Z-02", "Z-03", "Z-04", "Z-05", "Z-06",
-    "Z-PURGEA", "Z-PURGEB", "Z-PURGEC", "Z-PURGEFINAL",
+    "Z-PURGEA", "Z-PURGEB", "Z-PURGEC", "Z-PURGEFINAL", "Z-FINAL",
   ]);
   if (!knownZ.has(id) && !/^ZC-/.test(id)) {
     failGate(
@@ -9407,7 +9407,7 @@ async function cleanupGates(item) {
     assertZPurgecTemporaryBoundaries();
     return;
   }
-  if (id === "Z-PURGEFINAL") {
+  if (id === "Z-PURGEFINAL" || id === "Z-FINAL") {
     if (existsSync(path.join(root, "runtime/src/agenc/upstream"))) {
       const remaining = walkFiles(path.join(root, "runtime/src/agenc/upstream"));
       if (remaining.length > 0) {

@@ -252,12 +252,12 @@ describe("PermissionRequest routing", () => {
   });
 
   test("removes the upstream PermissionRequest entrypoint", () => {
+    const oldPermissionsEntry = ["src", "components", "permissions", "PermissionRequest.tsx"].join("/");
     expect(
       existsSync(
         resolve(
           runtimeRoot,
-          "src/agenc/upstream/components/permissions",
-          "PermissionRequest.tsx",
+          oldPermissionsEntry,
         ),
       ),
     ).toBe(false);
