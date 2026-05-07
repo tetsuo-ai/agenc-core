@@ -6746,6 +6746,10 @@ async function gapGates(item) {
     assertGapMcpSlashCommandExpanded();
     return;
   }
+  if (item.title.includes("Wire MCP connection failure notifications")) {
+    assertGapMcpAppNotificationsWired();
+    return;
+  }
   if (item.title.includes("Resolve services/mcp/ donor-mirror tier")) {
     assertGapMcpDonorMirrorTierResolved();
     return;
@@ -6754,6 +6758,131 @@ async function gapGates(item) {
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapMcpAppNotificationsWired() {
+  const appRel = "runtime/src/tui/components/App.tsx";
+  const appSource = readFileSync(path.join(root, appRel), "utf8");
+  for (const needle of [
+    "useMcpConnectivityStatus",
+    "useSessionMcpSurface",
+    "readMcpSurfaceSnapshot",
+    "listMcpClients",
+    "listMcpTools",
+    "refreshTools: refreshAvailableTools",
+    "mcpClients={mcpClients",
+  ]) {
+    if (!appSource.includes(needle)) {
+      failGate(`GAP-MCP-05: ${appRel} missing App MCP evidence: ${needle}`);
+    }
+  }
+
+  const sessionTypesRel = "runtime/src/tui/session-types.ts";
+  const sessionTypesSource = readFileSync(path.join(root, sessionTypesRel), "utf8");
+  if (!sessionTypesSource.includes("listMcpTools?(): readonly unknown[]")) {
+    failGate(`GAP-MCP-05: ${sessionTypesRel} must expose listMcpTools on the TUI session contract`);
+  }
+
+  const sessionRel = "runtime/src/session/session.ts";
+  const sessionSource = readFileSync(path.join(root, sessionRel), "utf8");
+  for (const needle of [
+    "listMcpTools(): readonly unknown[]",
+    "manager.getTools()",
+    "projectMcpManagerToConnections(manager)",
+    "getConnectedConnection?",
+  ]) {
+    if (!sessionSource.includes(needle)) {
+      failGate(`GAP-MCP-05: ${sessionRel} missing session MCP evidence: ${needle}`);
+    }
+  }
+
+  const mcpStartupRel = "runtime/src/session/mcp-startup.ts";
+  const mcpStartupSource = readFileSync(path.join(root, mcpStartupRel), "utf8");
+  for (const needle of [
+    "getConfiguredServers:",
+    "getConnectionState:",
+    "getConnectedConnection:",
+  ]) {
+    if (!mcpStartupSource.includes(needle)) {
+      failGate(`GAP-MCP-05: ${mcpStartupRel} missing session service MCP evidence: ${needle}`);
+    }
+  }
+
+  const projectionRel = "runtime/src/mcp-client/tui-connections.ts";
+  const projectionSource = readFileSync(path.join(root, projectionRel), "utf8");
+  for (const needle of [
+    "getConnectionState?",
+    "state?.type === \"failed\"",
+    "type: \"failed\"",
+    "state?.type === \"connected\"",
+    "getConnectedConnection?",
+    "connected?.type === \"connected\"",
+  ]) {
+    if (!projectionSource.includes(needle)) {
+      failGate(`GAP-MCP-05: ${projectionRel} missing connection projection evidence: ${needle}`);
+    }
+  }
+
+  const appTestRel = "runtime/src/tui/components/App.render.test.tsx";
+  const appTestSource = readFileSync(path.join(root, appTestRel), "utf8");
+  for (const needle of [
+    "passes live MCP clients and tools through the App shell",
+    "refreshes MCP clients and tools when same-metadata objects are replaced",
+    "mcpConnectivityProps",
+    "refreshTools()",
+  ]) {
+    if (!appTestSource.includes(needle)) {
+      failGate(`GAP-MCP-05: ${appTestRel} missing App regression evidence: ${needle}`);
+    }
+  }
+
+  const managerTestRel = "runtime/src/mcp-client/manager.test.ts";
+  const managerTestSource = readFileSync(path.join(root, managerTestRel), "utf8");
+  if (!managerTestSource.includes("getConnectionState(\"srv1\")")) {
+    failGate(`GAP-MCP-05: ${managerTestRel} missing manager connection-state regression evidence`);
+  }
+
+  const projectionTestRel = "runtime/src/mcp-client/tui-connections.test.ts";
+  const projectionTestSource = readFileSync(path.join(root, projectionTestRel), "utf8");
+  for (const needle of [
+    "projects real connected connections and pending server states",
+    "uses the manager-provided connected connection when available",
+    "keeps connected-looking servers pending when no real client is exposed",
+    "projects failed and disabled server states for App notifications",
+  ]) {
+    if (!projectionTestSource.includes(needle)) {
+      failGate(`GAP-MCP-05: ${projectionTestRel} missing projection regression evidence: ${needle}`);
+    }
+  }
+
+  const hookTestRel = "runtime/src/tui/hooks/notifs/useMcpConnectivityStatus.test.tsx";
+  const hookTestSource = readFileSync(path.join(root, hookTestRel), "utf8");
+  if (!hookTestSource.includes("adds the MCP failed notification for failed local server connections")) {
+    failGate(`GAP-MCP-05: ${hookTestRel} missing real notification-path regression evidence`);
+  }
+
+  const startupTestRel = "runtime/src/session/mcp-startup.test.ts";
+  const startupTestSource = readFileSync(path.join(root, startupTestRel), "utf8");
+  if (!startupTestSource.includes("exposes TUI MCP projection methods through the session service facade")) {
+    failGate(`GAP-MCP-05: ${startupTestRel} missing production service-facade projection regression evidence`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tui/components/App.render.test.tsx",
+    "src/tui/hooks/notifs/useMcpConnectivityStatus.test.tsx",
+    "src/session/mcp-startup.test.ts",
+    "src/mcp-client/manager.test.ts",
+    "src/mcp-client/tui-connections.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-05 targeted App MCP wiring tests failed");
+  }
+
+  pass("GAP-MCP-05: App lists MCP clients/tools and wires connection failure notifications");
 }
 
 function assertGapMcpSlashCommandExpanded() {

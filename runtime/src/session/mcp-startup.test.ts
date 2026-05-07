@@ -7,11 +7,16 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "../mcp-client/manager.js";
+import {
+  projectMcpManagerToConnections,
+  type McpManagerLike,
+} from "../mcp-client/tui-connections.js";
 import { createMCPConnection } from "../mcp-client/connection.js";
 import { createToolBridge } from "../mcp-client/tools.js";
 import { createResourceBridge } from "../mcp-client/resources.js";
 import { createPromptBridge } from "../mcp-client/prompts.js";
 import type { MCPCallObserver } from "../mcp-client/tools.js";
+import type { MCPServerConnection } from "../services/mcp/types.js";
 import {
   attachMcpManagerToSession,
   createSessionMcpManager,
@@ -358,6 +363,46 @@ describe("mcp-startup session-owned manager helpers", () => {
       toolName: "mcp.github.search",
     });
     expect(service.getServerForTool?.("mcp.github.search")).toBe("github");
+  });
+
+  it("exposes TUI MCP projection methods through the session service facade", () => {
+    const connected = {
+      type: "connected",
+      name: "github",
+      config: { type: "stdio", command: "github-mcp", args: [], scope: "user" },
+      capabilities: { tools: {} },
+      client: { setNotificationHandler: vi.fn() },
+      cleanup: vi.fn(),
+    } as MCPServerConnection;
+    const manager = {
+      getConfiguredServers: vi.fn(() => [
+        { name: "github", command: "github-mcp" },
+        { name: "files", command: "missing-files-mcp" },
+      ]),
+      isConnected: vi.fn((name: string) => name === "github"),
+      getConnectionState: vi.fn((name: string) =>
+        name === "github"
+          ? { type: "connected" }
+          : { type: "failed", error: "spawn ENOENT" },
+      ),
+      getConnectedConnection: vi.fn((name: string) =>
+        name === "github" ? connected : undefined,
+      ),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager);
+    const projected = projectMcpManagerToConnections(
+      service as unknown as McpManagerLike,
+    );
+
+    expect(projected).toEqual([
+      connected,
+      expect.objectContaining({
+        name: "files",
+        type: "failed",
+        error: "spawn ENOENT",
+      }),
+    ]);
   });
 
   it("forwards live slash command MCP manager controls", async () => {
