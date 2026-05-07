@@ -6750,10 +6750,132 @@ async function gapGates(item) {
     assertGapMcpDonorMirrorTierResolved();
     return;
   }
+  if (
+    id === "GAP-DMN-01" ||
+    item.title.includes("Route session.create / session.detach / session.terminate")
+  ) {
+    assertGapDmnSessionRoutes();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapDmnSessionRoutes() {
+  const dispatcherRel = "runtime/src/app-server/daemon-dispatcher.ts";
+  const dispatcherSource = readFileSync(path.join(root, dispatcherRel), "utf8");
+  const requiredDispatcherEvidence = [
+    'case "session.create"',
+    'case "session.detach"',
+    'case "session.terminate"',
+    "validateSessionCreateParams",
+    "validateSessionDetachParams",
+    "validateSessionTerminateParams",
+    "AgenCSessionLifecycleError",
+    "error instanceof AgenCSessionLifecycleError",
+    "this.#clientMultiplexer?.detachSession",
+    "this.#clientMultiplexer?.terminateSession",
+    "daemon method is not implemented yet: session.create",
+    "daemon method is not implemented yet: session.detach",
+    "daemon method is not implemented yet: session.terminate",
+  ];
+  const missingDispatcherEvidence = requiredDispatcherEvidence.filter(
+    (needle) => !dispatcherSource.includes(needle),
+  );
+  if (missingDispatcherEvidence.length > 0) {
+    failGate(
+      `GAP-DMN-01 dispatcher evidence missing:\n  - ${missingDispatcherEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const multiplexerRel = "runtime/src/app-server/client-multiplexer.ts";
+  const multiplexerSource = readFileSync(path.join(root, multiplexerRel), "utf8");
+  const requiredMultiplexerEvidence = [
+    "async detachSession(params: SessionDetachParams)",
+    "async terminateSession(",
+    "routeClientIdForDetach",
+    "params.attachmentId !== undefined",
+    "state.sessions.delete(params.sessionId)",
+    "sessionIds.delete(params.sessionId)",
+  ];
+  const missingMultiplexerEvidence = requiredMultiplexerEvidence.filter(
+    (needle) => !multiplexerSource.includes(needle),
+  );
+  if (missingMultiplexerEvidence.length > 0) {
+    failGate(
+      `GAP-DMN-01 multiplexer evidence missing:\n  - ${missingMultiplexerEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const dispatcherTestRel =
+    "runtime/src/app-server/daemon-dispatcher.contract.test.ts";
+  const dispatcherTestSource = readFileSync(
+    path.join(root, dispatcherTestRel),
+    "utf8",
+  );
+  const requiredDispatcherTestEvidence = [
+    "routes create, attach, detach, and terminate while reconciling multiplexer routes",
+    "falls back to SessionManager for detach and terminate without a multiplexer",
+    "cleans mux routes by attachmentId and preserves attachmentId precedence",
+    "preserves unrelated routes when detach targets an unowned client on another session",
+    "reports missing SessionManager before validating new session methods",
+    "maps session lifecycle errors to invalid params instead of internal errors",
+  ];
+  const missingDispatcherTestEvidence = requiredDispatcherTestEvidence.filter(
+    (needle) => !dispatcherTestSource.includes(needle),
+  );
+  if (missingDispatcherTestEvidence.length > 0) {
+    failGate(
+      `GAP-DMN-01 dispatcher test evidence missing:\n  - ${missingDispatcherTestEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const multiplexerTestRel =
+    "runtime/src/app-server/client-multiplexer.contract.test.ts";
+  const multiplexerTestSource = readFileSync(
+    path.join(root, multiplexerTestRel),
+    "utf8",
+  );
+  for (const needle of [
+    "detaches by params while preserving attachmentId precedence",
+    "terminates by params and clears route/client memberships",
+  ]) {
+    if (!multiplexerTestSource.includes(needle)) {
+      failGate(`GAP-DMN-01: ${multiplexerTestRel} missing evidence: ${needle}`);
+    }
+  }
+
+  const sdkClientTestRel = "runtime/src/app-server/sdk-client.contract.test.ts";
+  const sdkClientTestSource = readFileSync(path.join(root, sdkClientTestRel), "utf8");
+  for (const needle of [
+    "frames session lifecycle methods onto daemon JSON-RPC requests",
+    "client.createSession",
+    "client.detachSession",
+    "client.terminateSession",
+    'method: "session.create"',
+    'method: "session.detach"',
+    'method: "session.terminate"',
+  ]) {
+    if (!sdkClientTestSource.includes(needle)) {
+      failGate(`GAP-DMN-01: ${sdkClientTestRel} missing evidence: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/app-server/daemon-dispatcher.contract.test.ts",
+    "src/app-server/client-multiplexer.contract.test.ts",
+    "src/app-server/sdk-client.contract.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-DMN-01 targeted daemon session route tests failed");
+  }
+  pass("GAP-DMN-01 daemon session route evidence present");
 }
 
 function assertGapMcpSlashCommandExpanded() {
