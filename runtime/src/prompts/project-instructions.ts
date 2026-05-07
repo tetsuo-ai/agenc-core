@@ -5,9 +5,10 @@
  * Ports the ancestor-walk behavior from upstream runtimes while keeping
  * AgenC's product-specific instruction filenames.
  *
- * Returns the **single** closest project-root AGENC.md (plus its override
- * twin if present). Tiered discovery of multiple intermediate instruction files
- * is layered on top by `agenc-md.ts`'s project tier.
+ * Returns the **single** closest applicable AGENC.md (or same-directory
+ * override) between the current working directory and the discovered project
+ * root. Tiered discovery of multiple intermediate instruction files is
+ * layered on top by `agenc-md.ts`'s project tier.
  *
  * @module
  */
@@ -104,6 +105,11 @@ export type ProjectInstructionChainEntry = ProjectInstructions;
 const TRUNCATION_MARKER =
   "\n\n<!-- [truncated by project_doc_max_bytes] -->\n";
 
+const PROJECT_INSTRUCTION_CANDIDATES = [
+  OVERRIDE_PROJECT_INSTRUCTION_FILE,
+  PRIMARY_PROJECT_INSTRUCTION_FILE,
+] as const;
+
 async function pathExists(p: string): Promise<boolean> {
   try {
     await stat(p);
@@ -145,33 +151,96 @@ export async function findProjectRoot(
  * Resolve the preferred instruction file in a directory. Order:
  *   1. `AGENC.override.md`
  *   2. `AGENC.md`
- * Returns `null` if none exist.
+ * Returns `null` if no usable regular text file exists.
  */
 export async function resolveInstructionFile(dir: string): Promise<string | null> {
-  const candidates = [
-    OVERRIDE_PROJECT_INSTRUCTION_FILE,
-    PRIMARY_PROJECT_INSTRUCTION_FILE,
-  ];
-  for (const name of candidates) {
+  return (await readInstructionCandidate(dir))?.path ?? null;
+}
+
+async function readInstructionCandidate(
+  dir: string,
+): Promise<{ path: string; content: string } | null> {
+  for (const name of PROJECT_INSTRUCTION_CANDIDATES) {
     const full = join(dir, name);
-    if (await pathExists(full)) {
-      return full;
+    try {
+      const stats = await stat(full);
+      if (!stats.isFile()) {
+        continue;
+      }
+      return { path: full, content: await readTextFile(full) };
+    } catch {
+      continue;
     }
   }
   return null;
 }
 
+async function findClosestProjectInstruction(
+  cwd: string,
+  rootDir: string,
+): Promise<{ path: string; content: string } | null> {
+  let currentDir = resolve(cwd);
+  const boundaryDir = resolve(rootDir);
+
+  while (true) {
+    const candidate = await readInstructionCandidate(currentDir);
+    if (candidate) {
+      return candidate;
+    }
+
+    if (currentDir === boundaryDir) {
+      return null;
+    }
+    const parent = dirname(currentDir);
+    if (parent === currentDir) {
+      return null;
+    }
+    currentDir = parent;
+  }
+}
+
 /**
- * Walk upward from `cwd`, find the nearest project root marker, read the
- * AGENC.md/AGENC.override.md file in that directory, and
- * return its normalized contents. Applies the byte budget (truncating
- * with an I-15 marker) and respects zero-budget disable.
+ * Walk upward from `cwd` to the nearest project root marker, read the closest
+ * usable AGENC.md/AGENC.override.md file, and return its normalized contents.
+ * Applies the byte budget (truncating with an I-15 marker) and respects
+ * zero-budget disable.
  */
 export async function loadProjectInstructions(
   opts: LoadProjectInstructionsOptions,
 ): Promise<ProjectInstructions | null> {
-  const chain = await loadProjectInstructionChain(opts);
-  return chain[0] ?? null;
+  const markers =
+    opts.projectRootMarkers !== undefined
+      ? opts.projectRootMarkers
+      : DEFAULT_PROJECT_ROOT_MARKERS;
+  const maxBytes =
+    typeof opts.projectDocMaxBytes === "number"
+      ? opts.projectDocMaxBytes
+      : DEFAULT_PROJECT_DOC_MAX_BYTES;
+
+  if (maxBytes === 0) {
+    return null;
+  }
+
+  const root = await findProjectRoot(opts.cwd, markers);
+  const effectiveRoot = root ?? {
+    rootDir: resolve(opts.cwd),
+    marker: "<cwd>",
+  };
+  const candidate = await findClosestProjectInstruction(
+    opts.cwd,
+    effectiveRoot.rootDir,
+  );
+  if (!candidate) {
+    return null;
+  }
+  const truncated = truncateContentToBytes(candidate.content, maxBytes);
+  return {
+    path: candidate.path,
+    content: truncated.content,
+    truncated: truncated.truncated,
+    rootMarkerFound: effectiveRoot.marker,
+    rootDir: resolve(effectiveRoot.rootDir),
+  };
 }
 
 function truncateContentToBytes(
@@ -185,18 +254,34 @@ function truncateContentToBytes(
   if (byteLen <= maxBytes) {
     return { content, truncated: false };
   }
-  const buf = Buffer.from(content, "utf8");
   return {
-    content: buf.subarray(0, maxBytes).toString("utf8") + TRUNCATION_MARKER,
+    content: truncateUtf8AtCodePointBoundary(content, maxBytes) + TRUNCATION_MARKER,
     truncated: true,
   };
+}
+
+function truncateUtf8AtCodePointBoundary(content: string, maxBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  for (const char of content) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (bytes + charBytes > maxBytes) {
+      break;
+    }
+    bytes += charBytes;
+    end += char.length;
+  }
+  return content.slice(0, end);
 }
 
 function directoriesFromRoot(rootDir: string, cwd: string): string[] {
   const absRoot = resolve(rootDir);
   const absCwd = resolve(cwd);
   const rel = relative(absRoot, absCwd);
-  if (rel.startsWith("..") || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+  if (
+    rel.startsWith("..") ||
+    rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+  ) {
     return [absRoot];
   }
   if (rel === "") {
@@ -252,21 +337,14 @@ export async function loadProjectInstructionChain(
   let remainingBytes = maxBytes;
 
   for (const dir of directoriesFromRoot(effectiveRoot.rootDir, opts.cwd)) {
-    const filePath = await resolveInstructionFile(dir);
-    if (!filePath) {
+    const loaded = await readInstructionCandidate(dir);
+    if (!loaded) {
       continue;
     }
 
-    let rawContent: string;
-    try {
-      rawContent = await readTextFile(filePath);
-    } catch {
-      continue;
-    }
-
-    const truncated = truncateContentToBytes(rawContent, remainingBytes);
+    const truncated = truncateContentToBytes(loaded.content, remainingBytes);
     chain.push({
-      path: filePath,
+      path: loaded.path,
       content: truncated.content,
       truncated: truncated.truncated,
       rootMarkerFound: effectiveRoot.marker,
@@ -275,7 +353,7 @@ export async function loadProjectInstructionChain(
 
     remainingBytes -= Math.min(
       remainingBytes,
-      Buffer.byteLength(rawContent, "utf8"),
+      Buffer.byteLength(loaded.content, "utf8"),
     );
     if (truncated.truncated || remainingBytes <= 0) {
       break;
