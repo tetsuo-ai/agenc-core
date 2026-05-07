@@ -6780,6 +6780,13 @@ async function gapGates(item) {
     return;
   }
   if (
+    id === "GAP-DMN-04" ||
+    item.title.includes("Implement peerUid via native binding fallback")
+  ) {
+    assertGapDmnPeerUidFallback();
+    return;
+  }
+  if (
     id === "GAP-DMN-05" ||
     item.title.includes("Add `agenc-runtime reload` subcommand")
   ) {
@@ -7114,6 +7121,144 @@ function assertGapDmnUnixSocketAcceptAuth() {
     failGate("GAP-DMN-03 targeted Unix socket accept-auth tests failed");
   }
   pass("GAP-DMN-03 Unix socket connections authenticate before daemon dispatch");
+}
+
+function assertGapDmnPeerUidFallback() {
+  const unixSocketRel = "runtime/src/app-server/transport/unix-socket.ts";
+  const unixSocketSource = readFileSync(path.join(root, unixSocketRel), "utf8");
+  for (const needle of [
+    "resolveAgenCUnixSocketPeerUid",
+    "resolveAgenCPrivateUnixSocketOwnerUid",
+    "loadAgenCNativePeerCredentialBinding",
+    "peerUid",
+    "privateSocketOwnerUid",
+    "process.platform !== \"linux\"",
+  ]) {
+    if (!unixSocketSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${unixSocketRel} missing peerUid evidence: ${needle}`);
+    }
+  }
+  if (unixSocketSource.includes("spawnSync")) {
+    failGate(`GAP-DMN-04: ${unixSocketRel} must not spawn subprocesses in the accept path`);
+  }
+
+  const peerCredentialRel = "runtime/src/app-server/transport/peer-credentials.ts";
+  const peerCredentialSource = readFileSync(path.join(root, peerCredentialRel), "utf8");
+  for (const needle of [
+    "NAPI_MODULE_INIT",
+    "SO_PEERCRED",
+    "compileAndLoadAgenCNativePeerCredentialBinding",
+    "agenc-peer-credentials.node",
+    "AgenCNativePeerCredentialLoadResult",
+  ]) {
+    if (!peerCredentialSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${peerCredentialRel} missing native peer credential evidence: ${needle}`);
+    }
+  }
+
+  const authRel = "runtime/src/app-server/transport/auth.ts";
+  const authSource = readFileSync(path.join(root, authRel), "utf8");
+  for (const needle of [
+    "createAgenCDaemonPeerUidIdentity",
+    "createAgenCDaemonPrivateSocketOwnerIdentity",
+  ]) {
+    if (!authSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${authRel} must expose daemon identity evidence: ${needle}`);
+    }
+  }
+
+  const daemonCliRel = "runtime/src/app-server/daemon-cli.ts";
+  const daemonCliSource = readFileSync(path.join(root, daemonCliRel), "utf8");
+  for (const needle of [
+    "daemonVerifiedIdentityForContext",
+    "markDaemonSocketIdentity(verifiedIdentity)",
+    "authenticateInitializeMessage(message)",
+    "nativePeerCredentialBinding",
+    "onNativePeerCredentialUnavailable",
+  ]) {
+    if (!daemonCliSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${daemonCliRel} missing peerUid daemon wiring: ${needle}`);
+    }
+  }
+
+  const dispatcherRel = "runtime/src/app-server/daemon-dispatcher.ts";
+  const dispatcherSource = readFileSync(path.join(root, dispatcherRel), "utf8");
+  if (!dispatcherSource.includes("connection.daemonSocketIdentity === undefined")) {
+    failGate(`GAP-DMN-04: ${dispatcherRel} must preserve pre-verified peerUid identity`);
+  }
+
+  const daemonCliTestRel = "runtime/src/app-server/daemon-cli.contract.test.ts";
+  const daemonCliTestSource = readFileSync(path.join(root, daemonCliTestRel), "utf8");
+  for (const needle of [
+    "expectSameUserDaemonSocketIdentity",
+    "rejects mismatched native peer uid without cookie",
+  ]) {
+    if (!daemonCliTestSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${daemonCliTestRel} must assert daemon identity regression: ${needle}`);
+    }
+  }
+
+  const unixSocketTestRel = "runtime/src/app-server/unix-socket-transport.contract.test.ts";
+  const unixSocketTestSource = readFileSync(path.join(root, unixSocketTestRel), "utf8");
+  for (const needle of [
+    "resolveAgenCPrivateUnixSocketOwnerUid",
+    "connection.peerUid",
+    "connection.privateSocketOwnerUid",
+    "does not use non-private socket ownership as same-user proof",
+    "loads native SO_PEERCRED from an accepted Unix socket",
+  ]) {
+    if (!unixSocketTestSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${unixSocketTestRel} missing peerUid socket regression: ${needle}`);
+    }
+  }
+
+  const transportAuthTestRel = "runtime/src/app-server/transport-auth.contract.test.ts";
+  const transportAuthTestSource = readFileSync(path.join(root, transportAuthTestRel), "utf8");
+  for (const needle of [
+    "createAgenCDaemonPeerUidIdentity",
+    "createAgenCDaemonPrivateSocketOwnerIdentity",
+  ]) {
+    if (!transportAuthTestSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${transportAuthTestRel} must assert identity creation: ${needle}`);
+    }
+  }
+
+  const dispatcherTestRel = "runtime/src/app-server/daemon-dispatcher.auth-backend.contract.test.ts";
+  const dispatcherTestSource = readFileSync(path.join(root, dispatcherTestRel), "utf8");
+  if (!dispatcherTestSource.includes("keeps pre-marked daemon socket identity during initialize")) {
+    failGate(`GAP-DMN-04: ${dispatcherTestRel} must cover pre-marked peerUid initialize path`);
+  }
+
+  const peerCredentialTestRel = "runtime/src/app-server/peer-credentials.contract.test.ts";
+  const peerCredentialTestSource = readFileSync(path.join(root, peerCredentialTestRel), "utf8");
+  for (const needle of [
+    "falls back without compiling when runtime native builds are disabled",
+    "builds the native addon from a static SO_PEERCRED source",
+    "runtime native peer credential build disabled",
+  ]) {
+    if (!peerCredentialTestSource.includes(needle)) {
+      failGate(`GAP-DMN-04: ${peerCredentialTestRel} missing native binding regression: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/app-server/unix-socket-transport.contract.test.ts",
+    "src/app-server/transport-auth.contract.test.ts",
+    "src/app-server/daemon-cli.contract.test.ts",
+    "src/app-server/daemon-dispatcher.auth-backend.contract.test.ts",
+    "src/app-server/peer-credentials.contract.test.ts",
+    "-t",
+    "accepts newline-delimited JSON over a Unix socket|loads native SO_PEERCRED from an accepted Unix socket|does not use non-private socket ownership as same-user proof|authenticates the first socket message before dispatch|normalizes and verifies initialize cookies|foreground daemon instantiates AuthBackend for auth requests|foreground daemon rejects mismatched native peer uid without cookie|keeps pre-marked daemon socket identity during initialize|passes verified daemon socket identity into auth.whoami|falls back without compiling when runtime native builds are disabled|builds the native addon from a static SO_PEERCRED source",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-DMN-04 targeted peerUid tests failed");
+  }
+  pass("GAP-DMN-04 daemon Unix sockets derive peerUid identity before dispatch");
 }
 
 function assertGapMcpXaaRefreshLock() {

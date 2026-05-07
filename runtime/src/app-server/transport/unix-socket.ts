@@ -22,6 +22,10 @@ import {
 } from "node:net";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import { AgenCStdioTransport, writeJsonLine } from "./stdio.js";
+import {
+  loadAgenCNativePeerCredentialBinding,
+  type AgenCNativePeerCredentialBinding,
+} from "./peer-credentials.js";
 
 export const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
 export const AGENC_DAEMON_SOCKET_MODE = 0o600;
@@ -33,6 +37,8 @@ export function defaultAgenCDaemonSocketPath(homeDir = homedir()): string {
 
 export interface AgenCUnixSocketMessageContext {
   readonly connectionId: number;
+  readonly peerUid: number | null;
+  readonly privateSocketOwnerUid: number | null;
   send(message: JsonValue): Promise<void>;
   close(): void;
 }
@@ -40,6 +46,9 @@ export interface AgenCUnixSocketMessageContext {
 export interface AgenCUnixSocketServerOptions {
   readonly socketPath?: string;
   readonly homeDir?: string;
+  readonly allowRuntimeNativePeerCredentialBuild?: boolean;
+  readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
+  readonly onNativePeerCredentialUnavailable?: (message: string) => void;
   readonly acceptAuthenticator?: (
     message: JsonObject,
     context: AgenCUnixSocketMessageContext,
@@ -66,6 +75,8 @@ export class AgenCUnixSocketServer {
   readonly #options: AgenCUnixSocketServerOptions;
   readonly #connections = new Map<number, ActiveConnection>();
   #server: Server | null = null;
+  #privateSocketOwnerUid: number | null = null;
+  #nativePeerCredentialBinding: AgenCNativePeerCredentialBinding | null = null;
   #nextConnectionId = 1;
 
   constructor(options: AgenCUnixSocketServerOptions) {
@@ -108,12 +119,27 @@ export class AgenCUnixSocketServer {
     });
 
     await chmod(socketPath, AGENC_DAEMON_SOCKET_MODE);
+    this.#privateSocketOwnerUid =
+      await resolveAgenCPrivateUnixSocketOwnerUid(socketPath);
+    const nativePeerCredential = loadAgenCNativePeerCredentialBinding({
+      allowRuntimeNativeBuild:
+        this.#options.allowRuntimeNativePeerCredentialBuild,
+      nativeBinding: this.#options.nativePeerCredentialBinding,
+    });
+    this.#nativePeerCredentialBinding = nativePeerCredential.binding;
+    if (nativePeerCredential.error !== undefined) {
+      this.#options.onNativePeerCredentialUnavailable?.(
+        nativePeerCredential.error,
+      );
+    }
     return socketPath;
   }
 
   async close(): Promise<void> {
     const server = this.#server;
     this.#server = null;
+    this.#privateSocketOwnerUid = null;
+    this.#nativePeerCredentialBinding = null;
 
     for (const { socket, transport } of this.#connections.values()) {
       socket.destroy();
@@ -139,6 +165,10 @@ export class AgenCUnixSocketServer {
   #acceptConnection(socket: Socket): void {
     const connectionId = this.#nextConnectionId;
     this.#nextConnectionId += 1;
+    const peerUid = resolveAgenCUnixSocketPeerUid(
+      socket,
+      this.#nativePeerCredentialBinding,
+    );
     let accepted = this.#options.acceptAuthenticator === undefined;
     let closingUnauthenticated = false;
     let authenticationTimeout: NodeJS.Timeout | undefined;
@@ -151,6 +181,8 @@ export class AgenCUnixSocketServer {
 
     const context: AgenCUnixSocketMessageContext = {
       connectionId,
+      peerUid,
+      privateSocketOwnerUid: this.#privateSocketOwnerUid,
       send: (message) => writeJsonLine(socket, message),
       close: () => {
         socket.end();
@@ -245,6 +277,57 @@ export async function prepareAgenCUnixSocketPath(
   }
 
   await removeSocketPathIfPresent(socketPath);
+}
+
+export async function resolveAgenCPrivateUnixSocketOwnerUid(
+  socketPath: string,
+): Promise<number | null> {
+  if (process.platform !== "linux" || typeof process.getuid !== "function") {
+    return null;
+  }
+  const expectedUid = process.getuid();
+  const socketDir = await lstat(dirname(socketPath));
+  const socketInfo = await lstat(socketPath);
+  if (
+    socketDir.uid !== expectedUid ||
+    socketInfo.uid !== expectedUid ||
+    (socketDir.mode & 0o777) !== AGENC_DAEMON_SOCKET_DIR_MODE ||
+    (socketInfo.mode & 0o777) !== AGENC_DAEMON_SOCKET_MODE
+  ) {
+    return null;
+  }
+  return expectedUid;
+}
+
+export function resolveAgenCUnixSocketPeerUid(
+  socket: Socket,
+  nativePeerCredentialBinding: AgenCNativePeerCredentialBinding | null,
+): number | null {
+  if (nativePeerCredentialBinding === null) return null;
+  const fd = getSocketFd(socket);
+  if (fd === null) return null;
+  try {
+    const parsed = nativePeerCredentialBinding.getPeerUid(fd);
+    if (
+      typeof parsed !== "number" ||
+      !Number.isSafeInteger(parsed) ||
+      parsed < 0
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function getSocketFd(socket: Socket): number | null {
+  const maybeSocket = socket as Socket & {
+    readonly _handle?: { readonly fd?: unknown };
+  };
+  return typeof maybeSocket._handle?.fd === "number"
+    ? maybeSocket._handle.fd
+    : null;
 }
 
 async function canConnectToUnixSocket(socketPath: string): Promise<boolean> {

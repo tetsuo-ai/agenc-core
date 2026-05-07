@@ -278,6 +278,37 @@ async function waitForSocketClose(socket: Socket): Promise<"closed" | "open"> {
   ]);
 }
 
+function expectSameUserDaemonSocketIdentity(identity: unknown): void {
+  const currentUid =
+    typeof process.getuid === "function" ? process.getuid() : null;
+  if (currentUid === null) {
+    expect(identity).toEqual({
+      transport: "daemon",
+      verifiedBy: "cookie",
+      cookie: "verified",
+      peerUid: null,
+    });
+    return;
+  }
+
+  expect(identity).toMatchObject({ transport: "daemon" });
+  const daemonIdentity = identity as {
+    readonly peerUid?: number | null;
+    readonly privateSocketOwnerUid?: number | null;
+    readonly verifiedBy?: string;
+  };
+  if (daemonIdentity.verifiedBy === "peerUid") {
+    expect(daemonIdentity.peerUid).toBe(currentUid);
+    return;
+  }
+  expect(daemonIdentity).toEqual({
+    transport: "daemon",
+    verifiedBy: "privateSocketOwner",
+    peerUid: null,
+    privateSocketOwnerUid: currentUid,
+  });
+}
+
 function readWebSocketMessage(
   socket: WebSocket,
 ): Promise<Record<string, unknown>> {
@@ -711,9 +742,8 @@ token_cap = 123
         identity: {
           daemon: {
             transport: "daemon",
-            verifiedBy: "cookie",
-            cookie: "verified",
-            peerUid: null,
+            verifiedBy: "peerUid",
+            peerUid: 1000,
           },
         },
       });
@@ -781,9 +811,8 @@ port = 0
         identity: {
           daemon: {
             transport: "daemon",
-            verifiedBy: "cookie",
-            cookie: "verified",
-            peerUid: null,
+            verifiedBy: "peerUid",
+            peerUid: 1000,
           },
         },
       });
@@ -815,9 +844,8 @@ port = 0
         identity: {
           daemon: {
             transport: "daemon",
-            verifiedBy: "cookie",
-            cookie: "verified",
-            peerUid: null,
+            verifiedBy: "peerUid",
+            peerUid: 1000,
           },
         },
       });
@@ -906,17 +934,27 @@ port = 0
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
 
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
-    const rejectedClient = createAgenCJsonLineDaemonRequestClient({
+    const sameUserProofAvailable = typeof process.getuid === "function";
+    const sameUserClient = createAgenCJsonLineDaemonRequestClient({
       socketPath,
       authCookie: "wrong-daemon-cookie",
       timeoutMs: 1000,
     });
-    await expect(rejectedClient.request("auth.whoami")).rejects.toThrow(
-      "daemon connection authentication failed",
-    );
-    const rejectedSocket = createConnection(socketPath);
-    await once(rejectedSocket, "connect");
-    rejectedSocket.write(
+    if (sameUserProofAvailable) {
+      const whoami = await sameUserClient.request("auth.whoami");
+      expect(whoami).toMatchObject({ authenticated: false });
+      expectSameUserDaemonSocketIdentity(
+        (whoami as { readonly identity?: { readonly daemon?: unknown } })
+          .identity?.daemon,
+      );
+    } else {
+      await expect(sameUserClient.request("auth.whoami")).rejects.toThrow(
+        "daemon connection authentication failed",
+      );
+    }
+    const wrongCookieSocket = createConnection(socketPath);
+    await once(wrongCookieSocket, "connect");
+    wrongCookieSocket.write(
       `${JSON.stringify({
         jsonrpc: "2.0",
         id: "bad-init",
@@ -929,13 +967,23 @@ port = 0
         },
       })}\n`,
     );
-    const rejectedLine = JSON.parse(await readSocketLine(rejectedSocket)) as {
+    const wrongCookieLine = JSON.parse(
+      await readSocketLine(wrongCookieSocket),
+    ) as {
+      readonly result?: { readonly type?: string };
       readonly error?: { readonly data?: { readonly code?: string } };
     };
-    expect(rejectedLine.error?.data?.code).toBe(
-      "CONNECTION_AUTHENTICATION_FAILED",
+    if (sameUserProofAvailable) {
+      expect(wrongCookieLine.result?.type).toBe("initialized");
+      wrongCookieSocket.end();
+    } else {
+      expect(wrongCookieLine.error?.data?.code).toBe(
+        "CONNECTION_AUTHENTICATION_FAILED",
+      );
+    }
+    await expect(waitForSocketClose(wrongCookieSocket)).resolves.toBe(
+      "closed",
     );
-    await expect(waitForSocketClose(rejectedSocket)).resolves.toBe("closed");
     const missingCookieSocket = createConnection(socketPath);
     await once(missingCookieSocket, "connect");
     missingCookieSocket.write(
@@ -953,11 +1001,17 @@ port = 0
     const missingCookieLine = JSON.parse(
       await readSocketLine(missingCookieSocket),
     ) as {
+      readonly result?: { readonly type?: string };
       readonly error?: { readonly data?: { readonly code?: string } };
     };
-    expect(missingCookieLine.error?.data?.code).toBe(
-      "CONNECTION_AUTHENTICATION_FAILED",
-    );
+    if (sameUserProofAvailable) {
+      expect(missingCookieLine.result?.type).toBe("initialized");
+      missingCookieSocket.end();
+    } else {
+      expect(missingCookieLine.error?.data?.code).toBe(
+        "CONNECTION_AUTHENTICATION_FAILED",
+      );
+    }
     await expect(waitForSocketClose(missingCookieSocket)).resolves.toBe(
       "closed",
     );
@@ -970,17 +1024,15 @@ port = 0
       authCookie,
       timeoutMs: 1000,
     });
-    await expect(client.request("auth.whoami")).resolves.toEqual({
-      authenticated: false,
-      identity: {
-        daemon: {
-          transport: "daemon",
-          verifiedBy: "cookie",
-          cookie: "verified",
-          peerUid: null,
-        },
-      },
-    });
+    const beforeLoginWhoami = await client.request("auth.whoami");
+    expect(beforeLoginWhoami).toMatchObject({ authenticated: false });
+    expectSameUserDaemonSocketIdentity(
+      (
+        beforeLoginWhoami as {
+          readonly identity?: { readonly daemon?: unknown };
+        }
+      ).identity?.daemon,
+    );
     await expect(client.request("auth.login")).resolves.toMatchObject({
       authenticated: true,
       provider: "local",
@@ -988,18 +1040,68 @@ port = 0
     await expect(
       readFile(join(agencHome, "auth.json"), "utf8"),
     ).resolves.toContain('"token"');
-    await expect(client.request("auth.whoami")).resolves.toMatchObject({
+    const afterLoginWhoami = await client.request("auth.whoami");
+    expect(afterLoginWhoami).toMatchObject({
       authenticated: true,
       provider: "local",
-      identity: {
-        daemon: {
-          transport: "daemon",
-          verifiedBy: "cookie",
-          cookie: "verified",
-          peerUid: null,
-        },
-      },
     });
+    expectSameUserDaemonSocketIdentity(
+      (
+        afterLoginWhoami as {
+          readonly identity?: { readonly daemon?: unknown };
+        }
+      ).identity?.daemon,
+    );
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon rejects mismatched native peer uid without cookie", async () => {
+    if (typeof process.getuid !== "function") return;
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const currentUid = process.getuid();
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      {
+        host,
+        io,
+        signalProcess,
+        nativePeerCredentialBinding: {
+          getPeerUid: () => currentUid + 1,
+        },
+        socketAcceptAuthenticationTimeoutMs: 20,
+      },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    const socket = createConnection(socketPath);
+    await once(socket, "connect");
+    socket.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: "mismatched-peer",
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          clientName: "agenc-auth-test",
+          capabilities: {},
+        },
+      })}\n`,
+    );
+    const line = JSON.parse(await readSocketLine(socket)) as {
+      readonly error?: { readonly data?: { readonly code?: string } };
+    };
+    expect(line.error?.data?.code).toBe("CONNECTION_AUTHENTICATION_FAILED");
+    await expect(waitForSocketClose(socket)).resolves.toBe("closed");
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);

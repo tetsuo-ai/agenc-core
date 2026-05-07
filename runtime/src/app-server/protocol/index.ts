@@ -1426,9 +1426,10 @@ export interface AuthIdentity extends JsonObject {
 
 export interface AuthDaemonSocketIdentity extends JsonObject {
   readonly transport: "daemon";
-  readonly verifiedBy: "cookie" | "peerUid";
+  readonly verifiedBy: "cookie" | "peerUid" | "privateSocketOwner";
   readonly cookie?: "verified";
   readonly peerUid?: number | null;
+  readonly privateSocketOwnerUid?: number | null;
 }
 
 export interface AuthWhoamiResult extends JsonObject {

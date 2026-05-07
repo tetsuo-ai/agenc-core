@@ -1,12 +1,11 @@
 /**
- * Ports the app-server transport auth policy onto AgenC's daemon
- * shared-cookie authentication.
+ * Ports the app-server transport auth policy onto AgenC's local daemon peer
+ * verification.
  *
  * Why this lives here:
  *   - F-03p owns D-14's verified-peer surface for daemon transports. AgenC's
- *     Node runtime cannot port the reference Unix peer-credential helper through a
- *     public `net.Socket` API, so the shared-cookie path is the portable
- *     connection authenticator.
+ *     local Unix socket accepts same-user peer proof when the transport can
+ *     provide it, with the shared cookie as the portable authenticator.
  *
  * Cross-cuts deliberately NOT carried:
  *   - Websocket JWT bearer mode and capability-token CLI flags are remote
@@ -82,6 +81,27 @@ export function createAgenCDaemonCookieIdentity(): AuthDaemonSocketIdentity {
     verifiedBy: "cookie",
     cookie: "verified",
     peerUid: null,
+  };
+}
+
+export function createAgenCDaemonPeerUidIdentity(
+  peerUid: number,
+): AuthDaemonSocketIdentity {
+  return {
+    transport: "daemon",
+    verifiedBy: "peerUid",
+    peerUid,
+  };
+}
+
+export function createAgenCDaemonPrivateSocketOwnerIdentity(
+  privateSocketOwnerUid: number,
+): AuthDaemonSocketIdentity {
+  return {
+    transport: "daemon",
+    verifiedBy: "privateSocketOwner",
+    peerUid: null,
+    privateSocketOwnerUid,
   };
 }
 

@@ -55,8 +55,13 @@ import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 import { AgenCWebSocketServer } from "./transport/websocket.js";
 import {
   AgenCDaemonCookieAuthenticator,
+  createAgenCDaemonPrivateSocketOwnerIdentity,
+  createAgenCDaemonPeerUidIdentity,
   ensureAgenCDaemonCookie,
 } from "./transport/auth.js";
+import type {
+  AgenCNativePeerCredentialBinding,
+} from "./transport/peer-credentials.js";
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
@@ -161,6 +166,7 @@ export interface RunAgenCDaemonCliOptions {
   readonly signalProcess?: AgenCSignalProcess;
   readonly beforeDaemonReady?: () => void | Promise<void>;
   readonly runner?: AgenCBackgroundAgentRunner;
+  readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
   readonly snapshotPeriodicIntervalMs?: number;
   readonly socketAcceptAuthenticationTimeoutMs?: number;
   readonly stopTimeoutMs?: number;
@@ -394,6 +400,7 @@ async function runAgenCDaemonAction(
         signalProcess: options.signalProcess,
         beforeDaemonReady: options.beforeDaemonReady,
         runner: options.runner,
+        nativePeerCredentialBinding: options.nativePeerCredentialBinding,
         snapshotPeriodicIntervalMs: options.snapshotPeriodicIntervalMs,
         socketAcceptAuthenticationTimeoutMs:
           options.socketAcceptAuthenticationTimeoutMs,
@@ -671,6 +678,7 @@ async function runAgenCDaemonForeground(
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly runner?: AgenCBackgroundAgentRunner;
+    readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
     readonly snapshotPeriodicIntervalMs?: number;
     readonly socketAcceptAuthenticationTimeoutMs?: number;
   } = {},
@@ -979,8 +987,16 @@ async function runAgenCDaemonForeground(
   };
   const socketServer = new AgenCUnixSocketServer({
     socketPath,
-    acceptAuthenticator: (message) =>
-      cookieAuthenticator.authenticateInitializeMessage(message) !== null,
+    nativePeerCredentialBinding: options.nativePeerCredentialBinding,
+    onNativePeerCredentialUnavailable: (message) => {
+      io.stderr.write(
+        `agenc: daemon peer credential native binding unavailable: ${message}\n`,
+      );
+    },
+    acceptAuthenticator: (message, context) =>
+      message.method === "initialize" &&
+      (daemonVerifiedIdentityForContext(context) !== null ||
+        cookieAuthenticator.authenticateInitializeMessage(message) !== null),
     acceptAuthenticationTimeoutMs: options.socketAcceptAuthenticationTimeoutMs,
     onAuthenticationFailed: async (message, context) => {
       await context.send(daemonConnectionAuthenticationFailedResponse(message));
@@ -997,7 +1013,12 @@ async function runAgenCDaemonForeground(
       socketConnections.set(connectionKey, {
         send: (notification) => context.send(notification),
       });
-      const response = await connectionFor(connectionKey).dispatch(message);
+      const connection = connectionFor(connectionKey);
+      const verifiedIdentity = daemonVerifiedIdentityForContext(context);
+      if (!connection.initialized && verifiedIdentity !== null) {
+        connection.markDaemonSocketIdentity(verifiedIdentity);
+      }
+      const response = await connection.dispatch(message);
       await context.send(response);
       if (isDaemonConnectionAuthenticationFailure(response)) {
         context.close();
@@ -2373,6 +2394,25 @@ function daemonConnectionAuthenticationFailedResponse(
       data: { code: "CONNECTION_AUTHENTICATION_FAILED" },
     },
   };
+}
+
+function daemonVerifiedIdentityForContext(context: {
+  readonly peerUid: number | null;
+  readonly privateSocketOwnerUid: number | null;
+}) {
+  if (typeof process.getuid !== "function") return null;
+  const daemonUid = process.getuid();
+  if (context.peerUid !== null) {
+    return context.peerUid === daemonUid
+      ? createAgenCDaemonPeerUidIdentity(context.peerUid)
+      : null;
+  }
+  if (context.privateSocketOwnerUid === daemonUid) {
+    return createAgenCDaemonPrivateSocketOwnerIdentity(
+      context.privateSocketOwnerUid,
+    );
+  }
+  return null;
 }
 
 function daemonTransportConnectionKey(
