@@ -12,6 +12,7 @@ import {
   type AgenCDaemonAgentManager,
 } from "./agent-lifecycle.js";
 import type { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
+import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   AgenCFuzzyFileSearchService,
   type AgenCFuzzyFileSearch,
@@ -55,10 +56,14 @@ import {
   type FuzzyFileSearchParams,
   type InitializeParams,
   type JsonObject,
+  type MessageSendParams,
   type MessageStreamParams,
   type PermissionListParams,
   type RequestCancelParams,
   type RequestId,
+  type SessionAttachParams,
+  type SessionAttachResult,
+  type SessionListParams,
   type ThreadRealtimeAppendAudioParams,
   type ThreadRealtimeAppendTextParams,
   type ThreadRealtimeListVoicesParams,
@@ -134,6 +139,10 @@ export interface AgenCDaemonDispatcherOptions {
     | "registerClient"
     | "removeClient"
   >;
+  readonly sessionManager?: Pick<
+    AgenCDaemonSessionManager,
+    "attachSession" | "listSessions"
+  >;
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly commandExec?: AgenCCommandExec;
@@ -182,6 +191,9 @@ export class AgenCDaemonJsonRpcDispatcher {
         | "removeClient"
       >
     | undefined;
+  readonly #sessionManager:
+    | Pick<AgenCDaemonSessionManager, "attachSession" | "listSessions">
+    | undefined;
   readonly #createMessageId: () => string;
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly #commandExec: AgenCCommandExec;
@@ -194,6 +206,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#agentManager = options.agentManager;
     this.#initializeAuthenticator = options.initializeAuthenticator;
     this.#clientMultiplexer = options.clientMultiplexer;
+    this.#sessionManager = options.sessionManager;
     this.#createMessageId =
       options.createMessageId ?? (() => `message_${Date.now().toString(36)}`);
     this.#fuzzyFileSearch =
@@ -366,6 +379,24 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateAgentLogsParams(params),
           ),
         );
+      case "session.list":
+        if (this.#sessionManager === undefined) {
+          return errorResponse(
+            id,
+            -32601,
+            "daemon method is not implemented yet: session.list",
+          );
+        }
+        return successResponse(
+          id,
+          await this.#sessionManager.listSessions(
+            validateSessionListParams(params),
+          ),
+        );
+      case "session.attach":
+        return this.#attachSession(id, connection, params);
+      case "message.send":
+        return this.#sendMessage(id, params);
       case "message.stream":
         return this.#streamMessage(id, params);
       case "thread/realtime/start":
@@ -553,36 +584,104 @@ export class AgenCDaemonJsonRpcDispatcher {
     return successResponse(id, result);
   }
 
+  async #attachSession(
+    id: RequestId,
+    connection: AgenCDaemonJsonRpcConnection,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    if (this.#sessionManager === undefined) {
+      return errorResponse(
+        id,
+        -32601,
+        "daemon method is not implemented yet: session.attach",
+      );
+    }
+    const attachParams = validateSessionAttachParams(params);
+    const multiplexedResult = await this.#attachTrackedClientToSession(
+      connection,
+      attachParams.clientId,
+      attachParams.sessionId,
+    );
+    return successResponse(
+      id,
+      multiplexedResult ?? (await this.#sessionManager.attachSession(attachParams)),
+    );
+  }
+
   async #registerAttachedClient(
     connection: AgenCDaemonJsonRpcConnection,
     params: AgentAttachParams,
     sessionId: string,
   ): Promise<void> {
+    await this.#attachTrackedClientToSession(
+      connection,
+      params.clientId,
+      sessionId,
+    );
+  }
+
+  async #attachTrackedClientToSession(
+    connection: AgenCDaemonJsonRpcConnection,
+    clientId: string | undefined,
+    sessionId: string,
+  ): Promise<SessionAttachResult | undefined> {
     if (
       this.#clientMultiplexer === undefined ||
-      params.clientId === undefined ||
+      clientId === undefined ||
       connection.sendNotification === undefined
     ) {
-      return;
+      return undefined;
     }
-    await this.#clientMultiplexer
-      .registerClient({
-        clientId: params.clientId,
-        send: (message) => connection.sendNotification!(message),
-      })
-      .catch((error) => {
-        if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
-          throw invalidParams(
-            `daemon client is already registered: ${params.clientId}`,
-          );
-        }
-        throw error;
-      });
-    connection.trackClientId(params.clientId);
-    await this.#clientMultiplexer.attachClientToSession(
-      sessionId,
-      params.clientId,
-    );
+    let registeredHere = false;
+    if (!connection.trackedClientIds.includes(clientId)) {
+      await this.#clientMultiplexer
+        .registerClient({
+          clientId,
+          send: (message) => connection.sendNotification!(message),
+        })
+        .catch((error) => {
+          if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
+            throw invalidParams(`daemon client is already registered: ${clientId}`);
+          }
+          throw error;
+        });
+      registeredHere = true;
+    }
+    try {
+      const result = await this.#clientMultiplexer.attachClientToSession(
+        sessionId,
+        clientId,
+      );
+      if (registeredHere) connection.trackClientId(clientId);
+      return result;
+    } catch (error) {
+      if (registeredHere) {
+        await this.#clientMultiplexer.removeClient(clientId).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  async #sendMessage(
+    id: RequestId,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    const sendParams = validateMessageSendParams(params);
+    const messageId = sendParams.clientMessageId ?? this.#createMessageId();
+    const acceptedAt = this.#now();
+    await this.#agentManager.streamAgentMessage({
+      sessionId: sendParams.sessionId,
+      content: sendParams.content,
+      ...displayUserMessageFromMetadata("message.send", sendParams.metadata),
+      messageId,
+      streamId: messageId,
+      acceptedAt,
+      methodName: "message.send",
+    });
+    return successResponse(id, {
+      messageId,
+      acceptedAt,
+    });
   }
 
   async #streamMessage(
@@ -596,7 +695,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     await this.#agentManager.streamAgentMessage({
       sessionId: streamParams.sessionId,
       content: streamParams.content,
-      ...displayUserMessageFromMetadata(streamParams.metadata),
+      ...displayUserMessageFromMetadata("message.stream", streamParams.metadata),
       messageId,
       streamId,
       acceptedAt,
@@ -977,6 +1076,37 @@ function validateAgentLogsParams(params: JsonObject): AgentLogsParams {
   return validated as AgentLogsParams;
 }
 
+function validateSessionListParams(params: JsonObject): SessionListParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.list",
+    stringFields: ["agentId", "cursor"],
+    numberFields: ["limit"],
+  });
+  validatePositiveInteger(validated, "session.list", "limit", false);
+  return validated as SessionListParams;
+}
+
+function validateSessionAttachParams(params: JsonObject): SessionAttachParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.attach",
+    stringFields: ["sessionId", "clientId"],
+  });
+  validateRequiredString(validated, "session.attach", "sessionId");
+  return validated as SessionAttachParams;
+}
+
+function validateMessageSendParams(params: JsonObject): MessageSendParams {
+  const validated = validateObjectShape(params, {
+    methodName: "message.send",
+    stringFields: ["sessionId", "clientMessageId"],
+    objectFields: ["metadata"],
+    valueFields: ["content"],
+  });
+  validateRequiredString(validated, "message.send", "sessionId");
+  validateMessageContent("message.send", "content", validated.content);
+  return validated as MessageSendParams;
+}
+
 function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   const validated = validateObjectShape(params, {
     methodName: "message.stream",
@@ -1218,7 +1348,10 @@ function validateCommandExecTerminateParams(
   }) as CommandExecTerminateParams;
 }
 
-function displayUserMessageFromMetadata(metadata: JsonObject | undefined): {
+function displayUserMessageFromMetadata(
+  methodName: "message.send" | "message.stream",
+  metadata: JsonObject | undefined,
+): {
   readonly displayUserMessage?: string | null;
 } {
   if (metadata === undefined || !("displayUserMessage" in metadata)) return {};
@@ -1227,7 +1360,7 @@ function displayUserMessageFromMetadata(metadata: JsonObject | undefined): {
     return { displayUserMessage: value };
   }
   throw invalidParams(
-    "message.stream metadata 'displayUserMessage' must be a string or null",
+    `${methodName} metadata 'displayUserMessage' must be a string or null`,
   );
 }
 
