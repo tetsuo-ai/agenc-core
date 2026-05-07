@@ -32,6 +32,11 @@ export interface SessionStateUpdate {
 export interface ResponseItem {
   readonly role: "system" | "developer" | "user" | "assistant" | "tool";
   readonly content: string | ReadonlyArray<{ readonly type: string; readonly text?: string; readonly [k: string]: unknown }>;
+  readonly toolCalls?: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly arguments?: string;
+  }>;
   readonly toolCallId?: string;
   readonly toolName?: string;
   readonly id?: string;

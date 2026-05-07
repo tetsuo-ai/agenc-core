@@ -75,6 +75,18 @@ export const AGENC_DAEMON_METHODS = [
 
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 
+export const AGENC_DAEMON_INTERNAL_METHODS = [
+  "session.partialCompactFromMessage",
+  "session.rewindConversationToMessage",
+] as const;
+
+export type AgenCDaemonInternalMethod =
+  (typeof AGENC_DAEMON_INTERNAL_METHODS)[number];
+
+export type AgenCDaemonKnownMethod =
+  | AgenCDaemonMethod
+  | AgenCDaemonInternalMethod;
+
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "commandExec.outputDelta",
   "event.message_chunk",
@@ -494,6 +506,15 @@ export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
   return Object.prototype.hasOwnProperty.call(AGENC_DAEMON_METHOD_SPECS, value);
 }
 
+export function isAgenCDaemonKnownMethod(
+  value: string,
+): value is AgenCDaemonKnownMethod {
+  return (
+    isAgenCDaemonMethod(value) ||
+    (AGENC_DAEMON_INTERNAL_METHODS as readonly string[]).includes(value)
+  );
+}
+
 export function isAgenCDaemonNotificationMethod(
   value: string,
 ): value is AgenCDaemonNotificationMethod {
@@ -590,6 +611,18 @@ export interface SessionTerminateParams extends JsonObject {
 
 export interface SessionClearParams extends JsonObject {
   readonly sessionId: string;
+}
+
+export interface SessionPartialCompactFromMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+  readonly direction: "from" | "up_to";
+  readonly feedback?: string;
+}
+
+export interface SessionRewindConversationToMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
 }
 
 export type MessageContentBlock =
@@ -1215,6 +1248,24 @@ export interface SessionClearResult extends JsonObject {
   readonly sessionId: string;
   readonly cleared: true;
   readonly clearedAt: string;
+}
+
+export interface SessionPartialCompactFromMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly event?: JsonObject;
+}
+
+export interface SessionRewindConversationToMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly event?: JsonObject;
 }
 
 export interface MessageSendResult extends JsonObject {

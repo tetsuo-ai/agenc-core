@@ -50,6 +50,16 @@ import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
+  buildPostCompactMessages,
+  partialCompactConversationAsync,
+} from "../services/compact/compact.js";
+import type {
+  CompactContext,
+  CompactionResult,
+  RuntimeMessage,
+} from "../services/compact/types.js";
+import type { PartialCompactDirection } from "../services/compact/prompt.js";
+import {
   normalizeProviderName,
   prepareProviderSwitch,
   type ProviderFactoryOptions,
@@ -115,6 +125,14 @@ import type { RolloutStore } from "./rollout-store.js";
 import type { LiveThread } from "../thread-store/live-thread.js";
 import type { RolloutTraceRecorder } from "./rollout-trace.js";
 import type { AppendOptions } from "./session-store.js";
+import {
+  cloneLlmMessage,
+  llmMessageToResponseItem,
+} from "./message-history-conversion.js";
+import {
+  createHistoryReplacedEvent,
+  type HistoryReplacedEvent,
+} from "./transcript-replacement.js";
 import {
   buildPerTurnConfig,
   newDefaultTurnWithSubId as buildDefaultTurnWithSubId,
@@ -994,6 +1012,64 @@ export interface SessionTurnDriverHooks {
   readonly flushEventLog?: () => Promise<void> | void;
 }
 
+export interface SessionPartialCompactFromMessageParams {
+  readonly messageOrdinal: number;
+  readonly direction: PartialCompactDirection;
+  readonly feedback?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface SessionRewindConversationToMessageParams {
+  readonly messageOrdinal: number;
+}
+
+export type SessionPartialCompactErrorCode =
+  | "ABORTED"
+  | "ACTIVE_TURN"
+  | "MESSAGE_NOT_FOUND"
+  | "ROLLOUT_UNAVAILABLE"
+  | "ROLLOUT_DEGRADED";
+
+export type SessionConversationRewindErrorCode =
+  | "ACTIVE_TURN"
+  | "MESSAGE_NOT_FOUND"
+  | "ROLLOUT_UNAVAILABLE"
+  | "ROLLOUT_DEGRADED";
+
+export type SessionPartialCompactFromMessageResult =
+  | {
+      readonly ok: true;
+      readonly sessionId: string;
+      readonly eventAlreadyEmitted: false;
+      readonly event: HistoryReplacedEvent;
+      readonly replacementHistory: readonly LLMMessage[];
+      readonly displayText: string;
+    }
+  | {
+      readonly ok: false;
+      readonly sessionId: string;
+      readonly eventAlreadyEmitted: false;
+      readonly code: SessionPartialCompactErrorCode;
+      readonly message: string;
+    };
+
+export type SessionRewindConversationToMessageResult =
+  | {
+      readonly ok: true;
+      readonly sessionId: string;
+      readonly eventAlreadyEmitted: false;
+      readonly event: HistoryReplacedEvent;
+      readonly replacementHistory: readonly LLMMessage[];
+      readonly displayText: string;
+    }
+  | {
+      readonly ok: false;
+      readonly sessionId: string;
+      readonly eventAlreadyEmitted: false;
+      readonly code: SessionConversationRewindErrorCode;
+      readonly message: string;
+    };
+
 function readProviderHttpClient(
   provider: LLMProvider | undefined,
 ): ProviderHttpClient | undefined {
@@ -1046,6 +1122,255 @@ function normalizeHistoryMessages(
     });
   }
   return normalized;
+}
+
+const COMPACT_BOUNDARY_PREFIX = "<compact>";
+const COMPACT_SUMMARY_PREFIX =
+  "This session is being continued from a previous conversation";
+const NON_SELECTABLE_USER_TAGS = [
+  "local-command-stdout",
+  "local-command-stderr",
+  "bash-stdout",
+  "bash-stderr",
+  "task-notification",
+  "tick",
+  "teammate-message",
+] as const;
+
+function isCompactBoundaryMessage(message: LLMMessage | undefined): boolean {
+  return message?.role === "user" &&
+    typeof message.content === "string" &&
+    message.content.startsWith(COMPACT_BOUNDARY_PREFIX);
+}
+
+function isCompactSummaryMessage(message: LLMMessage | undefined): boolean {
+  return message?.role === "user" &&
+    typeof message.content === "string" &&
+    message.content.startsWith(COMPACT_SUMMARY_PREFIX);
+}
+
+function lastTextBlock(content: LLMMessage["content"]): string {
+  if (typeof content === "string") return content.trim();
+  for (let index = content.length - 1; index >= 0; index -= 1) {
+    const part = content[index];
+    if (part?.type === "text") return part.text.trim();
+  }
+  return "";
+}
+
+function isSelectableHistoryUserMessage(message: LLMMessage): boolean {
+  if (message.role !== "user") return false;
+  if (isCompactBoundaryMessage(message)) return false;
+  if (isCompactSummaryMessage(message)) return false;
+  const messageText = lastTextBlock(message.content);
+  if (messageText.length === 0) return false;
+  return !NON_SELECTABLE_USER_TAGS.some((tag) =>
+    messageText.includes(`<${tag}`) || messageText.includes(`</${tag}>`)
+  );
+}
+
+function splitActiveHistory(messages: readonly LLMMessage[]): {
+  readonly prefixBeforeActive: readonly LLMMessage[];
+  readonly activeHistory: readonly LLMMessage[];
+} {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isCompactBoundaryMessage(messages[index])) {
+      return {
+        prefixBeforeActive: messages.slice(0, index + 1).map(cloneLlmMessage),
+        activeHistory: messages.slice(index + 1).map(cloneLlmMessage),
+      };
+    }
+  }
+  return {
+    prefixBeforeActive: [],
+    activeHistory: messages.map(cloneLlmMessage),
+  };
+}
+
+function activeHistoryIndexForOrdinal(
+  activeHistory: readonly LLMMessage[],
+  ordinal: number,
+): number | null {
+  if (!Number.isInteger(ordinal) || ordinal < 0) return null;
+  let seen = 0;
+  for (let index = 0; index < activeHistory.length; index += 1) {
+    const message = activeHistory[index];
+    if (message === undefined || !isSelectableHistoryUserMessage(message)) {
+      continue;
+    }
+    if (seen === ordinal) return index;
+    seen += 1;
+  }
+  return null;
+}
+
+function toCompactRuntimeMessages(
+  messages: readonly LLMMessage[],
+): RuntimeMessage[] {
+  return messages.map((message, index) => {
+    const content = toCompactRuntimeContent(message.content);
+    const role = toCompactRuntimeRole(message.role);
+    return {
+      role,
+      type: role,
+      content,
+      message: { role, content },
+      uuid: `partial-compact-${role}-${index}`,
+      timestamp: new Date(0).toISOString(),
+      ...(message.role === role ? {} : { originalRole: message.role }),
+      ...(message.toolCalls !== undefined
+        ? { toolCalls: message.toolCalls.map((call) => ({ ...call })) }
+        : {}),
+      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+      ...(message.phase !== undefined ? { phase: message.phase } : {}),
+      ...(message.role === "tool" ? { isMeta: true } : {}),
+    };
+  });
+}
+
+function toCompactRuntimeRole(role: LLMMessage["role"]): NonNullable<RuntimeMessage["role"]> {
+  if (role === "developer") return "system";
+  if (role === "tool") return "user";
+  return role;
+}
+
+function toCompactRuntimeContent(content: LLMMessage["content"]): unknown {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return content.map((part) => {
+    if (part.type === "image_url") {
+      return {
+        type: "image",
+        source: { type: "url", url: part.image_url.url },
+      };
+    }
+    return { ...part };
+  });
+}
+
+function fromCompactRuntimeMessages(
+  messages: readonly RuntimeMessage[],
+): LLMMessage[] {
+  return messages
+    .map(fromCompactRuntimeMessage)
+    .filter((message): message is LLMMessage => message !== null);
+}
+
+function fromCompactRuntimeMessage(message: RuntimeMessage): LLMMessage | null {
+  const role = normalizeCompactRuntimeRole(message.originalRole ?? message.role);
+  if (role === null) return null;
+  const content = fromCompactRuntimeContent(
+    message.message?.content ?? message.content ?? "",
+  );
+  return {
+    role,
+    content,
+    ...(message.toolCalls !== undefined
+      ? {
+          toolCalls: message.toolCalls.map((call) => ({
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments ?? "",
+          })),
+        }
+      : {}),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase === "commentary" || message.phase === "final_answer"
+      ? { phase: message.phase }
+      : {}),
+  };
+}
+
+function normalizeCompactRuntimeRole(value: unknown): LLMMessage["role"] | null {
+  if (
+    value === "system" ||
+    value === "developer" ||
+    value === "user" ||
+    value === "assistant" ||
+    value === "tool"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function fromCompactRuntimeContent(content: unknown): LLMMessage["content"] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: LLMContentPart[] = [];
+  let textOnly = true;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const record = part as Record<string, unknown>;
+    if (record.type === "image" && record.source && typeof record.source === "object") {
+      const source = record.source as Record<string, unknown>;
+      if (typeof source.url === "string") {
+        textOnly = false;
+        parts.push({ type: "image_url", image_url: { url: source.url } });
+      }
+      continue;
+    }
+    if (record.type === "image_url" && record.image_url && typeof record.image_url === "object") {
+      const image = record.image_url as Record<string, unknown>;
+      if (typeof image.url === "string") {
+        textOnly = false;
+        parts.push({ type: "image_url", image_url: { url: image.url } });
+      }
+      continue;
+    }
+    if (record.type === "document") {
+      const source = record.source && typeof record.source === "object"
+        ? record.source as Record<string, unknown>
+        : null;
+      if (
+        source?.type === "base64" &&
+        source.media_type === "application/pdf" &&
+        typeof source.data === "string"
+      ) {
+        textOnly = false;
+        parts.push({
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: source.data,
+          },
+          ...(typeof record.title === "string" ? { title: record.title } : {}),
+          ...(typeof record.filename === "string"
+            ? { filename: record.filename }
+            : {}),
+        });
+      }
+      continue;
+    }
+    if (typeof record.text === "string") {
+      parts.push({ type: "text", text: record.text });
+    }
+  }
+  if (textOnly) {
+    return parts.map((part) => part.type === "text" ? part.text : "").join("\n");
+  }
+  return parts;
+}
+
+function compactionMessage(result: CompactionResult): string {
+  const summary = result.summaryMessages.at(-1) ?? result.messagesToKeep?.at(-1);
+  if (summary === undefined) return result.userDisplayMessage ?? "Conversation summarized";
+  const content = summary.message?.content ?? summary.content ?? "";
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return result.userDisplayMessage ?? "Conversation summarized";
+  const text = content
+    .map((part) =>
+      part && typeof part === "object" && "text" in part &&
+      typeof (part as { text?: unknown }).text === "string"
+        ? (part as { text: string }).text
+        : "",
+    )
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  return text.length > 0 ? text : result.userDisplayMessage ?? "Conversation summarized";
 }
 
 function activeAgentDefinitionsFromRoles(
@@ -1836,6 +2161,399 @@ export class Session {
     const id = this.nextInternalSubIdValue;
     this.nextInternalSubIdValue += 1;
     return `sub-${this.conversationId}-${id}`;
+  }
+
+  async partialCompactFromMessage(
+    params: SessionPartialCompactFromMessageParams,
+  ): Promise<SessionPartialCompactFromMessageResult> {
+    const rolloutStore = this.rolloutStore;
+    if (rolloutStore === null) {
+      return this.partialCompactFailure(
+        "ROLLOUT_UNAVAILABLE",
+        "Conversation summarization requires a durable session history.",
+      );
+    }
+    if (rolloutStore.isDegraded) {
+      return this.partialCompactFailure(
+        "ROLLOUT_DEGRADED",
+        "Conversation summarization is disabled because durable session history is degraded.",
+      );
+    }
+
+    const abortController = new AbortController();
+    const onCallerAbort = (): void => {
+      if (!abortController.signal.aborted) {
+        abortController.abort(
+          (params.signal as (AbortSignal & { reason?: unknown }) | undefined)
+            ?.reason,
+        );
+      }
+    };
+    if (params.signal?.aborted === true) {
+      onCallerAbort();
+    } else {
+      params.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    }
+
+    let task: RunningTask | null = null;
+    try {
+      task = await this.beginIdleTask({
+        subId: this.nextInternalSubId(),
+        kind: "compact",
+        autoStart: false,
+        abortController,
+      });
+    } catch (error) {
+      params.signal?.removeEventListener("abort", onCallerAbort);
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
+        return this.partialCompactFailure(
+          "ACTIVE_TURN",
+          "Cannot summarize right now: a turn is currently in flight.",
+        );
+      }
+      throw error;
+    }
+
+    try {
+      this.throwIfPartialCompactAborted(abortController.signal);
+      const sourceHistory = this.snapshotHistoryMessages();
+      const { prefixBeforeActive, activeHistory } = splitActiveHistory(sourceHistory);
+      const selectedIndex = activeHistoryIndexForOrdinal(
+        activeHistory,
+        params.messageOrdinal,
+      );
+      if (selectedIndex === null) {
+        return this.partialCompactFailure(
+          "MESSAGE_NOT_FOUND",
+          "The selected message is no longer in the active conversation.",
+        );
+      }
+
+      const context = this.buildPartialCompactContext(abortController);
+      const compactionResult = await partialCompactConversationAsync(
+        toCompactRuntimeMessages(activeHistory),
+        selectedIndex,
+        context,
+        {
+          direction: params.direction,
+          ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+          signal: abortController.signal,
+        },
+      );
+      this.throwIfPartialCompactAborted(abortController.signal);
+      const compactedActiveHistory = fromCompactRuntimeMessages(
+        buildPostCompactMessages(compactionResult),
+      );
+      const replacementHistory = [
+        ...prefixBeforeActive,
+        ...compactedActiveHistory,
+      ].map(cloneLlmMessage);
+      const event = createHistoryReplacedEvent({
+        replacementHistory,
+        id: `history-replaced-${task.subId}`,
+      });
+      const displayText =
+        compactionResult.userDisplayMessage ?? compactionMessage(compactionResult);
+
+      const commitFailure = await this.commitPartialCompaction({
+        task,
+        signal: abortController.signal,
+        rolloutStore,
+        replacementHistory,
+        compactionResult,
+      });
+      if (commitFailure !== null) return commitFailure;
+
+      return {
+        ok: true,
+        sessionId: this.conversationId,
+        eventAlreadyEmitted: false,
+        event,
+        replacementHistory,
+        displayText,
+      };
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        return this.partialCompactFailure(
+          "ABORTED",
+          "Conversation summarization was cancelled.",
+        );
+      }
+      throw error;
+    } finally {
+      params.signal?.removeEventListener("abort", onCallerAbort);
+      if (task !== null) {
+        await this.onTaskFinished(task.subId);
+      }
+    }
+  }
+
+  async rewindConversationToMessage(
+    params: SessionRewindConversationToMessageParams,
+  ): Promise<SessionRewindConversationToMessageResult> {
+    const rolloutStore = this.rolloutStore;
+    if (rolloutStore === null) {
+      return this.conversationRewindFailure(
+        "ROLLOUT_UNAVAILABLE",
+        "Conversation rewind requires a durable session history.",
+      );
+    }
+    if (rolloutStore.isDegraded) {
+      return this.conversationRewindFailure(
+        "ROLLOUT_DEGRADED",
+        "Conversation rewind is disabled because durable session history is degraded.",
+      );
+    }
+
+    let task: RunningTask | null = null;
+    try {
+      task = await this.beginIdleTask({
+        subId: this.nextInternalSubId(),
+        kind: "compact",
+        autoStart: false,
+      });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
+        return this.conversationRewindFailure(
+          "ACTIVE_TURN",
+          "Cannot rewind right now: a turn is currently in flight.",
+        );
+      }
+      throw error;
+    }
+
+    try {
+      const sourceHistory = this.snapshotHistoryMessages();
+      const { prefixBeforeActive, activeHistory } = splitActiveHistory(sourceHistory);
+      const selectedIndex = activeHistoryIndexForOrdinal(
+        activeHistory,
+        params.messageOrdinal,
+      );
+      if (selectedIndex === null) {
+        return this.conversationRewindFailure(
+          "MESSAGE_NOT_FOUND",
+          "The selected message is no longer in the active conversation.",
+        );
+      }
+
+      const replacementHistory = [
+        ...prefixBeforeActive,
+        ...activeHistory.slice(0, selectedIndex),
+      ].map(cloneLlmMessage);
+      const event = createHistoryReplacedEvent({
+        replacementHistory,
+        id: `history-replaced-${task.subId}`,
+        reason: "rewind",
+      });
+      const displayText = "Conversation rewound";
+
+      const commitFailure = await this.commitConversationRewind({
+        task,
+        rolloutStore,
+        replacementHistory,
+      });
+      if (commitFailure !== null) return commitFailure;
+
+      return {
+        ok: true,
+        sessionId: this.conversationId,
+        eventAlreadyEmitted: false,
+        event,
+        replacementHistory,
+        displayText,
+      };
+    } finally {
+      if (task !== null) {
+        await this.onTaskFinished(task.subId);
+      }
+    }
+  }
+
+  private partialCompactFailure(
+    code: SessionPartialCompactErrorCode,
+    message: string,
+  ): SessionPartialCompactFromMessageResult {
+    return {
+      ok: false,
+      sessionId: this.conversationId,
+      eventAlreadyEmitted: false,
+      code,
+      message,
+    };
+  }
+
+  private conversationRewindFailure(
+    code: SessionConversationRewindErrorCode,
+    message: string,
+  ): SessionRewindConversationToMessageResult {
+    return {
+      ok: false,
+      sessionId: this.conversationId,
+      eventAlreadyEmitted: false,
+      code,
+      message,
+    };
+  }
+
+  private throwIfPartialCompactAborted(signal: AbortSignal): void {
+    if (signal.aborted) {
+      throw new Error("Conversation summarization was cancelled.");
+    }
+  }
+
+  private async beginIdleTask(opts: SpawnTaskOptions): Promise<RunningTask> {
+    return this.taskDispatchLock.with(async () => {
+      const active = await this.activeTurn.with((current) => current);
+      if (active !== null) {
+        throw new Error(
+          "Cannot start idle task right now: a turn is currently in flight.",
+        );
+      }
+      return await this.startTask(opts);
+    });
+  }
+
+  private buildPartialCompactContext(
+    abortController: AbortController,
+  ): CompactContext {
+    const surface = this as unknown as {
+      readonly setStreamMode?: CompactContext["setStreamMode"];
+      readonly setResponseLength?: CompactContext["setResponseLength"];
+      readonly onCompactProgress?: CompactContext["onCompactProgress"];
+      readonly setSDKStatus?: CompactContext["setSDKStatus"];
+    };
+    return {
+      abortController,
+      provider: this.services.provider,
+      setStreamMode: surface.setStreamMode,
+      setResponseLength: surface.setResponseLength,
+      onCompactProgress: surface.onCompactProgress,
+      setSDKStatus: surface.setSDKStatus,
+      options: {
+        mainLoopModel:
+          this.modelInfo.slug ??
+          this.sessionConfiguration.collaborationMode?.model,
+        ...(this.modelInfo.contextWindow !== undefined
+          ? { contextWindowTokens: this.modelInfo.contextWindow }
+          : {}),
+        ...(this.modelInfo.maxOutputTokens !== undefined
+          ? { maxOutputTokens: this.modelInfo.maxOutputTokens }
+          : {}),
+      },
+      deps: {
+        cleanup: {
+          clearProviderResponseId: () => this.clearProviderResponseId(),
+        },
+      },
+    };
+  }
+
+  private async commitPartialCompaction(params: {
+    readonly task: RunningTask;
+    readonly signal: AbortSignal;
+    readonly rolloutStore: RolloutStore;
+    readonly replacementHistory: readonly LLMMessage[];
+    readonly compactionResult: CompactionResult;
+  }): Promise<SessionPartialCompactFromMessageResult | null> {
+    let failure: SessionPartialCompactFromMessageResult | null = null;
+    await this.taskDispatchLock.with(async () => {
+      if (params.signal.aborted) {
+        failure = this.partialCompactFailure(
+          "ABORTED",
+          "Conversation summarization was cancelled.",
+        );
+        return;
+      }
+      const ownsTask = await this.activeTurn.with((current) =>
+        current?.tasks.has(params.task.subId) === true
+      );
+      if (!ownsTask) {
+        failure = this.partialCompactFailure(
+          "ABORTED",
+          "Conversation summarization was cancelled.",
+        );
+        return;
+      }
+      if (params.rolloutStore.isDegraded) {
+        failure = this.partialCompactFailure(
+          "ROLLOUT_DEGRADED",
+          "Conversation summarization is disabled because durable session history is degraded.",
+        );
+        return;
+      }
+      const postCompactTokens =
+        params.compactionResult.truePostCompactTokenCount ??
+        params.compactionResult.postCompactTokenCount;
+      params.rolloutStore.appendRollout(
+        {
+          type: "compacted",
+          payload: {
+            message: compactionMessage(params.compactionResult),
+            replacementHistory:
+              params.replacementHistory.map(llmMessageToResponseItem),
+            ...(params.compactionResult.preCompactTokenCount !== undefined
+              ? { preCompactTokens: params.compactionResult.preCompactTokenCount }
+              : {}),
+            ...(postCompactTokens !== undefined ? { postCompactTokens } : {}),
+          },
+        },
+        { durable: true },
+      );
+      await this.state.with((sessionState) => {
+        sessionState.history = params.replacementHistory.map(cloneLlmMessage);
+      });
+      this.clearProviderResponseId();
+    });
+    return failure;
+  }
+
+  private async commitConversationRewind(params: {
+    readonly task: RunningTask;
+    readonly rolloutStore: RolloutStore;
+    readonly replacementHistory: readonly LLMMessage[];
+  }): Promise<SessionRewindConversationToMessageResult | null> {
+    let failure: SessionRewindConversationToMessageResult | null = null;
+    await this.taskDispatchLock.with(async () => {
+      const ownsTask = await this.activeTurn.with((current) =>
+        current?.tasks.has(params.task.subId) === true
+      );
+      if (!ownsTask) {
+        failure = this.conversationRewindFailure(
+          "ACTIVE_TURN",
+          "Conversation rewind was cancelled.",
+        );
+        return;
+      }
+      if (params.rolloutStore.isDegraded) {
+        failure = this.conversationRewindFailure(
+          "ROLLOUT_DEGRADED",
+          "Conversation rewind is disabled because durable session history is degraded.",
+        );
+        return;
+      }
+      params.rolloutStore.appendRollout(
+        {
+          type: "compacted",
+          payload: {
+            message: "Conversation rewound",
+            replacementHistory:
+              params.replacementHistory.map(llmMessageToResponseItem),
+          },
+        },
+        { durable: true },
+      );
+      await this.state.with((sessionState) => {
+        sessionState.history = params.replacementHistory.map(cloneLlmMessage);
+      });
+      this.clearProviderResponseId();
+    });
+    return failure;
   }
 
   /**

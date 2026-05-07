@@ -16,6 +16,10 @@ import type {
   MessageStreamParams,
   RequestId,
   SessionAttachParams,
+  SessionPartialCompactFromMessageParams,
+  SessionPartialCompactFromMessageResult,
+  SessionRewindConversationToMessageParams,
+  SessionRewindConversationToMessageResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
@@ -77,6 +81,15 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
+  partialCompactFromMessage?(params: {
+    readonly messageOrdinal: number;
+    readonly direction: "from" | "up_to";
+    readonly feedback?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<SessionPartialCompactFromMessageResult>;
+  rewindConversationToMessage?(params: {
+    readonly messageOrdinal: number;
+  }): Promise<SessionRewindConversationToMessageResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
@@ -113,12 +126,32 @@ export type AgenCDaemonBackedTuiSession<
     requestId: RequestId,
     response: ElicitationRespondParams["response"],
   ): Promise<AgenCDaemonResultByMethod["elicitation.respond"]>;
+  partialCompactFromMessage(params: {
+    readonly messageOrdinal: number;
+    readonly direction: "from" | "up_to";
+    readonly feedback?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<SessionPartialCompactFromMessageResult>;
+  rewindConversationToMessage(params: {
+    readonly messageOrdinal: number;
+  }): Promise<SessionRewindConversationToMessageResult>;
 };
 
 export interface AgenCDaemonTuiClient {
+  request(
+    method: "session.partialCompactFromMessage",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionPartialCompactFromMessageResult>;
+  request(
+    method: "session.rewindConversationToMessage",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionRewindConversationToMessageResult>;
   request<Method extends AgenCDaemonMethod>(
     method: Method,
     params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
   ): Promise<AgenCDaemonResultByMethod[Method]>;
   subscribeToNotifications?(
     cb: (event: JsonObject) => void,
@@ -285,6 +318,20 @@ export function createDaemonTuiSession<
     clearDaemonSession: async () => {
       await client.request("session.clear", { sessionId });
     },
+    partialCompactFromMessage: async (params) =>
+      client.request("session.partialCompactFromMessage", {
+        sessionId,
+        messageOrdinal: params.messageOrdinal,
+        direction: params.direction,
+        ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+      } satisfies SessionPartialCompactFromMessageParams, {
+        signal: params.signal,
+      }),
+    rewindConversationToMessage: async (params) =>
+      client.request("session.rewindConversationToMessage", {
+        sessionId,
+        messageOrdinal: params.messageOrdinal,
+      } satisfies SessionRewindConversationToMessageParams),
     subscribeToEvents: (cb) => {
       eventSubscribers.add(cb);
       ensureDaemonEventsSubscribed();

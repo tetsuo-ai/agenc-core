@@ -17,7 +17,12 @@ export type RuntimeMessage = {
   readonly content?: unknown;
   readonly toolCallId?: string;
   readonly toolName?: string;
-  readonly toolCalls?: readonly { readonly id: string; readonly name: string }[];
+  readonly phase?: string;
+  readonly toolCalls?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments?: string;
+  }[];
   readonly message?: {
     readonly role?: string;
     readonly content?: unknown;

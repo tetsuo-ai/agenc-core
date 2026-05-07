@@ -6,6 +6,7 @@ import {
   formatCommandInputTags,
   manualCompactCall,
   partialCompactConversation,
+  partialCompactConversationAsync,
 } from "./compact.js";
 import type { CompactionResult, RuntimeMessage } from "./types.js";
 
@@ -156,6 +157,88 @@ describe("compact service", () => {
       keepPrefixCount: 4,
       keepSuffixCount: 4,
     }).map((entry) => entry.content)).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  test("async partial compact summarizes from the selected message after kept prefix", async () => {
+    const provider = {
+      name: "test",
+      chat: vi.fn(async () => ({ content: "recent summary" })),
+    };
+    const result = await partialCompactConversationAsync(
+      [message("keep"), message("summarize me"), message("tail", "assistant")],
+      1,
+      { provider: provider as never },
+      { direction: "from" },
+    );
+
+    expect(buildPostCompactMessages(result).map((entry) => entry.content))
+      .toEqual([
+        expect.stringContaining("<compact>"),
+        "keep",
+        expect.stringContaining("recent summary"),
+      ]);
+    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("summarize me");
+  });
+
+  test("async partial compact summarizes up to selected message before kept suffix", async () => {
+    const provider = {
+      name: "test",
+      chat: vi.fn(async () => ({ content: "prefix summary" })),
+    };
+    const result = await partialCompactConversationAsync(
+      [message("older"), message("selected"), message("tail", "assistant")],
+      1,
+      { provider: provider as never },
+      { direction: "up_to", feedback: "keep constraints" },
+    );
+
+    expect(buildPostCompactMessages(result).map((entry) => entry.content))
+      .toEqual([
+        expect.stringContaining("<compact>"),
+        expect.stringContaining("prefix summary"),
+        "selected",
+        "tail",
+      ]);
+    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain("older");
+    expect(provider.chat.mock.calls[0]?.[0][0].content).toContain(
+      "Additional Instructions:\nkeep constraints",
+    );
+  });
+
+  test("async partial compact keeps all messages for up-to first message without provider call", async () => {
+    const provider = {
+      name: "test",
+      chat: vi.fn(async () => ({ content: "should not be used" })),
+    };
+    const result = await partialCompactConversationAsync(
+      [message("selected"), message("tail", "assistant")],
+      0,
+      { provider: provider as never },
+      { direction: "up_to" },
+    );
+
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(buildPostCompactMessages(result).map((entry) => entry.content))
+      .toEqual([
+        expect.stringContaining("<compact>"),
+        expect.stringContaining("No earlier messages to summarize."),
+        "selected",
+        "tail",
+      ]);
+  });
+
+  test("async partial compact rejects an aborted signal", async () => {
+    const controller = new AbortController();
+    controller.abort("test");
+
+    await expect(
+      partialCompactConversationAsync(
+        [message("selected")],
+        0,
+        {},
+        { direction: "from", signal: controller.signal },
+      ),
+    ).rejects.toThrow("Partial compaction aborted");
   });
 
   test("formats local command messages and caveat markers", () => {

@@ -24,15 +24,22 @@ let createRoot: any;
 let defaultConfig: any;
 let markFirstRunOnboardingComplete: any;
 let readOnboardingState: any;
+let mockTotalCost = 0;
+let mockHasConsoleBillingAccess = false;
+let mockWorktreeSession: unknown = null;
+let mockGlobalConfig: Record<string, unknown> = {};
 
 const providerProbe = {
   fpsGetters: [] as unknown[],
+  costSummaryGetters: [] as unknown[],
   statsStores: [] as unknown[],
   appStateProps: [] as Array<{
     initialState: unknown;
     onChangeAppState: unknown;
   }>,
   globalKeybindingProps: [] as Array<Record<string, unknown>>,
+  exitFlowProps: [] as Array<Record<string, unknown>>,
+  costThresholdDialogProps: [] as Array<Record<string, unknown>>,
   messageProps: [] as Array<Record<string, unknown>>,
   messageSelectorProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
@@ -42,6 +49,9 @@ const providerProbe = {
   }) => Promise<void>>,
   promptProps: [] as Array<Record<string, unknown>>,
   onChangeAppState: typeof vi.fn === "function" ? vi.fn() : () => {},
+  inkExit: typeof vi.fn === "function" ? vi.fn() : () => {},
+  logEvent: typeof vi.fn === "function" ? vi.fn() : () => {},
+  fileHistoryRewind: typeof vi.fn === "function" ? vi.fn() : () => {},
 };
 
 vi.mock("bun:bundle", () => ({
@@ -69,8 +79,42 @@ vi.mock("../context/fpsMetrics.js", async () => {
       providerProbe.fpsGetters.push(getFpsMetrics);
       return React.createElement(React.Fragment, null, children);
     },
+    useFpsMetrics: () => providerProbe.fpsGetters.at(-1),
   };
 });
+
+vi.mock("../../cost/hook.js", () => ({
+  useCostSummary: (getFpsMetrics: unknown) => {
+    providerProbe.costSummaryGetters.push(getFpsMetrics);
+  },
+}));
+
+vi.mock("../../cost/tracker.js", () => ({
+  getTotalCost: () => mockTotalCost,
+}));
+
+vi.mock("../../services/analytics/index.js", () => ({
+  logEvent: providerProbe.logEvent,
+}));
+
+vi.mock("../../utils/billing.js", () => ({
+  hasConsoleBillingAccess: () => mockHasConsoleBillingAccess,
+}));
+
+vi.mock("../../utils/config.js", () => ({
+  getGlobalConfig: () => mockGlobalConfig,
+  saveGlobalConfig: (updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
+    mockGlobalConfig = updater(mockGlobalConfig);
+  },
+}));
+
+vi.mock("../../utils/fileHistory.js", () => ({
+  fileHistoryRewind: providerProbe.fileHistoryRewind,
+}));
+
+vi.mock("../../utils/worktree.js", () => ({
+  getCurrentWorktreeSession: () => mockWorktreeSession,
+}));
 
 vi.mock("../context/stats.js", async () => {
   const React = await import("react");
@@ -99,7 +143,7 @@ vi.mock("../ink.js", async () => {
       React.createElement("ink-box", null, children),
     Text: ({ children }: { children?: React.ReactNode }) =>
       React.createElement("ink-text", null, children),
-    useApp: () => ({ exit: () => {} }),
+    useApp: () => ({ exit: providerProbe.inkExit }),
     useTerminalFocus: () => true,
     useTerminalTitle: () => {},
   };
@@ -294,6 +338,10 @@ vi.mock("./Messages.js", async () => {
 vi.mock("./MessageSelector.js", async () => {
   const React = await import("react");
   return {
+    selectableUserMessagesFilter: (message: { type?: unknown; message?: { content?: unknown } }) => {
+      const content = message.message?.content;
+      return message.type === "user" && typeof content === "string" && content.trim().length > 0;
+    },
     MessageSelector: (props: Record<string, unknown>) => {
       providerProbe.messageSelectorProps.push(props);
       const messages = props.messages as readonly unknown[];
@@ -306,6 +354,26 @@ vi.mock("./MessageSelector.js", async () => {
   };
 });
 
+vi.mock("./ExitFlow.js", async () => {
+  const React = await import("react");
+  return {
+    ExitFlow: (props: Record<string, unknown>) => {
+      providerProbe.exitFlowProps.push(props);
+      return React.createElement("ink-text", null, "exit-flow");
+    },
+  };
+});
+
+vi.mock("./dialogs/CostThresholdDialog.js", async () => {
+  const React = await import("react");
+  return {
+    CostThresholdDialog: (props: Record<string, unknown>) => {
+      providerProbe.costThresholdDialogProps.push(props);
+      return React.createElement("ink-text", null, "cost-threshold-dialog");
+    },
+  };
+});
+
 vi.mock("./PromptInput/PromptInput.js", async () => {
   const React = await import("react");
   return {
@@ -314,6 +382,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onSubmit,
       onShowMessageSelector,
       onMessageActionsEnter,
+      onExit,
       vimMode,
       setVimMode,
     }: {
@@ -325,6 +394,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       }) => Promise<void>;
       onShowMessageSelector?: () => void;
       onMessageActionsEnter?: () => void;
+      onExit?: () => void;
       vimMode?: unknown;
       setVimMode?: unknown;
     }) => {
@@ -333,6 +403,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         input,
         onShowMessageSelector,
         onMessageActionsEnter,
+        onExit,
         vimMode,
         setVimMode,
       });
@@ -386,6 +457,23 @@ function createTestStreams(): {
   stdin.unref = () => {};
 
   return { stdout, stdin, output: () => rendered };
+}
+
+function resetShellSurfaceProbe(): void {
+  providerProbe.costSummaryGetters.length = 0;
+  providerProbe.exitFlowProps.length = 0;
+  providerProbe.costThresholdDialogProps.length = 0;
+  providerProbe.messageSelectorProps.length = 0;
+  providerProbe.messageProps.length = 0;
+  providerProbe.promptProps.length = 0;
+  providerProbe.promptSubmits.length = 0;
+  providerProbe.inkExit.mockClear?.();
+  providerProbe.logEvent.mockClear?.();
+  providerProbe.fileHistoryRewind.mockReset?.();
+  mockTotalCost = 0;
+  mockHasConsoleBillingAccess = false;
+  mockWorktreeSession = null;
+  mockGlobalConfig = {};
 }
 
 let installElicitationResolvers: any;
@@ -468,6 +556,12 @@ function createSession(): AgenCBridgeSession {
     subscribeToEvents: () => () => {},
     submit: async () => {},
     enqueueIdleInput: () => 1,
+    rewindConversationToMessage: async () => ({
+      ok: true,
+      sessionId: "conversation-app-smoke",
+      eventAlreadyEmitted: true,
+      displayText: "Conversation rewound",
+    }),
     sessionConfiguration: {
       provider: { slug: "test-provider" },
       collaborationMode: { model: "test-model" },
@@ -614,6 +708,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         session={session}
         configStore={{}}
         isInteractive={false}
+        initialUserMessages={[{ role: "user", content: "revise this" }]}
       />,
       async () => {
         const promptProps = providerProbe.promptProps.at(-1);
@@ -629,7 +724,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
         expect(providerProbe.messageSelectorProps.at(-1)).toEqual(
           expect.objectContaining({
-            messages: [],
+            messages: [expect.objectContaining({ type: "user" })],
             onRestoreMessage: expect.any(Function),
             onClose: expect.any(Function),
           }),
@@ -641,14 +736,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         );
 
         const selectorProps = providerProbe.messageSelectorProps.at(-1)!;
-        await (selectorProps.onRestoreMessage as (message: unknown) => Promise<void>)({
-          type: "user",
-          uuid: "user-message",
-          message: {
-            role: "user",
-            content: "revise this",
-          },
-        });
+        await (selectorProps.onRestoreMessage as (message: unknown) => Promise<void>)(
+          (selectorProps.messages as unknown[])[0],
+        );
         (selectorProps.onClose as () => void)();
         await new Promise((resolve) => setTimeout(resolve, 25));
 
@@ -657,6 +747,263 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             input: "revise this",
           }),
         );
+      },
+    );
+  });
+
+  test("installs compact progress controls and restores them on unmount", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession() as AgenCBridgeSession & {
+      setStreamMode?: (mode: "requesting" | "responding" | null) => void;
+      setResponseLength?: (updater: (length: number) => number) => void;
+      onCompactProgress?: (event: unknown) => void;
+      setSDKStatus?: (status: "compacting" | null) => void;
+    };
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async ({ output }) => {
+        expect(providerProbe.costSummaryGetters.at(-1)).toBe(
+          providerProbe.fpsGetters.at(-1),
+        );
+        expect(session.setStreamMode).toEqual(expect.any(Function));
+        expect(session.setResponseLength).toEqual(expect.any(Function));
+        expect(session.onCompactProgress).toEqual(expect.any(Function));
+        expect(session.setSDKStatus).toEqual(expect.any(Function));
+
+        session.onCompactProgress?.({ type: "compact_start" });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(output()).toMatch(/Compacting[\s\S]*conversation/);
+
+        session.setResponseLength?.((length) => length + 8);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(output()).toMatch(/8[\s\S]*chars/);
+
+        session.onCompactProgress?.({ type: "compact_end" });
+        session.setSDKStatus?.(null);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      },
+    );
+
+    expect(session.setStreamMode).toBeUndefined();
+    expect(session.setResponseLength).toBeUndefined();
+    expect(session.onCompactProgress).toBeUndefined();
+    expect(session.setSDKStatus).toBeUndefined();
+  });
+
+  test("routes exit through worktree ExitFlow only for active worktree sessions", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    resetShellSurfaceProbe();
+    mockWorktreeSession = { worktreePath: "/tmp/worktree" };
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (promptProps.onExit as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.inkExit).not.toHaveBeenCalled();
+        expect(providerProbe.exitFlowProps.at(-1)).toEqual(
+          expect.objectContaining({
+            showWorktree: true,
+            onDone: expect.any(Function),
+            onCancel: expect.any(Function),
+          }),
+        );
+
+        (providerProbe.exitFlowProps.at(-1)!.onCancel as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      },
+    );
+
+    resetShellSurfaceProbe();
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession()}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (promptProps.onExit as () => void)();
+        expect(providerProbe.inkExit).toHaveBeenCalledTimes(1);
+        expect(providerProbe.exitFlowProps).toHaveLength(0);
+      },
+    );
+  });
+
+  test("renders and acknowledges the cost threshold dialog when billing access is available", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    resetShellSurfaceProbe();
+    mockTotalCost = 5;
+    mockHasConsoleBillingAccess = true;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async ({ output }) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(output()).toMatch(/cost-[\s\S]*hreshold-dialog/);
+        expect(providerProbe.costThresholdDialogProps.at(-1)).toEqual(
+          expect.objectContaining({
+            onDone: expect.any(Function),
+          }),
+        );
+        expect(providerProbe.logEvent).toHaveBeenCalledWith(
+          "tengu_cost_threshold_reached",
+          {},
+        );
+
+        (providerProbe.costThresholdDialogProps.at(-1)!.onDone as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(mockGlobalConfig.hasAcknowledgedCostThreshold).toBe(true);
+        expect(providerProbe.logEvent).toHaveBeenCalledWith(
+          "tengu_cost_threshold_acknowledged",
+          {},
+        );
+      },
+    );
+  });
+
+  test("marks the cost threshold as shown without rendering when billing access is unavailable", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    mockTotalCost = 5;
+    mockHasConsoleBillingAccess = false;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession()}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async ({ output }) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(output()).not.toContain("cost-threshold-dialog");
+        expect(providerProbe.costThresholdDialogProps).toHaveLength(0);
+        expect(providerProbe.logEvent).toHaveBeenCalledWith(
+          "tengu_cost_threshold_reached",
+          {},
+        );
+      },
+    );
+  });
+
+  test("wires MessageSelector code restore, conversation rewind, and partial summarize", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      clearDaemonSession: vi.fn(async () => {}),
+      emitPhaseEvent: vi.fn(),
+      rewindConversationToMessage: vi.fn(async () => ({
+        ok: true,
+        sessionId: "conversation-app-smoke",
+        eventAlreadyEmitted: false,
+        event: {
+          id: "history-rewound-test",
+          type: "history_replaced",
+          acceptedAt: "2026-05-07T00:00:00.000Z",
+          payload: {
+            reason: "rewind",
+            messages: [],
+          },
+        },
+        displayText: "Conversation rewound",
+      })),
+      partialCompactFromMessage: vi.fn(async () => ({
+        ok: true,
+        sessionId: "conversation-app-smoke",
+        eventAlreadyEmitted: false,
+        event: {
+          id: "history-replaced-test",
+          type: "history_replaced",
+          acceptedAt: "2026-05-07T00:00:00.000Z",
+          payload: {
+            reason: "partial_compact",
+            messages: [],
+          },
+        },
+        displayText: "Conversation summarized",
+      })),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+        initialUserMessages={[{ role: "user", content: "summarize this" }]}
+      />,
+      async ({ output }) => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (promptProps.onMessageActionsEnter as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        const selectorProps = providerProbe.messageSelectorProps.at(-1)!;
+        await (selectorProps.onRestoreCode as (message: unknown) => Promise<void>)({
+          type: "user",
+          uuid: "restore-code",
+          message: { role: "user", content: "edit this" },
+        });
+        expect(providerProbe.fileHistoryRewind).toHaveBeenCalledWith(
+          expect.any(Function),
+          "restore-code",
+        );
+
+        const selectedMessage = (selectorProps.messages as unknown[])[0]!;
+        await (selectorProps.onRestoreMessage as (
+          message: unknown,
+        ) => Promise<void>)(selectedMessage);
+        await (selectorProps.onSummarize as (
+          message: unknown,
+          feedback?: string,
+          direction?: "from" | "up_to",
+        ) => Promise<void>)(selectedMessage, "keep decisions", "from");
+        (selectorProps.onClose as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(session.rewindConversationToMessage).toHaveBeenCalledWith({
+          messageOrdinal: 0,
+        });
+        expect(session.partialCompactFromMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            messageOrdinal: 0,
+            direction: "from",
+            feedback: "keep decisions",
+            signal: expect.any(AbortSignal),
+          }),
+        );
+        expect(session.emitPhaseEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "history_replaced",
+          }),
+        );
+        expect(session.clearDaemonSession).not.toHaveBeenCalled();
+        expect(providerProbe.promptProps.at(-1)).toEqual(
+          expect.objectContaining({
+            input: "summarize this",
+          }),
+        );
+        expect(output()).toMatch(/Conversation[\s\S]*summarized/);
       },
     );
   });

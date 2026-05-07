@@ -76,7 +76,12 @@ export interface AgenCJsonLineDaemonRequestClient {
   request<Method extends AgenCDaemonMethod>(
     method: Method,
     params?: JsonObject,
+    options?: AgenCDaemonRequestOptions,
   ): Promise<AgenCDaemonResultByMethod[Method]>;
+}
+
+export interface AgenCDaemonRequestOptions {
+  readonly signal?: AbortSignal;
 }
 
 export interface AgenCJsonLineDaemonTuiClient extends AgenCJsonLineDaemonRequestClient {
@@ -294,7 +299,7 @@ export function createAgenCJsonLineDaemonRequestClient(
   const timeoutMs =
     options.timeoutMs ?? resolveAgenCDaemonRequestTimeoutMs(options.env);
   return {
-    request: (method, params = {}) =>
+    request: (method, params = {}, _options = {}) =>
       requestDaemon(
         method,
         params,
@@ -633,9 +638,12 @@ function connectPersistentDaemonClient(
       failPending(new Error("Daemon connection closed"));
     };
     const client: AgenCJsonLineDaemonTuiClient = {
-      request: (method, params = {}) => {
+      request: (method, params = {}, options = {}) => {
         if (closed) {
           return Promise.reject(new Error("Daemon connection is closed"));
+        }
+        if (options.signal?.aborted === true) {
+          return Promise.reject(new Error("Daemon request cancelled"));
         }
         const id = nextRequestId;
         nextRequestId += 1;
@@ -646,8 +654,26 @@ function connectPersistentDaemonClient(
           params,
         };
         return new Promise<unknown>((requestResolve, requestReject) => {
+          let removeAbortListener: (() => void) | undefined;
+          const sendCancel = (): void => {
+            if (!pending.has(id) || closed) return;
+            const cancelId = nextRequestId;
+            nextRequestId += 1;
+            socket.write(
+              `${JSON.stringify({
+                jsonrpc: JSON_RPC_VERSION,
+                id: cancelId,
+                method: "request.cancel",
+                params: {
+                  requestId: id,
+                  reason: String(options.signal?.reason ?? "request.cancel"),
+                },
+              })}\n`,
+            );
+          };
           const requestTimeout = setTimeout(() => {
             pending.delete(id);
+            removeAbortListener?.();
             requestReject(
               new Error(`Timed out waiting for daemon response to ${method}`),
             );
@@ -655,14 +681,20 @@ function connectPersistentDaemonClient(
           pending.set(id, {
             resolve: (value) => {
               clearTimeout(requestTimeout);
+              removeAbortListener?.();
               requestResolve(value);
             },
             reject: (error) => {
               clearTimeout(requestTimeout);
+              removeAbortListener?.();
               requestReject(error);
             },
             timeout: requestTimeout,
           });
+          options.signal?.addEventListener("abort", sendCancel, { once: true });
+          removeAbortListener = () => {
+            options.signal?.removeEventListener("abort", sendCancel);
+          };
           socket.write(`${JSON.stringify(request)}\n`);
         }) as Promise<AgenCDaemonResultByMethod[typeof method]>;
       },

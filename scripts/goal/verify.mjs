@@ -273,6 +273,71 @@ const ITEM_EVIDENCE = {
       { pattern: "USER_TYPE", scope: "runtime/src/commands/files.ts" },
     ],
   },
+  "GAP-TUI-12": {
+    files: [
+      "runtime/src/tui/components/App.tsx",
+      "runtime/src/tui/components/App.render.test.tsx",
+      "runtime/src/tui/components/MessageSelector.tsx",
+      "runtime/src/tui/components/message-selector-filter.ts",
+      "runtime/src/tui/components/MessageSelector.filter.test.ts",
+      "runtime/src/tui/components/PromptInput/Notifications.tsx",
+      "runtime/src/session/session.ts",
+      "runtime/src/session/session.test.ts",
+      "runtime/src/session/message-history-conversion.ts",
+      "runtime/src/session/transcript-replacement.ts",
+      "runtime/src/services/compact/compact.ts",
+      "runtime/src/services/compact/compact.test.ts",
+      "runtime/src/tui/session-transcript.ts",
+      "runtime/src/tui/parity/session-transcript.test.ts",
+      "runtime/src/tui/daemon-session.ts",
+      "runtime/src/tui/daemon-session.contract.test.ts",
+      "runtime/src/app-server/agent-cli.ts",
+      "runtime/src/app-server/protocol/index.ts",
+      "runtime/src/app-server/protocol/schema.json",
+      "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+      "scripts/goal/verify.mjs",
+    ],
+    tests: [
+      "runtime/src/tui/components/App.render.test.tsx",
+      "runtime/src/session/session.test.ts",
+      "runtime/src/services/compact/compact.test.ts",
+      "runtime/src/tui/parity/session-transcript.test.ts",
+      "runtime/src/tui/daemon-session.contract.test.ts",
+      "runtime/src/tui/components/MessageSelector.filter.test.ts",
+      "runtime/src/app-server/protocol.contract.test.ts",
+      "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "useCostSummary\\(useFpsMetrics\\(\\)\\)", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "installCompactProgressControls\\(props\\.session", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "CostThresholdDialog", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "getTotalCost\\(\\)", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "getCurrentWorktreeSession\\(\\)", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "ExitFlow", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "fileHistoryRewind", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "partialCompactFromMessage", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "rewindConversationToMessage", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "selectableUserMessagesFilter", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "history_replaced", scope: "runtime/src/tui/session-transcript.ts" },
+      { pattern: "partialCompactConversationAsync", scope: "runtime/src/services/compact/compact.ts" },
+      { pattern: "No earlier messages to summarize", scope: "runtime/src/services/compact/compact.ts" },
+      { pattern: "Session\\.partialCompactFromMessage", scope: "runtime/src/session/session.test.ts" },
+      { pattern: "Session\\.rewindConversationToMessage", scope: "runtime/src/session/session.test.ts" },
+      { pattern: "request\\.cancel", scope: "runtime/src/app-server/agent-cli.ts" },
+      { pattern: "session\\.partialCompactFromMessage", scope: "runtime/src/app-server/protocol/index.ts" },
+      { pattern: "session\\.rewindConversationToMessage", scope: "runtime/src/app-server/protocol/index.ts" },
+      { pattern: "matches the session selector by rejecting empty visible user text", scope: "runtime/src/tui/components/MessageSelector.filter.test.ts" },
+      { pattern: "TokenWarning", scope: "runtime/src/tui/components/PromptInput/Notifications.tsx" },
+      { pattern: "installs compact progress controls and restores them on unmount", scope: "runtime/src/tui/components/App.render.test.tsx" },
+      { pattern: "routes exit through worktree ExitFlow", scope: "runtime/src/tui/components/App.render.test.tsx" },
+      { pattern: "wires MessageSelector code restore, conversation rewind, and partial summarize", scope: "runtime/src/tui/components/App.render.test.tsx" },
+    ],
+    grepNotPresent: [
+      { pattern: "This rewind action is unavailable in the live TUI shell", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "handleSummarizeUnavailable", scope: "runtime/src/tui/components/App.tsx" },
+      { pattern: "onSummarize=\\{handleSummarize\\s+as\\s+any\\}", scope: "runtime/src/tui/components/App.tsx" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6643,6 +6708,10 @@ async function gapGates(item) {
     assertGapTuiFilesCommandVisible();
     return;
   }
+  if (item.title.includes("Reconcile App.tsx vs REPL.tsx")) {
+    assertGapTuiAppShellReconciled();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7800,6 +7869,294 @@ function assertGapTuiFilesCommandVisible() {
     failGate("GAP-TUI-11 targeted /files visibility tests failed");
   }
   pass("GAP-TUI-11 targeted /files visibility tests passed");
+}
+
+function assertGapTuiAppShellReconciled() {
+  const rels = {
+    app: "runtime/src/tui/components/App.tsx",
+    appTest: "runtime/src/tui/components/App.render.test.tsx",
+    selectorFilter: "runtime/src/tui/components/message-selector-filter.ts",
+    selectorFilterTest: "runtime/src/tui/components/MessageSelector.filter.test.ts",
+    notifications: "runtime/src/tui/components/PromptInput/Notifications.tsx",
+    session: "runtime/src/session/session.ts",
+    sessionTest: "runtime/src/session/session.test.ts",
+    compact: "runtime/src/services/compact/compact.ts",
+    compactTest: "runtime/src/services/compact/compact.test.ts",
+    transcript: "runtime/src/tui/session-transcript.ts",
+    transcriptTest: "runtime/src/tui/parity/session-transcript.test.ts",
+    protocol: "runtime/src/app-server/protocol/index.ts",
+    agentLifecycle: "runtime/src/app-server/agent-lifecycle.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-12: missing ${rel}`);
+  }
+
+  const app = readFileSync(path.join(root, rels.app), "utf8");
+  const appTest = readFileSync(path.join(root, rels.appTest), "utf8");
+  const selectorFilter = readFileSync(path.join(root, rels.selectorFilter), "utf8");
+  const selectorFilterTest = readFileSync(path.join(root, rels.selectorFilterTest), "utf8");
+  const notifications = readFileSync(path.join(root, rels.notifications), "utf8");
+  const session = readFileSync(path.join(root, rels.session), "utf8");
+  const sessionTest = readFileSync(path.join(root, rels.sessionTest), "utf8");
+  const compact = readFileSync(path.join(root, rels.compact), "utf8");
+  const compactTest = readFileSync(path.join(root, rels.compactTest), "utf8");
+  const transcript = readFileSync(path.join(root, rels.transcript), "utf8");
+  const transcriptTest = readFileSync(path.join(root, rels.transcriptTest), "utf8");
+  const protocol = readFileSync(path.join(root, rels.protocol), "utf8");
+  const agentLifecycle = readFileSync(path.join(root, rels.agentLifecycle), "utf8");
+
+  if (/This rewind action is unavailable in the live TUI shell/.test(app)) {
+    failGate("GAP-TUI-12: old MessageSelector throwing fallback remains in App.tsx");
+  }
+  if (/handleSummarizeUnavailable/.test(app)) {
+    failGate("GAP-TUI-12: App must use real MessageSelector summarization, not the old unavailable fallback");
+  }
+  if (/clearDaemonSession/.test(app)) {
+    failGate("GAP-TUI-12: App MessageSelector handling must not substitute full daemon clear for rewind");
+  }
+
+  const missingEvidence = [
+    [
+      "App registers cost summary against FPS metrics",
+      /useCostSummary\(useFpsMetrics\(\)\)/,
+      app,
+    ],
+    [
+      "App marks cost threshold as shown before checking billing UI access",
+      /setHaveShownCostDialog\(true\)[\s\S]*if\s*\(hasConsoleBillingAccess\(\)\)/,
+      app,
+    ],
+    [
+      "App renders cost threshold dialog and persists acknowledgment",
+      /hasAcknowledgedCostThreshold:\s*true[\s\S]*<CostThresholdDialog\s+onDone=\{handleCostThresholdDone\}/,
+      app,
+    ],
+    [
+      "App installs compact progress controls on the live session",
+      /installCompactProgressControls\(props\.session,\s*\{[\s\S]*setStreamMode:\s*setCompactStreamMode[\s\S]*setResponseLength:\s*setCompactResponseLength[\s\S]*onCompactProgress:\s*handleCompactProgress[\s\S]*setSDKStatus:\s*setCompactSDKStatus/,
+      app,
+    ],
+    [
+      "App narrows compact progress events before reading them",
+      /function\s+isCompactProgressEvent[\s\S]*type\s*===\s*["']hooks_start["'][\s\S]*type\s*===\s*["']compact_start["'][\s\S]*type\s*===\s*["']compact_end["']/,
+      app,
+    ],
+    [
+      "App routes active worktree exit through ExitFlow",
+      /getCurrentWorktreeSession\(\)\s*!==\s*null[\s\S]*<ExitFlow[\s\S]*showWorktree=\{true\}/,
+      app,
+    ],
+    [
+      "App worktree ExitFlow onDone does not call Ink exit",
+      /onDone=\{\(\)\s*=>\s*\{[\s\S]*setExitFlow\(null\);[\s\S]*\}\}/,
+      app,
+    ],
+    [
+      "App restores code through utils fileHistoryRewind",
+      /import\s+\{\s*fileHistoryRewind\s*\}\s+from\s+["']\.\.\/\.\.\/utils\/fileHistory\.js["'][\s\S]*onRestoreCode=\{handleRestoreCode\}/,
+      app,
+    ],
+    [
+      "App summarize callback calls the session partial compaction surface",
+      /const\s+handleSummarize\s*=\s*useCallback[\s\S]*props\.session\.partialCompactFromMessage[\s\S]*messageOrdinal[\s\S]*direction[\s\S]*feedback[\s\S]*signal:\s*abortController\.signal/,
+      app,
+    ],
+    [
+      "App rewinds conversation through the session replacement surface",
+      /const\s+handleRestoreMessage\s*=\s*useCallback[\s\S]*props\.session\.rewindConversationToMessage[\s\S]*messageOrdinal[\s\S]*emitPhaseEvent\?\./,
+      app,
+    ],
+    [
+      "App clears summarize abort controller on rejection paths",
+      /try\s*\{[\s\S]*result\s*=\s*await\s+props\.session\.partialCompactFromMessage[\s\S]*\}\s*finally\s*\{[\s\S]*summarizeAbortRef\.current\s*===\s*abortController[\s\S]*summarizeAbortRef\.current\s*=\s*null/,
+      app,
+    ],
+    [
+      "App maps MessageSelector messages through selectable user-message ordinals",
+      /selectableMessages[\s\S]*filter\(selectableUserMessagesFilter[\s\S]*indexOf\(message\)/,
+      app,
+    ],
+    [
+      "MessageSelector and Session both reject empty selectable user messages",
+      /messageText\.length\s*===\s*0[\s\S]*return\s+false/,
+      selectorFilter,
+    ],
+    [
+      "App emits history replacement events only when the session did not emit them",
+      /!result\.eventAlreadyEmitted[\s\S]*result\.event\s*!==\s*undefined[\s\S]*emitPhaseEvent\?\./,
+      app,
+    ],
+    [
+      "App passes the real summarize handler to MessageSelector",
+      /onSummarize=\{handleSummarize\}/,
+      app,
+    ],
+    [
+      "Session implements partial compaction as an idle compact task",
+      /async\s+partialCompactFromMessage[\s\S]*beginIdleTask[\s\S]*kind:\s*["']compact["'][\s\S]*partialCompactConversationAsync/,
+      session,
+    ],
+    [
+      "Session implements conversation rewind as durable replacement history",
+      /async\s+rewindConversationToMessage[\s\S]*splitActiveHistory[\s\S]*activeHistory\.slice\(0,\s*selectedIndex\)[\s\S]*commitConversationRewind/,
+      session,
+    ],
+    [
+      "Session commits durable replacement history before replacing in-memory history",
+      /appendRollout[\s\S]*replacementHistory[\s\S]*await\s+this\.state\.with[\s\S]*sessionState\.history/,
+      session,
+    ],
+    [
+      "Partial compaction preserves assistant tool-call arguments in history conversions",
+      /toolCalls:\s*message\.toolCalls\.map[\s\S]*arguments:\s*call\.arguments/,
+      readFileSync(path.join(root, "runtime/src/session/message-history-conversion.ts"), "utf8"),
+    ],
+    [
+      "Transcript replacement event converts replacement history to renderer-safe messages",
+      /createHistoryReplacedEvent[\s\S]*llmHistoryToRuntimeTranscriptMessages/,
+      readFileSync(path.join(root, "runtime/src/session/transcript-replacement.ts"), "utf8"),
+    ],
+    [
+      "Transcript replacement preserves compact metadata for selector parity",
+      /COMPACT_BOUNDARY_PREFIX[\s\S]*COMPACT_SUMMARY_PREFIX[\s\S]*isCompactBoundary[\s\S]*isMeta:\s*true[\s\S]*isCompactSummary:\s*true/,
+      readFileSync(path.join(root, "runtime/src/session/transcript-replacement.ts"), "utf8"),
+    ],
+    [
+      "TUI transcript reducer resets on history_replaced",
+      /case\s+["']history_replaced["'][\s\S]*out\.length\s*=\s*0[\s\S]*payload[\s\S]*messages/,
+      transcript,
+    ],
+    [
+      "Compact service exposes async partial compaction with abort signal support",
+      /export\s+async\s+function\s+partialCompactConversationAsync[\s\S]*signal[\s\S]*throwIfAborted/,
+      compact,
+    ],
+    [
+      "Daemon protocol declares session partial compaction as an internal TUI method",
+      /AGENC_DAEMON_INTERNAL_METHODS[\s\S]*["']session\.partialCompactFromMessage["'][\s\S]*["']session\.rewindConversationToMessage["'][\s\S]*SessionPartialCompactFromMessageParams[\s\S]*SessionRewindConversationToMessageParams[\s\S]*SessionPartialCompactFromMessageResult[\s\S]*SessionRewindConversationToMessageResult/,
+      protocol,
+    ],
+    [
+      "TokenWarning remains owned by PromptInput notifications using live messages/model",
+      /import\s+\{\s*TokenWarning\s*\}[\s\S]*tokenCountFromLastAPIResponse\(messagesForTokenCount\)[\s\S]*<TokenWarning\s+tokenUsage=\{tokenUsage\}\s+model=\{mainLoopModel\}/,
+      notifications,
+    ],
+    [
+      "test covers compact controls install/cleanup",
+      /installs compact progress controls and restores them on unmount[\s\S]*expect\(session\.onCompactProgress\)\.toBeUndefined\(\)/,
+      appTest,
+    ],
+    [
+      "test covers worktree and non-worktree exit routing",
+      /routes exit through worktree ExitFlow only for active worktree sessions[\s\S]*mockWorktreeSession[\s\S]*providerProbe\.inkExit/,
+      appTest,
+    ],
+    [
+      "test covers cost threshold access and acknowledgment",
+      /renders and acknowledges the cost threshold dialog[\s\S]*hasAcknowledgedCostThreshold[\s\S]*marks the cost threshold as shown without rendering/,
+      appTest,
+    ],
+    [
+      "test covers code restore, conversation rewind, and partial summarize",
+      /wires MessageSelector code restore, conversation rewind, and partial summarize[\s\S]*fileHistoryRewind[\s\S]*rewindConversationToMessage[\s\S]*partialCompactFromMessage[\s\S]*expect\(session\.clearDaemonSession\)\.not\.toHaveBeenCalled/,
+      appTest,
+    ],
+    [
+      "session tests cover durable replacement and active compact task clear rejection",
+      /commits a durable replacement history[\s\S]*appendRollout[\s\S]*installs an active compact task[\s\S]*clearSession\(session\)/,
+      sessionTest,
+    ],
+    [
+      "session tests cover durable conversation rewind and compact metadata ordinal parity",
+      /Session\.rewindConversationToMessage[\s\S]*commits a durable replacement history before the selected active message[\s\S]*does not count compact boundary or summary messages as selectable/,
+      sessionTest,
+    ],
+    [
+      "compact tests cover both selector directions and abort",
+      /partialCompactConversationAsync[\s\S]*direction:\s*["']from["'][\s\S]*direction:\s*["']up_to["'][\s\S]*AbortController/,
+      compactTest,
+    ],
+    [
+      "compact tests cover up-to first-message boundary without provider call",
+      /up-to first message without provider call[\s\S]*expect\(provider\.chat\)\.not\.toHaveBeenCalled/,
+      compactTest,
+    ],
+    [
+      "transcript tests cover history replacement reset",
+      /history_replaced resets transcript to renderer-safe replacement messages[\s\S]*payload:\s*\{[\s\S]*messages:/,
+      transcriptTest,
+    ],
+    [
+      "transcript tests cover compact boundary and summary metadata",
+      /history_replaced preserves compact boundary and summary metadata[\s\S]*isMeta:\s*true[\s\S]*isCompactSummary:\s*true/,
+      transcriptTest,
+    ],
+    [
+      "selector filter tests cover empty user text parity",
+      /matches the session selector by rejecting empty visible user text[\s\S]*selectableUserMessagesFilter\(userMessage\(["']["']\)/,
+      selectorFilterTest,
+    ],
+    [
+      "selector filter tests cover compact replacement metadata parity",
+      /rejects compact boundary and summary replacement messages[\s\S]*isMeta:\s*true[\s\S]*isCompactSummary:\s*true/,
+      selectorFilterTest,
+    ],
+    [
+      "daemon session test covers the internal partial compaction RPC",
+      /partially compacts daemon-owned session history through the internal TUI RPC[\s\S]*session\.partialCompactFromMessage[\s\S]*messageOrdinal:\s*2/,
+      readFileSync(path.join(root, "runtime/src/tui/daemon-session.contract.test.ts"), "utf8"),
+    ],
+    [
+      "daemon session test covers the internal conversation rewind RPC",
+      /rewinds daemon-owned session history through the internal TUI RPC[\s\S]*session\.rewindConversationToMessage[\s\S]*messageOrdinal:\s*1/,
+      readFileSync(path.join(root, "runtime/src/tui/daemon-session.contract.test.ts"), "utf8"),
+    ],
+    [
+      "agent lifecycle test covers internal partial compaction dispatch",
+      /dispatches internal TUI partial compaction through JSON-RPC to daemon-owned history[\s\S]*session\.partialCompactFromMessage[\s\S]*allowPartialCompact/,
+      [
+        readFileSync(path.join(root, "runtime/src/app-server/agent-lifecycle.contract.test.ts"), "utf8"),
+        agentLifecycle,
+      ].join("\n"),
+    ],
+    [
+      "agent lifecycle test covers internal conversation rewind dispatch",
+      /dispatches internal TUI conversation rewind through JSON-RPC to daemon-owned history[\s\S]*session\.rewindConversationToMessage[\s\S]*allowConversationRewind/,
+      [
+        readFileSync(path.join(root, "runtime/src/app-server/agent-lifecycle.contract.test.ts"), "utf8"),
+        agentLifecycle,
+      ].join("\n"),
+    ],
+    [
+      "agent lifecycle test covers internal partial compaction cancellation",
+      /cancels internal TUI partial compaction through request\.cancel[\s\S]*REQUEST_CANCELLED[\s\S]*selector closed/,
+      readFileSync(path.join(root, "runtime/src/app-server/agent-lifecycle.contract.test.ts"), "utf8"),
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-12 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-12: App shell reconciliation evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/tui/components/App.render.test.tsx",
+    "src/session/session.test.ts",
+    "src/services/compact/compact.test.ts",
+    "src/tui/parity/session-transcript.test.ts",
+    "src/tui/daemon-session.contract.test.ts",
+    "src/tui/components/MessageSelector.filter.test.ts",
+    "src/app-server/protocol.contract.test.ts",
+    "src/app-server/agent-lifecycle.contract.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-12 targeted App shell tests failed");
+  }
+  pass("GAP-TUI-12 targeted App shell tests passed");
 }
 
 function subsystemDirGates(label, dir) {

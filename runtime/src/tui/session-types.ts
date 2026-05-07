@@ -1,6 +1,7 @@
 import type { LLMMessage } from "../llm/types.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { Event } from "../session/event-log.js";
+import type { HistoryReplacedEvent } from "../session/transcript-replacement.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
@@ -65,6 +66,45 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
+  partialCompactFromMessage?(params: {
+    readonly messageOrdinal: number;
+    readonly direction: "from" | "up_to";
+    readonly feedback?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<
+    | {
+        readonly ok: true;
+        readonly sessionId: string;
+        readonly eventAlreadyEmitted: boolean;
+        readonly event?: HistoryReplacedEvent;
+        readonly displayText?: string;
+      }
+    | {
+        readonly ok: false;
+        readonly sessionId: string;
+        readonly eventAlreadyEmitted: boolean;
+        readonly code?: string;
+        readonly message: string;
+      }
+  >;
+  rewindConversationToMessage?(params: {
+    readonly messageOrdinal: number;
+  }): Promise<
+    | {
+        readonly ok: true;
+        readonly sessionId: string;
+        readonly eventAlreadyEmitted: boolean;
+        readonly event?: HistoryReplacedEvent;
+        readonly displayText?: string;
+      }
+    | {
+        readonly ok: false;
+        readonly sessionId: string;
+        readonly eventAlreadyEmitted: boolean;
+        readonly code?: string;
+        readonly message: string;
+      }
+  >;
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,

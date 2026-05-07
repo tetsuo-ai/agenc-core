@@ -8,6 +8,7 @@ import {
   formatStructuredToolResult,
 } from "../session-transcript.js";
 import { pickToolResultDispatch } from "../tool-result-routing.js";
+import { createHistoryReplacedEvent } from "../../session/transcript-replacement.js";
 
 describe("AgenC TUI session transcript", () => {
   test("maps AgenC user and streaming assistant events into renderable messages", () => {
@@ -205,6 +206,82 @@ describe("AgenC TUI session transcript", () => {
     expect(transcript.messages.at(0)).toMatchObject({
       type: "user",
       message: { content: "after" },
+    });
+  });
+
+  test("history_replaced resets transcript to renderer-safe replacement messages", () => {
+    const replacement = {
+      type: "user",
+      message: { role: "user", content: "summary replacement" },
+      uuid: "replacement-user",
+      timestamp: "2026-05-07T00:00:00.000Z",
+    };
+    let state = createSessionTranscriptStateForTesting([
+      {
+        id: "before-replace",
+        msg: { type: "user_message", payload: { message: "before" } },
+      },
+    ]);
+
+    state = appendSessionTranscriptEventForTesting(state, {
+      id: "replace",
+      type: "history_replaced",
+      acceptedAt: "2026-05-07T00:00:00.000Z",
+      payload: {
+        reason: "partial_compact",
+        messages: [replacement],
+      },
+    });
+    state = appendSessionTranscriptEventForTesting(state, {
+      id: "replace",
+      type: "history_replaced",
+      acceptedAt: "2026-05-07T00:00:00.000Z",
+      payload: {
+        reason: "partial_compact",
+        messages: [{ ...replacement, uuid: "duplicate" }],
+      },
+    });
+
+    const transcript = adaptTranscriptEvents(state.events);
+
+    expect(transcript.messages).toEqual([replacement]);
+    expect(transcript.streamingText).toBeNull();
+    expect(transcript.isStreaming).toBe(false);
+    expect(transcript.inProgressToolUseIDs.size).toBe(0);
+  });
+
+  test("history_replaced preserves compact boundary and summary metadata", () => {
+    const replacement = createHistoryReplacedEvent({
+      acceptedAt: "2026-05-07T00:00:00.000Z",
+      replacementHistory: [
+        { role: "user", content: "<compact>Conversation compacted</compact>" },
+        {
+          role: "user",
+          content:
+            "This session is being continued from a previous conversation that ran out of context. Summary.",
+        },
+        { role: "user", content: "active prompt" },
+      ],
+    });
+
+    const transcript = adaptTranscriptEvents([replacement]);
+
+    expect(transcript.messages.at(0)).toMatchObject({
+      type: "user",
+      isMeta: true,
+      message: { content: "<compact>Conversation compacted</compact>" },
+    });
+    expect(transcript.messages.at(1)).toMatchObject({
+      type: "user",
+      isCompactSummary: true,
+      message: {
+        content:
+          "This session is being continued from a previous conversation that ran out of context. Summary.",
+      },
+    });
+    expect(transcript.messages.at(2)).toMatchObject({
+      type: "user",
+      message: { content: "active prompt" },
     });
   });
 
