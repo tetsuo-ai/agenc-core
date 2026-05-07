@@ -17,6 +17,11 @@ import type { OpenAIProviderConfig } from "./providers/openai/types.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import type { AnthropicProviderConfig } from "./providers/anthropic/types.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
+import {
+  BedrockProvider,
+  bedrockBaseURLForRegion,
+  type BedrockProviderConfig,
+} from "./providers/bedrock/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
@@ -74,6 +79,10 @@ type ProviderRuntimeExtra = Partial<
   readonly oauth?: Record<string, unknown>;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
+  readonly accessKeyId?: string;
+  readonly secretAccessKey?: string;
+  readonly sessionToken?: string;
+  readonly region?: string;
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
   readonly contextManagement?: Record<string, unknown>;
@@ -114,6 +123,10 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "oauth",
   "defaultHeaders",
   "fetchImpl",
+  "accessKeyId",
+  "secretAccessKey",
+  "sessionToken",
+  "region",
   "anthropicVersion",
   "betaHeaders",
   "contextManagement",
@@ -392,6 +405,16 @@ function readProviderRuntimeExtra(
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
 
+function readBedrockFactoryExtra(
+  source: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const extra = readProviderRuntimeExtra(source);
+  if (!extra) return undefined;
+  delete extra.secretAccessKey;
+  delete extra.sessionToken;
+  return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
 function readRuntimeExtra(
   extra: Record<string, unknown> | undefined,
 ): ProviderRuntimeExtra {
@@ -444,6 +467,18 @@ function readRuntimeExtra(
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
     ...(extra?.fetchImpl ? { fetchImpl: extra.fetchImpl as typeof fetch } : {}),
+    ...(readString(extra, "accessKeyId") !== undefined
+      ? { accessKeyId: readString(extra, "accessKeyId") }
+      : {}),
+    ...(readString(extra, "secretAccessKey") !== undefined
+      ? { secretAccessKey: readString(extra, "secretAccessKey") }
+      : {}),
+    ...(readString(extra, "sessionToken") !== undefined
+      ? { sessionToken: readString(extra, "sessionToken") }
+      : {}),
+    ...(readString(extra, "region") !== undefined
+      ? { region: readString(extra, "region") }
+      : {}),
     ...(readString(extra, "anthropicVersion") !== undefined
       ? { anthropicVersion: readString(extra, "anthropicVersion") }
       : {}),
@@ -1074,6 +1109,70 @@ export function createProvider(
           ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
             ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
             : {}),
+        },
+      });
+    }
+    case "amazon-bedrock": {
+      const region = firstNonEmpty(
+        extra.region,
+        process.env.AWS_BEDROCK_REGION,
+        process.env.AWS_REGION,
+        process.env.AWS_DEFAULT_REGION,
+      ) ?? "us-east-1";
+      const accessKeyId = requireApiKey(
+        "amazon-bedrock",
+        firstNonEmpty(extra.accessKeyId, opts.apiKey),
+        "AWS_ACCESS_KEY_ID",
+        process.env.AWS_BEDROCK_ACCESS_KEY_ID,
+        process.env.AWS_ACCESS_KEY_ID,
+      );
+      const secretAccessKey = firstNonEmpty(
+        extra.secretAccessKey,
+        process.env.AWS_BEDROCK_SECRET_ACCESS_KEY,
+        process.env.AWS_SECRET_ACCESS_KEY,
+      );
+      if (secretAccessKey === undefined) {
+        throw new Error(
+          "amazon-bedrock provider requires secretAccessKey — set AWS_SECRET_ACCESS_KEY or pass secretAccessKey in factory options extra",
+        );
+      }
+      const sessionToken = firstNonEmpty(
+        extra.sessionToken,
+        process.env.AWS_BEDROCK_SESSION_TOKEN,
+        process.env.AWS_SESSION_TOKEN,
+      );
+      const model = requireModel(
+        "amazon-bedrock",
+        opts.model,
+        process.env.AWS_BEDROCK_MODEL,
+        "AWS_BEDROCK_MODEL",
+        defaultModelFor("amazon-bedrock"),
+      );
+      const cfg: BedrockProviderConfig = {
+        ...buildCommonConfig(extra),
+        accessKeyId,
+        secretAccessKey,
+        ...(sessionToken !== undefined ? { sessionToken } : {}),
+        region,
+        model,
+        tools: opts.tools ? [...opts.tools] : undefined,
+        baseURL:
+          normalizeBaseURL(opts.baseURL) ??
+          normalizeBaseURL(process.env.AWS_BEDROCK_BASE_URL) ??
+          bedrockBaseURLForRegion(region),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      };
+      const factoryExtra = readBedrockFactoryExtra(
+        cfg as unknown as Record<string, unknown>,
+      );
+      return markFactoryProvider(new BedrockProvider(cfg), {
+        provider: "amazon-bedrock",
+        options: {
+          baseURL: cfg.baseURL,
+          model,
+          ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+          ...(factoryExtra ? { extra: factoryExtra } : {}),
         },
       });
     }

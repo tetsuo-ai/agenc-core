@@ -22,6 +22,7 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   groq: "llama-3.3-70b-versatile",
   deepseek: "deepseek-reasoner",
   gemini: "gemini-2.5-pro",
+  "amazon-bedrock": "amazon.nova-pro-v1:0",
   agenc: "agenc",
 } as const);
 
@@ -38,13 +39,11 @@ export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   groq: "https://api.groq.com/openai/v1",
   deepseek: "https://api.deepseek.com/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
+  "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
   agenc: "https://api.agenc.tech/v1",
 } as const satisfies Readonly<Record<BuiltInProviderSlug, string>>);
 
-export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({
-  "amazon-bedrock":
-    "AgenC does not expose an AWS SigV4 Amazon Bedrock runtime provider yet.",
-} as const);
+export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({} as const);
 
 export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   Partial<Record<BuiltInProviderSlug, string>>
@@ -58,6 +57,7 @@ export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   groq: "GROQ_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
   gemini: "GEMINI_API_KEY",
+  "amazon-bedrock": "AWS_ACCESS_KEY_ID",
 });
 
 export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
@@ -98,6 +98,11 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ]),
   deepseek: Object.freeze(["deepseek-reasoner"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
+  "amazon-bedrock": Object.freeze([
+    "amazon.nova-pro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "amazon.nova-micro-v1:0",
+  ]),
   agenc: Object.freeze(["agenc"]),
 });
 
@@ -127,6 +132,7 @@ const PROVIDER_DISPLAY_NAMES: Readonly<Record<BuiltInProviderSlug, string>> =
     groq: "Groq",
     deepseek: "DeepSeek",
     gemini: "Gemini",
+    "amazon-bedrock": "Amazon Bedrock",
     agenc: "AgenC",
   });
 

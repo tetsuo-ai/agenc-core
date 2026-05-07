@@ -43,6 +43,17 @@ const PROVIDERS_REQUIRING_KEY = new Set<ProviderName>([
   "groq",
   "deepseek",
   "gemini",
+  "amazon-bedrock",
+]);
+
+const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
+  "grok",
+  "openai",
+  "anthropic",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "gemini",
 ]);
 
 const LOCAL_PROVIDERS = new Set<ProviderName>([
@@ -210,6 +221,9 @@ async function resolveProviderAvailabilityEntry(params: {
   });
   const keyEnvVar = credential.sourceEnvVar ?? credential.primaryEnvVar;
   const hasKey = credential.apiKey !== undefined;
+  const hasRequiredAwsSecret = params.provider !== "amazon-bedrock" ||
+    firstNonEmptyString(params.env.AWS_BEDROCK_SECRET_ACCESS_KEY) !== undefined ||
+    firstNonEmptyString(params.env.AWS_SECRET_ACCESS_KEY) !== undefined;
   const subscriptionTier = params.subscription.tier;
   const paidSubscription = isPaidSubscriptionTier(subscriptionTier);
   const localUrl = localProviderProbeUrl(
@@ -273,6 +287,18 @@ async function resolveProviderAvailabilityEntry(params: {
   }
 
   if (PROVIDERS_REQUIRING_KEY.has(params.provider)) {
+    if (hasKey && !hasRequiredAwsSecret) {
+      return buildEntry({
+        provider: params.provider,
+        model,
+        keyStatus: "missing",
+        localProbe,
+        subscription: params.subscription,
+        usable: false,
+        detail: "set AWS_SECRET_ACCESS_KEY for Amazon Bedrock SigV4 signing",
+        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+      });
+    }
     if (hasKey) {
       return buildEntry({
         provider: params.provider,
@@ -285,7 +311,11 @@ async function resolveProviderAvailabilityEntry(params: {
         ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
       });
     }
-    if (params.subscription.authBackendKind === "remote" && paidSubscription) {
+    if (
+      MANAGED_KEY_PROVIDERS.has(params.provider) &&
+      params.subscription.authBackendKind === "remote" &&
+      paidSubscription
+    ) {
       const managedKey = await verifyManagedProviderKey({
         authBackend: params.authBackend,
         provider: params.provider,
@@ -443,6 +473,8 @@ function providerApiKeyEnvCandidates(provider: ProviderName): readonly string[] 
       const envVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
       return envVar !== undefined ? [envVar] : [];
     }
+    case "amazon-bedrock":
+      return ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"];
     case "agenc":
     case "ollama":
       return [];

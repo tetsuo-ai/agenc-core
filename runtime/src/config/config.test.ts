@@ -582,6 +582,29 @@ describe("provider resolution (T13)", () => {
     });
   });
 
+  test("resolveProviderSettings honors custom Bedrock access-key env", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      providers: {
+        "amazon-bedrock": {
+          api_key_env: "CUSTOM_BEDROCK_ACCESS_KEY_ID",
+          default_model: "amazon.nova-lite-v1:0",
+        },
+      },
+    });
+
+    const settings = resolveProviderSettings("amazon-bedrock", config, {
+      CUSTOM_BEDROCK_ACCESS_KEY_ID: "custom-bedrock-access-key",
+      AWS_ACCESS_KEY_ID: "default-bedrock-access-key",
+    });
+
+    expect(settings).toMatchObject({
+      provider: "amazon-bedrock",
+      apiKeyEnvVar: "CUSTOM_BEDROCK_ACCESS_KEY_ID",
+      apiKey: "custom-bedrock-access-key",
+      defaultModel: "amazon.nova-lite-v1:0",
+    });
+  });
+
   test("resolveProviderSettings normalizes provider fallback targets", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
@@ -1185,6 +1208,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
     xai: ["grok-4-fast", "grok-3"],
     openrouter: ["grok-4-fast", "gpt-4o"],
     openai: ["gpt-4o", "o1"],
+    "amazon-bedrock": ["amazon.nova-pro-v1:0"],
   };
 
   test("unique slug resolves to single provider", () => {
@@ -1221,6 +1245,14 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
     expect(out).toEqual({ provider: "xai", model: "grok-4-fast" });
   });
 
+  test("provider model IDs may contain colons", () => {
+    const out = resolveModelDisambiguated("amazon.nova-pro-v1:0", catalog);
+    expect(out).toEqual({
+      provider: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+    });
+  });
+
   test("provider:model with invalid provider throws UnknownModelError", () => {
     expect(() =>
       resolveModelDisambiguated("bogus:grok-4-fast", catalog),
@@ -1237,6 +1269,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
     expect(caught).toBeInstanceOf(UnknownModelError);
     const err = caught as UnknownModelError;
     expect([...err.providers].sort()).toEqual([
+      "amazon-bedrock",
       "openai",
       "openrouter",
       "xai",
@@ -2174,6 +2207,13 @@ describe("env: resolvers", () => {
         OPENAI_API_KEY: "local",
       }),
     ).toBe("specific");
+    expect(resolveProviderApiKey("amazon-bedrock", {
+      AWS_ACCESS_KEY_ID: "aws",
+    })).toBe("aws");
+    expect(resolveProviderApiKey("amazon-bedrock", {
+      AWS_BEDROCK_ACCESS_KEY_ID: "bedrock-aws",
+      AWS_ACCESS_KEY_ID: "aws",
+    })).toBe("bedrock-aws");
     expect(resolveProviderApiKey("ollama", {})).toBeUndefined();
   });
 
@@ -2200,6 +2240,12 @@ describe("env: resolvers", () => {
         OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
       }),
     ).toBe("http://127.0.0.1:9000/v1");
+    expect(
+      resolveProviderBaseURL("amazon-bedrock", {
+        AWS_BEDROCK_BASE_URL:
+          "https://bedrock-runtime.us-west-2.amazonaws.com",
+      }),
+    ).toBe("https://bedrock-runtime.us-west-2.amazonaws.com");
   });
 });
 

@@ -416,6 +416,22 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsThinkingHistory: isGeminiThinkingModel,
     acceptsReasoningEffort: false,
   },
+  "amazon-bedrock": {
+    supportsToolUse: true,
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
+    supportsProviderNativeWebSearch: false,
+    supportsExtendedThinking: false,
+    acceptsImageHistory: false,
+    acceptsAudioHistory: false,
+    acceptsThinkingHistory: false,
+    acceptsReasoningEffort: false,
+  },
   lmstudio: {
     // LM Studio is model-dependent, so use the same local-model heuristic as
     // Ollama instead of claiming universal multimodal support.

@@ -94,8 +94,14 @@ function envModelForProvider(
   provider: ProviderName,
   env: NodeJS.ProcessEnv,
 ): string | undefined {
-  if (provider !== "openai-compatible") return undefined;
-  return firstNonEmpty(env.OPENAI_COMPATIBLE_MODEL, env.OPENAI_MODEL);
+  switch (provider) {
+    case "openai-compatible":
+      return firstNonEmpty(env.OPENAI_COMPATIBLE_MODEL, env.OPENAI_MODEL);
+    case "amazon-bedrock":
+      return firstNonEmpty(env.AWS_BEDROCK_MODEL);
+    default:
+      return undefined;
+  }
 }
 
 function configuredStartupModelForProvider(
