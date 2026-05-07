@@ -67,7 +67,7 @@ import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { drainPendingExtraction } from "../services/extractMemories/extractMemories.js";
 import { runMagicDocsPostSamplingHook } from "../services/MagicDocs/magicDocs.js";
-import { runSessionMemoryPostSamplingHook } from "../services/SessionMemory/sessionMemory.js";
+import { runSessionMemoryPostSamplingHook } from "../memory/session/sessionMemory.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";

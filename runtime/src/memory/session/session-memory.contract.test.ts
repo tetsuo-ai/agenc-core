@@ -7,13 +7,14 @@ const root = resolve(process.cwd(), "..");
 describe("session memory runtime contract", () => {
   it("keeps runtime, utility, prompt, and executable test files live", () => {
     for (const rel of [
-      "runtime/src/services/SessionMemory/sessionMemory.ts",
-      "runtime/src/services/SessionMemory/sessionMemoryUtils.ts",
-      "runtime/src/services/SessionMemory/prompts.ts",
-      "runtime/src/services/SessionMemory/sessionMemory.test.ts",
+      "runtime/src/memory/session/sessionMemory.ts",
+      "runtime/src/memory/session/sessionMemoryUtils.ts",
+      "runtime/src/memory/session/prompts.ts",
+      "runtime/src/memory/session/sessionMemory.test.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }
+    expect(existsSync(resolve(root, "runtime/src/services/SessionMemory"))).toBe(false);
   });
 
   it("wires the post-sampling hook into the live turn loop", () => {

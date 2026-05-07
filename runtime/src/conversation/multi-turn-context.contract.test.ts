@@ -24,7 +24,7 @@ import {
   startNewTurn,
   type MultiTurnMessage,
 } from "./multi-turn-context.js";
-import { resolveSessionMemoryPath } from "../services/SessionMemory/sessionMemoryUtils.js";
+import { resolveSessionMemoryPath } from "../memory/session/sessionMemoryUtils.js";
 
 const POSIX = platform() !== "win32";
 const posixTest = POSIX ? test : test.skip;

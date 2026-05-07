@@ -19,7 +19,7 @@ import {
   isEnvTruthy,
   resolveAgenCConfigHomeDir,
 } from "../../utils/envUtils.js";
-import { sanitizePathForProjectKey } from "../extractMemories/memory-paths.js";
+import { sanitizePathForProjectKey } from "../../services/extractMemories/memory-paths.js";
 
 const EXTRACTION_WAIT_TIMEOUT_MS = 15_000;
 const EXTRACTION_STALE_THRESHOLD_MS = 60_000;
