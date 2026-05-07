@@ -36,7 +36,7 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
       expect(cmd.name.length).toBeGreaterThan(0);
       expect(typeof cmd.description).toBe("string");
       expect(cmd.description.length).toBeGreaterThan(0);
-      if (cmd.name === "memory") {
+      if (cmd.name === "btw" || cmd.name === "memory") {
         expect((cmd as { type: string }).type).toBe("local-jsx");
       } else {
         expect((cmd as { type: string }).type).toBe("local");
@@ -49,6 +49,16 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(memory).toBeDefined();
     expect(memory?.type).toBe("local-jsx");
     expect(memory?.description).toBe("Edit AgenC memory files");
+  });
+
+  it("uses the interactive local JSX descriptor for /btw", () => {
+    const btw = listTuiCommandList().find((cmd) => cmd.name === "btw");
+    expect(btw).toBeDefined();
+    expect(btw?.type).toBe("local-jsx");
+    expect(btw?.immediate).toBe(true);
+    expect(btw?.description).toBe(
+      "Ask a quick side question without interrupting the main conversation",
+    );
   });
 
   it("excludes commands marked userInvocable=false", () => {
