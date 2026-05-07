@@ -32,7 +32,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { findItem, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
+import { findItem, parseItems, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
 import {
   RUNTIME_UPSTREAM_SCAN_PATHS,
   collectRuntimeUpstreamReferences,
@@ -109,6 +109,12 @@ const ITEM_EVIDENCE = {
       "runtime/src/tui/parity/message-adapter.streaming-tool-use.parity.test.ts",
       "runtime/src/tui/parity/message-adapter.no-runningtoolprogress.parity.test.ts",
       "runtime/src/tui/parity/use-session-transcript.streaming-tool-use.parity.test.ts",
+    ],
+  },
+  "ZC-15": {
+    files: ["scripts/goal/verify.mjs"],
+    grepPresent: [
+      { pattern: "assertZc15ChecklistHandoffClarified", scope: "scripts/goal/verify.mjs" },
     ],
   },
   "OC-06": {
@@ -6120,6 +6126,50 @@ function assertZc08NoDeletedShimSubjectTests() {
   }
 }
 
+function assertZc15ChecklistHandoffClarified() {
+  const checklistPath = path.join(mainCheckoutRoot(), "PORT_CHECKLIST.md");
+  if (!existsSync(checklistPath)) {
+    failGate(`ZC-15: checklist not found at ${checklistPath}`);
+  }
+  const checklist = readFileSync(checklistPath, "utf8");
+  const items = parseItems(checklist);
+  const z03 = items.find((candidate) => candidate.id === "Z-03");
+  const zc04 = items.find((candidate) => candidate.id === "ZC-04");
+  if (!z03 || !zc04) {
+    failGate("ZC-15: expected Z-03 and ZC-04 rows to exist in PORT_CHECKLIST.md");
+  }
+
+  const requiredUpstreamAdapterFiles = [
+    "upstream-agent-list.ts",
+    "upstream-attachments.ts",
+    "upstream-commands.ts",
+    "upstream-mcp-clients.ts",
+    "upstream-model-switch.ts",
+    "upstream-tool-result-dispatch.ts",
+  ];
+  const missingFromZ03 = requiredUpstreamAdapterFiles.filter(
+    (file) => !z03.body.includes(`\`${file}\``),
+  );
+  if (missingFromZ03.length > 0) {
+    failGate(`ZC-15: Z-03 row must enumerate upstream adapter file(s): ${missingFromZ03.join(", ")}`);
+  }
+
+  const zc04Text = `${zc04.title} ${zc04.body}`;
+  if (!zc04.dependsOn.includes("Z-03")) {
+    failGate("ZC-15: ZC-04 row must list Z-03 in its Depends clause.");
+  }
+  const requiredZc04Phrases = [
+    "does NOT touch the 6 `upstream-*.ts` files",
+    "Z-03's job exclusively",
+  ];
+  const missingFromZc04 = requiredZc04Phrases.filter(
+    (phrase) => !zc04Text.includes(phrase),
+  );
+  if (missingFromZc04.length > 0) {
+    failGate(`ZC-15: ZC-04 row is missing handoff phrase(s): ${missingFromZc04.join(", ")}`);
+  }
+}
+
 function assertZc22ElicitationRendererInlined() {
   const appRel = "runtime/src/tui/components/App.tsx";
   const appPath = path.join(root, appRel);
@@ -8297,6 +8347,7 @@ async function cleanupGates(item) {
       "ZC-12": { custom: assertZc12DonorPortArtifactsGone },
       "ZC-13": { gone: ["runtime/src/tui/bridges"] },
       "ZC-14": { gone: ["runtime/src/llm/grok/adapter.ts", "runtime/src/llm/grok/adapter-utils.ts"] },
+      "ZC-15": { custom: assertZc15ChecklistHandoffClarified },
       "ZC-16": { gone: ["runtime/src/agenc/adapters/dynamic-loaders.js", "runtime/src/agenc/adapters/dynamic-loaders.d.ts"] },
       "ZC-17": {
         gone: ["runtime/src/config/upstream-init.ts", "runtime/src/config/upstream-init.test.ts"],
