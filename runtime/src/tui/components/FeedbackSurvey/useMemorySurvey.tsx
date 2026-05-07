@@ -10,7 +10,7 @@ import { FILE_READ_TOOL_NAME } from '../../../tools/FileReadTool/prompt';
 import type { Message } from '../../../types/message';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from '../../../utils/envUtils';
-import { isAutoManagedMemoryFile } from '../../../memory/detection';
+import { isAutoManagedMemoryFile } from '../../../memory/project-memory.js';
 import { extractTextContent, getLastAssistantMessage } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logOTelEvent } from '../../../utils/telemetry/events.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { submitTranscriptShare } from './submitTranscriptShare';

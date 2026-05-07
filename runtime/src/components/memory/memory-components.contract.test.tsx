@@ -10,7 +10,7 @@ describe("memory component contract", () => {
       "runtime/src/components/MemoryUsageIndicator.tsx",
       "runtime/src/components/memory/MemoryFileSelector.tsx",
       "runtime/src/components/memory/MemoryUpdateNotification.tsx",
-      "runtime/src/components/memory/memoryFileSelectorPaths.ts",
+      "runtime/src/memory/project-memory.ts",
       "runtime/src/components/messages/UserMemoryInputMessage.tsx",
     ]) {
       expect(existsSync(resolve(root, target))).toBe(true);

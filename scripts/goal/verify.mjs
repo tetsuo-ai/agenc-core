@@ -242,6 +242,27 @@ const ITEM_EVIDENCE = {
     ],
     runStrict: true,
   },
+  "MM-03": {
+    files: [
+      "runtime/src/memory/project-memory.ts",
+      "runtime/src/memory/project-memory.test.ts",
+      "runtime/src/memory/project-memory-routing.test.ts",
+      "parity/MM-03-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "getProjectMemoryPathForSelector", scope: "runtime/src/memory/project-memory.ts" },
+      { pattern: "MEMORY_MENTION_SYNTAX", scope: "runtime/src/memory/project-memory.ts" },
+      { pattern: "isMemoryMention", scope: "runtime/src/memory/project-memory.ts" },
+      { pattern: "@memory", scope: "runtime/src/memory/project-memory.ts" },
+      { pattern: "project-memory-api", scope: "parity/MM-03-parity.json" },
+    ],
+    tests: [
+      "runtime/src/memory/project-memory.test.ts",
+      "runtime/src/memory/project-memory-routing.test.ts",
+      "runtime/src/components/memory/memory-components.contract.test.tsx",
+      "runtime/src/memory-wiring.contract.test.ts",
+    ],
+  },
   "RT-11": {
     files: [
       "runtime/src/conversation/realtime/instructions/markers.ts",
@@ -5813,10 +5834,51 @@ async function memoryGates(item) {
     return;
   }
   if (id === "MM-03") {
-    // Mention syntax / @memory.
-    const found = grepRepo("@memor|mentionSyntax|memoryMention", "runtime/src");
-    if (!found) failGate("MM-03: memory mention syntax not found");
-    pass("MM-03: memory mention referenced");
+    const requiredSymbols = [
+      ["runtime/src/memory/project-memory.ts", "getProjectMemoryPathForSelector"],
+      ["runtime/src/memory/project-memory.ts", "MEMORY_MENTION_SYNTAX"],
+      ["runtime/src/memory/project-memory.ts", "isMemoryMention"],
+      ["runtime/src/utils/attachments.ts", "isMemoryMention"],
+      ["runtime/src/components/memory/MemoryFileSelector.tsx", "../../memory/project-memory.js"],
+      ["runtime/src/tui/components/memory/MemoryFileSelector.tsx", "../../../memory/project-memory.js"],
+      ["runtime/src/tui/components/FeedbackSurvey/useMemorySurvey.tsx", "../../../memory/project-memory.js"],
+      ["runtime/src/tools/FileReadTool/FileReadTool.ts", "../../memory/project-memory.js"],
+      ["parity/MM-03-parity.json", "project-memory-api"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const source = readFileSync(path.join(root, rel), "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`MM-03: ${symbol} missing from ${rel}`);
+      }
+    }
+
+    const directDetectionImports = walkFiles(path.join(root, "runtime/src"))
+      .filter((f) => /\.(ts|tsx|mts|cts)$/.test(f))
+      .filter((f) => !f.split(path.sep).join("/").includes("/runtime/src/agenc/upstream/"))
+      .filter((f) => /from\s+["'][^"']*memory\/detection(?:\.js)?["']/.test(readFileSync(f, "utf8")));
+    if (directDetectionImports.length > 0) {
+      failGate(
+        `MM-03: direct memory/detection imports remain:\n  ${directDetectionImports.map((f) => path.relative(root, f)).join("\n  ")}`,
+      );
+    }
+    const fileReadTool = readFileSync(path.join(root, "runtime/src/tools/FileReadTool/FileReadTool.ts"), "utf8");
+    if (/function\s+detectSessionFileType\b/.test(fileReadTool)) {
+      failGate("MM-03: FileReadTool still carries a shadow detectSessionFileType implementation");
+    }
+
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/project-memory.test.ts",
+      "src/memory/project-memory-routing.test.ts",
+      "src/components/memory/memory-components.contract.test.tsx",
+      "src/memory-wiring.contract.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-03 targeted Vitest suite failed");
+    pass("MM-03: project memory API and mention syntax verified");
     return;
   }
   if (id === "MM-04") {

@@ -44,8 +44,9 @@ import {
   getMemoryFiles,
   getMemoryFilesForNestedDirectory,
   getConditionalRulesForCwdLevelDirectory,
+  isMemoryMention,
   type MemoryFileInfo,
-} from '../memory/agencmd.js'
+} from '../memory/project-memory.js'
 import { dirname, parse, relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../tui/state/selectors.js'
@@ -2780,7 +2781,11 @@ export function extractAtMentionedFiles(content: string): string[] {
   // Extract quoted mentions first (skip agent mentions like @"code-reviewer (agent)")
   let match
   while ((match = quotedAtMentionRegex.exec(content)) !== null) {
-    if (match[2] && !match[2].endsWith(' (agent)')) {
+    if (
+      match[2] &&
+      !match[2].endsWith(' (agent)') &&
+      !isMemoryMention(`@${match[2]}`)
+    ) {
       quotedMatches.push(match[2]) // The content inside quotes
     }
   }
@@ -2790,7 +2795,7 @@ export function extractAtMentionedFiles(content: string): string[] {
   regularMatchArray.forEach(match => {
     const filename = match.slice(match.indexOf('@') + 1)
     // Don't include if it starts with a quote (already handled as quoted)
-    if (!filename.startsWith('"')) {
+    if (!filename.startsWith('"') && !isMemoryMention(`@${filename}`)) {
       regularMatches.push(filename)
     }
   })
@@ -2824,7 +2829,8 @@ export function extractMcpResourceMentions(content: string): string[] {
       // `:/` is always a Windows drive-letter prefix, never a real MCP
       // resource. This covers the unquoted `@C:\Users\...` case that
       // the regex alone cannot disambiguate from `@server:resource`.
-      .filter(m => !/^[A-Za-z]:[\\/]/.test(m)),
+      .filter(m => !/^[A-Za-z]:[\\/]/.test(m))
+      .filter(m => !isMemoryMention(`@${m}`)),
   )
 }
 
