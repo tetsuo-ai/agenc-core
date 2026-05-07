@@ -63,6 +63,34 @@ export class AgenCConfigEditsBuilder {
 
   constructor(private readonly agencHome: string) {}
 
+  setMcpServer(
+    name: string,
+    config: Readonly<Record<string, unknown>>,
+  ): this {
+    this.edits.push((raw) => {
+      const existing = isPlainRecord(raw.mcp_servers)
+        ? cloneRecord(raw.mcp_servers)
+        : {};
+      existing[name] = cloneRecord(config);
+      raw.mcp_servers = existing;
+    });
+    return this;
+  }
+
+  removeMcpServer(name: string): this {
+    this.edits.push((raw) => {
+      if (!isPlainRecord(raw.mcp_servers)) return;
+      const next = cloneRecord(raw.mcp_servers);
+      delete next[name];
+      if (Object.keys(next).length === 0) {
+        delete raw.mcp_servers;
+      } else {
+        raw.mcp_servers = next;
+      }
+    });
+    return this;
+  }
+
   setPersonality(personality: Personality | null): this {
     this.edits.push((raw) => {
       if (personality === null) {

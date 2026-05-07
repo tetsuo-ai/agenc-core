@@ -6663,10 +6663,71 @@ async function gapGates(item) {
     assertGapToolsNullStubToolsRemoved();
     return;
   }
+  if (item.title.includes("Bridge config namespaces")) {
+    assertGapMcpBridgeConfigNamespaces();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapMcpBridgeConfigNamespaces() {
+  const serviceConfigRel = "runtime/src/services/mcp/config.ts";
+  const serviceConfig = readFileSync(path.join(root, serviceConfigRel), "utf8");
+  if (!/addUserMcpServerToToml/.test(serviceConfig) || !/getUserMcpConfigsFromToml/.test(serviceConfig)) {
+    failGate("GAP-MCP-01: addMcpConfig/getMcpConfigsByScope must use canonical TOML user helpers");
+  }
+  if (/saveGlobalConfig/.test(serviceConfig)) {
+    failGate("GAP-MCP-01: user MCP config must not write legacy ~/.agenc.json via saveGlobalConfig");
+  }
+
+  const tomlConfigRel = "runtime/src/services/mcp/user-config-toml.ts";
+  const tomlConfig = readFileSync(path.join(root, tomlConfigRel), "utf8");
+  const requiredServiceEvidence = [
+    "AgenCConfigEditsBuilder",
+    "toCanonicalMcpServerConfig",
+    "mcp_servers",
+    "endpoint: url",
+    "getUserMcpConfigsFromToml",
+  ];
+  for (const needle of requiredServiceEvidence) {
+    if (!tomlConfig.includes(needle)) {
+      failGate(`GAP-MCP-01: ${tomlConfigRel} is missing canonical TOML evidence: ${needle}`);
+    }
+  }
+
+  const editRel = "runtime/src/config/edit.ts";
+  const editSource = readFileSync(path.join(root, editRel), "utf8");
+  if (!/setMcpServer\(/.test(editSource) || !/removeMcpServer\(/.test(editSource)) {
+    failGate("GAP-MCP-01: config.toml editor must expose MCP server edits");
+  }
+
+  const addCommandRel = "runtime/src/commands/mcp/addCommand.ts";
+  const addCommand = readFileSync(path.join(root, addCommandRel), "utf8");
+  if (!/Configuration scope \(user or project\)[\s\S]*'user'/.test(addCommand)) {
+    failGate("GAP-MCP-01: mcp add must default to live user config.toml scope");
+  }
+
+  const testRel = "runtime/src/services/mcp/config-toml-namespace.test.ts";
+  if (!existsSync(path.join(root, testRel))) {
+    failGate(`GAP-MCP-01: missing regression test ${testRel}`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/services/mcp/config-toml-namespace.test.ts",
+    "src/session/mcp-startup.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-01 targeted MCP config namespace tests failed");
+  }
+
+  pass("GAP-MCP-01: mcp add user config writes canonical config.toml mcp_servers");
 }
 
 function assertGapToolsNullStubToolsRemoved() {

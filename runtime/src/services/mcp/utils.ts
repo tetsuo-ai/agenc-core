@@ -3,6 +3,7 @@ import { createHash } from 'crypto'
 import { join } from 'path'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
+import { resolveAgencHome } from '../../config/env.js'
 import type { AgentMcpServerInfo } from '../../components/mcp/types.js'
 import type { Tool } from '../../tools/Tool.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
@@ -263,7 +264,7 @@ export function isMcpCommand(command: Command): boolean {
 export function describeMcpConfigFilePath(scope: ConfigScope): string {
   switch (scope) {
     case 'user':
-      return getGlobalAgenCFile()
+      return join(resolveAgencHome(process.env), 'config.toml')
     case 'project':
       return join(getCwd(), '.mcp.json')
     case 'local':

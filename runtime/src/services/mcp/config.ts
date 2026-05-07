@@ -10,9 +10,7 @@ import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
 import {
   getCurrentProjectConfig,
-  getGlobalConfig,
   saveCurrentProjectConfig,
-  saveGlobalConfig,
 } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -56,6 +54,12 @@ import {
   type ScopedMcpServerConfig,
 } from './types.js'
 import { getProjectMcpServerStatus } from './utils.js'
+import {
+  addUserMcpServerToToml,
+  getUserMcpConfigsFromToml,
+  getUserMcpServersFromToml,
+  removeUserMcpServerFromToml,
+} from './user-config-toml.js'
 /**
  * Get the path to the managed MCP configuration file
  */
@@ -653,6 +657,11 @@ export async function addMcpConfig(
       `Cannot add MCP server: enterprise MCP configuration is active and has exclusive control over MCP servers`,
     )
   }
+  if (scope === 'local') {
+    throw new Error(
+      'Cannot add MCP server to local config: local MCP config is not loaded by the runtime. Use user config instead.',
+    )
+  }
 
   // Validate config first (needed for command-based policy checks)
   const result = McpServerConfigSchema().safeParse(config)
@@ -688,16 +697,9 @@ export async function addMcpConfig(
       break
     }
     case 'user': {
-      const globalConfig = getGlobalConfig()
-      if (globalConfig.mcpServers?.[name]) {
+      const userServers = await getUserMcpServersFromToml()
+      if (userServers[name]) {
         throw new Error(`MCP server ${name} already exists in user config`)
-      }
-      break
-    }
-    case 'local': {
-      const projectConfig = getCurrentProjectConfig()
-      if (projectConfig.mcpServers?.[name]) {
-        throw new Error(`MCP server ${name} already exists in local config`)
       }
       break
     }
@@ -734,24 +736,7 @@ export async function addMcpConfig(
     }
 
     case 'user': {
-      saveGlobalConfig(current => ({
-        ...current,
-        mcpServers: {
-          ...current.mcpServers,
-          [name]: validatedConfig,
-        },
-      }))
-      break
-    }
-
-    case 'local': {
-      saveCurrentProjectConfig(current => ({
-        ...current,
-        mcpServers: {
-          ...current.mcpServers,
-          [name]: validatedConfig,
-        },
-      }))
+      await addUserMcpServerToToml(name, validatedConfig)
       break
     }
 
@@ -770,6 +755,12 @@ export async function removeMcpConfig(
   name: string,
   scope: ConfigScope,
 ): Promise<void> {
+  if (scope === 'local') {
+    throw new Error(
+      'Cannot remove MCP server from local config: local MCP config is not loaded by the runtime. Use user config instead.',
+    )
+  }
+
   switch (scope) {
     case 'project': {
       const { servers: existingServers } = getProjectMcpConfigsFromCwd()
@@ -798,33 +789,11 @@ export async function removeMcpConfig(
     }
 
     case 'user': {
-      const config = getGlobalConfig()
-      if (!config.mcpServers?.[name]) {
+      const userServers = await getUserMcpServersFromToml()
+      if (!userServers[name]) {
         throw new Error(`No user-scoped MCP server found with name: ${name}`)
       }
-      saveGlobalConfig(current => {
-        const { [name]: _, ...restMcpServers } = current.mcpServers ?? {}
-        return {
-          ...current,
-          mcpServers: restMcpServers,
-        }
-      })
-      break
-    }
-
-    case 'local': {
-      // Check if server exists before updating
-      const config = getCurrentProjectConfig()
-      if (!config.mcpServers?.[name]) {
-        throw new Error(`No project-local MCP server found with name: ${name}`)
-      }
-      saveCurrentProjectConfig(current => {
-        const { [name]: _, ...restMcpServers } = current.mcpServers ?? {}
-        return {
-          ...current,
-          mcpServers: restMcpServers,
-        }
-      })
+      await removeUserMcpServerFromToml(name)
       break
     }
 
@@ -960,21 +929,7 @@ export function getMcpConfigsByScope(
       }
     }
     case 'user': {
-      const mcpServers = getGlobalConfig().mcpServers
-      if (!mcpServers) {
-        return { servers: {}, errors: [] }
-      }
-
-      const { config, errors } = parseMcpConfig({
-        configObject: { mcpServers },
-        expandVars: true,
-        scope: 'user',
-      })
-
-      return {
-        servers: addScopeToServers(config?.mcpServers, scope),
-        errors,
-      }
+      return getUserMcpConfigsFromToml()
     }
     case 'local': {
       const mcpServers = getCurrentProjectConfig().mcpServers
