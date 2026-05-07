@@ -182,6 +182,33 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
+  it("tracks hosted chat-compatible adapter capabilities", () => {
+    for (const provider of ["mistral", "nvidia-nim", "minimax", "github"]) {
+      expect(
+        resolveProviderModelCapabilities({
+          provider,
+          model: "adapter-default",
+        }),
+      ).toMatchObject({
+        provider,
+        supportsToolUse: true,
+        supportsPromptCaching: false,
+        supportsContextEdits: false,
+        supportsImageInput: false,
+        supportsAudioInput: false,
+        supportsAudioOutput: false,
+        supportsStructuredOutput: false,
+        supportsStructuredOutputWithTools: false,
+        supportsProviderNativeWebSearch: false,
+        supportsExtendedThinking: false,
+        acceptsImageHistory: false,
+        acceptsAudioHistory: false,
+        acceptsThinkingHistory: false,
+        acceptsReasoningEffort: false,
+      });
+    }
+  });
+
   it("keeps messages-provider image and thinking support aligned with the matrix", () => {
     expect(
       resolveProviderModelCapabilities({

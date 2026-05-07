@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
 import { saveGlobalConfig } from '../config.js'
+import { applyProviderFlag } from '../providerFlag.js'
 
 async function importFreshModelModule() {
   mock.restore()
   mock.module('./providers.js', () => ({
     getAPIProvider: () => {
       if (process.env.NVIDIA_NIM) return 'nvidia-nim'
-      if (process.env.MINIMAX_API_KEY) return 'minimax'
+      if (process.env.AGENC_USE_MINIMAX || process.env.MINIMAX_API_KEY) return 'minimax'
       if (process.env.AGENC_USE_GEMINI) return 'gemini'
       if (process.env.AGENC_USE_MISTRAL) return 'mistral'
       if (process.env.AGENC_USE_GITHUB) return 'github'
@@ -18,9 +19,6 @@ async function importFreshModelModule() {
           ? 'agenc'
           : 'openai'
       }
-      if (process.env.AGENC_USE_BEDROCK) return 'bedrock'
-      if (process.env.AGENC_USE_VERTEX) return 'vertex'
-      if (process.env.AGENC_USE_FOUNDRY) return 'foundry'
       return 'firstParty'
     },
   }))
@@ -33,11 +31,16 @@ const SAVED_ENV = {
   AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
   AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
   AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
+  AGENC_USE_MINIMAX: process.env.AGENC_USE_MINIMAX,
   AGENC_USE_BEDROCK: process.env.AGENC_USE_BEDROCK,
   AGENC_USE_VERTEX: process.env.AGENC_USE_VERTEX,
   AGENC_USE_FOUNDRY: process.env.AGENC_USE_FOUNDRY,
   NVIDIA_NIM: process.env.NVIDIA_NIM,
+  MISTRAL_MODEL: process.env.MISTRAL_MODEL,
+  NVIDIA_MODEL: process.env.NVIDIA_MODEL,
   MINIMAX_API_KEY: process.env.MINIMAX_API_KEY,
+  MINIMAX_MODEL: process.env.MINIMAX_MODEL,
+  GITHUB_MODEL: process.env.GITHUB_MODEL,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   AGENC_API_KEY: process.env.AGENC_API_KEY,
@@ -62,11 +65,16 @@ beforeEach(() => {
   delete process.env.AGENC_USE_GEMINI
   delete process.env.AGENC_USE_GITHUB
   delete process.env.AGENC_USE_MISTRAL
+  delete process.env.AGENC_USE_MINIMAX
   delete process.env.AGENC_USE_BEDROCK
   delete process.env.AGENC_USE_VERTEX
   delete process.env.AGENC_USE_FOUNDRY
   delete process.env.NVIDIA_NIM
+  delete process.env.MISTRAL_MODEL
+  delete process.env.NVIDIA_MODEL
   delete process.env.MINIMAX_API_KEY
+  delete process.env.MINIMAX_MODEL
+  delete process.env.GITHUB_MODEL
   delete process.env.OPENAI_MODEL
   delete process.env.OPENAI_BASE_URL
   delete process.env.AGENC_API_KEY
@@ -107,26 +115,40 @@ test('agenc provider reads OPENAI_MODEL, not stale settings.model', async () => 
   expect(model).toBe('agencplan')
 })
 
-test('nvidia-nim provider reads OPENAI_MODEL, not stale settings.model', async () => {
+test('nvidia-nim provider reads NVIDIA_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
   saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
   process.env.NVIDIA_NIM = '1'
   process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+  process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
 })
 
-test('minimax provider reads OPENAI_MODEL, not stale settings.model', async () => {
+test('minimax provider reads MINIMAX_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
   saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
+  process.env.AGENC_USE_MINIMAX = '1'
   process.env.MINIMAX_API_KEY = 'minimax-test'
   process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'MiniMax-M2.5'
+  process.env.MINIMAX_MODEL = 'MiniMax-M2.5'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('MiniMax-M2.5')
+})
+
+test('mistral provider reads MISTRAL_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
+  saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
+  process.env.AGENC_USE_MISTRAL = '1'
+  process.env.MISTRAL_MODEL = 'devstral-latest'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
+
+  const { getUserSpecifiedModelSetting } = await importFreshModelModule()
+  const model = getUserSpecifiedModelSetting()
+  expect(model).toBe('devstral-latest')
 })
 
 test('openai provider still reads OPENAI_MODEL (regression guard)', async () => {
@@ -139,15 +161,48 @@ test('openai provider still reads OPENAI_MODEL (regression guard)', async () => 
   expect(model).toBe('gpt-4o')
 })
 
-test('github provider still reads OPENAI_MODEL (regression guard)', async () => {
+test('github provider reads GITHUB_MODEL, not stale OPENAI_MODEL', async () => {
   saveGlobalConfig(current => ({ ...current, model: 'stale-default' }))
   process.env.AGENC_USE_GITHUB = '1'
-  process.env.OPENAI_MODEL = 'github:copilot'
+  process.env.GITHUB_MODEL = 'github:copilot'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('github:copilot')
 })
+
+test.each([
+  {
+    provider: 'github',
+    model: 'github:copilot',
+  },
+  {
+    provider: 'nvidia-nim',
+    model: 'nvidia/llama-3.1-nemotron-70b-instruct',
+  },
+  {
+    provider: 'minimax',
+    model: 'MiniMax-M2.5',
+  },
+] as const)(
+  '--provider $provider --model feeds model helper paths',
+  async ({ provider, model }) => {
+    saveGlobalConfig(current => ({ ...current, model: 'stale-default' }))
+    process.env.OPENAI_MODEL = 'wrong-openai-model'
+
+    const result = applyProviderFlag(provider, ['--provider', provider, '--model', model])
+    expect(result.error).toBeUndefined()
+
+    const {
+      getUserSpecifiedModelSetting,
+      getDefaultMainLoopModelSetting,
+    } = await importFreshModelModule()
+
+    expect(getUserSpecifiedModelSetting()).toBe(model)
+    expect(getDefaultMainLoopModelSetting()).toBe(model)
+  },
+)
 
 // ---------------------------------------------------------------------------
 // Default model helpers — must not fall through to claude-haiku-4-5 etc. for
@@ -156,9 +211,11 @@ test('github provider still reads OPENAI_MODEL (regression guard)', async () => 
 // because queryHaiku() shipped an unknown model id to the shim endpoint.
 // ---------------------------------------------------------------------------
 
-test('getSmallFastModel returns OPENAI_MODEL for MiniMax (regression: WebFetch hang)', async () => {
+test('getSmallFastModel returns MINIMAX_MODEL for MiniMax (regression: WebFetch hang)', async () => {
+  process.env.AGENC_USE_MINIMAX = '1'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.OPENAI_MODEL = 'MiniMax-M2.5-highspeed'
+  process.env.MINIMAX_MODEL = 'MiniMax-M2.5-highspeed'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getSmallFastModel } = await importFreshModelModule()
   expect(getSmallFastModel()).toBe('MiniMax-M2.5-highspeed')
@@ -175,35 +232,41 @@ test('getSmallFastModel returns OPENAI_MODEL for Agenc (regression)', async () =
   expect(getSmallFastModel()).toBe('agencspark')
 })
 
-test('getSmallFastModel returns OPENAI_MODEL for NVIDIA NIM (regression)', async () => {
+test('getSmallFastModel returns NVIDIA_MODEL for NVIDIA NIM (regression)', async () => {
   process.env.NVIDIA_NIM = '1'
   process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+  process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getSmallFastModel } = await importFreshModelModule()
   expect(getSmallFastModel()).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
 })
 
-test('getDefaultOpusModel returns OPENAI_MODEL for MiniMax', async () => {
+test('getDefaultOpusModel returns MINIMAX_MODEL for MiniMax', async () => {
+  process.env.AGENC_USE_MINIMAX = '1'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.OPENAI_MODEL = 'MiniMax-M2.7'
+  process.env.MINIMAX_MODEL = 'MiniMax-M2.7'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getDefaultOpusModel } = await importFreshModelModule()
   expect(getDefaultOpusModel()).toBe('MiniMax-M2.7')
 })
 
-test('getDefaultSonnetModel returns OPENAI_MODEL for NVIDIA NIM', async () => {
+test('getDefaultSonnetModel returns NVIDIA_MODEL for NVIDIA NIM', async () => {
   process.env.NVIDIA_NIM = '1'
   process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+  process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getDefaultSonnetModel } = await importFreshModelModule()
   expect(getDefaultSonnetModel()).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
 })
 
-test('getDefaultHaikuModel returns OPENAI_MODEL for MiniMax', async () => {
+test('getDefaultHaikuModel returns MINIMAX_MODEL for MiniMax', async () => {
+  process.env.AGENC_USE_MINIMAX = '1'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.OPENAI_MODEL = 'MiniMax-M2.5-highspeed'
+  process.env.MINIMAX_MODEL = 'MiniMax-M2.5-highspeed'
+  process.env.OPENAI_MODEL = 'wrong-openai-model'
 
   const { getDefaultHaikuModel } = await importFreshModelModule()
   expect(getDefaultHaikuModel()).toBe('MiniMax-M2.5-highspeed')
@@ -214,8 +277,10 @@ test('default helpers do not leak agenc-* names to shim providers', async () => 
   // helpers may return an provider-branded model name. That was the source
   // of the WebFetch 60s hang — MiniMax received "claude-haiku-4-5" and sat
   // on the connection.
+  process.env.AGENC_USE_MINIMAX = '1'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.OPENAI_MODEL = 'MiniMax-M2.7'
+  process.env.MINIMAX_MODEL = 'MiniMax-M2.7'
+  process.env.OPENAI_MODEL = 'agencplan'
 
   const {
     getSmallFastModel,
@@ -233,4 +298,3 @@ test('default helpers do not leak agenc-* names to shim providers', async () => 
     expect(model.toLowerCase()).not.toContain('agenc')
   }
 })
-

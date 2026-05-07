@@ -6,7 +6,11 @@ import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
+import { GitHubProvider } from "./providers/github/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
+import { MiniMaxProvider } from "./providers/minimax/index.js";
+import { MistralProvider } from "./providers/mistral/index.js";
+import { NvidiaNimProvider } from "./providers/nvidia-nim/index.js";
 import { OllamaProvider } from "./providers/ollama/adapter.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import { OpenAIProvider } from "./providers/openai/adapter.js";
@@ -121,6 +125,10 @@ describe("createProvider", () => {
         GROQ_MODEL: undefined,
         DEEPSEEK_MODEL: undefined,
         GEMINI_MODEL: undefined,
+        MISTRAL_MODEL: undefined,
+        NVIDIA_MODEL: undefined,
+        MINIMAX_MODEL: undefined,
+        GITHUB_MODEL: undefined,
         OPENAI_BASE_URL: undefined,
         ANTHROPIC_BASE_URL: undefined,
         OLLAMA_BASE_URL: undefined,
@@ -131,6 +139,10 @@ describe("createProvider", () => {
         GROQ_BASE_URL: undefined,
         DEEPSEEK_BASE_URL: undefined,
         GEMINI_BASE_URL: undefined,
+        MISTRAL_BASE_URL: undefined,
+        NVIDIA_BASE_URL: undefined,
+        MINIMAX_BASE_URL: undefined,
+        GITHUB_BASE_URL: undefined,
         XAI_API_KEY: undefined,
         GROK_API_KEY: undefined,
         AGENC_XAI_API_KEY: undefined,
@@ -142,6 +154,11 @@ describe("createProvider", () => {
         GROQ_API_KEY: undefined,
         DEEPSEEK_API_KEY: undefined,
         GEMINI_API_KEY: undefined,
+        MISTRAL_API_KEY: undefined,
+        NVIDIA_API_KEY: undefined,
+        MINIMAX_API_KEY: undefined,
+        GITHUB_TOKEN: undefined,
+        GH_TOKEN: undefined,
       };
       if (info?.apiKeyEnvVar !== undefined) {
         env[info.apiKeyEnvVar] = "registry-test-key";
@@ -242,11 +259,34 @@ describe("createProvider", () => {
       { DEEPSEEK_API_KEY: "deepseek-test" },
       () => createProvider("deepseek", { model: "deepseek-reasoner" }),
     );
+    const mistral = withEnv(
+      { MISTRAL_API_KEY: "mistral-test" },
+      () => createProvider("mistral", { model: "devstral-latest" }),
+    );
+    const nvidiaNim = withEnv(
+      { NVIDIA_API_KEY: "nvidia-test" },
+      () =>
+        createProvider("nvidia-nim", {
+          model: "nvidia/llama-3.1-nemotron-70b-instruct",
+        }),
+    );
+    const minimax = withEnv(
+      { MINIMAX_API_KEY: "minimax-test" },
+      () => createProvider("minimax", { model: "MiniMax-M2.5" }),
+    );
+    const github = withEnv(
+      { GITHUB_TOKEN: "github-test" },
+      () => createProvider("github", { model: "github:copilot" }),
+    );
 
     expect(compatible).toBeInstanceOf(OpenAICompatibleProvider);
     expect(openrouter).toBeInstanceOf(OpenRouterProvider);
     expect(groq).toBeInstanceOf(GroqProvider);
     expect(deepseek).toBeInstanceOf(DeepSeekProvider);
+    expect(mistral).toBeInstanceOf(MistralProvider);
+    expect(nvidiaNim).toBeInstanceOf(NvidiaNimProvider);
+    expect(minimax).toBeInstanceOf(MiniMaxProvider);
+    expect(github).toBeInstanceOf(GitHubProvider);
   });
 
   test("normalizes generic openai-compatible provider aliases", () => {
@@ -268,6 +308,22 @@ describe("createProvider", () => {
       "HTTP-Referer": "https://agenc.tech",
       "X-Title": "AgenC",
     });
+  });
+
+  test("normalizes GitHub Copilot aliases case-insensitively", () => {
+    const bare = withEnv(
+      { GITHUB_TOKEN: "github-test" },
+      () => createProvider("github", { model: "GitHub:Copilot" }),
+    );
+    const compound = withEnv(
+      { GITHUB_TOKEN: "github-test" },
+      () => createProvider("github", { model: "GitHub:Copilot:gpt-5.4" }),
+    );
+
+    expect((bare as unknown as { config: OpenAIProviderConfig }).config.model)
+      .toBe("gpt-4o");
+    expect((compound as unknown as { config: OpenAIProviderConfig }).config.model)
+      .toBe("gpt-5.4");
   });
 
   test("uses the documented openai default model when no model override is supplied", () => {
@@ -361,7 +417,7 @@ describe("createProvider", () => {
       env: {
         OLLAMA_BASE_URL: undefined,
         OLLAMA_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -436,7 +492,7 @@ describe("createProvider", () => {
         OPENROUTER_API_KEY: "or-test",
         OPENROUTER_BASE_URL: undefined,
         OPENROUTER_MODEL: "openai/gpt-5",
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -461,7 +517,7 @@ describe("createProvider", () => {
         GROQ_API_KEY: "groq-test",
         GROQ_BASE_URL: undefined,
         GROQ_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -486,7 +542,7 @@ describe("createProvider", () => {
         DEEPSEEK_API_KEY: "deepseek-test",
         DEEPSEEK_BASE_URL: undefined,
         DEEPSEEK_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -504,6 +560,75 @@ describe("createProvider", () => {
       expectedBaseURL: "https://api.deepseek.com/v1",
       expectedModel: "deepseek-reasoner",
       expectedUseResponsesApi: false,
+    },
+    {
+      name: "mistral",
+      env: {
+        MISTRAL_API_KEY: "mistral-test",
+        MISTRAL_BASE_URL: undefined,
+        MISTRAL_MODEL: undefined,
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://api.mistral.ai/v1",
+      expectedModel: "devstral-latest",
+      expectedUseResponsesApi: false,
+      expectedInstance: MistralProvider,
+      assertApiKey: true,
+      expectedApiKey: "mistral-test",
+    },
+    {
+      name: "nvidia-nim",
+      env: {
+        NVIDIA_API_KEY: "nvidia-test",
+        NVIDIA_BASE_URL: undefined,
+        NVIDIA_MODEL: undefined,
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://integrate.api.nvidia.com/v1",
+      expectedModel: "nvidia/llama-3.1-nemotron-70b-instruct",
+      expectedUseResponsesApi: false,
+      expectedInstance: NvidiaNimProvider,
+      assertApiKey: true,
+      expectedApiKey: "nvidia-test",
+    },
+    {
+      name: "minimax",
+      env: {
+        MINIMAX_API_KEY: "minimax-test",
+        MINIMAX_BASE_URL: undefined,
+        MINIMAX_MODEL: undefined,
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://api.minimax.io/v1",
+      expectedModel: "MiniMax-M2.5",
+      expectedUseResponsesApi: false,
+      expectedInstance: MiniMaxProvider,
+      assertApiKey: true,
+      expectedApiKey: "minimax-test",
+    },
+    {
+      name: "github",
+      env: {
+        GITHUB_TOKEN: "github-test",
+        GITHUB_BASE_URL: undefined,
+        GITHUB_MODEL: undefined,
+        OPENAI_API_KEY: "sk-openai",
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://api.githubcopilot.com",
+      expectedModel: "gpt-4o",
+      expectedUseResponsesApi: false,
+      expectedInstance: GitHubProvider,
+      assertApiKey: true,
+      expectedApiKey: "github-test",
     },
     {
       name: "gemini",
@@ -581,14 +706,14 @@ describe("createProvider", () => {
       () =>
         createProvider("openrouter", {
           model: "openai/gpt-5-mini",
-          baseURL: "https://router.example/api/v1",
+          baseURL: "http://127.0.0.1:19091/api/v1",
         }),
     );
 
     expect(readProviderIdentity(provider)).toBe("openrouter");
     expect(readProviderFactoryOptions(provider)).toMatchObject({
       apiKey: "or-test",
-      baseURL: "https://router.example/api/v1",
+      baseURL: "http://127.0.0.1:19091/api/v1",
       model: "openai/gpt-5-mini",
     });
   });
@@ -683,6 +808,43 @@ describe("createProvider", () => {
         GEMINI_MODEL: "gemini-2.5-pro",
       },
       expected: /GEMINI_API_KEY|apiKey/i,
+    },
+    {
+      name: "mistral",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        MISTRAL_API_KEY: undefined,
+        MISTRAL_MODEL: "devstral-latest",
+      },
+      expected: /MISTRAL_API_KEY|apiKey/i,
+    },
+    {
+      name: "nvidia-nim",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        NVIDIA_API_KEY: undefined,
+        NVIDIA_MODEL: "nvidia/llama-3.1-nemotron-70b-instruct",
+      },
+      expected: /NVIDIA_API_KEY|apiKey/i,
+    },
+    {
+      name: "minimax",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        MINIMAX_API_KEY: undefined,
+        MINIMAX_MODEL: "MiniMax-M2.5",
+      },
+      expected: /MINIMAX_API_KEY|apiKey/i,
+    },
+    {
+      name: "github",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        GITHUB_TOKEN: undefined,
+        GH_TOKEN: undefined,
+        GITHUB_MODEL: "gpt-4o",
+      },
+      expected: /GITHUB_TOKEN|apiKey/i,
     },
   ] as const)(
     "requires provider-specific auth for $name instead of falling back to unrelated globals",

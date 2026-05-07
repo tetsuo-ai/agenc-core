@@ -164,6 +164,10 @@ describe("provider discovery", () => {
       env: {
         GROK_API_KEY: "grok-key",
         OPENAI_API_KEY: "shared-local-key",
+        MISTRAL_API_KEY: "mistral-key",
+        NVIDIA_API_KEY: "nvidia-key",
+        MINIMAX_API_KEY: "minimax-key",
+        GITHUB_TOKEN: "github-key",
       },
     });
     const agencAliasReport = await collectProviderAvailability({
@@ -194,6 +198,61 @@ describe("provider discovery", () => {
     expect(entries.get("openai-compatible")).toMatchObject({
       keyStatus: "present",
       keyEnvVar: "OPENAI_API_KEY",
+    });
+    expect(entries.get("mistral")).toMatchObject({
+      keyStatus: "present",
+      keyEnvVar: "MISTRAL_API_KEY",
+    });
+    expect(entries.get("nvidia-nim")).toMatchObject({
+      keyStatus: "present",
+      keyEnvVar: "NVIDIA_API_KEY",
+    });
+    expect(entries.get("minimax")).toMatchObject({
+      keyStatus: "present",
+      keyEnvVar: "MINIMAX_API_KEY",
+    });
+    expect(entries.get("github")).toMatchObject({
+      keyStatus: "present",
+      keyEnvVar: "GITHUB_TOKEN",
+    });
+  });
+
+  it("does not treat shared credentials as hosted provider credentials", async () => {
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("local", "free"),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {
+        OPENAI_API_KEY: "shared-local-key",
+        OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
+      },
+    });
+    const entries = byProvider(report.entries);
+
+    expect(entries.get("openai")).toMatchObject({
+      usable: true,
+      keyStatus: "present",
+      keyEnvVar: "OPENAI_API_KEY",
+    });
+    expect(entries.get("mistral")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
+      keyEnvVar: "MISTRAL_API_KEY",
+    });
+    expect(entries.get("nvidia-nim")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
+      keyEnvVar: "NVIDIA_API_KEY",
+    });
+    expect(entries.get("minimax")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
+      keyEnvVar: "MINIMAX_API_KEY",
+    });
+    expect(entries.get("github")).toMatchObject({
+      usable: false,
+      keyStatus: "missing",
+      keyEnvVar: "GITHUB_TOKEN",
     });
   });
 

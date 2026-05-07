@@ -4,9 +4,10 @@ const originalEnv = {
   AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
   AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_BEDROCK: process.env.AGENC_USE_BEDROCK,
-  AGENC_USE_VERTEX: process.env.AGENC_USE_VERTEX,
-  AGENC_USE_FOUNDRY: process.env.AGENC_USE_FOUNDRY,
+  AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
+  AGENC_USE_MINIMAX: process.env.AGENC_USE_MINIMAX,
+  NVIDIA_NIM: process.env.NVIDIA_NIM,
+  MINIMAX_API_KEY: process.env.MINIMAX_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_BASE: process.env.OPENAI_API_BASE,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
@@ -14,16 +15,13 @@ const originalEnv = {
 }
 
 afterEach(() => {
-  process.env.AGENC_USE_GEMINI = originalEnv.AGENC_USE_GEMINI
-  process.env.AGENC_USE_GITHUB = originalEnv.AGENC_USE_GITHUB
-  process.env.AGENC_USE_OPENAI = originalEnv.AGENC_USE_OPENAI
-  process.env.AGENC_USE_BEDROCK = originalEnv.AGENC_USE_BEDROCK
-  process.env.AGENC_USE_VERTEX = originalEnv.AGENC_USE_VERTEX
-  process.env.AGENC_USE_FOUNDRY = originalEnv.AGENC_USE_FOUNDRY
-  process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL
-  process.env.OPENAI_API_BASE = originalEnv.OPENAI_API_BASE
-  process.env.OPENAI_MODEL = originalEnv.OPENAI_MODEL
-  process.env.XAI_API_KEY = originalEnv.XAI_API_KEY
+  for (const key of Object.keys(originalEnv) as Array<keyof typeof originalEnv>) {
+    if (originalEnv[key] === undefined) {
+      delete process.env[key]
+    } else {
+      process.env[key] = originalEnv[key]
+    }
+  }
 })
 
 async function importFreshProvidersModule() {
@@ -34,9 +32,10 @@ function clearProviderEnv(): void {
   delete process.env.AGENC_USE_GEMINI
   delete process.env.AGENC_USE_GITHUB
   delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_BEDROCK
-  delete process.env.AGENC_USE_VERTEX
-  delete process.env.AGENC_USE_FOUNDRY
+  delete process.env.AGENC_USE_MISTRAL
+  delete process.env.AGENC_USE_MINIMAX
+  delete process.env.NVIDIA_NIM
+  delete process.env.MINIMAX_API_KEY
   delete process.env.OPENAI_BASE_URL
   delete process.env.OPENAI_API_BASE
   delete process.env.OPENAI_MODEL
@@ -57,9 +56,9 @@ test.each([
   ['AGENC_USE_OPENAI', 'openai'],
   ['AGENC_USE_GITHUB', 'github'],
   ['AGENC_USE_GEMINI', 'gemini'],
-  ['AGENC_USE_BEDROCK', 'bedrock'],
-  ['AGENC_USE_VERTEX', 'vertex'],
-  ['AGENC_USE_FOUNDRY', 'foundry'],
+  ['AGENC_USE_MISTRAL', 'mistral'],
+  ['AGENC_USE_MINIMAX', 'minimax'],
+  ['NVIDIA_NIM', 'nvidia-nim'],
 ] as const)(
   '%s disables provider account setup flow',
   async (envKey, provider) => {
@@ -73,6 +72,16 @@ test.each([
   },
 )
 
+test('MINIMAX_API_KEY disables provider account setup flow', async () => {
+  clearProviderEnv()
+  process.env.MINIMAX_API_KEY = 'minimax-test-key'
+  const { getAPIProvider, usesAnthropicAccountFlow } =
+    await importFreshProvidersModule()
+
+  expect(getAPIProvider()).toBe('minimax')
+  expect(usesAnthropicAccountFlow()).toBe(false)
+})
+
 test('GEMINI takes precedence over GitHub when both are set', async () => {
   clearProviderEnv()
   process.env.AGENC_USE_GEMINI = '1'
@@ -80,6 +89,35 @@ test('GEMINI takes precedence over GitHub when both are set', async () => {
   const { getAPIProvider } = await importFreshProvidersModule()
 
   expect(getAPIProvider()).toBe('gemini')
+})
+
+test.each([
+  ['AGENC_USE_MISTRAL', 'mistral'],
+  ['AGENC_USE_GITHUB', 'github'],
+  ['AGENC_USE_OPENAI', 'openai'],
+] as const)(
+  '%s takes precedence over ambient MiniMax credentials',
+  async (envKey, provider) => {
+    clearProviderEnv()
+    process.env.MINIMAX_API_KEY = 'ambient-minimax-key'
+    process.env[envKey] = '1'
+    if (envKey === 'AGENC_USE_OPENAI') {
+      process.env.OPENAI_MODEL = 'gpt-4o'
+    }
+    const { getAPIProvider } = await importFreshProvidersModule()
+
+    expect(getAPIProvider()).toBe(provider)
+  },
+)
+
+test('explicit openai flag takes precedence over stale NVIDIA_NIM', async () => {
+  clearProviderEnv()
+  process.env.NVIDIA_NIM = '1'
+  process.env.AGENC_USE_OPENAI = '1'
+  process.env.OPENAI_MODEL = 'gpt-4o'
+  const { getAPIProvider } = await importFreshProvidersModule()
+
+  expect(getAPIProvider()).toBe('openai')
 })
 
 test('explicit local openai-compatible base URLs stay on the openai provider', async () => {
@@ -131,7 +169,7 @@ test('isGithubNativeAnthropicMode: false when AGENC_USE_GITHUB is not set', asyn
   expect(isGithubNativeAnthropicMode()).toBe(false)
 })
 
-test('isGithubNativeAnthropicMode: true for bare agenc- model via OPENAI_MODEL', async () => {
+test('isGithubNativeAnthropicMode: true for bare provider-native model via OPENAI_MODEL', async () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'claude-sonnet-4-5'
@@ -139,7 +177,7 @@ test('isGithubNativeAnthropicMode: true for bare agenc- model via OPENAI_MODEL',
   expect(isGithubNativeAnthropicMode()).toBe(true)
 })
 
-test('isGithubNativeAnthropicMode: true for github:copilot:agenc- compound format', async () => {
+test('isGithubNativeAnthropicMode: true for github:copilot provider-native compound format', async () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'github:copilot:claude-sonnet-4'
@@ -147,7 +185,7 @@ test('isGithubNativeAnthropicMode: true for github:copilot:agenc- compound forma
   expect(isGithubNativeAnthropicMode()).toBe(true)
 })
 
-test('isGithubNativeAnthropicMode: true when resolvedModel is a agenc- model', async () => {
+test('isGithubNativeAnthropicMode: true when resolvedModel is provider-native', async () => {
   clearProviderEnv()
   process.env.AGENC_USE_GITHUB = '1'
   process.env.OPENAI_MODEL = 'github:copilot'

@@ -8,11 +8,8 @@ import {
   getApiKeyFromApiKeyHelper,
   getAgenCAIOAuthTokens,
   isAgenCAISubscriber,
-  refreshAndGetAwsCredentials,
-  refreshGcpCredentialsIfNeeded,
 } from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
-import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
   isFirstPartyproviderBaseUrl,
@@ -25,15 +22,7 @@ import {
 } from '../../bootstrap/state.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { isDebugToStdErr, logForDebugging } from 'src/utils/debug.js'
-import {
-  getAWSRegion,
-  getVertexRegionForModel,
-  isEnvTruthy,
-} from '../../utils/envUtils.js'
-const importRuntimeModule = new Function(
-  'specifier',
-  'return import(specifier)',
-) as (specifier: string) => Promise<any>
+import { isEnvTruthy } from '../../utils/envUtils.js'
 
 /**
  * Environment variables for different client types:
@@ -41,39 +30,9 @@ const importRuntimeModule = new Function(
  * Direct API:
  * - ANTHROPIC_API_KEY: Required for direct API access
  *
- * AWS Bedrock:
- * - AWS credentials configured via aws-sdk defaults
- * - AWS_REGION or AWS_DEFAULT_REGION: Sets the AWS region for all models (default: us-east-1)
- * - ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION: Optional. Override AWS region specifically for the small fast model (Haiku)
- *
- * Foundry (Azure):
- * - ANTHROPIC_FOUNDRY_RESOURCE: Your Azure resource name (e.g., 'my-resource')
- *   For the full endpoint: https://{resource}.services.ai.azure.com/anthropic/v1/messages
- * - ANTHROPIC_FOUNDRY_BASE_URL: Optional. Alternative to resource - provide full base URL directly
- *   (e.g., 'https://my-resource.services.ai.azure.com')
- *
- * Authentication (one of the following):
- * - ANTHROPIC_FOUNDRY_API_KEY: Your Microsoft Foundry API key (if using API key auth)
- * - Azure AD authentication: If no API key is provided, uses DefaultAzureCredential
- *   which supports multiple auth methods (environment variables, managed identity,
- *   Azure CLI, etc.). See: https://docs.microsoft.com/en-us/javascript/api/@azure/identity
- *
- * Vertex AI:
- * - Model-specific region variables (highest priority):
- *   - VERTEX_REGION_AGENC_3_5_HAIKU: Region for AgenC 3.5 Haiku model
- *   - VERTEX_REGION_AGENC_HAIKU_4_5: Region for AgenC Haiku 4.5 model
- *   - VERTEX_REGION_AGENC_3_5_SONNET: Region for AgenC 3.5 Sonnet model
- *   - VERTEX_REGION_AGENC_3_7_SONNET: Region for AgenC 3.7 Sonnet model
- * - CLOUD_ML_REGION: Optional. The default GCP region to use for all models
- *   If specific model region not specified above
- * - ANTHROPIC_VERTEX_PROJECT_ID: Required. Your GCP project ID
- * - Standard GCP credentials configured via google-auth-library
- *
- * Priority for determining region:
- * 1. Hardcoded model-specific environment variables
- * 2. Global CLOUD_ML_REGION variable
- * 3. Default region from config
- * 4. Fallback region (us-east5)
+ * Provider-compatible routing:
+ * - OPENAI_API_KEY / OPENAI_BASE_URL for generic compatible endpoints
+ * - Provider-specific keys and base URLs for hosted compatible providers
  */
 
 function createStderrLogger(): ClientOptions['logger'] {
@@ -89,6 +48,24 @@ function createStderrLogger(): ClientOptions['logger'] {
       // biome-ignore lint/suspicious/noConsole:: intentional console output -- SDK logger must use console
       console.error('[provider SDK DEBUG]', msg, ...args),
   }
+}
+
+function stripForwardedAuthHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const safeHeaders: Record<string, string> = {}
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase()
+    if (
+      lower === 'authorization' ||
+      lower === 'x-api-key' ||
+      lower === 'api-key'
+    ) {
+      continue
+    }
+    safeHeaders[key] = value
+  }
+  return safeHeaders
 }
 
 export async function getproviderClient({
@@ -163,14 +140,8 @@ export async function getproviderClient({
   // to third-party endpoints (SSRF / credential forwarding mitigation).
   if (providerOverride) {
     const { createOpenAiShimClient } = await import('./openaiShim.js')
-    const safeHeaders: Record<string, string> = {}
-    for (const [k, v] of Object.entries(defaultHeaders)) {
-      const lower = k.toLowerCase()
-      if (lower === 'authorization' || lower === 'x-api-key' || lower === 'api-key') continue
-      safeHeaders[k] = v
-    }
     return createOpenAiShimClient({
-      defaultHeaders: safeHeaders,
+      defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
       providerOverride,
@@ -195,172 +166,25 @@ export async function getproviderClient({
     }
     return new provider(nativeArgs)
   }
+  const apiProvider = getAPIProvider()
   if (
+    apiProvider !== 'firstParty' ||
     isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
     isEnvTruthy(process.env.AGENC_USE_GITHUB) ||
     isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL)
+    isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
+    isEnvTruthy(process.env.NVIDIA_NIM) ||
+    isEnvTruthy(process.env.AGENC_USE_MINIMAX) ||
+    (typeof process.env.MINIMAX_API_KEY === 'string' &&
+      process.env.MINIMAX_API_KEY.trim() !== '')
   ) {
     const { createOpenAiShimClient } = await import('./openaiShim.js')
     return createOpenAiShimClient({
-      defaultHeaders,
+      defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     }) as unknown as provider
   }
-  if (isEnvTruthy(process.env.AGENC_USE_BEDROCK)) {
-    const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
-    // Use region override for small fast model if specified
-    const awsRegion =
-      model === getSmallFastModel() &&
-      process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
-        ? process.env.ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION
-        : getAWSRegion()
-
-    const bedrockArgs: ConstructorParameters<typeof providerBedrock>[0] = {
-      ...ARGS,
-      awsRegion,
-      ...(isEnvTruthy(process.env.AGENC_SKIP_BEDROCK_AUTH) && {
-        skipAuth: true,
-      }),
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-
-    // Add API key authentication if available
-    if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
-      bedrockArgs.skipAuth = true
-      // Add the Bearer token for Bedrock API key authentication
-      bedrockArgs.defaultHeaders = {
-        ...bedrockArgs.defaultHeaders,
-        Authorization: `Bearer ${process.env.AWS_BEARER_TOKEN_BEDROCK}`,
-      }
-    } else if (!isEnvTruthy(process.env.AGENC_SKIP_BEDROCK_AUTH)) {
-      // Refresh auth and get credentials with cache clearing
-      const cachedCredentials = await refreshAndGetAwsCredentials()
-      if (cachedCredentials) {
-        bedrockArgs.awsAccessKey = cachedCredentials.accessKeyId
-        bedrockArgs.awsSecretKey = cachedCredentials.secretAccessKey
-        bedrockArgs.awsSessionToken = cachedCredentials.sessionToken
-      }
-    }
-    // we have always been lying about the return type - this doesn't support batching or models
-    return new providerBedrock(bedrockArgs) as unknown as provider
-  }
-  if (isEnvTruthy(process.env.AGENC_USE_FOUNDRY)) {
-    const { providerFoundry } = await importRuntimeModule(
-      '@anthropic-ai/foundry-sdk',
-    )
-    // Determine Azure AD token provider based on configuration
-    // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
-    let azureADTokenProvider: (() => Promise<string>) | undefined
-    if (!process.env.ANTHROPIC_FOUNDRY_API_KEY) {
-      if (isEnvTruthy(process.env.AGENC_SKIP_FOUNDRY_AUTH)) {
-        // Mock token provider for testing/proxy scenarios (similar to Vertex mock GoogleAuth)
-        azureADTokenProvider = () => Promise.resolve('')
-      } else {
-        // Use real Azure AD authentication with DefaultAzureCredential
-        const {
-          DefaultAzureCredential: AzureCredential,
-          getBearerTokenProvider,
-        } = await importRuntimeModule('@azure/identity')
-        azureADTokenProvider = getBearerTokenProvider(
-          new AzureCredential(),
-          'https://cognitiveservices.azure.com/.default',
-        )
-      }
-    }
-
-    const foundryArgs = {
-      ...ARGS,
-      ...(azureADTokenProvider && { azureADTokenProvider }),
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-    // we have always been lying about the return type - this doesn't support batching or models
-    return new providerFoundry(foundryArgs) as unknown as provider
-  }
-  if (isEnvTruthy(process.env.AGENC_USE_VERTEX)) {
-    // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
-    // This is similar to how we handle AWS credential refresh for Bedrock
-    if (!isEnvTruthy(process.env.AGENC_SKIP_VERTEX_AUTH)) {
-      await refreshGcpCredentialsIfNeeded()
-    }
-
-    const [{ providerVertex }, { GoogleAuth }] = await Promise.all([
-      importRuntimeModule('@anthropic-ai/vertex-sdk'),
-      importRuntimeModule('google-auth-library'),
-    ])
-    // Follow-up: Cache either GoogleAuth instance or AuthClient to improve performance
-    // Currently we create a new GoogleAuth instance for every getproviderClient() call
-    // This could cause repeated authentication flows and metadata server checks
-    // However, caching needs careful handling of:
-    // - Credential refresh/expiration
-    // - Environment variable changes (GOOGLE_APPLICATION_CREDENTIALS, project vars)
-    // - Cross-request auth state management
-    // See: https://github.com/googleapis/google-auth-library-nodejs/issues/390 for caching challenges
-
-    // Prevent metadata server timeout by providing projectId as fallback
-    // google-auth-library checks project ID in this order:
-    // 1. Environment variables (GCLOUD_PROJECT, GOOGLE_CLOUD_PROJECT, etc.)
-    // 2. Credential files (service account JSON, ADC file)
-    // 3. gcloud config
-    // 4. GCE metadata server (causes 12s timeout outside GCP)
-    //
-    // We only set projectId if user hasn't configured other discovery methods
-    // to avoid interfering with their existing auth setup
-
-    // Check project environment variables in same order as google-auth-library
-    // See: https://github.com/googleapis/google-auth-library-nodejs/blob/main/src/auth/googleauth.ts
-    const hasProjectEnvVar =
-      process.env['GCLOUD_PROJECT'] ||
-      process.env['GOOGLE_CLOUD_PROJECT'] ||
-      process.env['gcloud_project'] ||
-      process.env['google_cloud_project']
-
-    // Check for credential file paths (service account or ADC)
-    // Note: We're checking both standard and lowercase variants to be safe,
-    // though we should verify what google-auth-library actually checks
-    const hasKeyFile =
-      process.env['GOOGLE_APPLICATION_CREDENTIALS'] ||
-      process.env['google_application_credentials']
-
-    const googleAuth = isEnvTruthy(process.env.AGENC_SKIP_VERTEX_AUTH)
-      ? ({
-          // Mock GoogleAuth for testing/proxy scenarios
-          getClient: () => ({
-            getRequestHeaders: () => ({}),
-          }),
-        } as {
-          getClient: () => {
-            getRequestHeaders: () => Record<string, string>
-          }
-        })
-      : new GoogleAuth({
-          scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-          // Only use ANTHROPIC_VERTEX_PROJECT_ID as last resort fallback
-          // This prevents the 12-second metadata server timeout when:
-          // - No project env vars are set AND
-          // - No credential keyfile is specified AND
-          // - ADC file exists but lacks project_id field
-          //
-          // Risk: If auth project != API target project, this could cause billing/audit issues
-          // Mitigation: Users can set GOOGLE_CLOUD_PROJECT to override
-          ...(hasProjectEnvVar || hasKeyFile
-            ? {}
-            : {
-                projectId: process.env.ANTHROPIC_VERTEX_PROJECT_ID,
-              }),
-        })
-
-    const vertexArgs = {
-      ...ARGS,
-      region: getVertexRegionForModel(model),
-      googleAuth,
-      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
-    }
-    // we have always been lying about the return type - this doesn't support batching or models
-    return new providerVertex(vertexArgs) as unknown as provider
-  }
-
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof provider>[0] = {
     apiKey: isAgenCAISubscriber() ? null : apiKey || getproviderApiKey(),
@@ -423,8 +247,7 @@ function buildFetch(
 ): ClientOptions['fetch'] {
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = fetchOverride ?? globalThis.fetch
-  // Only send to the first-party API — Bedrock/Vertex/Foundry don't log it
-  // and unknown headers risk rejection by strict proxies (inc-4029 class).
+  // Only send to the first-party API; unknown headers risk rejection by strict proxies.
   const injectClientRequestId =
     getAPIProvider() === 'firstParty' && isFirstPartyproviderBaseUrl()
   return (input, init) => {

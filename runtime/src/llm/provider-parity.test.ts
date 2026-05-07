@@ -9,7 +9,11 @@ import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
+import { GitHubProvider } from "./providers/github/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
+import { MiniMaxProvider } from "./providers/minimax/index.js";
+import { MistralProvider } from "./providers/mistral/index.js";
+import { NvidiaNimProvider } from "./providers/nvidia-nim/index.js";
 import { OllamaProvider } from "./providers/ollama/adapter.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import { OpenAIProvider } from "./providers/openai/adapter.js";
@@ -677,6 +681,73 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
             fetchImpl,
           }),
         payload: buildChatCompletionsPayload("gemini-2.5-pro", parityCase),
+      }),
+  },
+  {
+    provider: "mistral",
+    model: "devstral-latest",
+    env: { MISTRAL_API_KEY: "mistral-test" },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new MistralProvider({
+            apiKey: "mistral-test",
+            model: "devstral-latest",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("devstral-latest", parityCase),
+      }),
+  },
+  {
+    provider: "nvidia-nim",
+    model: "nvidia/llama-3.1-nemotron-70b-instruct",
+    env: { NVIDIA_API_KEY: "nvidia-test" },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new NvidiaNimProvider({
+            apiKey: "nvidia-test",
+            model: "nvidia/llama-3.1-nemotron-70b-instruct",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload(
+          "nvidia/llama-3.1-nemotron-70b-instruct",
+          parityCase,
+        ),
+      }),
+  },
+  {
+    provider: "minimax",
+    model: "MiniMax-M2.5",
+    env: { MINIMAX_API_KEY: "minimax-test" },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new MiniMaxProvider({
+            apiKey: "minimax-test",
+            model: "MiniMax-M2.5",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("MiniMax-M2.5", parityCase),
+      }),
+  },
+  {
+    provider: "github",
+    model: "gpt-4o",
+    env: { GITHUB_TOKEN: "github-test" },
+    createHarness: (parityCase) =>
+      createFetchHarness({
+        factory: (fetchImpl) =>
+          new GitHubProvider({
+            apiKey: "github-test",
+            model: "gpt-4o",
+            tools: parityCase.tools ? [...parityCase.tools] : [],
+            fetchImpl,
+          }),
+        payload: buildChatCompletionsPayload("gpt-4o", parityCase),
       }),
   },
 ];

@@ -92,6 +92,10 @@ type SecretValueSource = Partial<{
 }>
 
 const GITHUB_COPILOT_BASE = 'https://api.githubcopilot.com'
+const DEFAULT_MISTRAL_MODEL = 'devstral-latest'
+const DEFAULT_NVIDIA_NIM_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+const DEFAULT_MINIMAX_MODEL = 'MiniMax-M2.5'
+const DEFAULT_GITHUB_MODEL = 'gpt-4o'
 const GITHUB_429_MAX_RETRIES = 3
 const GITHUB_429_BASE_DELAY_SEC = 1
 const GITHUB_429_MAX_DELAY_SEC = 32
@@ -126,6 +130,96 @@ const SENSITIVE_URL_QUERY_PARAM_NAMES = [
 
 function isGithubModelsMode(): boolean {
   return isEnvTruthy(process.env.AGENC_USE_GITHUB)
+}
+
+function firstProviderEnvString(value: string | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function requireSelectedProviderApiKey(
+  providerName: string,
+  envLabel: string,
+  apiKey: string | undefined,
+): string {
+  if (apiKey) return apiKey
+  throw new Error(`${envLabel} is required for ${providerName} provider`)
+}
+
+function resolveSelectedProviderOverride():
+  | { model: string; baseURL: string; apiKey: string }
+  | undefined {
+  if (isEnvTruthy(process.env.AGENC_USE_MISTRAL)) {
+    return {
+      model:
+        firstProviderEnvString(process.env.MISTRAL_MODEL) ??
+        DEFAULT_MISTRAL_MODEL,
+      baseURL:
+        firstProviderEnvString(process.env.MISTRAL_BASE_URL) ??
+        'https://api.mistral.ai/v1',
+      apiKey: requireSelectedProviderApiKey(
+        'Mistral',
+        'MISTRAL_API_KEY',
+        firstProviderEnvString(process.env.MISTRAL_API_KEY),
+      ),
+    }
+  }
+
+  if (isEnvTruthy(process.env.NVIDIA_NIM)) {
+    return {
+      model:
+        firstProviderEnvString(process.env.NVIDIA_MODEL) ??
+        DEFAULT_NVIDIA_NIM_MODEL,
+      baseURL:
+        firstProviderEnvString(process.env.NVIDIA_BASE_URL) ??
+        'https://integrate.api.nvidia.com/v1',
+      apiKey: requireSelectedProviderApiKey(
+        'NVIDIA NIM',
+        'NVIDIA_API_KEY',
+        firstProviderEnvString(process.env.NVIDIA_API_KEY),
+      ),
+    }
+  }
+
+  if (
+    isEnvTruthy(process.env.AGENC_USE_MINIMAX) ||
+    firstProviderEnvString(process.env.MINIMAX_API_KEY)
+  ) {
+    return {
+      model:
+        firstProviderEnvString(process.env.MINIMAX_MODEL) ??
+        DEFAULT_MINIMAX_MODEL,
+      baseURL:
+        firstProviderEnvString(process.env.MINIMAX_BASE_URL) ??
+        'https://api.minimax.io/v1',
+      apiKey: requireSelectedProviderApiKey(
+        'MiniMax',
+        'MINIMAX_API_KEY',
+        firstProviderEnvString(process.env.MINIMAX_API_KEY),
+      ),
+    }
+  }
+
+  if (isEnvTruthy(process.env.AGENC_USE_GITHUB)) {
+    return {
+      model:
+        firstProviderEnvString(process.env.GITHUB_MODEL) ??
+        DEFAULT_GITHUB_MODEL,
+      baseURL:
+        firstProviderEnvString(process.env.GITHUB_BASE_URL) ??
+        GITHUB_COPILOT_BASE,
+      apiKey:
+        requireSelectedProviderApiKey(
+          'GitHub',
+          'GITHUB_TOKEN or GH_TOKEN',
+          firstProviderEnvString(process.env.GITHUB_TOKEN) ??
+            firstProviderEnvString(process.env.GH_TOKEN),
+        ),
+    }
+  }
+
+  return undefined
 }
 
 function isMistralMode(): boolean {
@@ -2271,10 +2365,12 @@ export function createOpenAiShimClient(options: {
 }): unknown {
   hydrateGeminiAccessTokenFromSecureStorage()
   hydrateGithubModelsTokenFromSecureStorage()
+  const providerOverride =
+    options.providerOverride ?? resolveSelectedProviderOverride()
 
   // When Gemini provider is active, map Gemini env vars to provider-compatible ones
   // so the existing providerConfig.ts infrastructure picks them up correctly.
-  if (isEnvTruthy(process.env.AGENC_USE_GEMINI)) {
+  if (!providerOverride && isEnvTruthy(process.env.AGENC_USE_GEMINI)) {
     process.env.OPENAI_BASE_URL ??=
       process.env.GEMINI_BASE_URL ??
       'https://generativelanguage.googleapis.com/v1beta/openai'
@@ -2286,33 +2382,24 @@ export function createOpenAiShimClient(options: {
     if (process.env.GEMINI_MODEL && !process.env.OPENAI_MODEL) {
       process.env.OPENAI_MODEL = process.env.GEMINI_MODEL
     }
-  } else if (isEnvTruthy(process.env.AGENC_USE_MISTRAL)) {
-    process.env.OPENAI_BASE_URL =
-      process.env.MISTRAL_BASE_URL ?? 'https://api.mistral.ai/v1'
-    process.env.OPENAI_API_KEY = process.env.MISTRAL_API_KEY
-    if (process.env.MISTRAL_MODEL) {
-      process.env.OPENAI_MODEL = process.env.MISTRAL_MODEL
-    }
-  } else if (isEnvTruthy(process.env.AGENC_USE_GITHUB)) {
-    process.env.OPENAI_BASE_URL ??= GITHUB_COPILOT_BASE
-    process.env.OPENAI_API_KEY ??=
-      process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
   }
 
   // Map Bankr env vars to provider-compatible ones when present
-  if (process.env.BNKR_API_KEY && !process.env.OPENAI_API_KEY) {
-    process.env.OPENAI_API_KEY = process.env.BNKR_API_KEY
-  }
-  if (process.env.BANKR_BASE_URL && !process.env.OPENAI_BASE_URL) {
-    process.env.OPENAI_BASE_URL = process.env.BANKR_BASE_URL
-  }
-  if (process.env.BANKR_MODEL && !process.env.OPENAI_MODEL) {
-    process.env.OPENAI_MODEL = process.env.BANKR_MODEL
+  if (!providerOverride) {
+    if (process.env.BNKR_API_KEY && !process.env.OPENAI_API_KEY) {
+      process.env.OPENAI_API_KEY = process.env.BNKR_API_KEY
+    }
+    if (process.env.BANKR_BASE_URL && !process.env.OPENAI_BASE_URL) {
+      process.env.OPENAI_BASE_URL = process.env.BANKR_BASE_URL
+    }
+    if (process.env.BANKR_MODEL && !process.env.OPENAI_MODEL) {
+      process.env.OPENAI_MODEL = process.env.BANKR_MODEL
+    }
   }
 
   const beta = new OpenAiShimBeta({
     ...(options.defaultHeaders ?? {}),
-  }, options.reasoningEffort, options.providerOverride)
+  }, options.reasoningEffort, providerOverride)
   return {
     beta,
     messages: beta.messages,

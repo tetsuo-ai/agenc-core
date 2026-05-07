@@ -23,44 +23,6 @@ describe('getAgentModel provider-aware fallback', () => {
       expect(result).not.toBe('claude-sonnet-4-6')
     })
 
-    test('haiku alias resolves for Bedrock provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'bedrock',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
-
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'claude-sonnet-4-6', undefined, 'default')
-
-      // Should resolve haiku alias for Bedrock
-      expect(result).toContain('haiku')
-    })
-
-    test('haiku alias resolves for Vertex provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'vertex',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
-
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'claude-sonnet-4-6', undefined, 'default')
-
-      // Should resolve haiku alias for Vertex
-      expect(result).toContain('haiku')
-    })
-
-    test('haiku alias resolves for Foundry provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'foundry',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
-
-      const { getAgentModel } = await import('./agent.js')
-      const result = getAgentModel('haiku', 'claude-sonnet-4-6', undefined, 'default')
-
-      // Should resolve haiku alias for Foundry
-      expect(result).toContain('haiku')
-    })
   })
 
   describe('Non-AgenC-native providers', () => {
@@ -202,36 +164,6 @@ describe('getAgentModel provider-aware fallback', () => {
       mock.module('./providers.js', () => ({
         getAPIProvider: () => 'firstParty',
         isFirstPartyAnthropicBaseUrl: () => true,
-      }))
-
-      const { checkIsAgenCNativeProvider } = await import('./agent.js')
-      expect(checkIsAgenCNativeProvider()).toBe(true)
-    })
-
-    test('returns true for Bedrock provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'bedrock',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
-
-      const { checkIsAgenCNativeProvider } = await import('./agent.js')
-      expect(checkIsAgenCNativeProvider()).toBe(true)
-    })
-
-    test('returns true for Vertex provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'vertex',
-        isFirstPartyAnthropicBaseUrl: () => false,
-      }))
-
-      const { checkIsAgenCNativeProvider } = await import('./agent.js')
-      expect(checkIsAgenCNativeProvider()).toBe(true)
-    })
-
-    test('returns true for Foundry provider', async () => {
-      mock.module('./providers.js', () => ({
-        getAPIProvider: () => 'foundry',
-        isFirstPartyAnthropicBaseUrl: () => false,
       }))
 
       const { checkIsAgenCNativeProvider } = await import('./agent.js')

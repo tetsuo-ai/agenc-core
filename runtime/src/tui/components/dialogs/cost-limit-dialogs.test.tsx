@@ -107,14 +107,14 @@ describe('cost and limit dialogs', () => {
   })
 
   test('renders the cost threshold dialog with provider label and AgenC docs link', async () => {
-    providerMock.provider = 'bedrock'
+    providerMock.provider = 'github'
 
     const output = await renderToString(
       <CostThresholdDialog onDone={() => {}} />,
       80,
     )
 
-    expect(output).toContain("You've spent $5 on the AWS Bedrock this session.")
+    expect(output).toContain("You've spent $5 on the GitHub Copilot API this session.")
     expect(output).toContain('https://agenc.tech/docs/costs')
     expect(output).toContain('Got it, thanks!')
   })

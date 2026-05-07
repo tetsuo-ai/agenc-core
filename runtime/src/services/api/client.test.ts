@@ -16,13 +16,30 @@ const originalMacro = (globalThis as Record<string, unknown>).MACRO
 const originalEnv = {
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
   AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
+  AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
+  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
+  AGENC_USE_MINIMAX: process.env.AGENC_USE_MINIMAX,
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   GEMINI_MODEL: process.env.GEMINI_MODEL,
   GEMINI_BASE_URL: process.env.GEMINI_BASE_URL,
   GEMINI_AUTH_MODE: process.env.GEMINI_AUTH_MODE,
   GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
+  MISTRAL_API_KEY: process.env.MISTRAL_API_KEY,
+  MISTRAL_BASE_URL: process.env.MISTRAL_BASE_URL,
+  MISTRAL_MODEL: process.env.MISTRAL_MODEL,
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  GITHUB_BASE_URL: process.env.GITHUB_BASE_URL,
+  GITHUB_MODEL: process.env.GITHUB_MODEL,
+  NVIDIA_NIM: process.env.NVIDIA_NIM,
+  NVIDIA_API_KEY: process.env.NVIDIA_API_KEY,
+  NVIDIA_BASE_URL: process.env.NVIDIA_BASE_URL,
+  NVIDIA_MODEL: process.env.NVIDIA_MODEL,
+  MINIMAX_API_KEY: process.env.MINIMAX_API_KEY,
+  MINIMAX_BASE_URL: process.env.MINIMAX_BASE_URL,
+  MINIMAX_MODEL: process.env.MINIMAX_MODEL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+  OPENAI_API_BASE: process.env.OPENAI_API_BASE,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
@@ -42,13 +59,30 @@ beforeEach(() => {
   process.env.AGENC_USE_GEMINI = '1'
   process.env.GEMINI_API_KEY = 'gemini-test-key'
   process.env.GEMINI_MODEL = 'gemini-2.0-flash'
-  process.env.GEMINI_BASE_URL = 'https://gemini.example/v1beta/openai'
+  process.env.GEMINI_BASE_URL = 'http://127.0.0.1:19080/v1beta/openai'
   process.env.GEMINI_AUTH_MODE = 'api-key'
 
   delete process.env.AGENC_USE_OPENAI
+  delete process.env.AGENC_USE_MISTRAL
+  delete process.env.AGENC_USE_GITHUB
+  delete process.env.AGENC_USE_MINIMAX
   delete process.env.GOOGLE_API_KEY
+  delete process.env.MISTRAL_API_KEY
+  delete process.env.MISTRAL_BASE_URL
+  delete process.env.MISTRAL_MODEL
+  delete process.env.GITHUB_TOKEN
+  delete process.env.GITHUB_BASE_URL
+  delete process.env.GITHUB_MODEL
+  delete process.env.NVIDIA_NIM
+  delete process.env.NVIDIA_API_KEY
+  delete process.env.NVIDIA_BASE_URL
+  delete process.env.NVIDIA_MODEL
+  delete process.env.MINIMAX_API_KEY
+  delete process.env.MINIMAX_BASE_URL
+  delete process.env.MINIMAX_MODEL
   delete process.env.OPENAI_API_KEY
   delete process.env.OPENAI_BASE_URL
+  delete process.env.OPENAI_API_BASE
   delete process.env.OPENAI_MODEL
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.ANTHROPIC_AUTH_TOKEN
@@ -59,13 +93,30 @@ afterEach(() => {
   ;(globalThis as Record<string, unknown>).MACRO = originalMacro
   restoreEnv('AGENC_USE_OPENAI', originalEnv.AGENC_USE_OPENAI)
   restoreEnv('AGENC_USE_GEMINI', originalEnv.AGENC_USE_GEMINI)
+  restoreEnv('AGENC_USE_MISTRAL', originalEnv.AGENC_USE_MISTRAL)
+  restoreEnv('AGENC_USE_GITHUB', originalEnv.AGENC_USE_GITHUB)
+  restoreEnv('AGENC_USE_MINIMAX', originalEnv.AGENC_USE_MINIMAX)
   restoreEnv('GEMINI_API_KEY', originalEnv.GEMINI_API_KEY)
   restoreEnv('GEMINI_MODEL', originalEnv.GEMINI_MODEL)
   restoreEnv('GEMINI_BASE_URL', originalEnv.GEMINI_BASE_URL)
   restoreEnv('GEMINI_AUTH_MODE', originalEnv.GEMINI_AUTH_MODE)
   restoreEnv('GOOGLE_API_KEY', originalEnv.GOOGLE_API_KEY)
+  restoreEnv('MISTRAL_API_KEY', originalEnv.MISTRAL_API_KEY)
+  restoreEnv('MISTRAL_BASE_URL', originalEnv.MISTRAL_BASE_URL)
+  restoreEnv('MISTRAL_MODEL', originalEnv.MISTRAL_MODEL)
+  restoreEnv('GITHUB_TOKEN', originalEnv.GITHUB_TOKEN)
+  restoreEnv('GITHUB_BASE_URL', originalEnv.GITHUB_BASE_URL)
+  restoreEnv('GITHUB_MODEL', originalEnv.GITHUB_MODEL)
+  restoreEnv('NVIDIA_NIM', originalEnv.NVIDIA_NIM)
+  restoreEnv('NVIDIA_API_KEY', originalEnv.NVIDIA_API_KEY)
+  restoreEnv('NVIDIA_BASE_URL', originalEnv.NVIDIA_BASE_URL)
+  restoreEnv('NVIDIA_MODEL', originalEnv.NVIDIA_MODEL)
+  restoreEnv('MINIMAX_API_KEY', originalEnv.MINIMAX_API_KEY)
+  restoreEnv('MINIMAX_BASE_URL', originalEnv.MINIMAX_BASE_URL)
+  restoreEnv('MINIMAX_MODEL', originalEnv.MINIMAX_MODEL)
   restoreEnv('OPENAI_API_KEY', originalEnv.OPENAI_API_KEY)
   restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
+  restoreEnv('OPENAI_API_BASE', originalEnv.OPENAI_API_BASE)
   restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
   restoreEnv('ANTHROPIC_API_KEY', originalEnv.ANTHROPIC_API_KEY)
   restoreEnv('ANTHROPIC_AUTH_TOKEN', originalEnv.ANTHROPIC_AUTH_TOKEN)
@@ -128,13 +179,369 @@ test('routes Gemini provider requests through the provider-compatible shim', asy
     stream: false,
   })
 
-  expect(capturedUrl).toBe('https://gemini.example/v1beta/openai/chat/completions')
+  expect(capturedUrl).toBe('http://127.0.0.1:19080/v1beta/openai/chat/completions')
   expect(capturedHeaders?.get('authorization')).toBe('Bearer gemini-test-key')
   expect(capturedBody?.model).toBe('gemini-2.0-flash')
   expect(response).toMatchObject({
     role: 'assistant',
     model: 'gemini-2.0-flash',
   })
+})
+
+test.each([
+  {
+    name: 'NVIDIA NIM',
+    env: {
+      NVIDIA_NIM: '1',
+      NVIDIA_API_KEY: 'nvidia-test-key',
+      NVIDIA_BASE_URL: 'http://127.0.0.1:19081/v1',
+      NVIDIA_MODEL: 'nvidia/example-model',
+    },
+    model: 'nvidia/example-model',
+    expectedUrl: 'http://127.0.0.1:19081/v1/chat/completions',
+    expectedAuth: 'Bearer nvidia-test-key',
+  },
+  {
+    name: 'MiniMax',
+    env: {
+      MINIMAX_API_KEY: 'minimax-test-key',
+      MINIMAX_BASE_URL: 'http://127.0.0.1:19082/v1',
+      MINIMAX_MODEL: 'MiniMax-test-model',
+    },
+    model: 'MiniMax-test-model',
+    expectedUrl: 'http://127.0.0.1:19082/v1/chat/completions',
+    expectedAuth: 'Bearer minimax-test-key',
+  },
+] as const)(
+  'routes env-only $name requests through the provider-compatible shim',
+  async ({ env, model, expectedUrl, expectedAuth }) => {
+    let capturedUrl: string | undefined
+    let capturedHeaders: Headers | undefined
+    let capturedBody: Record<string, unknown> | undefined
+
+    delete process.env.AGENC_USE_GEMINI
+    delete process.env.AGENC_USE_OPENAI
+    for (const [key, value] of Object.entries(env)) {
+      process.env[key] = value
+    }
+
+    globalThis.fetch = (async (input, init) => {
+      capturedUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      capturedHeaders = new Headers(init?.headers)
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-compatible',
+          model,
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: 'ok',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 3,
+            total_tokens: 11,
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      )
+    }) as FetchType
+
+    const client = (await getproviderClient({
+      maxRetries: 0,
+      model,
+    })) as unknown as ShimClient
+
+    const response = await client.beta.messages.create({
+      model,
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    })
+
+    expect(capturedUrl).toBe(expectedUrl)
+    expect(capturedHeaders?.get('authorization')).toBe(expectedAuth)
+    expect(capturedBody?.model).toBe(model)
+    expect(response).toMatchObject({
+      role: 'assistant',
+      model,
+    })
+  },
+)
+
+test.each([
+  {
+    name: 'Mistral',
+    env: {
+      AGENC_USE_MISTRAL: '1',
+      MISTRAL_API_KEY: 'mistral-provider-key',
+      MISTRAL_BASE_URL: 'https://api.mistral.ai/v1',
+      MISTRAL_MODEL: 'devstral-latest',
+    },
+    expectedUrl: 'https://api.mistral.ai/v1/chat/completions',
+    expectedAuth: 'Bearer mistral-provider-key',
+    expectedModel: 'devstral-latest',
+  },
+  {
+    name: 'NVIDIA NIM',
+    env: {
+      NVIDIA_NIM: '1',
+      NVIDIA_API_KEY: 'nvidia-provider-key',
+      NVIDIA_BASE_URL: 'http://127.0.0.1:19081/v1',
+      NVIDIA_MODEL: 'nvidia/provider-model',
+    },
+    expectedUrl: 'http://127.0.0.1:19081/v1/chat/completions',
+    expectedAuth: 'Bearer nvidia-provider-key',
+    expectedModel: 'nvidia/provider-model',
+  },
+  {
+    name: 'MiniMax',
+    env: {
+      AGENC_USE_MINIMAX: '1',
+      MINIMAX_API_KEY: 'minimax-provider-key',
+      MINIMAX_BASE_URL: 'http://127.0.0.1:19082/v1',
+      MINIMAX_MODEL: 'MiniMax-provider-model',
+    },
+    expectedUrl: 'http://127.0.0.1:19082/v1/chat/completions',
+    expectedAuth: 'Bearer minimax-provider-key',
+    expectedModel: 'MiniMax-provider-model',
+  },
+  {
+    name: 'GitHub',
+    env: {
+      AGENC_USE_GITHUB: '1',
+      GITHUB_TOKEN: 'github-test-token',
+      GITHUB_BASE_URL: 'https://models.github.ai/inference',
+      GITHUB_MODEL: 'openai/gpt-4.1',
+    },
+    expectedUrl: 'https://models.github.ai/inference/chat/completions',
+    expectedAuth: 'Bearer github-test-token',
+    expectedModel: 'openai/gpt-4.1',
+  },
+] as const)(
+  'does not leak stale shared env into selected $name shim requests',
+  async ({ env, expectedUrl, expectedAuth, expectedModel }) => {
+    let capturedUrl: string | undefined
+    let capturedHeaders: Headers | undefined
+    let capturedBody: Record<string, unknown> | undefined
+
+    delete process.env.AGENC_USE_GEMINI
+    delete process.env.AGENC_USE_OPENAI
+    process.env.OPENAI_API_KEY = 'stale-openai-key'
+    process.env.OPENAI_BASE_URL = 'http://127.0.0.1:19089/v1'
+    process.env.OPENAI_API_BASE = 'http://127.0.0.1:19088/v1'
+    process.env.OPENAI_MODEL = 'stale-openai-model'
+    for (const [key, value] of Object.entries(env)) {
+      process.env[key] = value
+    }
+
+    globalThis.fetch = (async (input, init) => {
+      capturedUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      capturedHeaders = new Headers(init?.headers)
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-compatible',
+          model: expectedModel,
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: 'ok',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 3,
+            total_tokens: 11,
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      )
+    }) as FetchType
+
+    const client = (await getproviderClient({
+      maxRetries: 0,
+      model: 'stale-request-model',
+    })) as unknown as ShimClient
+
+    const response = await client.beta.messages.create({
+      model: 'stale-request-model',
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    })
+
+    expect(capturedUrl).toBe(expectedUrl)
+    expect(capturedHeaders?.get('authorization')).toBe(expectedAuth)
+    expect(capturedBody?.model).toBe(expectedModel)
+    expect(response).toMatchObject({
+      role: 'assistant',
+      model: expectedModel,
+    })
+  },
+)
+
+test.each([
+  {
+    name: 'Mistral',
+    env: {
+      AGENC_USE_MISTRAL: '1',
+      MISTRAL_MODEL: 'devstral-latest',
+    },
+    expectedMessage: 'MISTRAL_API_KEY is required for Mistral provider',
+  },
+  {
+    name: 'NVIDIA NIM',
+    env: {
+      NVIDIA_NIM: '1',
+      NVIDIA_MODEL: 'nvidia/provider-model',
+    },
+    expectedMessage: 'NVIDIA_API_KEY is required for NVIDIA NIM provider',
+  },
+  {
+    name: 'MiniMax',
+    env: {
+      AGENC_USE_MINIMAX: '1',
+      MINIMAX_MODEL: 'MiniMax-provider-model',
+    },
+    expectedMessage: 'MINIMAX_API_KEY is required for MiniMax provider',
+  },
+  {
+    name: 'GitHub',
+    env: {
+      AGENC_USE_GITHUB: '1',
+      GITHUB_MODEL: 'github:copilot',
+    },
+    expectedMessage: 'GITHUB_TOKEN or GH_TOKEN is required for GitHub provider',
+  },
+] as const)(
+  'fails before fetch when selected $name shim credentials are missing',
+  async ({ env, expectedMessage }) => {
+    let fetchCalled = false
+
+    delete process.env.AGENC_USE_GEMINI
+    delete process.env.AGENC_USE_OPENAI
+    process.env.ANTHROPIC_AUTH_TOKEN = 'first-party-token'
+    process.env.ANTHROPIC_CUSTOM_HEADERS = [
+      'x-api-key: first-party-x-key',
+      'api-key: first-party-api-key',
+      'x-safe-header: keep-me',
+    ].join('\n')
+    for (const [key, value] of Object.entries(env)) {
+      process.env[key] = value
+    }
+
+    globalThis.fetch = (async () => {
+      fetchCalled = true
+      return new Response('{}', {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+    }) as FetchType
+
+    await expect(
+      getproviderClient({
+        maxRetries: 0,
+        model: 'stale-request-model',
+      }),
+    ).rejects.toThrow(expectedMessage)
+    expect(fetchCalled).toBe(false)
+  },
+)
+
+test('strips first-party auth headers before hosted provider shim requests', async () => {
+  let capturedHeaders: Headers | undefined
+
+  delete process.env.AGENC_USE_GEMINI
+  process.env.AGENC_USE_MISTRAL = '1'
+  process.env.MISTRAL_API_KEY = 'mistral-provider-key'
+  process.env.MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
+  process.env.MISTRAL_MODEL = 'devstral-latest'
+  process.env.ANTHROPIC_AUTH_TOKEN = 'first-party-token'
+  process.env.ANTHROPIC_CUSTOM_HEADERS = [
+    'x-api-key: first-party-x-key',
+    'api-key: first-party-api-key',
+    'x-safe-header: keep-me',
+  ].join('\n')
+
+  globalThis.fetch = (async (_input, init) => {
+    capturedHeaders = new Headers(init?.headers)
+
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-mistral',
+        model: 'devstral-latest',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: 'ok',
+            },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 3,
+          total_tokens: 11,
+        },
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+  }) as FetchType
+
+  const client = (await getproviderClient({
+    maxRetries: 0,
+    model: 'devstral-latest',
+  })) as unknown as ShimClient
+
+  await client.beta.messages.create({
+    model: 'devstral-latest',
+    system: 'test system',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(capturedHeaders?.get('authorization')).toBe('Bearer mistral-provider-key')
+  expect(capturedHeaders?.get('x-api-key')).toBeNull()
+  expect(capturedHeaders?.get('api-key')).toBeNull()
+  expect(capturedHeaders?.get('x-safe-header')).toBe('keep-me')
 })
 
 test('strips provider-specific custom headers before sending provider-compatible shim requests', async () => {

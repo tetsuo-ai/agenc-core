@@ -43,6 +43,10 @@ const PROVIDERS_REQUIRING_KEY = new Set<ProviderName>([
   "groq",
   "deepseek",
   "gemini",
+  "mistral",
+  "nvidia-nim",
+  "minimax",
+  "github",
 ]);
 
 const LOCAL_PROVIDERS = new Set<ProviderName>([
@@ -61,6 +65,10 @@ const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
   "groq",
   "deepseek",
   "gemini",
+  "mistral",
+  "nvidia-nim",
+  "minimax",
+  "github",
 ]);
 
 export const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
@@ -443,6 +451,14 @@ function providerApiKeyEnvCandidates(provider: ProviderName): readonly string[] 
       const envVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
       return envVar !== undefined ? [envVar] : [];
     }
+    case "mistral":
+      return ["MISTRAL_API_KEY"];
+    case "nvidia-nim":
+      return ["NVIDIA_API_KEY"];
+    case "minimax":
+      return ["MINIMAX_API_KEY"];
+    case "github":
+      return ["GITHUB_TOKEN", "GH_TOKEN"];
     case "agenc":
     case "ollama":
       return [];
@@ -477,6 +493,22 @@ function resolveProviderBaseURLForDiscovery(params: {
         firstNonEmptyString(params.env.OPENAI_API_BASE) ??
         configuredBaseURL ??
         BUILT_IN_PROVIDER_BASE_URLS["openai-compatible"];
+    case "mistral":
+      return firstNonEmptyString(params.env.MISTRAL_BASE_URL) ??
+        configuredBaseURL ??
+        BUILT_IN_PROVIDER_BASE_URLS.mistral;
+    case "nvidia-nim":
+      return firstNonEmptyString(params.env.NVIDIA_BASE_URL) ??
+        configuredBaseURL ??
+        BUILT_IN_PROVIDER_BASE_URLS["nvidia-nim"];
+    case "minimax":
+      return firstNonEmptyString(params.env.MINIMAX_BASE_URL) ??
+        configuredBaseURL ??
+        BUILT_IN_PROVIDER_BASE_URLS.minimax;
+    case "github":
+      return firstNonEmptyString(params.env.GITHUB_BASE_URL) ??
+        configuredBaseURL ??
+        BUILT_IN_PROVIDER_BASE_URLS.github;
     default:
       return params.settingsBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS[params.provider];
   }

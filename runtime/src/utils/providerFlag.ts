@@ -21,8 +21,6 @@ export const VALID_PROVIDERS = [
   'gemini',
   'mistral',
   'github',
-  'bedrock',
-  'vertex',
   'ollama',
   'nvidia-nim',
   'minimax',
@@ -88,8 +86,11 @@ export function applyProviderFlag(
   delete process.env.AGENC_USE_GEMINI
   delete process.env.AGENC_USE_MISTRAL
   delete process.env.AGENC_USE_GITHUB
+  delete process.env.AGENC_USE_MINIMAX
   delete process.env.AGENC_USE_BEDROCK
   delete process.env.AGENC_USE_VERTEX
+  delete process.env.AGENC_USE_FOUNDRY
+  delete process.env.NVIDIA_NIM
 
   const model = parseModelFlag(args)
 
@@ -115,15 +116,7 @@ export function applyProviderFlag(
 
     case 'github':
       process.env.AGENC_USE_GITHUB = '1'
-      if (model) process.env.OPENAI_MODEL = model
-      break
-
-    case 'bedrock':
-      process.env.AGENC_USE_BEDROCK = '1'
-      break
-
-    case 'vertex':
-      process.env.AGENC_USE_VERTEX = '1'
+      if (model) process.env.GITHUB_MODEL = model
       break
 
     case 'ollama':
@@ -138,18 +131,17 @@ export function applyProviderFlag(
       break
 
     case 'nvidia-nim':
-      process.env.AGENC_USE_OPENAI = '1'
-      process.env.OPENAI_BASE_URL ??= 'https://integrate.api.nvidia.com/v1'
       process.env.NVIDIA_NIM = '1'
-      process.env.OPENAI_MODEL ??= 'nvidia/llama-3.1-nemotron-70b-instruct'
-      if (model) process.env.OPENAI_MODEL = model
+      process.env.NVIDIA_BASE_URL ??= 'https://integrate.api.nvidia.com/v1'
+      process.env.NVIDIA_MODEL ??= 'nvidia/llama-3.1-nemotron-70b-instruct'
+      if (model) process.env.NVIDIA_MODEL = model
       break
 
     case 'minimax':
-      process.env.AGENC_USE_OPENAI = '1'
-      process.env.OPENAI_BASE_URL ??= 'https://api.minimax.io/v1'
-      process.env.OPENAI_MODEL ??= 'MiniMax-M2.5'
-      if (model) process.env.OPENAI_MODEL = model
+      process.env.AGENC_USE_MINIMAX = '1'
+      process.env.MINIMAX_BASE_URL ??= 'https://api.minimax.io/v1'
+      process.env.MINIMAX_MODEL ??= 'MiniMax-M2.5'
+      if (model) process.env.MINIMAX_MODEL = model
       break
 
     case 'bankr':
