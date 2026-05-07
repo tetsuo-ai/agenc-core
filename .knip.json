@@ -19,6 +19,10 @@
     "runtime/src/tui/components/memory/selector-options.ts": [
       "types"
     ],
+    "runtime/src/tui/components/AgenCMdExternalIncludesDialog.tsx": [
+      "exports",
+      "types"
+    ],
     "runtime/src/tools/Tool.ts": [
       "types"
     ],
