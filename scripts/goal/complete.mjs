@@ -11,7 +11,8 @@
 //   4. Run reviewer subagent (review.mjs). Exit on NEEDS_REVISION/BLOCKED.
 //   5. Switch to main, merge port/<id> with --no-ff (local only).
 //   6. Delete the feature branch.
-//   7. Write .goal-completed/<id>.json marker (excluded from git).
+//   7. Write .goal-completed/<id>.json marker (excluded from git), except
+//      Z-FINAL, which is the marker cleanup item and removes the marker dir.
 //   8. Flip PORT_CHECKLIST.md row from [ ] / [~] to [x].
 //   9. Print a one-line success summary.
 //
@@ -23,7 +24,7 @@
 // The goal is "done" if and only if this script exits 0.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, mainCheckoutRoot, worktreePath, markerDir, markerPath, setItemStatus, STATUS, fail } from "./checklist-utils.mjs";
@@ -233,6 +234,21 @@ function writeCompletionMarker(mergedHead) {
   writeFileSync(markerPath(id), JSON.stringify(markerData, null, 2) + "\n");
 }
 
+function removeCompletionMarkerDirForFinalItem() {
+  if (id !== "Z-FINAL") return;
+  rmSync(markerDir(), { recursive: true, force: true });
+  ok("Z-FINAL removed .goal-completed marker directory");
+}
+
+function writeOrSkipCompletionMarker(mergedHead) {
+  if (id === "Z-FINAL") {
+    ok("Z-FINAL skips writing a new .goal-completed marker");
+    return;
+  }
+  writeCompletionMarker(mergedHead);
+  ok(`marker written: .goal-completed/${id}.json`);
+}
+
 async function recoverMatchingInFlightJournal(entry) {
   const journal = parseJournal(entry);
   if (journal.itemId !== id || journal.branch !== expected) {
@@ -273,8 +289,7 @@ async function recoverMatchingInFlightJournal(entry) {
     process.stderr.write(`${DIM}(feature branch ${expected} already deleted)${RESET}\n`);
   }
 
-  writeCompletionMarker(mergeCommit);
-  ok(`marker written: .goal-completed/${id}.json`);
+  writeOrSkipCompletionMarker(mergeCommit);
   const flip = await setItemStatus(id, STATUS.DONE);
   if (flip.changed) {
     ok(`PORT_CHECKLIST.md updated`);
@@ -287,6 +302,7 @@ async function recoverMatchingInFlightJournal(entry) {
   } catch (error) {
     abort(`could not remove in-flight journal ${entry.file}: ${error?.message || error}`);
   }
+  removeCompletionMarkerDirForFinalItem();
 
   process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
   process.stdout.write(`${DIM}Recovered from existing in-flight journal.${RESET}\n`);
@@ -433,7 +449,9 @@ writeFileSync(journalPath, JSON.stringify({
   mainCheckout: mainRoot,
   startedAt: new Date().toISOString(),
   preMergeHead,
-  expectedEndState: "checklist=[x] + branch deleted + worktree removed + marker written",
+  expectedEndState: id === "Z-FINAL"
+    ? "checklist=[x] + branch deleted + worktree removed + marker directory removed"
+    : "checklist=[x] + branch deleted + worktree removed + marker written",
   recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Re-run complete.mjs for this same item to finish marker/checklist/branch cleanup if the merge happened. If the merge did not happen, roll back to preMergeHead and delete this file.",
 }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 
@@ -494,13 +512,12 @@ if (deleteRes.status !== 0) {
 // ---- step 7: marker file -----------------------------------------------
 
 header("step 7 — writing completion marker");
-writeCompletionMarker(
+writeOrSkipCompletionMarker(
   spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).stdout.trim(),
 );
-ok(`marker written: .goal-completed/${id}.json`);
 
 // ---- step 8: flip checklist status -------------------------------------
 
@@ -525,6 +542,7 @@ try {
   process.stderr.write(`${YELLOW}!${RESET} could not remove in-flight journal ${journalPath}; remove manually.\n`);
 }
 releaseMergeLock();
+removeCompletionMarkerDirForFinalItem();
 
 process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
 process.stdout.write(`${DIM}This is ONE iteration of the loop, not goal completion. The goal is the entire checklist. Continue: cd /home/tetsuo/git/AgenC/agenc-core && node scripts/goal/next.mjs${RESET}\n`);

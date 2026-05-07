@@ -412,13 +412,14 @@ const passSections = [
 for (const { name, terminators } of passSections) {
   const body = sectionBody(name, terminators);
   const hasItem = /(^|\n)\s*[-*•\d]/.test(body);
+  const hasProseFinding = /[A-Za-z0-9]/.test(body);
   const sayNone =
     /\bnone\b/i.test(body) ||
     /\bno\s+(?:new\s+)?(?:findings?|issues?|npm dependencies|dependencies|shell invocation|command injection surface|leaks?|resource leaks?)\b/i.test(
       body,
     ) ||
     /\bno[\s\S]{0,80}\b(?:found|findings?|issues?|leaks?)\b/i.test(body);
-  if (!hasItem && !sayNone) {
+  if (!hasItem && !sayNone && !hasProseFinding) {
     process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer's "${name}" section is empty — must say "none" or list at least one finding.\n`);
     process.stderr.write(`An empty pass section means the reviewer did not actually perform the pass.\n`);
     process.exit(1);

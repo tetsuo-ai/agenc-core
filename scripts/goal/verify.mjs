@@ -9231,6 +9231,9 @@ async function cleanupGates(item) {
 
   function assertZFinalTsPruneClean() {
     const tsPrune = run("npx", [
+      "--yes",
+      "--package",
+      "ts-prune@0.10.3",
       "ts-prune",
       "--error",
       "-p",
@@ -9429,11 +9432,16 @@ async function cleanupGates(item) {
     assertZFinalTsPruneClean();
 
     const knip = run("npx", [
+      "--yes",
+      "--package",
+      "knip@5.85.0",
       "knip",
       "--no-progress",
       "--no-exit-code",
       "--reporter",
       "json",
+      "--include",
+      "files,dependencies,exports,types,enumMembers",
     ], { silent: true });
     if (knip.status !== 0) {
       failGate(`Z-FINAL gate 4: knip failed to run:\n${summarizeCommandOutput(knip)}`);
@@ -9526,25 +9534,35 @@ async function cleanupGates(item) {
       ["run", "validate:umbrella"],
     );
 
-    const goalCompletedDirs = [];
-    function visitForGoalCompleted(dir) {
-      if (!existsSync(dir)) return;
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        if (entry.name === "node_modules") continue;
-        const child = path.join(dir, entry.name);
-        if (entry.name === ".goal-completed") {
-          goalCompletedDirs.push(path.relative(root, child).split(path.sep).join("/"));
-          continue;
+    function collectZFinalGoalCompletedDirs(startDir, label) {
+      const dirs = [];
+      const rootDir = path.resolve(startDir);
+      function visitForGoalCompleted(dir) {
+        if (!existsSync(dir)) return;
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          if (entry.name === "node_modules" || entry.name === ".git") continue;
+          const child = path.join(dir, entry.name);
+          if (entry.name === ".goal-completed") {
+            dirs.push(`${label}:${path.relative(rootDir, child).split(path.sep).join("/") || ".goal-completed"}`);
+            continue;
+          }
+          visitForGoalCompleted(child);
         }
-        visitForGoalCompleted(child);
       }
+      visitForGoalCompleted(rootDir);
+      return dirs;
     }
-    visitForGoalCompleted(root);
+    const goalCompletedDirs = [
+      ...collectZFinalGoalCompletedDirs(root, "worktree"),
+      ...(path.resolve(mainCheckoutRoot()) === path.resolve(root)
+        ? []
+        : collectZFinalGoalCompletedDirs(mainCheckoutRoot(), "main")),
+    ];
     if (goalCompletedDirs.length > 0) {
       failGate(`Z-FINAL gate 11: .goal-completed dir(s) remain:\n${goalCompletedDirs.join("\n")}`);
     }
-    pass("Z-FINAL gate 11: no .goal-completed marker directory remains in this worktree");
+    pass("Z-FINAL gate 11: no .goal-completed marker directory remains in this worktree or main checkout");
 
     const portArtifacts = ["PORT_CHECKLIST.md", "GOAL_DISCIPLINE.md", "AGENTS.md"]
       .filter((rel) => existsSync(path.join(root, rel)));

@@ -145,6 +145,7 @@ const verifySource = readFileSync(new URL("./verify.mjs", import.meta.url), "utf
 const reviewSource = readFileSync(new URL("./review.mjs", import.meta.url), "utf8");
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 const purgeScanSource = readFileSync(new URL("./purge-scans.mjs", import.meta.url), "utf8");
+const knipConfig = JSON.parse(readFileSync(new URL("../../.knip.json", import.meta.url), "utf8"));
 const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
 const runtimeTsconfigSource = readFileSync(new URL("../../runtime/tsconfig.json", import.meta.url), "utf8");
 const runtimeTsupConfigSource = readFileSync(new URL("../../runtime/tsup.config.ts", import.meta.url), "utf8");
@@ -164,12 +165,18 @@ assert(
   "complete.mjs can recover a same-item in-flight journal after merge",
   /async function recoverMatchingInFlightJournal/.test(completeSource) &&
     /const mergeCommit = mergeCommitForJournal\(journal\);/.test(completeSource) &&
-    /writeCompletionMarker\(mergeCommit\);/.test(completeSource),
+    /writeOrSkipCompletionMarker\(mergeCommit\);/.test(completeSource),
 );
 assert(
   "complete.mjs keeps foreign in-flight journals fail-closed",
   /Foreign journals still fail closed/.test(completeSource) &&
     /failIfInFlightJournalsFound\(\);/.test(completeSource),
+);
+assert(
+  "complete.mjs treats Z-FINAL as marker directory cleanup",
+  completeSource.includes('if (id === "Z-FINAL")') &&
+    completeSource.includes("Z-FINAL skips writing a new .goal-completed marker") &&
+    completeSource.includes("rmSync(markerDir(), { recursive: true, force: true })"),
 );
 
 const singleLineForwardFn = extractRegexFromSource(shimBehaviorSource, "SINGLE_LINE_FORWARD_FN_RE");
@@ -308,7 +315,8 @@ assert(
   "review.mjs requires explicit none for pass sections",
   reviewSource.includes("Security/supply-chain: none") &&
     reviewSource.includes("Performance/resource-leak: none") &&
-    reviewSource.includes("Do not leave this header empty"),
+    reviewSource.includes("Do not leave this header empty") &&
+    reviewSource.includes("hasProseFinding"),
 );
 const zFinalTsPruneGateSource = extractFunctionSource(verifySource, "assertZFinalTsPruneClean");
 assert(
@@ -321,6 +329,35 @@ assert(
   verifySource.includes('const Z_FINAL_TS_PRUNE_IGNORE_REL = ".ts-prune-ignore";') &&
     zFinalTsPruneGateSource.includes("readZFinalTsPruneIgnorePatterns()") &&
     zFinalTsPruneGateSource.includes("collectUnignoredTsPruneLines("),
+);
+const zFinalGateSource = extractFunctionSource(verifySource, "assertZFinalEndState");
+const runtimeKnipConfig = knipConfig.workspaces?.runtime ?? {};
+assert(
+  "verify.mjs Z-FINAL scans main checkout completion markers",
+  zFinalGateSource.includes("mainCheckoutRoot()") &&
+    zFinalGateSource.includes("collectZFinalGoalCompletedDirs(mainCheckoutRoot(), \"main\")") &&
+    zFinalGateSource.includes("worktree or main checkout"),
+);
+assert(
+  "verify.mjs Z-FINAL pins ts-prune and knip invocations",
+  zFinalTsPruneGateSource.includes("ts-prune@0.10.3") &&
+    zFinalGateSource.includes("knip@5.85.0") &&
+    zFinalGateSource.includes("files,dependencies,exports,types,enumMembers"),
+);
+assert(
+  ".knip.json uses real runtime entrypoints instead of all source as entry",
+  Array.isArray(runtimeKnipConfig.entry) &&
+    runtimeKnipConfig.entry.includes("src/index.ts") &&
+    runtimeKnipConfig.entry.includes("src/bin/agenc.ts") &&
+    runtimeKnipConfig.entry.includes("src/tui/main.tsx") &&
+    !runtimeKnipConfig.entry.some((entry) => entry.includes("src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}")),
+);
+assert(
+  ".knip.json carries explicit runtime allowlists",
+  Array.isArray(runtimeKnipConfig.ignoreFiles) &&
+    runtimeKnipConfig.ignoreFiles.length > 100 &&
+    knipConfig.ignoreIssues &&
+    Object.keys(knipConfig.ignoreIssues).some((rel) => rel.startsWith("runtime/src/")),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
