@@ -972,7 +972,7 @@ export async function performMCPOAuthFlow(
   // If the IdP id_token isn't cached, this pops the browser once at the IdP
   // (shared across all XAA servers for that issuer). Subsequent servers hit
   // the cache and are silent. Tokens land in the same keychain slot, so the
-  // rest of CC's transport wiring (AgenCAuthProvider.tokens() in client.ts)
+  // rest of AgenC's transport wiring (AgenCAuthProvider.tokens() in client.ts)
   // works unchanged.
   //
   // No silent fallback: if `oauth.xaa` is set, XAA is the only path. We
@@ -1846,7 +1846,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
    * No browser.
    *
    * Returns undefined if the id_token is gone from cache — caller treats this
-   * as needs-interactive-reauth (transport will 401, CC surfaces it).
+   * as needs-interactive-reauth (transport will 401, AgenC surfaces it).
    *
    * On exchange failure, clears the id_token cache so the next interactive
    * auth does a fresh IdP login (the cached id_token is likely stale/revoked).

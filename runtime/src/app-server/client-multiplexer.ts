@@ -4,8 +4,9 @@
  *
  * Why this lives here:
  *   - F-03g owns concurrent client fan-out only. Session creation and
- *     termination stay in `session-lifecycle.ts`; transport accept loops stay
- *     in `transport/`.
+ *     lifecycle authority stays in `session-lifecycle.ts`; this multiplexer
+ *     only reconciles route cleanup for routed detach and terminate calls.
+ *     Transport accept loops stay in `transport/`.
  *
  * Cross-cuts deliberately NOT carried:
  *   - disconnect recovery policy and daemon process lifecycle are handled by
@@ -18,7 +19,10 @@ import type {
   AgenCDaemonSessionNotification,
   JsonObject,
   SessionAttachResult,
+  SessionDetachParams,
   SessionDetachResult,
+  SessionTerminateParams,
+  SessionTerminateResult,
 } from "./protocol/index.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 
@@ -192,6 +196,41 @@ export class AgenCDaemonClientMultiplexer {
     });
   }
 
+  async detachSession(params: SessionDetachParams): Promise<SessionDetachResult> {
+    return this.#state.with(async (state) => {
+      const route = state.sessions.get(params.sessionId);
+      const routeClientId = routeClientIdForDetach(route, params);
+      const detached = await this.#sessionManager.detachSession(params);
+      if (!detached.detached || routeClientId === undefined || route === undefined) {
+        return detached;
+      }
+
+      route.clientAttachmentIds.delete(routeClientId);
+      state.clients.get(routeClientId)?.sessionIds.delete(params.sessionId);
+      deleteRouteIfEmpty(state, route);
+      return detached;
+    });
+  }
+
+  async terminateSession(
+    params: SessionTerminateParams,
+  ): Promise<SessionTerminateResult> {
+    return this.#state.with(async (state) => {
+      const route = state.sessions.get(params.sessionId);
+      const affectedClientIds =
+        route === undefined ? [] : [...route.clientAttachmentIds.keys()];
+      const terminated = await this.#sessionManager.terminateSession(params);
+
+      if (route !== undefined) {
+        state.sessions.delete(params.sessionId);
+        for (const clientId of affectedClientIds) {
+          state.clients.get(clientId)?.sessionIds.delete(params.sessionId);
+        }
+      }
+      return terminated;
+    });
+  }
+
   async removeClient(clientId: string): Promise<readonly string[]> {
     return this.disconnectClient(clientId);
   }
@@ -288,6 +327,24 @@ function getOrCreateRoute(
     state.sessions.set(sessionId, route);
   }
   return route;
+}
+
+function routeClientIdForDetach(
+  route: MutableSessionRoute | undefined,
+  params: SessionDetachParams,
+): string | undefined {
+  if (route === undefined) return undefined;
+  if (params.attachmentId !== undefined) {
+    return [...route.clientAttachmentIds.entries()].find(
+      ([, attachmentId]) => attachmentId === params.attachmentId,
+    )?.[0];
+  }
+  if (params.clientId !== undefined) {
+    return route.clientAttachmentIds.has(params.clientId)
+      ? params.clientId
+      : undefined;
+  }
+  return undefined;
 }
 
 function enqueueDelivery(
