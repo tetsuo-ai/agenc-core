@@ -2135,6 +2135,35 @@ const ITEM_EVIDENCE = {
       "runtime/src/bin/bootstrap.test.ts",
     ],
   },
+  "PR-11": {
+    files: [
+      "runtime/src/llm/registry/model-catalog.ts",
+      "runtime/src/personality/personality.contract.test.ts",
+      "runtime/src/personality/personality-migration.contract.test.ts",
+      "parity/PR-11-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "personality_does_not_mutate_base_instructions_without_template", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "base_instructions_override_disables_personality_template", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "user_turn_personality_none_does_not_add_update_message", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "config_personality_some_sets_instructions_template", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "config_personality_none_sends_no_personality", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "default_personality_is_pragmatic_without_config_toml", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "user_turn_personality_some_adds_update_message", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "user_turn_personality_same_value_does_not_add_update_message", scope: "runtime/src/personality/personality.contract.test.ts" },
+      { pattern: "applies_when_sessions_exist_and_no_personality", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
+      { pattern: "applies_when_only_archived_sessions_exist_and_no_personality", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
+      { pattern: "skips_when_marker_exists", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
+      { pattern: "skips_when_personality_explicit", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
+      { pattern: "skips_when_no_sessions", scope: "runtime/src/personality/personality-migration.contract.test.ts" },
+      { pattern: "personalityDefault: OPENAI_PRAGMATIC_PERSONALITY", scope: "runtime/src/llm/registry/model-catalog.ts" },
+      { pattern: "personality-integration-contract", scope: "parity/PR-11-parity.json" },
+    ],
+    tests: [
+      "runtime/src/personality/personality.contract.test.ts",
+      "runtime/src/personality/personality-migration.contract.test.ts",
+    ],
+  },
   "MM-06": {
     grepPresent: [{ pattern: "agenc memory", scope: "runtime/src" }],
   },
@@ -5554,6 +5583,88 @@ async function promptGates(item) {
     if (vitest.status !== 0) failGate("PR-10 targeted Vitest suite failed");
     pass("PR-10 targeted Vitest suite passed");
     pass("PR-10: personality migration behavior and startup hook present");
+    return;
+  }
+  if (id === "PR-11") {
+    const requiredFiles = [
+      "runtime/src/llm/registry/model-catalog.ts",
+      "runtime/src/personality/personality.contract.test.ts",
+      "runtime/src/personality/personality-migration.contract.test.ts",
+      "parity/PR-11-parity.json",
+    ];
+    for (const file of requiredFiles) {
+      if (!existsSync(path.join(root, file))) {
+        failGate(`PR-11: required personality contract file missing: ${file}`);
+      }
+    }
+    const personalityTest = "runtime/src/personality/personality.contract.test.ts";
+    const migrationTest = "runtime/src/personality/personality-migration.contract.test.ts";
+    const requiredPersonalityScenarios = [
+      "personality_does_not_mutate_base_instructions_without_template",
+      "base_instructions_override_disables_personality_template",
+      "user_turn_personality_none_does_not_add_update_message",
+      "config_personality_some_sets_instructions_template",
+      "config_personality_none_sends_no_personality",
+      "default_personality_is_pragmatic_without_config_toml",
+      "user_turn_personality_some_adds_update_message",
+      "user_turn_personality_same_value_does_not_add_update_message",
+    ];
+    for (const scenario of requiredPersonalityScenarios) {
+      if (!grepRepo(scenario, personalityTest)) {
+        failGate(`PR-11: missing personality scenario ${scenario}`);
+      }
+    }
+    const requiredMigrationScenarios = [
+      "applies_when_sessions_exist_and_no_personality",
+      "applies_when_only_archived_sessions_exist_and_no_personality",
+      "skips_when_marker_exists",
+      "skips_when_personality_explicit",
+      "skips_when_no_sessions",
+    ];
+    for (const scenario of requiredMigrationScenarios) {
+      if (!grepRepo(scenario, migrationTest)) {
+        failGate(`PR-11: missing migration scenario ${scenario}`);
+      }
+    }
+    if (!grepRepo("seenMessages", personalityTest)) {
+      failGate("PR-11: personality contract must assert captured provider requests");
+    }
+    if (!grepRepo("PERSONALITY_SPEC_START_MARKER", personalityTest)) {
+      failGate("PR-11: personality contract must assert developer update markers");
+    }
+    if (!grepRepo("LOCAL_PRAGMATIC_TEMPLATE", personalityTest)) {
+      failGate("PR-11: personality contract must assert pragmatic template text");
+    }
+    if (!grepRepo("bootstrapLocalRuntimeSession", personalityTest)) {
+      failGate("PR-11: default pragmatic contract must exercise startup bootstrap");
+    }
+    if (!grepRepo("personalityDefault: OPENAI_PRAGMATIC_PERSONALITY", "runtime/src/llm/registry/model-catalog.ts")) {
+      failGate("PR-11: model catalog default personality must be pragmatic");
+    }
+    if (!grepRepo("MARKER_CONTENTS = \"v1\\\\n\"", migrationTest)) {
+      failGate("PR-11: migration contract must lock marker file contents");
+    }
+    if (!grepRepo("config\\.toml", migrationTest)) {
+      failGate("PR-11: migration contract must assert current config persistence");
+    }
+    if (!grepRepo("config\\.json\\.bak-cf12", migrationTest)) {
+      failGate("PR-11: migration contract must cover legacy JSON config migration");
+    }
+    if (!grepRepo("personality-integration-contract", "parity/PR-11-parity.json")) {
+      failGate("PR-11: parity matrix missing personality integration contract");
+    }
+    if (!grepRepo("legacy-config-json-migrates-before-apply", "parity/PR-11-parity.json")) {
+      failGate("PR-11: parity matrix missing config JSON migration row");
+    }
+    const vitest = run("npm", [
+      "test",
+      "--",
+      "src/personality/personality.contract.test.ts",
+      "src/personality/personality-migration.contract.test.ts",
+    ], { cwd: path.join(root, "runtime") });
+    if (vitest.status !== 0) failGate("PR-11 targeted Vitest suite failed");
+    pass("PR-11 targeted Vitest suite passed");
+    pass("PR-11: personality integration contract suites present");
     return;
   }
   failGate(
