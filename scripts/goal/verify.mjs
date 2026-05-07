@@ -5800,10 +5800,37 @@ async function memoryGates(item) {
     return;
   }
   if (id === "MM-02") {
-    // AGENC.md inclusion / per-repo memory.
-    const found = grepRepo("AGENC\\.md|agencMd|agencMemory", "runtime/src");
-    if (!found) failGate("MM-02: AGENC.md / agenc-memory surface not found");
-    pass("MM-02: AGENC.md inclusion referenced");
+    const requiredSymbols = [
+      ["runtime/src/memory/global-store.ts", "getGlobalMemoryStoreInfo"],
+      ["runtime/src/memory/global-store.ts", "ensureGlobalMemoryStore"],
+      ["runtime/src/memory/global-store.ts", "loadGlobalMemoryStorePrompt"],
+      ["runtime/src/memory/global-store.ts", "scanGlobalMemoryStore"],
+      ["runtime/src/memory/global-store.ts", "getGlobalMemoryStoreSnapshot"],
+      ["runtime/src/memory/global-store.test.ts", "global memory store"],
+      ["runtime/src/utils/yaml.ts", "createRequire"],
+      ["runtime/src/utils/yaml.ts", "js-yaml"],
+      ["parity/MM-02-parity.json", "global-memory-store"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const file = path.join(root, rel);
+      if (!existsSync(file)) failGate(`MM-02: ${rel} missing`);
+      const source = readFileSync(file, "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`MM-02: ${symbol} missing from ${rel}`);
+      }
+    }
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/global-store.test.ts",
+      "src/memory/scan.test.ts",
+      "src/memory/paths.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-02 targeted Vitest suite failed");
+    pass("MM-02: global memory store verified");
     return;
   }
   if (id === "MM-03") {
@@ -5850,10 +5877,63 @@ async function memoryGates(item) {
     return;
   }
   if (id === "MM-04") {
-    // Per-conversation memory persistence.
-    const found = grepRepo("MemoryStore|memoryStore|persistMemory|saveMemory", "runtime/src");
-    if (!found) failGate("MM-04: memory persistence not found");
-    pass("MM-04: memory persistence referenced");
+    const requiredSymbols = [
+      ["runtime/src/memory/session/sessionMemory.ts", "runSessionMemoryPostSamplingHook"],
+      ["runtime/src/memory/session/sessionMemory.ts", "setupSessionMemoryFile"],
+      ["runtime/src/memory/session/sessionMemory.ts", "createSessionMemoryEditPolicy"],
+      ["runtime/src/memory/session/sessionMemoryUtils.ts", "resolveSessionMemoryPath"],
+      ["runtime/src/memory/session/sessionMemoryUtils.ts", "isSessionMemoryEnabled"],
+      ["runtime/src/memory/session/prompts.ts", "buildSessionMemoryUpdatePrompt"],
+      ["runtime/src/memory/session/PARITY.md", "Session Memory Parity"],
+      ["parity/MM-04-parity.json", "session-memory"],
+      ["runtime/src/session/run-turn.ts", "../memory/session/sessionMemory.js"],
+      ["runtime/src/setup.ts", "./memory/session/sessionMemory.js"],
+      ["runtime/src/conversation/multi-turn-context.ts", "../memory/session/sessionMemoryUtils.js"],
+      ["runtime/src/services/awaySummary.ts", "../memory/session/sessionMemoryUtils.js"],
+      ["runtime/src/commands/compact/compact.ts", "../../memory/session/sessionMemoryUtils.js"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const file = path.join(root, rel);
+      if (!existsSync(file)) failGate(`MM-04: ${rel} missing`);
+      const source = readFileSync(file, "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`MM-04: ${symbol} missing from ${rel}`);
+      }
+    }
+
+    const oldDir = path.join(root, "runtime/src/services/SessionMemory");
+    if (existsSync(oldDir)) {
+      failGate("MM-04: old runtime/src/services/SessionMemory directory remains");
+    }
+
+    const oldImportOffenders = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) => /\.(ts|tsx|mts|cts)$/.test(file))
+      .filter((file) =>
+        /from\s+["'][^"']*services\/SessionMemory\//.test(
+          readFileSync(file, "utf8"),
+        ),
+      )
+      .map((file) => path.relative(root, file));
+    if (oldImportOffenders.length > 0) {
+      failGate(
+        `MM-04: old SessionMemory imports remain:\n  ${oldImportOffenders.join("\n  ")}`,
+      );
+    }
+
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/session/sessionMemory.test.ts",
+      "src/memory/session/session-memory.contract.test.ts",
+      "src/session/run-turn.test.ts",
+      "src/conversation/multi-turn-context.contract.test.ts",
+      "src/personality/personality.contract.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-04 targeted Vitest suite failed");
+    pass("MM-04: session memory verified");
     return;
   }
   if (id === "MM-05") {

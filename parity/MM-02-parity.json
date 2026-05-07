@@ -1,0 +1,80 @@
+{
+  "item": "MM-02",
+  "status": "implemented",
+  "contractName": "global-memory-store",
+  "scope": "AgenC global durable memory store composes the upstream path, prompt, and scan behavior into runtime/src/memory/global-store.ts.",
+  "sourceRoot": "TUI/source reference",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/memdir/paths.ts",
+    "src/memdir/memdir.ts",
+    "src/memdir/memoryScan.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/memory/global-store.ts",
+    "runtime/src/memory/global-store.test.ts",
+    "runtime/src/memory/scan.test.ts",
+    "runtime/src/memory/PARITY.md",
+    "runtime/src/utils/yaml.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/memory/global-store.test.ts",
+    "runtime/src/memory/scan.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "MM-02-global-root-entrypoint",
+      "source": "src/memdir/paths.ts",
+      "target": "runtime/src/memory/global-store.ts",
+      "requiredBehaviors": [
+        "Global memory store exposes the D-13 global memory root and MEMORY.md entrypoint.",
+        "Global memory path detection does not treat project memory files as global memory."
+      ],
+      "edgeCases": [
+        "The global store remains independent from project memory path overrides."
+      ],
+      "tests": [
+        "runtime/src/memory/global-store.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-02-global-prompt",
+      "source": "src/memdir/memdir.ts",
+      "target": "runtime/src/memory/global-store.ts",
+      "requiredBehaviors": [
+        "Global memory store ensures its directory before prompt loading.",
+        "Global MEMORY.md content is loaded and truncation follows the shared entrypoint caps."
+      ],
+      "edgeCases": [
+        "Missing or empty global MEMORY.md returns no entrypoint snapshot.",
+        "Oversized global MEMORY.md content reports the byte-cap warning."
+      ],
+      "tests": [
+        "runtime/src/memory/global-store.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-02-global-scan-manifest",
+      "source": "src/memdir/memoryScan.ts",
+      "target": "runtime/src/memory/global-store.ts",
+      "requiredBehaviors": [
+        "Global memory scan returns only global topic files.",
+        "Global manifest formatting uses the shared memory header formatter."
+      ],
+      "edgeCases": [
+        "Unknown frontmatter type degrades to an untyped header.",
+        "Already-aborted scans return an empty result.",
+        "Node runtime YAML fallback preserves frontmatter type and description fields."
+      ],
+      "tests": [
+        "runtime/src/memory/global-store.test.ts",
+        "runtime/src/memory/scan.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

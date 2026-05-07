@@ -11,6 +11,9 @@ Primary source anchors:
 - `src/memdir/memoryScan.ts`
 - `src/memdir/memoryAge.ts`
 - `src/memdir/findRelevantMemories.ts`
+- `src/services/SessionMemory/sessionMemory.ts`
+- `src/services/SessionMemory/sessionMemoryUtils.ts`
+- `src/services/SessionMemory/prompts.ts`
 - project-instruction loader source
 - `src/utils/memoryFileDetection.ts`
 - `state/src/model/memories.rs`
@@ -20,6 +23,8 @@ Primary source anchors:
 This directory owns the MM-01 memory subsystem:
 - `paths.ts` resolves the D-13 global, project, and compatibility memory paths.
 - `memdir.ts` builds the typed memory prompt, entrypoint truncation, and explicit three-layer guidance.
+- `global-store.ts` composes the global memory path, prompt, scan, and manifest primitives into the user-level global store surface.
+- `session/` owns session-scoped notes extraction, prompt generation, path resolution, and compact/read helpers.
 - `types.ts`, `scan.ts`, `age.ts`, and `find-relevant.ts` provide memory taxonomy, scanning, freshness, and recall selection.
 - `agencmd.ts` owns full AGENC.md discovery with includes and rules. It is the only temporary strictness boundary in this directory.
 - `detection.ts` classifies memory files and memory-targeting shell patterns.

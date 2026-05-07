@@ -32,7 +32,7 @@ vi.mock("axios", () => {
     isAxiosError: () => false,
   };
 });
-vi.mock("../services/SessionMemory/sessionMemory.js", () => ({
+vi.mock("../memory/session/sessionMemory.js", () => ({
   runSessionMemoryPostSamplingHook: async (context: unknown) => {
     sessionMemoryPostSamplingMockState.calls.push(context);
     if (sessionMemoryPostSamplingMockState.error) {

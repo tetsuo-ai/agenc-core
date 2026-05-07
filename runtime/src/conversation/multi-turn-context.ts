@@ -39,7 +39,7 @@ import type { CompactContext } from "../services/compact/types.js";
 import {
   getSessionMemoryContent,
   type SessionMemoryPathOptions,
-} from "../services/SessionMemory/sessionMemoryUtils.js";
+} from "../memory/session/sessionMemoryUtils.js";
 import {
   roughTokenCountEstimationForContent,
   roughTokenCountEstimationForMessages,
