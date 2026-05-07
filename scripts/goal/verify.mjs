@@ -6030,7 +6030,87 @@ async function memoryGates(item) {
     pass("MM-05: memory extraction triggers verified");
     return;
   }
-  if (id === "MM-07" || id === "MM-08") {
+  if (id === "MM-07") {
+    const indexPath = path.join(root, "runtime/src/memory/index.ts");
+    const index = readFileSync(indexPath, "utf8");
+    const requiredIndexSymbols = [
+      "clearMemoryFileCaches",
+      "detectSessionFileType",
+      "detectSessionPatternType",
+      "filterInjectedMemoryFiles",
+      "findRelevantMemories",
+      "formatMemoryManifest",
+      "formatRelevantMemoryHeader",
+      "getAgenCMds",
+      "getAllMemoryFilePaths",
+      "getAutoMemPath",
+      "getConditionalRulesForCwdLevelDirectory",
+      "getExternalAgenCMdIncludes",
+      "getGlobalMemoryPath",
+      "getLargeMemoryFiles",
+      "getManagedAndUserConditionalRules",
+      "getMemoryFiles",
+      "getMemoryFilesForNestedDirectory",
+      "getProjectMemoryPathForSelector",
+      "hasExternalAgenCMdIncludes",
+      "isAutoMemFile",
+      "isMemoryFilePath",
+      "isMemoryMention",
+      "MAX_MEMORY_CHARACTER_COUNT",
+      "memoryFreshnessNote",
+      "MEMORY_MENTION_ALIASES",
+      "MEMORY_MENTION_SYNTAX",
+      "processConditionedMdRules",
+      "processMdRules",
+      "processMemoryFile",
+      "resetGetMemoryFilesCache",
+      "scanMemoryFiles",
+      "shouldShowAgenCMdExternalIncludesWarning",
+      "stripHtmlComments",
+    ];
+    for (const symbol of requiredIndexSymbols) {
+      if (!isExportedFromSource(index, symbol)) {
+        failGate(`MM-07: ${symbol} missing from runtime/src/memory/index.ts`);
+      }
+    }
+    if (existsSync(path.join(root, "runtime/src/services/extractMemories/memory-scan.ts"))) {
+      failGate("MM-07: stale extraction-local memory-scan.ts must be removed");
+    }
+
+    const migratedCallers = [
+      "runtime/src/utils/attachments.ts",
+      "runtime/src/tools/FileReadTool/FileReadTool.ts",
+      "runtime/src/services/extractMemories/extractMemories.ts",
+    ];
+    const directMemoryModuleImport =
+      /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection)\.js["']/g;
+    for (const rel of migratedCallers) {
+      const source = readFileSync(path.join(root, rel), "utf8");
+      if (!source.includes("memory/index.js")) {
+        failGate(`MM-07: ${rel} must import memory access from runtime/src/memory/index.ts`);
+      }
+      const directImports = source.match(directMemoryModuleImport) ?? [];
+      if (directImports.length > 0) {
+        failGate(`MM-07: ${rel} directly imports memory implementation module(s): ${directImports.join(", ")}`);
+      }
+    }
+
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/index.test.ts",
+      "src/memory/scan.test.ts",
+      "src/services/extractMemories/extractMemories.test.ts",
+      "src/memory-wiring.contract.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-07 targeted Vitest suite failed");
+    pass("MM-07: public memory access surface verified");
+    return;
+  }
+  if (id === "MM-08") {
     const tests = walkFiles(existsSync(dir) ? dir : altDir).filter((p) => /\.test\.(ts|tsx)$/.test(p));
     if (tests.length === 0) failGate(`${id}: no test files in memory subsystem`);
     pass(`${id}: ${tests.length} test file(s)`);
@@ -6039,6 +6119,15 @@ async function memoryGates(item) {
   failGate(
     `memory item ${id} has no specific gate branch. ` +
     `Add a branch to memoryGates() in scripts/goal/verify.mjs.`,
+  );
+}
+
+function isExportedFromSource(source, symbol) {
+  const escaped = escapeRegExp(symbol);
+  return (
+    new RegExp(`export\\s+(?:async\\s+)?(?:function|const|let|var|class)\\s+${escaped}\\b`).test(source) ||
+    new RegExp(`export\\s+type\\s+${escaped}\\b`).test(source) ||
+    new RegExp(`export\\s*\\{[\\s\\S]*\\b${escaped}\\b[\\s\\S]*\\}\\s*from\\s*["']`).test(source)
   );
 }
 

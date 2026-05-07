@@ -15,6 +15,7 @@ describe("memory wiring contract", () => {
       "runtime/src/prompts/memory/index.ts",
       "runtime/src/prompts/memory/loader.ts",
       "runtime/src/prompts/memory/types.ts",
+      "runtime/src/services/extractMemories/memory-scan.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(false);
     }
@@ -66,11 +67,27 @@ describe("memory wiring contract", () => {
     expect(projectMemory).toContain("getProjectMemoryPathForSelector");
     expect(projectMemory).toContain("MEMORY_MENTION_SYNTAX");
     expect(fileReadTool).toContain("detectSessionFileType");
-    expect(fileReadTool).toContain("../../memory/project-memory.js");
+    expect(fileReadTool).toContain("../../memory/index.js");
     expect(fileReadTool).not.toContain("function detectSessionFileType");
     expect(attachments).toContain("getDurableMemorySearchDirs");
     expect(attachments).toContain("getGlobalMemoryPath");
     expect(filesystem).toContain("isGlobalMemoryPath");
+  });
+
+  it("routes MM-07 tool and service memory access through the public index", () => {
+    const inScopeFiles = [
+      "runtime/src/utils/attachments.ts",
+      "runtime/src/tools/FileReadTool/FileReadTool.ts",
+      "runtime/src/services/extractMemories/extractMemories.ts",
+    ];
+    const directMemoryModuleImport =
+      /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection)\.js["']/g;
+
+    for (const rel of inScopeFiles) {
+      const source = readFileSync(resolve(root, rel), "utf8");
+      expect(source, rel).toContain("memory/index.js");
+      expect(source.match(directMemoryModuleImport) ?? [], rel).toEqual([]);
+    }
   });
 });
 
