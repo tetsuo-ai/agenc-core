@@ -1,7 +1,6 @@
 // @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { getShortcutDisplay } from '../tui/keybindings/shortcutFormat.js'
-import { isExtractModeActive } from '../memory/paths.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -41,9 +40,6 @@ import type { SystemPrompt } from '../utils/systemPromptType.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
 import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
-const extractMemoriesModule = feature('EXTRACT_MEMORIES')
-  ? (require('../services/extractMemories/extractMemories.js') as typeof import('../services/extractMemories/extractMemories.js'))
-  : null
 const jobClassifierModule = feature('TEMPLATES')
   ? (require('../jobs/classifier.js') as typeof import('../jobs/classifier.js'))
   : null
@@ -131,25 +127,12 @@ export async function* handleStopHooks(
     ])
   }
   // --bare / SIMPLE: skip background bookkeeping (prompt suggestion,
-  // memory extraction, auto-dream). Scripted -p calls don't want auto-memory
-  // or forked agents contending for resources during shutdown.
+  // auto-dream). Scripted -p calls don't want forked agents contending for
+  // resources during shutdown.
   if (!isBareMode()) {
     // Inline env check for dead code elimination in external builds
     if (!isEnvDefinedFalsy(process.env.AGENC_ENABLE_PROMPT_SUGGESTION)) {
       void executePromptSuggestion(stopHookContext, { cwd: getCwd(), speculationEnabled: getGlobalConfig().speculationEnabled })
-    }
-    if (
-      feature('EXTRACT_MEMORIES') &&
-      !toolUseContext.agentId &&
-      isExtractModeActive()
-    ) {
-      // Fire-and-forget in both interactive and non-interactive. For -p/SDK,
-      // print.ts drains the in-flight promise after flushing the response
-      // but before gracefulShutdownSync (see drainPendingExtraction).
-      void extractMemoriesModule!.executeExtractMemories(
-        stopHookContext,
-        toolUseContext.appendSystemMessage,
-      )
     }
     if (!toolUseContext.agentId) {
       void executeAutoDream(stopHookContext, toolUseContext.appendSystemMessage)

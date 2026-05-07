@@ -1,0 +1,116 @@
+{
+  "item": "MM-05",
+  "status": "implemented",
+  "contractName": "memory-extraction-triggers",
+  "scope": "AgenC memory extraction trigger decisions live in runtime/src/memory/extraction-triggers.ts and are consumed by the extraction service before it launches child agents.",
+  "sourceRoot": "TUI/source reference",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/services/extractMemories/extractMemories.ts",
+    "src/services/extractMemories/prompts.ts",
+    "src/services/SessionMemory/sessionMemoryUtils.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/memory/extraction-triggers.ts",
+    "runtime/src/memory/extraction-triggers.test.ts",
+    "runtime/src/services/extractMemories/extractMemories.ts",
+    "runtime/src/services/extractMemories/extractMemories.test.ts",
+    "runtime/src/query/stopHooks.ts",
+    "runtime/src/memory/PARITY.md",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/memory/extraction-triggers.test.ts",
+    "runtime/src/services/extractMemories/extractMemories.test.ts",
+    "runtime/src/phases/commit.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "MM-05-visible-range",
+      "source": "src/services/extractMemories/extractMemories.ts",
+      "target": "runtime/src/memory/extraction-triggers.ts",
+      "requiredBehaviors": [
+        "Extraction only counts model-visible user and assistant messages.",
+        "If compaction shrinks visible history below the processed cursor, the trigger reconsiders retained visible messages instead of permanently disabling extraction."
+      ],
+      "edgeCases": [
+        "Hidden system messages are excluded from trigger ranges."
+      ],
+      "tests": [
+        "runtime/src/memory/extraction-triggers.test.ts",
+        "runtime/src/services/extractMemories/extractMemories.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-05-direct-write-skip",
+      "source": "src/services/extractMemories/extractMemories.ts",
+      "target": "runtime/src/memory/extraction-triggers.ts",
+      "requiredBehaviors": [
+        "Successful main-agent writes to absolute memory paths skip child extraction and advance the cursor.",
+        "Failed writes, untracked writes, or relative writes do not skip extraction."
+      ],
+      "edgeCases": [
+        "Malformed tool arguments are treated as empty objects.",
+        "Only completed non-error tool results count as direct memory writes."
+      ],
+      "tests": [
+        "runtime/src/memory/extraction-triggers.test.ts",
+        "runtime/src/services/extractMemories/extractMemories.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-05-main-agent-and-cadence",
+      "source": "src/services/extractMemories/extractMemories.ts + src/services/SessionMemory/sessionMemoryUtils.ts",
+      "target": "runtime/src/memory/extraction-triggers.ts",
+      "requiredBehaviors": [
+        "Extraction triggers only from the main agent context.",
+        "The AGENC_DISABLE_EXTRACT_MEMORIES env flag disables extraction.",
+        "Minimum eligible-turn cadence throttles normal extraction but never defers trailing coalesced runs."
+      ],
+      "edgeCases": [
+        "Nested or subagent turn contexts do not trigger memory extraction."
+      ],
+      "tests": [
+        "runtime/src/memory/extraction-triggers.test.ts",
+        "runtime/src/services/extractMemories/extractMemories.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-05-service-integration",
+      "source": "src/services/extractMemories/prompts.ts",
+      "target": "runtime/src/services/extractMemories/extractMemories.ts",
+      "requiredBehaviors": [
+        "The extraction service consumes memory-owned trigger primitives before scanning memories and building the extraction prompt.",
+        "Commit-phase scheduling still launches extraction after natural terminal turns and skips pending-tool turns."
+      ],
+      "edgeCases": [
+        "Child policy denials and failed child writes keep the cursor eligible for retry."
+      ],
+      "tests": [
+        "runtime/src/services/extractMemories/extractMemories.test.ts",
+        "runtime/src/phases/commit.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-05-legacy-stop-hook-caller",
+      "source": "src/services/extractMemories/extractMemories.ts",
+      "target": "runtime/src/query/stopHooks.ts",
+      "requiredBehaviors": [
+        "The legacy query stop-hook path no longer calls memory extraction with the donor-era hook context shape.",
+        "Memory extraction scheduling remains owned by the commit phase, where a real Session, TurnContext, and completed tool results are available."
+      ],
+      "edgeCases": [
+        "The @ts-nocheck stop-hook boundary cannot hide a stale executeExtractMemories call."
+      ],
+      "tests": [
+        "scripts/goal/verify.mjs"
+      ],
+      "status": "required"
+    }
+  ]
+}
