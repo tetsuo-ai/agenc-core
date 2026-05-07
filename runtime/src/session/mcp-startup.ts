@@ -67,6 +67,8 @@ type EffectiveServerWithInstructions = Awaited<
 type RuntimeMcpManagerWithMetadata = MCPManager & {
   getConnectedServers?(): string[];
   getConfiguredServers?(): readonly ConfiguredServerWithExtras[];
+  getConnectionState?: MCPManager["getConnectionState"];
+  getConnectedConnection?: MCPManager["getConnectedConnection"];
   getServerConfig?(name: string): ConfiguredServerWithExtras | undefined;
   getServerInstructions?(name: string): string | undefined;
   getInstructionsForServer?(name: string): string | undefined;
@@ -338,6 +340,18 @@ export function createSessionMcpService(
     getToolsByServer:
       typeof manager.getToolsByServer === "function"
         ? manager.getToolsByServer.bind(manager)
+        : undefined,
+    getConfiguredServers:
+      typeof manager.getConfiguredServers === "function"
+        ? manager.getConfiguredServers.bind(manager)
+        : undefined,
+    getConnectionState:
+      typeof manager.getConnectionState === "function"
+        ? manager.getConnectionState.bind(manager)
+        : undefined,
+    getConnectedConnection:
+      typeof manager.getConnectedConnection === "function"
+        ? manager.getConnectedConnection.bind(manager)
         : undefined,
     isConnected:
       typeof manager.isConnected === "function"

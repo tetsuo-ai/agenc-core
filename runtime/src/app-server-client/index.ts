@@ -181,6 +181,7 @@ export async function createAgenCDaemonOnlyTuiContext(
     emit: () => {},
     nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
     listMcpClients: () => [],
+    listMcpTools: () => [],
   };
   return {
     configStore: configStoreLike,

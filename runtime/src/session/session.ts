@@ -42,6 +42,7 @@ import {
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import {
   projectMcpManagerToConnections,
+  type McpConnectionProjection,
   type McpManagerLike,
 } from "../mcp-client/tui-connections.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
@@ -481,6 +482,9 @@ export interface McpManager {
   addServer?(config: McpSessionServerConfig): Promise<McpServerMutationResult>;
   getTools?(): ReadonlyArray<McpSessionToolInfo>;
   getToolsByServer?(name: string): ReadonlyArray<McpSessionToolInfo>;
+  getConfiguredServers?(): readonly McpSessionServerConfig[];
+  getConnectionState?(name: string): McpConnectionProjection | undefined;
+  getConnectedConnection?(name: string): MCPServerConnection | undefined;
   getResources?(): Promise<ReadonlyArray<unknown>>;
   getResourcesByServer?(name: string): Promise<ReadonlyArray<unknown>>;
   readResource?(namespacedName: string): Promise<unknown | null>;
@@ -1747,14 +1751,10 @@ export class Session {
    * Bridge accessor for the TUI composer's MCP picker. Walks the live
    * MCP manager and projects each configured server into the upstream
    * `MCPServerConnection` shape so `<PromptInput mcpClients={...}>`
-   * can render the configured server list without leaking the full
-   * SDK Client into the bridge contract. All entries are emitted as
-   * `type: 'pending'` today; upgrading to `'connected'` requires a
-   * runtime `MCPManager.getClient(name)` accessor (see
-   * `mcp-client/tui-connections.ts` for rationale). Returns
-   * an empty array if the manager is not a class shape that exposes
-   * `getConfiguredServers` / `isConnected` (e.g. a compatibility shim
-   * is installed).
+   * can render configured, failed, disabled, and live connected servers.
+   * Connected entries require the manager/service facade to expose a
+   * real `getConnectedConnection(name)` result; partial manager shapes
+   * fall back to pending entries instead of synthesizing SDK clients.
    */
   listMcpClients(): readonly MCPServerConnection[] {
     const manager = this.services.mcpManager as unknown as
@@ -1770,6 +1770,17 @@ export class Session {
       return [];
     }
     return projectMcpManagerToConnections(manager);
+  }
+
+  listMcpTools(): readonly unknown[] {
+    const manager = this.services.mcpManager as unknown as
+      | Pick<McpManager, "getTools">
+      | null
+      | undefined;
+    if (manager === null || manager === undefined || typeof manager.getTools !== "function") {
+      return [];
+    }
+    return manager.getTools();
   }
 
   /**

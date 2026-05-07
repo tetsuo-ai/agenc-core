@@ -119,6 +119,15 @@ describe("MCPManager", () => {
     expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
     expect(manager.getTools()).toHaveLength(3);
     expect(manager.getConnectedServers()).toEqual(["srv1", "srv2"]);
+    expect(manager.getConnectionState("srv1")).toEqual({ type: "connected" });
+    expect(manager.getConnectionState("srv2")).toEqual({ type: "connected" });
+    expect(manager.getConnectedConnection("srv1")).toEqual(
+      expect.objectContaining({
+        type: "connected",
+        name: "srv1",
+        client: "client1",
+      }),
+    );
   });
 
   it("skips disabled servers", async () => {
@@ -134,6 +143,7 @@ describe("MCPManager", () => {
 
     expect(mockCreateMCPConnection).toHaveBeenCalledTimes(1);
     expect(manager.getConnectedServers()).toEqual(["srv1"]);
+    expect(manager.getConnectionState("srv2")).toEqual({ type: "disabled" });
   });
 
   it("drops invalid server default approval modes before bridge creation", async () => {
@@ -189,6 +199,11 @@ describe("MCPManager", () => {
     );
     expect(manager.getConnectedServers()).toEqual(["srv2"]);
     expect(manager.getTools()).toHaveLength(1);
+    expect(manager.getConnectionState("srv1")).toEqual({
+      type: "failed",
+      error: "connection refused",
+    });
+    expect(manager.getConnectionState("srv2")).toEqual({ type: "connected" });
   });
 
   it("closes client when createToolBridge fails", async () => {
@@ -248,8 +263,14 @@ describe("MCPManager", () => {
     const manager = new MCPManager([makeConfig("srv1")]);
     await manager.start();
     expect(manager.getServerInstructions("srv1")).toBe("ins");
+    expect(manager.getConnectedConnection("srv1")).toEqual(
+      expect.objectContaining({
+        instructions: "ins",
+      }),
+    );
     await manager.stop();
     expect(manager.getServerInstructions("srv1")).toBeUndefined();
+    expect(manager.getConnectedConnection("srv1")).toBeUndefined();
   });
 
   // --------------------------------------------------------------------------
@@ -456,6 +477,10 @@ describe("MCPManager", () => {
     expect(initialBridge.dispose).toHaveBeenCalledOnce();
     expect(manager.getConnectedServers()).toEqual([]);
     expect(manager.getToolsByServer("srv1")).toEqual([]);
+    expect(manager.getConnectionState("srv1")).toEqual({
+      type: "failed",
+      error: "refused",
+    });
   });
 
   it("enables a configured disabled server and connects it", async () => {

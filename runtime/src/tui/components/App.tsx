@@ -67,6 +67,7 @@ import {
   installCompactProgressControls,
   type AgenCTuiProps,
 } from "../session-types.js";
+import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
 import { logEvent } from "../../services/analytics/index.js";
@@ -79,8 +80,14 @@ import {
   type FirstRunOnboardingState,
   useFirstRunOnboardingController,
 } from "../../onboarding/Onboarding.js";
+import type { MCPServerConnection } from "../../services/mcp/types.js";
 
 export type McpFieldValue = string | number | boolean | readonly string[];
+
+const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
+const EMPTY_MCP_TOOLS: readonly unknown[] = [];
+const mcpSurfaceObjectIds = new WeakMap<object, number>();
+let nextMcpSurfaceObjectId = 1;
 
 export type McpFieldParseResult =
   | { readonly ok: true; readonly value: McpFieldValue }
@@ -844,6 +851,103 @@ function useInitialSubmit(
   }, [initialPrompt, initialUserMessages, session, submit]);
 }
 
+type McpSurfaceSnapshot = {
+  readonly clients: readonly MCPServerConnection[];
+  readonly tools: readonly unknown[];
+};
+
+function readMcpSurfaceSnapshot(
+  session: AgenCTuiProps["session"],
+): McpSurfaceSnapshot {
+  return {
+    clients: session.listMcpClients?.() ?? EMPTY_MCP_CLIENTS,
+    tools: session.listMcpTools?.() ?? EMPTY_MCP_TOOLS,
+  };
+}
+
+function mcpSurfaceValueSignature(value: unknown): string {
+  if (value === undefined) return "";
+  if (value === null) return "null";
+  if (typeof value !== "object") return String(value);
+  try {
+    return JSON.stringify(value, (_key, nested) => {
+      if (typeof nested === "function") return "[function]";
+      return nested;
+    });
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+function mcpSurfaceObjectIdentity(value: unknown): string {
+  if (value === null || typeof value !== "object") return "";
+  let id = mcpSurfaceObjectIds.get(value);
+  if (id === undefined) {
+    id = nextMcpSurfaceObjectId++;
+    mcpSurfaceObjectIds.set(value, id);
+  }
+  return String(id);
+}
+
+function mcpSurfaceSignature(snapshot: McpSurfaceSnapshot): string {
+  const clients = snapshot.clients.map((client) => {
+    const maybeError =
+      "error" in client ? mcpSurfaceValueSignature(client.error) : "";
+    const connectedIdentity =
+      client.type === "connected" ? mcpSurfaceObjectIdentity(client) : "";
+    return [
+      client.name,
+      client.type,
+      maybeError,
+      mcpSurfaceValueSignature(client.config),
+      connectedIdentity,
+    ].join(":");
+  });
+  const tools = snapshot.tools.map((tool) => {
+    if (tool && typeof tool === "object") {
+      const typed = tool as {
+        readonly name?: unknown;
+        readonly description?: unknown;
+        readonly inputSchema?: unknown;
+      };
+      return [
+        typed.name,
+        typed.description,
+        typed.inputSchema,
+        mcpSurfaceObjectIdentity(tool),
+      ].map(mcpSurfaceValueSignature).join(":");
+    }
+    return "";
+  });
+  return `${clients.join("\u0000")}\u0001${tools.join("\u0000")}`;
+}
+
+function useSessionMcpSurface(
+  session: AgenCTuiProps["session"],
+): McpSurfaceSnapshot {
+  const [snapshot, setSnapshot] = useState(() => readMcpSurfaceSnapshot(session));
+  const refresh = useCallback(() => {
+    setSnapshot((previous) => {
+      const next = readMcpSurfaceSnapshot(session);
+      return mcpSurfaceSignature(previous) === mcpSurfaceSignature(next)
+        ? previous
+        : next;
+    });
+  }, [session]);
+
+  useEffect(() => {
+    refresh();
+    const unsubscribe = session.subscribeToEvents?.(() => refresh());
+    const interval = setInterval(refresh, 1500);
+    return () => {
+      unsubscribe?.();
+      clearInterval(interval);
+    };
+  }, [refresh, session]);
+
+  return snapshot;
+}
+
 function extractTag(text: string, tag: string): string | null {
   const open = `<${tag}>`;
   const close = `</${tag}>`;
@@ -1074,6 +1178,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     return names;
   }, [permissionRequests, transcript.toolNames]);
   const tools = useMemo(() => createTuiTools(toolNames), [toolNames]);
+  const mcpSurface = useSessionMcpSurface(props.session);
+  const mcpClients = mcpSurface.clients;
+  const availableTools = useMemo(
+    () => [...tools, ...mcpSurface.tools],
+    [tools, mcpSurface.tools],
+  );
+  const refreshAvailableTools = useCallback(
+    () => [...tools, ...readMcpSurfaceSnapshot(props.session).tools],
+    [props.session, tools],
+  );
   const commands = useMemo(() => listTuiCommandList(), []);
   const agents = useMemo(() => listAgentRoleDefinitions(), []);
 
@@ -1116,31 +1230,34 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         getToolPermissionContext: async () => toolPermissionContext,
         options: {
           commands,
+          tools: availableTools,
+          mcpClients,
+          mcpResources: {},
           isNonInteractiveSession: false,
+          refreshTools: refreshAvailableTools,
         },
         services: props.session.services,
         session: props.session,
-        tools,
+        tools: availableTools,
         setToolJSX,
+        mcpClients,
       }) as any,
     [
       appStateStore,
       commands,
+      availableTools,
+      mcpClients,
       props.session,
+      refreshAvailableTools,
       toolPermissionContext,
-      tools,
       setToolJSX,
     ],
   );
-
-  const mcpClients = useMemo(
-    () => props.session.listMcpClients?.() ?? [],
-    [props.session],
-  );
   const toolUseConfirmQueue = useMemo(
-    () => buildToolUseConfirmQueue(permissionRequests, tools),
-    [permissionRequests, tools],
+    () => buildToolUseConfirmQueue(permissionRequests, availableTools),
+    [permissionRequests, availableTools],
   );
+  useMcpConnectivityStatus({ mcpClients: mcpClients as MCPServerConnection[] });
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
     transcript.isStreaming &&
@@ -1409,7 +1526,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {!onboarding.active ? (
         <PermissionOverlay
           request={permissionRequests[0]}
-          tools={tools}
+          tools={availableTools as any}
         />
       ) : null}
       {!onboarding.active ? (
