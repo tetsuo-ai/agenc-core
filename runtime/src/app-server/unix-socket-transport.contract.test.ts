@@ -3,8 +3,8 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnection } from "node:net";
-import { describe, expect, it } from "vitest";
+import { createConnection, type Socket } from "node:net";
+import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import {
   AgenCUnixSocketServer,
@@ -20,6 +20,16 @@ function nextChunk(socket: NodeJS.ReadableStream): Promise<string> {
       resolve(chunk.toString("utf8"));
     });
   });
+}
+
+async function waitForSocketClose(socket: Socket): Promise<"closed" | "open"> {
+  if (socket.closed || socket.destroyed) return "closed";
+  return Promise.race([
+    once(socket, "close").then(() => "closed" as const),
+    new Promise<"open">((resolve) => {
+      setTimeout(() => resolve("open"), 500);
+    }),
+  ]);
 }
 
 async function tempDir(): Promise<string> {
@@ -86,6 +96,95 @@ describe("AgenC Unix socket transport", () => {
     await server.close();
     expect(existsSync(socketPath)).toBe(false);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  itUnix("authenticates the first socket message before dispatch", async () => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const onMessage = vi.fn(
+      async (
+        _message: Record<string, unknown>,
+        connection: { send(message: Record<string, unknown>): Promise<void> },
+      ) => {
+        await connection.send({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "ok",
+          result: { accepted: true },
+        });
+      },
+    );
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      acceptAuthenticator: (message) =>
+        message.method === "initialize" &&
+        typeof message.params === "object" &&
+        message.params !== null &&
+        !Array.isArray(message.params) &&
+        (message.params as { readonly authCookie?: unknown }).authCookie ===
+          "socket-cookie",
+      onAuthenticationFailed: async (message, connection) => {
+        await connection.send({
+          jsonrpc: JSON_RPC_VERSION,
+          id: message.id,
+          error: {
+            code: -32000,
+            message: "daemon connection authentication failed",
+            data: { code: "CONNECTION_AUTHENTICATION_FAILED" },
+          },
+        });
+      },
+      onMessage,
+    });
+
+    await server.listen();
+    try {
+      const rejected = createConnection(socketPath);
+      await once(rejected, "connect");
+      rejected.write(
+        '{"jsonrpc":"2.0","id":"bad","method":"initialize","params":{"authCookie":"wrong"}}\n',
+      );
+      await expect(nextChunk(rejected)).resolves.toContain(
+        "CONNECTION_AUTHENTICATION_FAILED",
+      );
+      await expect(waitForSocketClose(rejected)).resolves.toBe("closed");
+      expect(onMessage).not.toHaveBeenCalled();
+
+      const accepted = createConnection(socketPath);
+      await once(accepted, "connect");
+      accepted.write(
+        '{"jsonrpc":"2.0","id":"ok","method":"initialize","params":{"authCookie":"socket-cookie"}}\n',
+      );
+      await expect(nextChunk(accepted)).resolves.toBe(
+        '{"jsonrpc":"2.0","id":"ok","result":{"accepted":true}}\n',
+      );
+      accepted.end();
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix("closes sockets that do not authenticate after accept", async () => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const onMessage = vi.fn();
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      acceptAuthenticator: () => true,
+      acceptAuthenticationTimeoutMs: 10,
+      onMessage,
+    });
+
+    await server.listen();
+    try {
+      const client = createConnection(socketPath);
+      await once(client, "connect");
+      await expect(waitForSocketClose(client)).resolves.toBe("closed");
+      expect(onMessage).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   itUnix("refuses to prepare an already active socket", async () => {

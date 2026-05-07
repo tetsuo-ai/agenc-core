@@ -143,6 +143,22 @@ describe("AgenC daemon transport authentication", () => {
       }),
     ).toEqual(createAgenCDaemonCookieIdentity());
     expect(
+      authenticator.authenticateInitializeMessage({
+        jsonrpc: "2.0",
+        id: "initialize",
+        method: "initialize",
+        params: { authCookie: "socket-cookie" },
+      }),
+    ).toEqual(createAgenCDaemonCookieIdentity());
+    expect(
+      authenticator.authenticateInitializeMessage({
+        jsonrpc: "2.0",
+        id: "agent-list",
+        method: "agent.list",
+        params: { authCookie: "socket-cookie" },
+      }),
+    ).toBeNull();
+    expect(
       authenticator.verifyInitializeParams({ authCookie: "wrong-cookie" }),
     ).toBe(false);
     expect(

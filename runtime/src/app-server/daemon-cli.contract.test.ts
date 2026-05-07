@@ -645,7 +645,12 @@ describe("AgenC daemon CLI", () => {
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
-      { host, io, signalProcess },
+      {
+        host,
+        io,
+        signalProcess,
+        socketAcceptAuthenticationTimeoutMs: 20,
+      },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
 
@@ -705,6 +710,9 @@ describe("AgenC daemon CLI", () => {
     await expect(waitForSocketClose(missingCookieSocket)).resolves.toBe(
       "closed",
     );
+    const idleSocket = createConnection(socketPath);
+    await once(idleSocket, "connect");
+    await expect(waitForSocketClose(idleSocket)).resolves.toBe("closed");
 
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath,
