@@ -56,11 +56,14 @@ describe("memory wiring contract", () => {
 
   it("wires global durable memory into loading, recall, and permissions", () => {
     const agencmd = readFileSync(resolve(root, "runtime/src/memory/agencmd.ts"), "utf8");
+    const projectMemory = readFileSync(resolve(root, "runtime/src/memory/project-memory.ts"), "utf8");
     const attachments = readFileSync(resolve(root, "runtime/src/utils/attachments.ts"), "utf8");
     const filesystem = readFileSync(resolve(root, "runtime/src/utils/permissions/filesystem.ts"), "utf8");
 
     expect(agencmd).toContain("getGlobalMemoryEntrypoint");
     expect(agencmd).toContain("globalMemEntry");
+    expect(projectMemory).toContain("getProjectMemoryPathForSelector");
+    expect(projectMemory).toContain("MEMORY_MENTION_SYNTAX");
     expect(attachments).toContain("getDurableMemorySearchDirs");
     expect(attachments).toContain("getGlobalMemoryPath");
     expect(filesystem).toContain("isGlobalMemoryPath");

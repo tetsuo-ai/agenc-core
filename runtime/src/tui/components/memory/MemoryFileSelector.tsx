@@ -17,7 +17,11 @@ import { readLastConsolidatedAt } from '../../../services/autoDream/consolidatio
 import { useAppState } from '../../state/AppState.js';
 import { getAgentMemoryDir } from '../../../tools/AgentTool/agentMemory';
 import { openPath } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMemoryFiles, type MemoryFileInfo } from '../../../memory/agencmd.js'; // branding-scan: allow upstream memory filename pending absorb // upstream-import: keep target is owned by another Z-PURGE item
+import {
+  getMemoryFiles,
+  getProjectMemoryPathForSelector,
+  type MemoryFileInfo,
+} from '../../../memory/project-memory.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getAgenCConfigHomeDir } from '../../../utils/envUtils';
 import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatRelativeTimeAgo } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -25,7 +29,6 @@ import { projectIsInGitRepo } from '../../../utils/memory/versions';
 import { updateSettingsForSource } from '../../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { ListItem } from '../design-system/ListItem';
-import { getProjectMemoryPathForSelector } from './memoryFileSelectorPaths';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null;

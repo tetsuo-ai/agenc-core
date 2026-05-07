@@ -51,7 +51,7 @@ import {
 } from '../../utils/imageResizer.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
-import { isAutoMemFile } from '../../memory/detection.js'
+import { isAutoMemFile } from '../../memory/project-memory.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getCanonicalName, getMainLoopModel } from '../../utils/model/model.js'
 import {

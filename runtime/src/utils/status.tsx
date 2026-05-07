@@ -6,7 +6,7 @@ import * as React from 'react';
 import { color, Text } from '../tui/ink.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
 import { getAccountInformation, isAgenCAISubscriber } from './auth.js';
-import { getLargeMemoryFiles, getMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from '../memory/agencmd.js'; // branding-scan: allow existing upstream memory-file module path
+import { getLargeMemoryFiles, getMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from '../memory/project-memory.js'; // branding-scan: allow existing upstream memory-file module path
 import { getDoctorDiagnostic } from './doctorDiagnostic.js';
 import { getAWSRegion, getDefaultVertexRegion, isEnvTruthy } from './envUtils.js';
 import { getDisplayPath } from './file.js';
