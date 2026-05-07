@@ -19,7 +19,7 @@ import { suppressCompactWarning } from '../../services/compact/compactWarningSta
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup.js'
 import { trySessionMemoryCompaction } from '../../services/compact/sessionMemoryCompact.js'
-import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
+import { setLastSummarizedMessageId } from '../../memory/session/sessionMemoryUtils.js'
 import type { ToolUseContext } from '../../tools/Tool.js'
 import type { LocalCommandCall } from '../../types/command.js'
 import type { Message } from '../../types/message.js'
