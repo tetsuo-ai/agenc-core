@@ -2093,9 +2093,9 @@ async function callCanonicalFileReadTool(
   return result.data
 }
 
-function canonicalFileReadHasImage(content: unknown): boolean {
+function canonicalFileReadMediaType(content: unknown): string | undefined {
   if (content === null || typeof content !== 'object' || Array.isArray(content)) {
-    return false
+    return undefined
   }
   const record = content as Record<string, unknown>
   const metadata =
@@ -2104,19 +2104,17 @@ function canonicalFileReadHasImage(content: unknown): boolean {
     !Array.isArray(record.metadata)
       ? record.metadata as Record<string, unknown>
       : {}
-  if (
-    typeof metadata.mediaType === 'string' &&
-    metadata.mediaType.startsWith('image/')
-  ) {
-    return true
-  }
-  return Array.isArray(record.contentItems) &&
-    record.contentItems.some(item =>
-      item &&
-      typeof item === 'object' &&
-      !Array.isArray(item) &&
-      (item as Record<string, unknown>).type === 'input_image',
-    )
+  return typeof metadata.mediaType === 'string' ? metadata.mediaType : undefined
+}
+
+function canonicalFileReadIsStandaloneImage(content: unknown): boolean {
+  return canonicalFileReadMediaType(content)?.startsWith('image/') === true
+}
+
+function canonicalFileReadIsText(content: unknown): boolean {
+  if (typeof content === 'string') return true
+  const mediaType = canonicalFileReadMediaType(content)
+  return mediaType === undefined || mediaType.startsWith('text/')
 }
 
 function isCanonicalFileReadSizeError(error: unknown): boolean {
@@ -2164,12 +2162,16 @@ export async function getChangedFiles(
           toolUseContext,
         )
 
-        if (canonicalFileReadHasImage(content)) {
+        if (canonicalFileReadIsStandaloneImage(content)) {
           return {
             type: 'edited_image_file' as const,
             filename: normalizedPath,
             content,
           }
+        }
+
+        if (!canonicalFileReadIsText(content)) {
+          return null
         }
 
         // Extract only the changed section. The canonical FileRead result is

@@ -255,6 +255,84 @@ describe("old-stack tool surface consolidation", () => {
     expect(block.is_error).toBe(true);
   });
 
+  test("canonical Bash wrapper forwards system Bash progress updates", async () => {
+    const progressEvents: unknown[] = [];
+
+    await CanonicalBashTool.call(
+      { command: "printf first; sleep 0.05; printf second" },
+      toolContext(),
+      (async () => undefined) as never,
+      {} as never,
+      ((event: unknown) => {
+        progressEvents.push(event);
+      }) as never,
+    );
+
+    expect(progressEvents.length).toBeGreaterThan(0);
+    expect(JSON.stringify(progressEvents)).toContain("bash_progress");
+    expect(JSON.stringify(progressEvents)).toContain("first");
+  });
+
+  test("canonical Bash truncates large output without persisted-output recovery", async () => {
+    const { processToolResultBlock } = await import("../utils/toolResultStorage.js");
+    const result = await CanonicalBashTool.call(
+      {
+        command: `${process.execPath} -e "process.stdout.write('x'.repeat(120000))"`,
+      },
+      toolContext(),
+      (async () => undefined) as never,
+      {} as never,
+    );
+
+    expect(resultText(result.data)).toContain("[truncated]");
+    expect(result.data).toMatchObject({
+      metadata: expect.objectContaining({ truncated: true }),
+    });
+    const block = await processToolResultBlock(
+      CanonicalBashTool,
+      result.data,
+      "large-canonical-bash",
+    );
+    expect(String(block.content)).toContain("[truncated]");
+    expect(String(block.content)).not.toContain("<persisted-output>");
+  });
+
+  test("canonical wrappers preserve search/read classification hooks", () => {
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "ls src" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: true });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat package.json|jq .name" }),
+    ).toMatchObject({ isSearch: false, isRead: true, isList: false });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat script.sh|sh" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: false });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat package.json&sh" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: false });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat package.json\nsh" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: false });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat package.json$(sh)" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: false });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat package.json`sh`" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: false });
+    expect(
+      CanonicalBashTool.isSearchOrReadCommand?.({ command: "cat >(sh)" }),
+    ).toMatchObject({ isSearch: false, isRead: false, isList: false });
+    expect(
+      CanonicalFileReadTool.isSearchOrReadCommand?.({ file_path: "package.json" }),
+    ).toMatchObject({ isSearch: false, isRead: true });
+    expect(
+      CanonicalGrepTool.isSearchOrReadCommand?.({ pattern: "needle" }),
+    ).toMatchObject({ isSearch: true, isRead: false });
+    expect(
+      CanonicalGlobTool.isSearchOrReadCommand?.({ pattern: "*.ts" }),
+    ).toMatchObject({ isSearch: true, isRead: false });
+  });
+
   test("canonical file wrappers enforce session read-before-edit", async () => {
     const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-file-"));
     const sessionId = "canonical-file-session";
@@ -500,6 +578,56 @@ describe("old-stack tool surface consolidation", () => {
             },
           ],
           metadata: {},
+          nbformat: 4,
+          nbformat_minor: 5,
+        }),
+        "utf8",
+      );
+
+      await CanonicalFileReadTool.call(
+        { file_path: notebookPath, [SESSION_ID_ARG]: sessionId },
+        toolContext(),
+        (async () => undefined) as never,
+        {} as never,
+      );
+      const result = await CanonicalNotebookEditTool.call(
+        {
+          notebook_path: notebookPath,
+          cell_id: "cell-a",
+          new_source: "print('new')",
+          [SESSION_ID_ARG]: sessionId,
+        },
+        toolContext(),
+        (async () => undefined) as never,
+        {} as never,
+      );
+
+      expect(resultText(result.data)).toContain('"language":"python"');
+    } finally {
+      clearSessionReadState(sessionId);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("canonical NotebookEdit defaults empty metadata language to python", async () => {
+    const workspace = await mkdtemp(join(process.cwd(), ".tmp-canonical-notebook-empty-language-"));
+    const sessionId = "canonical-notebook-empty-language-session";
+    try {
+      const notebookPath = join(workspace, "demo.ipynb");
+      await writeFile(
+        notebookPath,
+        JSON.stringify({
+          cells: [
+            {
+              cell_type: "code",
+              id: "cell-a",
+              metadata: {},
+              source: "print('old')",
+              execution_count: null,
+              outputs: [],
+            },
+          ],
+          metadata: { language_info: { name: "" } },
           nbformat: 4,
           nbformat_minor: 5,
         }),
@@ -805,6 +933,108 @@ describe("old-stack tool surface consolidation", () => {
       );
 
       expect(result).toEqual([]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("changed-file attachments skip canonical notebook and PDF media", async () => {
+    const { getChangedFiles } = await import("../utils/attachments.js");
+    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-media-"));
+    try {
+      const cases = [
+        {
+          filename: "doc.pdf",
+          data: {
+            content: "pdf text",
+            metadata: { mediaType: "application/pdf" },
+          },
+        },
+        {
+          filename: "notebook.ipynb",
+          data: {
+            content: "notebook text",
+            metadata: { mediaType: "application/x-ipynb+json" },
+          },
+        },
+        {
+          filename: "notebook-with-image.ipynb",
+          data: {
+            content: "notebook text",
+            contentItems: [
+              { type: "input_text", text: "notebook text" },
+              { type: "input_image", image_url: "data:image/png;base64,YWJj" },
+            ],
+            metadata: { mediaType: "application/x-ipynb+json" },
+          },
+        },
+      ];
+
+      for (const entry of cases) {
+        const filePath = join(workspace, entry.filename);
+        await writeFile(filePath, "new\n", "utf8");
+        const readFileState = new Map([
+          [
+            filePath,
+            {
+              content: "old\n",
+              timestamp: 0,
+              offset: undefined,
+              limit: undefined,
+            },
+          ],
+        ]);
+
+        const result = await withMockedCanonicalFileRead(
+          (async () => ({ data: entry.data })) as typeof CanonicalFileReadTool.call,
+          () => getChangedFiles(attachmentContext(readFileState)),
+        );
+
+        expect(result).toEqual([]);
+      }
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("changed-file attachments preserve standalone canonical image media", async () => {
+    const { getChangedFiles } = await import("../utils/attachments.js");
+    const workspace = await mkdtemp(join(process.cwd(), ".tmp-attachment-image-"));
+    try {
+      const filePath = join(workspace, "image.png");
+      await writeFile(filePath, "new\n", "utf8");
+      const imageData = {
+        content: "Read image",
+        contentItems: [
+          { type: "input_text", text: "Read image" },
+          { type: "input_image", image_url: "data:image/png;base64,YWJj" },
+        ],
+        metadata: { mediaType: "image/png" },
+      };
+      const readFileState = new Map([
+        [
+          filePath,
+          {
+            content: "old\n",
+            timestamp: 0,
+            offset: undefined,
+            limit: undefined,
+          },
+        ],
+      ]);
+
+      const result = await withMockedCanonicalFileRead(
+        (async () => ({ data: imageData })) as typeof CanonicalFileReadTool.call,
+        () => getChangedFiles(attachmentContext(readFileState)),
+      );
+
+      expect(result).toEqual([
+        {
+          type: "edited_image_file",
+          filename: filePath,
+          content: imageData,
+        },
+      ]);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

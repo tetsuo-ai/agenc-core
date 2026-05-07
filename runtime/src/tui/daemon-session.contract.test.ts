@@ -110,6 +110,7 @@ import {
   installElicitationResolvers,
   subscribeToMcpUrlCompletions,
 } from "./components/App.js";
+import { installCompactProgressControls } from "./session-types.js";
 import type {
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
@@ -133,6 +134,39 @@ function createBaseSession(): AgenCTuiBridgeSession {
     },
   };
 }
+
+describe("compact progress controls", () => {
+  it("publishes daemon-backed session compact controls and restores previous values", () => {
+    const session = createBaseSession();
+    const previousSetStreamMode = vi.fn();
+    session.setStreamMode = previousSetStreamMode;
+    const controls = {
+      setStreamMode: vi.fn(),
+      setResponseLength: vi.fn(),
+      onCompactProgress: vi.fn(),
+      setSDKStatus: vi.fn(),
+    };
+
+    const restore = installCompactProgressControls(session, controls);
+    session.setStreamMode?.("requesting");
+    session.setResponseLength?.((value) => value + 1);
+    session.onCompactProgress?.({ type: "compact_start" });
+    session.setSDKStatus?.("compacting");
+
+    expect(controls.setStreamMode).toHaveBeenCalledWith("requesting");
+    expect(controls.setResponseLength).toHaveBeenCalledOnce();
+    expect(controls.onCompactProgress).toHaveBeenCalledWith({
+      type: "compact_start",
+    });
+    expect(controls.setSDKStatus).toHaveBeenCalledWith("compacting");
+
+    restore();
+    expect(session.setStreamMode).toBe(previousSetStreamMode);
+    expect(session.setResponseLength).toBeUndefined();
+    expect(session.onCompactProgress).toBeUndefined();
+    expect(session.setSDKStatus).toBeUndefined();
+  });
+});
 
 function createClient(): AgenCDaemonTuiClient & {
   readonly requests: Array<{
@@ -294,6 +328,25 @@ describe("AgenC TUI daemon session adapter", () => {
         content: "run tests",
       },
     });
+  });
+
+  it("clears daemon-owned session history through session.clear", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await session.clearDaemonSession?.();
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.clear",
+        params: { sessionId: "session_1" },
+      },
+    ]);
   });
 
   it("exposes realtime controls that route through the daemon thread RPC surface", async () => {

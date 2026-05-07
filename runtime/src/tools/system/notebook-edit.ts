@@ -88,7 +88,10 @@ function notebookLanguage(notebook: Record<string, unknown>): string | undefined
   const languageInfo = isRecord(metadata?.language_info)
     ? metadata.language_info
     : undefined;
-  return typeof languageInfo?.name === "string" ? languageInfo.name : "python";
+  return typeof languageInfo?.name === "string" &&
+    languageInfo.name.trim().length > 0
+    ? languageInfo.name
+    : "python";
 }
 
 export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {

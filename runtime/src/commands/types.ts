@@ -52,6 +52,8 @@ export interface SlashCommandContext {
   readonly home: string;
   /** Resolved AgenC state directory (`AGENC_HOME` or `$HOME/.agenc`). */
   readonly agencHome?: string;
+  /** The live registry used for this dispatch, when command execution can refresh it. */
+  readonly commandRegistry?: CommandRegistry;
   /**
    * Bridge into React-side AppState. Populated by the dispatcher when
    * running in a TUI context; absent in headless/test contexts.
@@ -114,6 +116,10 @@ export async function safeExecute(
 export interface CommandRegistry {
   list(): readonly SlashCommand[];
   find(nameOrAlias: string): SlashCommand | undefined;
+  replaceDynamicCommands?(
+    source: string,
+    commands: readonly SlashCommand[],
+  ): void;
 }
 
 let globalRegistry: CommandRegistry | null = null;

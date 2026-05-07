@@ -113,9 +113,10 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       : canonicalShellOut(resultData);
     const stderr = shellOut.stderr;
     // Reuse the same formatting pipeline as inline !`cmd` bash (promptShellExecution)
-    // and model-initiated Bash. When BashTool.call() persists large output to disk,
-    // data.persistedOutputPath is set and the formatter wraps in <persisted-output>.
-    // Pass stderr:'' to keep it separate for the <bash-stderr> UI tag.
+    // and model-initiated Bash. Canonical system.bash returns bounded output;
+    // if it truncates, metadata.truncated is set and the bounded content is
+    // surfaced directly. Pass stderr:'' to keep it separate for the
+    // <bash-stderr> UI tag.
     const mapped = await processToolResultBlock(shellTool, usePowerShell ? {
       ...response.data,
       stderr: ''

@@ -155,4 +155,48 @@ describe("processBashCommand", () => {
       "<bash-stdout>failed</bash-stdout><bash-stderr>bad</bash-stderr>",
     );
   });
+
+  it("passes canonical Bash progress updates to the bash-mode progress UI", async () => {
+    mocks.bashCall.mockImplementationOnce(
+      async (_input, _context, _canUseTool, _parentMessage, onProgress) => {
+        expect(typeof onProgress).toBe("function");
+        onProgress?.({
+          toolUseID: "progress-1",
+          data: {
+            type: "bash_progress",
+            output: "tick",
+            fullOutput: "tick",
+            elapsedTimeSeconds: 0.1,
+            totalLines: 1,
+            totalBytes: 4,
+          },
+        });
+        return {
+          data: {
+            content: "ok",
+            metadata: {
+              stdout: "ok",
+              stderr: "",
+            },
+          },
+        };
+      },
+    );
+    const setToolJSX = vi.fn();
+
+    await processBashCommand(
+      "printf tick",
+      [],
+      [],
+      { options: { verbose: false } } as never,
+      setToolJSX,
+    );
+
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shouldHidePromptInput: false,
+        showSpinner: false,
+      }),
+    );
+  });
 });

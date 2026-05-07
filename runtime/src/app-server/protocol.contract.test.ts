@@ -66,6 +66,7 @@ const expectedMethods = [
   "session.attach",
   "session.detach",
   "session.terminate",
+  "session.clear",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -350,12 +351,18 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 11,
+        method: "session.clear",
+        params: { sessionId: "session_1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 12,
         method: "message.send",
         params: { sessionId: "session_1", content: "Run tests" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 12,
+        id: 13,
         method: "message.stream",
         params: {
           sessionId: "session_1",

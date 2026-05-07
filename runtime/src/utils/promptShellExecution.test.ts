@@ -123,3 +123,28 @@ test('executeShellCommandsInPrompt preserves failed canonical Bash result status
   })
   expect(rendered).toContain('failed')
 })
+
+test('executeShellCommandsInPrompt keeps bounded canonical Bash output inline', async () => {
+  const boundedOutput = `${'x'.repeat(40000)}\n[truncated]`
+
+  CanonicalBashTool.call = (async () => ({
+    data: {
+      content: boundedOutput,
+      metadata: {
+        stdout: boundedOutput,
+        stderr: '',
+        interrupted: false,
+        truncated: true,
+      },
+    },
+  })) as unknown as typeof CanonicalBashTool.call
+
+  const rendered = await executeShellCommandsInPrompt(
+    '```!\nnode -e "process.stdout.write(1)"\n```',
+    promptContext(),
+    'security-review',
+  )
+
+  expect(rendered).toContain('[truncated]')
+  expect(rendered).not.toContain('<persisted-output>')
+})

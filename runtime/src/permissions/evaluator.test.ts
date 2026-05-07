@@ -219,7 +219,7 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
     expect(result.behavior).toBe("allow");
   });
 
-  it("system.bash sandbox fallthrough lets canonical Bash auto-allow", async () => {
+  it("system.bash whole-tool ask does not auto-allow without sandbox execution", async () => {
     const tool = makeTool({
       name: "system.bash",
       checkPermissions: () => ({
@@ -236,10 +236,10 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
       shouldUseSandbox: () => true,
     };
     const result = await hasPermissionsToUseTool(tool, {}, sandboxCtx);
-    expect(result.behavior).toBe("allow");
+    expect(result.behavior).toBe("ask");
   });
 
-  it("system.bash sandbox fallthrough reaches the real Bash permission hook", async () => {
+  it("real system.bash remains ask-gated when sandbox auto-allow is requested", async () => {
     const { context } = buildHarness({
       askRules: [{ toolName: "Bash" }],
     });
@@ -255,12 +255,7 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
       sandboxCtx,
     );
 
-    expect(result.behavior).toBe("allow");
-    if (result.behavior === "allow") {
-      expect(result.decisionReason).toMatchObject({
-        type: "sandboxOverride",
-      });
-    }
+    expect(result.behavior).toBe("ask");
   });
 });
 

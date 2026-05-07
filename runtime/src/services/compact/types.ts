@@ -30,6 +30,10 @@ export type RuntimeMessage = {
 export type CompactContext = {
   readonly abortController?: AbortController;
   readonly provider?: LLMProvider;
+  readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
+  readonly setResponseLength?: (updater: (length: number) => number) => void;
+  readonly onCompactProgress?: (event: CompactProgressEvent) => void;
+  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly options?: {
     readonly mainLoopModel?: string;
     readonly contextWindowTokens?: number;
@@ -43,6 +47,14 @@ export type CompactContext = {
   };
   readonly deps?: CompactRuntimeDeps;
 };
+
+export type CompactProgressEvent =
+  | {
+      readonly type: "hooks_start";
+      readonly hookType: "pre_compact" | "post_compact" | "session_start";
+    }
+  | { readonly type: "compact_start" }
+  | { readonly type: "compact_end" };
 
 export type CompactCleanupDeps = {
   readonly clearReadFileState?: () => void;

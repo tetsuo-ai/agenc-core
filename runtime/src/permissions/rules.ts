@@ -153,6 +153,8 @@ const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =
     ["FileRead", Object.freeze(["FileRead", "Read"] as const)],
     ["Edit", Object.freeze(["Edit", "FileEdit"] as const)],
     ["Write", Object.freeze(["Write", "FileWrite"] as const)],
+    ["Grep", Object.freeze(["Grep", "system.grep"] as const)],
+    ["Glob", Object.freeze(["Glob", "system.glob"] as const)],
   ]);
 
 export function toolNameAliases(toolName: string): readonly string[] {

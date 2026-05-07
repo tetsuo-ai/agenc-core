@@ -50,6 +50,39 @@ describe("compact service", () => {
     expect(cleanup.resetMicrocompactState).toHaveBeenCalledOnce();
   });
 
+  test("manual compact emits one ordered progress lifecycle and clears status on cleanup failure", async () => {
+    const onCompactProgress = vi.fn();
+    const setSDKStatus = vi.fn();
+
+    await expect(
+      manualCompactCall("keep decisions", {
+        messages: [
+          createUserMessage({ content: "Inspect src/a.ts" }),
+          message("assistant result", "assistant"),
+        ],
+        onCompactProgress,
+        setSDKStatus,
+        deps: {
+          cleanup: {
+            clearReadFileState: () => {
+              throw new Error("cleanup failed");
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("cleanup failed");
+
+    expect(onCompactProgress.mock.calls.map(([event]) => event)).toEqual([
+      { type: "hooks_start", hookType: "pre_compact" },
+      { type: "compact_start" },
+      { type: "compact_end" },
+    ]);
+    expect(setSDKStatus.mock.calls.map(([status]) => status)).toEqual([
+      "compacting",
+      null,
+    ]);
+  });
+
   test("adds callback attachments and hook results to compact output", async () => {
     const result = await manualCompactCall("", {
       messages: [message("history"), message("tail", "assistant")],

@@ -17,6 +17,11 @@ export type UnattendedPermissionDecision =
 
 export const DEFAULT_UNATTENDED_ALLOWLIST = Object.freeze([] as const);
 
+const REMOVED_DAEMON_SEARCH_ALIASES = Object.freeze({
+  ["system" + ".grep"]: "Grep",
+  ["system" + ".glob"]: "Glob",
+} as const);
+
 const TOOL_ALIASES = Object.freeze({
   bash: "system.bash",
   fileedit: "Edit",
@@ -24,6 +29,7 @@ const TOOL_ALIASES = Object.freeze({
   read: "FileRead",
   grep: "Grep",
   glob: "Glob",
+  ...REMOVED_DAEMON_SEARCH_ALIASES,
 } as const);
 
 function canonicalUnattendedToolName(value: string): string {

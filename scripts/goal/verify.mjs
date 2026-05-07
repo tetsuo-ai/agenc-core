@@ -130,6 +130,114 @@ const ITEM_EVIDENCE = {
       { pattern: "assertZc15ChecklistHandoffClarified", scope: "scripts/goal/verify.mjs" },
     ],
   },
+  "GAP-TUI-03": {
+    files: [
+      "runtime/src/commands/clear.ts",
+      "runtime/src/phases/events.ts",
+      "runtime/src/bin/agenc.ts",
+      "runtime/src/bin/tui-local-events.ts",
+      "runtime/src/tui/session-transcript.ts",
+      "runtime/src/tui/session-types.ts",
+      "runtime/src/tui/daemon-session.ts",
+    ],
+    tests: [
+      "runtime/src/commands/clear.test.ts",
+      "runtime/src/bin/tui-local-events.test.ts",
+      "runtime/src/tui/parity/session-transcript.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "history_cleared", scope: "runtime/src/commands/clear.ts" },
+      { pattern: "emitLocalTuiPhaseEvent", scope: "runtime/src/bin/agenc.ts" },
+      { pattern: "isHistoryClearedEvent", scope: "runtime/src/tui/session-transcript.ts" },
+    ],
+  },
+  "GAP-TUI-04": {
+    files: ["runtime/src/commands/keybindings.ts"],
+    tests: ["runtime/src/commands/keybindings.test.ts"],
+    grepPresent: [
+      { pattern: "spawnKeybindingsEditor", scope: "runtime/src/commands/keybindings.ts" },
+      { pattern: "enterAlternateScreen", scope: "runtime/src/commands/keybindings.ts" },
+      { pattern: "stdio:\\s*[\"']ignore[\"']", scope: "runtime/src/commands/keybindings.ts" },
+    ],
+  },
+  "GAP-TUI-05": {
+    files: ["runtime/src/commands/init.ts"],
+    tests: ["runtime/src/commands/init.test.ts"],
+    grepPresent: [
+      { pattern: "kind:\\s*[\"']prompt[\"']", scope: "runtime/src/commands/init.ts" },
+      { pattern: "buildInitPrompt", scope: "runtime/src/commands/init.ts" },
+      { pattern: "Do not write these instructions", scope: "runtime/src/commands/init.ts" },
+    ],
+  },
+  "GAP-TUI-06": {
+    files: ["runtime/src/commands/copy.ts"],
+    tests: ["runtime/src/commands/copy.test.ts"],
+    grepPresent: [
+      { pattern: "copyTextToClipboard", scope: "runtime/src/commands/copy.ts" },
+      { pattern: "setClipboard", scope: "runtime/src/commands/copy.ts" },
+      { pattern: "writeSequence", scope: "runtime/src/commands/copy.ts" },
+      { pattern: "Copied to clipboard|Sent to clipboard via OSC 52", scope: "runtime/src/commands/copy.ts" },
+    ],
+  },
+  "GAP-TUI-07": {
+    files: [
+      "runtime/src/commands/reload-plugins.ts",
+      "runtime/src/commands/registry.ts",
+      "runtime/src/commands/dispatcher.ts",
+      "runtime/src/commands/types.ts",
+    ],
+    tests: [
+      "runtime/src/commands/command-surface.test.ts",
+      "runtime/src/commands/registry.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "replaceDynamicCommands", scope: "runtime/src/commands/registry.ts" },
+      { pattern: "commandRegistry", scope: "runtime/src/commands/dispatcher.ts" },
+      { pattern: "refreshDispatcherPluginCommands", scope: "runtime/src/commands/reload-plugins.ts" },
+      { pattern: "pluginCommandToSlashCommand", scope: "runtime/src/commands/reload-plugins.ts" },
+    ],
+  },
+  "GAP-TUI-08": {
+    files: [
+      "runtime/src/commands/session-compact.ts",
+      "runtime/src/services/compact/compact.ts",
+      "runtime/src/services/compact/types.ts",
+      "runtime/src/tui/screens/REPL.tsx",
+      "runtime/src/tui/session-types.ts",
+      "runtime/src/tui/daemon-session.ts",
+    ],
+    tests: [
+      "runtime/tests/slash-compact.contract.test.ts",
+      "runtime/src/services/compact/compact.test.ts",
+      "runtime/src/tui/daemon-session.contract.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "installCompactProgressControls", scope: "runtime/src/tui/session-types.ts" },
+      { pattern: "installCompactProgressControls\\(session", scope: "runtime/src/tui/screens/REPL.tsx" },
+      { pattern: "compact_start", scope: "runtime/src/services/compact/compact.ts" },
+      { pattern: "compact_end", scope: "runtime/src/services/compact/compact.ts" },
+      { pattern: "onCompactProgress", scope: "runtime/tests/slash-compact.contract.test.ts" },
+      { pattern: "setSDKStatus", scope: "runtime/tests/slash-compact.contract.test.ts" },
+    ],
+  },
+  "GAP-TUI-09": {
+    files: [
+      "runtime/src/commands/registry.ts",
+      "runtime/src/commands.ts",
+      "runtime/src/commands/btw/index.ts",
+      "runtime/src/commands/btw/btw.tsx",
+    ],
+    tests: [
+      "runtime/src/commands/registry.test.ts",
+      "runtime/src/commands/tui-command-list.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "btwCommand", scope: "runtime/src/commands/registry.ts" },
+      { pattern: "btwLocalCommand", scope: "runtime/src/commands.ts" },
+      { pattern: "reg\\.has\\(\"btw\"\\)", scope: "runtime/src/commands/registry.test.ts" },
+      { pattern: "interactive local JSX descriptor for /btw", scope: "runtime/src/commands/tui-command-list.test.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6464,6 +6572,34 @@ async function gapGates(item) {
     assertGapTuiMessageSelectorCallbacks();
     return;
   }
+  if (item.title.includes("/clear must emit daemon event")) {
+    assertGapTuiClearHistoryEvent();
+    return;
+  }
+  if (item.title.includes("/keybindings: don't spawn editor")) {
+    assertGapTuiKeybindingsEditorHandoff();
+    return;
+  }
+  if (item.title.includes("/init: generate doc via model")) {
+    assertGapTuiInitGeneratesViaModel();
+    return;
+  }
+  if (item.title.includes("/copy: actually copy to system clipboard")) {
+    assertGapTuiCopyWritesClipboard();
+    return;
+  }
+  if (item.title.includes("/reload-plugins: reload the live dispatcher registry")) {
+    assertGapTuiReloadPluginsRefreshesDispatcherRegistry();
+    return;
+  }
+  if (item.title.includes("/compact: wire progress hooks on daemon-backed Session")) {
+    assertGapTuiCompactProgressControls();
+    return;
+  }
+  if (item.title.includes("Register /btw in dispatcher")) {
+    assertGapTuiBtwRegisteredInDispatcher();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -6575,12 +6711,16 @@ function assertGapToolsConsolidatedToolSurfaces() {
     "canonical Bash schema rejects unsupported legacy control fields",
     "canonical Bash and daemon system.bash share execution behavior",
     "canonical Bash failure marks tool_result as error",
+    "canonical Bash wrapper forwards system Bash progress updates",
+    "canonical Bash truncates large output without persisted-output recovery",
+    "canonical wrappers preserve search/read classification hooks",
     "canonical file wrappers enforce session read-before-edit",
     "file attachments read through canonical FileRead implementation",
     "directory attachments render through canonical Bash implementation",
     "canonical NotebookEdit uses shared session-backed implementation",
     "canonical NotebookEdit prefers exact numeric cell IDs over index fallback",
     "canonical NotebookEdit defaults sparse metadata language to python",
+    "canonical NotebookEdit defaults empty metadata language to python",
     "canonical NotebookEdit delete does not require new_source",
     "canonical Write, Grep, and Glob wrappers execute shared system tools",
     "canonical result mapping preserves rich contentItems",
@@ -6588,6 +6728,8 @@ function assertGapToolsConsolidatedToolSurfaces() {
     "file attachments truncate after canonical FileRead size errors",
     "file attachments return null after canonical FileRead non-size errors",
     "changed-file attachments stop after canonical FileRead errors",
+    "changed-file attachments skip canonical notebook and PDF media",
+    "changed-file attachments preserve standalone canonical image media",
   ];
   const missingOldStackEvidence = requiredOldStackEvidence.filter(
     (needle) => !oldStackTest.includes(needle),
@@ -6595,6 +6737,21 @@ function assertGapToolsConsolidatedToolSurfaces() {
   if (missingOldStackEvidence.length > 0) {
     failGate(
       `GAP-TOOLS-04 old-stack test evidence missing:\n  - ${missingOldStackEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const evaluatorTestRel = "runtime/src/permissions/evaluator.test.ts";
+  const evaluatorTest = readFileSync(path.join(root, evaluatorTestRel), "utf8");
+  const requiredEvaluatorEvidence = [
+    "system.bash whole-tool ask does not auto-allow without sandbox execution",
+    "real system.bash remains ask-gated when sandbox auto-allow is requested",
+  ];
+  const missingEvaluatorEvidence = requiredEvaluatorEvidence.filter(
+    (needle) => !evaluatorTest.includes(needle),
+  );
+  if (missingEvaluatorEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 evaluator test evidence missing:\n  - ${missingEvaluatorEvidence.join("\n  - ")}`,
     );
   }
 
@@ -7096,6 +7253,638 @@ function assertGapTuiMessageSelectorCallbacks() {
     failGate("GAP-TUI-02 targeted App render test failed");
   }
   pass("GAP-TUI-02 targeted App render test passed");
+}
+
+function assertGapTuiClearHistoryEvent() {
+  const clearRel = "runtime/src/commands/clear.ts";
+  const phaseRel = "runtime/src/phases/events.ts";
+  const binRel = "runtime/src/bin/agenc.ts";
+  const localEventsRel = "runtime/src/bin/tui-local-events.ts";
+  const transcriptRel = "runtime/src/tui/session-transcript.ts";
+  const sessionTypesRel = "runtime/src/tui/session-types.ts";
+  const daemonSessionRel = "runtime/src/tui/daemon-session.ts";
+  const protocolRel = "runtime/src/app-server/protocol/index.ts";
+  const protocolSchemaRel = "runtime/src/app-server/protocol/schema.json";
+  const dispatcherRel = "runtime/src/app-server/daemon-dispatcher.ts";
+  const agentLifecycleRel = "runtime/src/app-server/agent-lifecycle.ts";
+  const backgroundRunnerRel = "runtime/src/app-server/background-agent-runner.ts";
+  const controlRel = "runtime/src/agents/control.ts";
+  const runAgentRel = "runtime/src/agents/run-agent.ts";
+  const threadManagerRel = "runtime/src/agents/thread-manager.ts";
+  const clearTestRel = "runtime/src/commands/clear.test.ts";
+  const localEventsTestRel = "runtime/src/bin/tui-local-events.test.ts";
+  const transcriptTestRel = "runtime/src/tui/parity/session-transcript.test.ts";
+  const daemonSessionTestRel = "runtime/src/tui/daemon-session.contract.test.ts";
+  const protocolTestRel = "runtime/src/app-server/protocol.contract.test.ts";
+  const agentLifecycleTestRel = "runtime/src/app-server/agent-lifecycle.contract.test.ts";
+  const backgroundRunnerTestRel = "runtime/src/app-server/background-agent-runner.contract.test.ts";
+  const controlTestRel = "runtime/src/agents/control.test.ts";
+  const runAgentMailboxTestRel = "runtime/src/agents/run-agent-mailbox.test.ts";
+  const requiredFiles = [
+    clearRel,
+    phaseRel,
+    binRel,
+    localEventsRel,
+    transcriptRel,
+    sessionTypesRel,
+    daemonSessionRel,
+    protocolRel,
+    protocolSchemaRel,
+    dispatcherRel,
+    agentLifecycleRel,
+    backgroundRunnerRel,
+    controlRel,
+    runAgentRel,
+    threadManagerRel,
+    clearTestRel,
+    localEventsTestRel,
+    transcriptTestRel,
+    daemonSessionTestRel,
+    protocolTestRel,
+    agentLifecycleTestRel,
+    backgroundRunnerTestRel,
+    controlTestRel,
+    runAgentMailboxTestRel,
+  ];
+  for (const rel of requiredFiles) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-03: missing ${rel}`);
+  }
+
+  const clear = readFileSync(path.join(root, clearRel), "utf8");
+  const phase = readFileSync(path.join(root, phaseRel), "utf8");
+  const bin = readFileSync(path.join(root, binRel), "utf8");
+  const localEvents = readFileSync(path.join(root, localEventsRel), "utf8");
+  const transcript = readFileSync(path.join(root, transcriptRel), "utf8");
+  const sessionTypes = readFileSync(path.join(root, sessionTypesRel), "utf8");
+  const daemonSession = readFileSync(path.join(root, daemonSessionRel), "utf8");
+  const protocol = readFileSync(path.join(root, protocolRel), "utf8");
+  const protocolSchema = readFileSync(path.join(root, protocolSchemaRel), "utf8");
+  const dispatcher = readFileSync(path.join(root, dispatcherRel), "utf8");
+  const agentLifecycle = readFileSync(path.join(root, agentLifecycleRel), "utf8");
+  const backgroundRunner = readFileSync(path.join(root, backgroundRunnerRel), "utf8");
+  const control = readFileSync(path.join(root, controlRel), "utf8");
+  const runAgent = readFileSync(path.join(root, runAgentRel), "utf8");
+  const threadManager = readFileSync(path.join(root, threadManagerRel), "utf8");
+  const clearTest = readFileSync(path.join(root, clearTestRel), "utf8");
+  const localEventsTest = readFileSync(path.join(root, localEventsTestRel), "utf8");
+  const transcriptTest = readFileSync(path.join(root, transcriptTestRel), "utf8");
+  const daemonSessionTest = readFileSync(path.join(root, daemonSessionTestRel), "utf8");
+  const protocolTest = readFileSync(path.join(root, protocolTestRel), "utf8");
+  const agentLifecycleTest = readFileSync(path.join(root, agentLifecycleTestRel), "utf8");
+  const backgroundRunnerTest = readFileSync(path.join(root, backgroundRunnerTestRel), "utf8");
+  const controlTest = readFileSync(path.join(root, controlTestRel), "utf8");
+  const runAgentMailboxTest = readFileSync(path.join(root, runAgentMailboxTestRel), "utf8");
+
+  const requiredEvidence = [
+    ["clear command emits history_cleared", clear, /type:\s*["']history_cleared["']/],
+    ["clear command uses emitPhaseEvent", clear, /emitPhaseEvent\?\.\(/],
+    ["clear command tolerates missing state lock", clear, /state\?\.with/],
+    ["phase event typing declares history_cleared", phase, /type:\s*["']history_cleared["'];\s*readonly\s+timestamp:\s*number/],
+    ["bin imports local TUI event helpers", bin, /emitLocalTuiPhaseEvent/],
+    ["bin wrapper exposes emitPhaseEvent", bin, /emitPhaseEvent:\s*\(event\)\s*=>/],
+    ["local event helper isolates subscribers", localEvents, /try\s*\{[\s\S]*subscriber\(event\)[\s\S]*\}\s*catch/],
+    ["local phase helper forwards before local broadcast", localEvents, /target\.emitPhaseEvent\(event\)/],
+    ["local slash helper emits slash_result", localEvents, /type:\s*["']slash_result["']/],
+    ["session transcript detects history clear", transcript, /function\s+isHistoryClearedEvent/],
+    ["session transcript reset clears keys", transcript, /keys\.clear\(\)/],
+    ["session transcript append resets state", transcript, /events:\s*\[action\.event\]/],
+    ["session type exposes emitPhaseEvent", sessionTypes, /emitPhaseEvent\?\(event:\s*PhaseEvent\):\s*void/],
+    ["daemon session type exposes emitPhaseEvent", daemonSession, /emitPhaseEvent\?\(event:\s*PhaseEvent\):\s*void/],
+    ["daemon session exposes clearDaemonSession", daemonSession, /clearDaemonSession:\s*async\s*\(\)\s*=>[\s\S]*session\.clear/],
+    ["protocol declares session.clear", protocol, /["']session\.clear["']/],
+    ["protocol schema declares session.clear", protocolSchema, /["']session\.clear["']/],
+    ["dispatcher routes session.clear", dispatcher, /case\s+["']session\.clear["'][\s\S]*clearSessionHistory/],
+    ["agent lifecycle clears daemon session via runner", agentLifecycle, /clearSessionHistory[\s\S]*clearAgentSession/],
+    ["agent lifecycle validates clear owner runtime", agentLifecycle, /allowClearSession:\s*true/],
+    ["background runner emits history_cleared", backgroundRunner, /type:\s*["']history_cleared["']/],
+    ["background runner clears live child through control", backgroundRunner, /clearConversationHistory\(agentId\)/],
+    ["background runner rejects in-flight clear", backgroundRunner, /isClearInFlight[\s\S]*Cannot clear right now/],
+    ["agent control exposes clearConversationHistory", control, /clearConversationHistory\(threadId:\s*ThreadId\)/],
+    ["thread manager supports clear history op", threadManager, /type:\s*["']clear_conversation_history["']/],
+    ["runAgent handles history_clear mailbox boundary", runAgent, /kind\s*===\s*["']history_clear["']/],
+    ["clear test covers bridge-like session", clearTest, /bridge-like sessions without local history state/],
+    ["clear test asserts active turn does not emit", clearTest, /emitPhaseEvent\)\.not\.toHaveBeenCalled/],
+    ["clear test covers daemon delegation", clearTest, /delegates daemon-backed sessions/],
+    ["local event test asserts order", localEventsTest, /before slash_result/],
+    ["local event test asserts no double broadcast", localEventsTest, /double-broadcasting/],
+    ["transcript test covers history clear", transcriptTest, /history_cleared/],
+    ["transcript test covers dedupe reset", transcriptTest, /reused-after-clear/],
+    ["transcript test covers reducer append clear", transcriptTest, /subscribed history_cleared/],
+    ["daemon session test covers session.clear request", daemonSessionTest, /clears daemon-owned session history through session\.clear/],
+    ["protocol test covers session.clear", protocolTest, /method:\s*["']session\.clear["']/],
+    ["agent lifecycle test covers session.clear route", agentLifecycleTest, /routes session\.clear to the runner/],
+    ["agent lifecycle test covers recovered clear rejection", agentLifecycleTest, /recovered agents without live runtime/],
+    ["background runner test covers clear event", backgroundRunnerTest, /clears daemon-owned agent history/],
+    ["background runner test covers active-turn clear rejection", backgroundRunnerTest, /owning session has an active turn/],
+    ["control test covers history boundary", controlTest, /queues a history boundary/],
+    ["runAgent mailbox test covers fresh next input", runAgentMailboxTest, /keeps only fresh follow-up input/],
+  ];
+  const missingEvidence = requiredEvidence
+    .filter(([, source, pattern]) => !pattern.test(source))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-03 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-03: clear history event evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/clear.test.ts",
+    "src/bin/tui-local-events.test.ts",
+    "src/tui/parity/session-transcript.test.ts",
+    "src/tui/daemon-session.contract.test.ts",
+    "src/app-server/agent-lifecycle.contract.test.ts",
+    "src/app-server/background-agent-runner.contract.test.ts",
+    "src/agents/control.test.ts",
+    "src/agents/run-agent-mailbox.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-03 targeted clear/transcript tests failed");
+  }
+  pass("GAP-TUI-03 targeted clear/transcript tests passed");
+}
+
+function assertGapTuiKeybindingsEditorHandoff() {
+  const sourceRel = "runtime/src/commands/keybindings.ts";
+  const testRel = "runtime/src/commands/keybindings.test.ts";
+  const sourcePath = path.join(root, sourceRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(sourcePath)) failGate(`GAP-TUI-04: missing ${sourceRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-04: missing ${testRel}`);
+
+  const source = readFileSync(sourcePath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const missingEvidence = [
+    [
+      "exports an Ink-aware keybindings editor launcher",
+      /export\s+async\s+function\s+spawnKeybindingsEditor/,
+      source,
+    ],
+    [
+      "terminal editor path enters Ink handoff before inherited stdio",
+      /enterAlternateScreen\(\)[\s\S]*spawnProcess\(base,\s*args,\s*\{\s*stdio:\s*["']inherit["']\s*\}\)/,
+      source,
+    ],
+    [
+      "terminal editor path always exits Ink handoff",
+      /finally\s*\{[\s\S]*exitAlternateScreen\(\)/,
+      source,
+    ],
+    [
+      "GUI editor path detaches from stdio",
+      /detached:\s*true[\s\S]*stdio:\s*["']ignore["']/,
+      source,
+    ],
+    [
+      "test covers terminal editor Ink handoff",
+      /hands terminal editors the terminal only after pausing Ink/,
+      test,
+    ],
+    [
+      "test covers GUI editor stdio isolation",
+      /launches GUI editors detached from the TUI stdio/,
+      test,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-04 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/spawn\(editor,\s*\[\s*file\s*\],\s*\{\s*stdio:\s*["']inherit["']/.test(source)) {
+    failGate("GAP-TUI-04: keybindings must not spawn(editor, [file], { stdio: 'inherit' }) directly");
+  }
+
+  pass("GAP-TUI-04: keybindings editor handoff evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/keybindings.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-04 targeted keybindings test failed");
+  }
+  pass("GAP-TUI-04 targeted keybindings test passed");
+}
+
+function assertGapTuiInitGeneratesViaModel() {
+  const sourceRel = "runtime/src/commands/init.ts";
+  const testRel = "runtime/src/commands/init.test.ts";
+  const sourcePath = path.join(root, sourceRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(sourcePath)) failGate(`GAP-TUI-05: missing ${sourceRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-05: missing ${testRel}`);
+
+  const source = readFileSync(sourcePath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const missingEvidence = [
+    [
+      "init command builds target-specific prompt context",
+      /export\s+function\s+buildInitPrompt/,
+      source,
+    ],
+    [
+      "init command dispatches a prompt result",
+      /return\s*\{\s*kind:\s*["']prompt["']\s*,\s*content:\s*buildInitPrompt/,
+      source,
+    ],
+    [
+      "init prompt forbids writing the template itself",
+      /Do not write these instructions or a prompt template into the file/,
+      source,
+    ],
+    [
+      "init test asserts model prompt dispatch",
+      /returns a model prompt instead of writing the template/,
+      test,
+    ],
+    [
+      "init test asserts AGENC.md is not synchronously written",
+      /expect\(existsSync\(target\)\)\.toBe\(false\)/,
+      test,
+    ],
+    [
+      "init test covers override prompt handling",
+      /CUSTOM-PROMPT/,
+      test,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-05 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/writeFile\s*\(\s*target\s*,\s*(body|resolveInitTemplate|INIT_TEMPLATE)/.test(source)) {
+    failGate("GAP-TUI-05: /init must not write the prompt template to AGENC.md");
+  }
+
+  pass("GAP-TUI-05: init model-generation evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/init.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-05 targeted init test failed");
+  }
+  pass("GAP-TUI-05 targeted init test passed");
+}
+
+function assertGapTuiCopyWritesClipboard() {
+  const sourceRel = "runtime/src/commands/copy.ts";
+  const testRel = "runtime/src/commands/copy.test.ts";
+  const sourcePath = path.join(root, sourceRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(sourcePath)) failGate(`GAP-TUI-06: missing ${sourceRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-06: missing ${testRel}`);
+
+  const source = readFileSync(sourcePath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const missingEvidence = [
+    [
+      "copy command imports the terminal clipboard transport",
+      /from\s+["']\.\.\/tui\/ink\/termio\/osc\.js["']/,
+      source,
+    ],
+    [
+      "copy command exposes an injectable clipboard writer",
+      /export\s+async\s+function\s+copyTextToClipboard/,
+      source,
+    ],
+    [
+      "copy helper writes selected text through the clipboard transport",
+      /deps\.setClipboard\(text\)/,
+      source,
+    ],
+    [
+      "copy helper emits returned OSC control sequence when needed",
+      /deps\.writeSequence\(sequence\)/,
+      source,
+    ],
+    [
+      "slash command returns clipboard confirmation after writing",
+      /return\s*\{\s*kind:\s*["']text["']\s*,\s*text:\s*await\s+copyTextToClipboard\(text,\s*deps\)\s*\}/,
+      source,
+    ],
+    [
+      "copy tests assert latest-message clipboard payload",
+      /setClipboard\)\.toHaveBeenCalledWith\(["']answer["']\)/,
+      test,
+    ],
+    [
+      "copy tests assert transcript clipboard payload",
+      /setClipboard\)\.toHaveBeenCalledWith\(\s*["']USER:\\nquestion\\n\\nASSISTANT:\\nanswer["']/,
+      test,
+    ],
+    [
+      "copy tests assert returned terminal sequence write",
+      /writeSequence\)\.toHaveBeenCalledWith/,
+      test,
+    ],
+    [
+      "copy tests assert empty terminal sequences are not written",
+      /writeSequence\)\.not\.toHaveBeenCalled/,
+      test,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-06 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/return\s*\{\s*kind:\s*["']text["']\s*,\s*text:\s*formatCopyExport\(/.test(source)) {
+    failGate("GAP-TUI-06: /copy must not return transcript text without writing the clipboard");
+  }
+
+  pass("GAP-TUI-06: copy clipboard evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/copy.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-06 targeted copy test failed");
+  }
+  pass("GAP-TUI-06 targeted copy test passed");
+}
+
+function assertGapTuiReloadPluginsRefreshesDispatcherRegistry() {
+  const rels = {
+    reload: "runtime/src/commands/reload-plugins.ts",
+    registry: "runtime/src/commands/registry.ts",
+    dispatcher: "runtime/src/commands/dispatcher.ts",
+    types: "runtime/src/commands/types.ts",
+    surfaceTest: "runtime/src/commands/command-surface.test.ts",
+    registryTest: "runtime/src/commands/registry.test.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-07: missing ${rel}`);
+  }
+
+  const reload = readFileSync(path.join(root, rels.reload), "utf8");
+  const registry = readFileSync(path.join(root, rels.registry), "utf8");
+  const dispatcher = readFileSync(path.join(root, rels.dispatcher), "utf8");
+  const types = readFileSync(path.join(root, rels.types), "utf8");
+  const surfaceTest = readFileSync(path.join(root, rels.surfaceTest), "utf8");
+  const registryTest = readFileSync(path.join(root, rels.registryTest), "utf8");
+  const missingEvidence = [
+    [
+      "slash command context exposes the live registry",
+      /readonly\s+commandRegistry\?:\s*CommandRegistry/,
+      types,
+    ],
+    [
+      "dispatcher passes the active registry into command context",
+      /commandRegistry:\s*registry/,
+      dispatcher,
+    ],
+    [
+      "registry supports dynamic command replacement",
+      /replaceDynamicCommands\(\s*source:\s*string/,
+      registry,
+    ],
+    [
+      "registry replacement tracks prior dynamic registrations",
+      /dynamicRegistrations/,
+      registry,
+    ],
+    [
+      "reload command projects plugin commands into slash commands",
+      /function\s+pluginCommandToSlashCommand/,
+      reload,
+    ],
+    [
+      "reload command replaces the live plugin registry surface",
+      /registry\.replaceDynamicCommands\(\s*["']plugins["']/,
+      reload,
+    ],
+    [
+      "reload command applies dispatcher registry refresh after plugin refresh",
+      /refreshDispatcherPluginCommands\(ctx,\s*result\)/,
+      reload,
+    ],
+    [
+      "surface test dispatches a plugin command after reload",
+      /reloads plugin commands into the live dispatcher registry/,
+      surfaceTest,
+    ],
+    [
+      "surface test verifies stale plugin command removal",
+      /registry\.find\(["']sample:hello["']\)\)\.toBeUndefined/,
+      surfaceTest,
+    ],
+    [
+      "registry test covers atomic dynamic replacement",
+      /keeps the previous dynamic source when replacement collides/,
+      registryTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-07 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-07: reload dispatcher registry evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/command-surface.test.ts",
+    "src/commands/registry.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-07 targeted reload registry tests failed");
+  }
+  pass("GAP-TUI-07 targeted reload registry tests passed");
+}
+
+function assertGapTuiCompactProgressControls() {
+  const rels = {
+    compact: "runtime/src/commands/session-compact.ts",
+    compactService: "runtime/src/services/compact/compact.ts",
+    compactTypes: "runtime/src/services/compact/types.ts",
+    repl: "runtime/src/tui/screens/REPL.tsx",
+    sessionTypes: "runtime/src/tui/session-types.ts",
+    daemonSession: "runtime/src/tui/daemon-session.ts",
+    slashTest: "runtime/tests/slash-compact.contract.test.ts",
+    serviceTest: "runtime/src/services/compact/compact.test.ts",
+    daemonTest: "runtime/src/tui/daemon-session.contract.test.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-08: missing ${rel}`);
+  }
+
+  const compact = readFileSync(path.join(root, rels.compact), "utf8");
+  const compactService = readFileSync(path.join(root, rels.compactService), "utf8");
+  const compactTypes = readFileSync(path.join(root, rels.compactTypes), "utf8");
+  const repl = readFileSync(path.join(root, rels.repl), "utf8");
+  const sessionTypes = readFileSync(path.join(root, rels.sessionTypes), "utf8");
+  const daemonSession = readFileSync(path.join(root, rels.daemonSession), "utf8");
+  const slashTest = readFileSync(path.join(root, rels.slashTest), "utf8");
+  const serviceTest = readFileSync(path.join(root, rels.serviceTest), "utf8");
+  const daemonTest = readFileSync(path.join(root, rels.daemonTest), "utf8");
+  const missingEvidence = [
+    [
+      "compact command reads progress callbacks from the session surface",
+      /surface\.setStreamMode[\s\S]*surface\.onCompactProgress[\s\S]*surface\.setSDKStatus/,
+      compact,
+    ],
+    [
+      "compact service context type exposes progress callbacks",
+      /setStreamMode\?[\s\S]*onCompactProgress\?[\s\S]*type\s+CompactProgressEvent/,
+      compactTypes,
+    ],
+    [
+      "compact service owns compact progress lifecycle",
+      /onCompactProgress\?\.\(\{\s*type:\s*["']hooks_start["'][\s\S]*setSDKStatus\?\.\(["']compacting["']\)[\s\S]*onCompactProgress\?\.\(\{\s*type:\s*["']compact_start["']\s*\}\)/,
+      compactService,
+    ],
+    [
+      "compact service clears compact status in a finally block",
+      /finally\s*\{[\s\S]*onCompactProgress\?\.\(\{\s*type:\s*["']compact_end["']\s*\}\)[\s\S]*setSDKStatus\?\.\(null\)/,
+      compactService,
+    ],
+    [
+      "TUI session contract defines compact progress controls",
+      /interface\s+AgenCCompactProgressControls/,
+      sessionTypes,
+    ],
+    [
+      "TUI session contract exports compact control installer",
+      /export\s+function\s+installCompactProgressControls/,
+      sessionTypes,
+    ],
+    [
+      "daemon session type carries compact progress controls",
+      /interface\s+AgenCTuiBridgeSession\s+extends\s+AgenCCompactProgressControls/,
+      daemonSession,
+    ],
+    [
+      "REPL installs compact progress controls on the live session",
+      /installCompactProgressControls\(session,\s*\{[\s\S]*setStreamMode[\s\S]*setResponseLength[\s\S]*onCompactProgress[\s\S]*setSDKStatus:\s*setCompactSDKStatus/,
+      repl,
+    ],
+    [
+      "REPL reuses the same compact progress handler in command context",
+      /setStreamMode,\s*\n\s*onCompactProgress,\s*\n\s*setInProgressToolUseIDs/,
+      repl,
+    ],
+    [
+      "slash compact test asserts an exact single progress lifecycle",
+      /compactLifecycle[\s\S]*toEqual\(\[[\s\S]*hooks_start[\s\S]*compact_start[\s\S]*compact_end[\s\S]*sdk_status["'],\s*status:\s*null/,
+      slashTest,
+    ],
+    [
+      "compact service test asserts cleanup failure clears status",
+      /clears status on cleanup failure[\s\S]*rejects\.toThrow\(["']cleanup failed["']\)[\s\S]*setSDKStatus\.mock\.calls/,
+      serviceTest,
+    ],
+    [
+      "daemon session test covers compact control publish and restore",
+      /publishes daemon-backed session compact controls and restores previous values/,
+      daemonTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-08 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/toolUseContext\.onCompactProgress\(\{\s*type:\s*["']compact_(?:start|end)["']/.test(compact)) {
+    failGate("GAP-TUI-08: session compact command must not emit duplicate compact lifecycle events");
+  }
+  if (/toolUseContext\.setSDKStatus\(["']compacting["']\)/.test(compact)) {
+    failGate("GAP-TUI-08: session compact command must delegate compact status lifecycle to the compact service");
+  }
+
+  pass("GAP-TUI-08: compact progress control evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "tests/slash-compact.contract.test.ts",
+    "src/services/compact/compact.test.ts",
+    "src/tui/daemon-session.contract.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-08 targeted compact progress tests failed");
+  }
+  pass("GAP-TUI-08 targeted compact progress tests passed");
+}
+
+function assertGapTuiBtwRegisteredInDispatcher() {
+  const rels = {
+    registry: "runtime/src/commands/registry.ts",
+    commands: "runtime/src/commands.ts",
+    registryTest: "runtime/src/commands/registry.test.ts",
+    tuiListTest: "runtime/src/commands/tui-command-list.test.ts",
+    btwIndex: "runtime/src/commands/btw/index.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-09: missing ${rel}`);
+  }
+
+  const registry = readFileSync(path.join(root, rels.registry), "utf8");
+  const commands = readFileSync(path.join(root, rels.commands), "utf8");
+  const registryTest = readFileSync(path.join(root, rels.registryTest), "utf8");
+  const tuiListTest = readFileSync(path.join(root, rels.tuiListTest), "utf8");
+  const btwIndex = readFileSync(path.join(root, rels.btwIndex), "utf8");
+  const missingEvidence = [
+    [
+      "/btw registry descriptor exists",
+      /const\s+btwCommand:\s+SlashCommand[\s\S]*name:\s*["']btw["'][\s\S]*immediate:\s*true/,
+      registry,
+    ],
+    [
+      "/btw is included in buildDefaultRegistry",
+      /CommandRegistry\.fromCommands\(\[[\s\S]*btwCommand[\s\S]*\]\)/,
+      registry,
+    ],
+    [
+      "/btw uses the existing local JSX command in the TUI command list",
+      /import\s+btwLocalCommand[\s\S]*LOCAL_JSX_COMMAND_OVERRIDES[\s\S]*btwLocalCommand\.name/,
+      commands,
+    ],
+    [
+      "/btw source stays local-jsx and immediate",
+      /type:\s*["']local-jsx["'][\s\S]*name:\s*["']btw["'][\s\S]*immediate:\s*true/,
+      btwIndex,
+    ],
+    [
+      "registry test asserts /btw lookup",
+      /reg\.has\(["']btw["']\)[\s\S]*reg\.find\(["']btw["']\)\?\.immediate/,
+      registryTest,
+    ],
+    [
+      "TUI command-list test asserts /btw local JSX projection",
+      /interactive local JSX descriptor for \/btw[\s\S]*btw\?\.type\)\.toBe\(["']local-jsx["']\)/,
+      tuiListTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-09 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-09: /btw dispatcher and TUI projection evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/registry.test.ts",
+    "src/commands/tui-command-list.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-09 targeted /btw registry tests failed");
+  }
+  pass("GAP-TUI-09 targeted /btw registry tests passed");
 }
 
 function subsystemDirGates(label, dir) {

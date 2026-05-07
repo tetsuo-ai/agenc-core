@@ -69,8 +69,12 @@ import {
  * dispatcher treats the registry as read-only during a turn.
  */
 export class CommandRegistry implements CommandRegistryInterface {
-  private readonly byName = new Map<string, SlashCommand>();
-  private readonly byAlias = new Map<string, SlashCommand>();
+  private byName = new Map<string, SlashCommand>();
+  private byAlias = new Map<string, SlashCommand>();
+  private readonly dynamicRegistrations = new Map<
+    string,
+    readonly DynamicRegistration[]
+  >();
 
   /**
    * Add a command to the registry.
@@ -81,39 +85,39 @@ export class CommandRegistry implements CommandRegistryInterface {
    *   the first registration wins.
    */
   register(cmd: SlashCommand): void {
-    const nameKey = cmd.name.toLowerCase();
-    if (this.byName.has(nameKey)) {
-      throw new Error(
-        `CommandRegistry: duplicate command name "${cmd.name}"`,
-      );
-    }
-    if (this.byAlias.has(nameKey)) {
-      throw new Error(
-        `CommandRegistry: command name "${cmd.name}" collides with existing alias`,
-      );
-    }
-    const aliasKeys: string[] = [];
-    for (const alias of cmd.aliases ?? []) {
-      const aKey = alias.toLowerCase();
-      if (this.byName.has(aKey)) {
-        throw new Error(
-          `CommandRegistry: alias "${alias}" (of /${cmd.name}) collides with existing command name`,
-        );
+    CommandRegistry.registerInto(this.byName, this.byAlias, cmd);
+  }
+
+  /**
+   * Replace a named dynamic command surface in place.
+   *
+   * `/reload-plugins` uses this to make freshly loaded plugin commands
+   * executable through the same registry object the dispatcher has already
+   * cached. Replacement is atomic: if any new command collides, the previous
+   * dynamic surface stays intact.
+   */
+  replaceDynamicCommands(
+    source: string,
+    commands: readonly SlashCommand[],
+  ): void {
+    const nextByName = new Map(this.byName);
+    const nextByAlias = new Map(this.byAlias);
+    for (const registration of this.dynamicRegistrations.get(source) ?? []) {
+      nextByName.delete(registration.nameKey);
+      for (const aliasKey of registration.aliasKeys) {
+        nextByAlias.delete(aliasKey);
       }
-      if (this.byAlias.has(aKey)) {
-        // First-registered wins — document and skip.
-        console.warn(
-          `CommandRegistry: alias "${alias}" (of /${cmd.name}) already registered by another command; dropping`,
-        );
-        continue;
-      }
-      aliasKeys.push(aKey);
     }
-    // Commit only after every precondition passes so partial-registration
-    // cannot leave the registry in a half-updated state.
-    this.byName.set(nameKey, cmd);
-    for (const aKey of aliasKeys) {
-      this.byAlias.set(aKey, cmd);
+
+    const nextRegistrations = commands.map(command =>
+      CommandRegistry.registerInto(nextByName, nextByAlias, command),
+    );
+    this.byName = nextByName;
+    this.byAlias = nextByAlias;
+    if (nextRegistrations.length === 0) {
+      this.dynamicRegistrations.delete(source);
+    } else {
+      this.dynamicRegistrations.set(source, nextRegistrations);
     }
   }
 
@@ -151,6 +155,51 @@ export class CommandRegistry implements CommandRegistryInterface {
     }
     return reg;
   }
+
+  private static registerInto(
+    byName: Map<string, SlashCommand>,
+    byAlias: Map<string, SlashCommand>,
+    cmd: SlashCommand,
+  ): DynamicRegistration {
+    const nameKey = cmd.name.toLowerCase();
+    if (byName.has(nameKey)) {
+      throw new Error(
+        `CommandRegistry: duplicate command name "${cmd.name}"`,
+      );
+    }
+    if (byAlias.has(nameKey)) {
+      throw new Error(
+        `CommandRegistry: command name "${cmd.name}" collides with existing alias`,
+      );
+    }
+    const aliasKeys: string[] = [];
+    for (const alias of cmd.aliases ?? []) {
+      const aKey = alias.toLowerCase();
+      if (byName.has(aKey)) {
+        throw new Error(
+          `CommandRegistry: alias "${alias}" (of /${cmd.name}) collides with existing command name`,
+        );
+      }
+      if (byAlias.has(aKey)) {
+        // First-registered wins — document and skip.
+        console.warn(
+          `CommandRegistry: alias "${alias}" (of /${cmd.name}) already registered by another command; dropping`,
+        );
+        continue;
+      }
+      aliasKeys.push(aKey);
+    }
+    byName.set(nameKey, cmd);
+    for (const aKey of aliasKeys) {
+      byAlias.set(aKey, cmd);
+    }
+    return { nameKey, aliasKeys };
+  }
+}
+
+interface DynamicRegistration {
+  readonly nameKey: string;
+  readonly aliasKeys: readonly string[];
 }
 
 /**
@@ -259,6 +308,16 @@ const exitWorktreeCommand: SlashCommand = {
   },
 };
 
+const btwCommand: SlashCommand = {
+  name: "btw",
+  description: "Ask a quick side question without interrupting the main conversation",
+  immediate: true,
+  execute: async () => ({
+    kind: "error",
+    message: "/btw is available in the interactive TUI.",
+  }),
+};
+
 /**
  * Build the default registry.
  *
@@ -281,6 +340,7 @@ export function buildDefaultRegistry(): CommandRegistry {
     statusCommand,
     initCommand,
     compactCommand,
+    btwCommand,
     copyCommand,
     mcpCommand,
     memoryCommand,

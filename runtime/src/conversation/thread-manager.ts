@@ -794,6 +794,10 @@ class ForkedConversationThread implements ManagedThread {
           { role: "user", content: op.message },
         ];
         return this.threadId;
+      case "clear_conversation_history":
+        this.history = [];
+        this.sourceSessionRef.clearProviderResponseId();
+        return this.threadId;
       case "inter_agent_communication":
         this.history = [
           ...this.history,

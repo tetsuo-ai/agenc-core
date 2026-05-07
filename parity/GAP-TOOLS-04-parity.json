@@ -24,7 +24,9 @@
       "Read": "FileRead",
       "FileEdit": "Edit",
       "FileWrite": "Write",
-      "explicitLegacyAllowlists": "Daemon-facing unattended allowlists must use the canonical Grep and Glob names after this consolidation; old agent/skill specs and permission rules for Bash, Read, FileEdit, and FileWrite are resolved through canonical aliases."
+      "system.grep": "Grep",
+      "system.glob": "Glob",
+      "explicitLegacyAllowlists": "Provider-facing system.grep/system.glob tools are removed, but existing unattended lists, agent specs, and permission rules using those names resolve through canonical Grep and Glob aliases. Old specs and permission rules for Bash, Read, FileEdit, and FileWrite are also resolved through canonical aliases."
     },
     "sharedNotebookEditImplementation": {
       "systemTool": "runtime/src/tools/system/notebook-edit.ts",
@@ -33,11 +35,11 @@
     },
     "fileReadErrorBoundary": {
       "status": "canonical-errors-preserved",
-      "reason": "Old attachment helpers translate canonical FileRead isError results back into their existing error paths, preserving large-file truncation and preventing changed-file raw reads after failed canonical reads."
+      "reason": "Old attachment helpers translate canonical FileRead isError results back into their existing error paths, preserving large-file truncation and preventing changed-file raw reads after failed canonical reads. Changed-file attachment generation diffs only text reads, keeps standalone image reads as image attachments, and skips notebook/PDF media."
     },
     "bashBoundary": {
       "status": "system-bash-shared",
-      "reason": "Old-stack CanonicalBashTool, daemon registry dispatch, prompt shell execution, direct TUI shell input, and directory attachment message rendering use the runtime system.bash implementation. Legacy unattended names and Bash permission-rule names normalize to system.bash. Failed system.bash results preserve tool_result is_error, and the real system.bash permission hook receives sandbox auto-allow context. Unsupported legacy Bash control fields are rejected by the canonical wrapper schema instead of being ignored."
+      "reason": "Old-stack CanonicalBashTool, daemon registry dispatch, prompt shell execution, direct TUI shell input, and directory attachment message rendering use the runtime system.bash implementation. Legacy unattended names and Bash permission-rule names normalize to system.bash. Failed system.bash results preserve tool_result is_error. system.bash remains ask-gated when sandbox auto-allow is requested because this runtime execution path is not the old sandbox executor. Unsupported legacy Bash control fields are rejected by the canonical wrapper schema instead of being ignored."
     },
     "liveOldStackCallers": {
       "bashInput": "runtime/src/tui/input/processBashCommand.tsx",

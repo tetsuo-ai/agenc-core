@@ -5,6 +5,7 @@ import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
+import type { PhaseEvent } from "../phases/events.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -12,6 +13,13 @@ import type {
   RequestUserInputResponse,
 } from "../elicitation/types.js";
 import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
+
+export interface AgenCCompactProgressControls {
+  setStreamMode?(mode: "requesting" | "responding" | null): void;
+  setResponseLength?(updater: (length: number) => number): void;
+  onCompactProgress?(event: unknown): void;
+  setSDKStatus?(status: "compacting" | null): void;
+}
 
 export interface PermissionModeRegistryLike {
   current(): ToolPermissionContext;
@@ -24,7 +32,7 @@ export interface PermissionModeRegistryLike {
   ): () => void;
 }
 
-export interface AgenCBridgeSession {
+export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
   readonly services: {
     readonly permissionModeRegistry: PermissionModeRegistryLike;
@@ -55,6 +63,8 @@ export interface AgenCBridgeSession {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  emitPhaseEvent?(event: PhaseEvent): void;
+  clearDaemonSession?(): Promise<void>;
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
@@ -81,6 +91,58 @@ export interface AgenCBridgeSession {
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
   listMcpClients?(): readonly MCPServerConnection[];
+}
+
+type MutableCompactProgressSession = {
+  setStreamMode?: AgenCCompactProgressControls["setStreamMode"];
+  setResponseLength?: AgenCCompactProgressControls["setResponseLength"];
+  onCompactProgress?: AgenCCompactProgressControls["onCompactProgress"];
+  setSDKStatus?: AgenCCompactProgressControls["setSDKStatus"];
+};
+
+export function installCompactProgressControls(
+  session: AgenCBridgeSession,
+  controls: Required<AgenCCompactProgressControls>,
+): () => void {
+  const target = session as MutableCompactProgressSession;
+  const previous = {
+    setStreamMode: target.setStreamMode,
+    setResponseLength: target.setResponseLength,
+    onCompactProgress: target.onCompactProgress,
+    setSDKStatus: target.setSDKStatus,
+  };
+  target.setStreamMode = controls.setStreamMode;
+  target.setResponseLength = controls.setResponseLength;
+  target.onCompactProgress = controls.onCompactProgress;
+  target.setSDKStatus = controls.setSDKStatus;
+  return () => {
+    restoreCompactProgressControl(target, "setStreamMode", previous.setStreamMode);
+    restoreCompactProgressControl(
+      target,
+      "setResponseLength",
+      previous.setResponseLength,
+    );
+    restoreCompactProgressControl(
+      target,
+      "onCompactProgress",
+      previous.onCompactProgress,
+    );
+    restoreCompactProgressControl(target, "setSDKStatus", previous.setSDKStatus);
+  };
+}
+
+function restoreCompactProgressControl<
+  Key extends keyof MutableCompactProgressSession,
+>(
+  target: MutableCompactProgressSession,
+  key: Key,
+  value: MutableCompactProgressSession[Key] | undefined,
+): void {
+  if (value === undefined) {
+    delete target[key];
+  } else {
+    target[key] = value;
+  }
 }
 
 export interface ConfigStoreLike {

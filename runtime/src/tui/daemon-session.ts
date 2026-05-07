@@ -25,6 +25,7 @@ import type {
   RequestUserInputEvent,
   RequestUserInputResponse,
 } from "../elicitation/types.js";
+import type { PhaseEvent } from "../phases/events.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 import {
   createRealtimeTuiControls,
@@ -35,6 +36,7 @@ import type {
   RealtimeAudioPlayer,
   StartRealtimeAudioCapture,
 } from "./realtime/audio.js";
+import type { AgenCCompactProgressControls } from "./session-types.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -52,7 +54,7 @@ export interface AgenCDaemonConnectionState extends JsonObject {
   readonly message?: string;
 }
 
-export interface AgenCTuiBridgeSession {
+export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
   readonly services: {
     approvalResolver?: ApprovalResolver;
@@ -73,6 +75,8 @@ export interface AgenCTuiBridgeSession {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  emitPhaseEvent?(event: PhaseEvent): void;
+  clearDaemonSession?(): Promise<void>;
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
@@ -278,6 +282,9 @@ export function createDaemonTuiSession<
         serverName,
         response,
       } satisfies ElicitationRespondParams),
+    clearDaemonSession: async () => {
+      await client.request("session.clear", { sessionId });
+    },
     subscribeToEvents: (cb) => {
       eventSubscribers.add(cb);
       ensureDaemonEventsSubscribed();

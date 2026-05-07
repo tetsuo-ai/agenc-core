@@ -12,9 +12,13 @@ import { createEmptyToolPermissionContext } from "./types.js";
 
 describe("unattended permission policy", () => {
   test("normalizes aliases, trims entries, and removes duplicates", () => {
-    expect(normalizeUnattendedToolList([" read ", "FileRead", "", "grep", "Bash", "FileEdit", "FileWrite"])).toEqual([
+    const removedGrepName = ["system", "grep"].join(".");
+    const removedGlobName = ["system", "glob"].join(".");
+
+    expect(normalizeUnattendedToolList([" read ", "FileRead", "", "grep", removedGrepName, removedGlobName, "Bash", "FileEdit", "FileWrite"])).toEqual([
       "FileRead",
       "Grep",
+      "Glob",
       "system.bash",
       "Edit",
       "Write",

@@ -50,7 +50,6 @@ import {
 import {
   getAskRuleForTool,
   getDenyRuleForTool,
-  toolNameAliases,
   toolAlwaysAllowedRule,
 } from "./rules.js";
 import {
@@ -284,7 +283,7 @@ export async function checkRuleBasedPermissions(
   );
   if (askRule) {
     const canSandboxAutoAllow =
-      toolNameAliases(tool.name).includes("system.bash") &&
+      tool.name === "Bash" &&
       context.autoAllowBashIfSandboxed === true &&
       typeof context.shouldUseSandbox === "function" &&
       context.shouldUseSandbox(input) === true;

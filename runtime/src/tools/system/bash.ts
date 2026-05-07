@@ -315,6 +315,7 @@ function runSpawnedCommand(params: {
   readonly shellMode: boolean;
   readonly cleanupPath?: string;
   readonly signal?: AbortSignal;
+  readonly onProgress?: ToolExecutionInjectedArgs["__onProgress"];
 }): Promise<ToolResult> {
   return new Promise<ToolResult>((resolve) => {
     let resolved = false;
@@ -357,9 +358,19 @@ function runSpawnedCommand(params: {
     child.stdout!.on("data", (chunk: Buffer) => {
       // I-78: push raw bytes; decode once at flush.
       stdoutChunks.push(chunk);
+      params.onProgress?.({
+        chunk: chunk.toString("utf8"),
+        stream: "stdout",
+        ...(child.pid !== undefined ? { processId: child.pid } : {}),
+      });
     });
     child.stderr!.on("data", (chunk: Buffer) => {
       stderrChunks.push(chunk);
+      params.onProgress?.({
+        chunk: chunk.toString("utf8"),
+        stream: "stderr",
+        ...(child.pid !== undefined ? { processId: child.pid } : {}),
+      });
     });
 
     const timer = setTimeout(() => {
@@ -829,14 +840,9 @@ async function bashContentRulePermission(
         const toolPermissionContext = context.toolPermissionContext
           ? context.toolPermissionContext(appState)
           : appState.toolPermissionContext;
-        const autoAllowBashIfSandboxed =
-          (context as { readonly autoAllowBashIfSandboxed?: boolean })
-            .autoAllowBashIfSandboxed === true;
         return {
           ...appState,
-          toolPermissionContext: autoAllowBashIfSandboxed
-            ? { ...toolPermissionContext, autoAllowBashIfSandboxed: true }
-            : toolPermissionContext,
+          toolPermissionContext,
         };
       },
     },
@@ -931,6 +937,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const input = rawArgs as unknown as BashToolInput & ToolExecutionInjectedArgs;
       const abortSignal = input.__abortSignal;
+      const onProgress = input.__onProgress;
 
       // Validate command
       if (
@@ -1216,6 +1223,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           shellMode: true,
           cleanupPath: scriptPath,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
         }).then(emitEnd);
       }
 
@@ -1234,6 +1242,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataArgs: execArgs,
           shellMode: false,
           ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
         }).then(emitEnd);
       }
 

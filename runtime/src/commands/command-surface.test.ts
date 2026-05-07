@@ -683,6 +683,76 @@ describe("absorbed T-10 command behavior", () => {
     }
   });
 
+  it("reloads plugin commands into the live dispatcher registry", async () => {
+    const registry = buildDefaultRegistry();
+    const session = fakeSession();
+    const pluginCommand = promptCommand({
+      name: "sample:hello",
+      aliases: ["sample:hi"],
+      getPromptForCommand: async (args, context) => {
+        const sessionId = (context as { sessionId?: string }).sessionId ?? "none";
+        return [{ type: "text", text: `Hello ${args} from ${sessionId}` }];
+      },
+    });
+    const refreshActivePlugins = vi.fn()
+      .mockResolvedValueOnce({
+        enabled_count: 1,
+        disabled_count: 0,
+        command_count: 1,
+        agent_count: 0,
+        hook_count: 0,
+        mcp_count: 0,
+        lsp_count: 0,
+        output_style_count: 0,
+        error_count: 0,
+        commands: [pluginCommand],
+        skills: [],
+      })
+      .mockResolvedValueOnce({
+        enabled_count: 0,
+        disabled_count: 0,
+        command_count: 0,
+        agent_count: 0,
+        hook_count: 0,
+        mcp_count: 0,
+        lsp_count: 0,
+        output_style_count: 0,
+        error_count: 0,
+        commands: [],
+        skills: [],
+      });
+    const restore = setActivePluginRefresherForTesting(refreshActivePlugins);
+    try {
+      await reloadPluginSurfaces({
+        ...fakeContext("/tmp", session),
+        commandRegistry: registry,
+      });
+
+      const loaded = registry.find("sample:hello");
+      expect(loaded).toBeDefined();
+      expect(registry.find("sample:hi")).toBe(loaded);
+      const outcome = await dispatchSlashCommand(
+        { name: "sample:hi", argsRaw: "world", isMcp: false },
+        fakeContext("/tmp", session),
+        registry,
+      );
+      expect(outcome.result).toEqual({
+        kind: "prompt",
+        content:
+          "<command-name>sample:hello</command-name>\nHello world from session-1",
+      });
+
+      await reloadPluginSurfaces({
+        ...fakeContext("/tmp", session),
+        commandRegistry: registry,
+      });
+      expect(registry.find("sample:hello")).toBeUndefined();
+      expect(registry.find("sample:hi")).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
   it("passes live AppState updates through reload plugin refresh", async () => {
     const refreshActivePlugins = vi.fn(async (ctx: SlashCommandContext) => {
       ctx.appState?.setAppState?.((prev) => ({

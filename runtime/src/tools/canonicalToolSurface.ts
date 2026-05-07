@@ -12,9 +12,14 @@ import { createGrepTool } from "./system/grep.js";
 import { SESSION_ID_ARG } from "./system/filesystem.js";
 import { createNotebookEditTool as createSystemNotebookEditTool } from "./system/notebook-edit.js";
 import type { Tool as RuntimeTool, ToolResult as RuntimeToolResult } from "./types.js";
-import { buildTool, type Tool, type ToolUseContext } from "./Tool.js";
+import { buildTool, type Tool, type ToolCallProgress, type ToolUseContext } from "./Tool.js";
 
 type RuntimeToolFactory = (workspaceRoot: string) => RuntimeTool;
+type SearchOrReadClassification = {
+  readonly isSearch: boolean;
+  readonly isRead: boolean;
+  readonly isList?: boolean;
+};
 type CanonicalToolData =
   | string
   | {
@@ -39,6 +44,9 @@ interface CanonicalToolOptions {
   readonly userFacingName?: (input: Partial<Record<string, unknown>>) => string;
   readonly summary?: (input: Partial<Record<string, unknown>>) => string | null;
   readonly classifierInput?: (input: Record<string, unknown>) => unknown;
+  readonly isSearchOrReadCommand?: (
+    input: Record<string, unknown>,
+  ) => SearchOrReadClassification;
 }
 
 function workspaceRoot(): string {
@@ -155,6 +163,176 @@ function dataUrlToImageSource(
   };
 }
 
+const BASH_SEARCH_COMMANDS = new Set([
+  "find",
+  "grep",
+  "rg",
+  "ag",
+  "ack",
+  "locate",
+  "which",
+  "whereis",
+]);
+const BASH_READ_COMMANDS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "wc",
+  "stat",
+  "file",
+  "strings",
+  "jq",
+  "awk",
+  "cut",
+  "sort",
+  "uniq",
+  "tr",
+]);
+const BASH_LIST_COMMANDS = new Set(["ls", "tree", "du"]);
+const BASH_NEUTRAL_COMMANDS = new Set(["echo", "printf", "true", "false", ":"]);
+const BASH_CLASSIFICATION_SEPARATORS = new Set(["|", "||", "&&", "&", ";"]);
+const BASH_CLASSIFICATION_REDIRECTS = new Set([">", ">>", ">&"]);
+
+function splitBashCommandForClassification(command: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | "`" | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    const next = command[index + 1] ?? "";
+    if (quote !== null) {
+      current += char;
+      if (char === quote && command[index - 1] !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    const twoCharOperator = `${char}${next}`;
+    if (twoCharOperator === "||" || twoCharOperator === "&&" || twoCharOperator === ">>") {
+      if (current.trim().length > 0) parts.push(current.trim());
+      parts.push(twoCharOperator);
+      current = "";
+      index += 1;
+      continue;
+    }
+    if (char === "\n" || char === "\r") {
+      if (current.trim().length > 0) parts.push(current.trim());
+      parts.push(";");
+      current = "";
+      continue;
+    }
+    if (char === "|" || char === "&" || char === ";" || char === ">" || char === "<") {
+      if (current.trim().length > 0) parts.push(current.trim());
+      parts.push(char);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim().length > 0) parts.push(current.trim());
+  return parts;
+}
+
+function classifyBashSearchOrRead(command: string): SearchOrReadClassification {
+  if (/[`]/u.test(command) || /\$\s*\(/u.test(command) || /[<>]\s*\(/u.test(command)) {
+    return { isSearch: false, isRead: false, isList: false };
+  }
+  const partsWithOperators = splitBashCommandForClassification(command);
+  let hasSearch = false;
+  let hasRead = false;
+  let hasList = false;
+  let hasNonNeutral = false;
+  let skipRedirectTarget = false;
+
+  for (const part of partsWithOperators) {
+    if (skipRedirectTarget) {
+      skipRedirectTarget = false;
+      continue;
+    }
+    if (BASH_CLASSIFICATION_REDIRECTS.has(part)) {
+      skipRedirectTarget = true;
+      continue;
+    }
+    if (BASH_CLASSIFICATION_SEPARATORS.has(part)) {
+      continue;
+    }
+
+    const commandToken = part.trim().split(/\s+/u)[0];
+    if (!commandToken) continue;
+    const base = commandToken.split("/").pop() ?? commandToken;
+    if (BASH_NEUTRAL_COMMANDS.has(base)) {
+      continue;
+    }
+    hasNonNeutral = true;
+    if (BASH_SEARCH_COMMANDS.has(base)) {
+      hasSearch = true;
+      continue;
+    }
+    if (BASH_READ_COMMANDS.has(base)) {
+      hasRead = true;
+      continue;
+    }
+    if (BASH_LIST_COMMANDS.has(base)) {
+      hasList = true;
+      continue;
+    }
+    return { isSearch: false, isRead: false, isList: false };
+  }
+
+  if (!hasNonNeutral) {
+    return { isSearch: false, isRead: false, isList: false };
+  }
+  return { isSearch: hasSearch, isRead: hasRead, isList: hasList };
+}
+
+function buildBashProgressForwarder(
+  input: Record<string, unknown>,
+  onProgress: ToolCallProgress | undefined,
+): ((event: {
+  readonly chunk: string;
+  readonly stream?: "stdout" | "stderr" | "status";
+  readonly processId?: number;
+}) => void) | undefined {
+  if (onProgress === undefined) return undefined;
+
+  const startTime = Date.now();
+  const chunks: string[] = [];
+  let progressCounter = 0;
+  const timeoutMs =
+    typeof input.timeoutMs === "number"
+      ? input.timeoutMs
+      : typeof input.timeout === "number"
+        ? input.timeout
+        : undefined;
+
+  return (event) => {
+    chunks.push(event.chunk);
+    const fullOutput = chunks.join("");
+    onProgress({
+      toolUseID: `canonical-bash-progress-${progressCounter++}`,
+      data: {
+        type: "bash_progress",
+        output: event.chunk,
+        fullOutput,
+        elapsedTimeSeconds: (Date.now() - startTime) / 1000,
+        totalLines: fullOutput.length === 0
+          ? 0
+          : fullOutput.split(/\r\n|\r|\n/u).length,
+        totalBytes: Buffer.byteLength(fullOutput, "utf8"),
+        ...(event.processId !== undefined ? { taskId: event.processId } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      },
+    });
+  };
+}
+
 function createCanonicalTool(options: CanonicalToolOptions): Tool {
   return buildTool({
     name: options.name,
@@ -213,12 +391,25 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     toAutoClassifierInput(input) {
       return options.classifierInput?.(input) ?? "";
     },
-    async call(input, context) {
+    isSearchOrReadCommand(input) {
+      return options.isSearchOrReadCommand?.(input) ?? {
+        isSearch: false,
+        isRead: false,
+        isList: false,
+      };
+    },
+    async call(input, context, _canUseTool, _parentMessage, onProgress) {
       const root = workspaceRoot();
       const runtimeTool = options.createRuntimeTool(root);
+      const runtimeInput = mapCanonicalInput(options, input, root);
+      const progressForwarder =
+        options.name === "system.bash"
+          ? buildBashProgressForwarder(input, onProgress)
+          : undefined;
       const result = await runtimeTool.execute({
-        ...mapCanonicalInput(options, input, root),
+        ...runtimeInput,
         __abortSignal: context.abortController.signal,
+        ...(progressForwarder !== undefined ? { __onProgress: progressForwarder } : {}),
       });
       return { data: runtimeResultToData(result) };
     },
@@ -312,7 +503,7 @@ export const CanonicalBashTool = createCanonicalTool({
   name: "system.bash",
   aliases: ["Bash"],
   searchHint: "execute shell commands",
-  maxResultSizeChars: 30_000,
+  maxResultSizeChars: Infinity,
   inputSchema: bashInputSchema,
   createRuntimeTool: (root) => createBashTool({ cwd: root }),
   mapInput: (input, root) => ({
@@ -329,6 +520,10 @@ export const CanonicalBashTool = createCanonicalTool({
   summary: (input) =>
     typeof input.command === "string" ? input.command : "Run shell command",
   classifierInput: (input) => input.command,
+  isSearchOrReadCommand: (input) =>
+    typeof input.command === "string"
+      ? classifyBashSearchOrRead(input.command)
+      : { isSearch: false, isRead: false, isList: false },
 });
 
 export const CanonicalFileReadTool = createCanonicalTool({
@@ -343,6 +538,7 @@ export const CanonicalFileReadTool = createCanonicalTool({
   userFacingName: () => "FileRead",
   summary: (input) =>
     typeof input.file_path === "string" ? input.file_path : "Read file",
+  isSearchOrReadCommand: () => ({ isSearch: false, isRead: true }),
 });
 
 export const CanonicalFileEditTool = createCanonicalTool({
@@ -384,6 +580,7 @@ export const CanonicalFileWriteTool = createCanonicalTool({
 
 export const CanonicalGrepTool = createCanonicalTool({
   name: "Grep",
+  aliases: ["system.grep"],
   searchHint: "search file contents",
   maxResultSizeChars: 30_000,
   inputSchema: grepInputSchema,
@@ -392,10 +589,12 @@ export const CanonicalGrepTool = createCanonicalTool({
   userFacingName: () => "Grep",
   summary: (input) =>
     typeof input.pattern === "string" ? input.pattern : "Search files",
+  isSearchOrReadCommand: () => ({ isSearch: true, isRead: false }),
 });
 
 export const CanonicalGlobTool = createCanonicalTool({
   name: "Glob",
+  aliases: ["system.glob"],
   searchHint: "find files by pattern",
   maxResultSizeChars: 30_000,
   inputSchema: globInputSchema,
@@ -404,6 +603,7 @@ export const CanonicalGlobTool = createCanonicalTool({
   userFacingName: () => "Glob",
   summary: (input) =>
     typeof input.pattern === "string" ? input.pattern : "Find files",
+  isSearchOrReadCommand: () => ({ isSearch: true, isRead: false }),
 });
 
 export const CanonicalNotebookEditTool = createCanonicalTool({

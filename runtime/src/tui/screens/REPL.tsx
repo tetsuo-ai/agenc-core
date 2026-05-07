@@ -62,6 +62,7 @@ import PromptInput from '../components/PromptInput/PromptInput.js';
 import { PromptInputQueuedCommands } from '../components/PromptInput/PromptInputQueuedCommands.js';
 import { useRemoteSession } from '../hooks/useRemoteSession.js';
 import { useDirectConnect } from '../hooks/useDirectConnect.js';
+import { installCompactProgressControls } from '../session-types.js';
 import type { DirectConnectConfig } from '../../server/directConnectManager.js';
 import { useSSHSession } from '../hooks/useSSHSession.js';
 import { useAssistantHistory } from '../hooks/useAssistantHistory.js';
@@ -1500,6 +1501,34 @@ export function REPL({
   const [spinnerMessage, setSpinnerMessage] = useState<string | null>(null);
   const [spinnerColor, setSpinnerColor] = useState<keyof Theme | null>(null);
   const [spinnerShimmerColor, setSpinnerShimmerColor] = useState<keyof Theme | null>(null);
+  const onCompactProgress = useCallback(event => {
+    switch (event.type) {
+      case 'hooks_start':
+        setSpinnerColor('agencBlue_FOR_SYSTEM_SPINNER');
+        setSpinnerShimmerColor('agencBlueShimmer_FOR_SYSTEM_SPINNER');
+        setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
+        break;
+      case 'compact_start':
+        setSpinnerMessage('Compacting conversation');
+        break;
+      case 'compact_end':
+        setSpinnerMessage(null);
+        setSpinnerColor(null);
+        setSpinnerShimmerColor(null);
+        break;
+    }
+  }, []);
+  const setCompactSDKStatus = useCallback(status => {
+    if (status === null) {
+      setSpinnerMessage(null);
+    }
+  }, []);
+  useEffect(() => installCompactProgressControls(session, {
+    setStreamMode,
+    setResponseLength,
+    onCompactProgress,
+    setSDKStatus: setCompactSDKStatus,
+  }), [session, setStreamMode, setResponseLength, onCompactProgress, setCompactSDKStatus]);
   const [isMessageSelectorVisible, setIsMessageSelectorVisible] = useState(false);
   const [messageSelectorPreselect, setMessageSelectorPreselect] = useState<UserMessage | undefined>(undefined);
   const [showCostDialog, setShowCostDialog] = useState(false);
@@ -2515,23 +2544,7 @@ export function REPL({
         });
       } : undefined,
       setStreamMode,
-      onCompactProgress: event => {
-        switch (event.type) {
-          case 'hooks_start':
-            setSpinnerColor('agencBlue_FOR_SYSTEM_SPINNER');
-            setSpinnerShimmerColor('agencBlueShimmer_FOR_SYSTEM_SPINNER');
-            setSpinnerMessage(event.hookType === 'pre_compact' ? 'Running PreCompact hooks\u2026' : event.hookType === 'post_compact' ? 'Running PostCompact hooks\u2026' : 'Running SessionStart hooks\u2026');
-            break;
-          case 'compact_start':
-            setSpinnerMessage('Compacting conversation');
-            break;
-          case 'compact_end':
-            setSpinnerMessage(null);
-            setSpinnerColor(null);
-            setSpinnerShimmerColor(null);
-            break;
-        }
-      },
+      onCompactProgress,
       setInProgressToolUseIDs,
       setHasInterruptibleToolInProgress: (v: boolean) => {
         hasInterruptibleToolInProgressRef.current = v;
@@ -2542,7 +2555,7 @@ export function REPL({
       contentReplacementState: contentReplacementStateRef.current,
       syncToolResultReplacements
     };
-  }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId, syncToolResultReplacements]);
+  }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId, onCompactProgress, syncToolResultReplacements]);
 
   // Session backgrounding (Ctrl+B to background/foreground)
   const handleBackgroundQuery = useCallback(() => {

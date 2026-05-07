@@ -18,6 +18,7 @@ function stubSession(opts: {
   toolApprovalsClear?: ReturnType<typeof vi.fn>;
   networkApprovalClear?: ReturnType<typeof vi.fn>;
   activeTurn?: unknown;
+  emitPhaseEvent?: ReturnType<typeof vi.fn>;
 }) {
   const history = opts.history ?? [{ foo: 1 }, { bar: 2 }];
   const sc = { sessionConfiguration: {}, history };
@@ -39,6 +40,7 @@ function stubSession(opts: {
     services: svc,
     activeTurn: { unsafePeek: () => opts.activeTurn ?? null },
     clearProviderResponseId: opts.clearProviderResponseId,
+    emitPhaseEvent: opts.emitPhaseEvent,
     budgetTracker: opts.budgetReset
       ? { resetSamplingGate: opts.budgetReset }
       : null,
@@ -62,6 +64,7 @@ describe("clearCommand", () => {
     const clearProviderResponseId = vi.fn();
     const toolApprovalsClear = vi.fn();
     const networkApprovalClear = vi.fn();
+    const emitPhaseEvent = vi.fn();
     const history: unknown[] = [{}, {}, {}];
     const session = stubSession({
       history,
@@ -71,6 +74,7 @@ describe("clearCommand", () => {
       clearProviderResponseId,
       toolApprovalsClear,
       networkApprovalClear,
+      emitPhaseEvent,
     });
     const res = await clearCommand.execute(mkctx(session));
     expect(res.kind).toBe("text");
@@ -83,6 +87,10 @@ describe("clearCommand", () => {
     expect(clearProviderResponseId).toHaveBeenCalled();
     expect(toolApprovalsClear).toHaveBeenCalled();
     expect(networkApprovalClear).toHaveBeenCalled();
+    expect(emitPhaseEvent).toHaveBeenCalledWith({
+      type: "history_cleared",
+      timestamp: expect.any(Number),
+    });
   });
 
   it("tolerates missing sidecars + missing budget tracker", async () => {
@@ -90,13 +98,45 @@ describe("clearCommand", () => {
     await expect(clearSession(session)).resolves.toBeUndefined();
   });
 
+  it("clears bridge-like sessions without local history state and still emits a TUI reset", async () => {
+    const emitPhaseEvent = vi.fn();
+    const session = {
+      emitPhaseEvent,
+    } as unknown as Session;
+
+    const res = await clearCommand.execute(mkctx(session));
+
+    expect(res.kind).toBe("text");
+    expect(emitPhaseEvent).toHaveBeenCalledWith({
+      type: "history_cleared",
+      timestamp: expect.any(Number),
+    });
+  });
+
+  it("delegates daemon-backed sessions to the daemon clear path without local duplicate emit", async () => {
+    const clearDaemonSession = vi.fn(async () => undefined);
+    const emitPhaseEvent = vi.fn();
+    const session = {
+      clearDaemonSession,
+      emitPhaseEvent,
+    } as unknown as Session;
+
+    const res = await clearCommand.execute(mkctx(session));
+
+    expect(res.kind).toBe("text");
+    expect(clearDaemonSession).toHaveBeenCalledTimes(1);
+    expect(emitPhaseEvent).not.toHaveBeenCalled();
+  });
+
   it("refuses to clear while a turn is in flight", async () => {
     const history: unknown[] = [{ live: true }];
     const clearProviderResponseId = vi.fn();
+    const emitPhaseEvent = vi.fn();
     const session = stubSession({
       history,
       activeTurn: { turnId: "turn-live" },
       clearProviderResponseId,
+      emitPhaseEvent,
     });
 
     const res = await clearCommand.execute(mkctx(session));
@@ -105,5 +145,6 @@ describe("clearCommand", () => {
     if (res.kind === "error") expect(res.message).toMatch(/in flight/);
     expect(history.length).toBe(1);
     expect(clearProviderResponseId).not.toHaveBeenCalled();
+    expect(emitPhaseEvent).not.toHaveBeenCalled();
   });
 });

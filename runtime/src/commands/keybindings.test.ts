@@ -1,3 +1,5 @@
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   mkdirSync,
   mkdtempSync,
@@ -13,6 +15,7 @@ import keybindingsCommand, {
   DEFAULT_KEYBINDINGS,
   keybindingsPath,
   runKeybindings,
+  spawnKeybindingsEditor,
 } from "./keybindings.js";
 
 let workHome: string;
@@ -74,6 +77,63 @@ describe("keybindingsCommand", () => {
     });
     expect(res.kind).toBe("error");
     if (res.kind === "error") expect(res.message).toMatch(/Failed to launch/);
+  });
+
+  it("hands terminal editors the terminal only after pausing Ink", async () => {
+    const calls: string[] = [];
+    const child = new EventEmitter() as ChildProcess;
+    const spawnProcess = vi.fn(() => {
+      calls.push("spawn");
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    });
+    const ink = {
+      enterAlternateScreen: vi.fn(() => calls.push("enter")),
+      exitAlternateScreen: vi.fn(() => calls.push("exit")),
+    };
+
+    const code = await spawnKeybindingsEditor("nano", "/tmp/keybindings.json", {
+      spawnProcess,
+      getInk: () => ink,
+      isEditorAvailable: () => true,
+    });
+
+    expect(code).toBe(0);
+    expect(spawnProcess).toHaveBeenCalledWith(
+      "nano",
+      ["/tmp/keybindings.json"],
+      { stdio: "inherit" },
+    );
+    expect(calls).toEqual(["enter", "spawn", "exit"]);
+  });
+
+  it("launches GUI editors detached from the TUI stdio", async () => {
+    const child = new EventEmitter() as ChildProcess;
+    child.unref = vi.fn();
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
+    });
+    const ink = {
+      enterAlternateScreen: vi.fn(),
+      exitAlternateScreen: vi.fn(),
+    };
+
+    const code = await spawnKeybindingsEditor("code --wait", "/tmp/keybindings.json", {
+      spawnProcess,
+      getInk: () => ink,
+      isEditorAvailable: () => true,
+    });
+
+    expect(code).toBe(0);
+    expect(spawnProcess).toHaveBeenCalledWith(
+      "code",
+      ["--wait", "/tmp/keybindings.json"],
+      { detached: true, stdio: "ignore" },
+    );
+    expect(child.unref).toHaveBeenCalled();
+    expect(ink.enterAlternateScreen).not.toHaveBeenCalled();
+    expect(ink.exitAlternateScreen).not.toHaveBeenCalled();
   });
 
   it("errors if the injected creator does not leave a file behind", async () => {
