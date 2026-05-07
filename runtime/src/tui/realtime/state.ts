@@ -111,6 +111,8 @@ export function reduceRealtimeTuiState(
         transport: event.transport,
         realtimeSessionId: null,
         localAudioLevel: 0,
+        lastTranscript: null,
+        lastItemSummary: null,
         errorBanner: null,
         closedBanner: null,
       };

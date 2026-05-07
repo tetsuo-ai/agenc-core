@@ -157,27 +157,46 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   async #stop(): Promise<void> {
     if (this.#state.phase === "inactive") return;
     this.#dispatch({ type: "stop_requested" });
-    await this.#stopAudioCapture();
+    let localCleanupError: unknown = null;
+    await this.#stopAudioCapture().catch((error) => {
+      localCleanupError = error;
+    });
     const webRtc = this.#webRtc;
     this.#webRtc = null;
     if (webRtc !== null) {
-      await this.#closeWebrtc(webRtc).catch(() => {});
+      await this.#closeWebrtc(webRtc).catch((error) => {
+        localCleanupError ??= error;
+      });
     }
+    let daemonStopError: unknown = null;
     try {
       await this.#client.request("thread/realtime/stop", {
         threadId: this.#threadId,
       } satisfies ThreadRealtimeStopParams);
-      this.#audioPlayer.close();
-      this.#dispatch({ type: "closed", reason: "requested" });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.#dispatch({ type: "error", message });
-      this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
-      throw error;
+      daemonStopError = error;
     }
+    try {
+      this.#audioPlayer.close();
+    } catch (error) {
+      localCleanupError ??= error;
+    }
+    if (daemonStopError !== null) {
+      this.#surfaceRealtimeError(daemonStopError, "Realtime stop failed");
+      throw daemonStopError;
+    }
+    if (localCleanupError !== null) {
+      const message = this.#surfaceRealtimeError(
+        localCleanupError,
+        "Realtime cleanup failed",
+      );
+      throw errorFromUnknown(localCleanupError, message);
+    }
+    this.#dispatch({ type: "closed", reason: "requested" });
   }
 
   async appendText(text: string): Promise<void> {
+    if (!this.#canAppendRealtimeInput()) return;
     await this.#client.request("thread/realtime/appendText", {
       threadId: this.#threadId,
       text,
@@ -185,6 +204,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   }
 
   async appendAudio(audio: ThreadRealtimeAudioChunk): Promise<void> {
+    if (!this.#canAppendRealtimeInput()) return;
     if (effectiveRealtimeMicrophoneMuted(this.#state)) return;
     await this.#client.request("thread/realtime/appendAudio", {
       threadId: this.#threadId,
@@ -193,18 +213,38 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   }
 
   setMuted(muted: boolean): void {
+    const previousMuted = this.#state.muted;
     this.#dispatch({ type: "muted_changed", muted });
-    void this.#applyMicrophoneMuted().catch(() => {});
+    this.#applyMicrophoneMutedWithRollback(() => {
+      this.#dispatch({ type: "muted_changed", muted: previousMuted });
+    });
   }
 
   setPushToTalk(enabled: boolean): void {
+    const previousEnabled = this.#state.pushToTalk;
+    const previousHeld = this.#state.pushToTalkHeld;
     this.#dispatch({ type: "push_to_talk_changed", enabled });
-    void this.#applyMicrophoneMuted().catch(() => {});
+    this.#applyMicrophoneMutedWithRollback(() => {
+      this.#dispatch({
+        type: "push_to_talk_changed",
+        enabled: previousEnabled,
+      });
+      this.#dispatch({
+        type: "push_to_talk_held_changed",
+        held: previousHeld,
+      });
+    });
   }
 
   setPushToTalkHeld(held: boolean): void {
+    const previousHeld = this.#state.pushToTalkHeld;
     this.#dispatch({ type: "push_to_talk_held_changed", held });
-    void this.#applyMicrophoneMuted().catch(() => {});
+    this.#applyMicrophoneMutedWithRollback(() => {
+      this.#dispatch({
+        type: "push_to_talk_held_changed",
+        held: previousHeld,
+      });
+    });
   }
 
   getState(): RealtimeTuiState {
@@ -356,6 +396,28 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     await this.#webRtc?.handle.setMicrophoneMuted?.(muted);
   }
 
+  #applyMicrophoneMutedWithRollback(rollback: () => void): void {
+    const started = this.#webRtc;
+    void this.#applyMicrophoneMuted().catch((error) => {
+      rollback();
+      if (started !== null && this.#webRtc === started) {
+        this.#webRtc = null;
+        void this.#closeWebrtc(started).catch(() => {});
+      }
+      try {
+        this.#audioPlayer.close();
+      } catch {
+        // The microphone error is the actionable failure; close remains best-effort.
+      }
+      void this.#requestDaemonStop();
+      this.#surfaceRealtimeError(error, "Realtime microphone state failed");
+    });
+  }
+
+  #canAppendRealtimeInput(): boolean {
+    return this.#state.phase === "starting" || this.#state.phase === "active";
+  }
+
   async #startWebsocketAudioCapture(): Promise<void> {
     await this.#stopAudioCapture();
     this.#audioCapture = await this.#startAudioCapture({
@@ -489,4 +551,8 @@ function toRealtimeAudioChunk(value: JsonObject): ThreadRealtimeAudioChunk | nul
         : null,
     itemId: typeof value.itemId === "string" ? value.itemId : null,
   };
+}
+
+function errorFromUnknown(error: unknown, fallbackMessage: string): Error {
+  return error instanceof Error ? error : new Error(fallbackMessage);
 }

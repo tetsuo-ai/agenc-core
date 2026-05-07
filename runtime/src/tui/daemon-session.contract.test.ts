@@ -385,6 +385,7 @@ describe("AgenC TUI daemon session adapter", () => {
       jsonrpc: JSON_RPC_VERSION,
       method: "thread/realtime/started",
       params: {
+        eventId: "rt_started_1",
         threadId: "agent_1",
         realtimeSessionId: "rt_1",
         version: "v2",
@@ -464,6 +465,7 @@ describe("AgenC TUI daemon session adapter", () => {
       "realtime_closed",
       "realtime_error",
     ]);
+    expect(received[0]?.id).toBe("rt_started_1");
     expect(realtimeAudioPlayer.enqueue).toHaveBeenCalledWith({
       data: "AAAA",
       sampleRate: 24000,

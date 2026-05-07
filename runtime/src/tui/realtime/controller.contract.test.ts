@@ -206,6 +206,101 @@ describe("AgenC realtime TUI controller", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  test.each([
+    [
+      "setMuted",
+      (controls: ReturnType<typeof createRealtimeTuiControls>) => {
+        controls.setMuted(true);
+      },
+      { muted: false, pushToTalk: false, pushToTalkHeld: false },
+    ],
+    [
+      "setPushToTalk",
+      (controls: ReturnType<typeof createRealtimeTuiControls>) => {
+        controls.setPushToTalk(true);
+      },
+      { muted: false, pushToTalk: false, pushToTalkHeld: false },
+    ],
+    [
+      "setPushToTalkHeld",
+      (controls: ReturnType<typeof createRealtimeTuiControls>) => {
+        controls.setPushToTalkHeld(true);
+      },
+      { muted: false, pushToTalk: true, pushToTalkHeld: false },
+    ],
+  ] as const)(
+    "surfaces WebRTC microphone state failures from %s",
+    async (_label, act, expectedState) => {
+      const client = createClient();
+      const channel = createRealtimeWebrtcEventChannel();
+      const close = vi.fn();
+      const audioPlayer = createAudioPlayer();
+      const emitted: JsonObject[] = [];
+      let failNextMicrophoneUpdate = false;
+      const setMicrophoneMuted = vi.fn(async () => {
+        if (failNextMicrophoneUpdate) {
+          throw new Error("microphone state failed");
+        }
+      });
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: (event) => emitted.push(event),
+        startWebrtcSession: async () => ({
+          offerSdp: "offer-sdp",
+          handle: new RealtimeWebrtcSessionHandle({
+            applyAnswerSdp: vi.fn(),
+            close,
+            setMicrophoneMuted,
+          }),
+          events: channel.receiver,
+        }),
+        audioPlayer,
+      });
+
+      await controls.start({ transport: "webrtc" });
+      channel.sender.send({ type: "connected" });
+      await waitFor(
+        () => controls.getState().phase === "active",
+        "active WebRTC session before microphone failure",
+      );
+      if (_label === "setPushToTalkHeld") {
+        controls.setPushToTalk(true);
+        await waitFor(
+          () =>
+            setMicrophoneMuted.mock.calls.some(([muted]) => muted === true),
+          "push-to-talk setup mute call",
+        );
+      }
+      client.requests.length = 0;
+      failNextMicrophoneUpdate = true;
+
+      act(controls);
+
+      await waitFor(
+        () =>
+          controls.getState().errorBanner === "microphone state failed" &&
+          close.mock.calls.length === 1 &&
+          client.requests.some(
+            (request) => request.method === "thread/realtime/stop",
+          ),
+        "microphone failure cleanup",
+      );
+      expect(audioPlayer.close).toHaveBeenCalledTimes(1);
+      expect(controls.getState()).toMatchObject({
+        phase: "inactive",
+        ...expectedState,
+      });
+      expect(emitted.at(-1)).toMatchObject({
+        type: "realtime_error",
+        payload: {
+          threadId: "agent_1",
+          message: "microphone state failed",
+        },
+      });
+    },
+  );
+
   test("serializes overlapping start and stop lifecycle operations", async () => {
     const client = createClient();
     let releaseCapture: (() => void) | null = null;
@@ -286,12 +381,16 @@ describe("AgenC realtime TUI controller", () => {
       threadId: "agent_1",
       client,
       emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
     });
     const audio = {
       data: "AAAA",
       sampleRate: 24000,
       numChannels: 1,
     };
+
+    await controls.start({ transport: "websocket" });
+    client.requests.length = 0;
 
     controls.setMuted(true);
     await controls.appendAudio(audio);
@@ -312,6 +411,33 @@ describe("AgenC realtime TUI controller", () => {
       method: "thread/realtime/appendAudio",
       params: { threadId: "agent_1", audio },
     });
+  });
+
+  test("does not send text or audio appends while realtime is inactive", async () => {
+    const client = createClient();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
+    });
+    const audio = {
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+    };
+
+    await controls.appendText("before start");
+    await controls.appendAudio(audio);
+    expect(client.requests).toHaveLength(0);
+
+    await controls.start({ transport: "websocket" });
+    await controls.stop();
+    client.requests.length = 0;
+
+    await controls.appendText("after stop");
+    await controls.appendAudio(audio);
+    expect(client.requests).toHaveLength(0);
   });
 
   test("starts websocket audio capture and routes captured frames to appendAudio", async () => {
@@ -523,6 +649,39 @@ describe("AgenC realtime TUI controller", () => {
     expect(emitted.at(-1)).toMatchObject({
       type: "realtime_error",
       payload: { threadId: "agent_1", message: "stop failed" },
+    });
+  });
+
+  test("still stops daemon realtime when local audio capture stop fails", async () => {
+    const client = createClient();
+    const audioPlayer = createAudioPlayer();
+    const emitted: JsonObject[] = [];
+    const stop = vi.fn(async () => {
+      throw new Error("capture stop failed");
+    });
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async () => ({ stop }),
+      audioPlayer,
+    });
+
+    await controls.start({ transport: "websocket" });
+    await expect(controls.stop()).rejects.toThrow("capture stop failed");
+
+    expect(client.requests.map((request) => request.method)).toEqual([
+      "thread/realtime/start",
+      "thread/realtime/stop",
+    ]);
+    expect(audioPlayer.close).toHaveBeenCalledTimes(1);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      errorBanner: "capture stop failed",
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      type: "realtime_error",
+      payload: { threadId: "agent_1", message: "capture stop failed" },
     });
   });
 

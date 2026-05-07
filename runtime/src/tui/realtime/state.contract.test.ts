@@ -119,5 +119,12 @@ describe("AgenC TUI realtime state", () => {
     });
     expect(state.lastItemSummary).toBe("message item_1");
     expect(formatRealtimeItemSummary(["a", "b"])).toBe("array(2)");
+
+    state = reduceRealtimeTuiState(state, {
+      type: "start_requested",
+      transport: "websocket",
+    });
+    expect(state.lastTranscript).toBeNull();
+    expect(state.lastItemSummary).toBeNull();
   });
 });

@@ -601,7 +601,10 @@ function toRealtimeTranscriptEvent(
   if (typeof method !== "string" || !isJsonObject(params)) return null;
   if (!method.startsWith("thread/realtime/")) return null;
   if (params.threadId !== realtimeThreadId) return null;
-  const id = nextRealtimeEventId(method, params.threadId);
+  const id = stringParam(
+    params.eventId,
+    nextRealtimeEventId(method, params.threadId),
+  );
   switch (method) {
     case "thread/realtime/started":
       return {
