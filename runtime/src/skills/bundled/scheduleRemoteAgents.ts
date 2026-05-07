@@ -28,7 +28,7 @@ const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
  * Tagged IDs have format: mcpsrv_01{base58(uuid.int)}
  * where 01 is the version prefix.
  *
- * TODO(public-ship): Before shipping publicly, the /v1/mcp_servers endpoint
+ * Follow-up(public-ship): Before shipping publicly, the /v1/mcp_servers endpoint
  * should return the raw UUID directly so we don't need this client-side decoding.
  * The tagged ID format is an internal implementation detail that could change.
  */

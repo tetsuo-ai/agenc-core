@@ -150,7 +150,7 @@ function isENOENT(err: unknown): boolean {
  * each emission so the same change does not re-fire next turn.
  *
  * Skips files whose snapshot lacks a populated `rawContent` field —
- * those are partial reads or pre-rawContent legacy entries that cannot
+ * those are partial reads or pre-rawContent compatibility entries that cannot
  * support a precise diff. The foundation has wired the field on
  * `SessionReadSnapshot` itself; downstream wiring through file-read.ts /
  * file-edit.ts / file-write.ts to actually populate it lands in a

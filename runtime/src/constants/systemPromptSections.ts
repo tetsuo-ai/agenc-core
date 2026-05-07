@@ -1,11 +1,11 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   clearBetaHeaderLatches,
   clearSystemPromptSectionState,
   getSystemPromptSectionCache,
   setSystemPromptSectionCacheEntry,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 
 type ComputeFn = () => string | null | Promise<string | null>

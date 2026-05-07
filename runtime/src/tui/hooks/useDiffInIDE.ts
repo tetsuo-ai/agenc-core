@@ -209,9 +209,9 @@ export function computeEditsFromContents(
  *
  * Resolves with the new file content.
  *
- * TODO: Time out after 5 mins of inactivity?
- * TODO: Update auto-approval UI when IDE exits
- * TODO: Close the IDE tab when the approval prompt is unmounted
+ * Follow-up: Time out after 5 mins of inactivity?
+ * Follow-up: Update auto-approval UI when IDE exits
+ * Follow-up: Close the IDE tab when the approval prompt is unmounted
  */
 async function showDiffInIDE(
   file_path: string,

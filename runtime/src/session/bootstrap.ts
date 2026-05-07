@@ -20,11 +20,11 @@
  *     itself and keeps the constructor usable directly from unit tests
  *     that don't want prewarm / session_configured side effects.
  *
- *   - **Legacy `new Session(...)` stays.** Pure unit tests (see
+ *   - **Compatibility `new Session(...)` stays.** Pure unit tests (see
  *     `session.test.ts`, `idle-input.test.ts`, `tasks.test.ts`) build
  *     minimal `SessionServices` via loose-cast through `unknown`; they
  *     are not upgraded to the bootstrap entry because they don't
- *     exercise shell/MCP/prewarm. The legacy constructor path remains
+ *     exercise shell/MCP/prewarm. The compatibility constructor path remains
  *     a no-op for bootstrap-only effects.
  *
  *   - **Staged caller hooks.** Upstream does thread-persistence,

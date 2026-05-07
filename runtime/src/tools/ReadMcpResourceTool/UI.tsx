@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import type { z } from 'zod/v4';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';

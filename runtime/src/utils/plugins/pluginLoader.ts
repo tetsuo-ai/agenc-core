@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Plugin Loader Module
  *
@@ -240,13 +240,13 @@ export async function probeSeedCacheAnyVersion(
 }
 
 /**
- * Get legacy (non-versioned) cache path for a plugin.
+ * Get compatibility (non-versioned) cache path for a plugin.
  * Format: ~/.agenc/plugins/cache/{plugin-name}/
  *
  * Used for backward compatibility with existing installations.
  *
  * @param pluginName - Plugin name (without marketplace suffix)
- * @returns Absolute path to legacy plugin directory
+ * @returns Absolute path to compatibility plugin directory
  */
 export function getLegacyCachePath(pluginName: string): string {
   const cachePath = getPluginCachePath()
@@ -254,11 +254,11 @@ export function getLegacyCachePath(pluginName: string): string {
 }
 
 /**
- * Resolve plugin path with fallback to legacy location.
+ * Resolve plugin path with fallback to compatibility location.
  *
  * Always:
  * 1. Try versioned path first if version is provided
- * 2. Fall back to legacy path for existing installations
+ * 2. Fall back to compatibility path for existing installations
  * 3. Return versioned path for new installations
  *
  * @param pluginId - Plugin identifier in format "name@marketplace"
@@ -277,7 +277,7 @@ export async function resolvePluginPath(
     }
   }
 
-  // Fall back to legacy path for existing installations
+  // Fall back to compatibility path for existing installations
   const pluginName = parsePluginIdentifier(pluginId).name || pluginId
   const legacyPath = getLegacyCachePath(pluginName)
   if (await pathExists(legacyPath)) {
@@ -870,7 +870,7 @@ async function installFromLocal(
 }
 
 /**
- * Generate a temporary cache name for a plugin
+ * Generate a short-lived cache name for a plugin
  */
 export function generateTemporaryCacheNameForPlugin(
   source: PluginSource,
@@ -2958,7 +2958,7 @@ async function loadSessionOnlyPlugins(
       const dirName = basename(resolvedPath)
       const { plugin, errors: pluginErrors } = await createPluginFromPath(
         resolvedPath,
-        `${dirName}@inline`, // temporary, will be updated after we know the real name
+        `${dirName}@inline`, // short-lived, will be updated after we know the real name
         true, // always enabled
         dirName,
       )
@@ -3280,7 +3280,7 @@ export function clearPluginCache(reason?: string): void {
     resetSettingsCache()
   }
   clearPluginSettingsBase()
-  // TODO: Clear installed plugins cache when installedPluginsManager is implemented
+  // Follow-up: Clear installed plugins cache when installedPluginsManager is implemented
 }
 
 /**

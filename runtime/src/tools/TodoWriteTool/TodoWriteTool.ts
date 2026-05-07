@@ -56,7 +56,7 @@ export const TodoWriteTool = buildTool({
     return `${input.todos.length} items`
   },
   async checkPermissions(input) {
-    // No permission checks required for todo operations
+    // No permission checks required for Follow-up operations
     return { behavior: 'allow', updatedInput: input }
   },
   renderToolUseMessage() {

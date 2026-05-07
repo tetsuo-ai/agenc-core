@@ -408,7 +408,7 @@ export type FunctionCallOutputContentItem =
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Tool result envelope. The flat legacy shape (`content` + `isError`
+ * Tool result envelope. The flat compatibility shape (`content` + `isError`
  * + `durationMs`) is preserved for backwards compatibility — existing
  * call sites read `.content` and still work. New code should branch
  * on `.variant?.kind` or call `toText()` to flatten any variant into
@@ -429,7 +429,7 @@ export interface ToolOutput {
   readonly postToolUseResponse?: unknown;
   /**
    * Discriminated-union payload preserving per-variant shape
-   * (MCP annotations, exec raw bytes, etc.). Absent on legacy
+   * (MCP annotations, exec raw bytes, etc.). Absent on compatibility
    * constructions (treated as `function`).
    */
   readonly variant?: ToolOutputVariant;
@@ -699,9 +699,9 @@ function abortMessage(toolName: ToolName, elapsedMs: number): string {
 
 /**
  * Backwards-compatible factory for the common function-call output
- * shape. Kept as the default constructor for legacy call sites that
+ * shape. Kept as the default constructor for compatibility call sites that
  * pass a plain `content` string — same as
- * `functionToolOutputFromText` with the legacy parameter shape.
+ * `functionToolOutputFromText` with the compatibility parameter shape.
  */
 export function functionToolOutput(opts: {
   readonly callId: string;
@@ -749,7 +749,7 @@ export function intoText(output: ToolOutput): string {
 }
 
 /**
- * Flatten any variant into plain text. Used everywhere a legacy
+ * Flatten any variant into plain text. Used everywhere a compatibility
  * consumer needs a single string — matches the old `.content` field.
  */
 export function toText(output: ToolOutput): string {

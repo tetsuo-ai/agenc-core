@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { relative } from 'path'
@@ -107,7 +107,7 @@ function assertResumeMessageSize(messages: Message[]): void {
 }
 
 /**
- * Transforms legacy attachment types to current types for backward compatibility
+ * Transforms compatibility attachment types to current types for backward compatibility
  */
 function migrateLegacyAttachmentTypes(message: Message): Message {
   if (message.type !== 'attachment') {
@@ -117,9 +117,9 @@ function migrateLegacyAttachmentTypes(message: Message): Message {
   const attachment = message.attachment as {
     type: string
     [key: string]: unknown
-  } // Handle legacy types not in current type system
+  } // Handle compatibility types not in current type system
 
-  // Transform legacy attachment types
+  // Transform compatibility attachment types
   if (attachment.type === 'new_file') {
     return {
       ...message,
@@ -219,7 +219,7 @@ export function deserializeMessagesWithInterruptDetection(
   serializedMessages: Message[],
 ): DeserializeResult {
   try {
-    // Transform legacy attachment types before processing
+    // Transform compatibility attachment types before processing
     const migratedMessages = serializedMessages.map(
       migrateLegacyAttachmentTypes,
     )
@@ -604,7 +604,7 @@ export async function loadConversationForResume(
         sessionId = getSessionIdFromLog(log) as UUID
       }
       // Pass the original session ID to ensure the plan slug is associated with
-      // the session we're resuming, not the temporary session ID before resume
+      // the session we're resuming, not the short-lived session ID before resume
       if (sessionId) {
         await copyPlanForResume(log, asSessionId(sessionId))
       }

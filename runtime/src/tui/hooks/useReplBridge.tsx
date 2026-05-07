@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import React, { useCallback, useEffect, useRef } from 'react';
 import { setMainLoopModelOverride } from '../../bootstrap/state';
@@ -309,7 +309,7 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
                           mcpClients: [],
                           model: mainLoopModelRef.current,
                           permissionMode: state_0.toolPermissionContext.mode as PermissionMode,
-                          // TODO: avoid the cast
+                          // Follow-up: avoid the cast
                           // Remote clients can only invoke bridge-safe commands —
                           // advertising unsafe ones (local-jsx, unallowed local)
                           // would let mobile/web attempt them and hit errors.

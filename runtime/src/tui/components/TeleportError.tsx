@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useEffect, useState } from 'react';
 import { checkIsGitClean, checkNeedsAgenCAiLogin } from '../../utils/background/remote/preconditions.js'; // upstream-import: keep target is owned by another Z-PURGE item

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ElicitRequestFormParams, ElicitRequestURLParams, ElicitResult, PrimitiveSchemaDefinition } from '@modelcontextprotocol/sdk/types.js';
 import figures from 'figures';
@@ -748,7 +748,7 @@ function ElicitationFormDialog({
   // Overhead: ~9 lines (dialog chrome, buttons, footer).
   // Each field: ~3 lines (label + description + validation spacer).
   // NOTE(v2): Multi-select accordion expands to N+3 lines when open.
-  // For now we assume 3 lines per field; an expanded accordion may
+  // currently we assume 3 lines per field; an expanded accordion may
   // temporarily push content off-screen (terminal scrollback handles it).
   // To generalize: track per-field height (3 for collapsed, N+3 for
   // expanded multi-select) and compute a pixel-budget window instead

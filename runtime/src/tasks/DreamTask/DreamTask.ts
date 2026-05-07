@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // Background task entry for auto-dream (memory consolidation subagent).
 // Makes the otherwise-invisible forked agent visible in the footer pill and
 // Shift+Down dialog. The dream agent itself is unchanged — this is pure UI

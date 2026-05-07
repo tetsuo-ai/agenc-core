@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from '../context/notifications.js';
@@ -1374,7 +1374,7 @@ export function useTypeahead({
   // Backward-compat bridge: PromptInput doesn't yet wire handleKeyDown to
   // <Box onKeyDown>. Subscribe via useInput and adapt InputEvent →
   // KeyboardEvent until the consumer is migrated (separate PR).
-  // TODO(onKeyDown-migration): remove once PromptInput passes handleKeyDown.
+  // Follow-up(onKeyDown-migration): remove once PromptInput passes handleKeyDown.
   useInput((_input, _key, event) => {
     const kbEvent = new KeyboardEvent(event.keypress);
     handleKeyDown(kbEvent);

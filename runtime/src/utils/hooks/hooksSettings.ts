@@ -1,8 +1,8 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { resolve } from 'path'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../bootstrap/state.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { EditableSettingSource } from '../settings/constants.js'
@@ -36,7 +36,7 @@ export interface IndividualHookConfig {
 export function isHookEqual(
   a: HookCommand | { type: 'function'; timeout?: number },
   b: HookCommand | { type: 'function'; timeout?: number },
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 ): boolean {
   if (a.type !== b.type) return false
 
@@ -71,7 +71,7 @@ export function isHookEqual(
 /** Get the display text for a hook */
 export function getHookDisplayText(
   hook: HookCommand | { type: 'callback' | 'function'; statusMessage?: string },
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 ): string {
   // Return custom status message if provided
   if ('statusMessage' in hook && hook.statusMessage) {
@@ -181,7 +181,7 @@ export function hookSourceDescriptionDisplayString(source: HookSource): string {
     case 'localSettings':
       return 'Local settings (.agenc/settings.local.json)'
     case 'pluginHook':
-      // TODO: Get the actual plugin hook file paths instead of using glob pattern
+      // Follow-up: Get the actual plugin hook file paths instead of using glob pattern
       // We should capture the specific plugin paths during hook registration and display them here
       // e.g., "Plugin hooks (~/.agenc/plugins/repos/source/example-plugin/example-plugin/hooks/hooks.json)"
       return 'Plugin hooks (~/.agenc/plugins/*/hooks/hooks.json)'

@@ -1,12 +1,12 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { mkdirSync, writeFileSync } from 'fs'
 import {
   getApiKeyFromFd,
   getOauthTokenFromFd,
   setApiKeyFromFd,
   setOauthTokenFromFd,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -135,7 +135,7 @@ function getCredentialFromFd({
         ? `/dev/fd/${fd}`
         : `/proc/self/fd/${fd}`
 
-    // eslint-disable-next-line custom-rules/no-sync-fs -- legacy FD path, read once at startup, caller is sync
+    // eslint-disable-next-line custom-rules/no-sync-fs -- compatibility FD path, read once at startup, caller is sync
     const token = fsOps.readFileSync(fdPath, { encoding: 'utf8' }).trim()
     if (!token) {
       logForDebugging(`File descriptor contained empty ${label}`, {

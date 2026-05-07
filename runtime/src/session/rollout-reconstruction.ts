@@ -63,7 +63,7 @@ import {
  * (referenced at `agenc-rs/core/src/compact.rs:43`). agenc runtime's
  * `is_summary_message` check (`compact.rs:410-412`) does
  * `message.starts_with(format!("{SUMMARY_PREFIX}\n"))` — we mirror that
- * exactly so a legacy compaction summary re-entering replay is not
+ * exactly so a compatibility compaction summary re-entering replay is not
  * re-fed as a real user message on the next compaction pass.
  *
  * Keep this string byte-for-byte identical to agenc runtime's template. If
@@ -597,7 +597,7 @@ export function reconstructFromRollout(
   // runtime state the writer saw at that seq:
   //   (a) I-15-style truncation of oversized response_item text (agenc runtime
   //       `ContextManager::record_items(truncation_policy)`),
-  //   (b) legacy compaction rebuild via `buildCompactedHistory`
+  //   (b) compatibility compaction rebuild via `buildCompactedHistory`
   //       (agenc runtime `compact::build_compacted_history`),
   //   (c) aggregate `ReductionReport` so callers can surface seq-gap
   //       / unknown-variant telemetry from replay.
@@ -618,7 +618,7 @@ export function reconstructFromRollout(
   let sawLegacyCompactionWithoutReplacement = false;
 
   for (const item of rolloutSuffix) {
-    // (b) Legacy compaction: rebuild history in place via the inline
+    // (b) Compatibility compaction: rebuild history in place via the inline
     // `buildCompactedHistory` helper instead of deferring to the
     // reducer (which would just clear the reference). This matches
     // agenc runtime `rollout_reconstruction.rs:252-274`.
@@ -697,7 +697,7 @@ export function reconstructFromRollout(
     state = step.state;
   }
 
-  // Resolve reference context: if legacy compaction without
+  // Resolve reference context: if compatibility compaction without
   // replacement history occurred, agenc runtime clears the reference to avoid
   // out-of-distribution prompt shape.
   let referenceContextItem: TurnContextItem | undefined;
@@ -769,7 +769,7 @@ export function replacementHistoryFrom(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Forward-replay helpers: truncation + legacy compaction rebuild
+// Forward-replay helpers: truncation + compatibility compaction rebuild
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -871,7 +871,7 @@ function applyReplayTruncation(item: ResponseItem): ResponseItem {
 /**
  * agenc runtime `collect_user_messages(history)` analogue. Extracts real
  * user-turn text (non-contextual, non-summary). Contextual and
- * tool-role items are skipped so legacy compaction rebuild sees only
+ * tool-role items are skipped so compatibility compaction rebuild sees only
  * human input.
  *
  * agenc runtime's collector filters on role=="user" only; the inter-agent
@@ -901,7 +901,7 @@ function collectUserMessages(
 /**
  * agenc runtime `compact::build_compacted_history` minimal port
  * (`compact.rs:465-531`). Rebuilds a compacted history from scratch
- * when the legacy `Compacted` item had no inline `replacementHistory`.
+ * when the compatibility `Compacted` item had no inline `replacementHistory`.
  * Structure:
  *   - replay prior real user messages,
  *   - append the compaction summary as a final user-role message.

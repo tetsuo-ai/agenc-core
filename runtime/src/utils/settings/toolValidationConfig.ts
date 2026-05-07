@@ -9,7 +9,7 @@ export type ToolValidationConfig = {
   /** Tools that accept file glob patterns (e.g., *.ts, src/**) */
   filePatternTools: string[]
 
-  /** Tools that accept bash wildcard patterns (* anywhere) and legacy :* prefix syntax */
+  /** Tools that accept bash wildcard patterns (* anywhere) and compatibility :* prefix syntax */
   bashPrefixTools: string[]
 
   /** Custom validation rules for specific tools */
@@ -34,7 +34,7 @@ export const TOOL_VALIDATION_CONFIG: ToolValidationConfig = {
     'NotebookEdit',
   ],
 
-  // Bash wildcard tools (accept * anywhere, and legacy command:* syntax)
+  // Bash wildcard tools (accept * anywhere, and compatibility command:* syntax)
   bashPrefixTools: ['Bash'],
 
   // Custom validation (only if needed)

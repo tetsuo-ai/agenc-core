@@ -1,0 +1,4464 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/**/*.mjs"
+      ],
+      "project": [
+        "scripts/**/*.mjs"
+      ]
+    },
+    "packages/agenc": {
+      "entry": [
+        "src/**/*.mjs",
+        "test/**/*.mjs"
+      ],
+      "project": [
+        "src/**/*.mjs",
+        "test/**/*.mjs"
+      ],
+      "ignoreDependencies": [
+        "@tetsuo-ai/runtime"
+      ]
+    },
+    "runtime": {
+      "entry": [
+        "scripts/**/*.mjs",
+        "tsup.config.ts",
+        "src/index.ts",
+        "src/bin/agenc.ts",
+        "src/bin/tui-trust-prompt.tsx",
+        "src/sandbox/linux-launcher/main.ts",
+        "src/tui/main.tsx",
+        "src/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        "tests/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
+      ],
+      "project": [
+        "scripts/**/*.mjs",
+        "tsup.config.ts",
+        "src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        "tests/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
+      ],
+      "ignoreFiles": [
+        "src/bridge/bridgeMain.ts",
+        "src/bridge/bridgeUI.ts",
+        "src/cli/handlers/agents.ts",
+        "src/cli/handlers/autoMode.ts",
+        "src/cli/handlers/plugins.ts",
+        "src/cli/handlers/util.tsx",
+        "src/cli/print.ts",
+        "src/cli/remoteIO.ts",
+        "src/cli/transports/transportUtils.ts",
+        "src/cli/update.ts",
+        "src/commands/add-dir/add-dir.tsx",
+        "src/commands/add-dir/index.ts",
+        "src/commands/advisor.ts",
+        "src/commands/agents/agents.tsx",
+        "src/commands/agents/index.ts",
+        "src/commands/auto-fix.ts",
+        "src/commands/benchmark.ts",
+        "src/commands/branch/branch.ts",
+        "src/commands/branch/index.ts",
+        "src/commands/bridge-kick.ts",
+        "src/commands/bridge/bridge.tsx",
+        "src/commands/bridge/index.ts",
+        "src/commands/brief.ts",
+        "src/commands/btw/btw.tsx",
+        "src/commands/btw/index.ts",
+        "src/commands/buddy/buddy.tsx",
+        "src/commands/buddy/index.ts",
+        "src/commands/cache-probe/cache-probe.ts",
+        "src/commands/cache-probe/index.ts",
+        "src/commands/chrome/chrome.tsx",
+        "src/commands/chrome/index.ts",
+        "src/commands/clear/clear.ts",
+        "src/commands/clear/index.ts",
+        "src/commands/color/color.ts",
+        "src/commands/color/index.ts",
+        "src/commands/commit-push-pr.ts",
+        "src/commands/commit.ts",
+        "src/commands/compact/compact.ts",
+        "src/commands/compact/index.ts",
+        "src/commands/config/config.tsx",
+        "src/commands/config/index.ts",
+        "src/commands/context/context-noninteractive.ts",
+        "src/commands/context/context.tsx",
+        "src/commands/context/index.ts",
+        "src/commands/copy/copy.tsx",
+        "src/commands/copy/index.ts",
+        "src/commands/createMovedToPluginCommand.ts",
+        "src/commands/desktop/desktop.tsx",
+        "src/commands/desktop/index.ts",
+        "src/commands/diff/diff.tsx",
+        "src/commands/diff/index.ts",
+        "src/commands/dream/dream.ts",
+        "src/commands/export/export.tsx",
+        "src/commands/export/index.ts",
+        "src/commands/fast/fast.tsx",
+        "src/commands/fast/index.ts",
+        "src/commands/feedback/feedback.tsx",
+        "src/commands/feedback/index.ts",
+        "src/commands/fork/index.ts",
+        "src/commands/heapdump/heapdump.ts",
+        "src/commands/heapdump/index.ts",
+        "src/commands/help/help.tsx",
+        "src/commands/help/index.ts",
+        "src/commands/hooks/hooks.tsx",
+        "src/commands/hooks/index.ts",
+        "src/commands/ide/ide.tsx",
+        "src/commands/ide/index.ts",
+        "src/commands/init-verifiers.ts",
+        "src/commands/initMode.ts",
+        "src/commands/insights.ts",
+        "src/commands/install-github-app/ApiKeyStep.tsx",
+        "src/commands/install-github-app/CheckExistingSecretStep.tsx",
+        "src/commands/install-github-app/CheckGitHubStep.tsx",
+        "src/commands/install-github-app/ChooseRepoStep.tsx",
+        "src/commands/install-github-app/CreatingStep.tsx",
+        "src/commands/install-github-app/ErrorStep.tsx",
+        "src/commands/install-github-app/ExistingWorkflowStep.tsx",
+        "src/commands/install-github-app/InstallAppStep.tsx",
+        "src/commands/install-github-app/OAuthFlowStep.tsx",
+        "src/commands/install-github-app/SuccessStep.tsx",
+        "src/commands/install-github-app/WarningsStep.tsx",
+        "src/commands/install-github-app/index.ts",
+        "src/commands/install-github-app/install-github-app.tsx",
+        "src/commands/install-github-app/setupGitHubActions.ts",
+        "src/commands/install-slack-app/index.ts",
+        "src/commands/install-slack-app/install-slack-app.ts",
+        "src/commands/install.tsx",
+        "src/commands/keybindings/index.ts",
+        "src/commands/keybindings/keybindings.ts",
+        "src/commands/knowledge/index.ts",
+        "src/commands/login/index.ts",
+        "src/commands/logout/index.ts",
+        "src/commands/mcp/addCommand.ts",
+        "src/commands/mcp/index.ts",
+        "src/commands/mcp/mcp.tsx",
+        "src/commands/mcp/xaaIdpCommand.ts",
+        "src/commands/memory/memory.tsx",
+        "src/commands/mobile/index.ts",
+        "src/commands/mobile/mobile.tsx",
+        "src/commands/model/index.ts",
+        "src/commands/onboard-github/index.ts",
+        "src/commands/output-style/index.ts",
+        "src/commands/output-style/output-style.tsx",
+        "src/commands/passes/index.ts",
+        "src/commands/passes/passes.tsx",
+        "src/commands/permissions/index.ts",
+        "src/commands/permissions/permissions.tsx",
+        "src/commands/plan/index.ts",
+        "src/commands/plan/plan.tsx",
+        "src/commands/plugin/AddMarketplace.tsx",
+        "src/commands/plugin/BrowseMarketplace.tsx",
+        "src/commands/plugin/DiscoverPlugins.tsx",
+        "src/commands/plugin/ManageMarketplaces.tsx",
+        "src/commands/plugin/ManagePlugins.tsx",
+        "src/commands/plugin/PluginErrors.tsx",
+        "src/commands/plugin/PluginOptionsDialog.tsx",
+        "src/commands/plugin/PluginOptionsFlow.tsx",
+        "src/commands/plugin/PluginSettings.tsx",
+        "src/commands/plugin/PluginTrustWarning.tsx",
+        "src/commands/plugin/UnifiedInstalledCell.tsx",
+        "src/commands/plugin/ValidatePlugin.tsx",
+        "src/commands/plugin/index.tsx",
+        "src/commands/plugin/parseArgs.ts",
+        "src/commands/plugin/plugin.tsx",
+        "src/commands/plugin/pluginDetailsHelpers.tsx",
+        "src/commands/plugin/usePagination.ts",
+        "src/commands/pr_comments/index.ts",
+        "src/commands/privacy-settings/index.ts",
+        "src/commands/privacy-settings/privacy-settings.tsx",
+        "src/commands/provider/index.ts",
+        "src/commands/rate-limit-options/index.ts",
+        "src/commands/rate-limit-options/rate-limit-options.tsx",
+        "src/commands/remote-env/index.ts",
+        "src/commands/remote-env/remote-env.tsx",
+        "src/commands/remote-setup/api.ts",
+        "src/commands/remote-setup/index.ts",
+        "src/commands/remote-setup/remote-setup.tsx",
+        "src/commands/rename/index.ts",
+        "src/commands/rename/rename.ts",
+        "src/commands/resume/index.ts",
+        "src/commands/resume/resume.tsx",
+        "src/commands/rewind/index.ts",
+        "src/commands/rewind/rewind.ts",
+        "src/commands/sandbox-toggle/index.ts",
+        "src/commands/sandbox-toggle/sandbox-toggle.tsx",
+        "src/commands/security-review.ts",
+        "src/commands/session/index.ts",
+        "src/commands/session/session.tsx",
+        "src/commands/skills/index.ts",
+        "src/commands/skills/skills.tsx",
+        "src/commands/status/index.ts",
+        "src/commands/status/status.tsx",
+        "src/commands/statusline.tsx",
+        "src/commands/stickers/index.ts",
+        "src/commands/stickers/stickers.ts",
+        "src/commands/tag/index.ts",
+        "src/commands/tag/tag.tsx",
+        "src/commands/tasks/index.ts",
+        "src/commands/tasks/tasks.tsx",
+        "src/commands/terminalSetup/index.ts",
+        "src/commands/theme/index.ts",
+        "src/commands/theme/theme.tsx",
+        "src/commands/thinkback-play/index.ts",
+        "src/commands/thinkback-play/thinkback-play.ts",
+        "src/commands/thinkback/index.ts",
+        "src/commands/thinkback/thinkback.tsx",
+        "src/commands/upgrade/index.ts",
+        "src/commands/upgrade/upgrade.tsx",
+        "src/commands/version.ts",
+        "src/commands/vim/index.ts",
+        "src/commands/vim/vim.ts",
+        "src/commands/voice/index.ts",
+        "src/commands/voice/voice.ts",
+        "src/components/MemoryUsageIndicator.tsx",
+        "src/components/memory/MemoryFileSelector.tsx",
+        "src/components/memory/MemoryUpdateNotification.tsx",
+        "src/components/messages/UserMemoryInputMessage.tsx",
+        "src/constants/errorIds.ts",
+        "src/constants/github-app.ts",
+        "src/entrypoints/cli.tsx",
+        "src/entrypoints/init.ts",
+        "src/grpc/server.ts",
+        "src/mcp-client/test-fixtures/stdio-pid-server.cjs",
+        "src/migrations/migrateAutoUpdatesToSettings.ts",
+        "src/migrations/migrateBypassPermissionsAcceptedToSettings.ts",
+        "src/migrations/migrateEnableAllProjectMcpServersToSettings.ts",
+        "src/migrations/migrateFennecToOpus.ts",
+        "src/migrations/migrateLegacyOpusToCurrent.ts",
+        "src/migrations/migrateOpusToOpus1m.ts",
+        "src/migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.ts",
+        "src/migrations/migrateSonnet1mToSonnet45.ts",
+        "src/migrations/migrateSonnet45ToSonnet46.ts",
+        "src/migrations/resetAutoModeOptInForDefaultOffer.ts",
+        "src/migrations/resetProToOpusDefault.ts",
+        "src/permissions/mode-display.ts",
+        "src/phases/_deps/orchestration.ts",
+        "src/phases/_deps/query-source.ts",
+        "src/phases/_deps/session-storage.ts",
+        "src/phases/_deps/tool-result-storage.ts",
+        "src/plugins/bundled/index.ts",
+        "src/plugins/cli/PluginInstallationManager.ts",
+        "src/plugins/cli/marketplace-add.ts",
+        "src/plugins/cli/marketplace-remove.ts",
+        "src/plugins/cli/marketplace-upgrade.ts",
+        "src/plugins/marketplace/installed_marketplaces.ts",
+        "src/plugins/test-fixtures/plugin-mcp-env-server.cjs",
+        "src/prompts/_deps/async-lock.ts",
+        "src/query/QueryEngine.ts",
+        "src/recovery/_deps/tokens.ts",
+        "src/sandbox/escalation/on-failure.ts",
+        "src/sandbox/linux-launcher/build.ts",
+        "src/sandbox/linux-launcher/vendored-bwrap.ts",
+        "src/server/createDirectConnectSession.ts",
+        "src/server/types.ts",
+        "src/services/api/minimaxUsage/fetch.ts",
+        "src/services/api/minimaxUsage/parse.ts",
+        "src/services/api/minimaxUsage/types.ts",
+        "src/services/contextCollapse/operations.ts",
+        "src/services/internalLogging.ts",
+        "src/services/mcpServerApproval.tsx",
+        "src/services/plugins/PluginInstallationManager.ts",
+        "src/services/plugins/pluginCliCommands.ts",
+        "src/services/settingsSync/index.ts",
+        "src/services/settingsSync/types.ts",
+        "src/services/voiceKeyterms.ts",
+        "src/services/voiceStreamSTT.ts",
+        "src/session/_deps/display.ts",
+        "src/session/_deps/effort.ts",
+        "src/session/_deps/forked-agent.ts",
+        "src/session/_deps/messages.ts",
+        "src/session/_deps/no-op.ts",
+        "src/session/_deps/orchestrator-types.ts",
+        "src/session/_deps/system-prompt.ts",
+        "src/session/_deps/types-ids.ts",
+        "src/session/_deps/types-message.ts",
+        "src/skills/bundled/agencInChrome.ts",
+        "src/skills/bundled/anthropicApi.ts",
+        "src/skills/bundled/anthropicApiContent.ts",
+        "src/skills/bundled/batch.ts",
+        "src/skills/bundled/debug.ts",
+        "src/skills/bundled/index.ts",
+        "src/skills/bundled/keybindings.ts",
+        "src/skills/bundled/scheduleRemoteAgents.ts",
+        "src/skills/bundled/simplify.ts",
+        "src/skills/bundled/stuck.ts",
+        "src/skills/bundled/verifyContent.ts",
+        "src/state/resume.ts",
+        "src/state/test-support.ts",
+        "src/tasks.ts",
+        "src/tools/AgentTool/agentDisplay.ts",
+        "src/tools/AgentTool/agentMemorySnapshot.ts",
+        "src/tools/ConfigTool/ConfigTool.ts",
+        "src/tools/ConfigTool/UI.tsx",
+        "src/tools/ConfigTool/constants.ts",
+        "src/tools/ConfigTool/prompt.ts",
+        "src/tools/ConfigTool/supportedSettings.ts",
+        "src/tools/REPLTool/REPLTool.ts",
+        "src/tools/SuggestBackgroundPRTool/SuggestBackgroundPRTool.ts",
+        "src/tools/system/_deps/overescaped-text.ts",
+        "src/tui/assistant/AssistantSessionChooser.tsx",
+        "src/tui/components/AgenCInChromeOnboarding.tsx",
+        "src/tui/components/AgenCMdExternalIncludesDialog.tsx",
+        "src/tui/components/ApproveApiKey.tsx",
+        "src/tui/components/BypassPermissionsModeDialog.tsx",
+        "src/tui/components/ChannelDowngradeDialog.tsx",
+        "src/tui/components/ContextSuggestions.tsx",
+        "src/tui/components/ContextVisualization.tsx",
+        "src/tui/components/DevChannelsDialog.tsx",
+        "src/tui/components/EffortPicker.tsx",
+        "src/tui/components/ExportDialog.tsx",
+        "src/tui/components/HelpV2/Commands.tsx",
+        "src/tui/components/HelpV2/General.tsx",
+        "src/tui/components/HelpV2/HelpV2.tsx",
+        "src/tui/components/IdeAutoConnectDialog.tsx",
+        "src/tui/components/InvalidConfigDialog.tsx",
+        "src/tui/components/KeybindingWarnings.tsx",
+        "src/tui/components/LanguagePicker.tsx",
+        "src/tui/components/LogSelector.tsx",
+        "src/tui/components/LogoV2/WelcomeV2.tsx",
+        "src/tui/components/MCPServerApprovalDialog.tsx",
+        "src/tui/components/MCPServerDialogCopy.tsx",
+        "src/tui/components/MCPServerMultiselectDialog.tsx",
+        "src/tui/components/Onboarding.tsx",
+        "src/tui/components/OutputStylePicker.tsx",
+        "src/tui/components/Passes/Passes.tsx",
+        "src/tui/components/PressEnterToContinue.tsx",
+        "src/tui/components/RemoteEnvironmentDialog.tsx",
+        "src/tui/components/ResumeTask.tsx",
+        "src/tui/components/SessionPreview.tsx",
+        "src/tui/components/Settings/Config.tsx",
+        "src/tui/components/Settings/MiniMaxUsage.tsx",
+        "src/tui/components/Settings/OpenAiCodeUsage.tsx",
+        "src/tui/components/Settings/Settings.tsx",
+        "src/tui/components/Settings/Status.tsx",
+        "src/tui/components/Settings/UnsupportedUsage.tsx",
+        "src/tui/components/Settings/Usage.tsx",
+        "src/tui/components/TagTabs.tsx",
+        "src/tui/components/TeleportProgress.tsx",
+        "src/tui/components/TeleportRepoMismatchDialog.tsx",
+        "src/tui/components/TeleportResumeWrapper.tsx",
+        "src/tui/components/TrustDialog/TrustDialog.tsx",
+        "src/tui/components/TrustDialog/utils.ts",
+        "src/tui/components/WorkflowMultiselectDialog.tsx",
+        "src/tui/components/agents/AgentDetail.tsx",
+        "src/tui/components/agents/AgentEditor.tsx",
+        "src/tui/components/agents/AgentNavigationFooter.tsx",
+        "src/tui/components/agents/AgentsList.tsx",
+        "src/tui/components/agents/AgentsMenu.tsx",
+        "src/tui/components/agents/ColorPicker.tsx",
+        "src/tui/components/agents/ModelSelector.tsx",
+        "src/tui/components/agents/SnapshotUpdateDialog.tsx",
+        "src/tui/components/agents/ToolSelector.tsx",
+        "src/tui/components/agents/agentFileUtils.ts",
+        "src/tui/components/agents/generateAgent.ts",
+        "src/tui/components/agents/new-agent-creation/CreateAgentWizard.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/ColorStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStepWrapper.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/DescriptionStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/GenerateStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/LocationStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/MemoryStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/MethodStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/ModelStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/PromptStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/ToolsStep.tsx",
+        "src/tui/components/agents/new-agent-creation/wizard-steps/TypeStep.tsx",
+        "src/tui/components/agents/types.ts",
+        "src/tui/components/agents/utils.ts",
+        "src/tui/components/agents/validateAgent.ts",
+        "src/tui/components/design-system/StatusIcon.tsx",
+        "src/tui/components/design-system/Tabs.tsx",
+        "src/tui/components/grove/Grove.tsx",
+        "src/tui/components/hooks/HooksConfigMenu.tsx",
+        "src/tui/components/hooks/SelectEventMode.tsx",
+        "src/tui/components/hooks/SelectHookMode.tsx",
+        "src/tui/components/hooks/SelectMatcherMode.tsx",
+        "src/tui/components/hooks/ViewHookMode.tsx",
+        "src/tui/components/mcp/CapabilitiesSection.tsx",
+        "src/tui/components/mcp/MCPAgentServerMenu.tsx",
+        "src/tui/components/mcp/MCPListPanel.tsx",
+        "src/tui/components/mcp/MCPReconnect.tsx",
+        "src/tui/components/mcp/MCPRemoteServerMenu.tsx",
+        "src/tui/components/mcp/MCPSettings.tsx",
+        "src/tui/components/mcp/MCPStdioServerMenu.tsx",
+        "src/tui/components/mcp/MCPToolDetailView.tsx",
+        "src/tui/components/mcp/MCPToolListView.tsx",
+        "src/tui/components/mcp/McpParsingWarnings.tsx",
+        "src/tui/components/mcp/utils/reconnectHelpers.tsx",
+        "src/tui/components/memory/MemoryFileSelector.tsx",
+        "src/tui/components/memory/MemoryUpdateNotification.tsx",
+        "src/tui/components/permissions/rules/AddWorkspaceDirectory.tsx",
+        "src/tui/components/permissions/rules/PermissionRuleInput.tsx",
+        "src/tui/components/permissions/rules/PermissionRuleList.tsx",
+        "src/tui/components/permissions/rules/RecentDenialsTab.tsx",
+        "src/tui/components/permissions/rules/RemoveWorkspaceDirectory.tsx",
+        "src/tui/components/permissions/rules/WorkspaceTab.tsx",
+        "src/tui/components/sandbox/SandboxConfigTab.tsx",
+        "src/tui/components/sandbox/SandboxDependenciesTab.tsx",
+        "src/tui/components/sandbox/SandboxDoctorSection.tsx",
+        "src/tui/components/sandbox/SandboxOverridesTab.tsx",
+        "src/tui/components/sandbox/SandboxSettings.tsx",
+        "src/tui/components/skills/SkillsMenu.tsx",
+        "src/tui/components/spinner/FlashingChar.tsx",
+        "src/tui/components/ui/OrderedList.tsx",
+        "src/tui/components/ui/OrderedListItem.tsx",
+        "src/tui/components/ui/TreeSelect.tsx",
+        "src/tui/components/wizard/WizardDialogLayout.tsx",
+        "src/tui/components/wizard/WizardNavigationFooter.tsx",
+        "src/tui/components/wizard/WizardProvider.tsx",
+        "src/tui/components/wizard/useWizard.ts",
+        "src/tui/cost/Stats.tsx",
+        "src/tui/dialogLaunchers.tsx",
+        "src/tui/history/ResumeConversation.tsx",
+        "src/tui/hooks/useExitOnCtrlCD.ts",
+        "src/tui/hooks/useTeleportResume.tsx",
+        "src/tui/hooks/useTimeout.ts",
+        "src/tui/hooks/useVoice.ts",
+        "src/tui/hooks/useVoiceEnabled.ts",
+        "src/tui/hooks/useVoiceIntegration.tsx",
+        "src/tui/interactiveHelpers.tsx",
+        "src/tui/replLauncher.tsx",
+        "src/tui/screens/Doctor.tsx",
+        "src/types/generated/google/protobuf/timestamp.ts",
+        "src/utils/agencInChrome/chromeNativeHost.ts",
+        "src/utils/agenticSessionSearch.ts",
+        "src/utils/ansiToPng.ts",
+        "src/utils/ansiToSvg.ts",
+        "src/utils/apiPreconnect.ts",
+        "src/utils/caCertsConfig.ts",
+        "src/utils/cliArgs.ts",
+        "src/utils/computerUse/setup.ts",
+        "src/utils/contextAnalysis.ts",
+        "src/utils/contextSuggestions.ts",
+        "src/utils/crossProjectResume.ts",
+        "src/utils/debugFilter.ts",
+        "src/utils/deepLink/banner.ts",
+        "src/utils/deepLink/protocolHandler.ts",
+        "src/utils/deepLink/terminalLauncher.ts",
+        "src/utils/deepLink/terminalPreference.ts",
+        "src/utils/doctorContextWarnings.ts",
+        "src/utils/filePersistence/filePersistence.ts",
+        "src/utils/github/ghAuthStatus.ts",
+        "src/utils/githubRepoPathMapping.ts",
+        "src/utils/heapDumpService.ts",
+        "src/utils/heatmap.ts",
+        "src/utils/hooks/hooksConfigManager.ts",
+        "src/utils/idleTimeout.ts",
+        "src/utils/immediateCommand.ts",
+        "src/utils/memory/versions.ts",
+        "src/utils/model/benchmark.ts",
+        "src/utils/plugins/headlessPluginInstall.ts",
+        "src/utils/plugins/installCounts.ts",
+        "src/utils/plugins/parseMarketplaceInput.ts",
+        "src/utils/plugins/reconciler.ts",
+        "src/utils/plugins/refresh.ts",
+        "src/utils/plugins/validatePlugin.ts",
+        "src/utils/plugins/zipCacheAdapters.ts",
+        "src/utils/preflightChecks.tsx",
+        "src/utils/protectedNamespace.ts",
+        "src/utils/queryContext.ts",
+        "src/utils/screenshotClipboard.ts",
+        "src/utils/sessionUrl.ts",
+        "src/utils/stats.ts",
+        "src/utils/statsCache.ts",
+        "src/utils/streamJsonStdoutGuard.ts",
+        "src/utils/streamlinedTransform.ts",
+        "src/utils/telemetry/skillLoadedEvent.ts",
+        "src/utils/treeify.ts",
+        "src/utils/validation.ts",
+        "src/utils/warningHandler.ts",
+        "src/watch/agenc-watch-art.mjs",
+        "src/watch/agenc-watch-markdown-parse.mjs",
+        "src/watch/agenc-watch-markdown-stream.mjs",
+        "src/watch/agenc-watch-render-cache.mjs",
+        "src/watch/agenc-watch-splash.mjs",
+        "src/watch/agenc-watch-terminal-sequences.mjs",
+        "src/watch/agenc-watch-text-utils.mjs",
+        "src/watch/agenc-watch-ui-primitives.mjs"
+      ],
+      "ignoreDependencies": [
+        "@ant/computer-use-mcp",
+        "supports-hyperlinks",
+        "jimp",
+        "markdown-it"
+      ]
+    }
+  },
+  "ignoreIssues": {
+    "runtime/src/agents/_deps/file-read.ts": [
+      "types"
+    ],
+    "runtime/src/agents/control.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/fork-context.ts": [
+      "types"
+    ],
+    "runtime/src/agents/graph-store/errors.ts": [
+      "types"
+    ],
+    "runtime/src/agents/graph-store/local.ts": [
+      "types"
+    ],
+    "runtime/src/agents/jobs/csv-reader.ts": [
+      "types"
+    ],
+    "runtime/src/agents/jobs/job-orchestrator.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/mailbox.ts": [
+      "types"
+    ],
+    "runtime/src/agents/registry.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/resume.ts": [
+      "types"
+    ],
+    "runtime/src/agents/role-presentation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/role.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/run-agent.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/status.ts": [
+      "types"
+    ],
+    "runtime/src/agents/thread-manager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/thread-rollout-truncation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/thread.ts": [
+      "types"
+    ],
+    "runtime/src/agents/v2/common.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/agents/v2/index.ts": [
+      "exports"
+    ],
+    "runtime/src/agents/v2/message-tool.ts": [
+      "types"
+    ],
+    "runtime/src/agents/worktree.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/app-server-client/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/app-server-protocol/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/app-server/agent-cli.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/app-server/agent-lifecycle.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/auth.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/background-agent-runner.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/client-multiplexer.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/daemon-autostart.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/daemon-cli.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/app-server/daemon-dispatcher.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/fuzzy-file-search.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/health.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/protocol/index.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/realtime-transport.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/app-server/realtime.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/reattach.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/session-lifecycle.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/transport/auth.ts": [
+      "exports"
+    ],
+    "runtime/src/app-server/transport/stdio.ts": [
+      "types"
+    ],
+    "runtime/src/app-server/transport/unix-socket.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/auth/backend.ts": [
+      "types"
+    ],
+    "runtime/src/auth/backends/local.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/auth/backends/remote.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/auth/byok-precedence.ts": [
+      "types"
+    ],
+    "runtime/src/auth/selection.ts": [
+      "types"
+    ],
+    "runtime/src/bootstrap/state.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/bridgeDebug.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/bridgeEnabled.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/bridgeMessaging.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/bridgePointer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/bridgeStatusUtil.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/capacityWake.ts": [
+      "types"
+    ],
+    "runtime/src/bridge/createSession.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/debugUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/envLessBridgeConfig.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/inboundAttachments.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/inboundMessages.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/initReplBridge.ts": [
+      "types"
+    ],
+    "runtime/src/bridge/jwtUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/remoteBridgeCore.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/replBridge.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/replBridgeHandle.ts": [
+      "exports"
+    ],
+    "runtime/src/bridge/sessionRunner.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/bridge/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/cli/handlers/auth.ts": [
+      "exports"
+    ],
+    "runtime/src/cli/handlers/mcp.tsx": [
+      "exports"
+    ],
+    "runtime/src/cli/transports/ccrClient.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/cli/transports/SSETransport.ts": [
+      "exports"
+    ],
+    "runtime/src/commands.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/add-dir/validation.ts": [
+      "types"
+    ],
+    "runtime/src/commands/cache-stats.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/clear.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/config.ts": [
+      "types"
+    ],
+    "runtime/src/commands/copy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/cost.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/diff.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/dispatcher.ts": [
+      "types"
+    ],
+    "runtime/src/commands/doctor/doctor.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/effort.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/enter-worktree.ts": [
+      "types"
+    ],
+    "runtime/src/commands/exit-worktree.ts": [
+      "types"
+    ],
+    "runtime/src/commands/exit.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/extra-usage/index.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/files.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/fork.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/help.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/init.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/keybindings.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/login/login.tsx": [
+      "exports"
+    ],
+    "runtime/src/commands/logout/logout.tsx": [
+      "exports"
+    ],
+    "runtime/src/commands/mcp.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/model.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/onboard-github/onboard-github.tsx": [
+      "exports"
+    ],
+    "runtime/src/commands/permissions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/plan.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/provider.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/provider/provider.tsx": [
+      "exports"
+    ],
+    "runtime/src/commands/release-notes.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/reload-plugins.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/resume.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/review.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/review/reviewRemote.ts": [
+      "types"
+    ],
+    "runtime/src/commands/skills.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/commands/stats.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/status.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/terminalSetup/terminalSetup.tsx": [
+      "exports"
+    ],
+    "runtime/src/commands/ultraplan.tsx": [
+      "exports"
+    ],
+    "runtime/src/commands/usage.ts": [
+      "exports"
+    ],
+    "runtime/src/commands/wiki.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/config/_deps/file-read.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/config/edit.ts": [
+      "exports"
+    ],
+    "runtime/src/config/loader.ts": [
+      "types"
+    ],
+    "runtime/src/config/migrate.ts": [
+      "types"
+    ],
+    "runtime/src/config/profiles.ts": [
+      "exports"
+    ],
+    "runtime/src/config/project-init.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/config/resolve-model.ts": [
+      "exports"
+    ],
+    "runtime/src/config/resolve-provider.ts": [
+      "exports"
+    ],
+    "runtime/src/config/schema.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/config/store.ts": [
+      "types"
+    ],
+    "runtime/src/connectors/connectors.ts": [
+      "exports"
+    ],
+    "runtime/src/connectors/filter.ts": [
+      "exports"
+    ],
+    "runtime/src/connectors/metadata.ts": [
+      "exports"
+    ],
+    "runtime/src/connectors/types.ts": [
+      "types"
+    ],
+    "runtime/src/constants/betas.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/figures.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/files.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/oauth.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/product.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/spinnerVerbs.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/system.ts": [
+      "types"
+    ],
+    "runtime/src/constants/toolLimits.ts": [
+      "exports"
+    ],
+    "runtime/src/constants/xml.ts": [
+      "exports"
+    ],
+    "runtime/src/context.ts": [
+      "exports"
+    ],
+    "runtime/src/context/personality-spec-instructions.ts": [
+      "types"
+    ],
+    "runtime/src/conversation/multi-turn-context.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/conversation/realtime/context.ts": [
+      "exports"
+    ],
+    "runtime/src/conversation/realtime/conversation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/conversation/realtime/prompt.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/conversation/realtime/webrtc/lib.ts": [
+      "types"
+    ],
+    "runtime/src/conversation/realtime/webrtc/native.ts": [
+      "types"
+    ],
+    "runtime/src/conversation/thread-manager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/conversation/token-budget.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/coordinator/coordinatorMode.ts": [
+      "exports"
+    ],
+    "runtime/src/coordinator/workerAgent.ts": [
+      "exports"
+    ],
+    "runtime/src/cost/hook.ts": [
+      "types"
+    ],
+    "runtime/src/cost/tracker.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/diagnostics/doctor.ts": [
+      "types"
+    ],
+    "runtime/src/elicitation/request-user-input.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/elicitation/respond.ts": [
+      "types"
+    ],
+    "runtime/src/entrypoints/agentSdkTypes.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/entrypoints/sandboxTypes.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/entrypoints/sdk/controlSchemas.ts": [
+      "exports"
+    ],
+    "runtime/src/entrypoints/sdk/coreSchemas.ts": [
+      "exports"
+    ],
+    "runtime/src/entrypoints/sdk/coreTypes.generated.ts": [
+      "types"
+    ],
+    "runtime/src/entrypoints/sdk/coreTypes.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/errors/api.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/errors/openai-compatible.ts": [
+      "types"
+    ],
+    "runtime/src/errors/runtime.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/file-watcher/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/hooks/configured-hooks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/hooks/engine/command-runner.ts": [
+      "types"
+    ],
+    "runtime/src/hooks/engine/output-parser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/hooks/user-prompt-submit.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/lifecycle/cleanup-registry.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/lifecycle/signal-handlers.ts": [
+      "types"
+    ],
+    "runtime/src/llm/_deps/command-line.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/_deps/config.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/_deps/env.ts": [
+      "types"
+    ],
+    "runtime/src/llm/_deps/monotonic.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/_deps/runtime-errors.ts": [
+      "types"
+    ],
+    "runtime/src/llm/_deps/safe-stringify.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/_deps/sse.ts": [
+      "types"
+    ],
+    "runtime/src/llm/api/errors.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/api/fallback-ladder.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/api/http.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/api/retry.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/auth/bearer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/capabilities.ts": [
+      "types"
+    ],
+    "runtime/src/llm/client-session.ts": [
+      "types"
+    ],
+    "runtime/src/llm/client.ts": [
+      "types"
+    ],
+    "runtime/src/llm/context-window-upgrade.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/discovery/provider-discovery.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/errors.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/hooks/dispatcher.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/hooks/registry.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/hooks/types.ts": [
+      "types"
+    ],
+    "runtime/src/llm/messages.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/model-metadata.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/model-registry.ts": [
+      "types"
+    ],
+    "runtime/src/llm/oauth/refresh-loop.ts": [
+      "types"
+    ],
+    "runtime/src/llm/policy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/provider-native-search.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/provider.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/agenc/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/deepseek/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/gemini/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/grok/adapter-utils.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/providers/grok/auth-refresh.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/providers/grok/incremental.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/groq/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/lmstudio/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/openai-compatible/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/providers/openrouter/index.ts": [
+      "types"
+    ],
+    "runtime/src/llm/registry/features.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/registry/model-catalog.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/registry/provider-info.ts": [
+      "exports"
+    ],
+    "runtime/src/llm/shape-request.ts": [
+      "types"
+    ],
+    "runtime/src/llm/shell-write-policy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/stream-parser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/stream-watchdog.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/structured-output.ts": [
+      "types"
+    ],
+    "runtime/src/llm/token-estimation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/tool-call-normalize.ts": [
+      "types"
+    ],
+    "runtime/src/llm/tool-turn-validator.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/llm/wire/chat-completions.ts": [
+      "types"
+    ],
+    "runtime/src/llm/wire/messages-anthropic.ts": [
+      "types"
+    ],
+    "runtime/src/llm/wire/responses-openai.ts": [
+      "types"
+    ],
+    "runtime/src/llm/wire/responses-xai.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-client/_deps/logger.ts": [
+      "types"
+    ],
+    "runtime/src/mcp-client/manager.ts": [
+      "exports"
+    ],
+    "runtime/src/mcp-client/supply-chain.ts": [
+      "types"
+    ],
+    "runtime/src/mcp-client/tools.ts": [
+      "exports"
+    ],
+    "runtime/src/mcp-client/transports/http.ts": [
+      "types"
+    ],
+    "runtime/src/mcp-client/transports/sse.ts": [
+      "types"
+    ],
+    "runtime/src/mcp-client/transports/stdio.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-client/transports/websocket.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-server/framework.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-server/http-sse.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-server/stdio.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-server/tools.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/mcp-server/types.ts": [
+      "types"
+    ],
+    "runtime/src/mcp/server/start.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/memdir/memory-types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/memdir/teamMemPaths.ts": [
+      "exports"
+    ],
+    "runtime/src/memory/extraction-triggers.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/memory/global-store.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/memory/index.ts": [
+      "types"
+    ],
+    "runtime/src/memory/memdir.ts": [
+      "exports"
+    ],
+    "runtime/src/memory/privacy.ts": [
+      "types"
+    ],
+    "runtime/src/memory/project-memory.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/memory/session/prompts.ts": [
+      "exports"
+    ],
+    "runtime/src/memory/session/sessionMemory.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/memory/session/sessionMemoryUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/memory/store.ts": [
+      "types"
+    ],
+    "runtime/src/migration/external-agent/project-importer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/migration/external-agent/toml.ts": [
+      "types"
+    ],
+    "runtime/src/onboarding/ApproveApiKey.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/onboarding/inputPaste.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/onboarding/Onboarding.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/onboarding/pasteStore.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/onboarding/projectOnboardingState.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/onboarding/projectOnboardingSteps.ts": [
+      "exports"
+    ],
+    "runtime/src/onboarding/useApiKeyVerification.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/onboarding/WelcomeV2.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/outputStyles/loadOutputStylesDir.ts": [
+      "exports"
+    ],
+    "runtime/src/permissions/_deps/file-read.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/approval-cache.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/approval-policy.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/bash.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/classifier.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/context.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/dangerous-patterns.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/denial-tracking.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/guardian/approval-request.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/guardian/arbiter.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/guardian/prompt.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/guardian/rejection-circuit-breaker.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/guardian/reviewer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/hook-event-schedule.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/network-approval.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/path-validation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/permission-audit-log.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/permission-cli.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/permission-mode.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/rpc/mcp-tool-approval-templates.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/rpc/request-permissions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/rules.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/sandbox.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/settings.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/tool-approval.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/trust/project-trust.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/trust/trust-sources.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/trust/TrustDialog.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/permissions/types.ts": [
+      "types"
+    ],
+    "runtime/src/permissions/unattended-policy.ts": [
+      "types"
+    ],
+    "runtime/src/personality/migration.ts": [
+      "types"
+    ],
+    "runtime/src/phases/_deps/tool-runtime.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/phases/commit.ts": [
+      "exports"
+    ],
+    "runtime/src/phases/continuation-nudge.ts": [
+      "exports"
+    ],
+    "runtime/src/phases/post-sample-recovery.ts": [
+      "exports"
+    ],
+    "runtime/src/phases/stop-hooks.ts": [
+      "types"
+    ],
+    "runtime/src/planning/exit-plan-approval.ts": [
+      "types"
+    ],
+    "runtime/src/planning/plan-files.ts": [
+      "exports"
+    ],
+    "runtime/src/planning/plan-instructions.ts": [
+      "types"
+    ],
+    "runtime/src/plugins/blocklist.ts": [
+      "types"
+    ],
+    "runtime/src/plugins/builtinPlugins.ts": [
+      "exports"
+    ],
+    "runtime/src/plugins/cli/pluginCliCommands.ts": [
+      "types"
+    ],
+    "runtime/src/plugins/cli/pluginOperations.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/loader.ts": [
+      "exports"
+    ],
+    "runtime/src/plugins/manifest-schema.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/manifest.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/marketplace.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/marketplaceHelpers.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/marketplaceManager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/parseMarketplaceInput.ts": [
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/remote_bundle.ts": [
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/remote_legacy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/remote.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/startup_checks.ts": [
+      "types"
+    ],
+    "runtime/src/plugins/marketplace/startup_remote_sync.ts": [
+      "exports"
+    ],
+    "runtime/src/plugins/policy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/common.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/load-plugin-agents.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/load-plugin-commands.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/load-plugin-hooks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/load-plugin-output-styles.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/lsp-plugin-integration.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/manager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/registration/mcp-plugin-integration.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/resolution.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/sandbox.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/plugins/toggles.ts": [
+      "types"
+    ],
+    "runtime/src/prompts/_deps/file-read.ts": [
+      "types"
+    ],
+    "runtime/src/prompts/agenc-md.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/attachments/file-mentions.ts": [
+      "exports"
+    ],
+    "runtime/src/prompts/attachments/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/attachments/user-image-input.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/attachments/user-pdf-input.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/file-mentions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/project-instructions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/rules/discovery.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/prompts/system-prompt.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/query/config.ts": [
+      "types"
+    ],
+    "runtime/src/recovery/api-errors.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/recovery/fallback-ladder.ts": [
+      "types"
+    ],
+    "runtime/src/recovery/max-output-tokens.ts": [
+      "types"
+    ],
+    "runtime/src/recovery/model-fallback.ts": [
+      "types"
+    ],
+    "runtime/src/recovery/reconnection.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/recovery/terminal-tool-result.ts": [
+      "types"
+    ],
+    "runtime/src/recovery/tombstone.ts": [
+      "types"
+    ],
+    "runtime/src/recovery/withhold-cascading.ts": [
+      "types"
+    ],
+    "runtime/src/relay-proxy/relay.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/relay-proxy/upstreamproxy.ts": [
+      "exports"
+    ],
+    "runtime/src/remote/RemoteSessionManager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/remote/sdkMessageAdapter.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/rollout/list.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/rollout/metadata.ts": [
+      "exports"
+    ],
+    "runtime/src/rollout/policy.ts": [
+      "types"
+    ],
+    "runtime/src/rollout/session-index.ts": [
+      "exports"
+    ],
+    "runtime/src/rollout/trace.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/engine/bwrap.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/engine/index.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/engine/landlock.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/engine/policy-transforms.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/engine/seatbelt.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/environment-selection.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/escalation/approvals.ts": [
+      "types"
+    ],
+    "runtime/src/sandbox/escalation/network-approval.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/escalation/on-request-rule-request-permission.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/escalation/on-request.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/escalation/sandboxing.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/escalation/unix-escalation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/execpolicy/error.ts": [
+      "types"
+    ],
+    "runtime/src/sandbox/execpolicy/execpolicycheck.ts": [
+      "types"
+    ],
+    "runtime/src/sandbox/execpolicy/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/execpolicy/main.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/execpolicy/policy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/execpolicy/rule.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/linux-launcher/bwrap.ts": [
+      "types"
+    ],
+    "runtime/src/sandbox/linux-launcher/cli.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/linux-launcher/launcher.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/linux-launcher/lib.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/linux-launcher/linux-run-main.ts": [
+      "exports"
+    ],
+    "runtime/src/sandbox/linux-launcher/proxy-routing.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/network-policy.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/network-proxy-loader.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/sandbox/sandbox-tags.ts": [
+      "types"
+    ],
+    "runtime/src/schemas/hooks.ts": [
+      "types"
+    ],
+    "runtime/src/secrets/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/secrets/sanitizer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/server/directConnectManager.ts": [
+      "types"
+    ],
+    "runtime/src/services/agencAiLimits.ts": [
+      "exports"
+    ],
+    "runtime/src/services/AgentSummary/agentSummary.ts": [
+      "types"
+    ],
+    "runtime/src/services/analytics/datadog.ts": [
+      "exports"
+    ],
+    "runtime/src/services/analytics/firstPartyEventLogger.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/analytics/growthbook.ts": [
+      "exports"
+    ],
+    "runtime/src/services/analytics/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/analytics/metadata.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/analytics/sink.ts": [
+      "exports"
+    ],
+    "runtime/src/services/analytics/sinkKillswitch.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/adminRequests.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/agentRouting.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/anthropic.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/cacheMetrics.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/cacheStatsTracker.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/compressToolHistory.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/dumpPrompts.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/errors.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/errorUtils.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/filesApi.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/grove.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/metricsOptOut.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/openAiCodeOAuthShared.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/openAiCodeUsage.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/openaiErrorClassification.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/overageCreditGrant.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/promptCacheBreakDetection.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/providerConfig.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/api/referral.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/sessionIngress.ts": [
+      "exports"
+    ],
+    "runtime/src/services/api/smartModelRouting.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/thinkTagSanitizer.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/ultrareviewQuota.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/usage.ts": [
+      "types"
+    ],
+    "runtime/src/services/api/withRetry.ts": [
+      "exports"
+    ],
+    "runtime/src/services/autoDream/consolidationLock.ts": [
+      "exports"
+    ],
+    "runtime/src/services/autoFix/autoFixConfig.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/autoFix/autoFixHook.ts": [
+      "types"
+    ],
+    "runtime/src/services/compact/apiMicrocompact.ts": [
+      "types"
+    ],
+    "runtime/src/services/compact/autoCompact.ts": [
+      "exports"
+    ],
+    "runtime/src/services/compact/cachedMicrocompact.ts": [
+      "types"
+    ],
+    "runtime/src/services/compact/postCompactCleanup.ts": [
+      "types"
+    ],
+    "runtime/src/services/compact/prompt.ts": [
+      "types"
+    ],
+    "runtime/src/services/contextCollapse/persist.ts": [
+      "exports"
+    ],
+    "runtime/src/services/extractMemories/extractMemories.ts": [
+      "types"
+    ],
+    "runtime/src/services/extractMemories/memory-paths.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/github/device-flow.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/github/deviceFlow.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/lsp/config.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/lsp/LSPClient.ts": [
+      "types"
+    ],
+    "runtime/src/services/lsp/LSPDiagnosticRegistry.ts": [
+      "types"
+    ],
+    "runtime/src/services/lsp/LSPServerInstance.ts": [
+      "types"
+    ],
+    "runtime/src/services/lsp/passiveFeedback.ts": [
+      "types"
+    ],
+    "runtime/src/services/MagicDocs/magicDocs.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/mcp/auth.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/channelNotification.ts": [
+      "types"
+    ],
+    "runtime/src/services/mcp/channelPermissions.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/client.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/mcp/config.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/doctor.ts": [
+      "types"
+    ],
+    "runtime/src/services/mcp/headersHelper.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/MCPConnectionManager.tsx": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/mcpStringUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/officialRegistry.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/SdkControlTransport.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/mcp/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/mcp/utils.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/vscodeSdkMcp.ts": [
+      "exports"
+    ],
+    "runtime/src/services/mcp/xaa.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/mcp/xaaIdpLogin.ts": [
+      "types"
+    ],
+    "runtime/src/services/mockRateLimits.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/notifier.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/oauth/client.ts": [
+      "exports"
+    ],
+    "runtime/src/services/plugins/pluginOperations.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/policyLimits/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/policyLimits/types.ts": [
+      "exports"
+    ],
+    "runtime/src/services/preventSleep.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/PromptSuggestion/limits.ts": [
+      "types"
+    ],
+    "runtime/src/services/PromptSuggestion/promptSuggestion.ts": [
+      "exports"
+    ],
+    "runtime/src/services/PromptSuggestion/runtime.ts": [
+      "types"
+    ],
+    "runtime/src/services/rateLimitMessages.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/remoteManagedSettings/index.ts": [
+      "exports"
+    ],
+    "runtime/src/services/remoteManagedSettings/securityCheck.tsx": [
+      "types"
+    ],
+    "runtime/src/services/remoteManagedSettings/types.ts": [
+      "types"
+    ],
+    "runtime/src/services/teamMemorySync/index.ts": [
+      "exports"
+    ],
+    "runtime/src/services/teamMemorySync/types.ts": [
+      "exports"
+    ],
+    "runtime/src/services/teamMemorySync/watcher.ts": [
+      "exports"
+    ],
+    "runtime/src/services/tips/tipHistory.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/tokenEstimation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/tools/toolExecution.ts": [
+      "exports"
+    ],
+    "runtime/src/services/tools/toolHooks.ts": [
+      "types"
+    ],
+    "runtime/src/services/tools/toolOrchestration.ts": [
+      "types"
+    ],
+    "runtime/src/services/toolUseSummary/toolUseSummaryGenerator.ts": [
+      "types"
+    ],
+    "runtime/src/services/vcr.ts": [
+      "exports"
+    ],
+    "runtime/src/services/voice.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/services/wiki/paths.ts": [
+      "exports"
+    ],
+    "runtime/src/session/_deps/tool-registry.ts": [
+      "types"
+    ],
+    "runtime/src/session/_deps/tool-result-storage.ts": [
+      "exports"
+    ],
+    "runtime/src/session/_deps/utils.ts": [
+      "exports"
+    ],
+    "runtime/src/session/agenc-delegate.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/agent-task-lifecycle.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/autonomous-mode.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/bootstrap.ts": [
+      "exports"
+    ],
+    "runtime/src/session/cost.ts": [
+      "types"
+    ],
+    "runtime/src/session/degraded-store.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/error-log.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/event-log.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/file-history.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/lifecycle.ts": [
+      "types"
+    ],
+    "runtime/src/session/mcp-startup.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/plan-mode.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/review.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/rollout-item.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/rollout-reconstruction.ts": [
+      "exports"
+    ],
+    "runtime/src/session/rollout-store.ts": [
+      "types"
+    ],
+    "runtime/src/session/rollout-trace.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/run-turn.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/session-store.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/session.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/session/sidecar.ts": [
+      "types"
+    ],
+    "runtime/src/session/startup-prewarm.ts": [
+      "exports"
+    ],
+    "runtime/src/session/tasks.ts": [
+      "types"
+    ],
+    "runtime/src/session/turn-context.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/shell-command/parser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/shell-command/powershell-parser.ts": [
+      "types"
+    ],
+    "runtime/src/skills/bundledSkills.ts": [
+      "exports"
+    ],
+    "runtime/src/skills/change-detector.ts": [
+      "exports"
+    ],
+    "runtime/src/skills/loadSkillsDir.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/skills/local-loader.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/skills/mcpSkillBuilders.ts": [
+      "types"
+    ],
+    "runtime/src/state/agent-jobs.ts": [
+      "types"
+    ],
+    "runtime/src/state/agent-runs.ts": [
+      "types"
+    ],
+    "runtime/src/state/atomic-snapshot-writes.ts": [
+      "types"
+    ],
+    "runtime/src/state/backfill.ts": [
+      "types"
+    ],
+    "runtime/src/state/csv-agent-jobs.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/state/errors.ts": [
+      "exports"
+    ],
+    "runtime/src/state/export-import.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/state/logs.ts": [
+      "types"
+    ],
+    "runtime/src/state/memories.ts": [
+      "types"
+    ],
+    "runtime/src/state/migrations/config-migrations.ts": [
+      "types"
+    ],
+    "runtime/src/state/pruning.ts": [
+      "types"
+    ],
+    "runtime/src/state/recovery.ts": [
+      "types"
+    ],
+    "runtime/src/state/snapshot-policy.ts": [
+      "types"
+    ],
+    "runtime/src/state/spawn-edges.ts": [
+      "types"
+    ],
+    "runtime/src/state/sqlite-driver.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/state/threads.ts": [
+      "types"
+    ],
+    "runtime/src/state/tool-output-rotation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tasks/agent-thread.ts": [
+      "types"
+    ],
+    "runtime/src/tasks/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tasks/InProcessTeammateTask/types.ts": [
+      "exports"
+    ],
+    "runtime/src/tasks/lifecycle.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tasks/LocalMainSessionTask.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tasks/LocalShellTask/LocalShellTask.tsx": [
+      "exports"
+    ],
+    "runtime/src/tasks/MonitorMcpTask/MonitorMcpTask.ts": [
+      "exports"
+    ],
+    "runtime/src/tasks/registry.ts": [
+      "types"
+    ],
+    "runtime/src/tasks/RemoteAgentTask/RemoteAgentTask.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tasks/stopTask.ts": [
+      "types"
+    ],
+    "runtime/src/tasks/types.ts": [
+      "types"
+    ],
+    "runtime/src/thread-store/in-memory.ts": [
+      "types"
+    ],
+    "runtime/src/thread-store/live-thread.ts": [
+      "types"
+    ],
+    "runtime/src/thread-store/store.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tool-registry.ts": [
+      "types"
+    ],
+    "runtime/src/tools.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/AgentTool/agentMemory.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/AgentTool/agentToolUtils.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/AgentTool/built-in/agencGuideAgent.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/AgentTool/builtInAgents.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/AgentTool/forkSubagent.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/AgentTool/loadAgentsDir.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/AgentTool/resumeAgent.ts": [
+      "types"
+    ],
+    "runtime/src/tools/AgentTool/runAgent.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/AgentTool/UI.tsx": [
+      "exports"
+    ],
+    "runtime/src/tools/apply-patch/parser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/apply-patch/runtime.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/apply-patch/tool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/apply-patch/types.ts": [
+      "types"
+    ],
+    "runtime/src/tools/ask-user-question/tool.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/ask-user-question/tui-tool.tsx": [
+      "types"
+    ],
+    "runtime/src/tools/AskUserQuestionTool/prompt.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/bashCommandHelpers.ts": [
+      "types"
+    ],
+    "runtime/src/tools/BashTool/bashPermissions.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/bashSecurity.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/BashTool.tsx": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/commandSemantics.ts": [
+      "types"
+    ],
+    "runtime/src/tools/BashTool/modeValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/pathValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/readOnlyValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/sedEditParser.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BashTool/sedValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BriefTool/attachments.ts": [
+      "types"
+    ],
+    "runtime/src/tools/BriefTool/BriefTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/BriefTool/UI.tsx": [
+      "exports"
+    ],
+    "runtime/src/tools/BriefTool/upload.ts": [
+      "types"
+    ],
+    "runtime/src/tools/code-mode/description.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/code-mode/service.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/code-mode/tools.ts": [
+      "types"
+    ],
+    "runtime/src/tools/concurrency.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/config.ts": [
+      "types"
+    ],
+    "runtime/src/tools/context.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/CtxInspectTool/CtxInspectTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/execution.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/FileEditTool/utils.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/FileReadTool/FileReadTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/FileReadTool/imageProcessor.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/FileReadTool/limits.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/FileWriteTool/FileWriteTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/FileWriteTool/prompt.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/FileWriteTool/UI.tsx": [
+      "exports"
+    ],
+    "runtime/src/tools/GlobTool/GlobTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/hooks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/LSPTool/schemas.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/McpAuthTool/McpAuthTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/MCPTool/MCPTool.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/MCPTool/UI.tsx": [
+      "exports"
+    ],
+    "runtime/src/tools/MonitorTool/MonitorTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/NotebookEditTool/NotebookEditTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/orchestration.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/orchestrator.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/PowerShellTool/clmTypes.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/PowerShellTool/commandSemantics.ts": [
+      "types"
+    ],
+    "runtime/src/tools/PowerShellTool/powershellPermissions.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/PowerShellTool/PowerShellTool.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/PowerShellTool/readOnlyValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/ReadMcpResourceTool/ReadMcpResourceTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/result-metadata.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/router.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/runtimes/apply-patch.ts": [
+      "types"
+    ],
+    "runtime/src/tools/runtimes/context.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/runtimes/parallel.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/runtimes/sandboxing.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/runtimes/shell.ts": [
+      "types"
+    ],
+    "runtime/src/tools/runtimes/unified-exec.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/SendMessageTool/SendMessageTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/shared/spawnMultiAgent.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/SkillTool/prompt.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/SkillTool/SkillTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/SleepTool/prompt.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/streaming-executor.ts": [
+      "types"
+    ],
+    "runtime/src/tools/SyntheticOutputTool/SyntheticOutputTool.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/code-intel.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/coding-common.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/coding.ts": [
+      "types"
+    ],
+    "runtime/src/tools/system/command-line.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/system/exec-command.ts": [
+      "types"
+    ],
+    "runtime/src/tools/system/file-edit.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/file-read.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/file-write.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/filesystem.ts": [
+      "types"
+    ],
+    "runtime/src/tools/system/glob.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/grep.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/monitor.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/system/planning.ts": [
+      "types"
+    ],
+    "runtime/src/tools/system/sleep.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/system/types.ts": [
+      "types"
+    ],
+    "runtime/src/tools/system/worktree.ts": [
+      "types"
+    ],
+    "runtime/src/tools/system/write-stdin.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TaskCreateTool/TaskCreateTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TaskGetTool/TaskGetTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TaskListTool/TaskListTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TaskOutputTool/TaskOutputTool.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/TaskUpdateTool/TaskUpdateTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TeamCreateTool/TeamCreateTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TeamDeleteTool/TeamDeleteTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/TodoWriteTool/TodoWriteTool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/Tool.ts": [
+      "types"
+    ],
+    "runtime/src/tools/ToolSearchTool/ToolSearchTool.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/TungstenTool/TungstenTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tools/VerifyPlanExecutionTool/VerifyPlanExecutionTool.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/WebFetchTool/preapproved.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/WebFetchTool/utils.ts": [
+      "exports"
+    ],
+    "runtime/src/tools/WebSearchTool/providers/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/transport/fallback-ladder.ts": [
+      "types"
+    ],
+    "runtime/src/tui/assistant/sessionHistory.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/buddy/companion.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/buddy/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/buddy/useBuddyNotification.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/AgenCMdExternalIncludesDialog.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/App.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/select-option.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/select.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/SelectMulti.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/use-multi-select-state.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/use-select-input.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/use-select-navigation.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/CustomSelect/use-select-state.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/design-system/ThemedBox.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/DesktopHandoff.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/diff/StructuredDiff/colorDiff.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/diff/StructuredDiff/Fallback.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/FastIcon.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/Feedback.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/FullscreenLayout.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/GlobalSearchDialog.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/IdeOnboardingDialog.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/LogoV2/ChannelsNotice.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/LogoV2/OverageCreditUpsell.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/ManagedSettingsSecurityDialog/utils.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/memory/MemoryFileSelector.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/memory/MemoryUpdateNotification.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/memory/selector-options.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/Message.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/messageActions.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/MessageRow.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/Messages.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/messages/PlanApprovalMessage.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/messages/ShutdownMessage.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/messages/TaskAssignmentMessage.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/messages/teamMemCollapsed.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/messages/teamMemSaved.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/components/messages/UserChannelMessage.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/ModelPicker.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/use-multiple-choice-state.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/BashPermissionRequest/bashToolUseOptions.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/permissions/FilePermissionDialog/FilePermissionDialog.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/FilePermissionDialog/ideDiffConfig.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/FilePermissionDialog/permissionOptions.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/permissions/FilePermissionDialog/useFilePermissionDialog.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/FilePermissionDialog/usePermissionHandler.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/PermissionPrompt.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/PermissionRuleExplanation.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/PowerShellPermissionRequest/powershellToolUseOptions.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/permissions/rules/AddPermissionRules.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/PromptInput/inputModes.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/PromptInput/inputPaste.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/RemoteCallout.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/ScrollKeybindingHandler.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/components/shell/OutputLine.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/tasks/RemoteSessionDetailDialog.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/components/TextInput.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/ThemePicker.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/ThinkingToggle.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/useOpenAiCodeOAuthFlow.ts": [
+      "types"
+    ],
+    "runtime/src/tui/components/ValidationErrorsList.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/components/VimTextInput.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/context/modalContext.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/context/notifications.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/context/promptOverlayContext.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/context/stats.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/context/voice.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/cost/tokenAnalytics.ts": [
+      "types"
+    ],
+    "runtime/src/tui/daemon-session.ts": [
+      "types"
+    ],
+    "runtime/src/tui/elicitation-submit-routing.ts": [
+      "types"
+    ],
+    "runtime/src/tui/history/history.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/fileSuggestions.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/toolPermission/handlers/coordinatorHandler.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/toolPermission/handlers/interactiveHandler.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/toolPermission/handlers/swarmWorkerHandler.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/toolPermission/PermissionContext.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/toolPermission/permissionLogging.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useApiKeyVerification.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useDiffInIDE.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/useDoublePress.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/useIdeConnectionStatus.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useIdeSelection.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useInputBuffer.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useIssueFlagBanner.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/useLspPluginRecommendation.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useMemoryUsage.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useNotifyAfterTimeout.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/usePrStatus.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useReplBridge.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/useSwarmPermissionPoller.ts": [
+      "types"
+    ],
+    "runtime/src/tui/hooks/useTypeahead.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/useUpdateNotification.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/hooks/useVirtualScroll.ts": [
+      "types"
+    ],
+    "runtime/src/tui/ink.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/clearTerminal.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/colorize.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/components/App.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/components/AppContext.ts": [
+      "types"
+    ],
+    "runtime/src/tui/ink/components/Button.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/components/ClockContext.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/components/Link.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/ink/components/Newline.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/components/ScrollBox.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/ink/components/Spacer.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/components/StdinContext.ts": [
+      "types"
+    ],
+    "runtime/src/tui/ink/components/TerminalFocusContext.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/ink/components/Text.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/ink/devtools.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/events/terminal-focus-event.ts": [
+      "types"
+    ],
+    "runtime/src/tui/ink/frame.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/hit-test.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/hooks/use-interval.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/ink.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/layout/geometry.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/layout/yoga.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/native-ts/color-diff/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/native-ts/file-index/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/native-ts/yoga-layout/index.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/node-cache.ts": [
+      "types"
+    ],
+    "runtime/src/tui/ink/output.ts": [
+      "types"
+    ],
+    "runtime/src/tui/ink/parse-keypress.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/reconciler.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/render-node-to-output.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/render-to-screen.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/root.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/screen.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/selection.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/supports-hyperlinks.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/terminal-focus-state.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/terminal-querier.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/terminal.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/termio/ansi.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/termio/csi.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/termio/dec.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/ink/termio/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/ink/useTerminalNotification.ts": [
+      "types"
+    ],
+    "runtime/src/tui/input/processSlashCommand.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/keybindings/KeybindingContext.tsx": [
+      "exports"
+    ],
+    "runtime/src/tui/keybindings/loadUserBindings.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/keybindings/match.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/keybindings/parser.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/keybindings/reservedShortcuts.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/keybindings/resolver.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/keybindings/schema.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/keybindings/types.ts": [
+      "types"
+    ],
+    "runtime/src/tui/keybindings/validate.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/model-switch.ts": [
+      "types"
+    ],
+    "runtime/src/tui/permission-requests.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/realtime/audio.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/realtime/commands.ts": [
+      "types"
+    ],
+    "runtime/src/tui/realtime/RealtimePanel.tsx": [
+      "types"
+    ],
+    "runtime/src/tui/realtime/state.ts": [
+      "exports"
+    ],
+    "runtime/src/tui/screens/REPL.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/session-transcript.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/slash/shell-quote.ts": [
+      "types"
+    ],
+    "runtime/src/tui/slash/slash-command-parsing.ts": [
+      "types"
+    ],
+    "runtime/src/tui/startup/statusNoticeDefinitions.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/state/AppState.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/state/AppStateStore.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/state/selectors.ts": [
+      "types"
+    ],
+    "runtime/src/tui/tool-jsx-state.ts": [
+      "types"
+    ],
+    "runtime/src/tui/tool-result-routing.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/tui/vim/text-objects.ts": [
+      "types"
+    ],
+    "runtime/src/tui/vim/transitions.ts": [
+      "types"
+    ],
+    "runtime/src/tui/voice/voiceModeEnabled.ts": [
+      "exports"
+    ],
+    "runtime/src/types/command.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/types/hooks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/types/permissions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/types/plugin.ts": [
+      "types"
+    ],
+    "runtime/src/unified-exec/head-tail-buffer.ts": [
+      "types"
+    ],
+    "runtime/src/utils/activityManager.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/advisor.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agencCredentials.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agencDesktop.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agencInChrome/common.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/agencInChrome/mcpServer.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agencInChrome/prompt.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agencInChrome/setup.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agencInChrome/setupPortable.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/agencInChrome/toolRendering.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/agentContext.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/agentId.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/analyzeContext.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/api.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/appleTerminalBackup.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/asciicast.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/async-queue.ts": [
+      "types"
+    ],
+    "runtime/src/utils/attachments.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/attribution.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/auth.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/auto-updater.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/autoModeDenials.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/autoUpdater.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/aws.ts": [
+      "types"
+    ],
+    "runtime/src/utils/background/remote/preconditions.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/background/remote/remoteSession.ts": [
+      "types"
+    ],
+    "runtime/src/utils/bash/ast.ts": [
+      "types"
+    ],
+    "runtime/src/utils/bash/commands.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/bash/heredoc.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/bash/ParsedCommand.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/bash/parser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/bash/prefix.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/bash/registry.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/bash/shellQuote.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/bash/shellQuoting.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/bash/ShellSnapshot.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/bash/treeSitterAnalysis.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/betas.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/binaryCheck.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/bufferedWriter.ts": [
+      "types"
+    ],
+    "runtime/src/utils/classifierApprovals.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/cleanup.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/codeIndexing.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/collapseReadSearch.ts": [
+      "types"
+    ],
+    "runtime/src/utils/commandLifecycle.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/commitAttribution.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/completionCache.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/computerUse/computerUseLock.ts": [
+      "types"
+    ],
+    "runtime/src/utils/computerUse/mcpServer.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/computerUse/swiftLoader.ts": [
+      "types"
+    ],
+    "runtime/src/utils/computerUse/wrapper.tsx": [
+      "exports"
+    ],
+    "runtime/src/utils/concurrentSessions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/config.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/configConstants.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/context.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/contextPreload.ts": [
+      "types"
+    ],
+    "runtime/src/utils/conversationArc.ts": [
+      "types"
+    ],
+    "runtime/src/utils/conversationRecovery.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/cron.ts": [
+      "types"
+    ],
+    "runtime/src/utils/cronScheduler.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/cronTasks.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/cronTasksLock.ts": [
+      "types"
+    ],
+    "runtime/src/utils/deepLink/parseDeepLink.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/deepLink/registerProtocol.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/desktopDeepLink.ts": [
+      "types"
+    ],
+    "runtime/src/utils/detectRepository.ts": [
+      "types"
+    ],
+    "runtime/src/utils/directMemberMessage.ts": [
+      "types"
+    ],
+    "runtime/src/utils/doctorDiagnostic.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/dxt/helpers.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/dxt/zip.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/earlyInput.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/effort.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/env.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/envDynamic.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/envUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/envValidation.ts": [
+      "types"
+    ],
+    "runtime/src/utils/errorLogSink.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/errors.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/exampleCommands.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/exportRenderer.tsx": [
+      "exports"
+    ],
+    "runtime/src/utils/fastMode.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/file.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/fileHistory.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/filePersistence/outputsScanner.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/filePersistence/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/fileStateCache.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/fingerprint.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/forkedAgent.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/format.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/fpsTracker.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/frontmatterParser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/fsOperations.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/fullscreen.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/geminiAuth.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/geminiCredentials.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/generatedFiles.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/generators.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/genericProcessUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/ghPrStatus.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/git.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/git/gitConfigParser.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/git/gitFilesystem.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/git/gitignore.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/gitDiff.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/githubModelsCredentials.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/glob.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/gracefulShutdown.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/groupToolUses.ts": [
+      "types"
+    ],
+    "runtime/src/utils/handlePromptSubmit.ts": [
+      "types"
+    ],
+    "runtime/src/utils/hookChains.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/hooks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/hooks/AsyncHookRegistry.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/hooks/fileChangedWatcher.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/hooks/hookEvents.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/hooks/hooksConfigSnapshot.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/hooks/hooksSettings.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/hooks/postSamplingHooks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/hooks/sessionHooks.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/hooks/ssrfGuard.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/horizontalScroll.ts": [
+      "types"
+    ],
+    "runtime/src/utils/http.ts": [
+      "types"
+    ],
+    "runtime/src/utils/hybridContextStrategy.ts": [
+      "types"
+    ],
+    "runtime/src/utils/hyperlink.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/ide.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/idePathConversion.ts": [
+      "types"
+    ],
+    "runtime/src/utils/imagePaste.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/imageResizer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/imageValidation.ts": [
+      "types"
+    ],
+    "runtime/src/utils/inProcessTeammateHelpers.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/intl.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/iTermBackup.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/jetbrains.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/knowledgeGraph.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/listSessionsImpl.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/localInstaller.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/log.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/logger.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/logoV2Utils.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/mailbox.ts": [
+      "types"
+    ],
+    "runtime/src/utils/managedEnv.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/markdownConfigLoader.ts": [
+      "types"
+    ],
+    "runtime/src/utils/mcp/dateTimeParser.ts": [
+      "types"
+    ],
+    "runtime/src/utils/mcp/elicitationValidation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/mcpInstructionsDelta.ts": [
+      "types"
+    ],
+    "runtime/src/utils/mcpOutputStorage.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/mcpValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/memoize.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/messageFilters.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/messageQueueManager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/messages.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/messages/mappers.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/messages/systemInit.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/model/agent.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/model/aliases.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/model/antModels.ts": [
+      "types"
+    ],
+    "runtime/src/utils/model/bedrock.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/model/configs.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/model/copilotModels.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/model/model.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/model/modelCache.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/model/modelCapabilities.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/model/modelOptions.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/model/modelSupportOverrides.ts": [
+      "types"
+    ],
+    "runtime/src/utils/model/ollamaModels.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/model/openaiModelDiscovery.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/model/providers.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/modelCost.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/modifiers.ts": [
+      "types"
+    ],
+    "runtime/src/utils/mtls.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/multiTurnContext.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/nativeInstaller/download.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/nativeInstaller/installer.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/nativeInstaller/packageManagers.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/nativeInstaller/pidLock.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/pdf.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/pdfUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/autoModeState.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/bashClassifier.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/classifierDecision.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/filesystem.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/pathValidation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/permissions/PermissionMode.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/permissions/PermissionPromptToolResultSchema.ts": [
+      "types"
+    ],
+    "runtime/src/utils/permissions/PermissionResult.ts": [
+      "types"
+    ],
+    "runtime/src/utils/permissions/permissionRuleParser.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/permissions.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/permissionSetup.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/permissions/permissionsLoader.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/PermissionUpdate.ts": [
+      "types"
+    ],
+    "runtime/src/utils/permissions/PermissionUpdateSchema.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/shadowedRuleDetection.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/permissions/shellRuleMatching.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/permissions/yoloClassifier.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/planModeV2.ts": [
+      "types"
+    ],
+    "runtime/src/utils/plans.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/platform.ts": [
+      "types"
+    ],
+    "runtime/src/utils/plugins/cacheUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/dependencyResolver.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/fetchTelemetry.ts": [
+      "types"
+    ],
+    "runtime/src/utils/plugins/gitAvailability.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/installedPluginsManager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/loadPluginCommands.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/loadPluginHooks.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/lspPluginIntegration.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/lspRecommendation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/marketplaceHelpers.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/marketplaceManager.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/mcpbHandler.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/mcpPluginIntegration.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/officialMarketplaceGcs.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/officialMarketplaceStartupCheck.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/orphanedPluginFilter.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/pluginAutoupdate.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/pluginBlocklist.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/pluginDirectories.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/pluginFlagging.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/pluginIdentifier.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/pluginInstallationHelpers.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/pluginLoader.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/pluginOptionsStorage.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/pluginStartupCheck.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/pluginVersioning.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/plugins/schemas.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/plugins/zipCache.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/powershell/dangerousCmdlets.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/powershell/parser.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/powershell/staticPrefix.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/privacyLevel.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/process.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/promptEditor.ts": [
+      "types"
+    ],
+    "runtime/src/utils/providerAutoDetect.ts": [
+      "types"
+    ],
+    "runtime/src/utils/providerDiscovery.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/providerFlag.ts": [
+      "types"
+    ],
+    "runtime/src/utils/providerProfile.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/providerProfiles.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/providerRecommendation.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/providerSecrets.ts": [
+      "types"
+    ],
+    "runtime/src/utils/providerStartupOverrides.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/providerValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/proxy.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/queryHelpers.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/queueProcessor.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/readEditContext.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/readFileInRange.ts": [
+      "types"
+    ],
+    "runtime/src/utils/releaseNotes.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/requestLogging.ts": [
+      "types"
+    ],
+    "runtime/src/utils/ripgrep.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/sandbox/sandbox-runtime.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/sdkEventQueue.ts": [
+      "types"
+    ],
+    "runtime/src/utils/secureStorage/keychainPrefetch.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/semver.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/sessionActivity.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/sessionEnvironment.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/sessionEnvVars.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/sessionRestore.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/sessionState.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/sessionStorage.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/sessionStoragePortable.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/set.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/settings/changeDetector.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/settings/constants.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/settings/mdm/constants.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/settings/mdm/rawRead.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/settings/mdm/settings.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/settings/pluginOnlyPolicy.ts": [
+      "types"
+    ],
+    "runtime/src/utils/settings/settings.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/settings/toolValidationConfig.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/settings/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/settings/validationTips.ts": [
+      "types"
+    ],
+    "runtime/src/utils/shell-config.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/shell-discovery.ts": [
+      "types"
+    ],
+    "runtime/src/utils/Shell.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/shell/outputLimits.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/shell/powershellDetection.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/shell/prefix.ts": [
+      "types"
+    ],
+    "runtime/src/utils/shell/readOnlyCommandValidation.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/shell/shellToolUtils.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/shellConfig.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/sideQuery.ts": [
+      "types"
+    ],
+    "runtime/src/utils/sideQuestion.ts": [
+      "types"
+    ],
+    "runtime/src/utils/signal.ts": [
+      "types"
+    ],
+    "runtime/src/utils/sleep.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/slowOperations.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/startupProfiler.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/status.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/streamingOptimizer.ts": [
+      "types"
+    ],
+    "runtime/src/utils/subprocessEnv.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/suggestions/commandSuggestions.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/suggestions/directoryCompletion.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/suggestions/shellHistoryCompletion.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/suggestions/slackChannelSuggestions.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/backends/detection.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/backends/InProcessBackend.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/backends/it2Setup.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/swarm/backends/ITermBackend.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/backends/PaneBackendExecutor.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/backends/registry.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/backends/teammateModeSnapshot.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/swarm/backends/TmuxBackend.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/constants.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/inProcessRunner.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/swarm/leaderPermissionBridge.ts": [
+      "types"
+    ],
+    "runtime/src/utils/swarm/permissionSync.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/swarm/reconnection.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/swarm/spawnInProcess.ts": [
+      "types"
+    ],
+    "runtime/src/utils/swarm/teamHelpers.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/swarm/teammateLayoutManager.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/systemDirectories.ts": [
+      "types"
+    ],
+    "runtime/src/utils/systemPrompt.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/systemTheme.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/task/diskOutput.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/task/framework.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/task/outputFormatting.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/tasks.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/teammate.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/teammateMailbox.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/teamMemoryOps.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/telemetry/betaSessionTracing.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/telemetry/instrumentation.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/telemetry/perfettoTracing.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/telemetry/pluginTelemetry.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/telemetry/sessionTracing.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/teleport.tsx": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/teleport/api.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/teleport/environments.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/teleport/environmentSelection.ts": [
+      "types"
+    ],
+    "runtime/src/utils/teleport/gitBundle.ts": [
+      "types"
+    ],
+    "runtime/src/utils/terminal-detection.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/terminalPanel.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/TextCursor.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/textHighlighting.ts": [
+      "types"
+    ],
+    "runtime/src/utils/theme.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/thinkingTokenExtractor.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/tmuxSocket.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/todo/types.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/tokens.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/toolPool.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/toolResultStorage.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/toolSearch.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/truncate.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/ultraplan/ccrSession.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/ultraplan/keyword.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/user.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/windowsPaths.ts": [
+      "exports"
+    ],
+    "runtime/src/utils/workloadContext.ts": [
+      "types"
+    ],
+    "runtime/src/utils/worktree.ts": [
+      "exports",
+      "types"
+    ],
+    "runtime/src/utils/zodToJsonSchema.ts": [
+      "types"
+    ],
+    "runtime/src/watch/agenc-watch-diff-render.mjs": [
+      "exports"
+    ],
+    "runtime/src/watch/agenc-watch-file-links.mjs": [
+      "exports"
+    ],
+    "runtime/tests/fixtures.ts": [
+      "exports"
+    ]
+  }
+}

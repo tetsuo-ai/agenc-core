@@ -20,7 +20,7 @@
  *   4. Permission gate: the guardian arbiter merges hook, rule, and
  *      evaluator decisions. inc-4788: hook `allow` does NOT bypass
  *      rule `deny` / `ask`.
- *   5. Legacy approval-modal fallback (only when the evaluator path is
+ *   5. Compatibility approval-modal fallback (only when the evaluator path is
  *      unavailable).
  *   6. Execute under timeout + abort race (I-9 / I-21).
  *   7. PostToolUse hooks; emit the six hook-attachment kinds on the
@@ -1151,10 +1151,10 @@ export async function runToolUse(
 
   // Step 4: permission gate. Merge hook result with rule/evaluator.
   let inputForTool: Record<string, unknown> = args;
-  // When the evaluator (canUseTool) decides "ask" and a legacy
+  // When the evaluator (canUseTool) decides "ask" and a compatibility
   // requestApproval prompt is wired, we still need to invoke that prompt
   // to let the resolver record the modal decision. Track that here so
-  // step 4b can opt back into the legacy fallback even though the
+  // step 4b can opt back into the compatibility fallback even though the
   // evaluator path was wired.
   let evaluatorRequestedAsk = false;
   let permissionAlreadyAllowed = false;
@@ -1293,10 +1293,10 @@ export async function runToolUse(
     }
   }
 
-  // Step 4b: legacy approval-modal fallback.
+  // Step 4b: compatibility approval-modal fallback.
   //
   // If the evaluator path is wired, it already decided allow/deny/ask.
-  // Falling through to the legacy modal after an evaluator-side allow
+  // Falling through to the compatibility modal after an evaluator-side allow
   // defeats bypassPermissions / acceptEdits semantics by prompting a
   // second time on an already-approved call.
   const shouldUseGuardianApprovalFallback =

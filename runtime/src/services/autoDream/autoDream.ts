@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 // Background memory consolidation. Fires the /dream prompt as a forked
 // subagent when time-gate passes AND enough sessions have accumulated.

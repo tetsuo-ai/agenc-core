@@ -390,7 +390,7 @@ export class ToolRouter {
    *   2. A request with a namespace (e.g. `{namespace: "server", name: "tool"}`)
    *      resolves either by the canonical MCP flat storage form
    *      `"server.tool"` when the stored entry carries `serverId === "server"`,
-   *      or by the AgenC legacy flat dotted key lookup when no
+   *      or by the AgenC compatibility flat dotted key lookup when no
    *      MCP-server match exists.
    *
    * Accepts either a `ToolName` struct or a string. A string is parsed
@@ -1356,7 +1356,7 @@ export function routerFromRegistry(
  * `session.services.mcpManager.resolveMcpToolInfo(toolName)` when a
  * session is provided; the previous `namespace.startsWith("mcp")`
  * heuristic is retained only as a no-session fallback for tests and
- * legacy call sites.
+ * compatibility call sites.
  */
 export function toolCallFromLLMToolCall(
   llmCall: LLMToolCall,
@@ -1379,7 +1379,7 @@ export function toolCallFromLLMToolCall(
     };
   }
   const toolName = parseToolName(llmCall.name);
-  // Legacy fallback for callers without a session bound — keeps
+  // Compatibility fallback for callers without a session bound — keeps
   // existing tests happy until every call site passes `session`.
   const payload: ToolPayload =
     opts.session === undefined && toolName.namespace?.startsWith("mcp")

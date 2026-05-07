@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { extractTag } from 'src/utils/messages.js';
@@ -73,7 +73,7 @@ export function renderToolUseTag({
   return <Text dimColor> {agentTaskId}</Text>;
 }
 export function renderToolResultMessage(output: Output): React.ReactNode {
-  // TODO: Render recursively
+  // Follow-up: Render recursively
   switch (output.type) {
     case 'image':
       {

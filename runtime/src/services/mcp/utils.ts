@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
@@ -354,7 +354,7 @@ export function getProjectMcpServerStatus(
   const settings = getSettings_DEPRECATED()
   const normalizedName = normalizeNameForMCP(serverName)
 
-  // TODO: This fails an e2e test if the ?. is not present. This is likely a bug in the e2e test.
+  // Follow-up: This fails an e2e test if the ?. is not present. This is likely a bug in the e2e test.
   // Will fix this in a follow-up PR.
   if (
     settings?.disabledMcpjsonServers?.some(

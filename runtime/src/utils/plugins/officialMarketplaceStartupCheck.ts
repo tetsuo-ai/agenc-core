@@ -106,8 +106,8 @@ function shouldRetryInstallation(
     return false
   }
 
-  // Retry for temporary failures (unknown), semi-permanent (git_unavailable),
-  // and legacy state (undefined failReason from before retry logic existed)
+  // Retry for short-lived failures (unknown), semi-permanent (git_unavailable),
+  // and compatibility state (undefined failReason from before retry logic existed)
   return (
     failReason === 'unknown' ||
     failReason === 'git_unavailable' ||

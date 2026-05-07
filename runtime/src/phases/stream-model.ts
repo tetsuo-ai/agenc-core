@@ -694,7 +694,7 @@ export async function streamModel(
     const decision = session.budgetTracker.checkBoundary(turnTokens);
     if (decision.action === "continue") {
       // Local adaptation: `TurnState.pendingBudgetDecision` is still the
-      // legacy `kind/reason` union, so carry the upstream continuation
+      // compatibility `kind/reason` union, so carry the upstream continuation
       // prompt in `reason` for post-sample-recovery to inject.
       state.pendingBudgetDecision = {
         kind: "stop",

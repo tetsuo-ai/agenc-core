@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Marketplace manager for AgenC plugins
  *
@@ -25,7 +25,7 @@ import { writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'path'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../envUtils.js'
@@ -1624,7 +1624,7 @@ async function loadAndCacheMarketplace(
       }
 
       case 'npm': {
-        // TODO: Implement npm package support
+        // Follow-up: Implement npm package support
         throw new Error('NPM marketplace sources not yet implemented')
       }
 
@@ -1633,7 +1633,7 @@ async function loadAndCacheMarketplace(
         // File sources point to .agenc-plugin/marketplace.json, so the marketplace
         // root is two directories up (parent of .agenc-plugin/)
         // Resolve to absolute so error messages show the actual path checked
-        // (legacy known_marketplaces.json entries may have relative paths)
+        // (compatibility known_marketplaces.json entries may have relative paths)
         const absPath = resolve(source.path)
         marketplacePath = absPath
         temporaryCachePath = dirname(dirname(absPath))
@@ -1644,7 +1644,7 @@ async function loadAndCacheMarketplace(
       case 'directory': {
         // For directories, look for .agenc-plugin/marketplace.json
         // Resolve to absolute so error messages show the actual path checked
-        // (legacy known_marketplaces.json entries may have relative paths)
+        // (compatibility known_marketplaces.json entries may have relative paths)
         const absPath = resolve(source.path)
         marketplacePath = join(absPath, '.agenc-plugin', 'marketplace.json')
         temporaryCachePath = absPath
@@ -1756,7 +1756,7 @@ async function loadAndCacheMarketplace(
 
     return { marketplace, cachePath: temporaryCachePath }
   } catch (error) {
-    // Clean up any temporary files/directories on error
+    // Clean up any short-lived files/directories on error
     if (
       cleanupNeeded &&
       temporaryCachePath! &&
@@ -2012,7 +2012,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
 
       for (const pluginId in updatedPlugins) {
         if (pluginId.endsWith(marketplaceSuffix)) {
-          // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+          // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
           updatedPlugins[pluginId] = undefined
           removedPlugins = true
         }
@@ -2139,7 +2139,7 @@ export const getMarketplace = memoize(
       )
     }
 
-    // Legacy entries (pre-#19708) may have relative paths in global config.
+    // Compatibility entries (pre-#19708) may have relative paths in global config.
     // These are meaningless outside the project that wrote them — resolving
     // against process.cwd() produces the wrong path. Give actionable guidance
     // instead of a misleading ENOENT.

@@ -1,6 +1,6 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getActiveTimeCounter as getActiveTimeCounterImpl } from '../bootstrap/state.js'
 
 type ActivityManagerOptions = {

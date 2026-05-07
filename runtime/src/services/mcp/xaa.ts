@@ -130,7 +130,7 @@ export type ProtectedResourceMetadata = {
 
 /**
  * RFC 9728 PRM discovery via SDK, plus RFC 9728 §3.3 resource-mismatch
- * validation (mix-up protection — TODO: upstream to SDK).
+ * validation (mix-up protection — Follow-up: upstream to SDK).
  */
 export async function discoverProtectedResource(
   serverUrl: string,
@@ -173,7 +173,7 @@ export type AuthorizationServerMetadata = {
 
 /**
  * AS metadata discovery via SDK (RFC 8414 + OIDC fallback), plus RFC 8414
- * §3.3 issuer-mismatch validation (mix-up protection — TODO: upstream to SDK).
+ * §3.3 issuer-mismatch validation (mix-up protection — Follow-up: upstream to SDK).
  */
 export async function discoverAuthorizationServer(
   asUrl: string,
@@ -226,7 +226,7 @@ export type JwtAuthGrantResult = {
  * Some IdPs register the client as confidential even when they advertise
  * `token_endpoint_auth_method: "none"`.
  *
- * TODO(xaa-ga): consult `token_endpoint_auth_methods_supported` from IdP
+ * Follow-up(xaa-ga): consult `token_endpoint_auth_methods_supported` from IdP
  * OIDC metadata and support `client_secret_basic`, mirroring the AS-side
  * selection in `performCrossAppAccess`. All major IdPs accept POST today.
  */

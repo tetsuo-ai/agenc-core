@@ -377,7 +377,7 @@ export type YoloClassifierResult = {
   /**
    * API request_id (req_xxx) for stage 1. Enables joining to server-side
    * api_usage logs for cache-miss / routing attribution. Also used for the
-   * legacy 1-stage (tool_use) classifier — the single request goes here.
+   * compatibility 1-stage (tool_use) classifier — the single request goes here.
    */
   stage1RequestId?: string
   /**

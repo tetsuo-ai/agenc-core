@@ -1,7 +1,7 @@
 import type {
   ComputerUseInput,
   ComputerUseInputAPI,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '@ant/computer-use-input'
 
 let cached: ComputerUseInputAPI | undefined

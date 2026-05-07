@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Component that registers global keybinding handlers.
  *
@@ -30,7 +30,7 @@ type Props = {
 
 /**
  * Registers global keybinding handlers for:
- * - ctrl+t: Toggle todo list
+ * - ctrl+t: Toggle Follow-up list
  * - ctrl+o: Toggle transcript mode
  * - ctrl+e: Toggle showing all messages in transcript
  * - ctrl+c/escape: Exit transcript mode
@@ -49,7 +49,7 @@ export function GlobalKeybindingHandlers({
   const expandedView = useAppState(s => s.expandedView);
   const setAppState = useSetAppState();
 
-  // Toggle todo list (ctrl+t) - cycles through views
+  // Toggle Follow-up list (ctrl+t) - cycles through views
   const handleToggleTodos = useCallback(() => {
     logEvent('tengu_toggle_todos', {
       is_expanded: expandedView === 'tasks'

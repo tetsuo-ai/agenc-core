@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // Centralized analytics/telemetry logging for tool permission decisions.
 // All permission approve/reject events flow through logPermissionDecision(),
 // which fans out to Statsig analytics, OTel telemetry, and code-edit metrics.

@@ -33,7 +33,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { findItem, parseItems, repoRoot, mainCheckoutRoot, fail } from "./checklist-utils.mjs";
+import { findItem, parseItems, repoRoot, mainCheckoutRoot, STATUS, fail } from "./checklist-utils.mjs";
 import {
   RUNTIME_UPSTREAM_SCAN_PATHS,
   collectRuntimeUpstreamReferences,
@@ -44,6 +44,15 @@ import {
   formatShimBehaviorViolation,
   measureShimBehaviorForPath,
 } from "./shim-behavior.mjs";
+import {
+  collectKnipIssueTypesByFile,
+  collectKnipUnusedIssueEntries,
+  findStaleKnipIssueIgnores,
+  findUnignoredKnipIssues,
+  normalizeKnipIssueIgnoreEntries,
+  stripKnipIssueAllowlists,
+} from "./knip-issue-audit.mjs";
+import { collectIncompleteZFinalPredecessors } from "./z-final-contracts.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -87,6 +96,9 @@ const ITEM_EVIDENCE = {
     grepNotPresent: [
       { pattern: "agenc/upstream", scope: "runtime/src" },
     ],
+  },
+  "Z-FINAL": {
+    runStrict: true,
   },
   "ZC-08": {
     tests: [
@@ -9288,7 +9300,7 @@ async function cleanupGates(item) {
   // silently no-op through the function with no checks fired.
   const knownZ = new Set([
     "Z-01", "Z-02", "Z-03", "Z-04", "Z-05", "Z-06",
-    "Z-PURGEA", "Z-PURGEB", "Z-PURGEC", "Z-PURGEFINAL",
+    "Z-PURGEA", "Z-PURGEB", "Z-PURGEC", "Z-PURGEFINAL", "Z-FINAL",
   ]);
   if (!knownZ.has(id) && !/^ZC-/.test(id)) {
     failGate(
@@ -9344,6 +9356,501 @@ async function cleanupGates(item) {
       );
     }
     pass(`${id}: ${label} has zero stale agenc/upstream references in tracked runtime source, tests, and build config`);
+  }
+
+  function summarizeCommandOutput(result, limit = 4_000) {
+    const output = `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
+    if (output.length <= limit) return output;
+    return `${output.slice(0, limit)}\n... truncated ${output.length - limit} byte(s)`;
+  }
+
+  function runRequiredZFinalCommand(label, cmd, argv) {
+    const result = run(cmd, argv, { silent: true });
+    if (result.status !== 0) {
+      failGate(`${label} failed:\n${summarizeCommandOutput(result)}`);
+    }
+    pass(label);
+    return result;
+  }
+
+  const Z_FINAL_TS_PRUNE_PROJECT = "runtime/tsconfig.json";
+  const Z_FINAL_TS_PRUNE_IGNORE_REL = ".ts-prune-ignore";
+  const Z_FINAL_KNIP_CONFIG_REL = ".knip.json";
+  const Z_FINAL_KNIP_ISSUE_IGNORE_REL = ".knip-issues-ignore.json";
+
+  function readZFinalTsPruneIgnorePatterns() {
+    const ignorePath = path.join(root, Z_FINAL_TS_PRUNE_IGNORE_REL);
+    if (!existsSync(ignorePath)) return [];
+    return readFileSync(ignorePath, "utf8")
+      .split(/\r?\n/)
+      .map((line, index) => ({ line: line.trim(), index: index + 1 }))
+      .filter(({ line }) => line && !line.startsWith("#"))
+      .map(({ line, index }) => {
+        try {
+          return { pattern: new RegExp(line), index };
+        } catch (error) {
+          failGate(
+            `Z-FINAL gate 3: ${Z_FINAL_TS_PRUNE_IGNORE_REL}:${index} is not a valid regex: ${error?.message || error}`,
+          );
+        }
+      });
+  }
+
+  function collectUnignoredTsPruneLines(output, ignorePatterns) {
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !ignorePatterns.some(({ pattern }) => pattern.test(line)));
+  }
+
+  function assertZFinalTsPruneClean() {
+    const tsPrune = run("npx", [
+      "--yes",
+      "--package",
+      "ts-prune@0.10.3",
+      "ts-prune",
+      "--error",
+      "-p",
+      Z_FINAL_TS_PRUNE_PROJECT,
+    ], { silent: true });
+    if (![0, 1].includes(tsPrune.status)) {
+      failGate(`Z-FINAL gate 3: ts-prune failed to run:\n${summarizeCommandOutput(tsPrune)}`);
+    }
+    const ignorePatterns = readZFinalTsPruneIgnorePatterns();
+    const unignored = collectUnignoredTsPruneLines(tsPrune.stdout || "", ignorePatterns);
+    if (unignored.length > 0) {
+      failGate(
+        `Z-FINAL gate 3: ts-prune reported ${unignored.length} unignored unused export(s). ` +
+          `Remove the export or add a precise ${Z_FINAL_TS_PRUNE_IGNORE_REL} entry:\n${unignored.slice(0, 80).join("\n")}`,
+      );
+    }
+    if (tsPrune.stderr?.trim()) {
+      failGate(`Z-FINAL gate 3: ts-prune wrote unexpected stderr:\n${tsPrune.stderr.trim()}`);
+    }
+    pass(`Z-FINAL gate 3: ts-prune has zero unignored unused exports (${ignorePatterns.length} ignore pattern(s))`);
+  }
+
+  function assertZFinalPredecessorsDone() {
+    const checklist = path.join(mainCheckoutRoot(), "PORT_CHECKLIST.md");
+    if (!existsSync(checklist)) {
+      failGate("Z-FINAL precondition: PORT_CHECKLIST.md is missing from the main checkout before final merge");
+    }
+    const items = parseItems(readFileSync(checklist, "utf8"));
+    const predecessors = items
+      .filter((candidate) => candidate.id !== "Z-FINAL" && /^(?:Z-|ZC-)/.test(candidate.id))
+      .filter((candidate) => !candidate.dependsOn.includes("Z-FINAL"));
+    const incomplete = collectIncompleteZFinalPredecessors(items);
+    if (incomplete.length > 0) {
+      failGate(
+        `Z-FINAL precondition: all predecessor Z-* and ZC-* items must be [x] before final cleanup:\n` +
+          incomplete.map((candidate) => `${candidate.statusToken} ${candidate.id} ${candidate.title}`).join("\n"),
+      );
+    }
+    pass(`Z-FINAL precondition: ${predecessors.length} predecessor Z/ZC item(s) are done`);
+  }
+
+  function listRuntimeDirectories() {
+    const runtimeSrc = path.join(root, "runtime/src");
+    const out = [];
+    function visit(dir) {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const child = path.join(dir, entry.name);
+        out.push(child);
+        visit(child);
+      }
+    }
+    visit(runtimeSrc);
+    return out;
+  }
+
+  function readZFinalKnipIssueIgnoreEntries() {
+    const ignorePath = path.join(root, Z_FINAL_KNIP_ISSUE_IGNORE_REL);
+    if (!existsSync(ignorePath)) return [];
+    let parsed;
+    try {
+      parsed = JSON.parse(readFileSync(ignorePath, "utf8"));
+    } catch (error) {
+      failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} is not valid JSON: ${error?.message || error}`);
+    }
+    try {
+      return normalizeKnipIssueIgnoreEntries(parsed?.entries);
+    } catch (error) {
+      failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} ${error?.message || error}`);
+    }
+  }
+
+  function readZFinalKnipConfig() {
+    const configPath = path.join(root, Z_FINAL_KNIP_CONFIG_REL);
+    try {
+      return JSON.parse(readFileSync(configPath, "utf8"));
+    } catch (error) {
+      failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_CONFIG_REL} is not valid JSON: ${error?.message || error}`);
+    }
+  }
+
+  function assertZFinalKnipConfigCoversExactAuditEntries(config, ignoreEntries) {
+    const expected = collectKnipIssueTypesByFile(ignoreEntries);
+    const actual = config?.ignoreIssues && typeof config.ignoreIssues === "object" ? config.ignoreIssues : {};
+    const missing = [];
+    const stale = [];
+    for (const [file, types] of Object.entries(expected)) {
+      const actualTypes = new Set(Array.isArray(actual[file]) ? actual[file] : []);
+      for (const type of types) {
+        if (!actualTypes.has(type)) missing.push(`${file}: ${type}`);
+      }
+    }
+    for (const [file, types] of Object.entries(actual)) {
+      if (!Array.isArray(types)) {
+        stale.push(`${file}: invalid non-array ignoreIssues entry`);
+        continue;
+      }
+      const expectedTypes = new Set(expected[file] ?? []);
+      for (const type of types) {
+        if (!expectedTypes.has(type)) stale.push(`${file}: ${type}`);
+      }
+    }
+    if (missing.length > 0 || stale.length > 0) {
+      failGate(
+        `Z-FINAL gate 4: ${Z_FINAL_KNIP_CONFIG_REL} ignoreIssues must match ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} file/type coverage exactly.\n` +
+          `${missing.length > 0 ? `Missing from ${Z_FINAL_KNIP_CONFIG_REL}:\n${missing.slice(0, 80).join("\n")}\n` : ""}` +
+          `${stale.length > 0 ? `Stale in ${Z_FINAL_KNIP_CONFIG_REL}:\n${stale.slice(0, 80).join("\n")}` : ""}`,
+      );
+    }
+  }
+
+  function parseZFinalKnipReport(result, label) {
+    if (result.status !== 0) {
+      failGate(`Z-FINAL gate 4: ${label} failed to run:\n${summarizeCommandOutput(result)}`);
+    }
+    try {
+      return JSON.parse(result.stdout || "{}");
+    } catch (error) {
+      failGate(`Z-FINAL gate 4: ${label} JSON reporter output was not parseable: ${error?.message || error}`);
+    }
+  }
+
+  function runZFinalKnip(configPath = null) {
+    const argv = [
+      "--yes",
+      "--package",
+      "knip@5.85.0",
+      "knip",
+      "--no-progress",
+      "--no-exit-code",
+      "--reporter",
+      "json",
+      "--include",
+      "files,dependencies,exports,types,enumMembers",
+    ];
+    if (configPath) argv.push("--config", configPath);
+    return run("npx", argv, { silent: true });
+  }
+
+  function writeZFinalKnipAuditConfig(config) {
+    const dir = mkdtempSync(path.join(tmpdir(), "agenc-z-final-knip-"));
+    const configPath = path.join(dir, "knip.json");
+    writeFileSync(configPath, JSON.stringify(stripKnipIssueAllowlists(config), null, 2) + "\n");
+    return { dir, configPath };
+  }
+
+  const zFinalDebtCommentRe = /\b(?:TODO|FIXME|HACK|legacy|temporary|for now|remove after)\b/i;
+
+  function collectTsCommentLines(source) {
+    const comments = [];
+    let index = 0;
+    let line = 1;
+    let state = "code";
+    let commentStartLine = 0;
+    let commentText = "";
+
+    function consumeQuotedString(quote) {
+      index += 1;
+      let escaped = false;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === "\n") {
+          line += 1;
+          index += 1;
+          if (quote !== "`") return;
+          continue;
+        }
+        if (escaped) {
+          escaped = false;
+          index += 1;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          index += 1;
+          continue;
+        }
+        index += 1;
+        if (char === quote) return;
+      }
+    }
+
+    while (index < source.length) {
+      const char = source[index];
+      const next = source[index + 1];
+      if (state === "code") {
+        if (char === "/" && next === "/") {
+          state = "line";
+          commentStartLine = line;
+          commentText = "";
+          index += 2;
+          continue;
+        }
+        if (char === "/" && next === "*") {
+          state = "block";
+          commentStartLine = line;
+          commentText = "";
+          index += 2;
+          continue;
+        }
+        if (char === "\"" || char === "'" || char === "`") {
+          consumeQuotedString(char);
+          continue;
+        }
+        if (char === "\n") line += 1;
+        index += 1;
+        continue;
+      }
+
+      if (state === "line") {
+        if (char === "\n") {
+          comments.push({ line: commentStartLine, text: commentText });
+          state = "code";
+          line += 1;
+          index += 1;
+          continue;
+        }
+        commentText += char;
+        index += 1;
+        continue;
+      }
+
+      if (state === "block") {
+        if (char === "*" && next === "/") {
+          comments.push({ line: commentStartLine, text: commentText });
+          state = "code";
+          index += 2;
+          continue;
+        }
+        commentText += char;
+        if (char === "\n") line += 1;
+        index += 1;
+      }
+    }
+
+    if (state === "line" || state === "block") {
+      comments.push({ line: commentStartLine, text: commentText });
+    }
+    return comments;
+  }
+
+  function collectZFinalProductionDebtCommentHits() {
+    const runtimeRoot = path.join(root, "runtime/src");
+    return walkFiles(runtimeRoot)
+      .filter((file) => /\.(ts|tsx)$/.test(file))
+      .filter((file) => !/\.test\.(ts|tsx)$/.test(file))
+      .flatMap((file) => {
+        const rel = path.relative(root, file).split(path.sep).join("/");
+        const source = readFileSync(file, "utf8");
+        const hits = [];
+        for (const comment of collectTsCommentLines(source)) {
+          const lines = comment.text.split("\n");
+          for (let offset = 0; offset < lines.length; offset += 1) {
+            const text = lines[offset].trim();
+            if (zFinalDebtCommentRe.test(text)) {
+              hits.push(`${rel}:${comment.line + offset}:${text}`);
+            }
+          }
+        }
+        return hits;
+      });
+  }
+
+  function assertZFinalEndState() {
+    assertZFinalPredecessorsDone();
+
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 1: runtime tsc has zero errors",
+      "npx",
+      ["tsc", "--noEmit", "-p", "runtime/tsconfig.json"],
+    );
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 2: runtime strict unused-locals tsc has zero errors",
+      "npx",
+      [
+        "tsc",
+        "--strict",
+        "--noUnusedLocals",
+        "--noUnusedParameters",
+        "--noEmit",
+        "-p",
+        "runtime/tsconfig.json",
+      ],
+    );
+    assertZFinalTsPruneClean();
+
+    const knipConfig = readZFinalKnipConfig();
+    const ignoredIssueEntries = readZFinalKnipIssueIgnoreEntries();
+    assertZFinalKnipConfigCoversExactAuditEntries(knipConfig, ignoredIssueEntries);
+
+    const knipReport = parseZFinalKnipReport(runZFinalKnip(), "knip");
+    const unusedFiles = Array.isArray(knipReport.files) ? knipReport.files : [];
+    const configuredIssueEntries = collectKnipUnusedIssueEntries(knipReport);
+    if (unusedFiles.length > 0 || configuredIssueEntries.length > 0) {
+      failGate(
+        `Z-FINAL gate 4: configured knip reported ${unusedFiles.length} unused file(s) and ${configuredIssueEntries.length} issue(s). ` +
+          `Remove the dead surface or add justified file/type allow-list coverage to ${Z_FINAL_KNIP_CONFIG_REL}:\n` +
+          configuredIssueEntries.slice(0, 80).map((entry) => `${entry.file}: ${entry.type} ${entry.name}`).join("\n"),
+      );
+    }
+
+    const auditConfig = writeZFinalKnipAuditConfig(knipConfig);
+    let auditIssueEntries = [];
+    try {
+      const rawKnipReport = parseZFinalKnipReport(runZFinalKnip(auditConfig.configPath), "raw knip audit");
+      auditIssueEntries = collectKnipUnusedIssueEntries(rawKnipReport);
+    } finally {
+      rmSync(auditConfig.dir, { recursive: true, force: true });
+    }
+    const unignoredIssueEntries = findUnignoredKnipIssues(auditIssueEntries, ignoredIssueEntries);
+    const staleIgnoredIssueEntries = findStaleKnipIssueIgnores(ignoredIssueEntries, auditIssueEntries);
+    if (unignoredIssueEntries.length > 0) {
+      failGate(
+        `Z-FINAL gate 4: raw knip audit reported ${unignoredIssueEntries.length} issue(s) not covered by ${Z_FINAL_KNIP_ISSUE_IGNORE_REL}. ` +
+          `Remove the dead surface or add an exact audit entry:\n` +
+          unignoredIssueEntries.slice(0, 80).map((entry) => `${entry.file}: ${entry.type} ${entry.name}`).join("\n"),
+      );
+    }
+    if (staleIgnoredIssueEntries.length > 0) {
+      failGate(
+        `Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} contains ${staleIgnoredIssueEntries.length} stale issue ignore entr${staleIgnoredIssueEntries.length === 1 ? "y" : "ies"} no longer present in knip output:\n` +
+          staleIgnoredIssueEntries.slice(0, 80).map((entry) => `${entry.file}: ${entry.type} ${entry.name ?? entry.namePattern}`).join("\n"),
+      );
+    }
+    pass(`Z-FINAL gate 4: configured knip is clean and raw knip audit matches ${ignoredIssueEntries.length} exact issue entr${ignoredIssueEntries.length === 1 ? "y" : "ies"}`);
+
+    const debtHits = collectZFinalProductionDebtCommentHits();
+    if (debtHits.length > 0) {
+      failGate(`Z-FINAL gate 5: production TODO/legacy/temporary comment debt remains:\n${debtHits.join("\n")}`);
+    }
+    pass("Z-FINAL gate 5: production TODO/legacy/temporary comment debt scan is clean");
+
+    const upstreamImportScan = run("rg", [
+      "--no-messages",
+      "-l",
+      "from .*agenc/upstream/",
+      "runtime/src",
+      "-g",
+      "*.ts",
+      "-g",
+      "*.tsx",
+    ], { silent: true });
+    if (upstreamImportScan.status === 0 && upstreamImportScan.stdout.trim()) {
+      failGate(`Z-FINAL gate 6: upstream importers remain:\n${upstreamImportScan.stdout.trim()}`);
+    }
+    if (upstreamImportScan.status > 1) {
+      failGate(`Z-FINAL gate 6: upstream importer scan failed:\n${summarizeCommandOutput(upstreamImportScan)}`);
+    }
+    pass("Z-FINAL gate 6: upstream importer scan is clean");
+
+    const forbiddenDirNames = new Set([
+      // branding-scan: allow verifier rejects donor-named runtime dirs
+      "openclaude",
+      // branding-scan: allow verifier rejects donor-named runtime dirs
+      "codex",
+      "claude",
+      "donor",
+      "mirror",
+      "vendored",
+      "external",
+      "_oc",
+      "_cx",
+    ]);
+    const forbiddenDirs = listRuntimeDirectories()
+      .filter((dir) => forbiddenDirNames.has(path.basename(dir)))
+      .map((dir) => path.relative(root, dir).split(path.sep).join("/"));
+    if (forbiddenDirs.length > 0) {
+      failGate(`Z-FINAL gate 7: donor-named runtime dir(s) remain:\n${forbiddenDirs.join("\n")}`);
+    }
+    pass("Z-FINAL gate 7: no donor-named runtime directories remain");
+
+    const shimSuffixRe = /-(shim|adapter|compat|legacy|bridge|wrapper|facade|proxy|glue|forwarder|passthrough|stub|indirect|dispatch|barrel)\.[^/]+$/;
+    const shimFiles = walkFiles(path.join(root, "runtime/src"))
+      .map((file) => path.relative(root, file).split(path.sep).join("/"))
+      .filter((rel) => shimSuffixRe.test(path.basename(rel)));
+    if (shimFiles.length > 0) {
+      failGate(`Z-FINAL gate 8: shim-pattern runtime file(s) remain:\n${shimFiles.join("\n")}`);
+    }
+    pass("Z-FINAL gate 8: no shim-pattern runtime files remain");
+
+    const trackedNames = git("ls-files");
+    if (trackedNames.status !== 0) failGate("Z-FINAL gate 9: git ls-files failed");
+    const donorNamedTracked = trackedNames.stdout
+      .split("\n")
+      // branding-scan: allow verifier rejects donor-named tracked path patterns
+      .filter((line) => /(openclaude|codex|claude_code|claudecode)/i.test(line));
+    if (donorNamedTracked.length > 0) {
+      failGate(`Z-FINAL gate 9: donor-named tracked path(s) remain:\n${donorNamedTracked.join("\n")}`);
+    }
+    pass("Z-FINAL gate 9: no donor-named tracked paths remain");
+
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 10: validate:umbrella passes",
+      "npm",
+      ["run", "validate:umbrella"],
+    );
+
+    function collectZFinalGoalCompletedDirs(startDir, label) {
+      const dirs = [];
+      const rootDir = path.resolve(startDir);
+      function visitForGoalCompleted(dir) {
+        if (!existsSync(dir)) return;
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          if (entry.name === "node_modules" || entry.name === ".git") continue;
+          const child = path.join(dir, entry.name);
+          if (entry.name === ".goal-completed") {
+            dirs.push(`${label}:${path.relative(rootDir, child).split(path.sep).join("/") || ".goal-completed"}`);
+            continue;
+          }
+          visitForGoalCompleted(child);
+        }
+      }
+      visitForGoalCompleted(rootDir);
+      return dirs;
+    }
+    const goalCompletedDirs = [
+      ...collectZFinalGoalCompletedDirs(root, "worktree"),
+      ...(path.resolve(mainCheckoutRoot()) === path.resolve(root)
+        ? []
+        : collectZFinalGoalCompletedDirs(mainCheckoutRoot(), "main")),
+    ];
+    if (goalCompletedDirs.length > 0) {
+      failGate(`Z-FINAL gate 11: .goal-completed dir(s) remain:\n${goalCompletedDirs.join("\n")}`);
+    }
+    pass("Z-FINAL gate 11: no .goal-completed marker directory remains in this worktree or main checkout");
+
+    const portArtifacts = ["PORT_CHECKLIST.md", "GOAL_DISCIPLINE.md", "AGENTS.md"]
+      .filter((rel) => existsSync(path.join(root, rel)));
+    if (portArtifacts.length > 0) {
+      failGate(`Z-FINAL gate 12: top-level port-era artifact(s) remain:\n${portArtifacts.join("\n")}`);
+    }
+    pass("Z-FINAL gate 12: top-level port-era artifacts are absent in this worktree");
+
+    const parityDocs = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) => path.basename(file) === "PARITY.md")
+      .map((file) => path.relative(root, file).split(path.sep).join("/"));
+    if (parityDocs.length > 0) {
+      failGate(`Z-FINAL gate 13: runtime PARITY.md scaffolding remains:\n${parityDocs.join("\n")}`);
+    }
+    pass("Z-FINAL gate 13: runtime PARITY.md scaffolding is gone");
   }
 
   function assertZPurgecTemporaryBoundaries() {
@@ -9571,7 +10078,7 @@ async function cleanupGates(item) {
     assertZPurgecTemporaryBoundaries();
     return;
   }
-  if (id === "Z-PURGEFINAL") {
+  if (id === "Z-PURGEFINAL" || id === "Z-FINAL") {
     if (existsSync(path.join(root, "runtime/src/agenc/upstream"))) {
       const remaining = walkFiles(path.join(root, "runtime/src/agenc/upstream"));
       if (remaining.length > 0) {
@@ -9583,6 +10090,9 @@ async function cleanupGates(item) {
     }
     assertNoRuntimeUpstreamReferences("final runtime purge surface");
     pass(`${id}: upstream/ tree fully removed, zero importers`);
+    if (id === "Z-FINAL") {
+      assertZFinalEndState();
+    }
     return;
   }
   if (id === "Z-01" || id === "Z-02") {

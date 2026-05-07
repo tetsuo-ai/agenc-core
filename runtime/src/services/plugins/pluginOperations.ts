@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Core plugin operations (install, uninstall, enable, disable, update)
  *
@@ -530,7 +530,7 @@ export async function uninstallPluginOp(
   // Separate from the `&& installPath` guard above — deletePluginOptions only
   // needs pluginId, not installPath. Last scope removed → wipe stored options
   // and secrets. Before this, uninstalling left orphaned entries in
-  // settings.pluginConfigs (including the legacy ungated mcpServers sub-key
+  // settings.pluginConfigs (including the compatibility ungated mcpServers sub-key
   // from the MCPB Configure flow) and keychain pluginSecrets forever. No
   // feature gate: deletePluginOptions no-ops when nothing is stored, and
   // pluginConfigs.mcpServers is written ungated so its cleanup must run

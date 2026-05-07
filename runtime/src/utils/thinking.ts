@@ -1,9 +1,9 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
@@ -90,7 +90,7 @@ export function getRainbowColor(
   return colors[charIndex % colors.length]!
 }
 
-// TODO(inigo): add support for probing unknown models via API error detection
+// Follow-up(inigo): add support for probing unknown models via API error detection
 // Provider-aware thinking support detection (aligns with modelSupportsISP in betas.ts)
 export function modelSupportsThinking(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'thinking')
@@ -138,7 +138,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   if (canonical.includes('opus-4-7') || canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
     return true
   }
-  // Exclude any other known legacy models (allowlist above catches 4-6 variants first)
+  // Exclude any other known compatibility models (allowlist above catches 4-6 variants first)
   if (
     canonical.includes('opus') ||
     canonical.includes('sonnet') ||

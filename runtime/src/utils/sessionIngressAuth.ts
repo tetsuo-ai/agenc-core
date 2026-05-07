@@ -1,9 +1,9 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   getSessionIngressToken,
   setSessionIngressToken,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import {
   CCR_SESSION_INGRESS_TOKEN_PATH,
@@ -95,7 +95,7 @@ function getTokenFromFileDescriptor(): string | null {
  *  1. Environment variable (AGENC_SESSION_ACCESS_TOKEN) — set at spawn time,
  *     updated in-process via updateSessionIngressAuthToken or
  *     update_environment_variables stdin message from the parent bridge process.
- *  2. File descriptor (legacy path) — AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR,
+ *  2. File descriptor (compatibility path) — AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR,
  *     read once and cached.
  *  3. Well-known file — AGENC_SESSION_INGRESS_TOKEN_FILE env var path, or
  *     $HOME/.agenc/remote/.session_ingress_token. Covers subprocesses
@@ -108,7 +108,7 @@ export function getSessionIngressAuthToken(): string | null {
     return envToken
   }
 
-  // 2. Check file descriptor (legacy path), with file fallback
+  // 2. Check file descriptor (compatibility path), with file fallback
   return getTokenFromFileDescriptor()
 }
 

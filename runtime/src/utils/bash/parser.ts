@@ -1,7 +1,7 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
@@ -61,7 +61,7 @@ export async function parseCommand(
 ): Promise<ParsedCommandData | null> {
   if (!command || command.length > MAX_COMMAND_LENGTH) return null
 
-  // Gate: internal-only until pentest. External builds fall back to legacy
+  // Gate: internal-only until pentest. External builds fall back to compatibility
   // regex/shell-quote path. Guarding the whole body inside the positive
   // branch lets Bun DCE the NAPI import AND keeps telemetry honest — we
   // only fire tengu_tree_sitter_load when a load was genuinely attempted.
@@ -91,7 +91,7 @@ export async function parseCommand(
  * (timeout / node budget / Rust panic). Distinct from `null` (module not
  * loaded). Adversarial input can trigger abort under MAX_COMMAND_LENGTH:
  * `(( a[0][0]... ))` with ~2800 subscripts hits PARSE_TIMEOUT_MICROS.
- * Callers MUST treat this as fail-closed (too-complex), NOT route to legacy.
+ * Callers MUST treat this as fail-closed (too-complex), NOT route to compatibility.
  */
 export const PARSE_ABORTED = Symbol('parse-aborted')
 
@@ -117,7 +117,7 @@ export async function parseCommandRaw(
       const result = mod.parse(command)
       // SECURITY: Module loaded; null here = timeout/node-budget abort in
       // bashParser.ts (PARSE_TIMEOUT_MS=50, MAX_NODES=50_000).
-      // Previously collapsed into `return null` → parse-unavailable → legacy
+      // Previously collapsed into `return null` → parse-unavailable → compatibility
       // path, which lacks EVAL_LIKE_BUILTINS — `trap`, `enable`, `hash` leaked.
       if (result === null) {
         logEvent('tengu_tree_sitter_parse_abort', {

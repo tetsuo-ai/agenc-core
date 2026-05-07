@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { isBareMode } from './envUtils.js'
 import { getSecureStorage } from './secureStorage/index.js'
 import {
@@ -306,7 +306,7 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
     const refreshAttemptedAt = Date.now()
 
     try {
-      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       const body = new URLSearchParams({
         client_id: getAgencOAuthClientId(),
         grant_type: 'refresh_token',

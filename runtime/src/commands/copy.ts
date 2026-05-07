@@ -4,7 +4,7 @@
  * The command intentionally avoids owning platform clipboard behavior.
  * Its runtime contract is transcript export: produce stable plain text
  * from `SessionState.history` so CLI/TUI callers can render or copy it
- * without a second legacy command path.
+ * without a second compatibility command path.
  *
  * @module
  */

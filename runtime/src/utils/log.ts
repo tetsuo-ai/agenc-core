@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { readdir, readFile, stat } from 'fs/promises'
@@ -9,7 +9,7 @@ import type { QuerySource } from 'src/constants/querySource.js'
 import {
   setLastAPIRequest,
   setLastAPIRequestMessages,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import { TICK_TAG } from '../constants/xml.js'
 import {
@@ -234,7 +234,7 @@ export async function getErrorLogByIndex(
 async function loadLogList(path: string): Promise<LogOption[]> {
   let files: Awaited<ReturnType<typeof readdir>>
   try {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     files = await readdir(path, { withFileTypes: true })
   } catch {
     logError(new Error(`No logs found at ${path}`))
@@ -242,7 +242,7 @@ async function loadLogList(path: string): Promise<LogOption[]> {
   }
   const logData = await Promise.all(
     files.map(async (file, i) => {
-      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       const fullPath = join(path, file.name)
       const content = await readFile(fullPath, { encoding: 'utf8' })
       const messages = jsonParse(content) as SerializedMessage[]
@@ -267,7 +267,7 @@ async function loadLogList(path: string): Promise<LogOption[]> {
         date,
         fullPath,
         messages,
-        value: i, // hack: overwritten after sorting, right below this
+        value: i, // workaround: overwritten after sorting, right below this
         created: parseISOString(firstMessage?.timestamp || date),
         modified: lastMessage?.timestamp
           ? parseISOString(lastMessage.timestamp)

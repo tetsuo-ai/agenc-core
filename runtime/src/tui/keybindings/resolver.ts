@@ -84,7 +84,7 @@ function buildKeystroke(input: string, key: Key): ParsedKeystroke | null {
   if (!keyName) return null
 
   // QUIRK: Ink sets key.meta=true when escape is pressed (see input-event.ts).
-  // This is legacy terminal behavior - we should NOT record this as a modifier
+  // This is compatibility terminal behavior - we should NOT record this as a modifier
   // for the escape key itself, otherwise chord matching will fail.
   const effectiveMeta = key.escape ? false : key.meta
 
@@ -100,7 +100,7 @@ function buildKeystroke(input: string, key: Key): ParsedKeystroke | null {
 
 /**
  * Compare two ParsedKeystrokes for equality. Collapses alt/meta into
- * one logical modifier — legacy terminals can't distinguish them (see
+ * one logical modifier — compatibility terminals can't distinguish them (see
  * match.ts modifiersMatch), so "alt+k" and "meta+k" are the same key.
  * Super (cmd/win) is distinct — only arrives via kitty keyboard protocol.
  */

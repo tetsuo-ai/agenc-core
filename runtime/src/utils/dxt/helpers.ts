@@ -1,6 +1,6 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { McpbManifest } from '@anthropic-ai/mcpb'
 import { errorMessage } from '../errors.js'
 import { jsonParse } from '../slowOperations.js'
@@ -16,7 +16,7 @@ import { jsonParse } from '../slowOperations.js'
 export async function validateManifest(
   manifestJson: unknown,
 ): Promise<McpbManifest> {
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { McpbManifestSchema } = await import('@anthropic-ai/mcpb')
   const parseResult = McpbManifestSchema.safeParse(manifestJson)
 

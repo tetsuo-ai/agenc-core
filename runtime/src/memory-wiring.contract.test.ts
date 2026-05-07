@@ -36,7 +36,6 @@ describe("memory wiring contract", () => {
     for (const file of listSourceFiles(resolve(root, "runtime/src"))) {
       const rel = file.slice(root.length + 1);
       if (
-        rel.startsWith("runtime/src/agenc/upstream/") ||
         rel === "runtime/src/memdir/teamMemPaths.ts" ||
         rel === "runtime/src/memdir/teamMemPrompts.ts"
       ) {

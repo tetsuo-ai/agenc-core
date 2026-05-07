@@ -607,7 +607,7 @@ async function handleSpawnSplitPane(
 }
 
 /**
- * Handle spawn operation using separate windows (legacy behavior).
+ * Handle spawn operation using separate windows (compatibility behavior).
  * Creates each teammate in its own tmux window.
  */
 async function handleSpawnSeparateWindow(

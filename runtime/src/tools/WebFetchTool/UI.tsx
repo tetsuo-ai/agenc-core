@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React from 'react';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import memoize from 'lodash-es/memoize.js'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { getRegisteredHooks } from '../../bootstrap/state.js'

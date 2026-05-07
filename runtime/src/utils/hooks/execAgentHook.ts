@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { randomUUID } from 'crypto'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import { query } from '../../query.js'

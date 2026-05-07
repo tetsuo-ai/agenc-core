@@ -1,4 +1,4 @@
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ComputerUseAPI } from '@ant/computer-use-swift'
 
 let cached: ComputerUseAPI | undefined

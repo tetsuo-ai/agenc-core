@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { buildTool, type ToolDef, toolMatchesName } from 'src/tools/Tool.js';
@@ -1218,7 +1218,7 @@ export const AgentTool = buildTool({
         }
 
         // Re-throw abort errors
-        // TODO: Find a cleaner way to express this
+        // Follow-up: Find a cleaner way to express this
         const lastMessage = agentMessages.findLast(_ => _.type !== 'system' && _.type !== 'progress');
         if (lastMessage && isSyntheticMessage(lastMessage)) {
           logEvent('tengu_agent_tool_terminated', {

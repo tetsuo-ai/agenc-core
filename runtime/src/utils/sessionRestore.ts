@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { dirname } from 'path'
@@ -73,7 +73,7 @@ type ResumeResult = {
 
 /**
  * Scan the transcript for the last TodoWrite tool_use block and return its todos.
- * Used to hydrate AppState.todos on SDK --resume so the model's todo list
+ * Used to hydrate AppState.todos on SDK --resume so the model's Follow-up list
  * survives session restarts without file persistence.
  */
 function extractTodosFromTranscript(messages: Message[]): TodoList {

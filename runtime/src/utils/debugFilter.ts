@@ -34,10 +34,10 @@ export const parseDebugFilter = memoize(
     const hasInclusive = filters.some(f => !f.startsWith('!'))
 
     if (hasExclusive && hasInclusive) {
-      // For now, we'll treat this as an error case and show all messages
+      // currently, we'll treat this as an error case and show all messages
       // Log error using logForDebugging to avoid console.error lint rule
       // We'll import and use it later when the circular dependency is resolved
-      // For now, just return null silently
+      // currently, just return null silently
       return null
     }
 

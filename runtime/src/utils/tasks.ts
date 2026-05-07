@@ -1,9 +1,9 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
 import { uniq } from './array.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -319,7 +319,7 @@ export async function getTask(
     const content = await readFile(path, 'utf-8')
     const data = jsonParse(content) as { status?: string }
 
-    // TEMPORARY: Migrate old status names for existing sessions (internal-only)
+    // SHORT-LIVED: Migrate old status names for existing sessions (internal-only)
     if (process.env.USER_TYPE === 'ant') {
       if (data.status === 'open') data.status = 'pending'
       else if (data.status === 'resolved') data.status = 'completed'
@@ -786,7 +786,7 @@ export async function getAgentStatuses(
 
   // Build status for each agent (leader is already in members)
   return teamData.members.map(member => {
-    // Check both name (new) and agentId (legacy) for backwards compatibility
+    // Check both name (new) and agentId (compatibility) for backwards compatibility
     const tasksByName = unresolvedTasksByOwner.get(member.name) || []
     const tasksById = unresolvedTasksByOwner.get(member.agentId) || []
     const currentTasks = uniq([...tasksByName, ...tasksById])

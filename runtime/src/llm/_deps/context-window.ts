@@ -4,11 +4,11 @@
  * the AgenC port; this lean stub re-exposes only the surface that
  * the LLM subsystem actually consumes:
  *   - GatewayLLMConfig type (minimal field set)
- *   - normalizeGrokModel (legacy alias rewrite)
+ *   - normalizeGrokModel (compatibility alias rewrite)
  *   - resolveContextWindowProfile (heuristic-only path)
  *
  * The rebuilt gateway tranche will replace this with the canonical
- * resolver. For now keep behavior conservative: never throw, return
+ * resolver. currently keep behavior conservative: never throw, return
  * heuristic answers, and skip the catalog/dynamic-fetch paths.
  */
 

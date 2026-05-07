@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared utilities for spawning teammates across different backends.
  */
@@ -10,7 +10,7 @@ import {
   getInlinePlugins,
   getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
 import { isInBundledMode } from '../bundledMode.js'

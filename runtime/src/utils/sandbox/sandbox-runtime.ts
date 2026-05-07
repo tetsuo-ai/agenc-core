@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Adapter layer that wraps @anthropic-ai/sandbox-runtime with AgenC CLI-specific integrations.
  * This file provides the bridge between the external sandbox-runtime package and AgenC CLI's
@@ -127,7 +127,7 @@ export function resolvePathPatternForSandbox(
  * - `/path` → absolute path (as written, NOT settings-relative)
  * - `~/path` → expanded to home directory
  * - `./path` or `path` → relative to settings file directory
- * - `//path` → absolute (legacy permission-rule syntax, accepted for compat)
+ * - `//path` → absolute (compatibility permission-rule syntax, accepted for compat)
  *
  * Fix for #30067: resolvePathPatternForSandbox treats `/Users/foo/.cargo` as
  * settings-relative (permission-rule convention). Users reasonably expect
@@ -141,7 +141,7 @@ export function resolveSandboxFilesystemPath(
   pattern: string,
   source: SettingSource,
 ): string {
-  // Legacy permission-rule escape: //path → /path. Kept for compat with
+  // Compatibility permission-rule escape: //path → /path. Kept for compat with
   // users who worked around #30067 by writing //Users/foo/.cargo in config.
   if (pattern.startsWith('//')) return pattern.slice(1)
   return expandPath(pattern, getSettingsRootPathForSource(source))

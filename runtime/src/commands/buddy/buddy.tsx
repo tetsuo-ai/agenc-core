@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { LocalJSXCommandContext, LocalJSXCommandOnDone } from '../../types/command.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { companionUserId, getCompanion, rollWithSeed } from '../../tui/buddy/companion.js'

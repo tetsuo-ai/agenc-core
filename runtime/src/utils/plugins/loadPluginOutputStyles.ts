@@ -1,9 +1,9 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import memoize from 'lodash-es/memoize.js'
 import { basename } from 'path'
 import type { OutputStyleConfig } from '../../constants/outputStyles.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import {
@@ -95,7 +95,7 @@ export const loadPluginOutputStyles = memoize(
 
     if (errors.length > 0) {
       logForDebugging(
-        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         `Plugin loading errors: ${errors.map(e => getPluginErrorMessage(e)).join(', ')}`,
       )
     }

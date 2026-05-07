@@ -109,7 +109,7 @@ function normalizeAccessToken(
 }
 
 async function createDefaultGoogleAuth(): Promise<GoogleAuthLike> {
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { GoogleAuth } = await import('google-auth-library')
   return new GoogleAuth({
     scopes: [GEMINI_ADC_SCOPE],

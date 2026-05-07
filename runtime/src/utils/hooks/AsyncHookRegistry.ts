@@ -1,10 +1,10 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   AsyncHookJSONOutput,
   HookEvent,
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   SyncHookJSONOutput,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { logForDebugging } from 'src/utils/debug.js'

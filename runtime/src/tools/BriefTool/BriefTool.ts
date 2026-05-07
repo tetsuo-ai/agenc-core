@@ -102,7 +102,7 @@ export function isBriefEntitled(): boolean {
 /**
  * Unified activation gate for the Brief tool. Governs model-facing behavior
  * as a unit: tool availability, system prompt section (getBriefSection),
- * tool-deferral bypass (isDeferredTool), and todo-nag suppression.
+ * tool-deferral bypass (isDeferredTool), and Follow-up-nag suppression.
  *
  * Activation requires explicit opt-in (userMsgOptIn) set by one of:
  *   - `--brief` CLI flag (maybeActivateBrief in main.tsx)

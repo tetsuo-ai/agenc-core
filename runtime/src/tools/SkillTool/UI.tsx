@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { SubAgentProvider } from 'src/tui/components/CtrlOToExpand.js';
@@ -53,7 +53,7 @@ export function renderToolUseMessage({
   if (!skill) {
     return null;
   }
-  // Only legacy /commands_DEPRECATED entries need the command lookup so we can
+  // Only compatibility /commands_DEPRECATED entries need the command lookup so we can
   // preserve the slash-prefixed display. Plugin skills already carry the
   // invoked skill name in `skill`, so transcript/history rendering does not
   // need plugin command metadata.

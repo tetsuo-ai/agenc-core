@@ -864,7 +864,7 @@ export class ColorDiff {
     const hlState = { lang, stack: null }
 
     // Warm highlighter with prefix lines (highlight.js is stateless per call,
-    // so this is a no-op for now — preserved for API parity)
+    // so this is a no-op currently — preserved for API parity)
     void this.prefixContent
 
     const maxDigits = String(maxLineNumber(this.hunk)).length

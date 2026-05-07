@@ -1,15 +1,15 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash } from 'crypto'
 import { statSync } from 'fs'
 import { join, resolve } from 'path'
 import { HOOK_EVENTS } from 'src/entrypoints/agentSdkTypes.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getOriginalCwd } from '../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/analytics/index.js'
 import { isPolicyAllowed } from '../services/policyLimits/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -268,7 +268,7 @@ function getHookChainScopeKey(
   return scope && scope.length > 0 ? scope : '__global__'
 }
 
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 function getRuleCooldownKey(
   ruleId: string,
   runtime?: { dedupScope?: string | null } | null,
@@ -1016,7 +1016,7 @@ export async function executeWarmRemoteCapacityAction(args: {
   // of touching remote APIs. This keeps the action side-effect free when the
   // session is local-only.
   try {
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     const { getReplBridgeHandle } = await import('../bridge/replBridgeHandle.js')
     if (!getReplBridgeHandle()) {
       return {

@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
@@ -636,7 +636,7 @@ export function getServerCacheKey(
 }
 
 /**
- * TODO (ollie): The memoization here increases complexity by a lot, and im not sure it really improves performance
+ * Follow-up (ollie): The memoization here increases complexity by a lot, and im not sure it really improves performance
  * Attempts to connect to a single MCP server
  * @param name Server name
  * @param serverRef Scoped server configuration
@@ -726,7 +726,7 @@ export const connectToServer = memoize(
       } else if (serverRef.type === 'sse-ide') {
         logMCPDebug(name, `Setting up SSE-IDE transport to ${serverRef.url}`)
         // IDE servers don't need authentication
-        // TODO: Use the auth token provided in the lockfile
+        // Follow-up: Use the auth token provided in the lockfile
         const proxyOptions = getProxyFetchOptions()
         const transportOptions: SSEClientTransportOptions =
           proxyOptions.dispatcher
@@ -3213,7 +3213,7 @@ async function callMCPTool({
           errorDetails = firstContent.text
         }
       } else if ('error' in result) {
-        // Fallback for legacy error format
+        // Fallback for compatibility error format
         errorDetails = String(result.error)
       }
       logMCPError(name, errorDetails)

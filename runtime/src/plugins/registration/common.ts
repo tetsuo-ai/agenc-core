@@ -4,7 +4,7 @@
  * Projects local plugin-surface registration behavior onto AgenC's PK-01/PK-02
  * loader shape. This module is
  * intentionally runtime-owned: it consumes already-normalized `LoadedPlugin`
- * records and never imports from the legacy scaffolding tree.
+ * records and never imports from the compatibility scaffolding tree.
  */
 
 import { readdir, readFile, realpath, stat } from "node:fs/promises";

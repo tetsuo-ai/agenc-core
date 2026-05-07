@@ -48,7 +48,7 @@ export type ToolResultDispatchTarget =
  * renderer. Each routed tool also requires its specific envelope
  * tag in the joined content (produced by
  * `session-transcript.formatStructuredToolResult`); bare-string results
- * (legacy or error-path) always fall through to the generic renderer.
+ * (compatibility or error-path) always fall through to the generic renderer.
  *
  * The `<tool-error>` envelope is the cross-cutting error path —
  * dispatched regardless of tool name when the migrated renderer

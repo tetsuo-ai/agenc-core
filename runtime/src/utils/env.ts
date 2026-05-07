@@ -12,7 +12,7 @@ type Platform = 'win32' | 'darwin' | 'linux'
 
 // Config and data paths
 export const getGlobalAgenCFile = memoize((): string => {
-  // Legacy fallback for backwards compatibility
+  // Compatibility fallback for backwards compatibility
   if (
     getFsImplementation().existsSync(
       join(getAgenCConfigHomeDir(), '.config.json'),
@@ -25,7 +25,7 @@ export const getGlobalAgenCFile = memoize((): string => {
   const configDir = process.env.AGENC_CONFIG_DIR || homedir()
 
   // Default to .agenc.json. Fall back to .agenc.json only if the new
-  // file doesn't exist yet and the legacy one does (same migration pattern
+  // file doesn't exist yet and the compatibility one does (same migration pattern
   // as resolveAgenCConfigHomeDir for the config directory).
   const newFilename = `.agenc${oauthSuffix}.json`
   const legacyFilename = `.agenc${oauthSuffix}.json`

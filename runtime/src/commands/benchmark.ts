@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { Command } from '../types/command.js'
 import {

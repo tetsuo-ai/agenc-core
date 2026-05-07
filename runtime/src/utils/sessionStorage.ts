@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import type { Dirent } from 'fs'
@@ -183,7 +183,7 @@ function isLegacyProgressEntry(entry: unknown): entry is LegacyProgressEntry {
  * High-frequency tool progress ticks (1/sec for Sleep, per-chunk for Bash).
  * These are UI-only: not sent to the API, not rendered after the tool
  * completes. Used by REPL.tsx to replace-in-place instead of appending, and
- * by loadTranscriptFile to skip legacy entries from old transcripts.
+ * by loadTranscriptFile to skip compatibility entries from old transcripts.
  */
 const EPHEMERAL_PROGRESS_TYPES = new Set([
   'bash_progress',
@@ -2360,7 +2360,7 @@ export function buildConversationChain(
  * Two loss modes observed in production (both fixed here):
  *   1. Sibling assistant orphaned: walk goes prev→asstA→TR_A→next, drops asstB
  *      (same message.id, chained off asstA) and TR_B.
- *   2. Progress-fork (legacy, pre-#23537): each tool_use asst had a progress
+ *   2. Progress-fork (compatibility, pre-#23537): each tool_use asst had a progress
  *      child (continued the write chain) AND a TR child. Walk followed
  *      progress; TRs were dropped. No longer written (progress removed from
  *      transcript persistence), but old transcripts still have this shape.
@@ -3868,7 +3868,7 @@ export async function loadTranscriptFile(
       })
     }
 
-    // Bridge map for legacy progress entries: progress_uuid → progress_parent_uuid.
+    // Bridge map for compatibility progress entries: progress_uuid → progress_parent_uuid.
     // PR #24099 removed progress from isTranscriptMessage, so old transcripts with
     // progress in the parentUuid chain would truncate at buildConversationChain
     // when messages.get(progressUuid) returns undefined. Since transcripts are
@@ -3878,7 +3878,7 @@ export async function loadTranscriptFile(
     const progressBridge = new Map<UUID, UUID | null>()
 
     forEachParsedJSONLBufferEntry<Entry>(buf, entry => {
-      // Legacy progress check runs before the Entry-typed else-if chain —
+      // Compatibility progress check runs before the Entry-typed else-if chain —
       // progress is not in the Entry union, so checking it after TypeScript
       // has narrowed `entry` intersects to `never`.
       if (isLegacyProgressEntry(entry)) {

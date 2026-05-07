@@ -20,7 +20,7 @@ import { getOauthConfig } from 'src/constants/oauth.js'
 import { getAgenCConfigHomeDir } from '../envUtils.js'
 import type { SecureStorageData } from './index.js'
 
-// Suffix distinguishing the OAuth credentials keychain entry from the legacy
+// Suffix distinguishing the OAuth credentials keychain entry from the compatibility
 // API key entry (which uses no suffix). Both share the service name base.
 // DO NOT change this value — it's part of the keychain lookup key and would
 // orphan existing stored credentials.

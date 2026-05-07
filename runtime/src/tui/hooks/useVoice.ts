@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // React hook for hold-to-talk voice input using first-party voice_stream STT.
 //
 // Hold the keybinding to record; release to stop and submit.  Auto-repeat

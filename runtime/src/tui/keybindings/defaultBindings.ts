@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { satisfies } from '../../utils/semver.js'
 import { isRunningWithBun } from '../../utils/bundledMode.js'
@@ -77,7 +77,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       down: 'history:next',
       // Editing shortcuts (defined here, migration in progress)
       // Undo has two bindings to support different terminal behaviors:
-      // - ctrl+_ for legacy terminals (send \x1f control char)
+      // - ctrl+_ for compatibility terminals (send \x1f control char)
       // - ctrl+shift+- for Kitty protocol (sends physical key with modifiers)
       'ctrl+_': 'chat:undo',
       'ctrl+shift+-': 'chat:undo',

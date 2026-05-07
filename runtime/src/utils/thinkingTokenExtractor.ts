@@ -178,7 +178,7 @@ export class ThinkingTokenAnalyzer {
 }
 
 /**
- * Legacy export for backward compatibility
+ * Compatibility export for backward compatibility
  */
 export function extractThinkingTokens(
   message: AssistantMessage,

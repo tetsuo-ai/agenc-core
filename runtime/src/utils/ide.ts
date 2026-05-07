@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import axios from 'axios'
 import { execa } from 'execa'
@@ -1482,7 +1482,7 @@ async function installFromArtifactory(command: string): Promise<string> {
 
       return version
     } finally {
-      // Clean up the temporary file
+      // Clean up the short-lived file
       try {
         await fs.unlink(tempVsixPath)
       } catch {

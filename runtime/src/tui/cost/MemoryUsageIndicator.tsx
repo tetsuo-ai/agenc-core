@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { useMemoryUsage } from '../hooks/useMemoryUsage.js';
 import { Box, Text } from '../ink.js';

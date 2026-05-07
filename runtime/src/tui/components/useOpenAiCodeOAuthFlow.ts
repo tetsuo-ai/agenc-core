@@ -8,7 +8,7 @@ import { openBrowser } from '../../utils/browser' // upstream-import: keep targe
 import { saveAgencCredentials } from '../../utils/agencCredentials' // branding-scan: allow upstream mirror import path pending purge // upstream-import: keep target is owned by another Z-PURGE item
 import { isBareMode } from '../../utils/envUtils'
 
-export type CodexOAuthFlowStatus =
+export type OpenAiCodeOAuthFlowStatus =
   | { state: 'starting' }
   | {
       state: 'waiting'
@@ -20,15 +20,14 @@ export type CodexOAuthFlowStatus =
       message: string
     }
 
-type PersistCodexOAuthCredentials = (options?: {
+type PersistOpenAiCodeOAuthCredentials = (options?: {
   profileId?: string
 }) => void
-type CodexOAuthService = OpenAiCodeOAuthService
-type CodexOAuthTokens = OpenAiCodeOAuthTokens
+type OpenAiCodeOAuthFlowService = OpenAiCodeOAuthService
 
-type CodexOAuthFlowDependencies = {
+type OpenAiCodeOAuthFlowDependencies = {
   createOAuthService?: () => Pick<
-    CodexOAuthService,
+    OpenAiCodeOAuthFlowService,
     'startOAuthFlow' | 'cleanup'
   >
   openBrowser?: typeof openBrowser
@@ -37,19 +36,19 @@ type CodexOAuthFlowDependencies = {
 }
 
 function createDefaultOAuthService(): Pick<
-  CodexOAuthService,
+  OpenAiCodeOAuthFlowService,
   'startOAuthFlow' | 'cleanup'
 > {
   return new OpenAiCodeOAuthService()
 }
 
-export function useCodexOAuthFlow(options: {
+export function useOpenAiCodeOAuthFlow(options: {
   onAuthenticated: (
-    tokens: CodexOAuthTokens,
-    persistCredentials: PersistCodexOAuthCredentials,
+    tokens: OpenAiCodeOAuthTokens,
+    persistCredentials: PersistOpenAiCodeOAuthCredentials,
   ) => void | Promise<void>
-  deps?: CodexOAuthFlowDependencies
-}): CodexOAuthFlowStatus {
+  deps?: OpenAiCodeOAuthFlowDependencies
+}): OpenAiCodeOAuthFlowStatus {
   const { onAuthenticated } = options
   const createOAuthService =
     options.deps?.createOAuthService ?? createDefaultOAuthService
@@ -57,7 +56,7 @@ export function useCodexOAuthFlow(options: {
   const saveCredentials =
     options.deps?.saveAgencCredentials ?? saveAgencCredentials
   const isBareModeFn = options.deps?.isBareMode ?? isBareMode
-  const [status, setStatus] = React.useState<CodexOAuthFlowStatus>({
+  const [status, setStatus] = React.useState<OpenAiCodeOAuthFlowStatus>({
     state: 'starting',
   })
 
@@ -66,7 +65,7 @@ export function useCodexOAuthFlow(options: {
       setStatus({
         state: 'error',
         message:
-          'Codex OAuth is unavailable in --bare because secure storage is disabled.',
+          'Code OAuth is unavailable in --bare because secure storage is disabled.',
       })
       return
     }
@@ -93,7 +92,7 @@ export function useCodexOAuthFlow(options: {
       .then(async tokens => {
         if (cancelled) return
 
-        const persistCredentials: PersistCodexOAuthCredentials = options => {
+        const persistCredentials: PersistOpenAiCodeOAuthCredentials = options => {
           const saved = saveCredentials({
             apiKey: tokens.apiKey,
             accessToken: tokens.accessToken,
@@ -105,7 +104,7 @@ export function useCodexOAuthFlow(options: {
           if (!saved.success) {
             throw new Error(
               saved.warning ??
-                'Codex OAuth succeeded, but credentials could not be saved securely.',
+                'Code OAuth succeeded, but credentials could not be saved securely.',
             )
           }
         }

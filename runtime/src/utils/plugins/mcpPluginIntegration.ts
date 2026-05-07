@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { join } from 'path'
 import { expandEnvVarsInString } from '../../services/mcp/envExpansion.js'
 import {
@@ -61,7 +61,7 @@ async function loadMcpServersFromMcpb(
         `MCPB ${mcpbPath} requires user configuration. ` +
           `User can configure via: /plugin → Manage plugins → ${plugin.name} → Configure`,
       )
-      // Return null to skip this server for now (not an error)
+      // Return null to skip this server currently (not an error)
       return null
     }
 

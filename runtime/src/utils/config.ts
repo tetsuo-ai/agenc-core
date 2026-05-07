@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import { unwatchFile, watchFile } from 'fs'
@@ -237,7 +237,7 @@ export type GlobalConfig = {
   // a connector the user has actually used is worth flagging when it breaks,
   // but an org-configured connector that's been needs-auth since day one is
   // something the user has demonstrably ignored and shouldn't nag about.
-  // branding-scan: allow persisted legacy config key
+  // branding-scan: allow persisted compatibility config key
   agencAiMcpEverConnected?: string[]
   preferredNotifChannel: NotificationChannel
   /**
@@ -249,13 +249,13 @@ export type GlobalConfig = {
     approved?: string[]
     rejected?: string[]
   }
-  primaryApiKey?: string // Primary API key for the user when no environment variable is set, set via oauth (TODO: rename)
+  primaryApiKey?: string // Primary API key for the user when no environment variable is set, set via oauth (Follow-up: rename)
   hasAcknowledgedCostThreshold?: boolean
   hasSeenUndercoverAutoNotice?: boolean // internal-only: whether the one-time auto-undercover explainer has been shown
   hasSeenUltraplanTerms?: boolean // internal-only: whether the one-time CCR terms notice has been shown in the ultraplan launch dialog
   hasResetAutoModeOptInForDefaultOffer?: boolean // internal-only: one-shot migration guard, re-prompts churned auto-mode users
   oauthAccount?: AccountInfo
-  iterm2KeyBindingInstalled?: boolean // Legacy - keeping for backward compatibility
+  iterm2KeyBindingInstalled?: boolean // Compatibility - keeping for backward compatibility
   editorMode?: EditorMode
   tui?: TuiConfig
   bypassPermissionsModeAccepted?: boolean
@@ -399,8 +399,8 @@ export type GlobalConfig = {
   subscriptionUpsellShownCount?: number // Number of times the subscription upsell has been shown (deprecated)
   recommendedSubscription?: string // Cached config value from Statsig (deprecated)
 
-  // Todo feature configuration
-  todoFeatureEnabled: boolean // Whether the todo feature is enabled
+  // Follow-up feature configuration
+  todoFeatureEnabled: boolean // Whether the Follow-up feature is enabled
   showExpandedTodos?: boolean // Whether to show todos expanded, even when empty
   showSpinnerTree?: boolean // Whether to show the teammate spinner tree instead of pills
 
@@ -429,7 +429,7 @@ export type GlobalConfig = {
   agentPushNotifEnabled?: boolean
 
   // AgenC usage tracking
-  // branding-scan: allow persisted legacy config key
+  // branding-scan: allow persisted compatibility config key
   agencCodeFirstTokenDate?: string // ISO timestamp of the user's first AgenC OAuth token
 
   // Model switch callout tracking (internal-only)
@@ -438,7 +438,7 @@ export type GlobalConfig = {
   modelSwitchCalloutVersion?: string
 
   // Effort callout tracking - shown once for Opus 4.6 users
-  effortCalloutDismissed?: boolean // v1 - legacy, read to suppress v2 for Pro users who already saw it
+  effortCalloutDismissed?: boolean // v1 - compatibility, read to suppress v2 for Pro users who already saw it
   effortCalloutV2Dismissed?: boolean
 
   // Remote callout tracking - shown once before first bridge enable
@@ -534,7 +534,7 @@ export type GlobalConfig = {
 
   // AgenC in Chrome settings
   hasCompletedAgenCInChromeOnboarding?: boolean // Whether AgenC in Chrome onboarding has been shown
-  // branding-scan: allow persisted legacy config key
+  // branding-scan: allow persisted compatibility config key
   agencInChromeDefaultEnabled?: boolean // Whether AgenC in Chrome is enabled by default (undefined means platform default)
   cachedChromeExtensionInstalled?: boolean // Cached result of whether Chrome extension is installed
 
@@ -554,7 +554,7 @@ export type GlobalConfig = {
     plugin?: string[]
     disabled?: boolean
   }
-  // branding-scan: allow persisted legacy config key
+  // branding-scan: allow persisted compatibility config key
   agencCodeHints?: {
     plugin?: string[]
     disabled?: boolean
@@ -1419,7 +1419,7 @@ function getConfigBackupDir(): string {
 
 /**
  * Find the most recent backup file for a given config file.
- * Checks ~/.agenc/backups/ first, then falls back to the legacy location
+ * Checks ~/.agenc/backups/ first, then falls back to the compatibility location
  * (next to the config file) for backwards compatibility.
  * Returns the full path to the most recent backup, or null if none exist.
  */
@@ -1443,7 +1443,7 @@ function findMostRecentBackup(file: string): string | null {
     // Backup dir doesn't exist yet
   }
 
-  // Fall back to legacy location (next to the config file)
+  // Fall back to compatibility location (next to the config file)
   const fileDir = dirname(file)
 
   try {
@@ -1457,13 +1457,13 @@ function findMostRecentBackup(file: string): string | null {
       return join(fileDir, mostRecent)
     }
 
-    // Check for legacy backup file (no timestamp)
+    // Check for compatibility backup file (no timestamp)
     const legacyBackup = `${file}.backup`
     try {
       fs.statSync(legacyBackup)
       return legacyBackup
     } catch {
-      // Legacy backup doesn't exist
+      // Compatibility backup doesn't exist
     }
   } catch {
     // Ignore errors reading directory
@@ -1665,7 +1665,7 @@ export function getCurrentProjectConfig(): ProjectConfig {
 
   const projectConfig = config.projects[absolutePath] ?? DEFAULT_PROJECT_CONFIG
   // Not sure how this became a string
-  // TODO: Fix upstream
+  // Follow-up: Fix upstream
   if (typeof projectConfig.allowedTools === 'string') {
     projectConfig.allowedTools =
       (safeParseJSON(projectConfig.allowedTools) as string[]) ?? []

@@ -1,15 +1,15 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   McpbManifest,
   McpbUserConfigurationOption,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '@anthropic-ai/mcpb'
 import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
@@ -421,7 +421,7 @@ async function generateMcpConfig(
 ): Promise<McpServerConfig> {
   // Lazy import: @anthropic-ai/mcpb barrel pulls in zod v3 schemas (~700KB of
   // bound closures). See dxt/helpers.ts for details.
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { getMcpConfigForManifest } = await import('@anthropic-ai/mcpb')
   const mcpConfig = await getMcpConfigForManifest({
     manifest,

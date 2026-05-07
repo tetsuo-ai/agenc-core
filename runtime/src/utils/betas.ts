@@ -1,13 +1,13 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
 import {
   checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
   getFeatureValue_CACHED_MAY_BE_STALE,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from 'src/services/analytics/growthbook.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession, getSdkBetas } from '../bootstrap/state.js'
 import {
   BEDROCK_EXTRA_PARAMS_HEADERS,
@@ -180,7 +180,7 @@ export function modelSupportsAutoMode(model: string): boolean {
     const rawLower = model.toLowerCase()
     if (
       config?.allowModels?.some(
-        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         am => am.toLowerCase() === rawLower || am.toLowerCase() === m,
       )
     ) {
@@ -429,7 +429,7 @@ export function getMergedBetas(
   }
 
   // Merge SDK betas without duplicates (already filtered by filterAllowedSdkBetas)
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   return [...baseBetas, ...sdkBetas.filter(b => !baseBetas.includes(b))]
 }
 

@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ControlOperator, ParseEntry } from 'shell-quote'
 import {
   type CommandPrefixResult,
@@ -258,7 +258,7 @@ export function filterControlOperators(
 }
 
 /**
- * @deprecated Legacy regex/shell-quote path. Only used when tree-sitter is
+ * @deprecated Compatibility regex/shell-quote path. Only used when tree-sitter is
  * unavailable. The primary gate is parseForSecurity (ast.ts).
  *
  * Splits a command string into individual commands based on shell operators
@@ -604,7 +604,7 @@ function isCommandList(command: string): boolean {
 }
 
 /**
- * @deprecated Legacy regex/shell-quote path. Only used when tree-sitter is
+ * @deprecated Compatibility regex/shell-quote path. Only used when tree-sitter is
  * unavailable. The primary gate is parseForSecurity (ast.ts).
  */
 export function isUnsafeCompoundCommand_DEPRECATED(command: string): boolean {
@@ -628,7 +628,7 @@ export function isUnsafeCompoundCommand_DEPRECATED(command: string): boolean {
  * Extracts output redirections from a command if present.
  * Only handles simple string targets (no variables or command substitutions).
  *
- * TODO(inigo): Refactor and simplify once we have AST parsing
+ * Follow-up(inigo): Refactor and simplify once we have AST parsing
  *
  * @returns Object containing the command without redirections and the target paths if found
  */

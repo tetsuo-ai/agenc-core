@@ -7,12 +7,12 @@ import {
   type ParseEntry,
   parse as shellQuoteParse,
   quote as shellQuoteQuote,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from 'shell-quote'
 import { logError } from '../log.js'
 import { jsonStringify } from '../slowOperations.js'
 
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 export type { ParseEntry } from 'shell-quote'
 
 export type ShellParseResult =

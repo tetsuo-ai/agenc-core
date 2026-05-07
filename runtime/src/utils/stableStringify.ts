@@ -24,7 +24,7 @@
  *   - remoteManagedSettings: matches Python `json.dumps(sort_keys=True)`
  *     byte-for-byte to validate server-computed checksums. Must NOT
  *     drop undefined (Python preserves null).
- *   - policyLimits: uses `localeCompare` (keeps legacy behavior; locale-
+ *   - policyLimits: uses `localeCompare` (keeps compatibility behavior; locale-
  *     sensitive but stable for a given runtime).
  *   - this module (stableStringify): byte-identity for API body caching.
  *     Drops undefined to match `JSON.stringify` — the openaiShim/agencShim

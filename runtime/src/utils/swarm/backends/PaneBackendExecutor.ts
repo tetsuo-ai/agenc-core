@@ -1,8 +1,8 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../../bootstrap/state.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolUseContext } from '../../../tools/Tool.js'
 import { formatAgentId, parseAgentId } from '../../agentId.js'
 import { quote } from '../../bash/shellQuote.js'
@@ -341,7 +341,7 @@ export class PaneBackendExecutor implements TeammateExecutor {
       return false
     }
 
-    // For now, assume active if we have a record of it
+    // currently, assume active if we have a record of it
     // A more robust check would query the backend for pane existence
     // but that would require adding a new method to PaneBackend
     return true

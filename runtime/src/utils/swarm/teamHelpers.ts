@@ -1,10 +1,10 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { mkdir, readFile, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionCreatedTeams } from '../../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getTeamsDir } from '../envUtils.js'
@@ -587,9 +587,9 @@ export async function cleanupSessionTeams(): Promise<void> {
   // deleting directories alone would orphan them in open tmux/iTerm2 panes.
   // (TeamDeleteTool's path doesn't need this — by then teammates have
   // gracefully exited and useInboxPoller has already closed their panes.)
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   await Promise.allSettled(teams.map(name => killOrphanedTeammatePanes(name)))
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   await Promise.allSettled(teams.map(name => cleanupTeamDirectories(name)))
   sessionCreatedTeams.clear()
 }

@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { SearchInput, SearchProvider } from './types.js'
 import { applyDomainFilters, type ProviderOutput } from './types.js'
 // DuckDuckGo's HTML scraper aggressively blocks datacenter / repeat IPs with
@@ -62,7 +62,7 @@ export const duckduckgoProvider: SearchProvider = {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
-        // TODO: duck-duck-scrape doesn't accept AbortSignal — can't cancel in-flight searches
+        // Follow-up: duck-duck-scrape doesn't accept AbortSignal — can't cancel in-flight searches
         const response = await search(input.query, { safeSearch: SafeSearchType.STRICT })
 
         const hits = applyDomainFilters(

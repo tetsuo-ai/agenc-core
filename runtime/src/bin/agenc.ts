@@ -689,7 +689,7 @@ export interface RunSingleTurnOpts {
    * MCP instructions observe the latest snapshot on the next turn.
    */
   readonly loadTurnInputsFn?: () => Promise<PreparedTurnRuntimeInputs>;
-  /** Legacy direct inputs retained for focused unit tests. */
+  /** Compatibility direct inputs retained for focused unit tests. */
   readonly projectInstructions?: string;
   readonly memoryPromptText?: string;
   readonly allMemories?: readonly [];

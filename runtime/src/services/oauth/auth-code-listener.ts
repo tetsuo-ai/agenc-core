@@ -7,7 +7,7 @@ import { logError } from '../../utils/log.js'
 import { shouldUseAgenCAIAuth } from './client.js'
 
 /**
- * Temporary localhost HTTP server that listens for OAuth authorization code redirects.
+ * Short-lived localhost HTTP server that listens for OAuth authorization code redirects.
  *
  * When the user authorizes in their browser, the OAuth provider redirects to:
  * http://localhost:[port]/callback?code=AUTH_CODE&state=STATE
@@ -162,7 +162,7 @@ export class AuthCodeListener {
       return
     }
 
-    // TODO: swap to a different url once we have an error page
+    // Follow-up: swap to a different url once we have an error page
     const errorUrl = getOauthConfig().AGENCAI_SUCCESS_URL
 
     this.respondToPendingRequest({

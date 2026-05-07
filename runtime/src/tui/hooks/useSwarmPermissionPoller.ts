@@ -5,7 +5,7 @@
  * in agent swarms. Responses are delivered exclusively via the mailbox
  * system (useInboxPoller → processMailboxPermissionResponse).
  *
- * The legacy file-based polling (resolved/ directory) has been removed
+ * The compatibility file-based polling (resolved/ directory) has been removed
  * because it created an unauthenticated attack surface — any local process
  * could forge approval files. The mailbox path is the sole active channel.
  */
@@ -214,7 +214,7 @@ export function processSandboxPermissionResponse(params: {
   return true
 }
 
-// Legacy file-based polling (useSwarmPermissionPoller, processResponse)
+// Compatibility file-based polling (useSwarmPermissionPoller, processResponse)
 // has been removed. Permission responses are now delivered exclusively
 // via the mailbox system:
 //   Leader: sendPermissionResponseViaMailbox() → writeToMailbox()

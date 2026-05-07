@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Teammate Mailbox - File-based messaging system for agent swarms
  *
@@ -13,9 +13,9 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { PermissionModeSchema } from '../entrypoints/sdk/coreSchemas.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import type { Message } from '../types/message.js'
 import { generateRequestId } from './agentId.js'

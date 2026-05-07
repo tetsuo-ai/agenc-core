@@ -88,7 +88,7 @@ export default function createRenderer(
     // height={rows} flexShrink={0}>, so yogaHeight should equal
     // terminalRows. But if something renders as a SIBLING of that Box
     // (bug: MessageSelector was outside <FullscreenLayout>), yogaHeight
-    // exceeds rows and every assumption below (viewport +1 hack, cursor.y
+    // exceeds rows and every assumption below (viewport +1 workaround, cursor.y
     // clamp, log-update's heightDelta===0 fast path) breaks, desyncing
     // virtual/physical cursors. Clamping here enforces the invariant:
     // overflow writes land at y >= screen.height and setCellAt drops

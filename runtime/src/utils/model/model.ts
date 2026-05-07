@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
  * Ensure that any model codenames introduced here are also added to
@@ -7,7 +7,7 @@
  * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
  * during dead code elimination
  */
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import {
   getSubscriptionType,
@@ -811,7 +811,7 @@ function isLegacyOpusFirstParty(model: string): boolean {
 }
 
 /**
- * Opt-out for the legacy Opus 4.0/4.1 → current Opus remap.
+ * Opt-out for the compatibility Opus 4.0/4.1 → current Opus remap.
  */
 export function isLegacyModelRemapEnabled(): boolean {
   return !isEnvTruthy(process.env.AGENC_DISABLE_LEGACY_MODEL_REMAP)

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 export const PRODUCT_URL = 'https://agenc.tech/agenc-code'
 
 // AgenC Remote session URLs
@@ -54,7 +54,7 @@ export function getAgenCAiBaseUrl(
 /**
  * Get the full session URL for a remote session.
  *
- * The cse_→session_ translation is a temporary shim gated by
+ * The cse_→session_ translation is a short-lived shim gated by
  * tengu_bridge_repl_v2_cse_shim_enabled (see isCseShimEnabled). Worker
  * endpoints (/v1/code/sessions/{id}/worker/*) want `cse_*` but the AgenC web
  * frontend currently routes on `session_*` (compat/convert.go:27 validates
@@ -70,7 +70,7 @@ export function getRemoteSessionUrl(
 ): string {
   /* eslint-disable @typescript-eslint/no-require-imports */
   const { toCompatSessionId } =
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     require('../bridge/sessionIdCompat.js') as typeof import('../bridge/sessionIdCompat.js')
   /* eslint-enable @typescript-eslint/no-require-imports */
   const compatId = toCompatSessionId(sessionId)

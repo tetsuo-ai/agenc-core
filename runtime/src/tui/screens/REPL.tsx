@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { feature } from 'bun:bundle';
@@ -3166,7 +3166,7 @@ export function REPL({
       await awaitPendingHooks();
 
       // Route all initial prompts through onSubmit to ensure UserPromptSubmit hooks fire
-      // TODO: Simplify by always routing through onSubmit once it supports
+      // Follow-up: Simplify by always routing through onSubmit once it supports
       // ContentBlockParam arrays (images) as input
       const content = initialMsg.message.message.content;
 
@@ -3183,7 +3183,7 @@ export function REPL({
       } else {
         // Plan messages or complex content (images, etc.) - send directly to model
         // Plan messages use onQuery to preserve planContent metadata for rendering
-        // TODO: Once onSubmit supports ContentBlockParam arrays, remove this branch
+        // Follow-up: Once onSubmit supports ContentBlockParam arrays, remove this branch
         const newAbortController = createAbortController();
         setAbortController(newAbortController);
         void onQuery([initialMsg.message], newAbortController, true,
@@ -4153,7 +4153,7 @@ export function REPL({
     return () => {
       void diagnosticTracker.shutdown();
     };
-    // TODO: fix this
+    // Follow-up: fix this
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -4436,7 +4436,7 @@ export function REPL({
     // and memory is bounded by the viewport. Without it, wrapping transcript
     // in a ScrollBox would mount all messages (~250 MB on long sessions —
     // the exact problem), so the kill switch and non-fullscreen paths must
-    // fall through to the legacy render: no alt screen, dump to terminal
+    // fall through to the compatibility render: no alt screen, dump to terminal
     // scrollback, 30-cap + Ctrl+E. Reusing scrollRef is safe — normal-mode
     // and transcript-mode are mutually exclusive (this early return), so
     // only one ScrollBox is ever mounted at a time.

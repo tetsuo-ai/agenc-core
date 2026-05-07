@@ -10,7 +10,7 @@
  *                      `{ content, status, activeForm }` — all required.
  *   - Tool result:     literal sentence
  *                      `"Todos have been modified successfully. Ensure that
- *                       you continue to use the todo list to track your
+ *                       you continue to use the Follow-up list to track your
  *                       progress. Please proceed with the current tasks if
  *                       applicable"`.
  *   - Plan mode:       `TodoWrite` is metadata-only and IS permitted in

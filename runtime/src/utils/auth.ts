@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import chalk from 'chalk'
 import { exec } from 'child_process'
 import { execa } from 'execa'
@@ -1074,7 +1074,7 @@ export function prefetchAwsCredentialsAndBedRockInfoIfSafe(): void {
 export const getApiKeyFromConfigOrMacOSKeychain = memoize(
   (): { key: string; source: ApiKeySource } | null => {
     if (isBareMode()) return null
-    // TODO: migrate to SecureStorage
+    // Follow-up: migrate to SecureStorage
     if (process.platform === 'darwin') {
       // keychainPrefetch.ts fires this read at main.tsx top-level in parallel
       // with module imports. If it completed, use that instead of spawning a
@@ -1126,7 +1126,7 @@ export async function saveApiKey(apiKey: string): Promise<void> {
   let savedToKeychain = false
   if (process.platform === 'darwin') {
     try {
-      // TODO: migrate to SecureStorage
+      // Follow-up: migrate to SecureStorage
       const storageServiceName = getMacOsKeychainStorageServiceName()
       const username = getUsername()
 

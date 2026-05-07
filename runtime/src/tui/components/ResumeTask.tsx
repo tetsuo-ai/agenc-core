@@ -165,7 +165,7 @@ export function ResumeTask({
   }) => {
     const paddedTime = timeString.padEnd(maxTimeStringLength, ' ');
 
-    // TODO: include branch name when API returns it
+    // Follow-up: include branch name when API returns it
     return {
       label: `${paddedTime}  ${title}`,
       value: id

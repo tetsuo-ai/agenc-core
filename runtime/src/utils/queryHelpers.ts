@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import last from 'lodash-es/last.js'
 import {
@@ -161,7 +161,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         message.data.type === 'powershell_progress'
       ) {
         // Filter bash progress to send only one per minute
-        // Only emit for AgenC Remote for now
+        // Only emit for AgenC Remote currently
         if (
           !isEnvTruthy(process.env.AGENC_REMOTE) &&
           !process.env.AGENC_CONTAINER_ID

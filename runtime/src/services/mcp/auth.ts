@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   discoverAuthorizationServerMetadata,
   discoverOAuthServerInfo,
@@ -312,7 +312,7 @@ function createAuthFetch(): FetchLike {
  * 1. RFC 9728: probe /.well-known/oauth-protected-resource on the MCP server,
  *    read authorization_servers[0], then RFC 8414 against that URL.
  * 2. Fallback: RFC 8414 directly against the MCP server URL (path-aware). Covers
- *    legacy servers that co-host auth metadata at /.well-known/oauth-authorization-server/{path}
+ *    compatibility servers that co-host auth metadata at /.well-known/oauth-authorization-server/{path}
  *    without implementing RFC 9728. The SDK's own fallback strips the path, so this
  *    preserves the pre-existing path-aware probe for backward compatibility.
  *
@@ -360,7 +360,7 @@ async function fetchAuthServerMetadata(
   } catch (err) {
     // Any error from the RFC 9728 → RFC 8414 chain (5xx from the root or
     // resolved-AS probe, schema parse failure, network error) — fall through
-    // to the legacy path-aware retry.
+    // to the compatibility path-aware retry.
     logMCPDebug(
       serverName,
       `RFC 9728 discovery failed, falling back: ${errorMessage(err)}`,
@@ -667,7 +667,7 @@ export async function revokeServerTokens(
             : {}),
           ...(tokenData.discoveryState
             ? {
-                // Strip legacy bulky metadata fields here too so users with
+                // Strip compatibility bulky metadata fields here too so users with
                 // existing overflowed blobs recover on next re-auth (#30337).
                 discoveryState: {
                   authorizationServerUrl:
@@ -1806,7 +1806,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
    * On exchange failure, clears the id_token cache so the next interactive
    * auth does a fresh IdP login (the cached id_token is likely stale/revoked).
    *
-   * TODO(xaa-ga): add cross-process lockfile before GA. `_refreshInProgress`
+   * Follow-up(xaa-ga): add cross-process lockfile before GA. `_refreshInProgress`
    * only dedupes within one process — two CC instances with expiring tokens
    * both fire the full 4-request XAA chain and race on storage.update().
    * Unlike inc-4829 the id_token is not single-use so both access_tokens

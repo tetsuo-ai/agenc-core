@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
@@ -48,7 +48,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   try {
     const bashModeContext: ProcessUserInputContext = {
       ...context,
-      // TODO: Clean up this hack
+      // Follow-up: Clean up this workaround
       setToolJSX: _ => {
         jsx = _?.jsx;
       }

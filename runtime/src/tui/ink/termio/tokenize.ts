@@ -206,7 +206,7 @@ function tokenize(
         // M immediately after [ (offset 2) means no params — SGR mouse
         // (CSI < … M) has a `<` param byte first and reaches M at offset > 2.
         // Terminals that ignore DECSET 1006 but honor 1000/1002 emit this
-        // legacy encoding; without this branch the 3 payload bytes leak
+        // compatibility encoding; without this branch the 3 payload bytes leak
         // through as text (`` `rK `` / `arK` garbage in the prompt).
         //
         // Gated on x10Mouse — `\x1b[M` is also CSI DL (Delete Lines) and

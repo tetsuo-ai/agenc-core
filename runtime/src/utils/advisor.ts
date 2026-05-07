@@ -1,14 +1,14 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { shouldIncludeFirstPartyOnlyBetas } from './betas.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getInitialSettings } from './settings/settings.js'
 
 // The SDK does not yet have types for advisor blocks.
-// TODO(hackyon): Migrate to the real anthropic SDK types when this feature ships publicly
+// Follow-up(hackyon): Migrate to the real anthropic SDK types when this feature ships publicly
 export type AdvisorServerToolUseBlock = {
   type: 'server_tool_use'
   id: string

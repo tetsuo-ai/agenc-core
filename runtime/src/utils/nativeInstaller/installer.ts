@@ -768,7 +768,7 @@ async function updateSymlink(
     logError(new Error(`Failed to check/remove existing symlink: ${error}`))
   }
 
-  // Use atomic rename to avoid race conditions. Create symlink with temporary name
+  // Use atomic rename to avoid race conditions. Create symlink with short-lived name
   // then atomically rename to final name. This ensures the symlink always exists
   // and is always valid, even with concurrent updates.
   const tempSymlink = `${symlinkPath}.tmp.${process.pid}.${Date.now()}`
@@ -989,13 +989,13 @@ async function installLatestImpl(
   }
 
   // Installation succeeded (early return above covers failure). Mark as native
-  // and disable legacy auto-updater to protect symlinks.
+  // and disable compatibility auto-updater to protect symlinks.
   const config = getGlobalConfig()
   if (config.installMethod !== 'native') {
     saveGlobalConfig(current => ({
       ...current,
       installMethod: 'native',
-      // Disable legacy auto-updater to prevent npm sessions from deleting native symlinks.
+      // Disable compatibility auto-updater to prevent npm sessions from deleting native symlinks.
       // Native installations use NativeAutoUpdater instead, which respects native installation.
       autoUpdates: false,
       // Mark this as protection-based, not user preference

@@ -67,7 +67,7 @@ export function analyzeContext(messages: Message[]): TokenStats {
           tokens
       }
     } else {
-      // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       content.forEach(block =>
         processBlock(
           block,
@@ -183,7 +183,7 @@ function processBlock(
     case 'text_editor_code_execution_tool_result':
     case 'tool_search_tool_result':
     case 'compaction':
-      // Don't care about these for now..
+      // Don't care about these currently..
       stats['other'] += tokens
       break
   }

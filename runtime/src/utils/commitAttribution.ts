@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { stat } from 'fs/promises'
 import { isAbsolute, join, relative, sep } from 'path'
