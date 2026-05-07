@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../config/schema.js";
 import { resolveProviderCapabilityEntry } from "./capabilities.js";
 import { StaticModelsManager } from "./models-manager.js";
-import { createProvider, readProviderIdentity, type ProviderName } from "./provider.js";
+import {
+  createProvider,
+  readProviderIdentity,
+  type ProviderFactoryOptions,
+  type ProviderName,
+} from "./provider.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
@@ -99,6 +104,8 @@ interface ProviderHarness {
 interface ProviderParityEntry {
   readonly provider: ProviderName;
   readonly model: string;
+  readonly apiKey?: string;
+  readonly extra?: ProviderFactoryOptions["extra"];
   readonly env: Record<string, string | undefined>;
   readonly createHarness: (parityCase: CanonicalPromptCase) => ProviderHarness;
 }
@@ -558,7 +565,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "grok",
     model: "grok-4-fast",
-    env: { XAI_API_KEY: "xai-test" },
+    apiKey: "xai-test",
+    env: { XAI_API_KEY: undefined },
     createHarness: (parityCase) =>
       createResponsesHarness({
         providerFactory: () =>
@@ -573,7 +581,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "openai",
     model: "gpt-5",
-    env: { OPENAI_API_KEY: "openai-test" },
+    apiKey: "openai-test",
+    env: { OPENAI_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -589,7 +598,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "anthropic",
     model: "claude-opus-4-7",
-    env: { ANTHROPIC_API_KEY: "anthropic-test" },
+    apiKey: "anthropic-test",
+    env: { ANTHROPIC_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -649,7 +659,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "openrouter",
     model: "openai/gpt-5",
-    env: { OPENROUTER_API_KEY: "openrouter-test" },
+    apiKey: "openrouter-test",
+    env: { OPENROUTER_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -665,7 +676,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "groq",
     model: "llama-3.3-70b-versatile",
-    env: { GROQ_API_KEY: "groq-test" },
+    apiKey: "groq-test",
+    env: { GROQ_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -684,7 +696,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "deepseek",
     model: "deepseek-reasoner",
-    env: { DEEPSEEK_API_KEY: "deepseek-test" },
+    apiKey: "deepseek-test",
+    env: { DEEPSEEK_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -700,7 +713,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "gemini",
     model: "gemini-2.5-pro",
-    env: { GEMINI_API_KEY: "gemini-test" },
+    apiKey: "gemini-test",
+    env: { GEMINI_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -716,12 +730,16 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "amazon-bedrock",
     model: "amazon.nova-pro-v1:0",
+    apiKey: "bedrock-test",
+    extra: {
+      secretAccessKey: "bedrock-secret",
+    },
     env: {
       AWS_BEDROCK_ACCESS_KEY_ID: undefined,
       AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
       AWS_BEDROCK_REGION: undefined,
-      AWS_ACCESS_KEY_ID: "bedrock-test",
-      AWS_SECRET_ACCESS_KEY: "bedrock-secret",
+      AWS_ACCESS_KEY_ID: undefined,
+      AWS_SECRET_ACCESS_KEY: undefined,
     },
     createHarness: (parityCase) =>
       createFetchHarness({
@@ -748,7 +766,11 @@ describe("provider parity", () => {
 
     for (const entry of PROVIDERS) {
       const provider = withEnv(entry.env, () =>
-        createProvider(entry.provider, { model: entry.model }),
+        createProvider(entry.provider, {
+          ...(entry.apiKey !== undefined ? { apiKey: entry.apiKey } : {}),
+          model: entry.model,
+          ...(entry.extra !== undefined ? { extra: entry.extra } : {}),
+        }),
       );
       const caps = resolveProviderCapabilityEntry({
         provider: entry.provider,

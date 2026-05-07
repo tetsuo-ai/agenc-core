@@ -14,51 +14,51 @@ const PROVIDER_CASES: ReadonlyArray<{
   readonly provider: ProviderName;
   readonly model: string;
   readonly enabled: boolean;
-  readonly envKey?: string;
+  readonly apiKey?: () => string | undefined;
 }> = [
   {
     provider: "grok",
     model: process.env.AGENC_GROK_INTEGRATION_MODEL ?? "grok-4-fast",
     enabled: RUN_REMOTE && Boolean(process.env.XAI_API_KEY ?? process.env.GROK_API_KEY),
-    envKey: "XAI_API_KEY",
+    apiKey: () => process.env.XAI_API_KEY ?? process.env.GROK_API_KEY,
   },
   {
     provider: "openai",
     model: process.env.AGENC_OPENAI_INTEGRATION_MODEL ?? "gpt-5",
     enabled: RUN_REMOTE && Boolean(process.env.OPENAI_API_KEY),
-    envKey: "OPENAI_API_KEY",
+    apiKey: () => process.env.OPENAI_API_KEY,
   },
   {
     provider: "anthropic",
     model: process.env.AGENC_ANTHROPIC_INTEGRATION_MODEL ?? "claude-opus-4-7",
     enabled: RUN_REMOTE && Boolean(process.env.ANTHROPIC_API_KEY),
-    envKey: "ANTHROPIC_API_KEY",
+    apiKey: () => process.env.ANTHROPIC_API_KEY,
   },
   {
     provider: "openrouter",
     model: process.env.AGENC_OPENROUTER_INTEGRATION_MODEL ?? "openai/gpt-5",
     enabled: RUN_REMOTE && Boolean(process.env.OPENROUTER_API_KEY),
-    envKey: "OPENROUTER_API_KEY",
+    apiKey: () => process.env.OPENROUTER_API_KEY,
   },
   {
     provider: "groq",
     model:
       process.env.AGENC_GROQ_INTEGRATION_MODEL ?? "llama-3.3-70b-versatile",
     enabled: RUN_REMOTE && Boolean(process.env.GROQ_API_KEY),
-    envKey: "GROQ_API_KEY",
+    apiKey: () => process.env.GROQ_API_KEY,
   },
   {
     provider: "deepseek",
     model:
       process.env.AGENC_DEEPSEEK_INTEGRATION_MODEL ?? "deepseek-reasoner",
     enabled: RUN_REMOTE && Boolean(process.env.DEEPSEEK_API_KEY),
-    envKey: "DEEPSEEK_API_KEY",
+    apiKey: () => process.env.DEEPSEEK_API_KEY,
   },
   {
     provider: "gemini",
     model: process.env.AGENC_GEMINI_INTEGRATION_MODEL ?? "gemini-2.5-pro",
     enabled: RUN_REMOTE && Boolean(process.env.GEMINI_API_KEY),
-    envKey: "GEMINI_API_KEY",
+    apiKey: () => process.env.GEMINI_API_KEY,
   },
   {
     provider: "ollama",
@@ -77,7 +77,9 @@ describe("provider integration (env-gated)", () => {
     test.skipIf(!testCase.enabled)(
       `${testCase.provider} chat smoke`,
       async () => {
+        const apiKey = testCase.apiKey?.()?.trim();
         const provider = createProvider(testCase.provider, {
+          ...(apiKey ? { apiKey } : {}),
           model: testCase.model,
         });
         const response = await provider.chat(
