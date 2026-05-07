@@ -355,12 +355,17 @@ describe("AgenC TUI daemon session adapter", () => {
 
   it("maps realtime JSON-RPC notifications into subscribed TUI transcript events", async () => {
     const client = createClient();
+    const realtimeAudioPlayer = {
+      enqueue: vi.fn(),
+      close: vi.fn(),
+    };
     const session = createDaemonTuiSession({
       baseSession: createBaseSession(),
       client,
       sessionId: "session_1",
       clientId: "tui_1",
       realtimeThreadId: "agent_1",
+      realtimeAudioPlayer,
     });
     const received: JsonObject[] = [];
     const unsubscribe = session.subscribeToEvents((event) => {
@@ -396,10 +401,47 @@ describe("AgenC TUI daemon session adapter", () => {
     });
     client.emitNotification({
       jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/transcript/delta",
+      params: {
+        threadId: "agent_1",
+        role: "assistant",
+        delta: "partial",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
       method: "thread/realtime/itemAdded",
       params: {
         threadId: "agent_1",
         item: { type: "message", id: "item_1" },
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/outputAudio/delta",
+      params: {
+        threadId: "agent_1",
+        audio: {
+          data: "AAAA",
+          sampleRate: 24000,
+          numChannels: 1,
+        },
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/sdp",
+      params: {
+        threadId: "agent_1",
+        sdp: "answer-sdp",
+      },
+    });
+    client.emitNotification({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "thread/realtime/closed",
+      params: {
+        threadId: "agent_1",
+        reason: "requested",
       },
     });
     client.emitNotification({
@@ -415,9 +457,20 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(received.map((event) => event.type)).toEqual([
       "realtime_started",
       "realtime_transcript_done",
+      "realtime_transcript_delta",
       "realtime_item_added",
+      "realtime_output_audio_delta",
+      "realtime_sdp",
+      "realtime_closed",
       "realtime_error",
     ]);
+    expect(realtimeAudioPlayer.enqueue).toHaveBeenCalledWith({
+      data: "AAAA",
+      sampleRate: 24000,
+      numChannels: 1,
+      samplesPerChannel: null,
+      itemId: null,
+    });
     expect(session.realtime.getState()).toMatchObject({
       phase: "inactive",
       realtimeSessionId: null,

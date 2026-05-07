@@ -22,6 +22,7 @@
   ],
   "tests": [
     "runtime/src/tui/realtime/state.contract.test.ts",
+    "runtime/src/tui/realtime/audio.contract.test.ts",
     "runtime/src/tui/realtime/commands.contract.test.ts",
     "runtime/src/tui/realtime/controller.contract.test.ts",
     "runtime/src/tui/realtime/panel.contract.test.tsx",

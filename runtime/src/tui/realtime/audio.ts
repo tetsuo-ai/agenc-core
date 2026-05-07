@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
 import type { ThreadRealtimeAudioChunk } from "../../app-server/protocol/index.js";
 
@@ -23,6 +23,12 @@ export interface RealtimeAudioPlayer {
   enqueue(audio: ThreadRealtimeAudioChunk): void;
   close(): void;
 }
+
+export type RealtimeAudioPlayerSpawn = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcess;
 
 const INPUT_SAMPLE_RATE = 16_000;
 const INPUT_CHANNELS = 1;
@@ -54,20 +60,30 @@ export async function startDefaultRealtimeAudioCapture(
   };
 }
 
-export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
+export function createProcessRealtimeAudioPlayer(
+  spawnProcess: RealtimeAudioPlayerSpawn = spawn,
+): RealtimeAudioPlayer {
   let child: ChildProcess | null = null;
   let format: { sampleRate: number; numChannels: number } | null = null;
   const queue: Buffer[] = [];
   let queuedBytes = 0;
   let waitingForDrain = false;
 
-  const close = (): void => {
-    const active = child;
+  const reset = (active: ChildProcess | null): void => {
+    if (active !== child) return;
     child = null;
     format = null;
     queue.length = 0;
     queuedBytes = 0;
     waitingForDrain = false;
+  };
+
+  const close = (): void => {
+    const active = child;
+    reset(active);
+    active?.stdin?.removeAllListeners("drain");
+    active?.stdin?.removeAllListeners("error");
+    active?.stdin?.removeAllListeners("close");
     active?.stdin?.destroy();
     active?.kill("SIGTERM");
   };
@@ -82,7 +98,14 @@ export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
     }
     while (queue.length > 0) {
       const chunk = queue[0]!;
-      if (!active.stdin.write(chunk)) {
+      let accepted = false;
+      try {
+        accepted = active.stdin.write(chunk);
+      } catch {
+        reset(active);
+        return;
+      }
+      if (!accepted) {
         if (!waitingForDrain) {
           waitingForDrain = true;
           active.stdin.once("drain", () => {
@@ -123,7 +146,7 @@ export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
         format.numChannels !== nextFormat.numChannels
       ) {
         close();
-        child = spawn(
+        child = spawnProcess(
           "play",
           [
             "-q",
@@ -142,14 +165,11 @@ export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
           { stdio: ["pipe", "ignore", "ignore"] },
         );
         format = nextFormat;
-        child?.on("error", () => {
-          child = null;
-          format = null;
-        });
-        child?.on("close", () => {
-          child = null;
-          format = null;
-        });
+        const active = child;
+        active?.on("error", () => reset(active));
+        active?.on("close", () => reset(active));
+        active?.stdin?.on("error", () => reset(active));
+        active?.stdin?.on("close", () => reset(active));
       }
       enqueueBuffer(Buffer.from(audio.data, "base64"));
     },
@@ -157,7 +177,9 @@ export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
   };
 }
 
-function pcmBufferToRealtimeAudioChunk(chunk: Buffer): ThreadRealtimeAudioChunk {
+export function pcmBufferToRealtimeAudioChunk(
+  chunk: Buffer,
+): ThreadRealtimeAudioChunk {
   return {
     data: Buffer.from(chunk).toString("base64"),
     sampleRate: INPUT_SAMPLE_RATE,
@@ -166,11 +188,11 @@ function pcmBufferToRealtimeAudioChunk(chunk: Buffer): ThreadRealtimeAudioChunk 
   };
 }
 
-function pcmPeakLevel(chunk: Buffer): number {
+export function pcmPeakLevel(chunk: Buffer): number {
   let peak = 0;
   for (let index = 0; index < chunk.length - 1; index += 2) {
     const sample = Math.abs(chunk.readInt16LE(index));
     if (sample > peak) peak = sample;
   }
-  return Math.round((peak / 32_767) * 65_535);
+  return Math.min(65_535, Math.round((peak / 32_767) * 65_535));
 }
