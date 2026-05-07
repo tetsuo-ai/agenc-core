@@ -6464,10 +6464,89 @@ async function gapGates(item) {
     assertGapTuiMessageSelectorCallbacks();
     return;
   }
+  if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
+    assertGapToolsSyntheticOutputToolValidation();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapToolsSyntheticOutputToolValidation() {
+  const toolRel = "runtime/src/tools/SyntheticOutputTool/SyntheticOutputTool.ts";
+  const hookRel = "runtime/src/utils/hooks/hookHelpers.ts";
+  const testRel = "runtime/src/tools/SyntheticOutputTool/SyntheticOutputTool.test.ts";
+  const toolPath = path.join(root, toolRel);
+  const hookPath = path.join(root, hookRel);
+  const testPath = path.join(root, testRel);
+  for (const rel of [toolRel, hookRel, testRel]) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-TOOLS-01: missing required evidence file ${rel}`);
+    }
+  }
+
+  const tool = readFileSync(toolPath, "utf8");
+  const hook = readFileSync(hookPath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+
+  const requiredToolEvidence = [
+    [
+      "unbound singleton rejects direct execution",
+      /async\s+call\s*\(\s*\)\s*\{[\s\S]{0,240}StructuredOutput must be created with createSyntheticOutputTool\(jsonSchema\)/,
+    ],
+    [
+      "factory compiles the caller-provided JSON schema",
+      /const\s+validateSchema\s*=\s*ajv\.compile\(jsonSchema\)/,
+    ],
+    [
+      "factory validates each tool input",
+      /const\s+isValid\s*=\s*validateSchema\(input\)/,
+    ],
+    [
+      "schema mismatch is surfaced as an error",
+      /Output does not match required schema/,
+    ],
+  ];
+  const missingToolEvidence = requiredToolEvidence
+    .filter(([, pattern]) => !pattern.test(tool))
+    .map(([label]) => label);
+  if (missingToolEvidence.length > 0) {
+    failGate(`GAP-TOOLS-01 tool validation evidence missing:\n  - ${missingToolEvidence.join("\n  - ")}`);
+  }
+
+  if (!hook.includes("createSyntheticOutputTool(hookResponseJsonSchema)")) {
+    failGate("GAP-TOOLS-01: hook structured-output helper must use the schema-bound factory");
+  }
+  if (/^\s*SyntheticOutputTool\s*,/m.test(hook) || /\.\.\.\s*SyntheticOutputTool\b/.test(hook)) {
+    failGate("GAP-TOOLS-01: hook structured-output helper must not spread the unbound singleton");
+  }
+
+  const requiredTestEvidence = [
+    "rejects direct calls to the unbound singleton",
+    "accepts schema-bound output that satisfies the JSON schema",
+    "rejects schema-bound output that does not satisfy the JSON schema",
+    "reports invalid JSON schemas before a tool is exposed",
+    "caches schema-bound tools by schema object identity",
+  ];
+  const missingTestEvidence = requiredTestEvidence.filter((needle) => !test.includes(needle));
+  if (missingTestEvidence.length > 0) {
+    failGate(`GAP-TOOLS-01 regression test evidence missing:\n  - ${missingTestEvidence.join("\n  - ")}`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tools/SyntheticOutputTool/SyntheticOutputTool.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-01 targeted SyntheticOutputTool tests failed");
+  }
+
+  pass("GAP-TOOLS-01: SyntheticOutputTool singleton is guarded and factory validation is covered");
 }
 
 function assertGapTuiGlobalKeybindingHandlers() {

@@ -5,7 +5,7 @@ import { z } from 'zod/v4'
 import type { Tool } from '../../tools/Tool.js'
 import {
   SYNTHETIC_OUTPUT_TOOL_NAME,
-  SyntheticOutputTool,
+  createSyntheticOutputTool,
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { substituteArguments } from '../../tui/slash/argument-substitution.js'
@@ -27,6 +27,22 @@ export const hookResponseSchema = lazySchema(() =>
   }),
 )
 
+const hookResponseJsonSchema: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    ok: {
+      type: 'boolean',
+      description: 'Whether the condition was met',
+    },
+    reason: {
+      type: 'string',
+      description: 'Reason, if the condition was not met',
+    },
+  },
+  required: ['ok'],
+  additionalProperties: false,
+}
+
 /**
  * Add hook input JSON to prompt, either replacing $ARGUMENTS placeholder or appending.
  * Also supports indexed arguments like $ARGUMENTS[0], $ARGUMENTS[1], or shorthand $0, $1, etc.
@@ -43,24 +59,15 @@ export function addArgumentsToPrompt(
  * Reusable by agent hooks and background verification.
  */
 export function createStructuredOutputTool(): Tool {
+  const result = createSyntheticOutputTool(hookResponseJsonSchema)
+  if ('error' in result) {
+    throw new Error(`Invalid StructuredOutput hook schema: ${result.error}`)
+  }
+
   return {
-    ...SyntheticOutputTool,
+    ...result.tool,
     inputSchema: hookResponseSchema(),
-    inputJSONSchema: {
-      type: 'object',
-      properties: {
-        ok: {
-          type: 'boolean',
-          description: 'Whether the condition was met',
-        },
-        reason: {
-          type: 'string',
-          description: 'Reason, if the condition was not met',
-        },
-      },
-      required: ['ok'],
-      additionalProperties: false,
-    },
+    inputJSONSchema: hookResponseJsonSchema,
     async prompt(): Promise<string> {
       return `Use this tool to return your verification result. You MUST call this tool exactly once at the end of your response.`
     },

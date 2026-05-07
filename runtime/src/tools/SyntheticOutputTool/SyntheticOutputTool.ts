@@ -56,12 +56,11 @@ export const SyntheticOutputTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  async call(input) {
-    // The tool just validates and returns the input as the structured output
-    return {
-      data: 'Structured output provided successfully',
-      structured_output: input,
-    }
+  async call() {
+    throw new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+      'StructuredOutput must be created with createSyntheticOutputTool(jsonSchema) before it can be called',
+      'StructuredOutput called without a bound schema',
+    )
   },
   async checkPermissions(input): Promise<PermissionResult> {
     // Always allow this tool - it's just returning data
