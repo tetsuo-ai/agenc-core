@@ -9241,6 +9241,7 @@ async function cleanupGates(item) {
 
   const Z_FINAL_TS_PRUNE_PROJECT = "runtime/tsconfig.json";
   const Z_FINAL_TS_PRUNE_IGNORE_REL = ".ts-prune-ignore";
+  const Z_FINAL_KNIP_ISSUE_IGNORE_REL = ".knip-issues-ignore.json";
 
   function readZFinalTsPruneIgnorePatterns() {
     const ignorePath = path.join(root, Z_FINAL_TS_PRUNE_IGNORE_REL);
@@ -9331,25 +9332,78 @@ async function cleanupGates(item) {
     return out;
   }
 
-  function countKnipUnusedIssueEntries(issue) {
-    let count = 0;
-    for (const key of [
-      "dependencies",
-      "devDependencies",
-      "optionalPeerDependencies",
-      "exports",
-      "types",
-    ]) {
-      const value = issue?.[key];
-      if (Array.isArray(value)) count += value.length;
-    }
-    const enumMembers = issue?.enumMembers;
-    if (enumMembers && typeof enumMembers === "object") {
-      for (const value of Object.values(enumMembers)) {
-        if (Array.isArray(value)) count += value.length;
+  function collectKnipUnusedIssueEntries(report) {
+    const entries = [];
+    for (const issue of Array.isArray(report.issues) ? report.issues : []) {
+      const file = issue?.file;
+      if (typeof file !== "string") continue;
+      for (const key of [
+        "dependencies",
+        "devDependencies",
+        "optionalPeerDependencies",
+        "exports",
+        "types",
+      ]) {
+        const value = issue?.[key];
+        if (!Array.isArray(value)) continue;
+        for (const item of value) {
+          if (typeof item?.name === "string") entries.push({ file, type: key, name: item.name });
+        }
+      }
+      const enumMembers = issue?.enumMembers;
+      if (enumMembers && typeof enumMembers === "object") {
+        for (const [enumName, members] of Object.entries(enumMembers)) {
+          if (!Array.isArray(members)) continue;
+          for (const member of members) {
+            const memberName = typeof member?.name === "string" ? member.name : String(member);
+            entries.push({ file, type: "enumMembers", name: `${enumName}.${memberName}` });
+          }
+        }
       }
     }
-    return count;
+    return entries;
+  }
+
+  function readZFinalKnipIssueIgnoreEntries() {
+    const ignorePath = path.join(root, Z_FINAL_KNIP_ISSUE_IGNORE_REL);
+    if (!existsSync(ignorePath)) return [];
+    let parsed;
+    try {
+      parsed = JSON.parse(readFileSync(ignorePath, "utf8"));
+    } catch (error) {
+      failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} is not valid JSON: ${error?.message || error}`);
+    }
+    const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+    return entries.map((entry, index) => {
+      if (typeof entry?.file !== "string" || typeof entry?.type !== "string") {
+        failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} entry ${index + 1} must include file and type`);
+      }
+      if (typeof entry.name === "string") return { file: entry.file, type: entry.type, name: entry.name };
+      if (typeof entry.namePattern === "string") {
+        try {
+          return { file: entry.file, type: entry.type, namePattern: new RegExp(`^(?:${entry.namePattern})$`) };
+        } catch (error) {
+          failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} entry ${index + 1} has invalid namePattern: ${error?.message || error}`);
+        }
+      }
+      failGate(`Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} entry ${index + 1} must include name or namePattern`);
+    });
+  }
+
+  function isIgnoredKnipIssue(entry, ignoreEntries) {
+    return ignoreEntries.some((ignored) =>
+      ignored.file === entry.file &&
+        ignored.type === entry.type &&
+        (ignored.name === entry.name || ignored.namePattern?.test(entry.name)),
+    );
+  }
+
+  function isKnipIgnoreEntryUsed(ignored, issueEntries) {
+    return issueEntries.some((entry) =>
+      ignored.file === entry.file &&
+        ignored.type === entry.type &&
+        (ignored.name === entry.name || ignored.namePattern?.test(entry.name)),
+    );
   }
 
   const zFinalDebtCommentRe = /\b(?:TODO|FIXME|HACK|legacy|temporary|for now|remove after)\b/i;
@@ -9514,15 +9568,24 @@ async function cleanupGates(item) {
       failGate(`Z-FINAL gate 4: knip JSON reporter output was not parseable: ${error?.message || error}`);
     }
     const unusedFiles = Array.isArray(knipReport.files) ? knipReport.files : [];
-    const issues = Array.isArray(knipReport.issues) ? knipReport.issues : [];
-    const issueCount = issues.reduce((sum, issue) => sum + countKnipUnusedIssueEntries(issue), 0);
-    if (unusedFiles.length > 0 || issueCount > 0) {
+    const issueEntries = collectKnipUnusedIssueEntries(knipReport);
+    const ignoredIssueEntries = readZFinalKnipIssueIgnoreEntries();
+    const unignoredIssueEntries = issueEntries.filter((entry) => !isIgnoredKnipIssue(entry, ignoredIssueEntries));
+    const staleIgnoredIssueEntries = ignoredIssueEntries.filter((entry) => !isKnipIgnoreEntryUsed(entry, issueEntries));
+    if (unusedFiles.length > 0 || unignoredIssueEntries.length > 0) {
       failGate(
-        `Z-FINAL gate 4: knip reported ${unusedFiles.length} unused file(s) and ${issueCount} unused dependency/export issue(s). ` +
-          `Remove the dead surface or add a precise .knip.json allow-list for genuine public entry points.`,
+        `Z-FINAL gate 4: knip reported ${unusedFiles.length} unused file(s) and ${unignoredIssueEntries.length} unignored dependency/export issue(s). ` +
+          `Remove the dead surface or add a precise ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} entry:\n` +
+          unignoredIssueEntries.slice(0, 80).map((entry) => `${entry.file}: ${entry.type} ${entry.name}`).join("\n"),
       );
     }
-    pass("Z-FINAL gate 4: knip has zero unused files, exports, and dependencies");
+    if (staleIgnoredIssueEntries.length > 0) {
+      failGate(
+        `Z-FINAL gate 4: ${Z_FINAL_KNIP_ISSUE_IGNORE_REL} contains ${staleIgnoredIssueEntries.length} stale issue ignore entr${staleIgnoredIssueEntries.length === 1 ? "y" : "ies"} no longer present in knip output:\n` +
+          staleIgnoredIssueEntries.slice(0, 80).map((entry) => `${entry.file}: ${entry.type} ${entry.name ?? entry.namePattern}`).join("\n"),
+      );
+    }
+    pass(`Z-FINAL gate 4: knip has zero unignored unused files, exports, and dependencies (${ignoredIssueEntries.length} exact issue ignore entr${ignoredIssueEntries.length === 1 ? "y" : "ies"})`);
 
     const debtHits = collectZFinalProductionDebtCommentHits();
     if (debtHits.length > 0) {

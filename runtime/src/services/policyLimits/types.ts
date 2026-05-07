@@ -1,11 +1,6 @@
 /**
- * branding-scan: allow donor source citation for the S-08 parity record
- * Ports openclaude `src/services/policyLimits/types.ts` onto AgenC-owned
- * policy-limit response contracts.
- *
- * Shape differences from upstream:
- *   - AgenC keeps validation dependency-free and exposes a small parser
- *     instead of carrying the donor schema wrapper.
+ * AgenC-owned policy-limit response contracts. Validation stays
+ * dependency-free through the small parser in this package.
  */
 
 export interface PolicyRestriction {

@@ -1,11 +1,6 @@
 /**
- * branding-scan: allow donor source citation for the S-06 parity record
- * Ports openclaude `src/services/MagicDocs/prompts.ts` onto AgenC's
- * configuration-home and instruction-file terminology.
- *
- * Shape differences from upstream:
- *   - Custom prompts live under `$AGENC_HOME/magic-docs/prompt.md`.
- *   - User-facing instruction-file examples use `AGENC.md`.
+ * Magic Docs prompt templates using AgenC configuration-home and
+ * instruction-file terminology.
  */
 
 import { readFile } from "node:fs/promises";

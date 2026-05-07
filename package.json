@@ -23,8 +23,6 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "knip": "5.85.0",
-    "ts-prune": "0.10.3",
     "typescript": "^5.0.0"
   }
 }

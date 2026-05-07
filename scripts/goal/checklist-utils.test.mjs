@@ -146,6 +146,7 @@ const reviewSource = readFileSync(new URL("./review.mjs", import.meta.url), "utf
 const shimBehaviorSource = readFileSync(new URL("./shim-behavior.mjs", import.meta.url), "utf8");
 const purgeScanSource = readFileSync(new URL("./purge-scans.mjs", import.meta.url), "utf8");
 const knipConfig = JSON.parse(readFileSync(new URL("../../.knip.json", import.meta.url), "utf8"));
+const knipIssueIgnore = JSON.parse(readFileSync(new URL("../../.knip-issues-ignore.json", import.meta.url), "utf8"));
 const tsPruneIgnoreSource = readFileSync(new URL("../../.ts-prune-ignore", import.meta.url), "utf8");
 const zFinalAllowlistEvidence = JSON.parse(readFileSync(new URL("../../docs/z-final-allowlist-evidence.json", import.meta.url), "utf8"));
 const vitestConfigSource = readFileSync(new URL("../../runtime/vitest.config.ts", import.meta.url), "utf8");
@@ -153,6 +154,9 @@ const runtimeTsconfigSource = readFileSync(new URL("../../runtime/tsconfig.json"
 const runtimeTsupConfigSource = readFileSync(new URL("../../runtime/tsup.config.ts", import.meta.url), "utf8");
 const outputStylesSource = readFileSync(new URL("../../runtime/src/constants/outputStyles.ts", import.meta.url), "utf8");
 const todoWritePromptSource = readFileSync(new URL("../../runtime/src/tools/TodoWriteTool/prompt.ts", import.meta.url), "utf8");
+const mcpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp/mcp.tsx", import.meta.url), "utf8");
+const mcpXaaIdpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp/xaaIdpCommand.ts", import.meta.url), "utf8");
+const cliPrintSource = readFileSync(new URL("../../runtime/src/cli/print.ts", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
   /const wtRemove =[\s\S]*if \(wtRemove\.status !== 0\) \{\s*abort\(/.test(completeSource),
@@ -350,7 +354,12 @@ assert(
   "verify.mjs Z-FINAL pins ts-prune and knip invocations",
   zFinalTsPruneGateSource.includes("ts-prune@0.10.3") &&
     zFinalGateSource.includes("knip@5.85.0") &&
-    zFinalGateSource.includes("files,dependencies,exports,types,enumMembers"),
+    zFinalGateSource.includes("files,dependencies,exports,types,enumMembers") &&
+    verifySource.includes('const Z_FINAL_KNIP_ISSUE_IGNORE_REL = ".knip-issues-ignore.json";') &&
+    verifySource.includes("collectKnipUnusedIssueEntries") &&
+    verifySource.includes("isIgnoredKnipIssue") &&
+    verifySource.includes("isKnipIgnoreEntryUsed") &&
+    verifySource.includes("stale issue ignore"),
 );
 assert(
   ".knip.json uses real runtime entrypoints instead of all source as entry",
@@ -364,15 +373,16 @@ assert(
   ".knip.json carries explicit runtime allowlists",
   Array.isArray(runtimeKnipConfig.ignoreFiles) &&
     runtimeKnipConfig.ignoreFiles.length > 100 &&
-    knipConfig.ignoreIssues &&
-    Object.keys(knipConfig.ignoreIssues).some((rel) => rel.startsWith("runtime/src/")),
+    !knipConfig.ignoreIssues &&
+    Array.isArray(knipIssueIgnore.entries) &&
+    knipIssueIgnore.entries.some((entry) => entry.file?.startsWith("runtime/src/")),
 );
 assert(
   "Z-FINAL allowlist evidence documents generated cleanup baselines",
   zFinalAllowlistEvidence.tsPrune?.ignorePatternCount ===
     tsPruneIgnoreSource.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith("#")).length &&
     zFinalAllowlistEvidence.knip?.ignoredRuntimeFileCount === runtimeKnipConfig.ignoreFiles.length &&
-    zFinalAllowlistEvidence.knip?.ignoredIssueFileCount === Object.keys(knipConfig.ignoreIssues).length &&
+    zFinalAllowlistEvidence.knip?.ignoredIssueEntryCount === knipIssueIgnore.entries.length &&
     zFinalAllowlistEvidence.tsPrune?.command.includes("ts-prune@0.10.3") &&
     zFinalAllowlistEvidence.knip?.command.includes("knip@5.85.0"),
 );
@@ -384,8 +394,18 @@ assert(
 assert(
   "TodoWrite prompt keeps todo-list terminology",
   todoWritePromptSource.includes("Creates todo list with specific items") &&
-    todoWritePromptSource.includes("Creates todo list with items like") &&
+  todoWritePromptSource.includes("Creates todo list with items like") &&
     !todoWritePromptSource.includes("Follow-up list"),
+);
+assert(
+  "reviewer-cited renamed debt comments stay removed",
+  !/Follow-up|follow-up|workaround|WORKAROUND/.test(
+    [
+      mcpCommandSource,
+      mcpXaaIdpCommandSource,
+      cliPrintSource,
+    ].join("\n"),
+  ),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

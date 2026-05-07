@@ -161,9 +161,6 @@ export function registerMcpXaaIdpCommand(mcp: Command): void {
       '--force',
       'Ignore any cached id_token and re-login (useful after IdP-side revocation)',
     )
-    // Follow-up(paulc): read the JWT from stdin instead of argv to keep it out of
-    // shell history. Fine for conformance (docker exec uses argv directly,
-    // no shell parser), but a real user would want `echo $TOKEN | ... --stdin`.
     .option(
       '--id-token <jwt>',
       'Write this pre-obtained id_token directly to cache, skipping the OIDC browser login',

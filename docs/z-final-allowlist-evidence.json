@@ -4,8 +4,8 @@
   "tsPrune": {
     "command": "npx --yes --package ts-prune@0.10.3 ts-prune --error -p runtime/tsconfig.json",
     "ignoreFile": ".ts-prune-ignore",
-    "ignorePatternCount": 6244,
-    "sha256": "700f4f2e45e4e493f34b69a5600aac03599905a3701bfcc7d4b288bce7273b7b",
+    "ignorePatternCount": 6214,
+    "sha256": "ab09a4be6c8ed7bee4e5b177dc139da47f81a5ca9f3276b42f1ee5393fea9571",
     "rationale": "Each non-comment ignore line is an anchored regular expression for one current ts-prune output line. The gate filters only those exact lines, so a new unused export line fails unless the allowlist is deliberately updated."
   },
   "knip": {
@@ -23,8 +23,10 @@
       "runtime/tests/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
     ],
     "ignoredRuntimeFileCount": 439,
-    "ignoredIssueFileCount": 1195,
-    "sha256": "373d0de231cfa00d68ec72e81d21a0a7d3f044d5320c810e01e4f0e33b746d04",
-    "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles and ignoreIssues entries are generated from the current narrowed Knip report for known retained command, prompt, public API, test-support, and moved-source surfaces; new files or issue files outside those lists fail gate 4."
+    "ignoredIssueEntryCount": 4507,
+    "configSha256": "49f08f56fef130860ee7a4e18c3e6726bffeedb06d844ba076a8dcf9838b9f22",
+    "issueIgnoreFile": ".knip-issues-ignore.json",
+    "issueIgnoreSha256": "84d75a8c03f8a74b36c2af99a4c570cd9f5681485ec85a8866a362dabb6d0b23",
+    "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles list covers exact retained file paths. The issue ignore file is generated from the current narrowed Knip report as exact file/type/name entries; new unused symbols or dependency entries outside that list fail gate 4."
   }
 }

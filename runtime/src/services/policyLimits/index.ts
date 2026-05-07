@@ -1,15 +1,8 @@
 /**
- * branding-scan: allow donor source citation for the S-08 parity record
- * Ports openclaude `src/services/policyLimits/index.ts` onto AgenC's
- * injected auth backend, provider factory state, and runtime home directory.
- *
- * Shape differences from upstream:
- *   - AgenC never reads provider API-key environment variables from this
- *     service; bootstrap injects any selected key or an AuthBackend.
- *   - Remote sign-in eligibility uses AgenC subscription tiers and managed
- *     key vending because the gut runtime has no donor OAuth-token singleton.
- *   - The policy endpoint is AgenC-owned and can be overridden through an
- *     AgenC-specific endpoint option or environment variable.
+ * Policy-limit loading through AgenC's injected auth backend, provider
+ * factory state, and runtime home directory. Bootstrap supplies any selected
+ * key or AuthBackend; this service does not read provider key environment
+ * variables directly.
  */
 
 import { createHash } from "node:crypto";

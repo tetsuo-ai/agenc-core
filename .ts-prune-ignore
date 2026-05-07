@@ -1420,8 +1420,8 @@
 ^runtime/src/onboarding/projectOnboardingState\.ts:47 - FirstRunDisplayOptions \(used in module\)$
 ^runtime/src/onboarding/projectOnboardingState\.ts:55 - MarkFirstRunCompleteOptions \(used in module\)$
 ^runtime/src/onboarding/projectOnboardingState\.ts:64 - ProjectOnboardingOptions \(used in module\)$
-^runtime/src/onboarding/projectOnboardingSteps\.ts:59 - findProjectInstructionFilePathInAncestors \(used in module\)$
-^runtime/src/onboarding/projectOnboardingSteps\.ts:79 - isDirEmpty \(used in module\)$
+^runtime/src/onboarding/projectOnboardingSteps\.ts:64 - findProjectInstructionFilePathInAncestors \(used in module\)$
+^runtime/src/onboarding/projectOnboardingSteps\.ts:88 - isDirEmpty \(used in module\)$
 ^runtime/src/onboarding/useApiKeyVerification\.ts:104 - useApiKeyVerification$
 ^runtime/src/onboarding/useApiKeyVerification\.ts:19 - ApiKeyVerificationResult \(used in module\)$
 ^runtime/src/onboarding/useApiKeyVerification\.ts:24 - VerifyApiKeyParams \(used in module\)$
@@ -1707,21 +1707,21 @@
 ^runtime/src/plugins/validation\.ts:401 - validatePluginContents$
 ^runtime/src/plugins/validation\.ts:18 - ValidationError \(used in module\)$
 ^runtime/src/plugins/validation\.ts:24 - ValidationWarning \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:157 - isPathWithin \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:182 - isPathWithinReal \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:215 - resolveIncludes \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:42 - DEFAULT_INCLUDE_MAX_DEPTH \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:44 - DEFAULT_INCLUDE_MAX_BYTES \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:47 - USER_INSTRUCTION_FILENAME \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:49 - LOCAL_INSTRUCTION_FILENAME \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:51 - DEFAULT_MANAGED_INSTRUCTION_PATH \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:53 - InstructionTier \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:59 - TierEntry \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:92 - DroppedInclude \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:106 - ResolveIncludesOptions \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:120 - ResolvedContent \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:643 - loadProjectInstructions \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:644 - ProjectInstructions$
+^runtime/src/prompts/agenc-md\.ts:158 - isPathWithin \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:183 - isPathWithinReal \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:216 - resolveIncludes \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:43 - DEFAULT_INCLUDE_MAX_DEPTH \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:45 - DEFAULT_INCLUDE_MAX_BYTES \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:48 - USER_INSTRUCTION_FILENAME \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:50 - LOCAL_INSTRUCTION_FILENAME \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:52 - DEFAULT_MANAGED_INSTRUCTION_PATH \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:54 - InstructionTier \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:60 - TierEntry \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:93 - DroppedInclude \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:107 - ResolveIncludesOptions \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:121 - ResolvedContent \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:650 - loadProjectInstructions \(used in module\)$
+^runtime/src/prompts/agenc-md\.ts:651 - ProjectInstructions$
 ^runtime/src/prompts/file-mentions\.ts:108 - validateMentionPath \(used in module\)$
 ^runtime/src/prompts/file-mentions\.ts:15 - MentionValidationResult \(used in module\)$
 ^runtime/src/prompts/file-mentions\.ts:19 - DetectedMention \(used in module\)$
@@ -1739,11 +1739,14 @@
 ^runtime/src/prompts/permissions-prompt\.ts:166 - SANDBOX_MODE_DANGER_FULL_ACCESS \(used in module\)$
 ^runtime/src/prompts/permissions-prompt\.ts:172 - SANDBOX_MODE_WORKSPACE_WRITE \(used in module\)$
 ^runtime/src/prompts/permissions-prompt\.ts:178 - SANDBOX_MODE_READ_ONLY \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:121 - findProjectRoot \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:150 - resolveInstructionFile \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:22 - PRIMARY_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:28 - OVERRIDE_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:73 - LoadProjectInstructionsOptions \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:164 - resolveInstructionFile \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:29 - AGENTS_PROJECT_INSTRUCTION_FILE \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:30 - C(?:LAUDE)_PROJECT_INSTRUCTION_FILE \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:31 - FALLBACK_PROJECT_INSTRUCTION_FILE \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:32 - FALLBACK_PROJECT_INSTRUCTION_FILES \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:33 - PRIMARY_PROJECT_INSTRUCTION_FILE \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:40 - OVERRIDE_PROJECT_INSTRUCTION_FILE \(used in module\)$
+^runtime/src/prompts/project-instructions\.ts:85 - LoadProjectInstructionsOptions \(used in module\)$
 ^runtime/src/prompts/sections\.ts:46 - systemPromptSection$
 ^runtime/src/prompts/sections\.ts:101 - __systemPromptSectionCacheSize$
 ^runtime/src/prompts/sections\.ts:109 - __peekSystemPromptSection$
@@ -2808,6 +2811,8 @@
 ^runtime/src/utils/earlyInput\.ts:174 - hasEarlyInput$
 ^runtime/src/utils/earlyInput\.ts:182 - seedEarlyInput$
 ^runtime/src/utils/earlyInput\.ts:189 - isCapturingEarlyInput$
+^runtime/src/utils/editor\.ts:53 - splitEditorCommand \(used in module\)$
+^runtime/src/utils/editor\.ts:103 - editorExecutableAvailable \(used in module\)$
 ^runtime/src/utils/effort\.ts:88 - isEffortLevel \(used in module\)$
 ^runtime/src/utils/effort\.ts:92 - isOpenAIEffortLevel$
 ^runtime/src/utils/effort\.ts:97 - modelUsesOpenAIEffort \(used in module\)$
@@ -3076,9 +3081,8 @@
 ^runtime/src/utils/process\.ts:48 - peekForStdinData$
 ^runtime/src/utils/process\.ts:67 - RunCommandOptions \(used in module\)$
 ^runtime/src/utils/process\.ts:74 - RunCommandResult \(used in module\)$
-^runtime/src/utils/projectInstructions\.ts:6 - getProjectInstructionFilePaths \(used in module\)$
-^runtime/src/utils/projectInstructions\.ts:23 - hasProjectInstructionFile \(used in module\)$
-^runtime/src/utils/projectInstructions\.ts:4 - FALLBACK_PROJECT_INSTRUCTION_FILE \(used in module\)$
+^runtime/src/utils/projectInstructions\.ts:14 - getProjectInstructionFileNames \(used in module\)$
+^runtime/src/utils/projectInstructions\.ts:34 - hasProjectInstructionFile \(used in module\)$
 ^runtime/src/utils/promptEditor\.ts:27 - EditorResult \(used in module\)$
 ^runtime/src/utils/providerDiscovery\.ts:128 - getAtomicChatApiBaseUrl \(used in module\)$
 ^runtime/src/utils/providerDiscovery\.ts:141 - getAtomicChatChatBaseUrl \(used in module\)$
@@ -3548,6 +3552,7 @@
 ^runtime/src/commands/login/login\.tsx:39 - call$
 ^runtime/src/commands/logout/index\.ts:4 - default$
 ^runtime/src/commands/mcp/index\.ts:12 - default$
+^runtime/src/commands/memory/slash\.ts:17 - memorySlashCommand \(used in module\)$
 ^runtime/src/commands/mobile/index\.ts:11 - default$
 ^runtime/src/commands/onboard-github/onboard-github\.tsx:50 - shouldForceGithubRelogin \(used in module\)$
 ^runtime/src/commands/onboard-github/onboard-github\.tsx:64 - hasExistingGithubModelsLoginToken \(used in module\)$
@@ -4748,18 +4753,18 @@
 ^runtime/src/services/lsp/protocol\.ts:9 - LspPosition \(used in module\)$
 ^runtime/src/services/lsp/protocol\.ts:19 - LspDiagnostic \(used in module\)$
 ^runtime/src/services/lsp/protocol\.ts:32 - WorkspaceFolder \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:114 - trackedMagicDocPathsForTests$
-^runtime/src/services/MagicDocs/magicDocs\.ts:126 - setMagicDocsAgentRunnerForTests$
-^runtime/src/services/MagicDocs/magicDocs\.ts:132 - resetMagicDocsForTests$
-^runtime/src/services/MagicDocs/magicDocs\.ts:142 - detectMagicDocHeader \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:195 - registerMagicDoc \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:220 - cloneMagicDocsReadFileState \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:266 - createMagicDocsEditPolicy \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:45 - MagicDocsReadFileState \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:47 - MagicDocsAgentRequest \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:60 - MagicDocsAgentRunner \(used in module\)$
-^runtime/src/services/MagicDocs/magicDocs\.ts:64 - MagicDocsPostSamplingContext \(used in module\)$
-^runtime/src/services/MagicDocs/prompts\.ts:78 - substituteMagicDocsVariables \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:107 - trackedMagicDocPathsForTests$
+^runtime/src/services/MagicDocs/magicDocs\.ts:119 - setMagicDocsAgentRunnerForTests$
+^runtime/src/services/MagicDocs/magicDocs\.ts:125 - resetMagicDocsForTests$
+^runtime/src/services/MagicDocs/magicDocs\.ts:135 - detectMagicDocHeader \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:188 - registerMagicDoc \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:213 - cloneMagicDocsReadFileState \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:259 - createMagicDocsEditPolicy \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:38 - MagicDocsReadFileState \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:40 - MagicDocsAgentRequest \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:53 - MagicDocsAgentRunner \(used in module\)$
+^runtime/src/services/MagicDocs/magicDocs\.ts:57 - MagicDocsPostSamplingContext \(used in module\)$
+^runtime/src/services/MagicDocs/prompts\.ts:73 - substituteMagicDocsVariables \(used in module\)$
 ^runtime/src/services/mcp/agencai\.ts:170 - hasAgenCAiMcpEverConnected$
 ^runtime/src/services/mcp/auth\.ts:150 - validateOAuthCallbackParams \(used in module\)$
 ^runtime/src/services/mcp/auth\.ts:225 - normalizeOAuthErrorBody \(used in module\)$
@@ -4871,32 +4876,32 @@
 ^runtime/src/services/plugins/pluginOperations\.ts:575 - setPluginEnabledOp \(used in module\)$
 ^runtime/src/services/plugins/pluginOperations\.ts:143 - PluginOperationResult \(used in module\)$
 ^runtime/src/services/plugins/pluginOperations\.ts:156 - PluginUpdateResult \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:554 - createPolicyLimitsService$
-^runtime/src/services/policyLimits/index\.ts:560 - getPolicyLimitsService \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:565 - initializePolicyLimitsLoadingPromise \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:569 - isPolicyLimitsEligible \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:577 - isProductFeedbackAllowedByPolicy$
-^runtime/src/services/policyLimits/index\.ts:581 - waitForPolicyLimitsToLoad \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:585 - loadPolicyLimits \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:597 - startBackgroundPolling \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:601 - stopBackgroundPolling \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:605 - _resetPolicyLimitsForTesting$
-^runtime/src/services/policyLimits/index\.ts:610 - computePolicyLimitsChecksum \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:618 - stablePolicyLimitsStringify \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:38 - PolicyLimitsFetchResult \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:39 - PolicyLimitsResponse \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:40 - PolicyLimitsRestrictions \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:41 - PolicyRestriction$
-^runtime/src/services/policyLimits/index\.ts:44 - POLICY_LIMITS_CACHE_FILENAME \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:45 - DEFAULT_POLICY_LIMITS_ENDPOINT \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:47 - POLICY_LIMITS_ENDPOINT_ENV \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:48 - DEFAULT_POLICY_LIMITS_FETCH_TIMEOUT_MS \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:49 - DEFAULT_POLICY_LIMITS_MAX_RETRIES \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:50 - DEFAULT_POLICY_LIMITS_POLLING_INTERVAL_MS \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:51 - DEFAULT_POLICY_LIMITS_LOADING_TIMEOUT_MS \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:52 - POLICY_ALLOW_PRODUCT_FEEDBACK \(used in module\)$
-^runtime/src/services/policyLimits/index\.ts:68 - PolicyLimitsServiceOptions \(used in module\)$
-^runtime/src/services/policyLimits/types\.ts:38 - parsePolicyLimitsRestrictions \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:547 - createPolicyLimitsService$
+^runtime/src/services/policyLimits/index\.ts:553 - getPolicyLimitsService \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:558 - initializePolicyLimitsLoadingPromise \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:562 - isPolicyLimitsEligible \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:570 - isProductFeedbackAllowedByPolicy$
+^runtime/src/services/policyLimits/index\.ts:574 - waitForPolicyLimitsToLoad \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:578 - loadPolicyLimits \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:590 - startBackgroundPolling \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:594 - stopBackgroundPolling \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:598 - _resetPolicyLimitsForTesting$
+^runtime/src/services/policyLimits/index\.ts:603 - computePolicyLimitsChecksum \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:611 - stablePolicyLimitsStringify \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:31 - PolicyLimitsFetchResult \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:32 - PolicyLimitsResponse \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:33 - PolicyLimitsRestrictions \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:34 - PolicyRestriction$
+^runtime/src/services/policyLimits/index\.ts:37 - POLICY_LIMITS_CACHE_FILENAME \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:38 - DEFAULT_POLICY_LIMITS_ENDPOINT \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:40 - POLICY_LIMITS_ENDPOINT_ENV \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:41 - DEFAULT_POLICY_LIMITS_FETCH_TIMEOUT_MS \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:42 - DEFAULT_POLICY_LIMITS_MAX_RETRIES \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:43 - DEFAULT_POLICY_LIMITS_POLLING_INTERVAL_MS \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:44 - DEFAULT_POLICY_LIMITS_LOADING_TIMEOUT_MS \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:45 - POLICY_ALLOW_PRODUCT_FEEDBACK \(used in module\)$
+^runtime/src/services/policyLimits/index\.ts:61 - PolicyLimitsServiceOptions \(used in module\)$
+^runtime/src/services/policyLimits/types\.ts:33 - parsePolicyLimitsRestrictions \(used in module\)$
 ^runtime/src/services/PromptSuggestion/limits\.ts:45 - setPromptSuggestionLimitsForTests$
 ^runtime/src/services/PromptSuggestion/limits\.ts:8 - PromptSuggestionLimitStatus \(used in module\)$
 ^runtime/src/services/PromptSuggestion/limits\.ts:13 - PromptSuggestionLimits \(used in module\)$
@@ -5076,14 +5081,14 @@
 ^runtime/src/tools/apply-patch/types\.ts:60 - ApplyPatchFileChange \(used in module\)$
 ^runtime/src/tools/apply-patch/types\.ts:76 - ApplyPatchAction$
 ^runtime/src/tools/apply-patch/types\.ts:82 - ParseErrorKind \(used in module\)$
-^runtime/src/tools/ask-user-question/tool\.ts:205 - recordAskUserQuestionResponse \(used in module\)$
-^runtime/src/tools/ask-user-question/tool\.ts:213 - recordAskUserQuestionUpdatedInput$
-^runtime/src/tools/ask-user-question/tool\.ts:223 - recordAskUserQuestionPlanInterviewAction$
-^runtime/src/tools/ask-user-question/tool\.ts:240 - clearAskUserQuestionResponse$
-^runtime/src/tools/ask-user-question/tool\.ts:244 - clearAskUserQuestionResponsesForTest$
-^runtime/src/tools/ask-user-question/tool\.ts:40 - AskUserQuestionInput \(used in module\)$
-^runtime/src/tools/ask-user-question/tool\.ts:47 - AskUserQuestionPlanInterviewAction \(used in module\)$
-^runtime/src/tools/ask-user-question/tool\.ts:51 - AskUserQuestionParseResult \(used in module\)$
+^runtime/src/tools/ask-user-question/tool\.ts:196 - recordAskUserQuestionResponse \(used in module\)$
+^runtime/src/tools/ask-user-question/tool\.ts:204 - recordAskUserQuestionUpdatedInput$
+^runtime/src/tools/ask-user-question/tool\.ts:214 - recordAskUserQuestionPlanInterviewAction$
+^runtime/src/tools/ask-user-question/tool\.ts:231 - clearAskUserQuestionResponse$
+^runtime/src/tools/ask-user-question/tool\.ts:235 - clearAskUserQuestionResponsesForTest$
+^runtime/src/tools/ask-user-question/tool\.ts:31 - AskUserQuestionInput \(used in module\)$
+^runtime/src/tools/ask-user-question/tool\.ts:38 - AskUserQuestionPlanInterviewAction \(used in module\)$
+^runtime/src/tools/ask-user-question/tool\.ts:42 - AskUserQuestionParseResult \(used in module\)$
 ^runtime/src/tools/ask-user-question/tui-tool\.tsx:14 - Question \(used in module\)$
 ^runtime/src/tools/ask-user-question/tui-tool\.tsx:15 - QuestionOption$
 ^runtime/src/tools/ask-user-question/tui-tool\.tsx:17 - Output \(used in module\)$
@@ -6097,6 +6102,11 @@
 ^runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup\.tsx:21 - getDesktopUpsellConfig \(used in module\)$
 ^runtime/src/tui/components/ManagedSettingsSecurityDialog/utils\.ts:123 - formatDangerousSettingsList$
 ^runtime/src/tui/components/ManagedSettingsSecurityDialog/utils\.ts:10 - DangerousSettings \(used in module\)$
+^runtime/src/tui/components/memory/MemoryFileSelector\.tsx:84 - getMemoryFilesForSelector \(used in module\)$
+^runtime/src/tui/components/memory/MemoryUpdateNotification\.tsx:16 - MemoryUpdateNotification$
+^runtime/src/tui/components/memory/selector-options\.ts:3 - MemorySelectorFileInfo \(used in module\)$
+^runtime/src/tui/components/memory/selector-options\.ts:11 - AgentMemoryScopeForSelector \(used in module\)$
+^runtime/src/tui/components/memory/selector-options\.ts:18 - MemorySelectorOption \(used in module\)$
 ^runtime/src/tui/components/messages/nullRenderingAttachments\.ts:53 - NullRenderingAttachmentType$
 ^runtime/src/tui/components/permissions/PermissionRequest\.tsx:163 - __permissionRequestTest$
 ^runtime/src/tui/components/permissions/SandboxPermissionRequest\.tsx:10 - SandboxPermissionRequestProps$
@@ -6206,43 +6216,3 @@
 ^runtime/src/types/generated/google/protobuf/timestamp\.ts:3 - Timestamp$
 ^runtime/src/types/generated/events_mono/agenc/v1/agenc_internal_event\.ts:5 - GitHubActionsMetadata \(used in module\)$
 ^runtime/src/types/generated/events_mono/agenc/v1/agenc_internal_event\.ts:49 - SlackContext \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:127 - findProjectRoot \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:156 - resolveInstructionFile \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:23 - PRIMARY_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:29 - OVERRIDE_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:74 - LoadProjectInstructionsOptions \(used in module\)$
-^runtime/src/utils/editor\.ts:53 - splitEditorCommand \(used in module\)$
-^runtime/src/utils/editor\.ts:103 - editorExecutableAvailable \(used in module\)$
-^runtime/src/commands/memory/slash\.ts:17 - memorySlashCommand \(used in module\)$
-^runtime/src/tui/components/memory/MemoryFileSelector\.tsx:84 - getMemoryFilesForSelector \(used in module\)$
-^runtime/src/tui/components/memory/MemoryUpdateNotification\.tsx:16 - MemoryUpdateNotification$
-^runtime/src/tui/components/memory/selector-options\.ts:3 - MemorySelectorFileInfo \(used in module\)$
-^runtime/src/tui/components/memory/selector-options\.ts:11 - AgentMemoryScopeForSelector \(used in module\)$
-^runtime/src/tui/components/memory/selector-options\.ts:18 - MemorySelectorOption \(used in module\)$
-^runtime/src/onboarding/projectOnboardingSteps\.ts:64 - findProjectInstructionFilePathInAncestors \(used in module\)$
-^runtime/src/onboarding/projectOnboardingSteps\.ts:88 - isDirEmpty \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:158 - isPathWithin \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:183 - isPathWithinReal \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:216 - resolveIncludes \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:43 - DEFAULT_INCLUDE_MAX_DEPTH \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:45 - DEFAULT_INCLUDE_MAX_BYTES \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:48 - USER_INSTRUCTION_FILENAME \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:50 - LOCAL_INSTRUCTION_FILENAME \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:52 - DEFAULT_MANAGED_INSTRUCTION_PATH \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:54 - InstructionTier \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:60 - TierEntry \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:93 - DroppedInclude \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:107 - ResolveIncludesOptions \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:121 - ResolvedContent \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:650 - loadProjectInstructions \(used in module\)$
-^runtime/src/prompts/agenc-md\.ts:651 - ProjectInstructions$
-^runtime/src/prompts/project-instructions\.ts:164 - resolveInstructionFile \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:29 - AGENTS_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:30 - C(?:LAUDE)_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:31 - FALLBACK_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:32 - FALLBACK_PROJECT_INSTRUCTION_FILES \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:33 - PRIMARY_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:40 - OVERRIDE_PROJECT_INSTRUCTION_FILE \(used in module\)$
-^runtime/src/prompts/project-instructions\.ts:85 - LoadProjectInstructionsOptions \(used in module\)$
-^runtime/src/utils/projectInstructions\.ts:14 - getProjectInstructionFileNames \(used in module\)$
-^runtime/src/utils/projectInstructions\.ts:34 - hasProjectInstructionFile \(used in module\)$

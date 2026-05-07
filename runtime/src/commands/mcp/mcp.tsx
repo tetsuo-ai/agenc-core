@@ -9,8 +9,8 @@ import { useAppState } from '../../tui/state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { PluginSettings } from '../plugin/PluginSettings.js';
 
-// Follow-up: This is a workaround to get the context value from toggleMcpServer (useContext only works in a component)
-// Ideally, all MCP state and functions would be in global state.
+// MCP command toggles run inside a component so hook-owned MCP state is
+// accessed through React rather than a module-level singleton.
 function MCPToggle(t0) {
   const $ = _c(7);
   const {

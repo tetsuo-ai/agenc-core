@@ -1,16 +1,7 @@
 /**
- * Ports donor `src/tools/AskUserQuestionTool/AskUserQuestionTool.tsx`
- * semantics onto AgenC's model-facing Tool contract.
- *
- * The model uses this tool to ask 1-4 multiple-choice questions during
- * planning or execution. The TUI renders the actual interactive picker
- * and records the user's answers before allowing the tool call to run.
- *
- * Shape differences from the donor tool:
- *   - AgenC exposes a plain JSON-schema Tool instead of the donor buildTool
- *     wrapper and handles TUI answers through a call-id side channel.
- *   - Donor channel disabling and HTML preview validation live in the
- *     upstream-shaped TUI adapter that renders the permission request.
+ * Model-facing tool for asking 1-4 multiple-choice questions during planning
+ * or execution. The TUI renders the interactive picker and records the user's
+ * answers before allowing the tool call to run.
  */
 
 import type { PermissionResult } from "../../permissions/types.js";
