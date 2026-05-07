@@ -24,6 +24,9 @@
   ],
   "scripts": {
     "build": "tsup --config tsup.config.ts && node scripts/write-build-version.mjs && npm run check:package-entrypoints",
+    "daemon": "node bin/agenc daemon start --foreground",
+    "daemon:status": "node bin/agenc daemon status",
+    "start": "node bin/agenc",
     "typecheck": "tsc --noEmit",
     "check:package-entrypoints": "node scripts/check-package-entrypoints.mjs",
     "check:runtime-ownership": "node scripts/check-runtime-ownership.mjs",

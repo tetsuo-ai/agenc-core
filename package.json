@@ -9,6 +9,9 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=@tetsuo-ai/runtime",
+    "daemon": "npm --workspace=@tetsuo-ai/runtime run daemon",
+    "daemon:status": "npm --workspace=@tetsuo-ai/runtime run daemon:status",
+    "start": "npm --workspace=@tetsuo-ai/runtime run start",
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
