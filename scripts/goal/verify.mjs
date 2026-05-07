@@ -6765,10 +6765,87 @@ async function gapGates(item) {
     assertGapDmnSessionRoutes();
     return;
   }
+  if (
+    id === "GAP-DMN-03" ||
+    item.title.includes("Authenticate Unix socket connections at accept")
+  ) {
+    assertGapDmnUnixSocketAcceptAuth();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapDmnUnixSocketAcceptAuth() {
+  const unixSocketRel = "runtime/src/app-server/transport/unix-socket.ts";
+  const unixSocketSource = readFileSync(path.join(root, unixSocketRel), "utf8");
+  for (const needle of [
+    "AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS",
+    "acceptAuthenticator",
+    "acceptAuthenticationTimeoutMs",
+    "onAuthenticationFailed",
+    "clearAuthenticationTimeout",
+    "socket.destroy()",
+  ]) {
+    if (!unixSocketSource.includes(needle)) {
+      failGate(`GAP-DMN-03: ${unixSocketRel} missing accept-auth evidence: ${needle}`);
+    }
+  }
+
+  const authRel = "runtime/src/app-server/transport/auth.ts";
+  const authSource = readFileSync(path.join(root, authRel), "utf8");
+  if (!authSource.includes("authenticateInitializeMessage")) {
+    failGate(`GAP-DMN-03: ${authRel} must authenticate initialize messages before dispatch`);
+  }
+
+  const daemonCliRel = "runtime/src/app-server/daemon-cli.ts";
+  const daemonCliSource = readFileSync(path.join(root, daemonCliRel), "utf8");
+  for (const needle of [
+    "acceptAuthenticator: (message)",
+    "authenticateInitializeMessage(message)",
+    "socketAcceptAuthenticationTimeoutMs",
+    "daemonConnectionAuthenticationFailedResponse",
+  ]) {
+    if (!daemonCliSource.includes(needle)) {
+      failGate(`GAP-DMN-03: ${daemonCliRel} missing daemon socket accept-auth wiring: ${needle}`);
+    }
+  }
+
+  const unixSocketTestRel = "runtime/src/app-server/unix-socket-transport.contract.test.ts";
+  const unixSocketTestSource = readFileSync(path.join(root, unixSocketTestRel), "utf8");
+  for (const needle of [
+    "authenticates the first socket message before dispatch",
+    "closes sockets that do not authenticate after accept",
+  ]) {
+    if (!unixSocketTestSource.includes(needle)) {
+      failGate(`GAP-DMN-03: ${unixSocketTestRel} missing accept-auth regression: ${needle}`);
+    }
+  }
+
+  const daemonCliTestRel = "runtime/src/app-server/daemon-cli.contract.test.ts";
+  const daemonCliTestSource = readFileSync(path.join(root, daemonCliTestRel), "utf8");
+  if (!daemonCliTestSource.includes("socketAcceptAuthenticationTimeoutMs")) {
+    failGate(`GAP-DMN-03: ${daemonCliTestRel} must cover idle accepted socket close`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/app-server/unix-socket-transport.contract.test.ts",
+    "src/app-server/transport-auth.contract.test.ts",
+    "src/app-server/daemon-cli.contract.test.ts",
+    "-t",
+    "authenticates the first socket message before dispatch|closes sockets that do not authenticate after accept|normalizes and verifies initialize cookies|foreground daemon instantiates AuthBackend for auth requests",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-DMN-03 targeted Unix socket accept-auth tests failed");
+  }
+  pass("GAP-DMN-03 Unix socket connections authenticate before daemon dispatch");
 }
 
 function assertGapMcpXaaRefreshLock() {
