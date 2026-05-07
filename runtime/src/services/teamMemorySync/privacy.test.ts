@@ -18,7 +18,7 @@ vi.mock('../../tools.js', () => ({}))
 vi.mock('src/tools.js', () => ({}))
 
 import { getProjectRoot, setProjectRoot } from '../../bootstrap/state.js'
-import { getProjectMemoryPath } from '../../memory/paths.js'
+import { getProjectMemoryPath } from '../../memory/index.js'
 import { readLocalTeamMemory } from './index.js'
 
 let tempRoot = ''

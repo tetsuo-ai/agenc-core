@@ -29,7 +29,7 @@ import {
   detectSessionPatternType,
   isAutoMemFile,
   memoryScopeForPath,
-} from '../memory/project-memory.js'
+} from '../memory/index.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null

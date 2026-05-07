@@ -9,7 +9,7 @@ import { getOriginalCwd } from '../../bootstrap/state.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { getAutoMemPath, isAutoMemoryEnabled } from '../../memory/paths.js';
+import { getAutoMemPath, isAutoMemoryEnabled } from '../../memory/index.js';
 import * as teamMemPathsModule from '../../memdir/teamMemPaths.js';
 import { logEvent } from '../../services/analytics/index.js';
 import { isAutoDreamEnabled } from '../../services/autoDream/config.js';
@@ -21,7 +21,7 @@ import {
   getMemoryFiles,
   getProjectMemoryPathForSelector,
   type MemoryFileInfo,
-} from '../../memory/project-memory.js';
+} from '../../memory/index.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatRelativeTimeAgo } from '../../utils/format.js';

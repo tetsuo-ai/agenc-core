@@ -31,6 +31,10 @@ This directory owns the MM-01 memory subsystem:
 - `extraction-triggers.ts` owns model-visible ranges, main-agent/env gates, direct-write skip detection, and eligible-turn cadence for background memory extraction.
 - `session/` owns session-scoped notes extraction, prompt generation, path resolution, and compact/read helpers.
 - `types.ts`, `scan.ts`, `age.ts`, and `find-relevant.ts` provide memory taxonomy, scanning, freshness, and recall selection.
+- `index.ts` exposes the public memory access surface consumed by tool and
+  runtime code paths, including stable relevant-memory header formatting and
+  branded instruction-memory loader, filtering, selector, cache-management,
+  external-include, and @memory mention entrypoints.
 - `agencmd.ts` owns full AGENC.md discovery with includes and rules. It is the only temporary strictness boundary in this directory.
 - `project-memory.ts` is the strict project-memory API that consolidates the
   project-instruction loader, selector path, privacy helpers, and @memory
