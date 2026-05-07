@@ -255,6 +255,24 @@ const ITEM_EVIDENCE = {
       { pattern: "projects registered legacy command surfaces", scope: "runtime/src/commands/tui-command-list.test.ts" },
     ],
   },
+  "GAP-TUI-11": {
+    files: [
+      "runtime/src/commands/files.ts",
+    ],
+    tests: [
+      "runtime/src/commands/command-surface.test.ts",
+      "runtime/src/commands/tui-command-list.test.ts",
+      "runtime/src/commands/help.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "keeps /files enabled for AgenC users", scope: "runtime/src/commands/command-surface.test.ts" },
+      { pattern: "includes /files in the TUI command list for AgenC users", scope: "runtime/src/commands/tui-command-list.test.ts" },
+      { pattern: "lists /files with visible default registry commands", scope: "runtime/src/commands/help.test.ts" },
+    ],
+    grepNotPresent: [
+      { pattern: "USER_TYPE", scope: "runtime/src/commands/files.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6621,6 +6639,10 @@ async function gapGates(item) {
     assertGapTuiOrphanedCommandsResolved();
     return;
   }
+  if (item.title.includes("/files: remove the USER_TYPE")) {
+    assertGapTuiFilesCommandVisible();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7712,6 +7734,72 @@ function assertGapTuiOrphanedCommandsResolved() {
     failGate("GAP-TUI-10 targeted orphan-command tests failed");
   }
   pass("GAP-TUI-10 targeted orphan-command tests passed");
+}
+
+function assertGapTuiFilesCommandVisible() {
+  const rels = {
+    filesCommand: "runtime/src/commands/files.ts",
+    commandSurfaceTest: "runtime/src/commands/command-surface.test.ts",
+    tuiListTest: "runtime/src/commands/tui-command-list.test.ts",
+    helpTest: "runtime/src/commands/help.test.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-11: missing ${rel}`);
+  }
+
+  const filesCommand = readFileSync(path.join(root, rels.filesCommand), "utf8");
+  const commandSurfaceTest = readFileSync(path.join(root, rels.commandSurfaceTest), "utf8");
+  const tuiListTest = readFileSync(path.join(root, rels.tuiListTest), "utf8");
+  const helpTest = readFileSync(path.join(root, rels.helpTest), "utf8");
+
+  if (/USER_TYPE\s*={0,2}={1,2}\s*["']ant["']/.test(filesCommand)) {
+    failGate("GAP-TUI-11: /files still has the USER_TYPE === \"ant\" gate");
+  }
+  if (/filesCommand[\s\S]*isEnabled\s*:/.test(filesCommand)) {
+    failGate("GAP-TUI-11: /files must not define a command-level isEnabled gate");
+  }
+
+  const missingEvidence = [
+    [
+      "command-surface test proves /files is enabled for AgenC users",
+      /keeps \/files enabled for AgenC users[\s\S]*getCommands\("\/tmp"\)[\s\S]*name:\s*["']files["']/,
+      commandSurfaceTest,
+    ],
+    [
+      "dispatcher test executes /files without USER_TYPE",
+      /executes \/files through the runtime dispatcher for AgenC users[\s\S]*delete process\.env\.USER_TYPE[\s\S]*No files in context\./,
+      commandSurfaceTest,
+    ],
+    [
+      "TUI list test includes /files for AgenC users",
+      /includes \/files in the TUI command list for AgenC users[\s\S]*toContain\(["']files["']\)/,
+      tuiListTest,
+    ],
+    [
+      "help test includes /files in visible commands",
+      /lists \/files with visible default registry commands[\s\S]*visibleNames\)\.toContain\(["']files["']\)[\s\S]*countCanonicalCommandLines\(text,\s*["']files["']\)\)\.toBe\(1\)/,
+      helpTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-11 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-11: /files is visible for AgenC users");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/command-surface.test.ts",
+    "src/commands/tui-command-list.test.ts",
+    "src/commands/help.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-11 targeted /files visibility tests failed");
+  }
+  pass("GAP-TUI-11 targeted /files visibility tests passed");
 }
 
 function subsystemDirGates(label, dir) {

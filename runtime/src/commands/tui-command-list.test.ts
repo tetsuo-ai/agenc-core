@@ -277,12 +277,10 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(projectedNames).toEqual(registryNames);
   });
 
-  it("omits disabled commands from the TUI command list", () => {
+  it("includes /files in the TUI command list for AgenC users", () => {
     const previousUserType = process.env.USER_TYPE;
     try {
       delete process.env.USER_TYPE;
-      expect(listTuiCommandList().map((cmd) => cmd.name)).not.toContain("files");
-      process.env.USER_TYPE = "ant";
       expect(listTuiCommandList().map((cmd) => cmd.name)).toContain("files");
     } finally {
       if (previousUserType === undefined) {
@@ -305,7 +303,7 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
       const files = commands.find((cmd) => cmd.name === "files");
       expect(reloadPlugins?.supportsNonInteractive).toBe(false);
       expect(files?.supportsNonInteractive).toBe(true);
-      expect(files?.isEnabled?.()).toBe(false);
+      expect(files?.isEnabled?.() ?? true).toBe(true);
       expect(
         filterCommandsForRemoteMode(commands).map((cmd) => cmd.name),
       ).not.toContain("reload-plugins");

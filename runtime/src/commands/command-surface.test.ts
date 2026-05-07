@@ -206,7 +206,7 @@ describe("AgenC command surface compatibility", () => {
     });
   });
 
-  it("preserves non-interactive and enablement metadata on projected built-ins", async () => {
+  it("keeps /files enabled for AgenC users with non-interactive metadata", async () => {
     const previousUserType = process.env.USER_TYPE;
     try {
       delete process.env.USER_TYPE;
@@ -217,13 +217,9 @@ describe("AgenC command surface compatibility", () => {
       expect(reloadPlugins?.type).toBe("local");
       expect(reloadPlugins?.supportsNonInteractive).toBe(false);
       expect(files?.supportsNonInteractive).toBe(true);
-      expect(files?.isEnabled?.()).toBe(false);
+      expect(files?.isEnabled?.() ?? true).toBe(true);
       expect(keybindings?.supportsNonInteractive).toBe(false);
 
-      await expect(getCommands("/tmp")).resolves.not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: "files" })]),
-      );
-      process.env.USER_TYPE = "ant";
       await expect(getCommands("/tmp")).resolves.toEqual(
         expect.arrayContaining([expect.objectContaining({ name: "files" })]),
       );
@@ -263,16 +259,10 @@ describe("AgenC command surface compatibility", () => {
     expect(state).toEqual({ value: 2 });
   });
 
-  it("rejects disabled commands through the runtime dispatcher", async () => {
+  it("executes /files through the runtime dispatcher for AgenC users", async () => {
     const previousUserType = process.env.USER_TYPE;
     try {
       delete process.env.USER_TYPE;
-      const outcome = await dispatchLine("/files", "/tmp/project");
-      expect(outcome.result.kind).toBe("error");
-      if (outcome.result.kind === "error") {
-        expect(outcome.result.message).toContain("disabled");
-      }
-      process.env.USER_TYPE = "ant";
       await expect(dispatchLine("/files", "/tmp/project")).resolves.toMatchObject({
         result: { kind: "text", text: "No files in context." },
       });
@@ -862,7 +852,7 @@ describe("absorbed T-10 command behavior", () => {
     }));
     const previousUserType = process.env.USER_TYPE;
     try {
-      process.env.USER_TYPE = "ant";
+      delete process.env.USER_TYPE;
       const expectations = new Map([
         ["/cache-stats", "Cache stats"],
         ["/cost", "Cost tracking is not enabled"],
