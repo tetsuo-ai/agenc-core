@@ -4607,31 +4607,6 @@
       "name": "normalizeConnectorName"
     },
     {
-      "file": "runtime/src/constants/prompts.ts",
-      "type": "exports",
-      "name": "AGENC_DOCS_MAP_URL"
-    },
-    {
-      "file": "runtime/src/constants/prompts.ts",
-      "type": "exports",
-      "name": "computeEnvInfo"
-    },
-    {
-      "file": "runtime/src/constants/prompts.ts",
-      "type": "exports",
-      "name": "computeSimpleEnvInfo"
-    },
-    {
-      "file": "runtime/src/constants/prompts.ts",
-      "type": "exports",
-      "name": "getUnameSR"
-    },
-    {
-      "file": "runtime/src/constants/prompts.ts",
-      "type": "exports",
-      "name": "getScratchpadInstructions"
-    },
-    {
       "file": "runtime/src/commands/clear.ts",
       "type": "exports",
       "name": "clearCommand"
@@ -5107,6 +5082,21 @@
       "name": "ConversationThreadSnapshot"
     },
     {
+      "file": "runtime/src/conversation/token-budget.ts",
+      "type": "exports",
+      "name": "DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL"
+    },
+    {
+      "file": "runtime/src/conversation/token-budget.ts",
+      "type": "exports",
+      "name": "resolveTokenBudgetCheckInterval"
+    },
+    {
+      "file": "runtime/src/conversation/token-budget.ts",
+      "type": "types",
+      "name": "MidStreamBudgetSample"
+    },
+    {
       "file": "runtime/src/cost/tracker.ts",
       "type": "exports",
       "name": "getTotalCostUSD"
@@ -5397,64 +5387,174 @@
       "name": "AgenCCleanupTask"
     },
     {
-      "file": "runtime/src/mcp-server/framework.ts",
+      "file": "runtime/src/llm/errors.ts",
       "type": "exports",
-      "name": "response"
+      "name": "LLMResponseConversionError"
     },
     {
-      "file": "runtime/src/mcp-server/framework.ts",
+      "file": "runtime/src/llm/errors.ts",
       "type": "exports",
-      "name": "errorResponse"
+      "name": "LLMToolCallError"
     },
     {
-      "file": "runtime/src/mcp-server/framework.ts",
-      "type": "types",
-      "name": "McpServerFrameworkOptions"
-    },
-    {
-      "file": "runtime/src/mcp-server/framework.ts",
-      "type": "types",
-      "name": "McpServerFrameworkSnapshot"
-    },
-    {
-      "file": "runtime/src/mcp-server/http-sse.ts",
+      "file": "runtime/src/llm/context-window-upgrade.ts",
       "type": "exports",
-      "name": "createMcpHttpSseNodeServer"
+      "name": "getContextWindowUpgradeContext"
     },
     {
-      "file": "runtime/src/mcp-server/http-sse.ts",
+      "file": "runtime/src/llm/context-window-upgrade.ts",
       "type": "types",
-      "name": "McpHttpSseServerTransportOptions"
+      "name": "ContextWindowUpgradeSnapshot"
     },
     {
-      "file": "runtime/src/mcp-server/http-sse.ts",
-      "type": "types",
-      "name": "McpHttpSseSessionSnapshot"
-    },
-    {
-      "file": "runtime/src/mcp-server/tools.ts",
+      "file": "runtime/src/llm/messages.ts",
       "type": "exports",
-      "name": "mcpResultFromToolDispatch"
+      "name": "applyCacheControlBreakpoints"
     },
     {
-      "file": "runtime/src/mcp-server/tools.ts",
-      "type": "exports",
-      "name": "registeredToolFromAgenCTool"
-    },
-    {
-      "file": "runtime/src/mcp-server/tools.ts",
+      "file": "runtime/src/llm/messages.ts",
       "type": "types",
-      "name": "McpRegisteredTool"
+      "name": "NormalizeMessagesForAPIOptions"
     },
     {
-      "file": "runtime/src/mcp-server/stdio.ts",
+      "file": "runtime/src/llm/model-metadata.ts",
       "type": "exports",
-      "name": "writeMcpJsonLine"
+      "name": "readExplicitProviderContextWindowTokens"
     },
     {
-      "file": "runtime/src/mcp-server/stdio.ts",
+      "file": "runtime/src/llm/model-metadata.ts",
+      "type": "exports",
+      "name": "readExplicitProviderMaxOutputTokens"
+    },
+    {
+      "file": "runtime/src/llm/registry/provider-info.ts",
+      "type": "exports",
+      "name": "DEFAULT_STREAM_IDLE_TIMEOUT_MS"
+    },
+    {
+      "file": "runtime/src/llm/registry/provider-info.ts",
+      "type": "exports",
+      "name": "DEFAULT_STREAM_MAX_RETRIES"
+    },
+    {
+      "file": "runtime/src/llm/registry/provider-info.ts",
+      "type": "exports",
+      "name": "DEFAULT_REQUEST_MAX_RETRIES"
+    },
+    {
+      "file": "runtime/src/llm/registry/provider-info.ts",
+      "type": "exports",
+      "name": "DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "exports",
+      "name": "stripInlineHiddenTags"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "exports",
+      "name": "InlineHiddenTagParser"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
       "type": "types",
-      "name": "McpStdioServerTransportOptions"
+      "name": "InlineTagSpec"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "ExtractedInlineTag"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "StripResult"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "StreamTextChunk"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "StreamChunkKind"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "StreamChunkReorderEntry"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "SanitizeModelOutputResult"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "SanitizeModelOutputOptions"
+    },
+    {
+      "file": "runtime/src/llm/stream-parser.ts",
+      "type": "types",
+      "name": "ValidatedToolCallBatch"
+    },
+    {
+      "file": "runtime/src/llm/stream-watchdog.ts",
+      "type": "exports",
+      "name": "STREAM_IDLE_TIMEOUT_MS_DEFAULT"
+    },
+    {
+      "file": "runtime/src/llm/stream-watchdog.ts",
+      "type": "types",
+      "name": "StreamWatchdogHandle"
+    },
+    {
+      "file": "runtime/src/llm/stream-watchdog.ts",
+      "type": "types",
+      "name": "InstallStreamWatchdogOptions"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "exports",
+      "name": "DEFAULT_BYTES_PER_TOKEN"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "exports",
+      "name": "MODEL_TOKENIZER_CONFIGS"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "exports",
+      "name": "UNKNOWN_TOKENIZER_CONFIG"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "exports",
+      "name": "COMPRESSION_RATIOS"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "exports",
+      "name": "roughTokenCountEstimationForMessage"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "types",
+      "name": "ModelTokenizerConfig"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "types",
+      "name": "TokenEstimateBounds"
+    },
+    {
+      "file": "runtime/src/llm/token-estimation.ts",
+      "type": "types",
+      "name": "ContentType"
     },
     {
       "file": "runtime/src/mcp-client/transports/stdio.ts",
@@ -5627,194 +5727,64 @@
       "name": "DefaultGuardianApprovalReviewerOptions"
     },
     {
-      "file": "runtime/src/llm/errors.ts",
+      "file": "runtime/src/mcp-server/framework.ts",
       "type": "exports",
-      "name": "LLMResponseConversionError"
+      "name": "response"
     },
     {
-      "file": "runtime/src/llm/errors.ts",
+      "file": "runtime/src/mcp-server/framework.ts",
       "type": "exports",
-      "name": "LLMToolCallError"
+      "name": "errorResponse"
     },
     {
-      "file": "runtime/src/llm/context-window-upgrade.ts",
-      "type": "exports",
-      "name": "getContextWindowUpgradeContext"
-    },
-    {
-      "file": "runtime/src/llm/context-window-upgrade.ts",
+      "file": "runtime/src/mcp-server/framework.ts",
       "type": "types",
-      "name": "ContextWindowUpgradeSnapshot"
+      "name": "McpServerFrameworkOptions"
     },
     {
-      "file": "runtime/src/llm/messages.ts",
-      "type": "exports",
-      "name": "applyCacheControlBreakpoints"
-    },
-    {
-      "file": "runtime/src/llm/messages.ts",
+      "file": "runtime/src/mcp-server/framework.ts",
       "type": "types",
-      "name": "NormalizeMessagesForAPIOptions"
+      "name": "McpServerFrameworkSnapshot"
     },
     {
-      "file": "runtime/src/llm/model-metadata.ts",
+      "file": "runtime/src/mcp-server/http-sse.ts",
       "type": "exports",
-      "name": "readExplicitProviderContextWindowTokens"
+      "name": "createMcpHttpSseNodeServer"
     },
     {
-      "file": "runtime/src/llm/model-metadata.ts",
-      "type": "exports",
-      "name": "readExplicitProviderMaxOutputTokens"
-    },
-    {
-      "file": "runtime/src/llm/registry/provider-info.ts",
-      "type": "exports",
-      "name": "DEFAULT_STREAM_IDLE_TIMEOUT_MS"
-    },
-    {
-      "file": "runtime/src/llm/registry/provider-info.ts",
-      "type": "exports",
-      "name": "DEFAULT_STREAM_MAX_RETRIES"
-    },
-    {
-      "file": "runtime/src/llm/registry/provider-info.ts",
-      "type": "exports",
-      "name": "DEFAULT_REQUEST_MAX_RETRIES"
-    },
-    {
-      "file": "runtime/src/llm/registry/provider-info.ts",
-      "type": "exports",
-      "name": "DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "exports",
-      "name": "stripInlineHiddenTags"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "exports",
-      "name": "InlineHiddenTagParser"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
+      "file": "runtime/src/mcp-server/http-sse.ts",
       "type": "types",
-      "name": "InlineTagSpec"
+      "name": "McpHttpSseServerTransportOptions"
     },
     {
-      "file": "runtime/src/llm/stream-parser.ts",
+      "file": "runtime/src/mcp-server/http-sse.ts",
       "type": "types",
-      "name": "ExtractedInlineTag"
+      "name": "McpHttpSseSessionSnapshot"
     },
     {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "StripResult"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "StreamTextChunk"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "StreamChunkKind"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "StreamChunkReorderEntry"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "SanitizeModelOutputResult"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "SanitizeModelOutputOptions"
-    },
-    {
-      "file": "runtime/src/llm/stream-parser.ts",
-      "type": "types",
-      "name": "ValidatedToolCallBatch"
-    },
-    {
-      "file": "runtime/src/llm/stream-watchdog.ts",
+      "file": "runtime/src/mcp-server/tools.ts",
       "type": "exports",
-      "name": "STREAM_IDLE_TIMEOUT_MS_DEFAULT"
+      "name": "mcpResultFromToolDispatch"
     },
     {
-      "file": "runtime/src/llm/stream-watchdog.ts",
+      "file": "runtime/src/mcp-server/tools.ts",
+      "type": "exports",
+      "name": "registeredToolFromAgenCTool"
+    },
+    {
+      "file": "runtime/src/mcp-server/tools.ts",
       "type": "types",
-      "name": "StreamWatchdogHandle"
+      "name": "McpRegisteredTool"
     },
     {
-      "file": "runtime/src/llm/stream-watchdog.ts",
+      "file": "runtime/src/mcp-server/stdio.ts",
+      "type": "exports",
+      "name": "writeMcpJsonLine"
+    },
+    {
+      "file": "runtime/src/mcp-server/stdio.ts",
       "type": "types",
-      "name": "InstallStreamWatchdogOptions"
-    },
-    {
-      "file": "runtime/src/llm/token-budget.ts",
-      "type": "exports",
-      "name": "DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL"
-    },
-    {
-      "file": "runtime/src/llm/token-budget.ts",
-      "type": "exports",
-      "name": "resolveTokenBudgetCheckInterval"
-    },
-    {
-      "file": "runtime/src/llm/token-budget.ts",
-      "type": "exports",
-      "name": "createBudgetTracker"
-    },
-    {
-      "file": "runtime/src/llm/token-budget.ts",
-      "type": "types",
-      "name": "MidStreamBudgetSample"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "exports",
-      "name": "DEFAULT_BYTES_PER_TOKEN"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "exports",
-      "name": "MODEL_TOKENIZER_CONFIGS"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "exports",
-      "name": "UNKNOWN_TOKENIZER_CONFIG"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "exports",
-      "name": "COMPRESSION_RATIOS"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "exports",
-      "name": "roughTokenCountEstimationForMessage"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "types",
-      "name": "ModelTokenizerConfig"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "types",
-      "name": "TokenEstimateBounds"
-    },
-    {
-      "file": "runtime/src/llm/token-estimation.ts",
-      "type": "types",
-      "name": "ContentType"
+      "name": "McpStdioServerTransportOptions"
     },
     {
       "file": "runtime/src/memory/extraction-triggers.ts",
@@ -6317,6 +6287,106 @@
       "name": "UseApiKeyVerificationOptions"
     },
     {
+      "file": "runtime/src/phases/commit.ts",
+      "type": "exports",
+      "name": "MAX_STOP_HOOK_BLOCKS"
+    },
+    {
+      "file": "runtime/src/phases/continuation-nudge.ts",
+      "type": "exports",
+      "name": "MAX_CONTINUATION_NUDGES"
+    },
+    {
+      "file": "runtime/src/tools/hooks.ts",
+      "type": "exports",
+      "name": "applyMcpOutputModifier"
+    },
+    {
+      "file": "runtime/src/tools/hooks.ts",
+      "type": "types",
+      "name": "PreHooksResult"
+    },
+    {
+      "file": "runtime/src/tools/hooks.ts",
+      "type": "types",
+      "name": "PostHooksResult"
+    },
+    {
+      "file": "runtime/src/planning/plan-files.ts",
+      "type": "exports",
+      "name": "resolveAgencHome"
+    },
+    {
+      "file": "runtime/src/planning/plan-files.ts",
+      "type": "exports",
+      "name": "getPlanSlug"
+    },
+    {
+      "file": "runtime/src/planning/plan-files.ts",
+      "type": "exports",
+      "name": "readPlanFile"
+    },
+    {
+      "file": "runtime/src/planning/plan-files.ts",
+      "type": "exports",
+      "name": "copyPlanForFork"
+    },
+    {
+      "file": "runtime/src/tools/system/file-write.ts",
+      "type": "exports",
+      "name": "default"
+    },
+    {
+      "file": "runtime/src/tools/system/file-write.ts",
+      "type": "types",
+      "name": "FileWriteToolConfig"
+    },
+    {
+      "file": "runtime/src/tools/concurrency.ts",
+      "type": "exports",
+      "name": "BACKGROUND_TERMINAL"
+    },
+    {
+      "file": "runtime/src/tools/concurrency.ts",
+      "type": "exports",
+      "name": "isNetworkTool"
+    },
+    {
+      "file": "runtime/src/tools/router.ts",
+      "type": "exports",
+      "name": "isCodeModeSafeTool"
+    },
+    {
+      "file": "runtime/src/tools/router.ts",
+      "type": "types",
+      "name": "ToolCall"
+    },
+    {
+      "file": "runtime/src/tools/router.ts",
+      "type": "types",
+      "name": "DirectToolDispatchOptions"
+    },
+    {
+      "file": "runtime/src/tools/router.ts",
+      "type": "types",
+      "name": "ToolRouterOpts"
+    },
+    {
+      "file": "runtime/src/tools/router.ts",
+      "type": "types",
+      "name": "ToolRouterFromConfigOpts"
+    },
+    {
+      "file": "runtime/src/tools/router.ts",
+      "type": "types",
+      "name": "ToolArgumentDiffConsumer"
+    },
+    {
+      "file": "runtime/src/tools/runtimes/context.ts",
+      "type": "exports",
+      "name": "TOOL_RUNTIME_CONTEXT_ARG"
+    },
+    {
       "file": "runtime/src/shell-command/parser.ts",
       "type": "exports",
       "name": "ENV_VAR_ASSIGN_RE"
@@ -6432,16 +6502,6 @@
       "name": "FileReadToolConfig"
     },
     {
-      "file": "runtime/src/tools/system/file-write.ts",
-      "type": "exports",
-      "name": "default"
-    },
-    {
-      "file": "runtime/src/tools/system/file-write.ts",
-      "type": "types",
-      "name": "FileWriteToolConfig"
-    },
-    {
       "file": "runtime/src/permissions/path-validation.ts",
       "type": "exports",
       "name": "isPathAllowed"
@@ -6555,96 +6615,6 @@
       "file": "runtime/src/tools/ask-user-question/tool.ts",
       "type": "types",
       "name": "AskUserQuestionParseResult"
-    },
-    {
-      "file": "runtime/src/phases/commit.ts",
-      "type": "exports",
-      "name": "MAX_STOP_HOOK_BLOCKS"
-    },
-    {
-      "file": "runtime/src/phases/continuation-nudge.ts",
-      "type": "exports",
-      "name": "MAX_CONTINUATION_NUDGES"
-    },
-    {
-      "file": "runtime/src/tools/hooks.ts",
-      "type": "exports",
-      "name": "applyMcpOutputModifier"
-    },
-    {
-      "file": "runtime/src/tools/hooks.ts",
-      "type": "types",
-      "name": "PreHooksResult"
-    },
-    {
-      "file": "runtime/src/tools/hooks.ts",
-      "type": "types",
-      "name": "PostHooksResult"
-    },
-    {
-      "file": "runtime/src/planning/plan-files.ts",
-      "type": "exports",
-      "name": "resolveAgencHome"
-    },
-    {
-      "file": "runtime/src/planning/plan-files.ts",
-      "type": "exports",
-      "name": "getPlanSlug"
-    },
-    {
-      "file": "runtime/src/planning/plan-files.ts",
-      "type": "exports",
-      "name": "readPlanFile"
-    },
-    {
-      "file": "runtime/src/planning/plan-files.ts",
-      "type": "exports",
-      "name": "copyPlanForFork"
-    },
-    {
-      "file": "runtime/src/tools/concurrency.ts",
-      "type": "exports",
-      "name": "BACKGROUND_TERMINAL"
-    },
-    {
-      "file": "runtime/src/tools/concurrency.ts",
-      "type": "exports",
-      "name": "isNetworkTool"
-    },
-    {
-      "file": "runtime/src/tools/router.ts",
-      "type": "exports",
-      "name": "isCodeModeSafeTool"
-    },
-    {
-      "file": "runtime/src/tools/router.ts",
-      "type": "types",
-      "name": "ToolCall"
-    },
-    {
-      "file": "runtime/src/tools/router.ts",
-      "type": "types",
-      "name": "DirectToolDispatchOptions"
-    },
-    {
-      "file": "runtime/src/tools/router.ts",
-      "type": "types",
-      "name": "ToolRouterOpts"
-    },
-    {
-      "file": "runtime/src/tools/router.ts",
-      "type": "types",
-      "name": "ToolRouterFromConfigOpts"
-    },
-    {
-      "file": "runtime/src/tools/router.ts",
-      "type": "types",
-      "name": "ToolArgumentDiffConsumer"
-    },
-    {
-      "file": "runtime/src/tools/runtimes/context.ts",
-      "type": "exports",
-      "name": "TOOL_RUNTIME_CONTEXT_ARG"
     },
     {
       "file": "runtime/src/plugins/loader.ts",
@@ -7272,21 +7242,6 @@
       "name": "BuildEffectiveSystemPromptInput"
     },
     {
-      "file": "runtime/src/recovery/reconnection.ts",
-      "type": "exports",
-      "name": "RECONNECT_JITTER_FRAC"
-    },
-    {
-      "file": "runtime/src/recovery/reconnection.ts",
-      "type": "types",
-      "name": "ReconnectOutcome"
-    },
-    {
-      "file": "runtime/src/recovery/reconnection.ts",
-      "type": "types",
-      "name": "ReconnectOpts"
-    },
-    {
       "file": "runtime/src/relay-proxy/upstreamproxy.ts",
       "type": "exports",
       "name": "SESSION_TOKEN_PATH"
@@ -7305,6 +7260,21 @@
       "file": "runtime/src/relay-proxy/upstreamproxy.ts",
       "type": "exports",
       "name": "resetUpstreamProxyForTests"
+    },
+    {
+      "file": "runtime/src/recovery/reconnection.ts",
+      "type": "exports",
+      "name": "RECONNECT_JITTER_FRAC"
+    },
+    {
+      "file": "runtime/src/recovery/reconnection.ts",
+      "type": "types",
+      "name": "ReconnectOutcome"
+    },
+    {
+      "file": "runtime/src/recovery/reconnection.ts",
+      "type": "types",
+      "name": "ReconnectOpts"
     },
     {
       "file": "runtime/src/session/rollout-trace.ts",
@@ -7707,346 +7677,6 @@
       "name": "SecretScope"
     },
     {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "exports",
-      "name": "generateKittyId"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "NotificationChannel"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "NotificationOptions"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "NotificationAnalyticsMetadata"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "NotificationHooks"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "NotificationAnalyticsLogger"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "ExecFileNoThrow"
-    },
-    {
-      "file": "runtime/src/services/notifier.ts",
-      "type": "types",
-      "name": "NotificationRuntime"
-    },
-    {
-      "file": "runtime/src/services/preventSleep.ts",
-      "type": "exports",
-      "name": "forceStopPreventSleep"
-    },
-    {
-      "file": "runtime/src/services/preventSleep.ts",
-      "type": "types",
-      "name": "PreventSleepRuntime"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "bytesPerTokenForFileType"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "getBytesPerTokenForProvider"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "getTokenizerConfigForProvider"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "roughTokenCountEstimationForContent"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "roughTokenCountEstimationForMessage"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "roughTokenCountEstimationForProvider"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "TOKEN_COUNT_THINKING_BUDGET"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "TOKEN_COUNT_MAX_TOKENS"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "TOKEN_COUNT_SMALL_MODEL"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "normalizeAttachmentContent"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "exports",
-      "name": "isToolReferenceBlock"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "ContentType"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "ModelTokenizerConfig"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "TokenEstimateBounds"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "TokenEstimationContent"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "TokenEstimationMessage"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "TokenizerProviderHint"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "TokenCountProvider"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "TokenCountCacheWrapper"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "CountMessagesTokensOptions"
-    },
-    {
-      "file": "runtime/src/services/tokenEstimation.ts",
-      "type": "types",
-      "name": "CountTokensViaSmallModelOptions"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "getSkillsPath"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "getCommandDirCommands"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "clearCommandCaches"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "transformSkillFiles"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "onDynamicSkillsLoaded"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "getDynamicSkills"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "exports",
-      "name": "getConditionalSkillCount"
-    },
-    {
-      "file": "runtime/src/skills/loadSkillsDir.ts",
-      "type": "types",
-      "name": "LoadedFrom"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "exports",
-      "name": "recordInvokedSkill"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "exports",
-      "name": "getInvokedSkillsForAgent"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "exports",
-      "name": "clearInvokedSkillsForAgent"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "types",
-      "name": "RenderedSkill"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "types",
-      "name": "InvokedSkillRecord"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "types",
-      "name": "LocalSkillsSnapshot"
-    },
-    {
-      "file": "runtime/src/skills/local-loader.ts",
-      "type": "types",
-      "name": "LocalSkillsServiceOptions"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "exports",
-      "name": "isFinalJobStatus"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJobStatus"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJobItemStatus"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJob"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJobItem"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJobProgress"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJobCreateParams"
-    },
-    {
-      "file": "runtime/src/state/csv-agent-jobs.ts",
-      "type": "types",
-      "name": "CsvAgentJobItemCreateParams"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "exports",
-      "name": "AGENC_STATE_EXPORT_SCHEMA_VERSION"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "exports",
-      "name": "AgenCStateExportImportError"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "types",
-      "name": "AgenCStateExportAgentRun"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "types",
-      "name": "AgenCStateExportSessionSnapshot"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "types",
-      "name": "AgenCStateExportInFlightToolCall"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "types",
-      "name": "AgenCStateExportPayload"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "types",
-      "name": "AgenCStateImportResult"
-    },
-    {
-      "file": "runtime/src/state/export-import.ts",
-      "type": "types",
-      "name": "AgenCStateImportOptions"
-    },
-    {
-      "file": "runtime/src/state/tool-output-rotation.ts",
-      "type": "exports",
-      "name": "DEFAULT_TOOL_OUTPUT_ROTATION_POLICY"
-    },
-    {
-      "file": "runtime/src/state/tool-output-rotation.ts",
-      "type": "exports",
-      "name": "DEFAULT_TOOL_RECOVERY_CATEGORY"
-    },
-    {
-      "file": "runtime/src/state/tool-output-rotation.ts",
-      "type": "types",
-      "name": "RotatedToolOutput"
-    },
-    {
-      "file": "runtime/src/state/tool-output-rotation.ts",
-      "type": "types",
-      "name": "InFlightToolCallStartParams"
-    },
-    {
-      "file": "runtime/src/state/tool-output-rotation.ts",
-      "type": "types",
-      "name": "InFlightToolCallCompletionParams"
-    },
-    {
-      "file": "runtime/src/state/tool-output-rotation.ts",
-      "type": "types",
-      "name": "InFlightToolCallProgressParams"
-    },
-    {
       "file": "runtime/src/session/review.ts",
       "type": "exports",
       "name": "formatReviewFindingsBlock"
@@ -8417,6 +8047,236 @@
       "name": "MagicDocsPostSamplingContext"
     },
     {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "getSkillsPath"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "getCommandDirCommands"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "clearCommandCaches"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "transformSkillFiles"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "onDynamicSkillsLoaded"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "getDynamicSkills"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "exports",
+      "name": "getConditionalSkillCount"
+    },
+    {
+      "file": "runtime/src/skills/loadSkillsDir.ts",
+      "type": "types",
+      "name": "LoadedFrom"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "exports",
+      "name": "recordInvokedSkill"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "exports",
+      "name": "getInvokedSkillsForAgent"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "exports",
+      "name": "clearInvokedSkillsForAgent"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "types",
+      "name": "RenderedSkill"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "types",
+      "name": "InvokedSkillRecord"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "types",
+      "name": "LocalSkillsSnapshot"
+    },
+    {
+      "file": "runtime/src/skills/local-loader.ts",
+      "type": "types",
+      "name": "LocalSkillsServiceOptions"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "exports",
+      "name": "generateKittyId"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "NotificationChannel"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "NotificationOptions"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "NotificationAnalyticsMetadata"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "NotificationHooks"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "NotificationAnalyticsLogger"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "ExecFileNoThrow"
+    },
+    {
+      "file": "runtime/src/services/notifier.ts",
+      "type": "types",
+      "name": "NotificationRuntime"
+    },
+    {
+      "file": "runtime/src/services/preventSleep.ts",
+      "type": "exports",
+      "name": "forceStopPreventSleep"
+    },
+    {
+      "file": "runtime/src/services/preventSleep.ts",
+      "type": "types",
+      "name": "PreventSleepRuntime"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "bytesPerTokenForFileType"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "getBytesPerTokenForProvider"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "getTokenizerConfigForProvider"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "roughTokenCountEstimationForContent"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "roughTokenCountEstimationForMessage"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "roughTokenCountEstimationForProvider"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "TOKEN_COUNT_THINKING_BUDGET"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "TOKEN_COUNT_MAX_TOKENS"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "TOKEN_COUNT_SMALL_MODEL"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "normalizeAttachmentContent"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "exports",
+      "name": "isToolReferenceBlock"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "ContentType"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "ModelTokenizerConfig"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "TokenEstimateBounds"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "TokenEstimationContent"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "TokenEstimationMessage"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "TokenizerProviderHint"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "TokenCountProvider"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "TokenCountCacheWrapper"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "CountMessagesTokensOptions"
+    },
+    {
+      "file": "runtime/src/services/tokenEstimation.ts",
+      "type": "types",
+      "name": "CountTokensViaSmallModelOptions"
+    },
+    {
       "file": "runtime/src/tasks/index.ts",
       "type": "exports",
       "name": "generateBackgroundTaskId"
@@ -8680,6 +8540,116 @@
       "file": "runtime/src/tasks/index.ts",
       "type": "types",
       "name": "RegisterAgentThreadTaskOptions"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "exports",
+      "name": "isFinalJobStatus"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJobStatus"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJobItemStatus"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJob"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJobItem"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJobProgress"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJobCreateParams"
+    },
+    {
+      "file": "runtime/src/state/csv-agent-jobs.ts",
+      "type": "types",
+      "name": "CsvAgentJobItemCreateParams"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "exports",
+      "name": "AGENC_STATE_EXPORT_SCHEMA_VERSION"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "exports",
+      "name": "AgenCStateExportImportError"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "types",
+      "name": "AgenCStateExportAgentRun"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "types",
+      "name": "AgenCStateExportSessionSnapshot"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "types",
+      "name": "AgenCStateExportInFlightToolCall"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "types",
+      "name": "AgenCStateExportPayload"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "types",
+      "name": "AgenCStateImportResult"
+    },
+    {
+      "file": "runtime/src/state/export-import.ts",
+      "type": "types",
+      "name": "AgenCStateImportOptions"
+    },
+    {
+      "file": "runtime/src/state/tool-output-rotation.ts",
+      "type": "exports",
+      "name": "DEFAULT_TOOL_OUTPUT_ROTATION_POLICY"
+    },
+    {
+      "file": "runtime/src/state/tool-output-rotation.ts",
+      "type": "exports",
+      "name": "DEFAULT_TOOL_RECOVERY_CATEGORY"
+    },
+    {
+      "file": "runtime/src/state/tool-output-rotation.ts",
+      "type": "types",
+      "name": "RotatedToolOutput"
+    },
+    {
+      "file": "runtime/src/state/tool-output-rotation.ts",
+      "type": "types",
+      "name": "InFlightToolCallStartParams"
+    },
+    {
+      "file": "runtime/src/state/tool-output-rotation.ts",
+      "type": "types",
+      "name": "InFlightToolCallCompletionParams"
+    },
+    {
+      "file": "runtime/src/state/tool-output-rotation.ts",
+      "type": "types",
+      "name": "InFlightToolCallProgressParams"
     },
     {
       "file": "runtime/src/tools/context.ts",
@@ -10952,6 +10922,51 @@
       "name": "waitForChild"
     },
     {
+      "file": "runtime/src/skills/bundledSkills.ts",
+      "type": "exports",
+      "name": "getBundledSkillExtractDir"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "exports",
+      "name": "AUTO_FIX_DEFAULT_MAX_RETRIES"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "exports",
+      "name": "AUTO_FIX_DEFAULT_TIMEOUT_MS"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "exports",
+      "name": "AUTO_FIX_MAX_RETRIES_LIMIT"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "exports",
+      "name": "AUTO_FIX_MIN_TIMEOUT_MS"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "exports",
+      "name": "AUTO_FIX_MAX_TIMEOUT_MS"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "types",
+      "name": "AutoFixParseFailure"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "types",
+      "name": "AutoFixParseSuccess"
+    },
+    {
+      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
+      "type": "types",
+      "name": "AutoFixParseResult"
+    },
+    {
       "file": "runtime/src/services/api/errors.ts",
       "type": "exports",
       "name": "getPromptTooLongTokenGap"
@@ -11035,46 +11050,6 @@
       "file": "runtime/src/services/api/openAiCodeUsage.ts",
       "type": "types",
       "name": "OpenAiCodeUsageRow"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "exports",
-      "name": "AUTO_FIX_DEFAULT_MAX_RETRIES"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "exports",
-      "name": "AUTO_FIX_DEFAULT_TIMEOUT_MS"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "exports",
-      "name": "AUTO_FIX_MAX_RETRIES_LIMIT"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "exports",
-      "name": "AUTO_FIX_MIN_TIMEOUT_MS"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "exports",
-      "name": "AUTO_FIX_MAX_TIMEOUT_MS"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "types",
-      "name": "AutoFixParseFailure"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "types",
-      "name": "AutoFixParseSuccess"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixConfig.ts",
-      "type": "types",
-      "name": "AutoFixParseResult"
     },
     {
       "file": "runtime/src/services/compact/autoCompact.ts",
@@ -11285,11 +11260,6 @@
       "file": "runtime/src/services/wiki/paths.ts",
       "type": "exports",
       "name": "WIKI_DIRNAME"
-    },
-    {
-      "file": "runtime/src/skills/bundledSkills.ts",
-      "type": "exports",
-      "name": "getBundledSkillExtractDir"
     },
     {
       "file": "runtime/src/tools/BashTool/bashPermissions.ts",
@@ -11562,11 +11532,6 @@
       "name": "clearPendingHistoryEntries"
     },
     {
-      "file": "runtime/src/tui/input/processSlashCommand.tsx",
-      "type": "exports",
-      "name": "looksLikeCommand"
-    },
-    {
       "file": "runtime/src/tui/ink/frame.ts",
       "type": "exports",
       "name": "shouldClearScreen"
@@ -11610,6 +11575,11 @@
       "file": "runtime/src/tui/components/Feedback.tsx",
       "type": "exports",
       "name": "Feedback"
+    },
+    {
+      "file": "runtime/src/tui/input/processSlashCommand.tsx",
+      "type": "exports",
+      "name": "looksLikeCommand"
     },
     {
       "file": "runtime/src/tui/keybindings/parser.ts",
@@ -12422,6 +12392,211 @@
       "name": "MAX_TOOL_RESULT_TOKENS"
     },
     {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "JSONRPCMessagePlaceholder"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKHookCallbackMatcherSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlInitializeRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlInitializeResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlInterruptRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlPermissionRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlSetPermissionModeRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlSetModelRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlSetMaxThinkingTokensRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpStatusRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpStatusResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlGetContextUsageRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlGetContextUsageResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlRewindFilesRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlRewindFilesResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlCancelAsyncMessageRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlCancelAsyncMessageResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlSeedReadStateRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKHookCallbackRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpMessageRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpSetServersRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpSetServersResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlReloadPluginsRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlReloadPluginsResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpReconnectRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlMcpToggleRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlStopTaskRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlApplyFlagSettingsRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlGetSettingsRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlGetSettingsResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlElicitationRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlRequestInnerSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "ControlResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "ControlErrorResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlResponseSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKControlCancelRequestSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKKeepAliveMessageSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "SDKUpdateEnvironmentVariablesMessageSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "StdoutMessageSchema"
+    },
+    {
+      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
+      "type": "exports",
+      "name": "StdinMessageSchema"
+    },
+    {
       "file": "runtime/src/bridge/debugUtils.ts",
       "type": "exports",
       "name": "redactSecrets"
@@ -12745,211 +12920,6 @@
       "file": "runtime/src/utils/privacyLevel.ts",
       "type": "exports",
       "name": "getPrivacyLevel"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "JSONRPCMessagePlaceholder"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKHookCallbackMatcherSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlInitializeRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlInitializeResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlInterruptRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlPermissionRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlSetPermissionModeRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlSetModelRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlSetMaxThinkingTokensRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpStatusRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpStatusResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlGetContextUsageRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlGetContextUsageResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlRewindFilesRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlRewindFilesResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlCancelAsyncMessageRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlCancelAsyncMessageResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlSeedReadStateRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKHookCallbackRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpMessageRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpSetServersRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpSetServersResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlReloadPluginsRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlReloadPluginsResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpReconnectRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlMcpToggleRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlStopTaskRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlApplyFlagSettingsRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlGetSettingsRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlGetSettingsResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlElicitationRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlRequestInnerSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "ControlResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "ControlErrorResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlResponseSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKControlCancelRequestSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKKeepAliveMessageSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "SDKUpdateEnvironmentVariablesMessageSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "StdoutMessageSchema"
-    },
-    {
-      "file": "runtime/src/entrypoints/sdk/controlSchemas.ts",
-      "type": "exports",
-      "name": "StdinMessageSchema"
     },
     {
       "file": "runtime/src/commands/cost.ts",
@@ -13847,6 +13817,16 @@
       "name": "RecordingAvailability"
     },
     {
+      "file": "runtime/src/utils/git/gitignore.ts",
+      "type": "exports",
+      "name": "getGlobalGitignorePath"
+    },
+    {
+      "file": "runtime/src/utils/memoize.ts",
+      "type": "exports",
+      "name": "memoizeWithTTL"
+    },
+    {
       "file": "runtime/src/session/_deps/utils.ts",
       "type": "exports",
       "name": "errorMessage"
@@ -13875,31 +13855,6 @@
       "file": "runtime/src/session/_deps/tool-result-storage.ts",
       "type": "exports",
       "name": "reconstructContentReplacementState"
-    },
-    {
-      "file": "runtime/src/utils/git/gitignore.ts",
-      "type": "exports",
-      "name": "getGlobalGitignorePath"
-    },
-    {
-      "file": "runtime/src/utils/memoize.ts",
-      "type": "exports",
-      "name": "memoizeWithTTL"
-    },
-    {
-      "file": "runtime/src/state/errors.ts",
-      "type": "exports",
-      "name": "StateStoreError"
-    },
-    {
-      "file": "runtime/src/state/errors.ts",
-      "type": "exports",
-      "name": "StateBackfillError"
-    },
-    {
-      "file": "runtime/src/state/errors.ts",
-      "type": "exports",
-      "name": "StateNotFoundError"
     },
     {
       "file": "runtime/src/utils/agentContext.ts",
@@ -13995,6 +13950,21 @@
       "file": "runtime/src/tasks/lifecycle.ts",
       "type": "types",
       "name": "BindTaskPromiseOptions"
+    },
+    {
+      "file": "runtime/src/state/errors.ts",
+      "type": "exports",
+      "name": "StateStoreError"
+    },
+    {
+      "file": "runtime/src/state/errors.ts",
+      "type": "exports",
+      "name": "StateBackfillError"
+    },
+    {
+      "file": "runtime/src/state/errors.ts",
+      "type": "exports",
+      "name": "StateNotFoundError"
     },
     {
       "file": "runtime/src/tui/context/notifications.tsx",
@@ -17662,16 +17632,6 @@
       "name": "isBuddyLive"
     },
     {
-      "file": "runtime/src/tui/context/modalContext.tsx",
-      "type": "exports",
-      "name": "useModalOrTerminalSize"
-    },
-    {
-      "file": "runtime/src/tui/context/modalContext.tsx",
-      "type": "exports",
-      "name": "useModalScrollRef"
-    },
-    {
       "file": "runtime/src/tui/context/stats.tsx",
       "type": "exports",
       "name": "createStatsStore"
@@ -17707,26 +17667,6 @@
       "name": "useSet"
     },
     {
-      "file": "runtime/src/tui/context/voice.tsx",
-      "type": "exports",
-      "name": "VoiceProvider"
-    },
-    {
-      "file": "runtime/src/tui/context/voice.tsx",
-      "type": "exports",
-      "name": "useSetVoiceState"
-    },
-    {
-      "file": "runtime/src/tui/context/voice.tsx",
-      "type": "exports",
-      "name": "useGetVoiceState"
-    },
-    {
-      "file": "runtime/src/tui/context/voice.tsx",
-      "type": "types",
-      "name": "VoiceState"
-    },
-    {
       "file": "runtime/src/tui/hooks/useUpdateNotification.ts",
       "type": "exports",
       "name": "getSemverPart"
@@ -17760,6 +17700,16 @@
       "file": "runtime/src/tui/components/FastIcon.tsx",
       "type": "exports",
       "name": "FastIcon"
+    },
+    {
+      "file": "runtime/src/tui/context/modalContext.tsx",
+      "type": "exports",
+      "name": "useModalOrTerminalSize"
+    },
+    {
+      "file": "runtime/src/tui/context/modalContext.tsx",
+      "type": "exports",
+      "name": "useModalScrollRef"
     },
     {
       "file": "runtime/src/tui/components/FullscreenLayout.tsx",
@@ -17907,6 +17857,236 @@
       "name": "isInGlobalAgenCFolder"
     },
     {
+      "file": "runtime/src/tui/context/voice.tsx",
+      "type": "exports",
+      "name": "VoiceProvider"
+    },
+    {
+      "file": "runtime/src/tui/context/voice.tsx",
+      "type": "exports",
+      "name": "useSetVoiceState"
+    },
+    {
+      "file": "runtime/src/tui/context/voice.tsx",
+      "type": "exports",
+      "name": "useGetVoiceState"
+    },
+    {
+      "file": "runtime/src/tui/context/voice.tsx",
+      "type": "types",
+      "name": "VoiceState"
+    },
+    {
+      "file": "runtime/src/tui/ink/termio/types.ts",
+      "type": "exports",
+      "name": "stylesEqual"
+    },
+    {
+      "file": "runtime/src/tui/ink/termio/types.ts",
+      "type": "exports",
+      "name": "colorsEqual"
+    },
+    {
+      "file": "runtime/src/tui/ink/termio/types.ts",
+      "type": "types",
+      "name": "CursorDirection"
+    },
+    {
+      "file": "runtime/src/tui/ink/termio/types.ts",
+      "type": "types",
+      "name": "TextSegment"
+    },
+    {
+      "file": "runtime/src/tui/ink/clearTerminal.ts",
+      "type": "exports",
+      "name": "clearTerminal"
+    },
+    {
+      "file": "runtime/src/tui/ink/colorize.ts",
+      "type": "exports",
+      "name": "CHALK_BOOSTED_FOR_XTERMJS"
+    },
+    {
+      "file": "runtime/src/tui/ink/colorize.ts",
+      "type": "exports",
+      "name": "CHALK_CLAMPED_FOR_TMUX"
+    },
+    {
+      "file": "runtime/src/tui/ink/devtools.ts",
+      "type": "exports",
+      "name": "default"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "exports",
+      "name": "edges"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "exports",
+      "name": "addEdges"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "exports",
+      "name": "ZERO_EDGES"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "exports",
+      "name": "resolveEdges"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "exports",
+      "name": "clampRect"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "exports",
+      "name": "withinBounds"
+    },
+    {
+      "file": "runtime/src/tui/ink/layout/geometry.ts",
+      "type": "types",
+      "name": "Edges"
+    },
+    {
+      "file": "runtime/src/tui/ink/render-node-to-output.ts",
+      "type": "exports",
+      "name": "buildCharToSegmentMap"
+    },
+    {
+      "file": "runtime/src/tui/ink/render-node-to-output.ts",
+      "type": "exports",
+      "name": "applyStylesToWrappedText"
+    },
+    {
+      "file": "runtime/src/tui/ink/render-node-to-output.ts",
+      "type": "types",
+      "name": "FollowScroll"
+    },
+    {
+      "file": "runtime/src/tui/ink/hit-test.ts",
+      "type": "exports",
+      "name": "hitTest"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "exports",
+      "name": "BoxSizing"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "exports",
+      "name": "Dimension"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "exports",
+      "name": "Errata"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "exports",
+      "name": "ExperimentalFeature"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "exports",
+      "name": "Unit"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "exports",
+      "name": "loadYoga"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "types",
+      "name": "Value"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "types",
+      "name": "MeasureFunction"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "types",
+      "name": "Size"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "types",
+      "name": "Config"
+    },
+    {
+      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
+      "type": "types",
+      "name": "Yoga"
+    },
+    {
+      "file": "runtime/src/tui/ink/components/App.tsx",
+      "type": "exports",
+      "name": "handleMouseEvent"
+    },
+    {
+      "file": "runtime/src/tui/ink/reconciler.ts",
+      "type": "exports",
+      "name": "getOwnerChain"
+    },
+    {
+      "file": "runtime/src/tui/ink/ink.tsx",
+      "type": "exports",
+      "name": "drainStdin"
+    },
+    {
+      "file": "runtime/src/tui/ink/termio/ansi.ts",
+      "type": "exports",
+      "name": "isC0"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-focus-state.ts",
+      "type": "exports",
+      "name": "resetTerminalFocusState"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "exports",
+      "name": "decrqm"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "exports",
+      "name": "da1"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "exports",
+      "name": "da2"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "exports",
+      "name": "kittyKeyboard"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "exports",
+      "name": "cursorPosition"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "exports",
+      "name": "oscColor"
+    },
+    {
+      "file": "runtime/src/tui/ink/terminal-querier.ts",
+      "type": "types",
+      "name": "TerminalQuery"
+    },
+    {
       "file": "runtime/src/tui/ink/native-ts/file-index/index.ts",
       "type": "exports",
       "name": "default"
@@ -17920,11 +18100,6 @@
       "file": "runtime/src/tui/ink/native-ts/file-index/index.ts",
       "type": "types",
       "name": "FileIndexType"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-focus-state.ts",
-      "type": "exports",
-      "name": "resetTerminalFocusState"
     },
     {
       "file": "runtime/src/utils/agencInChrome/setup.ts",
@@ -18250,211 +18425,6 @@
       "file": "runtime/src/tui/hooks/useTypeahead.tsx",
       "type": "exports",
       "name": "extractCompletionToken"
-    },
-    {
-      "file": "runtime/src/tui/ink/termio/types.ts",
-      "type": "exports",
-      "name": "stylesEqual"
-    },
-    {
-      "file": "runtime/src/tui/ink/termio/types.ts",
-      "type": "exports",
-      "name": "colorsEqual"
-    },
-    {
-      "file": "runtime/src/tui/ink/termio/types.ts",
-      "type": "types",
-      "name": "CursorDirection"
-    },
-    {
-      "file": "runtime/src/tui/ink/termio/types.ts",
-      "type": "types",
-      "name": "TextSegment"
-    },
-    {
-      "file": "runtime/src/tui/ink/clearTerminal.ts",
-      "type": "exports",
-      "name": "clearTerminal"
-    },
-    {
-      "file": "runtime/src/tui/ink/colorize.ts",
-      "type": "exports",
-      "name": "CHALK_BOOSTED_FOR_XTERMJS"
-    },
-    {
-      "file": "runtime/src/tui/ink/colorize.ts",
-      "type": "exports",
-      "name": "CHALK_CLAMPED_FOR_TMUX"
-    },
-    {
-      "file": "runtime/src/tui/ink/devtools.ts",
-      "type": "exports",
-      "name": "default"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "exports",
-      "name": "edges"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "exports",
-      "name": "addEdges"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "exports",
-      "name": "ZERO_EDGES"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "exports",
-      "name": "resolveEdges"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "exports",
-      "name": "clampRect"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "exports",
-      "name": "withinBounds"
-    },
-    {
-      "file": "runtime/src/tui/ink/layout/geometry.ts",
-      "type": "types",
-      "name": "Edges"
-    },
-    {
-      "file": "runtime/src/tui/ink/render-node-to-output.ts",
-      "type": "exports",
-      "name": "buildCharToSegmentMap"
-    },
-    {
-      "file": "runtime/src/tui/ink/render-node-to-output.ts",
-      "type": "exports",
-      "name": "applyStylesToWrappedText"
-    },
-    {
-      "file": "runtime/src/tui/ink/render-node-to-output.ts",
-      "type": "types",
-      "name": "FollowScroll"
-    },
-    {
-      "file": "runtime/src/tui/ink/hit-test.ts",
-      "type": "exports",
-      "name": "hitTest"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "exports",
-      "name": "BoxSizing"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "exports",
-      "name": "Dimension"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "exports",
-      "name": "Errata"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "exports",
-      "name": "ExperimentalFeature"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "exports",
-      "name": "Unit"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "exports",
-      "name": "loadYoga"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "types",
-      "name": "Value"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "types",
-      "name": "MeasureFunction"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "types",
-      "name": "Size"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "types",
-      "name": "Config"
-    },
-    {
-      "file": "runtime/src/tui/ink/native-ts/yoga-layout/index.ts",
-      "type": "types",
-      "name": "Yoga"
-    },
-    {
-      "file": "runtime/src/tui/ink/components/App.tsx",
-      "type": "exports",
-      "name": "handleMouseEvent"
-    },
-    {
-      "file": "runtime/src/tui/ink/reconciler.ts",
-      "type": "exports",
-      "name": "getOwnerChain"
-    },
-    {
-      "file": "runtime/src/tui/ink/ink.tsx",
-      "type": "exports",
-      "name": "drainStdin"
-    },
-    {
-      "file": "runtime/src/tui/ink/termio/ansi.ts",
-      "type": "exports",
-      "name": "isC0"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "exports",
-      "name": "decrqm"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "exports",
-      "name": "da1"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "exports",
-      "name": "da2"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "exports",
-      "name": "kittyKeyboard"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "exports",
-      "name": "cursorPosition"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "exports",
-      "name": "oscColor"
-    },
-    {
-      "file": "runtime/src/tui/ink/terminal-querier.ts",
-      "type": "types",
-      "name": "TerminalQuery"
     },
     {
       "file": "runtime/src/utils/ultraplan/keyword.ts",
@@ -20232,16 +20202,6 @@
       "name": "AppToolConfig"
     },
     {
-      "file": "runtime/src/constants/system.ts",
-      "type": "types",
-      "name": "CLISyspromptPrefix"
-    },
-    {
-      "file": "runtime/src/context/personality-spec-instructions.ts",
-      "type": "types",
-      "name": "PersonalityModelInfo"
-    },
-    {
       "file": "runtime/src/diagnostics/doctor.ts",
       "type": "types",
       "name": "DoctorSeverity"
@@ -20317,6 +20277,16 @@
       "name": "ContentRuleMatchHints"
     },
     {
+      "file": "runtime/src/constants/system.ts",
+      "type": "types",
+      "name": "CLISyspromptPrefix"
+    },
+    {
+      "file": "runtime/src/context/personality-spec-instructions.ts",
+      "type": "types",
+      "name": "PersonalityModelInfo"
+    },
+    {
       "file": "runtime/src/session/cost.ts",
       "type": "types",
       "name": "CostSummaryProcessLike"
@@ -20375,36 +20345,6 @@
       "file": "runtime/src/errors/openai-compatible.ts",
       "type": "types",
       "name": "OpenAICompatibilityFailure"
-    },
-    {
-      "file": "runtime/src/mcp-server/types.ts",
-      "type": "types",
-      "name": "McpIncomingMessage"
-    },
-    {
-      "file": "runtime/src/mcp-client/transports/sse.ts",
-      "type": "types",
-      "name": "MCPServerSseConfig"
-    },
-    {
-      "file": "runtime/src/mcp-client/transports/http.ts",
-      "type": "types",
-      "name": "MCPServerHttpConfig"
-    },
-    {
-      "file": "runtime/src/mcp-client/supply-chain.ts",
-      "type": "types",
-      "name": "CatalogHashResult"
-    },
-    {
-      "file": "runtime/src/permissions/denial-tracking.ts",
-      "type": "types",
-      "name": "DenialExecutionSurface"
-    },
-    {
-      "file": "runtime/src/permissions/denial-tracking.ts",
-      "type": "types",
-      "name": "DenialLimitOutcome"
     },
     {
       "file": "runtime/src/llm/capabilities.ts",
@@ -20497,6 +20437,36 @@
       "name": "ProviderStructuredOutputMode"
     },
     {
+      "file": "runtime/src/mcp-client/transports/sse.ts",
+      "type": "types",
+      "name": "MCPServerSseConfig"
+    },
+    {
+      "file": "runtime/src/mcp-client/transports/http.ts",
+      "type": "types",
+      "name": "MCPServerHttpConfig"
+    },
+    {
+      "file": "runtime/src/mcp-client/supply-chain.ts",
+      "type": "types",
+      "name": "CatalogHashResult"
+    },
+    {
+      "file": "runtime/src/permissions/denial-tracking.ts",
+      "type": "types",
+      "name": "DenialExecutionSurface"
+    },
+    {
+      "file": "runtime/src/permissions/denial-tracking.ts",
+      "type": "types",
+      "name": "DenialLimitOutcome"
+    },
+    {
+      "file": "runtime/src/mcp-server/types.ts",
+      "type": "types",
+      "name": "McpIncomingMessage"
+    },
+    {
       "file": "runtime/src/utils/sideQuery.ts",
       "type": "types",
       "name": "SideQueryOptions"
@@ -20555,6 +20525,31 @@
       "file": "runtime/src/personality/migration.ts",
       "type": "types",
       "name": "MaybeMigratePersonalityOptions"
+    },
+    {
+      "file": "runtime/src/phases/stop-hooks.ts",
+      "type": "types",
+      "name": "StopResult"
+    },
+    {
+      "file": "runtime/src/tools/streaming-executor.ts",
+      "type": "types",
+      "name": "ToolStatus"
+    },
+    {
+      "file": "runtime/src/tools/streaming-executor.ts",
+      "type": "types",
+      "name": "TrackedTool"
+    },
+    {
+      "file": "runtime/src/tools/streaming-executor.ts",
+      "type": "types",
+      "name": "SyntheticErrorReason"
+    },
+    {
+      "file": "runtime/src/llm/wire/messages-anthropic.ts",
+      "type": "types",
+      "name": "AnthropicMessagesRequestOptions"
     },
     {
       "file": "runtime/src/permissions/approval-cache.ts",
@@ -20712,31 +20707,6 @@
       "name": "ToolApprovalDecision"
     },
     {
-      "file": "runtime/src/phases/stop-hooks.ts",
-      "type": "types",
-      "name": "StopResult"
-    },
-    {
-      "file": "runtime/src/tools/streaming-executor.ts",
-      "type": "types",
-      "name": "ToolStatus"
-    },
-    {
-      "file": "runtime/src/tools/streaming-executor.ts",
-      "type": "types",
-      "name": "TrackedTool"
-    },
-    {
-      "file": "runtime/src/tools/streaming-executor.ts",
-      "type": "types",
-      "name": "SyntheticErrorReason"
-    },
-    {
-      "file": "runtime/src/llm/wire/messages-anthropic.ts",
-      "type": "types",
-      "name": "AnthropicMessagesRequestOptions"
-    },
-    {
       "file": "runtime/src/planning/plan-instructions.ts",
       "type": "types",
       "name": "PlanModeReminderType"
@@ -20877,6 +20847,61 @@
       "name": "PowerShellParseOptions"
     },
     {
+      "file": "runtime/src/session/sidecar.ts",
+      "type": "types",
+      "name": "SidecarDiagnostic"
+    },
+    {
+      "file": "runtime/src/session/sidecar.ts",
+      "type": "types",
+      "name": "SidecarManagerOptions"
+    },
+    {
+      "file": "runtime/src/permissions/guardian/rejection-circuit-breaker.ts",
+      "type": "types",
+      "name": "GuardianRejectionCircuitBreakerAction"
+    },
+    {
+      "file": "runtime/src/permissions/guardian/rejection-circuit-breaker.ts",
+      "type": "types",
+      "name": "GuardianRejectionCircuitBreakerOptions"
+    },
+    {
+      "file": "runtime/src/session/lifecycle.ts",
+      "type": "types",
+      "name": "SessionLifecycleOpts"
+    },
+    {
+      "file": "runtime/src/thread-store/live-thread.ts",
+      "type": "types",
+      "name": "CreateLiveThreadParams"
+    },
+    {
+      "file": "runtime/src/thread-store/live-thread.ts",
+      "type": "types",
+      "name": "ResumeLiveThreadParams"
+    },
+    {
+      "file": "runtime/src/session/tasks.ts",
+      "type": "types",
+      "name": "ActiveTurnLike"
+    },
+    {
+      "file": "runtime/src/services/PromptSuggestion/runtime.ts",
+      "type": "types",
+      "name": "CanUseToolFn"
+    },
+    {
+      "file": "runtime/src/tasks/registry.ts",
+      "type": "types",
+      "name": "TaskKillContext"
+    },
+    {
+      "file": "runtime/src/tasks/registry.ts",
+      "type": "types",
+      "name": "RegisteredTask"
+    },
+    {
       "file": "runtime/src/state/atomic-snapshot-writes.ts",
       "type": "types",
       "name": "SessionSnapshotWriteRecord"
@@ -20950,61 +20975,6 @@
       "file": "runtime/src/state/memories.ts",
       "type": "types",
       "name": "MemoryJobRecord"
-    },
-    {
-      "file": "runtime/src/session/sidecar.ts",
-      "type": "types",
-      "name": "SidecarDiagnostic"
-    },
-    {
-      "file": "runtime/src/session/sidecar.ts",
-      "type": "types",
-      "name": "SidecarManagerOptions"
-    },
-    {
-      "file": "runtime/src/permissions/guardian/rejection-circuit-breaker.ts",
-      "type": "types",
-      "name": "GuardianRejectionCircuitBreakerAction"
-    },
-    {
-      "file": "runtime/src/permissions/guardian/rejection-circuit-breaker.ts",
-      "type": "types",
-      "name": "GuardianRejectionCircuitBreakerOptions"
-    },
-    {
-      "file": "runtime/src/session/lifecycle.ts",
-      "type": "types",
-      "name": "SessionLifecycleOpts"
-    },
-    {
-      "file": "runtime/src/thread-store/live-thread.ts",
-      "type": "types",
-      "name": "CreateLiveThreadParams"
-    },
-    {
-      "file": "runtime/src/thread-store/live-thread.ts",
-      "type": "types",
-      "name": "ResumeLiveThreadParams"
-    },
-    {
-      "file": "runtime/src/session/tasks.ts",
-      "type": "types",
-      "name": "ActiveTurnLike"
-    },
-    {
-      "file": "runtime/src/services/PromptSuggestion/runtime.ts",
-      "type": "types",
-      "name": "CanUseToolFn"
-    },
-    {
-      "file": "runtime/src/tasks/registry.ts",
-      "type": "types",
-      "name": "TaskKillContext"
-    },
-    {
-      "file": "runtime/src/tasks/registry.ts",
-      "type": "types",
-      "name": "RegisteredTask"
     },
     {
       "file": "runtime/src/thread-store/in-memory.ts",
@@ -21277,6 +21247,11 @@
       "name": "PromptSuggestionLimits"
     },
     {
+      "file": "runtime/src/services/autoFix/autoFixHook.ts",
+      "type": "types",
+      "name": "AutoFixPostToolHookOptions"
+    },
+    {
       "file": "runtime/src/services/api/agentRouting.ts",
       "type": "types",
       "name": "ProviderOverride"
@@ -21310,11 +21285,6 @@
       "file": "runtime/src/services/api/thinkTagSanitizer.ts",
       "type": "types",
       "name": "ThinkTagFilter"
-    },
-    {
-      "file": "runtime/src/services/autoFix/autoFixHook.ts",
-      "type": "types",
-      "name": "AutoFixPostToolHookOptions"
     },
     {
       "file": "runtime/src/services/compact/apiMicrocompact.ts",
@@ -21527,11 +21497,6 @@
       "name": "ApiKeyVerificationResult"
     },
     {
-      "file": "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx",
-      "type": "types",
-      "name": "ConfiguredPromptTextInputProps"
-    },
-    {
       "file": "runtime/src/tui/components/TextInput.tsx",
       "type": "types",
       "name": "Props"
@@ -21555,6 +21520,11 @@
       "file": "runtime/src/tui/components/ValidationErrorsList.tsx",
       "type": "types",
       "name": "ValidationError"
+    },
+    {
+      "file": "runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx",
+      "type": "types",
+      "name": "ConfiguredPromptTextInputProps"
     },
     {
       "file": "runtime/src/tui/keybindings/types.ts",
@@ -21637,16 +21607,6 @@
       "name": "QueryConfig"
     },
     {
-      "file": "runtime/src/query/tokenBudget.ts",
-      "type": "types",
-      "name": "BudgetTracker"
-    },
-    {
-      "file": "runtime/src/query/tokenBudget.ts",
-      "type": "types",
-      "name": "TokenBudgetDecision"
-    },
-    {
       "file": "runtime/src/tools/system/coding.ts",
       "type": "types",
       "name": "CodingToolConfig"
@@ -21727,16 +21687,6 @@
       "name": "Signal"
     },
     {
-      "file": "runtime/src/bridge/capacityWake.ts",
-      "type": "types",
-      "name": "CapacityWake"
-    },
-    {
-      "file": "runtime/src/utils/detectRepository.ts",
-      "type": "types",
-      "name": "ParsedRepository"
-    },
-    {
       "file": "runtime/src/utils/permissions/PermissionResult.ts",
       "type": "types",
       "name": "PermissionAllowDecision"
@@ -21750,6 +21700,16 @@
       "file": "runtime/src/utils/permissions/PermissionUpdate.ts",
       "type": "types",
       "name": "WorkingDirectorySource"
+    },
+    {
+      "file": "runtime/src/bridge/capacityWake.ts",
+      "type": "types",
+      "name": "CapacityWake"
+    },
+    {
+      "file": "runtime/src/utils/detectRepository.ts",
+      "type": "types",
+      "name": "ParsedRepository"
     },
     {
       "file": "runtime/src/utils/mcpInstructionsDelta.ts",
@@ -21777,6 +21737,11 @@
       "name": "JsonSchema7Type"
     },
     {
+      "file": "runtime/src/mcp-client/_deps/logger.ts",
+      "type": "types",
+      "name": "LogLevel"
+    },
+    {
       "file": "runtime/src/llm/_deps/runtime-errors.ts",
       "type": "types",
       "name": "RuntimeErrorCode"
@@ -21790,11 +21755,6 @@
       "file": "runtime/src/llm/tool-call-normalize.ts",
       "type": "types",
       "name": "NormalizeOpts"
-    },
-    {
-      "file": "runtime/src/mcp-client/_deps/logger.ts",
-      "type": "types",
-      "name": "LogLevel"
     },
     {
       "file": "runtime/src/utils/readFileInRange.ts",
@@ -21837,6 +21797,16 @@
       "name": "LinuxDistroInfo"
     },
     {
+      "file": "runtime/src/utils/settings/pluginOnlyPolicy.ts",
+      "type": "types",
+      "name": "CustomizationSurface"
+    },
+    {
+      "file": "runtime/src/skills/mcpSkillBuilders.ts",
+      "type": "types",
+      "name": "MCPSkillBuilders"
+    },
+    {
       "file": "runtime/src/session/_deps/tool-registry.ts",
       "type": "types",
       "name": "JSONSchema"
@@ -21850,16 +21820,6 @@
       "file": "runtime/src/state/spawn-edges.ts",
       "type": "types",
       "name": "IndexedThreadSpawnEdge"
-    },
-    {
-      "file": "runtime/src/utils/settings/pluginOnlyPolicy.ts",
-      "type": "types",
-      "name": "CustomizationSurface"
-    },
-    {
-      "file": "runtime/src/skills/mcpSkillBuilders.ts",
-      "type": "types",
-      "name": "MCPSkillBuilders"
     },
     {
       "file": "runtime/src/tasks/agent-thread.ts",
@@ -22257,14 +22217,14 @@
       "name": "ShellRuntimeAccessAnalysis"
     },
     {
-      "file": "runtime/src/tui/ink/components/ScrollBox.tsx",
-      "type": "types",
-      "name": "ScrollBoxProps"
-    },
-    {
       "file": "runtime/src/tui/ink/useTerminalNotification.ts",
       "type": "types",
       "name": "TerminalNotification"
+    },
+    {
+      "file": "runtime/src/tui/ink/components/ScrollBox.tsx",
+      "type": "types",
+      "name": "ScrollBoxProps"
     },
     {
       "file": "runtime/src/tui/hooks/useIdeConnectionStatus.ts",
@@ -22300,6 +22260,21 @@
       "file": "runtime/src/tui/hooks/useMemoryUsage.ts",
       "type": "types",
       "name": "MemoryUsageInfo"
+    },
+    {
+      "file": "runtime/src/tui/ink/node-cache.ts",
+      "type": "types",
+      "name": "CachedLayout"
+    },
+    {
+      "file": "runtime/src/tui/ink/output.ts",
+      "type": "types",
+      "name": "Operation"
+    },
+    {
+      "file": "runtime/src/tui/ink/output.ts",
+      "type": "types",
+      "name": "Clip"
     },
     {
       "file": "runtime/src/tui/hooks/toolPermission/handlers/coordinatorHandler.ts",
@@ -22360,21 +22335,6 @@
       "file": "runtime/src/tui/hooks/usePrStatus.ts",
       "type": "types",
       "name": "PrStatusState"
-    },
-    {
-      "file": "runtime/src/tui/ink/node-cache.ts",
-      "type": "types",
-      "name": "CachedLayout"
-    },
-    {
-      "file": "runtime/src/tui/ink/output.ts",
-      "type": "types",
-      "name": "Operation"
-    },
-    {
-      "file": "runtime/src/tui/ink/output.ts",
-      "type": "types",
-      "name": "Clip"
     },
     {
       "file": "runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx",

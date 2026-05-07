@@ -790,7 +790,7 @@
 ^runtime/src/constants/prompts\.ts:653 - computeSimpleEnvInfo \(used in module\)$
 ^runtime/src/constants/prompts\.ts:747 - getUnameSR \(used in module\)$
 ^runtime/src/constants/prompts\.ts:799 - getScratchpadInstructions \(used in module\)$
-^runtime/src/constants/prompts\.ts:104 - AGENC_DOCS_MAP_URL$
+^runtime/src/constants/prompts\.ts:105 - AGENC_DOCS_MAP_URL$
 ^runtime/src/constants/spinnerVerbs\.ts:16 - SPINNER_VERBS \(used in module\)$
 ^runtime/src/constants/system\.ts:26 - CLISyspromptPrefix \(used in module\)$
 ^runtime/src/constants/toolLimits\.ts:22 - MAX_TOOL_RESULT_TOKENS \(used in module\)$
@@ -844,6 +844,10 @@
 ^runtime/src/conversation/thread-manager\.ts:86 - RegisterConversationOptions \(used in module\)$
 ^runtime/src/conversation/thread-manager\.ts:91 - ConversationReplayResult \(used in module\)$
 ^runtime/src/conversation/thread-manager\.ts:96 - ConversationThreadSnapshot \(used in module\)$
+^runtime/src/conversation/token-budget\.ts:77 - getBudgetContinuationMessage \(used in module\)$
+^runtime/src/conversation/token-budget\.ts:229 - resolveTokenBudgetCheckInterval \(used in module\)$
+^runtime/src/conversation/token-budget\.ts:12 - DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL \(used in module\)$
+^runtime/src/conversation/token-budget\.ts:118 - MidStreamBudgetSample \(used in module\)$
 ^runtime/src/coordinator/coordinatorMode\.ts:49 - matchSessionMode$
 ^runtime/src/coordinator/coordinatorMode\.ts:80 - getCoordinatorUserContext$
 ^runtime/src/coordinator/coordinatorMode\.ts:111 - getCoordinatorSystemPrompt$
@@ -1253,10 +1257,6 @@
 ^runtime/src/llm/stream-watchdog\.ts:82 - InstallStreamWatchdogOptions \(used in module\)$
 ^runtime/src/llm/structured-output\.ts:263 - enforceStrictStructuredOutputSchema \(used in module\)$
 ^runtime/src/llm/structured-output\.ts:26 - ProviderStructuredOutputMode \(used in module\)$
-^runtime/src/llm/token-budget\.ts:19 - resolveTokenBudgetCheckInterval \(used in module\)$
-^runtime/src/llm/token-budget\.ts:197 - createBudgetTracker$
-^runtime/src/llm/token-budget\.ts:15 - DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL \(used in module\)$
-^runtime/src/llm/token-budget\.ts:48 - MidStreamBudgetSample \(used in module\)$
 ^runtime/src/llm/token-estimation\.ts:67 - DEFAULT_BYTES_PER_TOKEN \(used in module\)$
 ^runtime/src/llm/token-estimation\.ts:72 - MODEL_TOKENIZER_CONFIGS \(used in module\)$
 ^runtime/src/llm/token-estimation\.ts:139 - UNKNOWN_TOKENIZER_CONFIG \(used in module\)$
@@ -1731,14 +1731,14 @@
 ^runtime/src/prompts/file-mentions\.ts:75 - FILE_MENTION_MAX_FILE_BYTES \(used in module\)$
 ^runtime/src/prompts/file-mentions\.ts:76 - FILE_MENTION_MAX_TOTAL_BYTES \(used in module\)$
 ^runtime/src/prompts/file-mentions\.ts:77 - FILE_MENTION_MAX_LINES \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:42 - APPROVAL_POLICY_NEVER \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:48 - APPROVAL_POLICY_UNLESS_TRUSTED \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:54 - APPROVAL_POLICY_ON_FAILURE \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:60 - APPROVAL_POLICY_ON_REQUEST \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:122 - APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION$
-^runtime/src/prompts/permissions-prompt\.ts:166 - SANDBOX_MODE_DANGER_FULL_ACCESS \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:172 - SANDBOX_MODE_WORKSPACE_WRITE \(used in module\)$
-^runtime/src/prompts/permissions-prompt\.ts:178 - SANDBOX_MODE_READ_ONLY \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:44 - APPROVAL_POLICY_NEVER \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:50 - APPROVAL_POLICY_UNLESS_TRUSTED \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:56 - APPROVAL_POLICY_ON_FAILURE \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:62 - APPROVAL_POLICY_ON_REQUEST \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:124 - APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION$
+^runtime/src/prompts/permissions-prompt\.ts:168 - SANDBOX_MODE_DANGER_FULL_ACCESS \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:174 - SANDBOX_MODE_WORKSPACE_WRITE \(used in module\)$
+^runtime/src/prompts/permissions-prompt\.ts:180 - SANDBOX_MODE_READ_ONLY \(used in module\)$
 ^runtime/src/prompts/project-instructions\.ts:164 - resolveInstructionFile \(used in module\)$
 ^runtime/src/prompts/project-instructions\.ts:29 - AGENTS_PROJECT_INSTRUCTION_FILE \(used in module\)$
 ^runtime/src/prompts/project-instructions\.ts:30 - C(?:LAUDE)_PROJECT_INSTRUCTION_FILE \(used in module\)$
@@ -1747,28 +1747,25 @@
 ^runtime/src/prompts/project-instructions\.ts:33 - PRIMARY_PROJECT_INSTRUCTION_FILE \(used in module\)$
 ^runtime/src/prompts/project-instructions\.ts:40 - OVERRIDE_PROJECT_INSTRUCTION_FILE \(used in module\)$
 ^runtime/src/prompts/project-instructions\.ts:85 - LoadProjectInstructionsOptions \(used in module\)$
-^runtime/src/prompts/sections\.ts:46 - systemPromptSection$
 ^runtime/src/prompts/sections\.ts:101 - __systemPromptSectionCacheSize$
 ^runtime/src/prompts/sections\.ts:109 - __peekSystemPromptSection$
-^runtime/src/prompts/system-prompt\.ts:76 - prependBullets \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:271 - getAgentToolSection \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:346 - getMemorySection \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:396 - getLanguageSection \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:408 - getOutputStyleSection \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:442 - getScratchpadSection \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:452 - getAutonomousWorkSection \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:578 - asSystemPrompt \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:602 - buildEffectiveSystemPrompt$
-^runtime/src/prompts/system-prompt\.ts:367 - EnvInfoInputs \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:522 - SUMMARIZE_TOOL_RESULTS_SECTION \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:533 - AssembleSystemPromptOpts \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:568 - AssembledSystemPrompt \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:574 - SystemPrompt \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:590 - BuildEffectiveSystemPromptInput \(used in module\)$
-^runtime/src/prompts/system-prompt\.ts:599 - DEFAULT_AGENT_PROMPT$
+^runtime/src/prompts/system-prompt\.ts:79 - prependBullets \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:274 - getAgentToolSection \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:349 - getMemorySection \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:399 - getLanguageSection \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:411 - getOutputStyleSection \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:445 - getScratchpadSection \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:455 - getAutonomousWorkSection \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:581 - asSystemPrompt \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:605 - buildEffectiveSystemPrompt$
+^runtime/src/prompts/system-prompt\.ts:370 - EnvInfoInputs \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:525 - SUMMARIZE_TOOL_RESULTS_SECTION \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:536 - AssembleSystemPromptOpts \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:571 - AssembledSystemPrompt \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:577 - SystemPrompt \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:593 - BuildEffectiveSystemPromptInput \(used in module\)$
+^runtime/src/prompts/system-prompt\.ts:602 - DEFAULT_AGENT_PROMPT$
 ^runtime/src/query/config\.ts:15 - QueryConfig \(used in module\)$
-^runtime/src/query/tokenBudget\.ts:6 - BudgetTracker \(used in module\)$
-^runtime/src/query/tokenBudget\.ts:43 - TokenBudgetDecision \(used in module\)$
 ^runtime/src/recovery/api-errors\.ts:95 - isPromptTooLongMessage \(used in module\)$
 ^runtime/src/recovery/api-errors\.ts:105 - parsePromptTooLongTokenCounts \(used in module\)$
 ^runtime/src/recovery/api-errors\.ts:120 - getPromptTooLongTokenGap$
