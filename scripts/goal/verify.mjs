@@ -160,6 +160,15 @@ const ITEM_EVIDENCE = {
       { pattern: "stdio:\\s*[\"']ignore[\"']", scope: "runtime/src/commands/keybindings.ts" },
     ],
   },
+  "GAP-TUI-05": {
+    files: ["runtime/src/commands/init.ts"],
+    tests: ["runtime/src/commands/init.test.ts"],
+    grepPresent: [
+      { pattern: "kind:\\s*[\"']prompt[\"']", scope: "runtime/src/commands/init.ts" },
+      { pattern: "buildInitPrompt", scope: "runtime/src/commands/init.ts" },
+      { pattern: "Do not write these instructions", scope: "runtime/src/commands/init.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6502,6 +6511,10 @@ async function gapGates(item) {
     assertGapTuiKeybindingsEditorHandoff();
     return;
   }
+  if (item.title.includes("/init: generate doc via model")) {
+    assertGapTuiInitGeneratesViaModel();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7008,6 +7021,70 @@ function assertGapTuiKeybindingsEditorHandoff() {
     failGate("GAP-TUI-04 targeted keybindings test failed");
   }
   pass("GAP-TUI-04 targeted keybindings test passed");
+}
+
+function assertGapTuiInitGeneratesViaModel() {
+  const sourceRel = "runtime/src/commands/init.ts";
+  const testRel = "runtime/src/commands/init.test.ts";
+  const sourcePath = path.join(root, sourceRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(sourcePath)) failGate(`GAP-TUI-05: missing ${sourceRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-05: missing ${testRel}`);
+
+  const source = readFileSync(sourcePath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const missingEvidence = [
+    [
+      "init command builds target-specific prompt context",
+      /export\s+function\s+buildInitPrompt/,
+      source,
+    ],
+    [
+      "init command dispatches a prompt result",
+      /return\s*\{\s*kind:\s*["']prompt["']\s*,\s*content:\s*buildInitPrompt/,
+      source,
+    ],
+    [
+      "init prompt forbids writing the template itself",
+      /Do not write these instructions or a prompt template into the file/,
+      source,
+    ],
+    [
+      "init test asserts model prompt dispatch",
+      /returns a model prompt instead of writing the template/,
+      test,
+    ],
+    [
+      "init test asserts AGENC.md is not synchronously written",
+      /expect\(existsSync\(target\)\)\.toBe\(false\)/,
+      test,
+    ],
+    [
+      "init test covers override prompt handling",
+      /CUSTOM-PROMPT/,
+      test,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-05 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+  if (/writeFile\s*\(\s*target\s*,\s*(body|resolveInitTemplate|INIT_TEMPLATE)/.test(source)) {
+    failGate("GAP-TUI-05: /init must not write the prompt template to AGENC.md");
+  }
+
+  pass("GAP-TUI-05: init model-generation evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/init.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-05 targeted init test failed");
+  }
+  pass("GAP-TUI-05 targeted init test passed");
 }
 
 function subsystemDirGates(label, dir) {
