@@ -215,7 +215,7 @@ function mockProviderManagerDependencies(
     codexAsyncRead?: () => Promise<unknown>
     updateProviderProfile?: (...args: unknown[]) => unknown
     setActiveProviderProfile?: (...args: unknown[]) => unknown
-    useCodexOAuthFlow?: (options: {
+    useOpenAiCodeOAuthFlow?: (options: {
       onAuthenticated: (tokens: {
         accessToken: string
         refreshToken: string
@@ -303,9 +303,9 @@ function mockProviderManagerDependencies(
     updateSettingsForSource: () => ({ error: null }),
   }))
 
-  mock.module('./useCodexOAuthFlow.js', () => ({ // branding-scan: allow upstream mirror mock path pending purge
-    useCodexOAuthFlow:
-      options?.useCodexOAuthFlow ??
+  mock.module('./useOpenAiCodeOAuthFlow.js', () => ({ // branding-scan: allow upstream mirror mock path pending purge
+    useOpenAiCodeOAuthFlow:
+      options?.useOpenAiCodeOAuthFlow ??
       (() => ({
         state: 'waiting' as const,
         authUrl: 'https://chatgpt.com/codex',
@@ -611,7 +611,7 @@ test('ProviderManager first-run Codex OAuth switches the current session after l
     {
       addProviderProfile,
       applySavedProfileToCurrentSession,
-      useCodexOAuthFlow: ({ onAuthenticated }) => {
+      useOpenAiCodeOAuthFlow: ({ onAuthenticated }) => {
         React.useEffect(() => {
           void onAuthenticated({
             accessToken: 'oauth-access-token',
@@ -703,7 +703,7 @@ test('ProviderManager first-run Codex OAuth reports next-startup fallback when s
     {
       addProviderProfile,
       applySavedProfileToCurrentSession,
-      useCodexOAuthFlow: ({ onAuthenticated }) => {
+      useOpenAiCodeOAuthFlow: ({ onAuthenticated }) => {
         React.useEffect(() => {
           void onAuthenticated({
             accessToken: 'oauth-access-token',
@@ -791,7 +791,7 @@ test('ProviderManager does not hijack a manual Codex profile when OAuth credenti
       addProviderProfile,
       getProviderProfiles: () => [manualProfile],
       updateProviderProfile,
-      useCodexOAuthFlow: ({ onAuthenticated }) => {
+      useOpenAiCodeOAuthFlow: ({ onAuthenticated }) => {
         const hasAuthenticated = React.useRef(false)
 
         React.useEffect(() => {

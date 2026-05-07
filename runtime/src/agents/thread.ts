@@ -8,7 +8,7 @@
  * The class also exposes an AgenC-compatible surface (`threadName`,
  * `messages`, `memory`, `metadata`, `worktreePath`, `worktreeBranch`,
  * `fork()`, `spawn()`, `join()`)
- * so callers that expect the legacy `AgentTool` shape can
+ * so callers that expect the compatibility `AgentTool` shape can
  * interoperate with AgenC's subagent runtime without reaching into the
  * underlying `LiveAgent` / `delegate()` surface directly.
  *

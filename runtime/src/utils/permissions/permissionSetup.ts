@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { relative } from 'path'
 import {
@@ -837,7 +837,7 @@ export async function initializeToolPermissionContext({
   overlyBroadBashPermissions: DangerousPermissionInfo[]
 }> {
   // Parse comma-separated allowed and disallowed tools if provided
-  // Normalize legacy tool names (e.g., 'Task' → 'Agent') so that in-memory
+  // Normalize compatibility tool names (e.g., 'Task' → 'Agent') so that in-memory
   // rule removal in stripDangerousPermissionsForAutoMode matches correctly.
   const parsedAllowedToolsCli = parseToolListFromCLI(allowedToolsCli).map(
     rule => permissionRuleValueToString(permissionRuleValueFromString(rule)),
@@ -848,7 +848,7 @@ export async function initializeToolPermissionContext({
   // We need to check if base tools were explicitly provided (not just empty default)
   if (baseToolsCli && baseToolsCli.length > 0) {
     const baseToolsResult = parseBaseToolsFromCLI(baseToolsCli)
-    // Normalize legacy tool names (e.g., 'Task' → 'Agent') so user-provided
+    // Normalize compatibility tool names (e.g., 'Task' → 'Agent') so user-provided
     // base tool lists using old names still match canonical names.
     const baseToolsSet = new Set(baseToolsResult.map(normalizeLegacyToolName))
     const allToolNames = getToolsForDefaultPreset()

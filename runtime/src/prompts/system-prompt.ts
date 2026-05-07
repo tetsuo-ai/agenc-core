@@ -264,7 +264,7 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
  * 6. agent_tool — guidance for the multi-agent delegation surface.
  *
  * The host exposes delegation through the primary agent tool spec.
- * Do not add separate prompt guidance for AgenC's legacy
+ * Do not add separate prompt guidance for AgenC's compatibility
  * `system.agent.delegate` compatibility shim; surfacing that tool here
  * causes the model to bypass the supported task-name/background semantics.
  */

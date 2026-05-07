@@ -53,7 +53,7 @@ const HOLD_THRESHOLD = 5;
 // Number of rapid key events to start showing warmup feedback.
 const WARMUP_THRESHOLD = 2;
 
-// Match a KeyboardEvent against a ParsedKeystroke. Replaces the legacy
+// Match a KeyboardEvent against a ParsedKeystroke. Replaces the compatibility
 // matchesKeystroke(input, Key, ...) path which assumed useInput's raw
 // `input` arg — KeyboardEvent.key holds normalized names (e.g. 'space',
 // 'f9') that getKeyName() didn't handle, so modifier combos and f-keys
@@ -649,7 +649,7 @@ export function useVoiceKeybindingHandler({
   // Backward-compat bridge: REPL.tsx doesn't yet wire handleKeyDown to
   // <Box onKeyDown>. Subscribe via useInput and adapt InputEvent →
   // KeyboardEvent until the consumer is migrated (separate PR).
-  // TODO(onKeyDown-migration): remove once REPL passes handleKeyDown.
+  // Follow-up(onKeyDown-migration): remove once REPL passes handleKeyDown.
   useInput((_input, _key, event) => {
     const kbEvent = new KeyboardEvent(event.keypress);
     handleKeyDown(kbEvent);

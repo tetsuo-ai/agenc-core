@@ -382,7 +382,7 @@ async function processRemoteEvalPayload(
 ): Promise<boolean> {
   // WORKAROUND: Transform remote eval response format
   // The API returns { "value": ... } but SDK expects { "defaultValue": ... }
-  // TODO: Remove this once the API is fixed to return correct format
+  // Follow-up: Remove this once the API is fixed to return correct format
   const payload = gbClient.getPayload()
   // Empty object is truthy — without the length check, `{features: {}}`
   // (transient server bug, truncated response) would pass, clear the maps
@@ -435,7 +435,7 @@ async function processRemoteEvalPayload(
   remoteEvalFeatureValues.clear()
   for (const [key, feature] of Object.entries(transformedFeatures)) {
     // Under remoteEval:true the server pre-evaluates. Whether the answer
-    // lands in `value` (current API) or `defaultValue` (post-TODO API shape),
+    // lands in `value` (current API) or `defaultValue` (post-Follow-up API shape),
     // it's the authoritative value for this user. Guarding on both keeps
     // syncRemoteEvalToDisk correct across a partial or full API migration.
     const v = 'value' in feature ? feature.value : feature.defaultValue

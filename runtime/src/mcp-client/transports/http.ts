@@ -2,7 +2,7 @@
  * MCP Streamable HTTP transport.
  *
  * Wraps `@modelcontextprotocol/sdk`'s `StreamableHTTPClientTransport`
- * (the spec-sanctioned replacement for the legacy SSE transport). The
+ * (the spec-sanctioned replacement for the compatibility SSE transport). The
  * transport multiplexes request/response pairs over a single long-
  * poll or streaming HTTP connection.
  *

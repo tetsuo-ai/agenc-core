@@ -1,7 +1,7 @@
 /**
  * OpenAI provider adapter. // branding-scan: allow real OpenAI provider identifier
  *
- * Uses the new T13 wire shims rather than the legacy `openai` SDK path.
+ * Uses the new T13 wire shims rather than the compatibility `openai` SDK path.
  *
  * @module
  */

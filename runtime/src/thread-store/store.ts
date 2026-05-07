@@ -76,7 +76,7 @@ export type ThreadEventPersistenceMode = "limited" | "extended";
 
 /**
  * Runtime source for the thread. Source runtime uses a serde enum
- * (`SessionSource`); the TS runtime currently accepts both legacy
+ * (`SessionSource`); the TS runtime currently accepts both compatibility
  * string labels and JSON-shaped structured sources used by subagents.
  */
 export type ThreadSource = string | Readonly<Record<string, unknown>>;
@@ -395,7 +395,7 @@ export class FileThreadStore implements ThreadStore {
     this.readLegacyThreadsJson();
   }
 
-  /** Legacy sidecar path imported by this store. Exposed for tests. */
+  /** Compatibility sidecar path imported by this store. Exposed for tests. */
   get registryFilePath(): string {
     return this.registryPath;
   }

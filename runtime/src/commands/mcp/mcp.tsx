@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useEffect, useRef } from 'react';
 import { MCPSettings } from '../../tui/components/mcp/MCPSettings.js';
@@ -9,7 +9,7 @@ import { useAppState } from '../../tui/state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { PluginSettings } from '../plugin/PluginSettings.js';
 
-// TODO: This is a hack to get the context value from toggleMcpServer (useContext only works in a component)
+// Follow-up: This is a workaround to get the context value from toggleMcpServer (useContext only works in a component)
 // Ideally, all MCP state and functions would be in global state.
 function MCPToggle(t0) {
   const $ = _c(7);

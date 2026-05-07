@@ -35,10 +35,10 @@ import type {
   ResolvePrepareCaptureResult,
   RunningApp,
   ScreenshotResult,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '@ant/computer-use-mcp'
 
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { API_RESIZE_PARAMS, targetImageSize } from '@ant/computer-use-mcp'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../errors.js'

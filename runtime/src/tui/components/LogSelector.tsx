@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import figures from 'figures';
@@ -93,7 +93,7 @@ function formatSnippet({
 function extractSnippet(text: string, query: string, contextChars: number): Snippet | null {
   // Find exact query occurrence (case-insensitive).
   // Note: Fuse does fuzzy matching, so this may miss some fuzzy matches.
-  // This is acceptable for now - in the future we could use Fuse's includeMatches
+  // This is acceptable currently - in the future we could use Fuse's includeMatches
   // option and work with the match indices directly.
   const matchIndex = text.toLowerCase().indexOf(query.toLowerCase());
   if (matchIndex === -1) return null;

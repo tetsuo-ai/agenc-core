@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import { markPostCompaction } from 'src/bootstrap/state.js'
@@ -109,7 +109,7 @@ export const call: LocalCommandCall = async (args, context) => {
       false,
     )
 
-    // Reset lastSummarizedMessageId since legacy compaction replaces all messages
+    // Reset lastSummarizedMessageId since compatibility compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
     setLastSummarizedMessageId(undefined)
 

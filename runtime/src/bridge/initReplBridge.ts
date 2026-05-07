@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * REPL-specific wrapper around initBridgeCore. Owns the parts that read
  * bootstrap state — gates, cwd, session ID, git context, OAuth, title

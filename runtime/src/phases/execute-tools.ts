@@ -258,7 +258,7 @@ function resolveHookRegistry(session: Session): ToolHookRegistry {
  * Derive the orchestrator's session-level knobs from the TurnContext
  * and SessionServices. Falls back to safe defaults (`never` +
  * `workspace_write`) when the context/service fields are undefined —
- * the legacy hardcoded behavior — so existing test fixtures without a
+ * the compatibility hardcoded behavior — so existing test fixtures without a
  * full TurnContext shape continue to work.
  */
 function resolveOrchestratorSessionPolicy(

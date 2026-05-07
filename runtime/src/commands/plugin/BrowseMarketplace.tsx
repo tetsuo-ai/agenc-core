@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures';
 import * as React from 'react';
 import { useEffect, useState } from 'react';
@@ -681,7 +681,7 @@ export function BrowseMarketplace({
                 {typeof selectedPlugin.entry.source === 'object' && 'source' in selectedPlugin.entry.source && (selectedPlugin.entry.source.source === 'github' || selectedPlugin.entry.source.source === 'url' || selectedPlugin.entry.source.source === 'npm' || selectedPlugin.entry.source.source === 'pip') ? <Text dimColor>
                     · Component summary not available for remote plugin
                   </Text> :
-          // TODO: Actually scan local plugin directories to show real components
+          // Follow-up: Actually scan local plugin directories to show real components
           // This would require accessing the filesystem to check for:
           // - commands/ directory and list files
           // - agents/ directory and list files

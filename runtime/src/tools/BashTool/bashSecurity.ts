@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { logEvent } from 'src/services/analytics/index.js'
 import { extractHeredocs } from '../../utils/bash/heredoc.js'
 import { ParsedCommand } from '../../utils/bash/ParsedCommand.js'
@@ -2251,7 +2251,7 @@ function validateZshDangerousCommands(
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/
 
 /**
- * @deprecated Legacy regex/shell-quote path. Only used when tree-sitter is
+ * @deprecated Compatibility regex/shell-quote path. Only used when tree-sitter is
  * unavailable. The primary gate is parseForSecurity (ast.ts).
  */
 export function bashCommandIsSafe_DEPRECATED(
@@ -2413,7 +2413,7 @@ export function bashCommandIsSafe_DEPRECATED(
 }
 
 /**
- * @deprecated Legacy regex/shell-quote path. Only used when tree-sitter is
+ * @deprecated Compatibility regex/shell-quote path. Only used when tree-sitter is
  * unavailable. The primary gate is parseForSecurity (ast.ts).
  *
  * Async version of bashCommandIsSafe that uses tree-sitter when available

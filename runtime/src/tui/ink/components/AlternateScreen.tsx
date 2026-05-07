@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { type PropsWithChildren, useContext, useInsertionEffect } from 'react';
 import { getInkInstance } from '../instances.js';
@@ -25,7 +25,7 @@ type Props = PropsWithChildren<{
  *
  * On unmount, disables mouse tracking and exits the alt screen, restoring
  * the main screen's content. Safe for use in ctrl-o transcript overlays
- * and similar temporary fullscreen views — the main screen is preserved.
+ * and similar short-lived fullscreen views — the main screen is preserved.
  *
  * Notifies the Ink instance via `setAltScreenActive()` so the renderer
  * keeps the cursor inside the viewport (preventing the cursor-restore LF

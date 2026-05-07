@@ -1,7 +1,7 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { z } from 'zod/v4'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { mcpInfoFromString } from '../../services/mcp/mcpStringUtils.js'
 import { lazySchema } from '../lazySchema.js'
 import { permissionRuleValueFromString } from '../permissions/permissionRuleParser.js'
@@ -159,7 +159,7 @@ export function validatePermissionRule(rule: string): {
   if (isBashPrefixTool(parsed.toolName) && parsed.ruleContent !== undefined) {
     const content = parsed.ruleContent
 
-    // Check for common :* mistakes - :* must be at the end (legacy prefix syntax)
+    // Check for common :* mistakes - :* must be at the end (compatibility prefix syntax)
     if (content.includes(':*') && !content.endsWith(':*')) {
       return {
         valid: false,
@@ -195,7 +195,7 @@ export function validatePermissionRule(rule: string): {
     // - "git * main" matches "git checkout main", "git push main", etc.
     // - "npm * --save" matches "npm install foo --save", etc.
     //
-    // Legacy :* syntax continues to work for backwards compatibility:
+    // Compatibility :* syntax continues to work for backwards compatibility:
     // - "npm:*" matches "npm" or "npm <anything>" (prefix matching with word boundary)
   }
 

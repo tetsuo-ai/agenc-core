@@ -1,11 +1,11 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { execFile } from 'child_process'
 import { execa } from 'execa'
 import { mkdir, stat } from 'fs/promises'
 import * as os from 'os'
 import { join } from 'path'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from 'src/services/analytics/index.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getCwd } from '../cwd.js'
@@ -394,13 +394,13 @@ async function getSnapshotScript(
  * This function is a critical part of AgenC CLI's shell integration strategy. It:
  *
  * 1. Identifies the user's shell config file (.zshrc, .bashrc, etc.)
- * 2. Creates a temporary script that sources this configuration file
+ * 2. Creates a short-lived script that sources this configuration file
  * 3. Captures the resulting shell environment state including:
  *    - Functions defined in the user's shell configuration
  *    - Shell options and settings that affect command behavior
  *    - Aliases that the user has defined
  *
- * The snapshot is saved to a temporary file that can be sourced by subsequent shell
+ * The snapshot is saved to a short-lived file that can be sourced by subsequent shell
  * commands, ensuring they run with the user's expected environment, aliases, and functions.
  *
  * This approach allows AgenC CLI to execute commands as if they were run in the user's

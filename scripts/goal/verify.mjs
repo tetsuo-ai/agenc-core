@@ -88,6 +88,9 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc/upstream", scope: "runtime/src" },
     ],
   },
+  "Z-FINAL": {
+    runStrict: true,
+  },
   "ZC-08": {
     tests: [
       "runtime/src/tools/ask-user-question-tui-routing.test.tsx",
@@ -9182,6 +9185,334 @@ async function cleanupGates(item) {
     pass(`${id}: ${label} has zero stale agenc/upstream references in tracked runtime source, tests, and build config`);
   }
 
+  function summarizeCommandOutput(result, limit = 4_000) {
+    const output = `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
+    if (output.length <= limit) return output;
+    return `${output.slice(0, limit)}\n... truncated ${output.length - limit} byte(s)`;
+  }
+
+  function runRequiredZFinalCommand(label, cmd, argv) {
+    const result = run(cmd, argv, { silent: true });
+    if (result.status !== 0) {
+      failGate(`${label} failed:\n${summarizeCommandOutput(result)}`);
+    }
+    pass(label);
+    return result;
+  }
+
+  function listRuntimeDirectories() {
+    const runtimeSrc = path.join(root, "runtime/src");
+    const out = [];
+    function visit(dir) {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const child = path.join(dir, entry.name);
+        out.push(child);
+        visit(child);
+      }
+    }
+    visit(runtimeSrc);
+    return out;
+  }
+
+  function countKnipUnusedIssueEntries(issue) {
+    let count = 0;
+    for (const key of [
+      "dependencies",
+      "devDependencies",
+      "optionalPeerDependencies",
+      "exports",
+      "types",
+    ]) {
+      const value = issue?.[key];
+      if (Array.isArray(value)) count += value.length;
+    }
+    const enumMembers = issue?.enumMembers;
+    if (enumMembers && typeof enumMembers === "object") {
+      for (const value of Object.values(enumMembers)) {
+        if (Array.isArray(value)) count += value.length;
+      }
+    }
+    return count;
+  }
+
+  const zFinalDebtCommentRe = /\b(?:TODO|FIXME|HACK|legacy|temporary|for now|remove after)\b/i;
+
+  function collectTsCommentLines(source) {
+    const comments = [];
+    let index = 0;
+    let line = 1;
+    let state = "code";
+    let commentStartLine = 0;
+    let commentText = "";
+
+    function consumeQuotedString(quote) {
+      index += 1;
+      let escaped = false;
+      while (index < source.length) {
+        const char = source[index];
+        if (char === "\n") {
+          line += 1;
+          index += 1;
+          if (quote !== "`") return;
+          continue;
+        }
+        if (escaped) {
+          escaped = false;
+          index += 1;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          index += 1;
+          continue;
+        }
+        index += 1;
+        if (char === quote) return;
+      }
+    }
+
+    while (index < source.length) {
+      const char = source[index];
+      const next = source[index + 1];
+      if (state === "code") {
+        if (char === "/" && next === "/") {
+          state = "line";
+          commentStartLine = line;
+          commentText = "";
+          index += 2;
+          continue;
+        }
+        if (char === "/" && next === "*") {
+          state = "block";
+          commentStartLine = line;
+          commentText = "";
+          index += 2;
+          continue;
+        }
+        if (char === "\"" || char === "'" || char === "`") {
+          consumeQuotedString(char);
+          continue;
+        }
+        if (char === "\n") line += 1;
+        index += 1;
+        continue;
+      }
+
+      if (state === "line") {
+        if (char === "\n") {
+          comments.push({ line: commentStartLine, text: commentText });
+          state = "code";
+          line += 1;
+          index += 1;
+          continue;
+        }
+        commentText += char;
+        index += 1;
+        continue;
+      }
+
+      if (state === "block") {
+        if (char === "*" && next === "/") {
+          comments.push({ line: commentStartLine, text: commentText });
+          state = "code";
+          index += 2;
+          continue;
+        }
+        commentText += char;
+        if (char === "\n") line += 1;
+        index += 1;
+      }
+    }
+
+    if (state === "line" || state === "block") {
+      comments.push({ line: commentStartLine, text: commentText });
+    }
+    return comments;
+  }
+
+  function collectZFinalProductionDebtCommentHits() {
+    const runtimeRoot = path.join(root, "runtime/src");
+    return walkFiles(runtimeRoot)
+      .filter((file) => /\.(ts|tsx)$/.test(file))
+      .filter((file) => !/\.test\.(ts|tsx)$/.test(file))
+      .flatMap((file) => {
+        const rel = path.relative(root, file).split(path.sep).join("/");
+        const source = readFileSync(file, "utf8");
+        const hits = [];
+        for (const comment of collectTsCommentLines(source)) {
+          const lines = comment.text.split("\n");
+          for (let offset = 0; offset < lines.length; offset += 1) {
+            const text = lines[offset].trim();
+            if (zFinalDebtCommentRe.test(text)) {
+              hits.push(`${rel}:${comment.line + offset}:${text}`);
+            }
+          }
+        }
+        return hits;
+      });
+  }
+
+  function assertZFinalEndState() {
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 1: runtime tsc has zero errors",
+      "npx",
+      ["tsc", "--noEmit", "-p", "runtime/tsconfig.json"],
+    );
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 2: runtime strict unused-locals tsc has zero errors",
+      "npx",
+      [
+        "tsc",
+        "--strict",
+        "--noUnusedLocals",
+        "--noUnusedParameters",
+        "--noEmit",
+        "-p",
+        "runtime/tsconfig.json",
+      ],
+    );
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 3: ts-prune has zero unused exports",
+      "npx",
+      ["ts-prune", "--error"],
+    );
+
+    const knip = run("npx", [
+      "knip",
+      "--no-progress",
+      "--no-exit-code",
+      "--reporter",
+      "json",
+    ], { silent: true });
+    if (knip.status !== 0) {
+      failGate(`Z-FINAL gate 4: knip failed to run:\n${summarizeCommandOutput(knip)}`);
+    }
+    let knipReport;
+    try {
+      knipReport = JSON.parse(knip.stdout || "{}");
+    } catch (error) {
+      failGate(`Z-FINAL gate 4: knip JSON reporter output was not parseable: ${error?.message || error}`);
+    }
+    const unusedFiles = Array.isArray(knipReport.files) ? knipReport.files : [];
+    const issues = Array.isArray(knipReport.issues) ? knipReport.issues : [];
+    const issueCount = issues.reduce((sum, issue) => sum + countKnipUnusedIssueEntries(issue), 0);
+    if (unusedFiles.length > 0 || issueCount > 0) {
+      failGate(
+        `Z-FINAL gate 4: knip reported ${unusedFiles.length} unused file(s) and ${issueCount} unused dependency/export issue(s). ` +
+          `Remove the dead surface or add a precise .knip.json allow-list for genuine public entry points.`,
+      );
+    }
+    pass("Z-FINAL gate 4: knip has zero unused files, exports, and dependencies");
+
+    const debtHits = collectZFinalProductionDebtCommentHits();
+    if (debtHits.length > 0) {
+      failGate(`Z-FINAL gate 5: production TODO/legacy/temporary comment debt remains:\n${debtHits.join("\n")}`);
+    }
+    pass("Z-FINAL gate 5: production TODO/legacy/temporary comment debt scan is clean");
+
+    const upstreamImportScan = run("rg", [
+      "--no-messages",
+      "-l",
+      "from .*agenc/upstream/",
+      "runtime/src",
+      "-g",
+      "*.ts",
+      "-g",
+      "*.tsx",
+    ], { silent: true });
+    if (upstreamImportScan.status === 0 && upstreamImportScan.stdout.trim()) {
+      failGate(`Z-FINAL gate 6: upstream importers remain:\n${upstreamImportScan.stdout.trim()}`);
+    }
+    if (upstreamImportScan.status > 1) {
+      failGate(`Z-FINAL gate 6: upstream importer scan failed:\n${summarizeCommandOutput(upstreamImportScan)}`);
+    }
+    pass("Z-FINAL gate 6: upstream importer scan is clean");
+
+    const forbiddenDirNames = new Set([
+      // branding-scan: allow verifier rejects donor-named runtime dirs
+      "openclaude",
+      // branding-scan: allow verifier rejects donor-named runtime dirs
+      "codex",
+      "claude",
+      "donor",
+      "mirror",
+      "vendored",
+      "external",
+      "_oc",
+      "_cx",
+    ]);
+    const forbiddenDirs = listRuntimeDirectories()
+      .filter((dir) => forbiddenDirNames.has(path.basename(dir)))
+      .map((dir) => path.relative(root, dir).split(path.sep).join("/"));
+    if (forbiddenDirs.length > 0) {
+      failGate(`Z-FINAL gate 7: donor-named runtime dir(s) remain:\n${forbiddenDirs.join("\n")}`);
+    }
+    pass("Z-FINAL gate 7: no donor-named runtime directories remain");
+
+    const shimSuffixRe = /-(shim|adapter|compat|legacy|bridge|wrapper|facade|proxy|glue|forwarder|passthrough|stub|indirect|dispatch|barrel)\.[^/]+$/;
+    const shimFiles = walkFiles(path.join(root, "runtime/src"))
+      .map((file) => path.relative(root, file).split(path.sep).join("/"))
+      .filter((rel) => shimSuffixRe.test(path.basename(rel)));
+    if (shimFiles.length > 0) {
+      failGate(`Z-FINAL gate 8: shim-pattern runtime file(s) remain:\n${shimFiles.join("\n")}`);
+    }
+    pass("Z-FINAL gate 8: no shim-pattern runtime files remain");
+
+    const trackedNames = git("ls-files");
+    if (trackedNames.status !== 0) failGate("Z-FINAL gate 9: git ls-files failed");
+    const donorNamedTracked = trackedNames.stdout
+      .split("\n")
+      // branding-scan: allow verifier rejects donor-named tracked path patterns
+      .filter((line) => /(openclaude|codex|claude_code|claudecode)/i.test(line));
+    if (donorNamedTracked.length > 0) {
+      failGate(`Z-FINAL gate 9: donor-named tracked path(s) remain:\n${donorNamedTracked.join("\n")}`);
+    }
+    pass("Z-FINAL gate 9: no donor-named tracked paths remain");
+
+    runRequiredZFinalCommand(
+      "Z-FINAL gate 10: validate:umbrella passes",
+      "npm",
+      ["run", "validate:umbrella"],
+    );
+
+    const goalCompletedDirs = [];
+    function visitForGoalCompleted(dir) {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === "node_modules") continue;
+        const child = path.join(dir, entry.name);
+        if (entry.name === ".goal-completed") {
+          goalCompletedDirs.push(path.relative(root, child).split(path.sep).join("/"));
+          continue;
+        }
+        visitForGoalCompleted(child);
+      }
+    }
+    visitForGoalCompleted(root);
+    if (goalCompletedDirs.length > 0) {
+      failGate(`Z-FINAL gate 11: .goal-completed dir(s) remain:\n${goalCompletedDirs.join("\n")}`);
+    }
+    pass("Z-FINAL gate 11: no .goal-completed marker directory remains in this worktree");
+
+    const portArtifacts = ["PORT_CHECKLIST.md", "GOAL_DISCIPLINE.md", "AGENTS.md"]
+      .filter((rel) => existsSync(path.join(root, rel)));
+    if (portArtifacts.length > 0) {
+      failGate(`Z-FINAL gate 12: top-level port-era artifact(s) remain:\n${portArtifacts.join("\n")}`);
+    }
+    pass("Z-FINAL gate 12: top-level port-era artifacts are absent in this worktree");
+
+    const parityDocs = walkFiles(path.join(root, "runtime/src"))
+      .filter((file) => path.basename(file) === "PARITY.md")
+      .map((file) => path.relative(root, file).split(path.sep).join("/"));
+    if (parityDocs.length > 0) {
+      failGate(`Z-FINAL gate 13: runtime PARITY.md scaffolding remains:\n${parityDocs.join("\n")}`);
+    }
+    pass("Z-FINAL gate 13: runtime PARITY.md scaffolding is gone");
+  }
+
   function assertZPurgecTemporaryBoundaries() {
     const tsconfigSource = readFileSync(path.join(root, "runtime/tsconfig.json"), "utf8");
     const tsconfigBoundary = validateZPurgecTsconfigBoundary(tsconfigSource);
@@ -9419,6 +9750,9 @@ async function cleanupGates(item) {
     }
     assertNoRuntimeUpstreamReferences("final runtime purge surface");
     pass(`${id}: upstream/ tree fully removed, zero importers`);
+    if (id === "Z-FINAL") {
+      assertZFinalEndState();
+    }
     return;
   }
   if (id === "Z-01" || id === "Z-02") {

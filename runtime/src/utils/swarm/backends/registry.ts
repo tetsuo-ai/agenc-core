@@ -1,6 +1,6 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getPlatform } from '../../platform.js'

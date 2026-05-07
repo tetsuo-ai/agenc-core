@@ -228,9 +228,9 @@ export class ITermBackend implements PaneBackend {
         teammateSessionIds.push(paneId)
 
         // Set pane color and title
-        // Skip color and title for now - each it2 call is slow (Python process + API)
+        // Skip color and title currently - each it2 call is slow (Python process + API)
         // The pane is functional without these cosmetic features
-        // TODO: Consider batching these or making them async/fire-and-forget
+        // Follow-up: Consider batching these or making them async/fire-and-forget
 
         return { paneId, isFirstTeammate }
       }

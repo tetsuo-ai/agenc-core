@@ -13,20 +13,16 @@
     "daemon": "npm --workspace=@tetsuo-ai/runtime run daemon",
     "daemon:status": "npm --workspace=@tetsuo-ai/runtime run daemon:status",
     "start": "npm --workspace=@tetsuo-ai/runtime run start",
-    "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
+    "validate:umbrella": "node scripts/check-sibling-package-pins.mjs --root . && npm run validate:runtime",
+    "validate:runtime": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run build --workspace=@tetsuo-ai/runtime && npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
   },
   "overrides": {
     "rollup": "^4.59.0"
   },
-  "dependencies": {
-    "markdown-it": "^14.1.1",
-    "tsx": "^4.7.0",
-    "ws": "^8.19.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "vitest": "^1.0.0"
+    "typescript": "^5.0.0"
   }
 }

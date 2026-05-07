@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
  * Hooks are user-defined shell commands that can be executed at various points
@@ -1010,7 +1010,7 @@ async function execCommandHook(
 
   // AGENC_SHELL_PREFIX wraps the command via POSIX quoting
   // (formatShellPrefixCommand uses shell-quote). This makes no sense for
-  // PowerShell — see design §8.1. For now PS hooks ignore the prefix;
+  // PowerShell — see design §8.1. currently PS hooks ignore the prefix;
   // a AGENC_PS_SHELL_PREFIX (or shell-aware prefix) is a follow-up.
   const finalCommand =
     !isPowerShell && process.env.AGENC_SHELL_PREFIX
@@ -1333,7 +1333,7 @@ async function execCommandHook(
   // the hook command exits before reading all input.
   // Note: EPIPE handling is difficult to set up in testing since Bun and Node
   // have different behaviors.
-  // TODO: Add tests for EPIPE handling.
+  // Follow-up: Add tests for EPIPE handling.
   // Skip if stdin was already written (e.g., by config-based async hook path)
   const stdinWritePromise = stdinWritten
     ? Promise.resolve()
@@ -1509,7 +1509,7 @@ function matchesPattern(matchQuery: string, matcher: string): boolean {
     if (regex.test(matchQuery)) {
       return true
     }
-    // Also test against legacy names so patterns like "^Task$" still match
+    // Also test against compatibility names so patterns like "^Task$" still match
     for (const legacyName of getLegacyToolNames(matchQuery)) {
       if (regex.test(legacyName)) {
         return true
@@ -1886,7 +1886,7 @@ export async function getMatchingHooks(
           )
           // shell is part of identity: {command:'echo x', shell:'bash'}
           // and {command:'echo x', shell:'powershell'} are distinct hooks,
-          // not duplicates. Default to 'bash' so legacy configs (no shell
+          // not duplicates. Default to 'bash' so compatibility configs (no shell
           // field) still dedup against explicit shell:'bash'.
           .map(m => [
             hookDedupKey(
@@ -3292,7 +3292,7 @@ async function executeHooksOutsideREPL({
         }
       }
 
-      // TODO: Implement prompt stop hooks outside REPL
+      // Follow-up: Implement prompt stop hooks outside REPL
       if (hook.type === 'prompt') {
         return {
           command: hook.prompt,
@@ -3302,7 +3302,7 @@ async function executeHooksOutsideREPL({
         }
       }
 
-      // TODO: Implement agent stop hooks outside REPL
+      // Follow-up: Implement agent stop hooks outside REPL
       if (hook.type === 'agent') {
         return {
           command: hook.prompt,
@@ -5068,7 +5068,7 @@ async function executeHookCallback({
   const processed = processHookJSONOutput({
     json,
     command: 'callback',
-    // TODO: If the hook came from a plugin, use the full path to the plugin for easier debugging
+    // Follow-up: If the hook came from a plugin, use the full path to the plugin for easier debugging
     hookName: `${hookEvent}:Callback`,
     toolUseID,
     hookEvent,

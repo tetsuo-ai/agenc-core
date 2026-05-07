@@ -43,6 +43,7 @@ vi.mock("../../utils/format.js", () => ({
 
 vi.mock("../../utils/auth.js", () => ({
   getAnthropicApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
+  getproviderApiKeyWithSource: () => ({ source: mocks.apiKeySource }),
   getApiKeyFromConfigOrMacOSKeychain: () =>
     mocks.apiKeyConfigured ? "configured-key" : null,
   getAuthTokenSource: () => mocks.authTokenSource,

@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: moved purge surface is outside baseline typecheck.
+// @ts-nocheck -- moved-source note: moved purge surface is outside baseline typecheck.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Markdown } from '../../markdown/Markdown.js';

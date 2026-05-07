@@ -18,7 +18,7 @@ export function getQuerySourceForAgent(
   isBuiltInAgent: boolean,
 ): QuerySource {
   if (isBuiltInAgent) {
-    // TODO: avoid this cast
+    // Follow-up: avoid this cast
     return agentType
       ? (`agent:builtin:${agentType}` as QuerySource)
       : 'agent:default'

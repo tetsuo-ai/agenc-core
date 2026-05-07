@@ -19,7 +19,7 @@ import {
  * this migration cleans up the settings file so /model shows the right
  * thing, and sets a timestamp so the REPL can show a one-time notification.
  *
- * Only touches userSettings. Legacy strings in project/local/policy settings
+ * Only touches userSettings. Compatibility strings in project/local/policy settings
  * are left alone (we can't/shouldn't rewrite those) and are still remapped at
  * runtime by parseUserSpecifiedModel. Reading and writing the same source
  * keeps this idempotent without a completion flag, and avoids silently

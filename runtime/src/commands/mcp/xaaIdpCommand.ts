@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * `agenc mcp xaa` — manage the XAA (SEP-990) IdP connection.
  *
@@ -161,7 +161,7 @@ export function registerMcpXaaIdpCommand(mcp: Command): void {
       '--force',
       'Ignore any cached id_token and re-login (useful after IdP-side revocation)',
     )
-    // TODO(paulc): read the JWT from stdin instead of argv to keep it out of
+    // Follow-up(paulc): read the JWT from stdin instead of argv to keep it out of
     // shell history. Fine for conformance (docker exec uses argv directly,
     // no shell parser), but a real user would want `echo $TOKEN | ... --stdin`.
     .option(

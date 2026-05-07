@@ -123,7 +123,7 @@ export function sanitizeAPIError(apiError: APIError): string {
   const message = apiError.message
   if (!message) {
     // Sometimes message is undefined
-    // TODO: figure out why
+    // Follow-up: figure out why
     return ''
   }
   return sanitizeMessageHTML(message)

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // branding-scan: allow terminal cursor type
 import type { Cursor } from './cursor.js'
 import type { Size } from './layout/geometry.js'

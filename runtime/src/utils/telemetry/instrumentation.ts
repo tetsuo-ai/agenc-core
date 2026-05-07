@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { DiagLogLevel, diag, trace } from '@opentelemetry/api'
 import { logs } from '@opentelemetry/api-logs'
 // OTLP/Prometheus exporters are dynamically imported inside the protocol

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { Box, Text } from '../../tui/ink.js';
 import type { ToolProgressData } from '../Tool.js';

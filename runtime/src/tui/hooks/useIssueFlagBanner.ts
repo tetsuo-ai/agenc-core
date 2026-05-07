@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useMemo, useRef } from 'react'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName'
 import type { Message } from '../../types/message'

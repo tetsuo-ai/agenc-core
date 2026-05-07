@@ -1558,7 +1558,7 @@ function parseSubscriptIndexInline(P: ParseState): TsNode | null {
   return parseArithExpr(P, ']', 'word')
 }
 
-/** Legacy byte-range subscript index parser — kept for callers that pre-scan. */
+/** Compatibility byte-range subscript index parser — kept for callers that pre-scan. */
 function parseSubscriptIndex(
   P: ParseState,
   startB: number,
@@ -2453,7 +2453,7 @@ function parseDollarLike(P: ParseState): TsNode | null {
     ])
   }
   if (c1 === '[') {
-    // $[ arithmetic ] — legacy bash syntax, same as $((...))
+    // $[ arithmetic ] — compatibility bash syntax, same as $((...))
     advance(P.L)
     advance(P.L)
     const open = mk(P, '$[', dStart, P.L.b, [])
@@ -3139,7 +3139,7 @@ function parseBacktick(P: ParseState): TsNode | null {
     close = mk(P, '`', P.L.b, P.L.b, [])
   }
   // Empty backticks (whitespace/newline only) are elided entirely by
-  // tree-sitter — used as a line-continuation hack: "foo"`<newline>`"bar"
+  // tree-sitter — used as a line-continuation workaround: "foo"`<newline>`"bar"
   // → (concatenation (string) (string)) with no command_substitution.
   if (body.length === 0) return null
   return mk(P, 'command_substitution', start, close.endIndex, [

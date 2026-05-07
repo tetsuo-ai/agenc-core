@@ -4,7 +4,7 @@
  * RemoteAgentTask so the polling loop pipes results back into the local
  * session via task-notification. Mirrors the /ultraplan → CCR flow.
  *
- * TODO(#22051): pass useBundleMode once landed so local-only / uncommitted
+ * Follow-up(#22051): pass useBundleMode once landed so local-only / uncommitted
  * repo state is captured. The GitHub-clone path (current) only works for
  * pushed branches on repos with the AgenC GitHub app installed.
  */
@@ -163,7 +163,7 @@ export async function launchRemoteReview(
   const isPrNumber = /^\d+$/.test(prNumber)
   // Synthetic code_review env. Go taggedid.FromUUID(TagEnvironment,
   // UUID{...,0x02}) encodes with version prefix '01' — NOT Python's
-  // legacy tagged_id() format. Verified in prod.
+  // compatibility tagged_id() format. Verified in prod.
   const CODE_REVIEW_ENV_ID = 'env_011111111111111111111113'
   // Lite-review bypasses bughunter.go entirely, so it doesn't see the
   // webhook's bug_hunter_config (different GB project). These env vars are

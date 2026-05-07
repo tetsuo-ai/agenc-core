@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { RenderableMessage } from '../../types/message.js'
 import {
   INTERRUPT_MESSAGE,
@@ -57,7 +57,7 @@ function computeSearchText(msg: RenderableMessage): string {
             // Bash {stdout,stderr}, Grep {content,filenames}, Read
             // {file.content}. Unknown shapes index empty — under-count is
             // honest, phantom is a lie. Proper fix is per-tool
-            // extractSearchText(Out) on the Tool interface (TODO).
+            // extractSearchText(Out) on the Tool interface (Follow-up).
             parts.push(toolResultSearchText(msg.toolUseResult))
           }
         }

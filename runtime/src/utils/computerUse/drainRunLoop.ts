@@ -70,7 +70,7 @@ export async function drainRunLoop<T>(fn: () => Promise<T>): Promise<T> {
     const work = fn()
     work.catch(() => {})
     const timeout = withResolvers<never>()
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     timer = setTimeout(timeoutReject, TIMEOUT_MS, timeout.reject)
     return await Promise.race([work, timeout.promise])
   } finally {

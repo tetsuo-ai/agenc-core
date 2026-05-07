@@ -243,7 +243,7 @@ interface RoleLikeConfig {
 /**
  * Minimal shape we lean on from the session to check MCP readiness.
  * T10 will extend SessionServices with a first-class mcpManager
- * surface; for now we read it defensively off `session.services`.
+ * surface; currently we read it defensively off `session.services`.
  */
 interface McpManagerLike {
   isConnected(name: string): boolean;
@@ -1946,7 +1946,7 @@ export async function* runAgent(
   }
 }
 
-/** @internal Kept for legacy callers that relied on the park-until-abort
+/** @internal Kept for compatibility callers that relied on the park-until-abort
  *  shape. Safe to remove once nothing outside this module references it. */
 export function awaitAbort(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();

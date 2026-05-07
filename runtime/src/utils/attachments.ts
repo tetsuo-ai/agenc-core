@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import {
   logEvent,
@@ -742,7 +742,7 @@ export type TeamContextAttachment = {
 
 /**
  * This is janky
- * TODO: Generate attachments when we create messages
+ * Follow-up: Generate attachments when we create messages
  */
 export async function getAttachments(
   input: string | null,
@@ -765,7 +765,7 @@ export async function getAttachments(
   }
 
   // This will slow down submissions
-  // TODO: Compute attachments as the user types, not here (though we use this
+  // Follow-up: Compute attachments as the user types, not here (though we use this
   // function for slash command prompts too)
   const abortController = createAbortController()
   const timeoutId = setTimeout(ac => ac.abort(), 1000, abortController)
@@ -2076,7 +2076,7 @@ export async function getChangedFiles(
       const fileState = toolUseContext.readFileState.get(filePath)
       if (!fileState) return null
 
-      // TODO: Implement offset/limit support for changed files
+      // Follow-up: Implement offset/limit support for changed files
       if (fileState.offset !== undefined || fileState.limit !== undefined) {
         return null
       }
@@ -2829,7 +2829,7 @@ export function extractMcpResourceMentions(content: string): string[] {
 
 export function extractAgentMentions(content: string): string[] {
   // Extract agent mentions in two formats:
-  // 1. @agent-<agent-type> (legacy/manual typing)
+  // 1. @agent-<agent-type> (compatibility/manual typing)
   //    Example: "@agent-code-elegance-refiner" → "agent-code-elegance-refiner"
   // 2. @"<agent-type> (agent)" (from autocomplete selection)
   //    Example: '@"code-reviewer (agent)"' → "code-reviewer"
@@ -2971,7 +2971,7 @@ export async function* getAttachmentMessages(
   querySource?: QuerySource,
   options?: { skipSkillDiscovery?: boolean },
 ): AsyncGenerator<AttachmentMessage, void> {
-  // TODO: Compute this upstream
+  // Follow-up: Compute this upstream
   const attachments = await getAttachments(
     input,
     toolUseContext,

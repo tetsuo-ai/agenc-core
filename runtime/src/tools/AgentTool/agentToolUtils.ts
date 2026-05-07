@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
@@ -432,7 +432,7 @@ export async function classifyHandoffIfNeeded({
       decision:
         handoffDecision as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       toolName:
-        // Use legacy name for analytics continuity across the Task→Agent rename
+        // Use compatibility name for analytics continuity across the Task→Agent rename
         LEGACY_AGENT_TOOL_NAME as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       inProtectedNamespace: isInProtectedNamespace(),
       classifierModel:

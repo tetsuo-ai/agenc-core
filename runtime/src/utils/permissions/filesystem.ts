@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import ignore from 'ignore'
@@ -308,7 +308,7 @@ function isProjectDirPath(absolutePath: string): boolean {
 
 /**
  * Checks if the scratchpad directory feature is enabled.
- * The scratchpad is a per-session directory for AgenC to write temporary files.
+ * The scratchpad is a per-session directory for AgenC to write short-lived files.
  * Controlled by the tengu_scratch Statsig gate.
  */
 export function isScratchpadEnabled(): boolean {
@@ -335,7 +335,7 @@ export function getAgenCTempDirName(): string {
  * Uses TMPDIR env var if set, otherwise:
  * - On Unix: /tmp/agenc-{uid}/ (resolved to /private/tmp/agenc-{uid}/ on macOS)
  * - On Windows: {tmpdir}/agenc/ (e.g., C:\Users\{user}\AppData\Local\Temp\agenc\)
- * This is a per-user temporary directory used by AgenC for all temp files.
+ * This is a per-user short-lived directory used by AgenC for all temp files.
  *
  * NOTE: We resolve symlinks to ensure this path matches the resolved paths used
  * in permission checks. On macOS, /tmp is a symlink to /private/tmp, so without

@@ -17,7 +17,7 @@ interface PowerShellResult {
 
 /**
  * Windows-specific secure storage implementation using DPAPI for new writes,
- * with best-effort reads/deletes from the legacy PasswordVault path.
+ * with best-effort reads/deletes from the compatibility PasswordVault path.
  */
 function escapePowerShellSingleQuoted(value: string): string {
   return value.replace(/'/g, "''")

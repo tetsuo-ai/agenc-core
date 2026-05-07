@@ -1,0 +1,44 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "scripts/**/*.mjs"
+      ],
+      "project": [
+        "scripts/**/*.mjs"
+      ]
+    },
+    "packages/agenc": {
+      "entry": [
+        "src/**/*.mjs",
+        "test/**/*.mjs"
+      ],
+      "project": [
+        "src/**/*.mjs",
+        "test/**/*.mjs"
+      ],
+      "ignoreDependencies": [
+        "@tetsuo-ai/runtime"
+      ]
+    },
+    "runtime": {
+      "entry": [
+        "scripts/**/*.mjs",
+        "tsup.config.ts",
+        "src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        "tests/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
+      ],
+      "project": [
+        "scripts/**/*.mjs",
+        "tsup.config.ts",
+        "src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
+        "tests/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
+      ],
+      "ignoreDependencies": [
+        "@ant/computer-use-mcp",
+        "supports-hyperlinks"
+      ]
+    }
+  }
+}

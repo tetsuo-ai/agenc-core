@@ -170,7 +170,7 @@ export function cyclePermissionMode(
   ctx: ToolPermissionContext,
 ): { nextMode: PermissionMode; context: ToolPermissionContext } {
   const nextMode = getNextPermissionMode(fromMode, ctx);
-  // Legacy 3-arg invocation — the bypass-consent gate is opt-in via opts.
+  // Compatibility 3-arg invocation — the bypass-consent gate is opt-in via opts.
   const context = transitionPermissionMode(fromMode, nextMode, ctx);
   return { nextMode, context };
 }
@@ -217,7 +217,7 @@ export function __setPlanAutoModeResolverForTesting(
 /**
  * Options controlling a bypass-consent gate around transitions TO
  * `bypassPermissions`. Passing this object opts the caller into the gate;
- * callers that omit `opts` keep the legacy unconditional behavior.
+ * callers that omit `opts` keep the compatibility unconditional behavior.
  */
 export interface TransitionPermissionModeOptions {
   /**
@@ -286,14 +286,14 @@ function isBypassConsentAccepted(
  *   `bypassPermissionsAcceptedIn` (deduped) so subsequent transitions in
  *   the same session pass without re-asking.
  *
- *   Callers that omit `opts` keep the legacy behavior: transitions to
+ *   Callers that omit `opts` keep the compatibility behavior: transitions to
  *   `bypassPermissions` are unconditional (e.g. `cyclePermissionMode`,
  *   internal plan-mode restore).
  *
  * @throws Error when `toMode === "auto"` but `isAutoModeGateEnabled()` is
  *   false.
  */
-// Overloads: legacy 3-arg callers always receive a plain context (the
+// Overloads: compatibility 3-arg callers always receive a plain context (the
 // bypass-consent gate is opt-in via `opts`). Passing `opts` widens the
 // return type so the caller handles the refusal branch.
 export function transitionPermissionMode(
@@ -319,7 +319,7 @@ export function transitionPermissionMode(
 
   // Bypass-consent gate. Only engaged when the caller explicitly opts in
   // by supplying `opts`. Existing callers (Shift+Tab cycle, plan-mode
-  // restore) keep the legacy unconditional behavior until they migrate
+  // restore) keep the compatibility unconditional behavior until they migrate
   // to the new API.
   let bypassConsentAlreadyPresent = false;
   if (toMode === "bypassPermissions" && opts !== undefined) {

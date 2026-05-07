@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import {
   APIConnectionError,
@@ -90,7 +90,7 @@ function shouldRetry529(querySource: QuerySource | undefined): boolean {
 // AGENC_UNATTENDED_RETRY: for unattended sessions (internal-only). Retries 429/529
 // indefinitely with higher backoff and periodic keep-alive yields so the host
 // environment does not mark the session idle mid-wait.
-// TODO(ANT-344): the keep-alive via SystemAPIErrorMessage yields is a stopgap
+// Follow-up(ANT-344): the keep-alive via SystemAPIErrorMessage yields is a stopgap
 // until there's a dedicated keep-alive channel.
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
 const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000
@@ -345,7 +345,7 @@ export async function* withRetry<T>(
       if (
         is529Error(error) &&
         // If FALLBACK_FOR_ALL_PRIMARY_MODELS is not set, fall through only if the primary model is a non-custom Opus model.
-        // TODO: Revisit if the isNonCustomOpusModel check should still exist, or if isNonCustomOpusModel is a stale artifact of when AgenC was hardcoded on Opus.
+        // Follow-up: Revisit if the isNonCustomOpusModel check should still exist, or if isNonCustomOpusModel is a stale artifact of when AgenC was hardcoded on Opus.
         (process.env.FALLBACK_FOR_ALL_PRIMARY_MODELS ||
           (!isAgenCAISubscriber() && isNonCustomOpusModel(options.model)))
       ) {
@@ -612,7 +612,7 @@ export function parseMaxTokensContextOverflowError(error: APIError):
   return { inputTokens, maxTokens, contextLimit }
 }
 
-// TODO: Replace with a response header check once the API adds a dedicated
+// Follow-up: Replace with a response header check once the API adds a dedicated
 // header for fast-mode rejection (e.g., x-fast-mode-rejected). String-matching
 // the error message is fragile and will break if the API wording changes.
 function isFastModeNotEnabledError(error: unknown): boolean {

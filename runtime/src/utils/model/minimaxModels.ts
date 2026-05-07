@@ -28,7 +28,7 @@ function getMiniMaxModels(): ModelOption[] {
     { value: 'MiniMax-Text-01-Preview', label: 'MiniMax Text 01 Preview', description: 'Preview - 256K context - FREE' },
     { value: 'MiniMax-Vision-01', label: 'MiniMax Vision 01', description: 'Vision model - 32K context' },
     { value: 'MiniMax-Vision-01-Fast', label: 'MiniMax Vision 01 Fast', description: 'Fast vision - 16K context - FREE' },
-    // Legacy free tier models
+    // Compatibility free tier models
     { value: 'abab6.5s-chat', label: 'ABAB 6.5S Chat', description: 'Legacy free - 16K context' },
     { value: 'abab6.5-chat', label: 'ABAB 6.5 Chat', description: 'Legacy free - 32K context' },
     { value: 'abab6.5g-chat', label: 'ABAB 6.5G Chat', description: 'Generation 6.5 - 32K context' },

@@ -135,7 +135,7 @@ function buildEffectiveServerMap(
  * Construct the real runtime `MCPManager` for a session boundary.
  * Bootstrap/CLI own env/config discovery, but the concrete manager
  * type comes from the session MCP startup module so the live lifecycle
- * stays anchored at the runtime boundary instead of legacy service/UI
+ * stays anchored at the runtime boundary instead of compatibility service/UI
  * surfaces.
  */
 export function createSessionMcpManager(

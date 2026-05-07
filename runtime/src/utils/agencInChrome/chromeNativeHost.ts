@@ -117,7 +117,7 @@ class ChromeNativeHost {
     if (platform() !== 'win32') {
       const socketDir = getSocketDir()
 
-      // Migrate legacy socket: if socket dir path exists as a file/socket, remove it
+      // Migrate compatibility socket: if socket dir path exists as a file/socket, remove it
       try {
         const dirStats = await stat(socketDir)
         if (!dirStats.isDirectory()) {

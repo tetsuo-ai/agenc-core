@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Plugin dependency resolution — pure functions, no I/O.
  *
@@ -13,7 +13,7 @@
  *    unsatisfied deps (session-local, does NOT write settings)
  */
 
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
 import type { EditableSettingSource } from '../settings/constants.js'
 import { getSettingsForSource } from '../settings/settings.js'
@@ -254,7 +254,7 @@ export function findReverseDependents(
       p =>
         p.enabled &&
         p.source !== pluginId &&
-        // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         (p.manifest.dependencies ?? []).some(d => {
           const qualified = qualifyDependency(d, p.source)
           // Bare dep (from @inline plugin): match by name only

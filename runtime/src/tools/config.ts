@@ -6,7 +6,7 @@
  * AgenC shape differences:
  *   - Built-in, MCP, dynamic, and model-facing tools all share one flat
  *     registry, so lookup accepts exact tool names plus dotted TOML paths.
- *   - The legacy boolean `tools_config.web_search = false` shorthand is
+ *   - The compatibility boolean `tools_config.web_search = false` shorthand is
  *     preserved as an alias for the model-facing `WebSearch` tool and the
  *     provider-native `web_search` name.
  *

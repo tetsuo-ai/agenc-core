@@ -1,5 +1,5 @@
 /**
- * Sandbox metric and legacy-policy tag derivation for AgenC runtime profiles.
+ * Sandbox metric and compatibility-policy tag derivation for AgenC runtime profiles.
  *
  * The executable sandbox command builders remain owned by
  * `runtime/src/sandbox/engine/`.

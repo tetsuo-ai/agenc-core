@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { basename } from 'path'
 import { useCallback, useEffect, useRef } from 'react'
@@ -337,7 +337,7 @@ export function useManageMCPConnections(
               )
             })
 
-            // TODO: This really isn't great: ideally we'd check appstate as the source of truth
+            // Follow-up: This really isn't great: ideally we'd check appstate as the source of truth
             // as to whether it was disconnected due to a disable, but appstate is stale at this
             // point. Getting a live reference to appstate feels a little hacky, so we'll just
             // check the disk state. We may want to refactor some of this.

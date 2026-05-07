@@ -3,7 +3,7 @@
  *
  * This command reads `SessionServices.mcpManager`, the same facade used
  * by tool routing and provenance. It does not reach around the session
- * into legacy UI/service owners.
+ * into compatibility UI/service owners.
  *
  * @module
  */

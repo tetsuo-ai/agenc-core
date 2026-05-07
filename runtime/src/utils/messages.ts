@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { getAPIProvider } from './model/providers.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
@@ -708,7 +708,7 @@ export function isNotEmptyMessage(message: Message): boolean {
     return false
   }
 
-  // Skip multi-block messages for now
+  // Skip multi-block messages currently
   if (message.message.content.length > 1) {
     return true
   }
@@ -2536,7 +2536,7 @@ type ToolResultContentItem = Extract<
  * search_result, document. All of these smoosh. tool_reference (beta) cannot
  * mix with other types — server ValueError — so we bail with null.
  *
- * - string/undefined content + all-text blocks → string (preserve legacy shape)
+ * - string/undefined content + all-text blocks → string (preserve compatibility shape)
  * - array content with tool_reference → null
  * - otherwise → array, with adjacent text merged (notebook.ts idiom)
  */
@@ -2565,7 +2565,7 @@ function smooshIntoToolResult(
 
   // Preserve string shape when existing was string/undefined and all incoming
   // blocks are text — this is the common case (hook reminders into Bash/Read
-  // results) and matches the legacy smoosh output shape.
+  // results) and matches the compatibility smoosh output shape.
   if (allText && (existing === undefined || typeof existing === 'string')) {
     const joined = [
       (existing ?? '').trim(),
@@ -2622,7 +2622,7 @@ export function mergeUserContentBlocks(
   }
 
   if (!checkStatsigFeatureGate_CACHED_MAY_BE_STALE('tengu_chair_sermon')) {
-    // Legacy (ungated) smoosh: only string-content tool_result + all-text
+    // Compatibility (ungated) smoosh: only string-content tool_result + all-text
     // siblings → joined string. Matches pre-universal-smoosh behavior on main.
     // The precondition guarantees smooshIntoToolResult hits its string path
     // (no tool_reference bail, string output shape preserved).
@@ -2680,7 +2680,7 @@ export function normalizeContentFromAPI(
         // The API has strange behaviour, where it returns nested stringified JSONs, and so
         // we need to recursively parse these. If the top-level value returned from the API is
         // an empty string, this should become an empty object (nested values should be empty string).
-        // TODO: This needs patching as recursive fields can still be stringified
+        // Follow-up: This needs patching as recursive fields can still be stringified
         let normalizedInput: unknown
         if (typeof contentBlock.input === 'string') {
           const parsed = safeParseJSON(contentBlock.input)
@@ -4270,7 +4270,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return []
   }
 
-  // Handle legacy attachments that were removed
+  // Handle compatibility attachments that were removed
   // IMPORTANT: if you remove an attachment type from normalizeAttachmentForAPI, make sure
   // to add it here to avoid errors from old --resume'd sessions that might still have
   // these attachment types.

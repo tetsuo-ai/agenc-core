@@ -514,7 +514,7 @@ export interface DaemonProtocolInfo extends JsonObject {
 
 export interface InitializeParams extends JsonObject {
   /**
-   * Legacy flat version field. Accepted when `protocol` is omitted, and must
+   * Compatibility flat version field. Accepted when `protocol` is omitted, and must
    * match `protocol.version` when both are sent.
    */
   readonly protocolVersion?: string;
@@ -1152,7 +1152,7 @@ export interface AgentLogsResult extends JsonObject {
 export interface InitializeResult extends JsonObject {
   readonly type: "initialized";
   /**
-   * Legacy mirror of `protocol.version` for older daemon clients.
+   * Compatibility mirror of `protocol.version` for older daemon clients.
    */
   readonly protocolVersion: string;
   /**

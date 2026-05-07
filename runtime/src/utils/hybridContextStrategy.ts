@@ -222,7 +222,7 @@ export function applyHybridStrategy(
   const cfg = { ...DEFAULT_CONFIG, ...config }
   
   // Preserve message chains (tool_use/tool_result pairs)
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const { chains, orphans } = getMessageChain(messages)
   
   // Always preserve the conversation tail (last N messages)

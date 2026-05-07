@@ -458,7 +458,7 @@ const isCtrlKey = (code: string): boolean => {
  * Modifier encoding: 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0) + (super ? 8 : 0)
  *
  * Note: `meta` here means Alt/Option (bit 2). `super` is a distinct
- * modifier (bit 8, i.e. Cmd on macOS / Win key). Most legacy terminal
+ * modifier (bit 8, i.e. Cmd on macOS / Win key). Most compatibility terminal
  * sequences can't express super — it only arrives via kitty keyboard
  * protocol (CSI u) or xterm modifyOtherKeys.
  */
@@ -713,7 +713,7 @@ function parseKeypress(s: string = ''): ParsedKey {
   }
 
   // X10 mouse: CSI M + 3 raw bytes (Cb+32, Cx+32, Cy+32). Terminals that
-  // ignore DECSET 1006 (SGR) but honor 1000/1002 emit this legacy encoding.
+  // ignore DECSET 1006 (SGR) but honor 1000/1002 emit this compatibility encoding.
   // Button bits match SGR: 0x40 = wheel, low bit = direction. Non-wheel
   // X10 events (clicks/drags) are swallowed here — we only enable mouse
   // tracking in alt-screen and only need wheel for ScrollBox.

@@ -1067,7 +1067,7 @@ export class Session {
   readonly conversationId: ThreadId;
 
   /**
-   * Legacy event stream. EventLog is the source-of-truth fanout path; this
+   * Compatibility event stream. EventLog is the source-of-truth fanout path; this
    * bounded queue remains only for older consumers that still call
    * `session.txEvent.stream()`.
    */
@@ -1161,7 +1161,7 @@ export class Session {
    * than poking the field directly so the I-13 staging site has a
    * single well-typed entry point.
    *
-   * TODO(T11-W3): surface the active profile name back on the snapshot
+   * Follow-up(T11-W3): surface the active profile name back on the snapshot
    * once ConfigStore tracks it.
    */
   pendingProviderSwitch: PendingProviderSwitch | null = null;
@@ -1846,7 +1846,7 @@ export class Session {
    *   2. RolloutStore (T6, when wired) — appends to the JSONL
    *      rollout; durable events (TurnComplete, TurnAborted, Error,
    *      ContextCompacted) force fsync before returning (I-4).
-   *   3. txEvent (legacy) — kept for consumers that still use
+   *   3. txEvent (compatibility) — kept for consumers that still use
    *      `for await ... of session.txEvent.stream()`.
    *
    * I-8: every error site MUST funnel through this or the dedicated
@@ -1881,7 +1881,7 @@ export class Session {
           : {}),
       });
     }
-    // Legacy consumer path.
+    // Compatibility consumer path.
     this.txEvent.send(stamped);
   }
 

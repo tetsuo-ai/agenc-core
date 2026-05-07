@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import noop from 'lodash-es/noop.js'
 import type { ReactElement } from 'react'
 import { LegacyRoot } from 'react-reconciler/constants.js'
@@ -161,7 +161,7 @@ export function scanPositions(screen: Screen, query: string): MatchPosition[] {
   for (let row = 0; row < h; row++) {
     const rowOff = row * w
     // Same text-build as applySearchHighlight. Keep in sync — or extract
-    // to a shared helper (TODO once both are stable). codeUnitToCell
+    // to a shared helper (Follow-up once both are stable). codeUnitToCell
     // maps indexOf positions (code units in the LOWERCASED text) to cell
     // indices in colOf — surrogate pairs (emoji) and multi-unit lowercase
     // (Turkish İ → i + U+0307) make text.length > colOf.length.

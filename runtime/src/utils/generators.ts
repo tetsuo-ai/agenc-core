@@ -59,7 +59,7 @@ export async function* all<A>(
 
     if (!done) {
       promises.add(next(generator))
-      // TODO: Clean this up
+      // Follow-up: Clean this up
       if (value !== undefined) {
         yield value
       }

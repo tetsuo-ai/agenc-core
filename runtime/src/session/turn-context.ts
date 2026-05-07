@@ -178,7 +178,7 @@ export interface ManagedFeatures {
   readonly enabled?: (feature: string) => boolean;
   /** Returns whether `apps_enabled_for_auth(is_chatgpt_auth)` is true. */
   readonly appsEnabledForAuth: (isChatgptAuth: boolean) => boolean;
-  /** Returns whether to use the legacy Landlock path. */
+  /** Returns whether to use the compatibility Landlock path. */
   readonly useLegacyLandlock: () => boolean;
 }
 
@@ -1032,12 +1032,12 @@ export function threadConfigSnapshot(
  *
  * Mirrors agenc runtime `SessionConfiguration::apply`. Notable parity:
  *
- *   - Legacy-FS-policy preservation on cwd-only updates. If only `cwd`
+ *   - Compatibility-FS-policy preservation on cwd-only updates. If only `cwd`
  *     changes and the current `fileSystemSandboxPolicy` matches the
- *     default derived from the legacy `sandboxPolicy`, re-derive it for
+ *     default derived from the compatibility `sandboxPolicy`, re-derive it for
  *     the new cwd; otherwise preserve the richer split policy unchanged.
  *   - Sandbox-policy changes rebuild the derived network/filesystem
- *     split policies from the new legacy sandbox mode.
+ *     split policies from the new compatibility sandbox mode.
  */
 export function applySessionConfiguration(
   current: SessionConfiguration,
@@ -1108,10 +1108,10 @@ export function applySessionConfiguration(
 
   // AgenC behavior (session.rs `SessionConfiguration::apply`):
   //   - sandbox policy changed -> rebuild the split filesystem policy
-  //     from the new legacy mode. T5 only has the default projection;
+  //     from the new compatibility mode. T5 only has the default projection;
   //     T11 wires the richer deny-entry-preserving variant.
   //   - cwd-only change -> reroot only when the current split policy is
-  //     still the legacy-derived one; richer policies survive unchanged.
+  //     still the compatibility-derived one; richer policies survive unchanged.
   if (sandboxPolicyChanged) {
     next.fileSystemSandboxPolicy = deriveFileSystemSandboxPolicyForMode(
       next.sandboxPolicy.value,
@@ -1137,7 +1137,7 @@ export function applySessionConfiguration(
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 /**
- * Rebuild a `FileSystemSandboxPolicy` from a legacy `SandboxPolicy`
+ * Rebuild a `FileSystemSandboxPolicy` from a compatibility `SandboxPolicy`
  * mode + cwd. Mirrors agenc runtime
  * `FileSystemSandboxPolicy::from_legacy_sandbox_policy` default
  * projection for each mode:
@@ -1192,7 +1192,7 @@ export function deriveFileSystemSandboxPolicyForMode(
 }
 
 /**
- * Rebuild a `NetworkSandboxPolicy` from a legacy `SandboxPolicy`.
+ * Rebuild a `NetworkSandboxPolicy` from a compatibility `SandboxPolicy`.
  *
  * agenc runtime's real network policy is binary (`Enabled` vs `Restricted`).
  * T5 keeps the placeholder allow/deny lists untouched and mirrors the

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useCallback, useRef, useState } from 'react';
 import { getModeFromInput } from '../components/PromptInput/inputModes.js';
 import { useNotifications } from '../context/notifications.js';

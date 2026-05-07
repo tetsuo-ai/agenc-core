@@ -8,7 +8,7 @@
  * gut→AgenC crossing.
  *
  * The lean rebuild owns its own session lifecycle; the global slot is
- * preserved here only so legacy bootstrap glue still has somewhere to
+ * preserved here only so compatibility bootstrap glue still has somewhere to
  * stash the active session reference.
  */
 

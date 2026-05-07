@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Plugin option storage and substitution.
  *
@@ -15,7 +15,7 @@
  */
 
 import memoize from 'lodash-es/memoize.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
@@ -156,7 +156,7 @@ export function savePluginOptions(
   // settings.json AFTER secureStorage — scrub sensitive keys via explicit
   // undefined (mergeWith deletion pattern).
   //
-  // TODO: getSettings_DEPRECATED returns MERGED settings across all scopes.
+  // Follow-up: getSettings_DEPRECATED returns MERGED settings across all scopes.
   // Mutating that and writing to userSettings can leak project-scope
   // pluginConfigs into ~/.agenc/settings.json. Same pattern exists in
   // saveMcpServerUserConfig. Safe today since pluginConfigs is only ever
@@ -211,7 +211,7 @@ export function savePluginOptions(
  * "uninstall failed" message for a cleanup side-effect.
  */
 export function deletePluginOptions(pluginId: string): void {
-  // Settings side — also wipes the legacy mcpServers sub-key (same story:
+  // Settings side — also wipes the compatibility mcpServers sub-key (same story:
   // orphaned on uninstall, never cleaned up before this PR).
   //
   // Use `undefined` (not `delete`) because `updateSettingsForSource` merges

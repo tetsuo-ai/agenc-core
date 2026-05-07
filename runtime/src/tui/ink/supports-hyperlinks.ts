@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 
 // Additional terminals that support OSC 8 hyperlinks but aren't detected by supports-hyperlinks.
 // Checked against both TERM_PROGRAM and LC_TERMINAL (the latter is preserved inside tmux).

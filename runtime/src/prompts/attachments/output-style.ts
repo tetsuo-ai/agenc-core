@@ -6,7 +6,7 @@
  * `output_style` system-reminder every turn whenever the active style
  * is non-default.
  *
- * AGENC GAP — TODO: AgenC has two separate "output style" surfaces
+ * AGENC GAP — Follow-up: AgenC has two separate "output style" surfaces
  * today and neither is threaded through `GetAttachmentsOptions`:
  *
  *   1. `config/schema.ts` `PartialOutputStyleConfig` carries a
@@ -33,7 +33,7 @@ export const outputStyleProducer: AttachmentProducer = async (
   _opts,
   _trackingState,
 ) => {
-  // TODO(attachments): emit `{ kind: "output_style", style }` once the
+  // Follow-up(attachments): emit `{ kind: "output_style", style }` once the
   // active output-style preset name is reachable from
   // GetAttachmentsOptions. Filter `style === "default"` before emit per
   // AgenC convention.

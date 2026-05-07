@@ -1,11 +1,11 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { readdir, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { clearCommandsCache } from '../../commands.js'
 import { clearAllOutputStylesCache } from '../../constants/outputStyles.js'
 import { clearAgentDefinitionsCache } from 'src/tools/AgentTool/loadAgentsDir.js'
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { clearPromptCache } from '../../tools/SkillTool/prompt.js'
 import { resetSentSkillNames } from '../attachments.js'
 import { logForDebugging } from 'src/utils/debug.js'

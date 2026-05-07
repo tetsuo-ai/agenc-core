@@ -234,7 +234,7 @@ export function __setClassifierWarningSinkForTesting(
 /**
  * Session-level sentinel so the classifier warning fires exactly once per
  * process regardless of how many times `classifyYoloAction` is called.
- * Tests call the legacy-named `__resetClassifierStubSessionForTesting` hook
+ * Tests call the compatibility-named `__resetClassifierStubSessionForTesting` hook
  * to reset this state.
  */
 let stubWarningFired = false;

@@ -192,7 +192,7 @@ export function usePasteHandler({
                   }
                   setIsPasting(false)
                 } else if (isTempScreenshot && isMacOS) {
-                  // For temporary screenshot files that no longer exist, try clipboard
+                  // For short-lived screenshot files that no longer exist, try clipboard
                   checkClipboardForImage()
                 } else {
                   if (onPaste) {

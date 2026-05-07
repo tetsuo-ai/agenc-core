@@ -4,7 +4,7 @@
  * Adapted from a reference context-window table, with AgenC-native
  * callers and environment names. Unknown compatible models use a 128k context
  * fallback and 32k/64k output defaults so local compatible endpoints do not
- * silently fall back to tiny legacy completion budgets.
+ * silently fall back to tiny compatibility completion budgets.
  *
  * @module
  */

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * HTTP utility constants and helpers
  */
@@ -33,7 +33,7 @@ export function getUserAgent(): string {
   // so the read picks up the same setWorkload() value as getAttributionHeader.
   const workload = getWorkload()
   const workloadSuffix = workload ? `, workload/${workload}` : ''
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   return `agenc-cli/${MACRO.VERSION} (${process.env.USER_TYPE}, ${process.env.AGENC_ENTRYPOINT ?? 'cli'}${agentSdkVersion}${clientApp}${workloadSuffix})`
 }
 
@@ -49,7 +49,7 @@ export function getMCPUserAgent(): string {
     parts.push(`client-app/${process.env.AGENC_AGENT_SDK_CLIENT_APP}`)
   }
   const suffix = parts.length > 0 ? ` (${parts.join(', ')})` : ''
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   return `agenc-code/${MACRO.VERSION}${suffix}`
 }
 
@@ -87,7 +87,7 @@ export function getAuthHeaders(): AuthHeaders {
       },
     }
   }
-  // TODO: this will fail if the API key is being set to an LLM Gateway key
+  // Follow-up: this will fail if the API key is being set to an LLM Gateway key
   // should we try to query keychain / credentials for a valid provider key?
   const apiKey = getAnthropicApiKey()
   if (!apiKey) {

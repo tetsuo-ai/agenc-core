@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Service for heap dump capture.
  * Used by the /heapdump command.
@@ -117,7 +117,7 @@ export async function captureMemoryDiagnostics(
   try {
     openFileDescriptors = (await readdir('/proc/self/fd')).length
   } catch {
-    // Not on Linux - try macOS approach would require lsof, skip for now
+    // Not on Linux - try macOS approach would require lsof, skip currently
   }
 
   // Try to read Linux smaps_rollup for detailed memory breakdown

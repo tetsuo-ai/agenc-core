@@ -1,10 +1,10 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomBytes } from 'crypto'
 import {
   isCodexBaseUrl,
   parseOpenAICompatibleApiFormat,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/api/providerConfig.js'
 import {
   getGlobalConfig,
@@ -1060,7 +1060,7 @@ export function setActiveProviderProfile(
 
   // Keep startup persisted provider profile in sync so initial startup
   // uses the selected provider/model.
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   const persistedProfile = (() => {
     if (activeProfile.provider === 'anthropic') return 'openai' as const
     return activeProfile.provider
@@ -1217,7 +1217,7 @@ export function getActiveOpenAIModelOptionsCache(
     return cached
   }
 
-  // Backward compatibility for users who have only the legacy single cache.
+  // Backward compatibility for users who have only the compatibility single cache.
   if (
     Object.keys(config.openaiAdditionalModelOptionsCacheByProfile ?? {}).length ===
     0

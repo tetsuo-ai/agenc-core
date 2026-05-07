@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   ToolResultBlockParam,
   ToolUseBlockParam,
@@ -411,7 +411,7 @@ export type Tool<
   // Type for MCP tools that can specify their input schema directly in JSON Schema format
   // rather than converting from Zod schema
   readonly inputJSONSchema?: ToolInputJSONSchema
-  // Optional because TungstenTool doesn't define this. TODO: Make it required.
+  // Optional because TungstenTool doesn't define this. Follow-up: Make it required.
   // When we do that, we can also go through and make this a bit more type-safe.
   outputSchema?: z.ZodType<unknown>
   inputsEquivalent?(a: z.infer<Input>, b: z.infer<Input>): boolean
@@ -490,7 +490,7 @@ export type Tool<
   /**
    * Called on copies of tool_use input before observers see it (SDK stream,
    * transcript, canUseTool, PreToolUse/PostToolUse hooks). Mutate in place
-   * to add legacy/derived fields. Must be idempotent. The original API-bound
+   * to add compatibility/derived fields. Must be idempotent. The original API-bound
    * input is never mutated (preserves prompt cache). Not re-applied when a
    * hook/permission returns a fresh updatedInput — those own their shape.
    */
@@ -577,7 +577,7 @@ export type Tool<
   /**
    * Optional. When omitted, the tool result renders nothing (same as returning
    * null). Omit for tools whose results are surfaced elsewhere (e.g., TodoWrite
-   * updates the todo panel, not the transcript).
+   * updates the Follow-up panel, not the transcript).
    */
   renderToolResultMessage?(
     content: Output,

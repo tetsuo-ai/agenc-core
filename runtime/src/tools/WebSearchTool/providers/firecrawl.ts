@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { SearchInput, SearchProvider } from './types.js'
 import { applyDomainFilters, type ProviderOutput } from './types.js'
 export const firecrawlProvider: SearchProvider = {
@@ -11,7 +11,7 @@ export const firecrawlProvider: SearchProvider = {
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    // TODO: @mendable/firecrawl-js SDK doesn't accept AbortSignal — can't cancel in-flight searches
+    // Follow-up: @mendable/firecrawl-js SDK doesn't accept AbortSignal — can't cancel in-flight searches
     const { FirecrawlClient } = await import('@mendable/firecrawl-js')
     const app = new FirecrawlClient({ apiKey: process.env.FIRECRAWL_API_KEY! })
 

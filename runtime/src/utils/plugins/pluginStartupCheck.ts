@@ -147,7 +147,7 @@ export function getPluginEditableScopes(): Map<string, ExtendedPluginScope> {
         // Explicitly disabled - remove from result
         result.delete(pluginId)
       }
-      // Note: Other values (like version strings for future P2) are ignored for now
+      // Note: Other values (like version strings for future P2) are ignored currently
     }
   }
 

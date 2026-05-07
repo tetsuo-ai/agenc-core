@@ -389,7 +389,7 @@ export function getAllLockInfo(locksDir: string): LockInfo[] {
  *
  * Handles both:
  * - PID-based locks (files containing JSON with PID)
- * - Legacy proper-lockfile locks (directories created by mtime-based locking)
+ * - Compatibility proper-lockfile locks (directories created by mtime-based locking)
  */
 export function cleanupStaleLocks(locksDir: string): number {
   const fs = getFsImplementation()
@@ -407,7 +407,7 @@ export function cleanupStaleLocks(locksDir: string): number {
         const stats = fs.lstatSync(lockFilePath)
 
         if (stats.isDirectory()) {
-          // Legacy proper-lockfile directory lock - always remove when PID-based
+          // Compatibility proper-lockfile directory lock - always remove when PID-based
           // locking is enabled since these are from a different locking mechanism
           fs.rmSync(lockFilePath, { recursive: true, force: true })
           cleanedCount++

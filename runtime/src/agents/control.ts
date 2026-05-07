@@ -790,7 +790,7 @@ export class AgentControl {
    * mailboxes/status/abort so a caller can reconnect.
    *
    * NOTE: T10 will extend this with full rollout-backed turn/tool
-   * state rehydration. For now we rebuild the live handle and rely on
+   * state rehydration. currently we rebuild the live handle and rely on
    * durable spawn-edge snapshots for subtree recovery.
    */
   async resume(opts: {

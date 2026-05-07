@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useEffect, useRef } from 'react'
 import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- backward-compat bridge until REPL wires handleKeyDown to <Box onKeyDown>
@@ -244,7 +244,7 @@ export function useBackgroundTaskNavigation(options?: {
   // Backward-compat bridge: REPL.tsx doesn't yet wire handleKeyDown to
   // <Box onKeyDown>. Subscribe via useInput and adapt InputEvent →
   // KeyboardEvent until the consumer is migrated (separate PR).
-  // TODO(onKeyDown-migration): remove once REPL passes handleKeyDown.
+  // Follow-up(onKeyDown-migration): remove once REPL passes handleKeyDown.
   useInput((_input, _key, event) => {
     handleKeyDown(new KeyboardEvent(event.keypress))
   })

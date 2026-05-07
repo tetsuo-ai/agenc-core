@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import * as React from 'react';
@@ -173,7 +173,7 @@ export const __permissionRequestTest = {
   },
 };
 
-// TODO: Move this to Tool.renderPermissionRequest
+// Follow-up: Move this to Tool.renderPermissionRequest
 export function PermissionRequest(t0) {
   const $ = _c(18);
   const {

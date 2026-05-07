@@ -441,7 +441,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // so the guard must be active during those awaits to ensure concurrent
     // handlePromptSubmit calls queue (via the isActive check above) instead
     // of starting a second executeUserInput. This call is a no-op if the
-    // guard is already in dispatching (legacy queue-processor path).
+    // guard is already in dispatching (compatibility queue-processor path).
     queryGuard.reserve()
     queryCheckpoint('query_process_user_input_start')
 

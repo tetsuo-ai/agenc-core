@@ -1,12 +1,12 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
-// @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../services/analytics/index.js'
 import {
   type AgenCCodeHint,
@@ -25,15 +25,15 @@ import { isPluginBlockedByPolicy } from './pluginPolicy.js'
 
 type HintRecommendationState = { plugin?: string[]; disabled?: boolean }
 type HintConfigShape = {
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   agencCodeHints?: HintRecommendationState
-  // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
-  agencCodeHints?: HintRecommendationState // branding-scan: allow persisted legacy config key
+  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+  agencHints?: HintRecommendationState // branding-scan: allow persisted compatibility config key
 }
 const readHintState = (
   config: HintConfigShape,
 ): HintRecommendationState | undefined =>
-  config.agencCodeHints ?? config.agencCodeHints // branding-scan: allow persisted legacy config key
+  config.agencCodeHints ?? config.agencHints // branding-scan: allow persisted compatibility config key
 
 /**
  * Hard cap on `agencCodeHints.plugin[]` — bounds config growth. Each shown

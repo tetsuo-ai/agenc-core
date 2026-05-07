@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, type ReactNode, useContext, useMemo } from 'react';
 import type { Command } from '../../commands.js';
@@ -36,7 +36,7 @@ interface MCPConnectionManagerProps {
   isStrictMcpConfig: boolean;
 }
 
-// TODO (ollie): We may be able to get rid of this context by putting these function on app state
+// Follow-up (ollie): We may be able to get rid of this context by putting these function on app state
 export function MCPConnectionManager(t0) {
   const $ = _c(6);
   const {

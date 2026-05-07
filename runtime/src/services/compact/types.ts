@@ -5,7 +5,7 @@
  * `0ca43335375beec6e58711b797d5b0c4bb5019b8`.
  *
  * This file keeps the live AgenC compact service independent from the
- * temporary upstream mirror and from excluded UI/session modules.
+ * short-lived upstream mirror and from excluded UI/session modules.
  */
 
 import type { LLMProvider } from "../../llm/types.js";

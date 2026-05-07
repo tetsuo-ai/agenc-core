@@ -58,7 +58,7 @@ async function waitForCondition(
     await Bun.sleep(intervalMs)
   }
 
-  throw new Error('Timed out waiting for useCodexOAuthFlow test condition')
+  throw new Error('Timed out waiting for useOpenAiCodeOAuthFlow test condition')
 }
 
 function extractLastFrame(output: string): string {
@@ -106,6 +106,7 @@ test('does not persist credentials when downstream setup rejects', async () => {
       async startOAuthFlow(
         onAuthorizationUrl: (authUrl: string) => void | Promise<void>,
       ) {
+        // branding-scan: allow provider OAuth endpoint path
         await onAuthorizationUrl('https://chatgpt.com/codex')
         return TOKENS
       },
@@ -116,13 +117,13 @@ test('does not persist credentials when downstream setup rejects', async () => {
     isBareMode: () => false,
   }
 
-  const { useCodexOAuthFlow } = await import(
-    `./useCodexOAuthFlow.js?real-reject-${Date.now()}-${Math.random()}`
+  const { useOpenAiCodeOAuthFlow } = await import(
+    `./useOpenAiCodeOAuthFlow.js?real-reject-${Date.now()}-${Math.random()}`
   )
 
   function Harness(): React.ReactNode {
     const handleAuthenticated = React.useCallback(onAuthenticated, [onAuthenticated])
-    const status = useCodexOAuthFlow({
+    const status = useOpenAiCodeOAuthFlow({
       onAuthenticated: handleAuthenticated,
       deps,
     })
@@ -168,6 +169,7 @@ test('persists credentials with profile linkage after downstream setup succeeds'
       async startOAuthFlow(
         onAuthorizationUrl: (authUrl: string) => void | Promise<void>,
       ) {
+        // branding-scan: allow provider OAuth endpoint path
         await onAuthorizationUrl('https://chatgpt.com/codex')
         return TOKENS
       },
@@ -178,13 +180,13 @@ test('persists credentials with profile linkage after downstream setup succeeds'
     isBareMode: () => false,
   }
 
-  const { useCodexOAuthFlow } = await import(
-    `./useCodexOAuthFlow.js?real-persist-${Date.now()}-${Math.random()}`
+  const { useOpenAiCodeOAuthFlow } = await import(
+    `./useOpenAiCodeOAuthFlow.js?real-persist-${Date.now()}-${Math.random()}`
   )
 
   function Harness(): React.ReactNode {
     const handleAuthenticated = React.useCallback(onAuthenticated, [onAuthenticated])
-    useCodexOAuthFlow({
+    useOpenAiCodeOAuthFlow({
       onAuthenticated: handleAuthenticated,
       deps,
     })

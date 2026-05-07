@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
+// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * The `.call()` override — thin adapter between `ToolUseContext` and
  * `bindSessionContext`. Spread into the MCP tool object in `client.ts`

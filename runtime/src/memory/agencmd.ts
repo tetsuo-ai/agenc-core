@@ -2,7 +2,7 @@
  * Ports the upstream project-instruction loader onto AgenC's AGENC.md memory
  * surface.
  *
- * Temporary strictness boundary: this loader still touches several moved
+ * Short-lived strictness boundary: this loader still touches several moved
  * purge surfaces. The rest of `runtime/src/memory/*.ts` is strict.
  *
  * Files are loaded in the following order:

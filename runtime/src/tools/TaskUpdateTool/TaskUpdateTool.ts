@@ -184,7 +184,7 @@ export const TaskUpdateTool = buildTool({
     }
     // Auto-set owner when a teammate marks a task as in_progress without
     // explicitly providing an owner. This ensures the task list can match
-    // todo items to teammates for showing activity status.
+    // Follow-up items to teammates for showing activity status.
     if (
       isAgentSwarmsEnabled() &&
       status === 'in_progress' &&

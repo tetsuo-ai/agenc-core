@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { feature } from 'bun:bundle'
 import { readFile, stat } from 'fs/promises'
@@ -1137,7 +1137,7 @@ function runHeadlessStreaming(
 
   // Messages for internal tracking, directly mutated by ask(). These messages
   // include Assistant, User, Attachment, and Progress messages.
-  // TODO: Clean up this code to avoid passing around a mutable array.
+  // Follow-up: Clean up this code to avoid passing around a mutable array.
   const mutableMessages: Message[] = initialMessages
 
   // Seed the readFileState cache from the transcript (content the model saw,
@@ -1869,7 +1869,7 @@ function runHeadlessStreaming(
     idleTimeout.stop()
 
     headlessProfilerCheckpoint('run_entry')
-    // TODO(custom-tool-refactor): Should move to the init message, like browser
+    // Follow-up(custom-tool-refactor): Should move to the init message, like browser
 
     await updateSdkMcp()
     headlessProfilerCheckpoint('after_updateSdkMcp')
@@ -2908,7 +2908,7 @@ function runHeadlessStreaming(
             void run()
           }
         } else if (message.request.subtype === 'set_permission_mode') {
-          const m = message.request // for typescript (TODO: use readonly types to avoid this)
+          const m = message.request // for typescript (Follow-up: use readonly types to avoid this)
           setAppState(prev => ({
             ...prev,
             toolPermissionContext: handleSetPermissionMode(

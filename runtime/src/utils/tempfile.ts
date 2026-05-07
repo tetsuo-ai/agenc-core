@@ -3,7 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 /**
- * Generate a temporary file path.
+ * Generate a short-lived file path.
  *
  * @param prefix Optional prefix for the temp file name
  * @param extension Optional file extension (defaults to '.md')

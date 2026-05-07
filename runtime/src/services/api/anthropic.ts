@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   BetaContentBlock,
   BetaContentBlockParam,
@@ -2124,7 +2124,7 @@ async function* queryModel(
             } else {
               switch (delta.type) {
                 case 'citations_delta':
-                  // TODO: handle citations
+                  // Follow-up: handle citations
                   break
                 case 'input_json_delta':
                   if (

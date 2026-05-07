@@ -1,4 +1,4 @@
-// @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources';
 import { getRemoteSessionUrl } from '../../constants/product.js';
 import { OUTPUT_FILE_TAG, REMOTE_REVIEW_PROGRESS_TAG, REMOTE_REVIEW_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TASK_TYPE_TAG, TOOL_USE_ID_TAG, ULTRAPLAN_TAG } from '../../constants/xml.js';
@@ -360,7 +360,7 @@ Remote review did not produce output (${reason}). Tell the user to retry /ultrar
 }
 
 /**
- * Extract todo list from SDK messages (finds last TodoWrite tool use).
+ * Extract Follow-up list from SDK messages (finds last TodoWrite tool use).
  */
 function extractTodoListFromLog(log: SDKMessage[]): TodoList {
   const todoListMessage = log.findLast((msg): msg is SDKAssistantMessage => msg.type === 'assistant' && msg.message.content.some(block => block.type === 'tool_use' && block.name === TodoWriteTool.name));
@@ -456,7 +456,7 @@ export function registerRemoteAgentTask(options: {
   // Ultraplan lifecycle is owned by startDetachedPoll in ultraplan.tsx. Generic
   // polling still runs so session.log populates for the detail view's progress
   // counts; the result-lookup guard below prevents early completion.
-  // TODO(#23985): fold ExitPlanModeScanner into this poller, drop startDetachedPoll.
+  // Follow-up(#23985): fold ExitPlanModeScanner into this poller, drop startDetachedPoll.
   const stopPolling = startRemoteSessionPolling(taskId, context);
   return {
     taskId,

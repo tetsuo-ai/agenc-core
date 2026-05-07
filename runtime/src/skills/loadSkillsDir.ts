@@ -566,14 +566,14 @@ async function loadSkillsFromSkillsDir(
   return results.filter((r): r is SkillWithPath => r !== null)
 }
 
-// --- Legacy /commands/ loader ---
+// --- Compatibility /commands/ loader ---
 
 function isSkillFile(filePath: string): boolean {
   return /^skill\.md$/i.test(basename(filePath))
 }
 
 /**
- * Transforms markdown files to handle "skill" commands in legacy /commands/ folder.
+ * Transforms markdown files to handle "skill" commands in compatibility /commands/ folder.
  * When a SKILL.md file exists in a directory, only that file is loaded
  * and it takes the name of its parent directory.
  */
@@ -646,7 +646,7 @@ function getCommandName(file: MarkdownFile): string {
 }
 
 /**
- * Loads skills from legacy /commands/ directories.
+ * Loads skills from compatibility /commands/ directories.
  * Supports both directory format (SKILL.md) and single .md file format.
  * Commands from /commands/ default to user-invocable: true
  */
@@ -710,13 +710,13 @@ async function loadSkillsFromCommandsDir(
 }
 
 /**
- * Loads all skills from both /skills/ and legacy /commands/ directories.
+ * Loads all skills from both /skills/ and compatibility /commands/ directories.
  *
  * Skills from /skills/ directories:
  * - Only support directory format: skill-name/SKILL.md
  * - Default to user-invocable: true (can opt-out with user-invocable: false)
  *
- * Skills from legacy /commands/ directories:
+ * Skills from compatibility /commands/ directories:
  * - Support both directory format (SKILL.md) and single .md file format
  * - Default to user-invocable: true (user can type /cmd)
  *
@@ -738,7 +738,7 @@ export const getSkillDirCommands = memoize(
     const projectSettingsEnabled =
       isSettingSourceEnabled('projectSettings') && !skillsLocked
 
-    // --bare: skip auto-discovery (managed/user/project dir walks + legacy
+    // --bare: skip auto-discovery (managed/user/project dir walks + compatibility
     // commands-dir). Load ONLY explicit --add-dir paths. Bundled skills
     // register separately. skillsLocked still applies — --bare is not a
     // policy bypass.
@@ -761,7 +761,7 @@ export const getSkillDirCommands = memoize(
       return additionalSkillsNested.flat().map(s => s.skill)
     }
 
-    // Load from /skills/ directories, additional dirs, and legacy /commands/ in parallel
+    // Load from /skills/ directories, additional dirs, and compatibility /commands/ in parallel
     // (all independent — different directories, no shared state)
     const [
       managedSkills,
@@ -793,7 +793,7 @@ export const getSkillDirCommands = memoize(
             ),
           )
         : Promise.resolve([]),
-      // Legacy commands-as-skills goes through markdownConfigLoader with
+      // Compatibility commands-as-skills goes through markdownConfigLoader with
       // subdir='commands', which our agents-only guard there skips. Block
       // here when skills are locked — these ARE skills, regardless of the
       // directory they load from.

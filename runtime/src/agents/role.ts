@@ -60,7 +60,7 @@ export interface AgentRoleConfig {
   /** Inline TOML role layer. Useful for tests and bootstrap-time
    *  in-memory role registration. */
   readonly configToml?: string;
-  /** Legacy inline parsed config object. Prefer `configToml` or
+  /** Compatibility inline parsed config object. Prefer `configToml` or
    *  `configFile` for AgenC behavior. */
   readonly configBundle?: Record<string, unknown>;
   /** Candidate nicknames for this role; registry picks one on spawn. */

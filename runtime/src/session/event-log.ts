@@ -647,7 +647,7 @@ export type EventMsg =
 /**
  * Structured deprecation-notice payload. Emitted whenever the runtime
  * silently rewrites an operator-supplied identifier (model alias,
- * deprecated API field, legacy config key) to a canonical value so
+ * deprecated API field, compatibility config key) to a canonical value so
  * telemetry and the event log can surface the rewrite instead of the
  * operator only discovering the change from downstream behavior.
  *

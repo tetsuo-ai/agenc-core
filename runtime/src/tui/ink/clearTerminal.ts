@@ -10,7 +10,7 @@ import {
   ERASE_SCROLLBACK,
 } from './termio/csi.js'
 
-// HVP (Horizontal Vertical Position) - legacy Windows cursor home
+// HVP (Horizontal Vertical Position) - compatibility Windows cursor home
 const CURSOR_HOME_WINDOWS = csi(0, 'f')
 
 function isWindowsTerminal(): boolean {
@@ -61,7 +61,7 @@ export function getClearTerminalSequence(): string {
     if (isModernWindowsTerminal()) {
       return ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
     } else {
-      // Legacy Windows console - can't clear scrollback
+      // Compatibility Windows console - can't clear scrollback
       return ERASE_SCREEN + CURSOR_HOME_WINDOWS
     }
   }

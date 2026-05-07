@@ -188,7 +188,7 @@ export interface StreamingToolExecutorOptions {
    *  dependency chains; independent tools don't). */
   readonly bashToolName?: string;
   /**
-   * Optional per-tool dispatch override. Test and legacy integration
+   * Optional per-tool dispatch override. Test and compatibility integration
    * seam for callers that already provide a guarded dispatch pipeline.
    * Production model-tool dispatchers must prefer `liveToolDispatch`.
    */

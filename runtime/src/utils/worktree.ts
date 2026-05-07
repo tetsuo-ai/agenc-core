@@ -645,12 +645,12 @@ async function performPostCreationSetup(
   if (feature('COMMIT_ATTRIBUTION')) {
     const worktreeHooksDir =
       hooksPath === huskyPath ? join(worktreePath, '.husky') : undefined
-    // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     void import('./postCommitAttribution.js')
       .then(m =>
         m
           .installPrepareCommitMsgHook(worktreePath, worktreeHooksDir)
-          // @ts-expect-error -- temporary boundary: moved utility depends on not-yet-absorbed subsystem types.
+          // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
           .catch(error => {
             logForDebugging(
               `Failed to install attribution hook in worktree: ${error}`,
@@ -907,7 +907,7 @@ export async function cleanupWorktree(): Promise<void> {
       activeWorktreeSession: undefined,
     }))
 
-    // Delete the temporary worktree branch (git-based only)
+    // Delete the short-lived worktree branch (git-based only)
     if (!hookBased && worktreeBranch) {
       // Wait a bit to ensure git has released all locks
       await sleep(100)
@@ -997,7 +997,7 @@ export async function createAgentWorktree(slug: string): Promise<{
 
 /**
  * Remove a worktree created by createAgentWorktree.
- * For git-based worktrees, removes the worktree directory and deletes the temporary branch.
+ * For git-based worktrees, removes the worktree directory and deletes the short-lived branch.
  * For hook-based worktrees, delegates to the WorktreeRemove hook.
  * Must be called with the main repo's git root (for git worktrees), not the worktree path,
  * since the worktree directory is deleted during this operation.
@@ -1049,7 +1049,7 @@ export async function removeAgentWorktree(
       return true
     }
 
-    // Delete the temporary worktree branch from the main repo
+    // Delete the short-lived worktree branch from the main repo
     const { code: deleteBranchCode, stderr: deleteBranchError } =
       await execFileNoThrowWithCwd(gitExe(), ['branch', '-D', worktreeBranch], {
         cwd: gitRoot,
@@ -1076,7 +1076,7 @@ export async function removeAgentWorktree(
 const EPHEMERAL_WORKTREE_PATTERNS = [
   /^agent-a[0-9a-f]{7}$/,
   /^wf_[0-9a-f]{8}-[0-9a-f]{3}-\d+$/,
-  // Legacy wf-<idx> slugs from before workflowRunId disambiguation — kept so
+  // Compatibility wf-<idx> slugs from before workflowRunId disambiguation — kept so
   // the 30-day sweep still cleans up worktrees leaked by older builds.
   /^wf-\d+$/,
   // Real bridge slugs are `bridge-${safeFilenameId(sessionId)}`.

@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { disableKeepAlive, getProxyFetchOptions } from '../../utils/proxy.js'
 
 const RETRYABLE_FETCH_ERROR_PATTERN =

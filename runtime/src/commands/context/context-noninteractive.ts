@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../tui/state/AppStateStore.js'
