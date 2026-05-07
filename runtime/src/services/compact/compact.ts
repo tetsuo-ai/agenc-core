@@ -39,17 +39,32 @@ export async function manualCompactCall(
   if (messages.length === 0) {
     throw new Error("No messages to compact");
   }
-  const compactionResult = await compactConversation(
-    messages,
-    context,
-    args.trim(),
-  );
-  runPostCompactCleanup(context.deps?.cleanup);
-  return {
-    type: "compact",
-    compactionResult,
-    displayText: compactionResult.userDisplayMessage ?? "Conversation compacted",
-  };
+  context.onCompactProgress?.({
+    type: "hooks_start",
+    hookType: "pre_compact",
+  });
+  context.setSDKStatus?.("compacting");
+  try {
+    context.setStreamMode?.("requesting");
+    context.setResponseLength?.(() => 0);
+    context.onCompactProgress?.({ type: "compact_start" });
+    const compactionResult = await compactConversation(
+      messages,
+      context,
+      args.trim(),
+    );
+    runPostCompactCleanup(context.deps?.cleanup);
+    return {
+      type: "compact",
+      compactionResult,
+      displayText: compactionResult.userDisplayMessage ?? "Conversation compacted",
+    };
+  } finally {
+    context.setStreamMode?.("requesting");
+    context.setResponseLength?.(() => 0);
+    context.onCompactProgress?.({ type: "compact_end" });
+    context.setSDKStatus?.(null);
+  }
 }
 
 export function buildPostCompactMessages(

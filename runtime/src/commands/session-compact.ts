@@ -440,7 +440,7 @@ async function runManualCompact(params: {
       const { manualCompactCall } =
         await import("../services/compact/compact.js");
       const call = manualCompactCall;
-      return call(params.customInstructions ?? "", commandContext as never);
+      return await call(params.customInstructions ?? "", commandContext as never);
     }, envForToolUseContext(toolUseContext));
     if (result.type !== "compact") {
       throw new Error("Compact command did not return a compaction result");

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { buildDefaultRegistry } from "../src/commands/registry.js";
 import {
   mkProvider,
@@ -47,6 +47,28 @@ describe("slash /compact contract", () => {
         { role: "user", content: "latest request" },
       ],
     });
+    const compactLifecycle: unknown[] = [];
+    const setStreamMode = vi.fn((mode) => {
+      compactLifecycle.push({ type: "stream_mode", mode });
+    });
+    const setResponseLength = vi.fn((updater) => {
+      compactLifecycle.push({
+        type: "response_length",
+        length: updater(123),
+      });
+    });
+    const onCompactProgress = vi.fn((event) => {
+      compactLifecycle.push(event);
+    });
+    const setSDKStatus = vi.fn((status) => {
+      compactLifecycle.push({ type: "sdk_status", status });
+    });
+    Object.assign(session, {
+      setStreamMode,
+      setResponseLength,
+      onCompactProgress,
+      setSDKStatus,
+    });
 
     const result = await command?.execute({
       session,
@@ -66,5 +88,30 @@ describe("slash /compact contract", () => {
     expect(state.history.map((message) => message.content).join("\n")).toContain(
       "focus on the latest request",
     );
+    expect(setSDKStatus).toHaveBeenNthCalledWith(1, "compacting");
+    expect(setSDKStatus).toHaveBeenLastCalledWith(null);
+    expect(setStreamMode).toHaveBeenCalledWith("requesting");
+    expect(setResponseLength).toHaveBeenCalledWith(expect.any(Function));
+    expect(onCompactProgress).toHaveBeenNthCalledWith(1, {
+      type: "hooks_start",
+      hookType: "pre_compact",
+    });
+    expect(onCompactProgress).toHaveBeenNthCalledWith(2, {
+      type: "compact_start",
+    });
+    expect(onCompactProgress).toHaveBeenNthCalledWith(3, {
+      type: "compact_end",
+    });
+    expect(compactLifecycle).toEqual([
+      { type: "hooks_start", hookType: "pre_compact" },
+      { type: "sdk_status", status: "compacting" },
+      { type: "stream_mode", mode: "requesting" },
+      { type: "response_length", length: 0 },
+      { type: "compact_start" },
+      { type: "stream_mode", mode: "requesting" },
+      { type: "response_length", length: 0 },
+      { type: "compact_end" },
+      { type: "sdk_status", status: null },
+    ]);
   });
 });
