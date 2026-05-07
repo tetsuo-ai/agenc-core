@@ -6035,6 +6035,7 @@ async function memoryGates(item) {
     const index = readFileSync(indexPath, "utf8");
     const requiredIndexSymbols = [
       "clearMemoryFileCaches",
+      "checkTeamMemSecrets",
       "detectSessionFileType",
       "detectSessionPatternType",
       "filterInjectedMemoryFiles",
@@ -6048,6 +6049,7 @@ async function memoryGates(item) {
       "getExternalAgenCMdIncludes",
       "getGlobalMemoryPath",
       "getLargeMemoryFiles",
+      "getSecretLabel",
       "getManagedAndUserConditionalRules",
       "getMemoryFiles",
       "getMemoryFilesForNestedDirectory",
@@ -6063,8 +6065,10 @@ async function memoryGates(item) {
       "processConditionedMdRules",
       "processMdRules",
       "processMemoryFile",
+      "redactSecrets",
       "resetGetMemoryFilesCache",
       "scanMemoryFiles",
+      "scanForSecrets",
       "shouldShowAgenCMdExternalIncludesWarning",
       "stripHtmlComments",
     ];
@@ -6083,16 +6087,31 @@ async function memoryGates(item) {
       "runtime/src/services/extractMemories/extractMemories.ts",
     ];
     const directMemoryModuleImport =
-      /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection)\.js["']/g;
+      /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection|privacy)\.js["']/g;
     for (const rel of migratedCallers) {
       const source = readFileSync(path.join(root, rel), "utf8");
       if (!source.includes("memory/index.js")) {
         failGate(`MM-07: ${rel} must import memory access from runtime/src/memory/index.ts`);
       }
-      const directImports = source.match(directMemoryModuleImport) ?? [];
-      if (directImports.length > 0) {
-        failGate(`MM-07: ${rel} directly imports memory implementation module(s): ${directImports.join(", ")}`);
+    }
+
+    const directImportAllowlist = new Set([
+      "runtime/src/memdir/teamMemPaths.ts",
+      "runtime/src/memdir/teamMemPrompts.ts",
+    ]);
+    const directImportOffenders = [];
+    for (const file of walkFiles(path.join(root, "runtime/src"))) {
+      const rel = path.relative(root, file);
+      if (rel.startsWith("runtime/src/memory/") || directImportAllowlist.has(rel)) {
+        continue;
       }
+      const directImports = readFileSync(file, "utf8").match(directMemoryModuleImport) ?? [];
+      if (directImports.length > 0) {
+        directImportOffenders.push(`${rel}: ${directImports.join(", ")}`);
+      }
+    }
+    if (directImportOffenders.length > 0) {
+      failGate(`MM-07: direct memory implementation imports remain:\n  ${directImportOffenders.join("\n  ")}`);
     }
 
     const vitest = run("npm", [

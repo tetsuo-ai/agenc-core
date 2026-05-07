@@ -10,7 +10,7 @@ import {
   hasAutoMemPathOverride,
   isAutoMemPath,
   isGlobalMemoryPath,
-} from 'src/memory/paths.js'
+} from 'src/memory/index.js'
 import { isAgentMemoryPath } from 'src/tools/AgentTool/agentMemory.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,

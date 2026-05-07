@@ -35,7 +35,7 @@
       "target": "runtime/src/memory/index.ts",
       "requiredBehaviors": [
         "Recall, scan, manifest, age, freshness, path, detection, and branded instruction-memory loader APIs are exported from the public memory access surface.",
-        "In-scope tool and service callers import memory access helpers from runtime/src/memory/index.ts instead of donor-shaped memory leaf modules.",
+        "Runtime tool and code callers import memory access helpers from runtime/src/memory/index.ts instead of donor-shaped memory leaf modules, except memory-internal legacy team prompt files allowlisted in the wiring contract.",
         "The public recall wrapper preserves recent-tool prompt context and already-surfaced memory filtering.",
         "Relevant-memory headers keep stable age text at attachment creation time."
       ],

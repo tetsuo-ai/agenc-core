@@ -58,6 +58,7 @@ describe("memory public access surface", () => {
   it("exports the MM-07 public access contract", () => {
     for (const name of [
       "clearMemoryFileCaches",
+      "checkTeamMemSecrets",
       "detectSessionFileType",
       "detectSessionPatternType",
       "filterInjectedMemoryFiles",
@@ -71,6 +72,7 @@ describe("memory public access surface", () => {
       "getExternalAgenCMdIncludes",
       "getGlobalMemoryPath",
       "getLargeMemoryFiles",
+      "getSecretLabel",
       "getManagedAndUserConditionalRules",
       "getMemoryFiles",
       "getMemoryFilesForNestedDirectory",
@@ -83,8 +85,10 @@ describe("memory public access surface", () => {
       "processConditionedMdRules",
       "processMdRules",
       "processMemoryFile",
+      "redactSecrets",
       "resetGetMemoryFilesCache",
       "scanMemoryFiles",
+      "scanForSecrets",
       "shouldShowAgenCMdExternalIncludesWarning",
       "stripHtmlComments",
     ]) {

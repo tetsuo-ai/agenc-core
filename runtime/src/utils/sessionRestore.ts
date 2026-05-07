@@ -31,7 +31,7 @@ import type {
 } from '../types/logs.js'
 import type { Message } from '../types/message.js'
 import { renameRecordingForSession } from './asciicast.js'
-import { clearMemoryFileCaches } from '../memory/project-memory.js'
+import { clearMemoryFileCaches } from '../memory/index.js'
 import {
   type AttributionState,
   attributionRestoreStateFromLog,

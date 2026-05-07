@@ -77,14 +77,20 @@ export {
 export {
   detectSessionFileType,
   detectSessionPatternType,
+  checkTeamMemSecrets,
+  getSecretLabel,
   isAutoManagedMemoryFile,
   isAutoManagedMemoryPattern,
   isAutoMemFile,
   isMemoryDirectory,
   isShellCommandTargetingMemory,
   memoryScopeForPath,
+  redactSecrets,
+  scanForSecrets,
   type MemoryScope,
-} from './detection.js'
+  type SecretMatch,
+  type SessionFileType,
+} from './privacy.js'
 
 export function formatRelevantMemoryHeader(
   path: string,

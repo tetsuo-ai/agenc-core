@@ -1,0 +1,99 @@
+{
+  "item": "MM-08",
+  "status": "implemented",
+  "contractName": "memory-privacy-scoping",
+  "scope": "AgenC memory privacy and scoping helpers live in runtime/src/memory/privacy.ts and protect durable/team/session memory surfaces.",
+  "sourceRoot": "TUI/source reference",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/memdir/paths.ts",
+    "src/services/teamMemorySync/secretScanner.ts",
+    "src/services/teamMemorySync/teamMemSecretGuard.ts",
+    "src/utils/memoryFileDetection.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/memory/privacy.ts",
+    "runtime/src/memory/project-memory.ts",
+    "runtime/src/services/teamMemorySync/index.ts",
+    "runtime/src/services/teamMemorySync/privacy.test.ts",
+    "runtime/src/tools/FileEditTool/FileEditTool.ts",
+    "runtime/src/tools/FileWriteTool/FileWriteTool.ts",
+    "runtime/src/memory/PARITY.md"
+  ],
+  "testFiles": [
+    "runtime/src/memory/privacy.test.ts",
+    "runtime/src/services/teamMemorySync/privacy.test.ts",
+    "runtime/src/memory/project-memory.test.ts",
+    "runtime/src/memory-wiring.contract.test.ts",
+    "runtime/src/memdir/memory.contract.test.ts",
+    "runtime/src/utils/memory/memory-utils.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "MM-08-path-scope",
+      "source": "src/memdir/paths.ts + src/utils/memoryFileDetection.ts",
+      "target": "runtime/src/memory/privacy.ts",
+      "requiredBehaviors": [
+        "Classifies durable global and project memory paths as personal memory.",
+        "Classifies team-memory subpaths as team memory before the broader durable-memory match.",
+        "Detects session-memory and transcript files only under the AgenC config directory.",
+        "Detects shell commands and directory arguments that target managed memory paths."
+      ],
+      "edgeCases": [
+        "A project instruction file outside a managed memory directory is not treated as auto-managed memory.",
+        "A shell command that mentions an unrelated absolute path is not treated as memory access."
+      ],
+      "tests": [
+        "runtime/src/memory/privacy.test.ts"
+      ],
+      "commands": [
+        "npm test --workspace @tetsuo-ai/runtime -- --run src/memory/privacy.test.ts src/services/teamMemorySync/privacy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-08-secret-scanner",
+      "source": "src/services/teamMemorySync/secretScanner.ts",
+      "target": "runtime/src/memory/privacy.ts",
+      "requiredBehaviors": [
+        "Scans memory content with high-confidence credential prefix rules.",
+        "Returns rule IDs and human labels without returning matched secret values.",
+        "Redacts matched secret spans while preserving surrounding boundary text."
+      ],
+      "edgeCases": [
+        "Duplicate matches from the same rule produce one reported match.",
+        "Provider names with initialisms keep canonical display casing."
+      ],
+      "tests": [
+        "runtime/src/memory/privacy.test.ts"
+      ],
+      "commands": [
+        "npm test --workspace @tetsuo-ai/runtime -- --run src/memory/privacy.test.ts src/services/teamMemorySync/privacy.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "MM-08-team-write-guard",
+      "source": "src/services/teamMemorySync/teamMemSecretGuard.ts",
+      "target": "runtime/src/memory/privacy.ts + runtime/src/tools/FileEditTool/FileEditTool.ts + runtime/src/tools/FileWriteTool/FileWriteTool.ts + runtime/src/services/teamMemorySync/index.ts",
+      "requiredBehaviors": [
+        "Rejects secret-bearing file writes and edits only when the target path is inside team memory.",
+        "Keeps non-team memory writes subject to normal permission flow instead of the team-memory secret guard.",
+        "Runs the same scanner before team-memory sync uploads so secret-bearing files never enter the upload payload."
+      ],
+      "edgeCases": [
+        "Safe team-memory content is accepted.",
+        "A secret-like string outside team memory does not trigger the team-memory write guard."
+      ],
+      "tests": [
+        "runtime/src/memory/privacy.test.ts",
+        "runtime/src/services/teamMemorySync/privacy.test.ts"
+      ],
+      "commands": [
+        "npm test --workspace @tetsuo-ai/runtime -- --run src/memory/privacy.test.ts src/services/teamMemorySync/privacy.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
