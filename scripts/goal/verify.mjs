@@ -6460,6 +6460,10 @@ async function gapGates(item) {
     assertGapTuiGlobalKeybindingHandlers();
     return;
   }
+  if (item.title.includes("Wire onMessageActionsEnter")) {
+    assertGapTuiMessageSelectorCallbacks();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
@@ -6521,6 +6525,58 @@ function assertGapTuiGlobalKeybindingHandlers() {
     failGate("GAP-TUI-01 targeted App render test failed");
   }
   pass("GAP-TUI-01 targeted App render test passed");
+}
+
+function assertGapTuiMessageSelectorCallbacks() {
+  const appRel = "runtime/src/tui/components/App.tsx";
+  const testRel = "runtime/src/tui/components/App.render.test.tsx";
+  const appPath = path.join(root, appRel);
+  const testPath = path.join(root, testRel);
+  if (!existsSync(appPath)) failGate(`GAP-TUI-02: missing ${appRel}`);
+  if (!existsSync(testPath)) failGate(`GAP-TUI-02: missing ${testRel}`);
+
+  const app = readFileSync(appPath, "utf8");
+  const test = readFileSync(testPath, "utf8");
+  const requiredAppEvidence = [
+    ["imports MessageSelector", /import\s+\{\s*MessageSelector\s*\}\s+from\s+["']\.\/MessageSelector\.js["']/],
+    ["tracks selector visibility", /isMessageSelectorVisible,\s*setIsMessageSelectorVisible/],
+    ["defines handleShowMessageSelector", /const\s+handleShowMessageSelector\s*=\s*useCallback/],
+    ["passes selector visibility into Messages", /isMessageSelectorVisible=\{isMessageSelectorVisible\}/],
+    ["renders MessageSelector", /<MessageSelector\b/],
+    ["passes restore callback", /onRestoreMessage=\{handleRestoreMessage\}/],
+    ["passes PromptInput onShowMessageSelector", /onShowMessageSelector=\{handleShowMessageSelector\}/],
+    ["passes PromptInput onMessageActionsEnter", /onMessageActionsEnter=\{handleShowMessageSelector\}/],
+  ];
+  const missingAppEvidence = requiredAppEvidence
+    .filter(([, pattern]) => !pattern.test(app))
+    .map(([label]) => label);
+  if (missingAppEvidence.length > 0) {
+    failGate(`GAP-TUI-02 App callback evidence missing:\n  - ${missingAppEvidence.join("\n  - ")}`);
+  }
+
+  const requiredTestEvidence = [
+    "opens the message selector from PromptInput callbacks",
+    "providerProbe.messageSelectorProps",
+    "onMessageActionsEnter",
+    "message-selector:",
+    'input: "revise this"',
+  ];
+  const missingTestEvidence = requiredTestEvidence.filter((needle) => !test.includes(needle));
+  if (missingTestEvidence.length > 0) {
+    failGate(`GAP-TUI-02 regression test evidence missing:\n  - ${missingTestEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-02: live App message selector callback evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/tui/components/App.render.test.tsx",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-02 targeted App render test failed");
+  }
+  pass("GAP-TUI-02 targeted App render test passed");
 }
 
 function subsystemDirGates(label, dir) {

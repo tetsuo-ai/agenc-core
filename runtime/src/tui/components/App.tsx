@@ -7,6 +7,7 @@ import { StatsProvider, type StatsStore } from "../context/stats.js";
 import { onChangeAppState } from "../state/onChangeAppState.js";
 import type { FpsMetrics } from "../../utils/fpsTracker.js";
 import { Messages } from "./Messages.js";
+import { MessageSelector } from "./MessageSelector.js";
 import PromptInput from "./PromptInput/PromptInput.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
@@ -806,6 +807,41 @@ function useInitialSubmit(
   }, [initialPrompt, initialUserMessages, session, submit]);
 }
 
+function extractTag(text: string, tag: string): string | null {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const start = text.indexOf(open);
+  if (start === -1) return null;
+  const contentStart = start + open.length;
+  const end = text.indexOf(close, contentStart);
+  if (end === -1) return null;
+  return text.slice(contentStart, end);
+}
+
+function restoreComposerText(message: any): { text: string; mode: "bash" | "prompt" } | null {
+  if (message?.type !== "user") return null;
+  const content = message.message?.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter((block) => block?.type === "text" && typeof block.text === "string")
+            .map((block) => block.text)
+            .join("\n")
+        : "";
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  const bash = extractTag(trimmed, "bash-input");
+  if (bash !== null) return { text: bash, mode: "bash" };
+  const command = extractTag(trimmed, "command-name");
+  if (command !== null) {
+    const args = extractTag(trimmed, "command-args") ?? "";
+    return { text: `${command} ${args}`.trim(), mode: "prompt" };
+  }
+  return { text: trimmed, mode: "prompt" };
+}
+
 const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
 const TITLE_STATIC_PREFIX = "✳";
 const TITLE_ANIMATION_INTERVAL_MS = 960;
@@ -875,6 +911,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [helpOpen, setHelpOpen] = useState(false);
   const [screen, setScreen] = useState<"prompt" | "transcript">("prompt");
   const [showAllInTranscript, setShowAllInTranscript] = useState(false);
+  const [isMessageSelectorVisible, setIsMessageSelectorVisible] = useState(false);
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
   const [toolPermissionContext, setToolPermissionContext] =
@@ -1038,6 +1075,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     elicitation.prompt === null &&
     toolJSX === null &&
     !onboarding.active;
+  const handleShowMessageSelector = useCallback(() => {
+    if (onboarding.active) return;
+    setIsMessageSelectorVisible((visible) => !visible);
+  }, [onboarding.active]);
+  const handleCloseMessageSelector = useCallback(() => {
+    setIsMessageSelectorVisible(false);
+  }, []);
+  const handleRestoreMessage = useCallback(async (message: any) => {
+    const restored = restoreComposerText(message);
+    if (restored === null) return;
+    setInput(restored.text);
+    setMode(restored.mode);
+  }, []);
+  const handleUnavailableSelectorAction = useCallback(async () => {
+    throw new Error("This rewind action is unavailable in the live TUI shell.");
+  }, []);
 
   return (
     <Box flexDirection="column" width="100%">
@@ -1067,7 +1120,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           toolJSX={toolJSX as any}
           toolUseConfirmQueue={toolUseConfirmQueue as never[]}
           inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
-          isMessageSelectorVisible={false}
+          isMessageSelectorVisible={isMessageSelectorVisible}
           conversationId={props.session.conversationId}
           screen={screen as any}
           streamingToolUses={transcript.streamingToolUses}
@@ -1094,58 +1147,73 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {!onboarding.active ? (
         <ElicitationOverlay prompt={elicitation.prompt} />
       ) : null}
-      <PromptInput
-        debug={false}
-        ideSelection={undefined}
-        toolPermissionContext={toolPermissionContext as any}
-        setToolPermissionContext={setToolPermissionContext as any}
-        apiKeyStatus={"valid" as any}
-        commands={commands as unknown as Command[]}
-        agents={agents as unknown as AgentDefinition[]}
-        isLoading={!onboarding.active && transcript.isStreaming}
-        verbose={false}
-        messages={transcript.messages as any[]}
-        onAutoUpdaterResult={() => {}}
-        autoUpdaterResult={null}
-        input={input}
-        onInputChange={setInput}
-        mode={mode}
-        onModeChange={setMode}
-        stashedPrompt={stashedPrompt}
-        setStashedPrompt={setStashedPrompt}
-        submitCount={submitCount}
-        onShowMessageSelector={() => {}}
-        mcpClients={mcpClients as never}
-        pastedContents={pastedContents}
-        setPastedContents={setPastedContents}
-        vimMode={vimMode}
-        setVimMode={setVimMode}
-        showBashesDialog={showBashesDialog}
-        setShowBashesDialog={setShowBashesDialog}
-        onExit={exit}
-        getToolUseContext={getToolUseContext}
-        onSubmit={async (value, helpers) => {
-          if (await onboarding.submit(value)) {
-            helpers.clearBuffer();
-            helpers.resetHistory();
-            helpers.setCursorOffset(0);
-            return;
-          }
-          if (
-            await executeRealtimeComposerCommand(props.session.realtime, value)
-          ) {
-            helpers.clearBuffer();
-            helpers.resetHistory();
-            helpers.setCursorOffset(0);
-            return;
-          }
-          await submitViaElicitationPrompt(elicitation, submit, value, helpers);
-        }}
-        isSearchingHistory={isSearchingHistory}
-        setIsSearchingHistory={setIsSearchingHistory}
-        helpOpen={helpOpen}
-        setHelpOpen={setHelpOpen}
-      />
+      {!onboarding.active && isMessageSelectorVisible ? (
+        <MessageSelector
+          messages={transcript.messages as any[]}
+          onPreRestore={() => {
+            props.session.abortTerminal?.("message-selector-restore");
+          }}
+          onRestoreMessage={handleRestoreMessage}
+          onRestoreCode={handleUnavailableSelectorAction}
+          onSummarize={handleUnavailableSelectorAction as any}
+          onClose={handleCloseMessageSelector}
+        />
+      ) : null}
+      {onboarding.active || !isMessageSelectorVisible ? (
+        <PromptInput
+          debug={false}
+          ideSelection={undefined}
+          toolPermissionContext={toolPermissionContext as any}
+          setToolPermissionContext={setToolPermissionContext as any}
+          apiKeyStatus={"valid" as any}
+          commands={commands as unknown as Command[]}
+          agents={agents as unknown as AgentDefinition[]}
+          isLoading={!onboarding.active && transcript.isStreaming}
+          verbose={false}
+          messages={transcript.messages as any[]}
+          onAutoUpdaterResult={() => {}}
+          autoUpdaterResult={null}
+          input={input}
+          onInputChange={setInput}
+          mode={mode}
+          onModeChange={setMode}
+          stashedPrompt={stashedPrompt}
+          setStashedPrompt={setStashedPrompt}
+          submitCount={submitCount}
+          onShowMessageSelector={handleShowMessageSelector}
+          onMessageActionsEnter={handleShowMessageSelector}
+          mcpClients={mcpClients as never}
+          pastedContents={pastedContents}
+          setPastedContents={setPastedContents}
+          vimMode={vimMode}
+          setVimMode={setVimMode}
+          showBashesDialog={showBashesDialog}
+          setShowBashesDialog={setShowBashesDialog}
+          onExit={exit}
+          getToolUseContext={getToolUseContext}
+          onSubmit={async (value, helpers) => {
+            if (await onboarding.submit(value)) {
+              helpers.clearBuffer();
+              helpers.resetHistory();
+              helpers.setCursorOffset(0);
+              return;
+            }
+            if (
+              await executeRealtimeComposerCommand(props.session.realtime, value)
+            ) {
+              helpers.clearBuffer();
+              helpers.resetHistory();
+              helpers.setCursorOffset(0);
+              return;
+            }
+            await submitViaElicitationPrompt(elicitation, submit, value, helpers);
+          }}
+          isSearchingHistory={isSearchingHistory}
+          setIsSearchingHistory={setIsSearchingHistory}
+          helpOpen={helpOpen}
+          setHelpOpen={setHelpOpen}
+        />
+      ) : null}
     </Box>
   );
 }
