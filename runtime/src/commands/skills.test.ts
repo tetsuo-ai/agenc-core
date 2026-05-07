@@ -13,6 +13,8 @@ function stubSession(opts: {
     readonly description?: string;
     readonly scope?: string;
     readonly loadedFrom?: string;
+    readonly userInvocable?: boolean;
+    readonly disableModelInvocation?: boolean;
   }>;
   roots?: unknown;
 }): Session {
@@ -65,6 +67,63 @@ describe("skillsCommand", () => {
       ],
       effectiveSkillRoots: ["/a", "/z"],
     });
+  });
+
+  it("merges MCP-derived skills from AppState into the snapshot", async () => {
+    const snapshot = await collectSkillsSnapshot(
+      stubSession({
+        availableSkills: [
+          {
+            name: "local-review",
+            description: "Local review skill",
+            loadedFrom: "skills",
+          },
+        ],
+      }),
+      {
+        getAppState: () => ({
+          mcp: {
+            commands: [
+              {
+                name: "mcp__Docs_Server__reviewer",
+                description: "Remote review skill",
+                loadedFrom: "mcp",
+                userInvocable: true,
+                disableModelInvocation: false,
+              },
+              {
+                name: "plugin-review",
+                description: "Plugin command",
+                loadedFrom: "plugin",
+              },
+              {
+                name: "",
+                loadedFrom: "mcp",
+              },
+            ],
+          },
+        }),
+      },
+    );
+
+    expect(snapshot.availableSkills).toEqual([
+      {
+        name: "local-review",
+        description: "Local review skill",
+        scope: undefined,
+        loadedFrom: "skills",
+        userInvocable: undefined,
+        disableModelInvocation: undefined,
+      },
+      {
+        name: "mcp__Docs_Server__reviewer",
+        description: "Remote review skill",
+        scope: undefined,
+        loadedFrom: "mcp",
+        userInvocable: true,
+        disableModelInvocation: false,
+      },
+    ]);
   });
 
   it("formats empty state explicitly", () => {

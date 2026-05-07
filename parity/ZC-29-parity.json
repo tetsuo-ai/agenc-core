@@ -50,8 +50,7 @@
       "intentionalReductions": [
         "ZC-31 owns full Rust core-skills coverage: metadata TOML interface/dependency/policy files, linked-resource mention selection, mention-count indexes, system-skill install/uninstall, remote list/export, and rendering telemetry.",
         "The donor skills menu and dedicated skills command UI are presentation concerns owned by AgenC commands/TUI surfaces, not by runtime/src/skills.",
-        "Remote skill download/listing is not part of the local loader; AgenC remote marketplace/auth flows own remote package distribution.",
-        "MCP skill roots and builders are not loaded by runtime/src/skills/local-loader.ts; runtime MCP integration owns those sources until a dedicated skills/MCP row wires a concrete loader into this service."
+        "Remote skill download/listing is not part of the local loader; AgenC remote marketplace/auth flows own remote package distribution; SK-01 owns MCP-derived skill resource loading in runtime/src/skills/mcpSkills.ts."
       ]
     },
     "conversation": {
