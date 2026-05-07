@@ -1,5 +1,12 @@
-// @ts-nocheck
-// Temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
+/**
+ * Ports the upstream `src/memdir/paths.ts` resolver onto AgenC's D-13 memory
+ * architecture.
+ *
+ * The public `getAutoMem*` names remain as compatibility aliases for existing
+ * callers, but the owned shape is now explicit: global memory is under the
+ * AgenC memory base, project memory belongs to the current project, and
+ * session memory is kept in conversation state rather than a filesystem path.
+ */
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { isAbsolute, join, normalize, sep } from 'path'
@@ -91,8 +98,10 @@ export function getMemoryBaseDir(): string {
   return getAgenCConfigHomeDir()
 }
 
-const AUTO_MEM_DIRNAME = 'memory'
-const AUTO_MEM_ENTRYPOINT_NAME = 'MEMORY.md'
+export const MEMORY_DIRNAME = 'memory'
+export const MEMORY_ENTRYPOINT_NAME = 'MEMORY.md'
+export const PROJECT_MEMORY_DIR = '.agenc'
+export const PROJECT_INSTRUCTION_FILE = 'AGENC.md'
 
 /**
  * Normalize and validate a candidate auto-memory directory path.
@@ -200,7 +209,7 @@ export function hasAutoMemPathOverride(): boolean {
 /**
  * Returns the canonical git repo root if available, otherwise falls back to
  * the stable project root. Uses findCanonicalGitRoot so all worktrees of the
- * same repo share one auto-memory directory (anthropics/agenc-code#24382).
+ * same repo share one auto-memory directory.
  */
 function getAutoMemBase(): string {
   return findCanonicalGitRoot(getProjectRoot()) ?? getProjectRoot()
@@ -212,8 +221,8 @@ function getAutoMemBase(): string {
  * Resolution order:
  *   1. AGENC_COWORK_MEMORY_PATH_OVERRIDE env var (full-path override, used by Cowork)
  *   2. autoMemoryDirectory in settings.json (trusted sources only: policy/local/user)
- *   3. <memoryBase>/projects/<sanitized-git-root>/memory/
- *      where memoryBase is resolved by getMemoryBaseDir()
+ *   3. In remote mode, <memoryBase>/projects/<sanitized-git-root>/memory/
+ *   4. Otherwise, <projectRoot>/.agenc/memory/
  *
  * Memoized: render-path callers (collapseReadSearchGroups → isAutoManagedMemoryFile)
  * fire per tool-use message per Messages re-render; each miss costs
@@ -222,19 +231,42 @@ function getAutoMemBase(): string {
  * env vars / settings.json / AGENC_CONFIG_DIR are session-stable in
  * production and covered by per-test cache.clear.
  */
-export const getAutoMemPath = memoize(
+export const getProjectMemoryPath = memoize(
   (): string => {
     const override = getAutoMemPathOverride() ?? getAutoMemPathSetting()
     if (override) {
       return override
     }
-    const projectsDir = join(getMemoryBaseDir(), 'projects')
+    if (process.env.AGENC_REMOTE_MEMORY_DIR) {
+      const projectsDir = join(getMemoryBaseDir(), 'projects')
+      return (
+        join(projectsDir, sanitizePath(getAutoMemBase()), MEMORY_DIRNAME) + sep
+      ).normalize('NFC')
+    }
     return (
-      join(projectsDir, sanitizePath(getAutoMemBase()), AUTO_MEM_DIRNAME) + sep
+      join(getProjectRoot(), PROJECT_MEMORY_DIR, MEMORY_DIRNAME) + sep
     ).normalize('NFC')
   },
   () => getProjectRoot(),
 )
+
+export const getAutoMemPath = getProjectMemoryPath
+
+export function getGlobalMemoryPath(): string {
+  return (join(getMemoryBaseDir(), MEMORY_DIRNAME) + sep).normalize('NFC')
+}
+
+export function getGlobalMemoryEntrypoint(): string {
+  return join(getGlobalMemoryPath(), MEMORY_ENTRYPOINT_NAME)
+}
+
+export function getProjectMemoryEntrypoint(): string {
+  return join(getProjectMemoryPath(), MEMORY_ENTRYPOINT_NAME)
+}
+
+export function getProjectInstructionPath(): string {
+  return join(getProjectRoot(), PROJECT_INSTRUCTION_FILE)
+}
 
 /**
  * Returns the daily log file path for the given date (defaults to today).
@@ -257,7 +289,7 @@ export function getAutoMemDailyLogPath(date: Date = new Date()): string {
  * Follows the same resolution order as getAutoMemPath().
  */
 export function getAutoMemEntrypoint(): string {
-  return join(getAutoMemPath(), AUTO_MEM_ENTRYPOINT_NAME)
+  return getProjectMemoryEntrypoint()
 }
 
 /**
@@ -277,4 +309,18 @@ export function isAutoMemPath(absolutePath: string): boolean {
   // SECURITY: Normalize to prevent path traversal bypasses via .. segments
   const normalizedPath = normalize(absolutePath)
   return normalizedPath.startsWith(getAutoMemPath())
+}
+
+export function isGlobalMemoryPath(absolutePath: string): boolean {
+  const normalizedPath = normalize(absolutePath)
+  return normalizedPath.startsWith(getGlobalMemoryPath())
+}
+
+export function isProjectMemoryPath(absolutePath: string): boolean {
+  const normalizedPath = normalize(absolutePath)
+  return normalizedPath.startsWith(getProjectMemoryPath())
+}
+
+export function isDurableMemoryPath(absolutePath: string): boolean {
+  return isGlobalMemoryPath(absolutePath) || isProjectMemoryPath(absolutePath)
 }

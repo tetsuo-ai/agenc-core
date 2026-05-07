@@ -9,7 +9,7 @@ import {
   normalizeMessagesForAPI,
 } from '../../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { ModelName } from '../../../utils/model/model.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { isAutoMemoryEnabled } from '../../../memdir/paths'
+import { isAutoMemoryEnabled } from '../../../memory/paths'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

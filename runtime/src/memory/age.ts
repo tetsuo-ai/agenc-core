@@ -1,4 +1,6 @@
 /**
+ * Ports the upstream `src/memdir/memoryAge.ts` freshness helpers onto AgenC.
+ *
  * Days elapsed since mtime.  Floor-rounded — 0 for today, 1 for
  * yesterday, 2+ for older.  Negative inputs (future mtime, clock skew)
  * clamp to 0.

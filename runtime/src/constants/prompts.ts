@@ -59,7 +59,7 @@ import {
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { loadMemoryPrompt } from '../memdir/memdir.js'
+import { loadMemoryPrompt } from '../memory/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/compact/cachedMicrocompact.js'

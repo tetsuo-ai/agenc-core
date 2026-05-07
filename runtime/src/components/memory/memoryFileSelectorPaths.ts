@@ -1,6 +1,6 @@
 import { basename, join } from 'path'
 
-import type { MemoryFileInfo } from '../../utils/agencmd.js'
+import type { MemoryFileInfo } from '../../memory/agencmd.js'
 import {
   findProjectInstructionFilePathInAncestors,
   isProjectInstructionFileName,

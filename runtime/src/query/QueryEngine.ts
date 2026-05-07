@@ -32,8 +32,8 @@ import {
   getTotalCost,
 } from '../cost/tracker.js'
 import type { CanUseToolFn } from '../tui/hooks/useCanUseTool.js'
-import { loadMemoryPrompt } from '../memdir/memdir.js'
-import { hasAutoMemPathOverride } from '../memdir/paths.js'
+import { loadMemoryPrompt } from '../memory/memdir.js'
+import { hasAutoMemPathOverride } from '../memory/paths.js'
 import { query } from '../query.js'
 import { categorizeRetryableAPIError } from '../services/api/errors.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'

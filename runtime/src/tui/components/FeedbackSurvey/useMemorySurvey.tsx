@@ -4,13 +4,13 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { isFeedbackSurveyDisabled } from '../../../services/analytics/config.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
-import { isAutoMemoryEnabled } from '../../../memdir/paths';
+import { isAutoMemoryEnabled } from '../../../memory/paths';
 import { isPolicyAllowed } from '../../../services/policyLimits/index';
 import { FILE_READ_TOOL_NAME } from '../../../tools/FileReadTool/prompt';
 import type { Message } from '../../../types/message';
 import { getGlobalConfig, saveGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from '../../../utils/envUtils';
-import { isAutoManagedMemoryFile } from '../../../utils/memoryFileDetection';
+import { isAutoManagedMemoryFile } from '../../../memory/detection';
 import { extractTextContent, getLastAssistantMessage } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logOTelEvent } from '../../../utils/telemetry/events.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { submitTranscriptShare } from './submitTranscriptShare';

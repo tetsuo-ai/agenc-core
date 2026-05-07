@@ -1,17 +1,18 @@
 import {
+  buildMemoryLayerLines,
   buildSearchingPastContextSection,
   DIRS_EXIST_GUIDANCE,
   ENTRYPOINT_NAME,
   MAX_ENTRYPOINT_LINES,
-} from './memdir.js'
+} from '../memory/memdir.js'
 import {
   MEMORY_DRIFT_CAVEAT,
   MEMORY_FRONTMATTER_EXAMPLE,
   TRUSTING_RECALL_SECTION,
   TYPES_SECTION_COMBINED,
   WHAT_NOT_TO_SAVE_SECTION,
-} from './memoryTypes.js'
-import { getAutoMemPath } from './paths.js'
+} from '../memory/types.js'
+import { getAutoMemPath, getGlobalMemoryPath } from '../memory/paths.js'
 import { getTeamMemPath } from './teamMemPaths.js'
 
 /**
@@ -24,13 +25,14 @@ export function buildCombinedMemoryPrompt(
   skipIndex = false,
 ): string {
   const autoDir = getAutoMemPath()
+  const globalDir = getGlobalMemoryPath()
   const teamDir = getTeamMemPath()
 
   const howToSave = skipIndex
     ? [
         '## How to save memories',
         '',
-        "Write each memory to its own file in the chosen directory (private or team, per the type's scope guidance) using this frontmatter format:",
+        "Write each memory to its own file in the chosen global, project, or team memory directory (per the save-destination and type-scope guidance) using this frontmatter format:",
         '',
         ...MEMORY_FRONTMATTER_EXAMPLE,
         '',
@@ -44,13 +46,13 @@ export function buildCombinedMemoryPrompt(
         '',
         'Saving a memory is a two-step process:',
         '',
-        "**Step 1** — write the memory to its own file in the chosen directory (private or team, per the type's scope guidance) using this frontmatter format:",
+        "**Step 1** — write the memory to its own file in the chosen global, project, or team memory directory (per the save-destination and type-scope guidance) using this frontmatter format:",
         '',
         ...MEMORY_FRONTMATTER_EXAMPLE,
         '',
-        `**Step 2** — add a pointer to that file in the same directory's \`${ENTRYPOINT_NAME}\`. Each directory (private and team) has its own \`${ENTRYPOINT_NAME}\` index — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. They have no frontmatter. Never write memory content directly into a \`${ENTRYPOINT_NAME}\`.`,
+        `**Step 2** — add a pointer to that file in the same directory's \`${ENTRYPOINT_NAME}\`. Each durable directory (global, project, and team) has its own \`${ENTRYPOINT_NAME}\` index — each entry should be one line, under ~150 characters: \`- [Title](file.md) — one-line hook\`. They have no frontmatter. Never write memory content directly into a \`${ENTRYPOINT_NAME}\`.`,
         '',
-        `- Both \`${ENTRYPOINT_NAME}\` indexes are loaded into your conversation context — lines after ${MAX_ENTRYPOINT_LINES} will be truncated, so keep them concise`,
+        `- Durable \`${ENTRYPOINT_NAME}\` indexes are loaded into your conversation context — lines after ${MAX_ENTRYPOINT_LINES} will be truncated, so keep them concise`,
         '- Keep the name, description, and type fields in memory files up-to-date with the content',
         '- Organize memory semantically by topic, not chronologically',
         '- Update or remove memories that turn out to be wrong or outdated',
@@ -60,18 +62,31 @@ export function buildCombinedMemoryPrompt(
   const lines = [
     '# Memory',
     '',
-    `You have a persistent, file-based memory system with two directories: a private directory at \`${autoDir}\` and a shared team directory at \`${teamDir}\`. ${DIRS_EXIST_GUIDANCE}`,
+    `You have persistent, file-based memory directories: global memory at \`${globalDir}\`, project memory at \`${autoDir}\`, and shared team memory at \`${teamDir}\`. ${DIRS_EXIST_GUIDANCE}`,
+    '',
+    ...buildMemoryLayerLines(autoDir),
+    '### Team memory',
+    '',
+    `Team memory is shared project-level memory contributed by users who work within this project directory. It is stored at \`${teamDir}\` and synced at the beginning of each session.`,
     '',
     "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
     '',
     'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
     '',
-    '## Memory scope',
+    '## Team memory scope',
     '',
-    'There are two scope levels:',
+    'Team memory adds a shared scope on top of the global/project/session layers:',
     '',
-    `- private: memories that are private between you and the current user. They persist across conversations with only this specific user and are stored at the root \`${autoDir}\`.`,
+    `- global user: memories about the current user as a person or collaborator. They persist across projects and are stored at \`${globalDir}\`.`,
+    `- project: memories about this working directory that should not be shared through team sync. They are stored at \`${autoDir}\`.`,
     `- team: memories that are shared with and contributed by all of the users who work within this project directory. Team memories are synced at the beginning of every session and they are stored at \`${teamDir}\`.`,
+    '',
+    '## Where to save memories',
+    '',
+    `- Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${globalDir}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a global memory topic file.`,
+    `- Save project-level memories that are useful only in this project in project memory at \`${autoDir}\`. Update that directory's \`${ENTRYPOINT_NAME}\` index when you add, rename, or remove a project memory topic file.`,
+    `- Save shared team memories only when the information should be visible to every contributor in this project. Store them in team memory at \`${teamDir}\` and update that directory's \`${ENTRYPOINT_NAME}\` index.`,
+    '- Do not save session-only information to durable memory unless it will matter in future conversations.',
     '',
     ...TYPES_SECTION_COMBINED,
     ...WHAT_NOT_TO_SAVE_SECTION,
@@ -80,7 +95,7 @@ export function buildCombinedMemoryPrompt(
     ...howToSave,
     '',
     '## When to access memories',
-    '- When memories (personal or team) seem relevant, or the user references prior work with them or others in their organization.',
+    '- When global, project, or team memories seem relevant, or the user references prior work with them or others in their organization.',
     '- You MUST access memory when the user explicitly asks you to check, recall, or remember.',
     '- If the user says to *ignore* or *not use* memory: proceed as if MEMORY.md were empty. Do not apply remembered facts, cite, compare against, or mention memory content.',
     MEMORY_DRIFT_CAVEAT,
@@ -93,7 +108,7 @@ export function buildCombinedMemoryPrompt(
     '- When to use or update tasks instead of memory: When you need to break your work in current conversation into discrete steps or keep track of your progress use tasks instead of saving to memory. Tasks are great for persisting information about the work that needs to be done in the current conversation, but memory should be reserved for information that will be useful in future conversations.',
     ...(extraGuidelines ?? []),
     '',
-    ...buildSearchingPastContextSection(autoDir),
+    ...buildSearchingPastContextSection([globalDir, autoDir, teamDir]),
   ]
 
   return lines.join('\n')

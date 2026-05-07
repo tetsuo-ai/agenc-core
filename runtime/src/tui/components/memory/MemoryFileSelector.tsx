@@ -9,7 +9,7 @@ import { getOriginalCwd } from '../../../bootstrap/state';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { getAutoMemPath, isAutoMemoryEnabled } from '../../../memdir/paths';
+import { getAutoMemPath, isAutoMemoryEnabled } from '../../../memory/paths';
 import * as teamMemPathsModule from '../../../memdir/teamMemPaths';
 import { logEvent } from '../../../services/analytics/index';
 import { isAutoDreamEnabled } from '../../../services/autoDream/config';
@@ -17,7 +17,7 @@ import { readLastConsolidatedAt } from '../../../services/autoDream/consolidatio
 import { useAppState } from '../../state/AppState.js';
 import { getAgentMemoryDir } from '../../../tools/AgentTool/agentMemory';
 import { openPath } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMemoryFiles, type MemoryFileInfo } from '../../../utils/agencmd.js'; // branding-scan: allow upstream memory filename pending absorb // upstream-import: keep target is owned by another Z-PURGE item
+import { getMemoryFiles, type MemoryFileInfo } from '../../../memory/agencmd.js'; // branding-scan: allow upstream memory filename pending absorb // upstream-import: keep target is owned by another Z-PURGE item
 import { getAgenCConfigHomeDir } from '../../../utils/envUtils';
 import { getDisplayPath } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatRelativeTimeAgo } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item

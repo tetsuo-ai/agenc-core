@@ -1,7 +1,7 @@
 // @ts-nocheck -- temporary boundary: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { getShortcutDisplay } from '../tui/keybindings/shortcutFormat.js'
-import { isExtractModeActive } from '../memdir/paths.js'
+import { isExtractModeActive } from '../memory/paths.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,

@@ -49,7 +49,7 @@ import type {
   UserMessage,
 } from '../types/message.js'
 import { toolToAPISchema } from './api.js'
-import { filterInjectedMemoryFiles, getMemoryFiles } from './agencmd.js'
+import { filterInjectedMemoryFiles, getMemoryFiles } from '../memory/agencmd.js'
 import { getContextWindowForModel } from './context.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
