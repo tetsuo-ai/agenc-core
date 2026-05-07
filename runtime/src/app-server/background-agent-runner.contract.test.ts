@@ -2788,6 +2788,83 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("refuses daemon clear while the owning session has an active turn", async () => {
+    const shutdown = vi.fn(async () => {});
+    const parentHistory = [{ role: "user", content: "old parent turn" }];
+    const clearProviderResponseId = vi.fn();
+    const stateWith = vi.fn(async (fn: (state: { history: unknown[] }) => void) =>
+      fn({ history: parentHistory }),
+    );
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+      activeTurn: {
+        unsafePeek: () => ({ turnId: "turn_1" }),
+      },
+      state: {
+        with: stateWith,
+      },
+      services: {},
+      clearProviderResponseId,
+    };
+    const clearConversationHistory = vi.fn(async () => {});
+    const control = {
+      shutdown: vi.fn(async () => {}),
+      clearConversationHistory,
+    };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      live: {
+        messages: [{ role: "assistant", content: "old child reply" }],
+      },
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emit = vi.fn(async () => {});
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit,
+    });
+
+    await expect(
+      runner.clearAgentSession("agent_live", {
+        sessionId: "session_1",
+        clearedAt: "2026-05-01T12:00:01.000Z",
+      }),
+    ).rejects.toThrow("Cannot clear right now");
+
+    expect(parentHistory).toEqual([{ role: "user", content: "old parent turn" }]);
+    expect(stateWith).not.toHaveBeenCalled();
+    expect(clearProviderResponseId).not.toHaveBeenCalled();
+    expect(clearConversationHistory).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it("reports live status freshness from thread status changes", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

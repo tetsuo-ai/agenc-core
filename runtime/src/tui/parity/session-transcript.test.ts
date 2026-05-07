@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import {
   adaptTranscriptEvents,
+  appendSessionTranscriptEventForTesting,
+  createSessionTranscriptStateForTesting,
   formatStructuredToolError,
   formatStructuredToolResult,
 } from "../session-transcript.js";
@@ -177,6 +179,33 @@ describe("AgenC TUI session transcript", () => {
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
     expect([...transcript.toolNames]).toEqual([]);
     expect(transcript.streamingToolUses).toEqual([]);
+  });
+
+  test("resets prior messages when subscribed history_cleared appends through the reducer", () => {
+    let state = createSessionTranscriptStateForTesting([
+      {
+        id: "before-clear",
+        msg: { type: "user_message", payload: { message: "before" } },
+      },
+    ]);
+
+    state = appendSessionTranscriptEventForTesting(state, {
+      id: "clear-from-subscription",
+      type: "history_cleared",
+      timestamp: 3,
+    });
+    state = appendSessionTranscriptEventForTesting(state, {
+      id: "after-clear",
+      msg: { type: "user_message", payload: { message: "after" } },
+    });
+
+    const transcript = adaptTranscriptEvents(state.events);
+
+    expect(transcript.messages).toHaveLength(1);
+    expect(transcript.messages.at(0)).toMatchObject({
+      type: "user",
+      message: { content: "after" },
+    });
   });
 
   test("interleaves realtime transcript completions and item notifications with surrounding text transcript", () => {

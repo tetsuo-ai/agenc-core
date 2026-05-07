@@ -713,6 +713,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    if (isClearInFlight(active)) {
+      throw new Error(
+        "Cannot clear right now: a turn is currently in flight; wait for it to complete before running /clear.",
+      );
+    }
     await clearSession(active.bootstrap.session);
     await active.control.clearConversationHistory(agentId);
     active.activeToolCallIds.clear();
@@ -1465,6 +1470,27 @@ function formatBudgetSeconds(value: number): string {
 
 function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
   return active.budgetHalt === undefined;
+}
+
+interface ActiveTurnPeek {
+  unsafePeek?: () => unknown;
+}
+
+function hasRuntimeActiveTurn(
+  session: LocalRuntimeBootstrap["session"],
+): boolean {
+  const activeTurn = (session as unknown as { activeTurn?: ActiveTurnPeek })
+    .activeTurn;
+  return typeof activeTurn?.unsafePeek === "function" &&
+    activeTurn.unsafePeek() !== null;
+}
+
+function isClearInFlight(active: ActiveBackgroundAgent): boolean {
+  if (hasRuntimeActiveTurn(active.bootstrap.session)) return true;
+  if (active.activeToolCallIds.size > 0) return true;
+  if (!hasCurrentStatus(active.thread)) return false;
+  return active.thread.currentStatus.status === "running" ||
+    active.thread.currentStatus.status === "pending_init";
 }
 
 async function unavailableRealtimeTransport(): Promise<RealtimeTransportConnection> {

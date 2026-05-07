@@ -1084,6 +1084,19 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
   }
 }
 
+export function createSessionTranscriptStateForTesting(
+  events: readonly SessionTranscriptEvent[],
+): TranscriptState {
+  return reducer({ events: [], keys: new Set() }, { kind: "reset", events });
+}
+
+export function appendSessionTranscriptEventForTesting(
+  state: TranscriptState,
+  event: SessionTranscriptEvent,
+): TranscriptState {
+  return reducer(state, { kind: "append", event });
+}
+
 function initialEvents(session: AgenCBridgeSession): readonly SessionTranscriptEvent[] {
   const fromGetter = session.getInitialTranscriptEvents?.();
   const fromProperty = session.initialTranscriptEvents;

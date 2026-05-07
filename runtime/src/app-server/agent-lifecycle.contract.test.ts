@@ -690,6 +690,14 @@ describe("AgenC background agent lifecycle", () => {
         clearAgentSession,
       },
     });
+    await agents.restoreAgent({
+      agentId: "agent-clear-restored",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-clear-restored"],
+      runtimeAvailable: true,
+    });
 
     await expect(
       agents.clearSessionHistory({ sessionId: "session-clear-restored" }),
@@ -702,6 +710,44 @@ describe("AgenC background agent lifecycle", () => {
       sessionId: "session-clear-restored",
       clearedAt: "2026-05-01T12:06:00.000Z",
     });
+  });
+
+  it("rejects session.clear for recovered agents without live runtime", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-clear-recovered",
+      agentId: "agent-clear-recovered",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const clearAgentSession = vi.fn(async () => {});
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        clearAgentSession,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-clear-recovered",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-clear-recovered"],
+      runtimeAvailable: false,
+    });
+
+    await expect(
+      agents.clearSessionHistory({ sessionId: "session-clear-recovered" }),
+    ).rejects.toMatchObject({
+      code: "BACKGROUND_RUNNER_UNAVAILABLE",
+    });
+    expect(clearAgentSession).not.toHaveBeenCalled();
   });
 
   it("rebinds restored runtime events so terminal status updates persist", async () => {
@@ -3171,19 +3217,28 @@ describe("AgenC background agent lifecycle", () => {
       initialPrompt: "continue work",
     });
     const clearAgentSession = vi.fn(async () => {});
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:06:00.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        clearAgentSession,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_rpc_clear",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_rpc_clear"],
+      runtimeAvailable: true,
+    });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager({
-        sessionManager: sessions,
-        now: () => "2026-05-01T12:06:00.000Z",
-        runner: {
-          startAgent: async () => ({
-            agentId: "unused",
-            startedAt: "2026-05-01T12:00:00.000Z",
-            status: "running",
-          }),
-          clearAgentSession,
-        },
-      }),
+      agentManager,
       sessionManager: sessions,
     });
     const connection = dispatcher.createConnection();

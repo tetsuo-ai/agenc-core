@@ -998,16 +998,11 @@ export class AgenCDaemonAgentManager {
         "session.clear requires a background runner",
       );
     }
-
-    const session = await this.#sessionManager.getSession(params.sessionId);
-    if (session === null || !isActiveSession(session)) {
-      throw new AgenCDaemonAgentLifecycleError(
-        "AGENT_NOT_FOUND",
-        `AgenC daemon session not found or closed: ${params.sessionId}`,
-      );
-    }
-
-    await this.#runner.clearAgentSession(session.agentId, {
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowClearSession: true },
+    );
+    await this.#runner.clearAgentSession(agentId, {
       sessionId: params.sessionId,
       clearedAt,
     });
@@ -1182,6 +1177,7 @@ export class AgenCDaemonAgentManager {
     sessionId: string,
     options: {
       readonly allowCancelTool?: boolean;
+      readonly allowClearSession?: boolean;
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
     } = {},
@@ -1199,6 +1195,9 @@ export class AgenCDaemonAgentManager {
     const hasElicitationRunner =
       options.allowElicitationResponse === true &&
       this.#runner?.respondToElicitation !== undefined;
+    const hasClearSessionRunner =
+      options.allowClearSession === true &&
+      this.#runner?.clearAgentSession !== undefined;
     const hasPermissionListRunner =
       options.allowListPermissions === true &&
       this.#runner?.listPermissions !== undefined;
@@ -1206,6 +1205,7 @@ export class AgenCDaemonAgentManager {
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
       !hasElicitationRunner &&
+      !hasClearSessionRunner &&
       !hasPermissionListRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
