@@ -2011,6 +2011,28 @@ const ITEM_EVIDENCE = {
   "PR-02": {
     grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
   },
+  "PR-06": {
+    files: [
+      "runtime/src/llm/wire/tools.ts",
+      "runtime/src/llm/wire/tools.test.ts",
+      "parity/PR-06-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "toChatCompletionsTools", scope: "runtime/src/llm/wire/tools.ts" },
+      { pattern: "toOpenAIResponsesTools", scope: "runtime/src/llm/wire/tools.ts" },
+      { pattern: "toXaiResponsesTools", scope: "runtime/src/llm/wire/tools.ts" },
+      { pattern: "toAnthropicTools", scope: "runtime/src/llm/wire/tools.ts" },
+      { pattern: "toChatCompletionsTools", scope: "runtime/src/llm/wire/chat-completions.ts" },
+      { pattern: "toOpenAIResponsesTools", scope: "runtime/src/llm/wire/responses-openai.ts" },
+      { pattern: "toXaiResponsesTools", scope: "runtime/src/llm/wire/responses-xai.ts" },
+      { pattern: "toAnthropicTools", scope: "runtime/src/llm/wire/messages-anthropic.ts" },
+      { pattern: "tool-description-injection", scope: "parity/PR-06-parity.json" },
+    ],
+    tests: [
+      "runtime/src/llm/wire/tools.test.ts",
+      "runtime/src/llm/wire/responses-openai.test.ts",
+    ],
+  },
   "MM-06": {
     grepPresent: [{ pattern: "agenc memory", scope: "runtime/src" }],
   },
@@ -5201,10 +5223,40 @@ async function promptGates(item) {
     return;
   }
   if (id === "PR-06") {
-    // Memory instructions.
-    const found = grepRepo("memoryInstructions|memory_instructions", "runtime/src/prompts");
-    if (!found) failGate("PR-06: memory instructions not referenced");
-    pass("PR-06: memory instructions referenced");
+    const wireToolsFile = "runtime/src/llm/wire/tools.ts";
+    const requiredConsumers = [
+      "runtime/src/llm/wire/chat-completions.ts",
+      "runtime/src/llm/wire/responses-openai.ts",
+      "runtime/src/llm/wire/responses-xai.ts",
+      "runtime/src/llm/wire/messages-anthropic.ts",
+    ];
+    if (!existsSync(path.join(root, wireToolsFile))) {
+      failGate("PR-06: wire tool conversion file missing");
+    }
+    for (const consumer of requiredConsumers) {
+      if (!existsSync(path.join(root, consumer))) {
+        failGate(`PR-06: required wire consumer missing: ${consumer}`);
+      }
+    }
+    if (!grepRepo("description: toolDescription\\(tool\\)", wireToolsFile)) {
+      failGate("PR-06: wire tools must inject prompt-derived descriptions");
+    }
+    if (!grepRepo("toOpenAIResponsesTools", "runtime/src/llm/wire/responses-openai.ts")) {
+      failGate("PR-06: Responses builder must use central tool conversion");
+    }
+    if (!grepRepo("toChatCompletionsTools", "runtime/src/llm/wire/chat-completions.ts")) {
+      failGate("PR-06: chat-completions builder must use central tool conversion");
+    }
+    if (!grepRepo("toXaiResponsesTools", "runtime/src/llm/wire/responses-xai.ts")) {
+      failGate("PR-06: xAI Responses builder must expose central tool conversion");
+    }
+    if (!grepRepo("toAnthropicTools", "runtime/src/llm/wire/messages-anthropic.ts")) {
+      failGate("PR-06: Messages builder must use central tool conversion");
+    }
+    const vitest = run("npm", ["test", "--", "src/llm/wire/tools.test.ts"], { cwd: path.join(root, "runtime") });
+    if (vitest.status !== 0) failGate("PR-06 targeted wire tool tests failed");
+    pass("PR-06 targeted wire tool tests passed");
+    pass("PR-06: tool description injection is centralized in llm/wire/tools");
     return;
   }
   if (id === "PR-07") {

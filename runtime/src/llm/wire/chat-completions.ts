@@ -30,6 +30,7 @@ import {
   withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
+import { toChatCompletionsTools } from "./tools.js";
 
 export interface ChatCompletionsRequestOptions {
   readonly model: string;
@@ -136,7 +137,8 @@ export function buildChatCompletionsRequest(
     [maxTokenField]: maxTokens,
   };
 
-  if (input.tools.length > 0) body.tools = input.tools;
+  const tools = toChatCompletionsTools(input.tools);
+  if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
     body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
   }

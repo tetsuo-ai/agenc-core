@@ -551,14 +551,6 @@ export function parseAnthropicToolChoice(
   };
 }
 
-export function toAnthropicTools(tools: readonly LLMTool[]): Array<Record<string, unknown>> {
-  return tools.map((tool) => ({
-    name: tool.function.name,
-    description: tool.function.description,
-    input_schema: tool.function.parameters,
-  }));
-}
-
 export function prepareMessagesForWire(
   messages: readonly LLMMessage[],
 ): readonly LLMMessage[] {
@@ -588,7 +580,10 @@ export function normalizeToolCallsStrict(
   });
 }
 
-export function collectRequestMetrics(messages: readonly LLMMessage[], tools: readonly LLMTool[]) {
+export function collectRequestMetrics(
+  messages: readonly LLMMessage[],
+  tools: readonly LLMTool[],
+) {
   let systemMessages = 0;
   let userMessages = 0;
   let assistantMessages = 0;

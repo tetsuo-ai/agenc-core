@@ -106,6 +106,20 @@ describe("buildOpenAIResponsesRequest", () => {
       stream: false,
       store: false,
     });
+    expect(request.tools).toEqual([
+      {
+        type: "function",
+        name: "shell",
+        description: "Run a shell command",
+        parameters: {
+          type: "object",
+          properties: {
+            cmd: { type: "string" },
+          },
+          required: ["cmd"],
+        },
+      },
+    ]);
     expect(request.input).toEqual([
       {
         type: "message",
