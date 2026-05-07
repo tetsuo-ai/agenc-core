@@ -297,6 +297,19 @@ assert(
     reviewSource.includes("root npm test command is not the completion gate") &&
     reviewSource.includes("Do reject if verify.mjs Z-PURGEFINAL fails"),
 );
+assert(
+  "review.mjs large changed-source manifests require the hash shortcut",
+  reviewSource.includes("const filesReviewedInstruction = changedSourceFilesForReview.length > 200") &&
+    reviewSource.includes("ALL_CHANGED_SOURCE_FILES_SHA256: ${changedSourceFilesHash}") &&
+    reviewSource.includes("do not enumerate all ${changedSourceFilesForReview.length} paths") &&
+    !reviewSource.includes("You may use the shortcut"),
+);
+assert(
+  "review.mjs requires explicit none for pass sections",
+  reviewSource.includes("Security/supply-chain: none") &&
+    reviewSource.includes("Performance/resource-leak: none") &&
+    reviewSource.includes("Do not leave this header empty"),
+);
 const zFinalTsPruneGateSource = extractFunctionSource(verifySource, "assertZFinalTsPruneClean");
 assert(
   "verify.mjs Z-FINAL runs ts-prune against runtime tsconfig",
