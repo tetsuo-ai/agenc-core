@@ -16,12 +16,42 @@ afterEach(async () => {
 describe("scanMemoryFiles", () => {
   it("finds shallow markdown files", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
-    await writeFile(join(tempDir, "note.md"), "---\nname: test\ntype: user\n---\nContent");
+    await writeFile(
+      join(tempDir, "note.md"),
+      "---\nname: test\ndescription: test memory\ntype: user\n---\nContent",
+    );
 
     const result = await scanMemoryFiles(tempDir, new AbortController().signal);
 
     expect(result).toHaveLength(1);
     expect(result[0]?.filename).toBe("note.md");
+    expect(result[0]?.description).toBe("test memory");
+    expect(result[0]?.type).toBe("user");
+  });
+
+  it("degrades gracefully for unknown frontmatter types", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
+    await writeFile(
+      join(tempDir, "unknown.md"),
+      "---\nname: unknown\ntype: not-a-memory-type\n---\nContent",
+    );
+
+    const result = await scanMemoryFiles(tempDir, new AbortController().signal);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.filename).toBe("unknown.md");
+    expect(result[0]?.type).toBeUndefined();
+  });
+
+  it("returns no candidates when the signal is already aborted", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "agenc-memory-scan-"));
+    await writeFile(join(tempDir, "note.md"), "---\nname: test\ntype: user\n---\nContent");
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await scanMemoryFiles(tempDir, controller.signal);
+
+    expect(result).toEqual([]);
   });
 
   it("ignores MEMORY.md entrypoints", async () => {
