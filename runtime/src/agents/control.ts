@@ -580,6 +580,32 @@ export class AgentControl {
     this.registry.updateLastTaskMessage(threadId, renderInputPreview(input));
   }
 
+  async clearConversationHistory(threadId: ThreadId): Promise<void> {
+    if (this.threadManager?.hasThread(threadId)) {
+      await this.threadManager.sendOp(threadId, {
+        type: "clear_conversation_history",
+      });
+      return;
+    }
+    const agent = this.requireLive(threadId);
+    agent.messages.length = 0;
+    try {
+      agent.downInbox.send({
+        author: agent.agentPath,
+        recipient: agent.agentPath,
+        content: "",
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "history_clear" },
+      });
+    } catch (err) {
+      if (err instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw err;
+    }
+  }
+
   /**
    * Port of reference runtime `append_message` (`control.rs:605`). Non-turn-
    * triggering message append.

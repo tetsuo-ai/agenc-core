@@ -5,6 +5,7 @@ import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
+import type { PhaseEvent } from "../phases/events.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationResponse,
@@ -55,6 +56,8 @@ export interface AgenCBridgeSession {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  emitPhaseEvent?(event: PhaseEvent): void;
+  clearDaemonSession?(): Promise<void>;
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,

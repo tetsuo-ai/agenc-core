@@ -34,6 +34,8 @@ import type {
   MessageContent,
   PermissionListParams,
   PermissionListResult,
+  SessionClearParams,
+  SessionClearResult,
   SessionSummary,
   ToolApproveParams,
   ToolCancelParams,
@@ -980,6 +982,37 @@ export class AgenCDaemonAgentManager {
     return { requestId: params.requestId, resolved };
   }
 
+  async clearSessionHistory(
+    params: SessionClearParams,
+  ): Promise<SessionClearResult> {
+    const clearedAt = this.#now();
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.clear requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.clearAgentSession === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.clear requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowClearSession: true },
+    );
+    await this.#runner.clearAgentSession(agentId, {
+      sessionId: params.sessionId,
+      clearedAt,
+    });
+    return {
+      sessionId: params.sessionId,
+      cleared: true,
+      clearedAt,
+    };
+  }
+
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -1144,6 +1177,7 @@ export class AgenCDaemonAgentManager {
     sessionId: string,
     options: {
       readonly allowCancelTool?: boolean;
+      readonly allowClearSession?: boolean;
       readonly allowElicitationResponse?: boolean;
       readonly allowListPermissions?: boolean;
     } = {},
@@ -1161,6 +1195,9 @@ export class AgenCDaemonAgentManager {
     const hasElicitationRunner =
       options.allowElicitationResponse === true &&
       this.#runner?.respondToElicitation !== undefined;
+    const hasClearSessionRunner =
+      options.allowClearSession === true &&
+      this.#runner?.clearAgentSession !== undefined;
     const hasPermissionListRunner =
       options.allowListPermissions === true &&
       this.#runner?.listPermissions !== undefined;
@@ -1168,6 +1205,7 @@ export class AgenCDaemonAgentManager {
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
       !hasElicitationRunner &&
+      !hasClearSessionRunner &&
       !hasPermissionListRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(

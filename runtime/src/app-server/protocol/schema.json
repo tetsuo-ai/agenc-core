@@ -20,6 +20,7 @@
     "session.attach",
     "session.detach",
     "session.terminate",
+    "session.clear",
     "message.send",
     "message.stream",
     "thread/realtime/start",
@@ -366,6 +367,17 @@
         },
         "reason": {
           "type": "string"
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionClearParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": ["sessionId"]
@@ -1516,6 +1528,9 @@
           "$ref": "#/definitions/SessionTerminateRequest"
         },
         {
+          "$ref": "#/definitions/SessionClearRequest"
+        },
+        {
           "$ref": "#/definitions/MessageSendRequest"
         },
         {
@@ -2118,6 +2133,25 @@
         },
         "params": {
           "$ref": "#/definitions/SessionTerminateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionClearRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.clear"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionClearParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

@@ -13,6 +13,7 @@ import {
   type LocalRuntimeBootstrap,
 } from "../bin/bootstrap.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
+import { clearSession } from "../commands/clear.js";
 import {
   delegate,
   type DelegateOpts,
@@ -163,6 +164,11 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly acceptedAt: string;
 }
 
+export interface AgenCBackgroundAgentClearSessionParams {
+  readonly sessionId: string;
+  readonly clearedAt: string;
+}
+
 export interface AgenCBackgroundAgentToolDecisionParams {
   readonly requestId: string;
   readonly decision: ReviewDecision;
@@ -194,6 +200,10 @@ export interface AgenCBackgroundAgentRunner {
   submitAgentMessage?(
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
+  ): Promise<void>;
+  clearAgentSession?(
+    agentId: string,
+    params: AgenCBackgroundAgentClearSessionParams,
   ): Promise<void>;
   resolveToolDecision?(
     agentId: string,
@@ -693,6 +703,35 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         },
       });
     }
+  }
+
+  async clearAgentSession(
+    agentId: string,
+    params: AgenCBackgroundAgentClearSessionParams,
+  ): Promise<void> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    if (isClearInFlight(active)) {
+      throw new Error(
+        "Cannot clear right now: a turn is currently in flight; wait for it to complete before running /clear.",
+      );
+    }
+    await clearSession(active.bootstrap.session);
+    await active.control.clearConversationHistory(agentId);
+    active.activeToolCallIds.clear();
+    this.#assistantTextByAgent.delete(agentId);
+    active.lastActiveAt = params.clearedAt;
+    const clearedAtMs = Date.parse(params.clearedAt);
+    await this.#emitOrBufferEvent(active, {
+      id: `history-cleared-${params.sessionId}-${params.clearedAt}`,
+      type: "history_cleared",
+      acceptedAt: params.clearedAt,
+      payload: {
+        timestamp: Number.isFinite(clearedAtMs) ? clearedAtMs : Date.now(),
+      },
+    });
   }
 
   async resolveToolDecision(
@@ -1431,6 +1470,27 @@ function formatBudgetSeconds(value: number): string {
 
 function isRunnableActiveAgent(active: ActiveBackgroundAgent): boolean {
   return active.budgetHalt === undefined;
+}
+
+interface ActiveTurnPeek {
+  unsafePeek?: () => unknown;
+}
+
+function hasRuntimeActiveTurn(
+  session: LocalRuntimeBootstrap["session"],
+): boolean {
+  const activeTurn = (session as unknown as { activeTurn?: ActiveTurnPeek })
+    .activeTurn;
+  return typeof activeTurn?.unsafePeek === "function" &&
+    activeTurn.unsafePeek() !== null;
+}
+
+function isClearInFlight(active: ActiveBackgroundAgent): boolean {
+  if (hasRuntimeActiveTurn(active.bootstrap.session)) return true;
+  if (active.activeToolCallIds.size > 0) return true;
+  if (!hasCurrentStatus(active.thread)) return false;
+  return active.thread.currentStatus.status === "running" ||
+    active.thread.currentStatus.status === "pending_init";
 }
 
 async function unavailableRealtimeTransport(): Promise<RealtimeTransportConnection> {

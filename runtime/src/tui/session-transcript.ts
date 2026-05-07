@@ -278,6 +278,10 @@ function unwrap(event: SessionTranscriptEvent): {
   };
 }
 
+function isHistoryClearedEvent(event: SessionTranscriptEvent): boolean {
+  return unwrap(event).type === "history_cleared";
+}
+
 function payloadRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === "object" && !Array.isArray(payload)
     ? (payload as Record<string, unknown>)
@@ -685,6 +689,20 @@ export function adaptTranscriptEvents(
     const payload = payloadRecord(event.payload);
 
     switch (event.type) {
+      case "history_cleared":
+        out.length = 0;
+        seen.clear();
+        seen.add(event.key);
+        openTools.clear();
+        toolNames.clear();
+        runningToolNames.clear();
+        streamingToolUses.length = 0;
+        streamingText = "";
+        realtimeStreamingText = "";
+        currentTurnId = null;
+        lastAssistantText = "";
+        isStreaming = false;
+        break;
       case "turn_start":
       case "turn_started":
         isStreaming = true;
@@ -1036,6 +1054,13 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       const events: SessionTranscriptEvent[] = [];
       for (const event of action.events) {
         const key = eventKey(event);
+        if (isHistoryClearedEvent(event)) {
+          keys.clear();
+          events.length = 0;
+          keys.add(key);
+          events.push(event);
+          continue;
+        }
         if (keys.has(key)) continue;
         keys.add(key);
         events.push(event);
@@ -1044,6 +1069,12 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
     }
     case "append": {
       const key = eventKey(action.event);
+      if (isHistoryClearedEvent(action.event)) {
+        return {
+          events: [action.event],
+          keys: new Set([key]),
+        };
+      }
       if (state.keys.has(key)) return state;
       return {
         events: [...state.events, action.event],
@@ -1051,6 +1082,19 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
       };
     }
   }
+}
+
+export function createSessionTranscriptStateForTesting(
+  events: readonly SessionTranscriptEvent[],
+): TranscriptState {
+  return reducer({ events: [], keys: new Set() }, { kind: "reset", events });
+}
+
+export function appendSessionTranscriptEventForTesting(
+  state: TranscriptState,
+  event: SessionTranscriptEvent,
+): TranscriptState {
+  return reducer(state, { kind: "append", event });
 }
 
 function initialEvents(session: AgenCBridgeSession): readonly SessionTranscriptEvent[] {
