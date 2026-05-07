@@ -18,6 +18,7 @@ import "./loadSkillsDir.js";
 
 const MCP_SKILL_URI_PREFIX = "skill://";
 const MAX_MCP_SKILLS_PER_SERVER = 64;
+const MAX_MCP_RESOURCE_PAGES = 32;
 const MAX_MCP_SKILL_BYTES = 256 * 1024;
 const MCP_SKILLS_FETCH_CACHE_SIZE = 50;
 
@@ -63,9 +64,21 @@ async function listSkillResources(
   client: Extract<MCPServerConnection, { type: "connected" }>,
 ): Promise<readonly SkillResource[]> {
   const skillResources: SkillResource[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
 
-  do {
+  for (let pagesRead = 0; pagesRead < MAX_MCP_RESOURCE_PAGES; pagesRead += 1) {
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor)) {
+        logMCPError(
+          client.name,
+          `Stopped MCP skill resource pagination at repeated cursor ${cursor}`,
+        );
+        return skillResources;
+      }
+      seenCursors.add(cursor);
+    }
+
     const result = await client.client.request(
       {
         method: "resources/list",
@@ -85,7 +98,15 @@ async function listSkillResources(
       typeof result.nextCursor === "string" && result.nextCursor.length > 0
         ? result.nextCursor
         : undefined;
-  } while (cursor);
+    if (cursor === undefined) return skillResources;
+  }
+
+  if (cursor !== undefined) {
+    logMCPError(
+      client.name,
+      `Stopped MCP skill resource pagination after ${MAX_MCP_RESOURCE_PAGES} pages`,
+    );
+  }
 
   return skillResources;
 }
@@ -123,8 +144,6 @@ function safeMcpFrontmatter(
     "argument-hint",
     "when_to_use",
     "version",
-    "disable-model-invocation",
-    "user-invocable",
   ]) {
     if (frontmatter[key] !== undefined) {
       safe[key] = frontmatter[key];
@@ -172,7 +191,12 @@ async function createCommandFromResource(
     loadedFrom: "mcp",
     paths: undefined,
   });
-  return { ...command, isMcp: true };
+  return {
+    ...command,
+    disableModelInvocation: false,
+    userInvocable: true,
+    isMcp: true,
+  };
 }
 
 function dedupeSkillResourcesByCommandName(

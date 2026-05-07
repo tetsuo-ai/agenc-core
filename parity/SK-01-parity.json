@@ -18,6 +18,7 @@
     "runtime/src/build/feature.ts",
     "runtime/src/commands.ts",
     "runtime/src/commands/skills.ts",
+    "runtime/src/commands/types.ts",
     "runtime/src/services/mcp/client.ts",
     "runtime/src/services/mcp/useManageMCPConnections.ts",
     "runtime/src/tools/SkillTool/SkillTool.ts",

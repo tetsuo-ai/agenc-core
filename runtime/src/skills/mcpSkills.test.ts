@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchMcpSkillsForClient } from "./mcpSkills.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
@@ -8,6 +8,7 @@ type FakeSkillResource = {
   readonly name?: string;
   readonly description?: string;
   readonly text?: string;
+  readonly blob?: string;
   readonly readError?: Error;
 };
 
@@ -15,6 +16,8 @@ function connectedClient(
   resources: readonly FakeSkillResource[],
   options: {
     readonly pages?: readonly (readonly FakeSkillResource[])[];
+    readonly nextCursors?: readonly (string | undefined)[];
+    readonly serverName?: string;
   } = {},
 ): MCPServerConnection {
   const pages = options.pages ?? [resources];
@@ -27,9 +30,15 @@ function connectedClient(
           : Number.parseInt(request.params.cursor, 10);
       const page = pages[pageIndex] ?? [];
       const nextCursor =
-        pageIndex + 1 < pages.length ? String(pageIndex + 1) : undefined;
+        options.nextCursors?.[pageIndex] ??
+        (pageIndex + 1 < pages.length ? String(pageIndex + 1) : undefined);
       return {
-        resources: page.map(({ text: _text, readError: _readError, ...resource }) => resource),
+        resources: page.map(({
+          text: _text,
+          blob: _blob,
+          readError: _readError,
+          ...resource
+        }) => resource),
         ...(nextCursor ? { nextCursor } : {}),
       };
     }
@@ -37,10 +46,15 @@ function connectedClient(
       const resource = allResources.find((candidate) => candidate.uri === request.params?.uri);
       if (resource?.readError) throw resource.readError;
       return {
-        contents:
-          resource && resource.text !== undefined
-            ? [{ uri: resource.uri, text: resource.text }]
-            : [],
+        contents: resource
+          ? [
+              {
+                uri: resource.uri,
+                ...(resource.text !== undefined ? { text: resource.text } : {}),
+                ...(resource.blob !== undefined ? { blob: resource.blob } : {}),
+              },
+            ]
+          : [],
       };
     }
     throw new Error(`unexpected MCP request: ${request.method}`);
@@ -48,7 +62,7 @@ function connectedClient(
 
   return {
     type: "connected",
-    name: "Docs Server",
+    name: options.serverName ?? "Docs Server",
     capabilities: { resources: {} },
     client: { request },
     config: { type: "stdio", command: "docs", scope: "project" },
@@ -57,6 +71,10 @@ function connectedClient(
 }
 
 describe("fetchMcpSkillsForClient", () => {
+  beforeEach(() => {
+    fetchMcpSkillsForClient.cache.clear();
+  });
+
   it("builds model-invocable MCP skills from skill resources", async () => {
     const client = connectedClient([
       {
@@ -110,7 +128,6 @@ Review $focus without running shell snippets: !\`echo nope\`
       },
     ]);
 
-    fetchMcpSkillsForClient.cache.delete("Docs Server");
     const skills = await fetchMcpSkillsForClient(client);
 
     expect(skills[0]).toMatchObject({
@@ -144,7 +161,6 @@ Use page two.
       ],
     });
 
-    fetchMcpSkillsForClient.cache.delete("Docs Server");
     const skills = await fetchMcpSkillsForClient(client);
 
     expect(skills).toHaveLength(1);
@@ -152,6 +168,53 @@ Use page two.
       name: "mcp__Docs_Server__page-two",
       description: "Page two",
     });
+  });
+
+  it("stops paginated listing when a server repeats a cursor", async () => {
+    const client = connectedClient([], {
+      pages: [
+        [
+          {
+            uri: "file:///not-a-skill.md",
+            name: "ignored",
+            text: "ignored",
+          },
+        ],
+      ],
+      nextCursors: ["0"],
+    });
+
+    const skills = await fetchMcpSkillsForClient(client);
+    const request = (client as unknown as {
+      client: { request: ReturnType<typeof vi.fn> };
+    }).client.request;
+
+    expect(skills).toEqual([]);
+    expect(
+      request.mock.calls.filter(([call]) => call.method === "resources/list"),
+    ).toHaveLength(2);
+  });
+
+  it("caps paginated listing when a server never exhausts non-skill pages", async () => {
+    const client = connectedClient([], {
+      pages: Array.from({ length: 40 }, (_, index) => [
+        {
+          uri: `file:///ignored-${index}.md`,
+          name: `ignored-${index}`,
+          text: "ignored",
+        },
+      ]),
+    });
+
+    const skills = await fetchMcpSkillsForClient(client);
+    const request = (client as unknown as {
+      client: { request: ReturnType<typeof vi.fn> };
+    }).client.request;
+
+    expect(skills).toEqual([]);
+    expect(
+      request.mock.calls.filter(([call]) => call.method === "resources/list"),
+    ).toHaveLength(32);
   });
 
   it("keeps the first skill when resource names normalize to the same command", async () => {
@@ -176,7 +239,6 @@ Second.
       },
     ]);
 
-    fetchMcpSkillsForClient.cache.delete("Docs Server");
     const skills = await fetchMcpSkillsForClient(client);
 
     expect(skills).toHaveLength(1);
@@ -199,6 +261,8 @@ agent: reviewer
 model: model-from-server
 effort: 999
 shell: bash
+disable-model-invocation: true
+user-invocable: false
 hooks:
   PostToolUse:
     - hooks:
@@ -220,6 +284,8 @@ Review $ARGUMENTS without running shell snippets: !\`echo nope\`
     expect(skills[0]!.model).toBeUndefined();
     expect(skills[0]!.effort).toBeUndefined();
     expect(skills[0]!.hooks).toBeUndefined();
+    expect(skills[0]!.disableModelInvocation).toBe(false);
+    expect(skills[0]!.userInvocable).toBe(true);
 
     const blocks = await skills[0]!.getPromptForCommand("architecture", {} as never);
     expect(blocks).toEqual([
@@ -248,7 +314,6 @@ Use the valid skill.
       },
     ]);
 
-    fetchMcpSkillsForClient.cache.delete("Docs Server");
     const skills = await fetchMcpSkillsForClient(client);
 
     expect(skills).toHaveLength(1);
@@ -256,5 +321,52 @@ Use the valid skill.
       name: "mcp__Docs_Server__valid",
       description: "Valid skill",
     });
+  });
+
+  it("skips oversized and non-text MCP resources without dropping valid skills", async () => {
+    const client = connectedClient([
+      {
+        uri: "skill://team/huge",
+        name: "huge",
+        text: "x".repeat(256 * 1024 + 1),
+      },
+      {
+        uri: "skill://team/blob-only",
+        name: "blob-only",
+        blob: "Ym9i",
+      },
+      {
+        uri: "skill://team/valid",
+        name: "valid",
+        text: `---
+description: Valid skill
+---
+Use the valid skill.
+`,
+      },
+    ]);
+
+    const skills = await fetchMcpSkillsForClient(client);
+
+    expect(skills).toHaveLength(1);
+    expect(skills[0]).toMatchObject({
+      name: "mcp__Docs_Server__valid",
+      description: "Valid skill",
+    });
+  });
+
+  it("does not request resources from clients without the resources capability", async () => {
+    const client = {
+      ...connectedClient([]),
+      capabilities: {},
+    } as unknown as MCPServerConnection;
+
+    const skills = await fetchMcpSkillsForClient(client);
+    const request = (client as unknown as {
+      client: { request: ReturnType<typeof vi.fn> };
+    }).client.request;
+
+    expect(skills).toEqual([]);
+    expect(request).not.toHaveBeenCalled();
   });
 });
