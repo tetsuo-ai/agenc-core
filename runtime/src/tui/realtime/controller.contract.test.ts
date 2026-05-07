@@ -75,11 +75,13 @@ async function waitFor(
 describe("AgenC realtime TUI controller", () => {
   test("routes websocket start, text, audio, and stop through daemon RPC", async () => {
     const client = createClient();
+    const audioPlayer = createAudioPlayer();
     const controls = createRealtimeTuiControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
       startAudioCapture: createNoopAudioCapture(),
+      audioPlayer,
     });
 
     await controls.start({ transport: "websocket", outputModality: "text" });
@@ -90,6 +92,11 @@ describe("AgenC realtime TUI controller", () => {
       numChannels: 1,
     });
     await controls.stop();
+    expect(audioPlayer.close).toHaveBeenCalledTimes(1);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      closedBanner: "Realtime closed: requested",
+    });
 
     expect(client.requests).toEqual([
       {
@@ -318,6 +325,72 @@ describe("AgenC realtime TUI controller", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  test("stops daemon realtime if websocket capture fails after daemon start", async () => {
+    const client = createClient();
+    const emitted: JsonObject[] = [];
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async () => {
+        throw new Error("microphone unavailable");
+      },
+    });
+
+    await expect(controls.start({ transport: "websocket" })).rejects.toThrow(
+      "microphone unavailable",
+    );
+
+    expect(client.requests.map((request) => request.method)).toEqual([
+      "thread/realtime/start",
+      "thread/realtime/stop",
+    ]);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      errorBanner: "microphone unavailable",
+    });
+    expect(emitted.at(-1)).toMatchObject({
+      type: "realtime_error",
+      payload: { threadId: "agent_1", message: "microphone unavailable" },
+    });
+  });
+
+  test.each([
+    ["error", "capture failed", "realtime_error"],
+    ["closed", "audio_capture_closed", "realtime_closed"],
+  ] as const)(
+    "stops daemon realtime when websocket capture reports %s",
+    async (kind, message, eventType) => {
+      const client = createClient();
+      let callbacks: RealtimeAudioCaptureCallbacks | null = null;
+      const emitted: JsonObject[] = [];
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: (event) => emitted.push(event),
+        startAudioCapture: async (nextCallbacks) => {
+          callbacks = nextCallbacks;
+          return { stop: vi.fn() };
+        },
+      });
+
+      await controls.start({ transport: "websocket" });
+      if (kind === "error") callbacks?.onError(message);
+      else callbacks?.onClosed();
+
+      await waitFor(
+        () =>
+          client.requests.filter(
+            (request) => request.method === "thread/realtime/stop",
+          ).length === 1,
+        "daemon stop after capture terminal event",
+      );
+      expect(emitted.at(-1)).toMatchObject({
+        type: eventType,
+      });
+    },
+  );
+
   test("enqueues realtime output audio deltas into the audio player", () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
@@ -394,6 +467,43 @@ describe("AgenC realtime TUI controller", () => {
       payload: { threadId: "agent_1", message: "stop failed" },
     });
   });
+
+  test.each([
+    [{ type: "failed" as const, message: "peer failed" }, "realtime_error"],
+    [{ type: "closed" as const }, "realtime_closed"],
+  ])(
+    "stops daemon realtime on unexpected local WebRTC %s events",
+    async (event, eventType) => {
+      const client = createClient();
+      const channel = createRealtimeWebrtcEventChannel();
+      const emitted: JsonObject[] = [];
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: (nextEvent) => emitted.push(nextEvent),
+        startWebrtcSession: async () => ({
+          offerSdp: "offer-sdp",
+          handle: new RealtimeWebrtcSessionHandle({
+            applyAnswerSdp: vi.fn(),
+            close: vi.fn(),
+          }),
+          events: channel.receiver,
+        }),
+      });
+
+      await controls.start({ transport: "webrtc" });
+      channel.sender.send(event);
+
+      await waitFor(
+        () =>
+          client.requests.filter(
+            (request) => request.method === "thread/realtime/stop",
+          ).length === 1,
+        "daemon stop after local WebRTC terminal event",
+      );
+      expect(emitted.at(-1)).toMatchObject({ type: eventType });
+    },
+  );
 
   test.each([
     [

@@ -506,8 +506,8 @@ describe("RealtimeWebrtcSession", () => {
 describe("WebRTC audio level helpers", () => {
   test("converts and clamps audio levels to realtime peaks", () => {
     expect(audioLevelToPeak(-1)).toBe(0);
-    expect(audioLevelToPeak(0.5)).toBe(16_384);
-    expect(audioLevelToPeak(2)).toBe(32_767);
+    expect(audioLevelToPeak(0.5)).toBe(32_768);
+    expect(audioLevelToPeak(2)).toBe(65_535);
     expect(audioLevelToPeak(Number.NaN)).toBe(0);
   });
 

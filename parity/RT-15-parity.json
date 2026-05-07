@@ -36,7 +36,7 @@
       "source": "tui/src/chatwidget/realtime.rs",
       "target": "runtime/src/tui/realtime/state.ts",
       "coverage": [
-        "voice lifecycle phases track inactive, starting, active, stopping, error, and closed states",
+        "voice lifecycle phases track inactive, starting, active, stopping, plus error and closed terminal banners",
         "requested-close, session id, transport, mute, push-to-talk, and local audio-level state are preserved",
         "audio level meter normalizes realtime local peaks into stable terminal bar output",
         "realtime item-added notifications are summarized for compact chat history rendering"

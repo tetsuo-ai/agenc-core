@@ -26,6 +26,7 @@ export interface RealtimeAudioPlayer {
 
 const INPUT_SAMPLE_RATE = 16_000;
 const INPUT_CHANNELS = 1;
+const MAX_OUTPUT_QUEUE_BYTES = 512 * 1024;
 
 export async function startDefaultRealtimeAudioCapture(
   callbacks: RealtimeAudioCaptureCallbacks,
@@ -56,13 +57,57 @@ export async function startDefaultRealtimeAudioCapture(
 export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
   let child: ChildProcess | null = null;
   let format: { sampleRate: number; numChannels: number } | null = null;
+  const queue: Buffer[] = [];
+  let queuedBytes = 0;
+  let waitingForDrain = false;
 
   const close = (): void => {
     const active = child;
     child = null;
     format = null;
+    queue.length = 0;
+    queuedBytes = 0;
+    waitingForDrain = false;
     active?.stdin?.destroy();
     active?.kill("SIGTERM");
+  };
+
+  const flush = (): void => {
+    const active = child;
+    if (active === null || active.stdin === null || active.stdin.destroyed) {
+      queue.length = 0;
+      queuedBytes = 0;
+      waitingForDrain = false;
+      return;
+    }
+    while (queue.length > 0) {
+      const chunk = queue[0]!;
+      if (!active.stdin.write(chunk)) {
+        if (!waitingForDrain) {
+          waitingForDrain = true;
+          active.stdin.once("drain", () => {
+            waitingForDrain = false;
+            flush();
+          });
+        }
+        return;
+      }
+      queue.shift();
+      queuedBytes -= chunk.length;
+    }
+  };
+
+  const enqueueBuffer = (chunk: Buffer): void => {
+    while (
+      queue.length > 0 &&
+      queuedBytes + chunk.length > MAX_OUTPUT_QUEUE_BYTES
+    ) {
+      queuedBytes -= queue.shift()!.length;
+    }
+    if (chunk.length > MAX_OUTPUT_QUEUE_BYTES) return;
+    queue.push(chunk);
+    queuedBytes += chunk.length;
+    flush();
   };
 
   return {
@@ -106,11 +151,7 @@ export function createProcessRealtimeAudioPlayer(): RealtimeAudioPlayer {
           format = null;
         });
       }
-      const active = child;
-      if (active === null || active.stdin === null || active.stdin.destroyed) {
-        return;
-      }
-      active.stdin.write(Buffer.from(audio.data, "base64"));
+      enqueueBuffer(Buffer.from(audio.data, "base64"));
     },
     close,
   };

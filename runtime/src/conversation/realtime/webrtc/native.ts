@@ -431,7 +431,7 @@ export async function localAudioLevel(
 
 export function audioLevelToPeak(audioLevel: number): number {
   if (!Number.isFinite(audioLevel)) return 0;
-  return Math.round(Math.max(0, Math.min(1, audioLevel)) * 32_767);
+  return Math.round(Math.max(0, Math.min(1, audioLevel)) * 65_535);
 }
 
 function resolveRealtimeWebrtcRuntime(

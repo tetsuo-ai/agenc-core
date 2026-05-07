@@ -106,6 +106,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     const transport = options.transport ?? "websocket";
     this.#dispatch({ type: "start_requested", transport });
     let startedWebRtc: StartedRealtimeWebrtcSession | null = null;
+    let daemonStarted = false;
     try {
       const requestTransport =
         transport === "webrtc"
@@ -120,6 +121,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         outputModality: options.outputModality ?? "audio",
         voice: options.voice ?? null,
       } satisfies ThreadRealtimeStartParams);
+      daemonStarted = true;
       if (transport === "websocket") {
         await this.#startWebsocketAudioCapture();
       }
@@ -129,6 +131,7 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         await this.#closeWebrtc(startedWebRtc).catch(() => {});
       }
       if (this.#webRtc === startedWebRtc) this.#webRtc = null;
+      if (daemonStarted) await this.#requestDaemonStop();
       const message = error instanceof Error ? error.message : String(error);
       this.#dispatch({ type: "start_failed", message });
       this.#emitLocal("realtime_error", { threadId: this.#threadId, message });
@@ -149,6 +152,12 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       await this.#client.request("thread/realtime/stop", {
         threadId: this.#threadId,
       } satisfies ThreadRealtimeStopParams);
+      this.#audioPlayer.close();
+      this.#dispatch({ type: "closed", reason: "requested" });
+      this.#emitLocal("realtime_closed", {
+        threadId: this.#threadId,
+        reason: "requested",
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.#dispatch({ type: "error", message });
@@ -306,22 +315,28 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
           peak: event.peak,
         });
         break;
-      case "closed":
+      case "closed": {
+        const requestedClose = this.#state.requestedClose;
         this.#webRtc = null;
         this.#dispatch({ type: "closed", reason: "webrtc_closed" });
         this.#emitLocal("realtime_closed", {
           threadId: this.#threadId,
           reason: "webrtc_closed",
         });
+        if (!requestedClose) void this.#requestDaemonStop();
         break;
-      case "failed":
+      }
+      case "failed": {
+        const requestedClose = this.#state.requestedClose;
         this.#webRtc = null;
         this.#dispatch({ type: "error", message: event.message });
         this.#emitLocal("realtime_error", {
           threadId: this.#threadId,
           message: event.message,
         });
+        if (!requestedClose) void this.#requestDaemonStop();
         break;
+      }
     }
   }
 
@@ -346,18 +361,31 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
         });
       },
       onError: (message) => {
-        this.#surfaceRealtimeError(message, "Realtime audio capture failed");
+        void this.#handleCaptureTerminal("error", message);
       },
       onClosed: () => {
-        if (this.#state.phase !== "inactive") {
-          this.#dispatch({ type: "closed", reason: "audio_capture_closed" });
-          this.#emitLocal("realtime_closed", {
-            threadId: this.#threadId,
-            reason: "audio_capture_closed",
-          });
-        }
+        void this.#handleCaptureTerminal("closed", "audio_capture_closed");
       },
     });
+  }
+
+  async #handleCaptureTerminal(
+    kind: "error" | "closed",
+    message: string,
+  ): Promise<void> {
+    if (this.#state.requestedClose || this.#state.phase === "inactive") return;
+    await this.#stopAudioCapture().catch(() => {});
+    this.#audioPlayer.close();
+    if (kind === "error") {
+      this.#surfaceRealtimeError(message, "Realtime audio capture failed");
+    } else {
+      this.#dispatch({ type: "closed", reason: message });
+      this.#emitLocal("realtime_closed", {
+        threadId: this.#threadId,
+        reason: message,
+      });
+    }
+    await this.#requestDaemonStop();
   }
 
   async #stopAudioCapture(): Promise<void> {
@@ -365,6 +393,14 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
     if (capture === null) return;
     this.#audioCapture = null;
     await capture.stop();
+  }
+
+  async #requestDaemonStop(): Promise<void> {
+    await this.#client
+      .request("thread/realtime/stop", {
+        threadId: this.#threadId,
+      } satisfies ThreadRealtimeStopParams)
+      .catch(() => {});
   }
 
   async #applyProviderSdp(sdp: string): Promise<void> {
