@@ -38,7 +38,7 @@ import {
   shouldDeferForEligibleTurnCadence,
   type MemoryExtractionTriggerState,
 } from "../../memory/extraction-triggers.js";
-import { formatMemoryManifest, scanMemoryFiles } from "./memory-scan.js";
+import { formatMemoryManifest, scanMemoryFiles } from "../../memory/index.js";
 import {
   AUTO_MEMORY_INDEX_FILE,
   isPathInsideMemoryDir,

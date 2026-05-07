@@ -1,0 +1,57 @@
+{
+  "item": "MM-07",
+  "status": "implemented",
+  "contractName": "memory-access-surface",
+  "scope": "MM-07 exposes the donor memory access modules through runtime/src/memory/index.ts and migrates the in-scope tool/service code paths to consume recall, scan, freshness, path, detection, filtering, @memory mention, project-memory selector, and instruction-memory loader APIs there.",
+  "sourceRoot": "TUI/source reference",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/memdir/findRelevantMemories.ts",
+    "src/memdir/memoryScan.ts",
+    "src/memdir/memoryAge.ts",
+    "src/utils/claudemd.ts (branding-scan: allow upstream source citation)"
+  ],
+  "targetFiles": [
+    "runtime/src/memory/index.ts",
+    "runtime/src/memory/age.ts",
+    "runtime/src/memory/agencmd.ts",
+    "runtime/src/memory/find-relevant.ts",
+    "runtime/src/memory/scan.ts",
+    "runtime/src/utils/attachments.ts",
+    "runtime/src/tools/FileReadTool/FileReadTool.ts",
+    "runtime/src/services/extractMemories/extractMemories.ts"
+  ],
+  "testFiles": [
+    "runtime/src/memory/index.test.ts",
+    "runtime/src/memory-wiring.contract.test.ts",
+    "runtime/src/memory/scan.test.ts",
+    "runtime/src/services/extractMemories/extractMemories.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "MM-07-public-surface",
+      "source": "src/memdir/findRelevantMemories.ts + src/memdir/memoryScan.ts + src/memdir/memoryAge.ts",
+      "target": "runtime/src/memory/index.ts",
+      "requiredBehaviors": [
+        "Recall, scan, manifest, age, freshness, path, detection, and branded instruction-memory loader APIs are exported from the public memory access surface.",
+        "Runtime tool and code callers import memory access helpers from runtime/src/memory/index.ts instead of donor-shaped memory leaf modules, except memory-internal legacy team prompt files allowlisted in the wiring contract.",
+        "The public recall wrapper preserves recent-tool prompt context and already-surfaced memory filtering.",
+        "Relevant-memory headers keep stable age text at attachment creation time."
+      ],
+      "edgeCases": [
+        "Memory scans can be called by services without an AbortSignal.",
+        "AGENC.md frontmatter path globs are preserved when loaded through the public surface.",
+        "MEMORY.md entrypoints are excluded from scan manifests.",
+        "Stale memory headers include the drift warning before the memory path."
+      ],
+      "tests": [
+        "runtime/src/memory/index.test.ts",
+        "runtime/src/memory-wiring.contract.test.ts",
+        "runtime/src/memory/scan.test.ts",
+        "runtime/src/services/extractMemories/extractMemories.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

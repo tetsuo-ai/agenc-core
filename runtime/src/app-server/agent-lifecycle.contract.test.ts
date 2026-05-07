@@ -18,6 +18,13 @@ import {
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
+  createAgenCPortalAgentCreateRequest,
+  createAgenCPortalAgentListRequest,
+  createAgenCPortalAgentStopRequest,
+  createAgenCPortalDaemonInitializeRequest,
+} from "../app-server-protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type {
   AgenCBackgroundAgentSnapshot,
@@ -2759,6 +2766,157 @@ describe("AgenC background agent lifecycle", () => {
         },
       },
     ]);
+  });
+
+  it("dispatches portal background agent dashboard list/start/stop through JSON-RPC", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_dashboard"]),
+      now: sequence([
+        "2026-05-01T12:15:01.000Z",
+        "2026-05-01T12:15:03.000Z",
+      ]),
+    });
+    const starts: AgenCBackgroundAgentStartParams[] = [];
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async (params) => {
+        starts.push(params);
+        return {
+          agentId: "agent_dashboard",
+          startedAt: "2026-05-01T12:15:00.500Z",
+          status: "running",
+        };
+      },
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:15:00.000Z",
+        "2026-05-01T12:15:02.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+
+    await expect(
+      connection.dispatch(createAgenCPortalDaemonInitializeRequest()),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "initialize",
+      result: {
+        type: "initialized",
+        protocolVersion: "1.0.0",
+      },
+    });
+    expect(connection.initializeState?.clientCapabilities).toEqual(
+      AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
+    );
+    await expect(
+      connection.dispatch(createAgenCPortalAgentListRequest({ limit: 5 })),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "agent.list",
+      result: {
+        agents: [],
+      },
+    });
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentCreateRequest(
+          {
+            objective: "  index queued work  ",
+            cwd: "/workspace",
+            unattendedAllow: ["FileRead"],
+            metadata: { source: "portal.dashboard" },
+          },
+          "start-background",
+        ),
+      ),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "start-background",
+      result: {
+        agentId: "agent_dashboard",
+        sessionId: "session_dashboard",
+        objective: "index queued work",
+        status: "running",
+        cwd: "/workspace",
+        activeSessionIds: ["session_dashboard"],
+        metadata: {
+          source: "portal.dashboard",
+          unattendedAllow: ["FileRead"],
+          unattendedDeny: [],
+        },
+      },
+    });
+    expect(starts).toEqual([
+      {
+        objective: "index queued work",
+        cwd: "/workspace",
+        metadata: {
+          source: "portal.dashboard",
+          unattendedAllow: ["FileRead"],
+          unattendedDeny: [],
+        },
+        unattendedAllow: ["FileRead"],
+        unattendedDeny: [],
+      },
+    ]);
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentListRequest({ limit: 5 }, "list-background"),
+      ),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "list-background",
+      result: {
+        agents: [
+          {
+            agentId: "agent_dashboard",
+            objective: "index queued work",
+            status: "running",
+            activeSessionIds: ["session_dashboard"],
+          },
+        ],
+      },
+    });
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentStopRequest(
+          "agent_dashboard",
+          "portal dashboard stop",
+          "stop-background",
+        ),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "stop-background",
+      result: {
+        agentId: "agent_dashboard",
+        stopped: true,
+      },
+    });
+    expect(stopAgent).toHaveBeenCalledWith(
+      "agent_dashboard",
+      "portal dashboard stop",
+    );
+    await expect(
+      connection.dispatch(
+        createAgenCPortalAgentListRequest({ limit: 5 }, "list-after-stop"),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "list-after-stop",
+      result: {
+        agents: [],
+      },
+    });
   });
 
   it("validates WP-04 dispatcher params and message.send errors", async () => {

@@ -2,7 +2,7 @@
 // Temporary boundary: this moved utility still imports not-yet-absorbed upstream subsystems.
 import memoize from 'lodash-es/memoize.js'
 import { basename } from 'path'
-import { isAutoMemoryEnabled } from '../../memory/paths.js'
+import { isAutoMemoryEnabled } from '../../memory/index.js'
 import type { AgentColorName } from 'src/tools/AgentTool/agentColorManager.js'
 import {
   type AgentMemoryScope,

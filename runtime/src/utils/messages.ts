@@ -28,7 +28,7 @@ import type { AgentId } from 'src/types/ids.js'
 import { companionIntroText } from '../tui/buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
-import { isAutoMemoryEnabled } from '../memory/paths.js'
+import { isAutoMemoryEnabled } from '../memory/index.js'
 import {
   checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
   getFeatureValue_CACHED_MAY_BE_STALE,
