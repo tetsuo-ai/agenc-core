@@ -30,6 +30,25 @@ const items = parseItems(content);
 
 assert("parses some items", items.length > 50, `got ${items.length}`);
 
+const multiSegmentFixture = [
+  "- [ ] **GAP-TUI-02 Wire App callbacks** — Body.",
+  "- [ ] **GAP-TOOLS-01 Fix tool surface** — Body. **Depends:** GAP-TUI-02.",
+].join("\n");
+const multiSegmentItems = parseItems(multiSegmentFixture);
+const gapTui02 = multiSegmentItems.find((i) => i.id === "GAP-TUI-02");
+const gapTools01 = multiSegmentItems.find((i) => i.id === "GAP-TOOLS-01");
+assert(
+  "parses multi-segment checklist IDs",
+  gapTui02?.title === "Wire App callbacks" &&
+    gapTools01?.title === "Fix tool surface",
+  JSON.stringify(multiSegmentItems),
+);
+assert(
+  "parses multi-segment dependencies",
+  gapTools01?.dependsOn.includes("GAP-TUI-02"),
+  `deps=${gapTools01?.dependsOn.join(",")}`,
+);
+
 // Items have required fields.
 const sample = items.find((i) => i.id === "F-01");
 assert("F-01 found", !!sample);
