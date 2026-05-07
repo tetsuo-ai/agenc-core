@@ -15,6 +15,7 @@
 //
 // Skip with env AGENC_SKIP_REVIEW=1 (escape hatch for emergencies).
 // Override the reviewer model with env AGENC_REVIEW_MODEL=<model>.
+// Override reasoning effort with env AGENC_REVIEW_REASONING_EFFORT=<effort>.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -218,9 +219,8 @@ const promptFile = path.join(tmp, "prompt.md");
 writeFileSync(promptFile, reviewerInstructions, "utf8");
 
 process.stdout.write(`\n${BOLD}━━ reviewer subagent: ${id}${RESET}\n`);
-// branding-scan: allow names the reviewer CLI binary that this script invokes
-process.stdout.write(`${DIM}spawning codex exec reviewer against main (this takes 30–90 seconds)...${RESET}\n`);
 
+// branding-scan: allow names the reviewer CLI binary
 const reviewArgs = [
   "exec",
   "--ephemeral",
@@ -230,6 +230,9 @@ const reviewArgs = [
   "-o",
   outFile,
 ];
+const REVIEWER_DEFAULT_MODEL = "gpt-5.3-codex-spark";
+const REVIEWER_DEFAULT_REASONING_EFFORT = "xhigh";
+
 // Allowlist of acceptable reviewer models. The reviewer pass is the
 // last quality gate before merge; substituting a weak model (mini /
 // haiku / turbo / older variants) silently degrades the entire harness.
@@ -238,23 +241,49 @@ const REVIEWER_MODEL_ALLOWLIST = [
   "gpt-5.5",
   // branding-scan: allow real OpenAI codex-family model identifier
   "gpt-5.5-codex",
+  "gpt-5.3-codex-spark",
   "claude-opus-4-7",
   "claude-sonnet-4-7",
   "claude-opus-4-6",
   "claude-sonnet-4-6",
 ];
-if (process.env.AGENC_REVIEW_MODEL) {
-  const requested = process.env.AGENC_REVIEW_MODEL.trim();
-  if (!REVIEWER_MODEL_ALLOWLIST.includes(requested)) {
-    process.stderr.write(`${BOLD}${RED}✗${RESET} model ${requested} not in allowlist; reviewer requires one of [${REVIEWER_MODEL_ALLOWLIST.join(", ")}]\n`);
-    process.exit(2);
-  }
-  reviewArgs.push("-m", requested);
+const requestedModel = process.env.AGENC_REVIEW_MODEL?.trim() || REVIEWER_DEFAULT_MODEL;
+if (!REVIEWER_MODEL_ALLOWLIST.includes(requestedModel)) {
+  process.stderr.write(`${BOLD}${RED}✗${RESET} model ${requestedModel} not in allowlist; reviewer requires one of [${REVIEWER_MODEL_ALLOWLIST.join(", ")}]\n`);
+  process.exit(2);
+}
+reviewArgs.push("-m", requestedModel);
+
+const requestedReasoningEffort = process.env.AGENC_REVIEW_REASONING_EFFORT?.trim() || REVIEWER_DEFAULT_REASONING_EFFORT;
+if (requestedReasoningEffort) {
+  reviewArgs.push("-c", `reasoning_effort=${requestedReasoningEffort}`);
 }
 reviewArgs.push("-");
 
+// Route claude-* models through the Claude CLI (uses ANTHROPIC_API_KEY
+// auth, separate from the alternate reviewer binary's billing account).
+// branding-scan: allow real binary names of reviewer CLIs
+// Other models stay on the original reviewer CLI path that supports them.
 // branding-scan: allow real binary name of the reviewer CLI
-const result = spawnSync("codex", reviewArgs, {
+const isClaudeModel = /^claude-/.test(requestedModel);
+const reviewerBinary = isClaudeModel ? "claude" : "codex";
+// branding-scan: allow real binary names of reviewer CLIs
+// Drop --bare so the reviewer CLI uses the operator's existing
+// OAuth/keychain auth from interactive login. With --bare set, the
+// reviewer requires ANTHROPIC_API_KEY explicitly; without it, the
+// spawned subprocess inherits the user's logged-in session.
+const reviewerArgv = isClaudeModel
+  ? [
+      "--print",
+      "--output-format", "text",
+      "--allow-dangerously-skip-permissions",
+      "--model", requestedModel,
+    ]
+  : reviewArgs;
+
+process.stdout.write(`${DIM}spawning ${reviewerBinary} reviewer (model=${requestedModel}, takes 30–90 seconds)...${RESET}\n`);
+
+const result = spawnSync(reviewerBinary, reviewerArgv, {
   cwd: root,
   encoding: "utf8",
   input: reviewerInstructions,
@@ -273,7 +302,11 @@ if (result.status !== 0) {
   process.exit(1);
 }
 
-const finalMsg = existsSync(outFile) ? readFileSync(outFile, "utf8") : "";
+// branding-scan: allow real binary name of the reviewer CLI
+// codex exec writes verdict.txt via -o; claude --print streams to stdout.
+const finalMsg = isClaudeModel
+  ? (result.stdout || "")
+  : (existsSync(outFile) ? readFileSync(outFile, "utf8") : "");
 if (!finalMsg.trim()) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} reviewer produced no output\n`);
   process.exit(1);
