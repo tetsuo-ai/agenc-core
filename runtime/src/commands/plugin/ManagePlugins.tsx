@@ -12,7 +12,7 @@ import { MCPRemoteServerMenu } from '../../tui/components/mcp/MCPRemoteServerMen
 import { MCPStdioServerMenu } from '../../tui/components/mcp/MCPStdioServerMenu.js';
 import { MCPToolDetailView } from '../../tui/components/mcp/MCPToolDetailView.js';
 import { MCPToolListView } from '../../tui/components/mcp/MCPToolListView.js';
-import type { AgenCAIServerInfo, HTTPServerInfo, SSEServerInfo, StdioServerInfo } from '../../components/mcp/types.js';
+import type { AgenCAIServerInfo, HTTPServerInfo, SSEServerInfo, StdioServerInfo } from '../../tui/components/mcp/types.js';
 import { SearchBox } from '../../tui/components/SearchBox.js';
 import { useSearchInput } from '../../tui/hooks/useSearchInput.js';
 import { useTerminalSize } from '../../tui/hooks/useTerminalSize.js';

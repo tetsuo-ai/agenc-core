@@ -1,7 +1,5 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { createContext, type ReactNode, useContext, useMemo } from 'react';
+import { createContext, type ReactNode, useContext } from 'react';
 import type { Command } from '../../commands.js';
 import type { Tool } from '../../tools/Tool.js';
 import type { MCPServerConnection, ScopedMcpServerConfig, ServerResource } from './types.js';
@@ -37,7 +35,7 @@ interface MCPConnectionManagerProps {
 }
 
 // Follow-up (ollie): We may be able to get rid of this context by putting these function on app state
-export function MCPConnectionManager(t0) {
+export function MCPConnectionManager(t0: MCPConnectionManagerProps) {
   const $ = _c(6);
   const {
     children,

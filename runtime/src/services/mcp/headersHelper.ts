@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from '../../utils/config.js'
 import { logAntError } from 'src/utils/debug.js'
@@ -47,8 +46,14 @@ export async function getMcpHeadersFromHelper(
     // Check if trust has been established for this project
     const hasTrust = checkHasTrustDialogAccepted()
     if (!hasTrust) {
+      const macroWithFeedback = MACRO as typeof MACRO & {
+        FEEDBACK_CHANNEL?: string
+      }
+      const supportTarget = macroWithFeedback.FEEDBACK_CHANNEL
+        ? `post in ${macroWithFeedback.FEEDBACK_CHANNEL}`
+        : 'contact AgenC support'
       const error = new Error(
-        `Security: headersHelper for MCP server '${serverName}' executed before workspace trust is confirmed. If you see this message, post in ${MACRO.FEEDBACK_CHANNEL}.`,
+        `Security: headersHelper for MCP server '${serverName}' executed before workspace trust is confirmed. If you see this message, ${supportTarget}.`,
       )
       logAntError('MCP headersHelper invoked before trust check', error)
       logEvent('tengu_mcp_headersHelper_missing_trust', {})

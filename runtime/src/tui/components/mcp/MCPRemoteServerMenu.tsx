@@ -1,35 +1,34 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { getOauthConfig } from '../../../constants/oauth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
 import { Box, color, Link, Text, useInput, useTheme } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens } from '../../../services/mcp/auth';
-import { clearServerCache } from '../../../services/mcp/client';
-import { useMcpReconnect, useMcpToggleEnabled } from '../../../services/mcp/MCPConnectionManager';
-import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../../services/mcp/utils';
+import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens } from '../../../services/mcp/auth.js';
+import { clearServerCache } from '../../../services/mcp/client.js';
+import { useMcpReconnect, useMcpToggleEnabled } from '../../../services/mcp/MCPConnectionManager.js';
+import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../../services/mcp/utils.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
+import type { AppState } from '../../state/AppStateStore.js';
 import { getOauthAccountInfo } from '../../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { openBrowser } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logMCPDebug } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { capitalize } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { Select } from '../CustomSelect/select';
-import { Byline } from '../design-system/Byline';
-import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { Select } from '../CustomSelect/select.js';
+import { Byline } from '../design-system/Byline.js';
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { Spinner } from '../spinner/Spinner.js';
-import TextInput from '../TextInput';
-import { CapabilitiesSection } from './CapabilitiesSection';
-import type { AgenCAIServerInfo, HTTPServerInfo, SSEServerInfo } from './types';
-import { handleReconnectError, handleReconnectResult } from './utils/reconnectHelpers';
+import TextInput from '../TextInput.js';
+import { CapabilitiesSection } from './CapabilitiesSection.js';
+import type { AgenCAIServerInfo, HTTPServerInfo, SSEServerInfo } from './types.js';
+import { handleReconnectError, handleReconnectResult } from './utils/reconnectHelpers.js';
 type Props = {
   server: SSEServerInfo | HTTPServerInfo | AgenCAIServerInfo;
   serverToolsCount: number;
@@ -55,7 +54,7 @@ export function MCPRemoteServerMenu({
   } = useTerminalSize();
   const [isAuthenticating, setIsAuthenticating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const mcp = useAppState(s => s.mcp);
+  const mcp = useAppState((s: AppState) => s.mcp);
   const setAppState = useSetAppState();
   const [authorizationUrl, setAuthorizationUrl] = React.useState<string | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
@@ -98,7 +97,7 @@ export function MCPRemoteServerMenu({
     try {
       const result = await reconnectMcpServer(server.name);
       const success = result.client.type === 'connected';
-      logEvent('tengu_claudeai_mcp_auth_completed', {
+      logEvent('tengu_agencai_mcp_auth_completed', {
         success
       });
       if (success) {
@@ -109,7 +108,7 @@ export function MCPRemoteServerMenu({
         onComplete?.('Authentication successful, but server reconnection failed. You may need to manually restart AgenC for the changes to take effect.');
       }
     } catch (err) {
-      logEvent('tengu_claudeai_mcp_auth_completed', {
+      logEvent('tengu_agencai_mcp_auth_completed', {
         success: false
       });
       onComplete?.(handleReconnectError(err, server.name));
@@ -141,7 +140,7 @@ export function MCPRemoteServerMenu({
         }
       };
     });
-    logEvent('tengu_claudeai_mcp_clear_auth_completed', {});
+    logEvent('tengu_agencai_mcp_clear_auth_completed', {});
     onComplete?.(`Disconnected from ${server.name}.`);
     setIsAgenCAIClearingAuth(false);
     setAgenCAIClearAuthUrl(null);
@@ -219,7 +218,7 @@ export function MCPRemoteServerMenu({
     const accountInfo = getOauthAccountInfo();
     const orgUuid = accountInfo?.organizationUuid;
     let authUrl: string;
-    if (orgUuid && server.config.type === 'claudeai-proxy' && server.config.id) {
+    if (orgUuid && server.config.type === 'agencai-proxy' && server.config.id) {
       // Use the direct auth URL with org and server IDs
       // Replace 'mcprs' prefix with 'mcpsrv' if present
       const serverId = server.config.id.startsWith('mcprs') ? 'mcpsrv' + server.config.id.slice(5) : server.config.id;
@@ -231,19 +230,19 @@ export function MCPRemoteServerMenu({
     }
     setAgenCAIAuthUrl(authUrl);
     setIsAgenCAIAuthenticating(true);
-    logEvent('tengu_claudeai_mcp_auth_started', {});
+    logEvent('tengu_agencai_mcp_auth_started', {});
     await openBrowser(authUrl);
   }, [server.config]);
   const handleAgenCAIClearAuth = React.useCallback(() => {
     setIsAgenCAIClearingAuth(true);
-    logEvent('tengu_claudeai_mcp_clear_auth_started', {});
+    logEvent('tengu_agencai_mcp_clear_auth_started', {});
   }, []);
   const handleToggleEnabled = React.useCallback(async () => {
     const wasEnabled = server.client.type !== 'disabled';
     try {
       await toggleMcpServer(server.name);
-      if (server.config.type === 'claudeai-proxy') {
-        logEvent('tengu_claudeai_mcp_toggle', {
+      if (server.config.type === 'agencai-proxy') {
+        logEvent('tengu_agencai_mcp_toggle', {
           new_state: (wasEnabled ? 'disabled' : 'enabled') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
       }
@@ -256,7 +255,7 @@ export function MCPRemoteServerMenu({
     }
   }, [server.client.type, server.config.type, server.name, toggleMcpServer, onCancel, onComplete]);
   const handleAuthenticate = React.useCallback(async () => {
-    if (server.config.type === 'claudeai-proxy') return;
+    if (server.config.type === 'agencai-proxy') return;
     setIsAuthenticating(true);
     setError(null);
     const controller = new AbortController();
@@ -303,7 +302,7 @@ export function MCPRemoteServerMenu({
     }
   }, [server.isAuthenticated, server.config, server.name, onComplete, reconnectMcpServer, isEffectivelyAuthenticated]);
   const handleClearAuth = async () => {
-    if (server.config.type === 'claudeai-proxy') return;
+    if (server.config.type === 'agencai-proxy') return;
     if (server.config) {
       // First revoke the authentication tokens and clear all auth state
       await revokeServerTokens(server.name, server.config);
@@ -344,9 +343,9 @@ export function MCPRemoteServerMenu({
     // XAA: silent exchange (cached id_token → no browser), so don't claim
     // one will open. If IdP login IS needed, authorizationUrl populates and
     // the URL fallback block below still renders.
-    const authCopy = server.config.type !== 'claudeai-proxy' && server.config.oauth?.xaa ? ' Authenticating via your identity provider' : ' A browser window will open for authentication';
+    const authCopy = server.config.type !== 'agencai-proxy' && server.config.oauth?.xaa ? ' Authenticating via your identity provider' : ' A browser window will open for authentication';
     return <Box flexDirection="column" gap={1} padding={1}>
-        <Text color="claude">Authenticating with {server.name}…</Text>
+        <Text color="text">Authenticating with {server.name}…</Text>
         <Box>
           <Spinner />
           <Text>{authCopy}</Text>
@@ -386,7 +385,7 @@ export function MCPRemoteServerMenu({
   }
   if (isAgenCAIAuthenticating) {
     return <Box flexDirection="column" gap={1} padding={1}>
-        <Text color="claude">Authenticating with {server.name}…</Text>
+        <Text color="text">Authenticating with {server.name}…</Text>
         <Box>
           <Spinner />
           <Text> A browser window will open for authentication</Text>
@@ -415,7 +414,7 @@ export function MCPRemoteServerMenu({
   }
   if (isAgenCAIClearingAuth) {
     return <Box flexDirection="column" gap={1} padding={1}>
-        <Text color="claude">Clear authentication for {server.name}</Text>
+        <Text color="text">Clear authentication for {server.name}</Text>
         {agencAIClearAuthBrowserOpened ? <>
             <Text>
               Find the MCP server in the browser and click
@@ -469,7 +468,7 @@ export function MCPRemoteServerMenu({
         <Text dimColor>This may take a few moments.</Text>
       </Box>;
   }
-  const menuOptions = [];
+  const menuOptions: Array<{ label: string; value: string }> = [];
 
   // If server is disabled, show Enable first as the primary action
   if (server.client.type === 'disabled') {
@@ -484,16 +483,16 @@ export function MCPRemoteServerMenu({
       value: 'tools'
     });
   }
-  if (server.config.type === 'claudeai-proxy') {
+  if (server.config.type === 'agencai-proxy') {
     if (server.client.type === 'connected') {
       menuOptions.push({
         label: 'Clear authentication',
-        value: 'claudeai-clear-auth'
+        value: 'agencai-clear-auth'
       });
     } else if (server.client.type !== 'disabled') {
       menuOptions.push({
         label: 'Authenticate',
-        value: 'claudeai-auth'
+        value: 'agencai-auth'
       });
     }
   } else {
@@ -552,7 +551,7 @@ export function MCPRemoteServerMenu({
               </Text> : <Text>{color('error', theme)(figures.cross)} failed</Text>}
           </Box>
 
-          {server.transport !== 'claudeai-proxy' && <Box>
+          {server.transport !== 'agencai-proxy' && <Box>
               <Text bold>Auth: </Text>
               {isEffectivelyAuthenticated ? <Text>
                   {color('success', theme)(figures.tick)} authenticated
@@ -584,7 +583,7 @@ export function MCPRemoteServerMenu({
           </Box>}
 
         {menuOptions.length > 0 && <Box marginTop={1}>
-            <Select options={menuOptions} onChange={async value_0 => {
+            <Select options={menuOptions} onChange={async (value_0: string) => {
           switch (value_0) {
             case 'tools':
               onViewTools();
@@ -596,18 +595,18 @@ export function MCPRemoteServerMenu({
             case 'clear-auth':
               await handleClearAuth();
               break;
-            case 'claudeai-auth':
+            case 'agencai-auth':
               await handleAgenCAIAuth();
               break;
-            case 'claudeai-clear-auth':
+            case 'agencai-clear-auth':
               handleAgenCAIClearAuth();
               break;
             case 'reconnectMcpServer':
               setIsReconnecting(true);
               try {
                 const result_1 = await reconnectMcpServer(server.name);
-                if (server.config.type === 'claudeai-proxy') {
-                  logEvent('tengu_claudeai_mcp_reconnect', {
+                if (server.config.type === 'agencai-proxy') {
+                  logEvent('tengu_agencai_mcp_reconnect', {
                     success: result_1.client.type === 'connected'
                   });
                 }
@@ -616,8 +615,8 @@ export function MCPRemoteServerMenu({
                 } = handleReconnectResult(result_1, server.name);
                 onComplete?.(message_0);
               } catch (err_2) {
-                if (server.config.type === 'claudeai-proxy') {
-                  logEvent('tengu_claudeai_mcp_reconnect', {
+                if (server.config.type === 'agencai-proxy') {
+                  logEvent('tengu_agencai_mcp_reconnect', {
                     success: false
                   });
                 }

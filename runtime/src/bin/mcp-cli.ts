@@ -55,6 +55,7 @@ const MCP_MANAGEMENT_COMMANDS = new Set([
   "add-from-agenc-desktop",
   "reset-project-choices",
   "doctor",
+  "xaa",
 ]);
 
 export function formatAgenCMcpCliHelpText(): string {
@@ -71,6 +72,7 @@ export function formatAgenCMcpCliHelpText(): string {
     "  add-from-agenc-desktop   Import servers from AgenC Desktop config",
     "  reset-project-choices    Reset project MCP approval choices",
     "  doctor                   Diagnose MCP configuration",
+    "  xaa                      Manage XAA IdP authentication",
     "",
     "Options:",
     "  serve --transport <stdio|sse>       Transport for serve",
@@ -280,6 +282,11 @@ async function runMcpManagementCommand(
         });
         return 0;
       }
+      case "xaa": {
+        const { runMcpXaaCommand } = await import("../cli/handlers/mcp-xaa.js");
+        await runMcpXaaCommand(rest, { io, env: process.env });
+        return 0;
+      }
     }
     return 0;
   } catch (error) {
@@ -382,7 +389,7 @@ async function runMcpAddCommand(
     throw new Error("Usage: agenc mcp add <name> <command-or-url> [args...]");
   }
 
-  const { runMcpAddAction } = await import("../commands/mcp/addAction.js");
+  const { runMcpAddAction } = await import("../cli/handlers/mcp-add-action.js");
   await runMcpAddAction(name, commandOrUrl, args, {
     scope: parsed.options.scope,
     transport: parsed.options.transport,

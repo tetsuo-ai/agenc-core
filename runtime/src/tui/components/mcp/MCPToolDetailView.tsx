@@ -1,19 +1,21 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { Box, Text } from '../../ink.js';
-import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../services/mcp/mcpStringUtils';
-import type { Tool } from '../../../tools/Tool';
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { Dialog } from '../design-system/Dialog';
-import type { ServerInfo } from './types';
+import { extractMcpToolDisplayName, getMcpDisplayName } from '../../../services/mcp/mcpStringUtils.js';
+import type { Tool } from '../../../tools/Tool.js';
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { Dialog } from '../design-system/Dialog.js';
+import type { ServerInfo } from './types.js';
 type Props = {
   tool: Tool;
   server: ServerInfo;
   onBack: () => void;
 };
-export function MCPToolDetailView(t0) {
+type ExitState = {
+  pending: boolean;
+  keyName: string;
+};
+export function MCPToolDetailView(t0: Props) {
   const $ = _c(44);
   const {
     tool,
@@ -208,6 +210,6 @@ export function MCPToolDetailView(t0) {
   }
   return t18;
 }
-function _temp(exitState) {
+function _temp(exitState: ExitState) {
   return exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="go back" />;
 }

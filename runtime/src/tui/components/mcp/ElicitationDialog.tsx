@@ -1,24 +1,22 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { ElicitRequestFormParams, ElicitRequestURLParams, ElicitResult, PrimitiveSchemaDefinition } from '@modelcontextprotocol/sdk/types.js';
 import figures from 'figures';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRegisterOverlay } from '../../context/overlayContext';
-import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import { useRegisterOverlay } from '../../context/overlayContext.js';
+import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for elicitation form
 import { Box, Text, useInput } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { ElicitationRequestEvent } from '../../../services/mcp/elicitationHandler';
-import { openBrowser } from '../../../utils/browser'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getEnumLabel, getEnumValues, getMultiSelectLabel, getMultiSelectValues, isDateTimeSchema, isEnumSchema, isMultiSelectEnumSchema, validateElicitationInput, validateElicitationInputAsync } from '../../../utils/mcp/elicitationValidation'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { Byline } from '../design-system/Byline';
-import { Dialog } from '../design-system/Dialog';
-import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
-import TextInput from '../TextInput';
+import type { ElicitationRequestEvent } from '../../../services/mcp/elicitationHandler.js';
+import { openBrowser } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getEnumLabel, getEnumValues, getMultiSelectLabel, getMultiSelectValues, isDateTimeSchema, isEnumSchema, isMultiSelectEnumSchema, validateElicitationInput, validateElicitationInputAsync } from '../../../utils/mcp/elicitationValidation.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { Byline } from '../design-system/Byline.js';
+import { Dialog } from '../design-system/Dialog.js';
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
+import TextInput from '../TextInput.js';
 type Props = {
   event: ElicitationRequestEvent;
   onResponse: (action: ElicitResult['action'], content?: ElicitResult['content']) => void;
@@ -26,6 +24,18 @@ type Props = {
   onWaitingDismiss?: (action: 'dismiss' | 'retry' | 'cancel') => void;
 };
 const isTextField = (s: PrimitiveSchemaDefinition) => ['string', 'number', 'integer'].includes(s.type);
+type ExitState = {
+  pending: boolean;
+  keyName: string;
+};
+type MultiSelectConstraints = {
+  minItems?: number;
+  maxItems?: number;
+};
+type AsyncValidationResult = Awaited<ReturnType<typeof validateElicitationInputAsync>>;
+function getMultiSelectConstraints(schema: PrimitiveSchemaDefinition): MultiSelectConstraints {
+  return schema as PrimitiveSchemaDefinition & MultiSelectConstraints;
+}
 const RESOLVING_SPINNER_CHARS = '\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F';
 const advanceSpinnerFrame = (f: number) => (f + 1) % RESOLVING_SPINNER_CHARS.length;
 
@@ -51,8 +61,8 @@ function resetTypeahead(ta: {
 function ResolvingSpinner() {
   const $ = _c(4);
   const [frame, setFrame] = useState(0);
-  let t0;
-  let t1;
+  let t0: React.EffectCallback;
+  let t1: React.DependencyList;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t0 = () => {
       const timer = setInterval(setFrame, 80, advanceSpinnerFrame);
@@ -111,7 +121,7 @@ function formatDateDisplay(isoValue: string, schema: PrimitiveSchemaDefinition):
     return isoValue;
   }
 }
-export function ElicitationDialog(t0) {
+export function ElicitationDialog(t0: Props) {
   const $ = _c(7);
   const {
     event,
@@ -255,7 +265,7 @@ function ElicitationFormDialog({
 
   // Text fields are always in edit mode when focused — no Enter-to-edit step.
   const isEditingTextField = currentFieldIsText && !focusedButton;
-  useRegisterOverlay('elicitation');
+  useRegisterOverlay('elicitation', true);
   useNotifyAfterTimeout('AgenC needs your input', 'elicitation_dialog');
 
   // Sync textInputValue when the focused field changes
@@ -277,8 +287,7 @@ function ElicitationFormDialog({
     if (!isMultiSelectEnumSchema(schema_0)) return;
     const selected = formValues[fieldName] as string[] | undefined ?? [];
     const fieldRequired = schemaFields.find(f => f.name === fieldName)?.isRequired ?? false;
-    const min = schema_0.minItems;
-    const max = schema_0.maxItems;
+    const { minItems: min, maxItems: max } = getMultiSelectConstraints(schema_0);
     // Skip minItems check when field is optional and unset
     if (min !== undefined && selected.length < min && (selected.length > 0 || fieldRequired)) {
       updateValidationError(fieldName, `Select at least ${min} ${plural(min, 'item')}`);
@@ -394,7 +403,7 @@ function ElicitationFormDialog({
     const controller_0 = new AbortController();
     resolveAbortRef.current.set(fieldName_4, controller_0);
     setResolvingFields(prev_1 => new Set(prev_1).add(fieldName_4));
-    void validateElicitationInputAsync(rawValue, schema_2, controller_0.signal).then(result => {
+    void validateElicitationInputAsync(rawValue, schema_2, controller_0.signal).then((result: AsyncValidationResult) => {
       resolveAbortRef.current.delete(fieldName_4);
       setResolvingFields(prev_2 => {
         const next_1 = new Set(prev_2);
@@ -523,8 +532,10 @@ function ElicitationFormDialog({
           const newSelected = selected_0.includes(optionValue) ? selected_0.filter(v => v !== optionValue) : [...selected_0, optionValue];
           const newValue_1 = newSelected.length > 0 ? newSelected : undefined;
           setField(currentField.name, newValue_1);
-          const min_0 = msSchema.minItems;
-          const max_0 = msSchema.maxItems;
+          const {
+            minItems: min_0,
+            maxItems: max_0,
+          } = getMultiSelectConstraints(msSchema);
           if (min_0 !== undefined && newSelected.length < min_0 && (newSelected.length > 0 || currentField.isRequired)) {
             updateValidationError(currentField.name, `Select at least ${min_0} ${plural(min_0, 'item')}`);
           } else if (max_0 !== undefined && newSelected.length > max_0) {
@@ -546,7 +557,7 @@ function ElicitationFormDialog({
         return;
       }
       if (_input) {
-        const labels_0 = msValues.map(v_0 => getMultiSelectLabel(msSchema, v_0).toLowerCase());
+        const labels_0 = msValues.map((v_0: string) => getMultiSelectLabel(msSchema, v_0).toLowerCase());
         runTypeahead(_input, labels_0, setAccordionOptionIndex);
         return;
       }
@@ -598,7 +609,7 @@ function ElicitationFormDialog({
         return;
       }
       if (_input) {
-        const labels_1 = enumValues.map(v_1 => getEnumLabel(enumSchema, v_1).toLowerCase());
+        const labels_1 = enumValues.map((v_1: string) => getEnumLabel(enumSchema, v_1).toLowerCase());
         runTypeahead(_input, labels_1, setAccordionOptionIndex);
         return;
       }
@@ -694,13 +705,13 @@ function ElicitationFormDialog({
       let startIdx = 0;
       if (isEnumSchema(schema_5)) {
         const vals = getEnumValues(schema_5);
-        labels_2 = vals.map(v_2 => getEnumLabel(schema_5, v_2).toLowerCase());
+        labels_2 = vals.map((v_2: string) => getEnumLabel(schema_5, v_2).toLowerCase());
         if (value_1 !== undefined) {
           startIdx = Math.max(0, vals.indexOf(value_1 as string));
         }
       } else {
         const vals_0 = getMultiSelectValues(schema_5);
-        labels_2 = vals_0.map(v_3 => getMultiSelectLabel(schema_5, v_3).toLowerCase());
+        labels_2 = vals_0.map((v_3: string) => getMultiSelectLabel(schema_5, v_3).toLowerCase());
       }
       if (key.rightArrow) {
         setExpandedAccordion(name_0);
@@ -820,7 +831,7 @@ function ElicitationFormDialog({
           if (isExpanded) {
             valueContent = <Text dimColor>{figures.triangleDownSmall}</Text>;
             accordionContent = <Box flexDirection="column" marginLeft={6}>
-                    {msValues_0.map((optVal, optIdx) => {
+                    {msValues_0.map((optVal: string, optIdx: number) => {
                 const optLabel = getMultiSelectLabel(schema_6, optVal);
                 const isChecked = selected_1.includes(optVal);
                 const isFocused = optIdx === accordionOptionIndex;
@@ -863,7 +874,7 @@ function ElicitationFormDialog({
           if (isExpanded_0) {
             valueContent = <Text dimColor>{figures.triangleDownSmall}</Text>;
             accordionContent = <Box flexDirection="column" marginLeft={6}>
-                    {enumValues_0.map((optVal_0, optIdx_0) => {
+                    {enumValues_0.map((optVal_0: string, optIdx_0: number) => {
                 const optLabel_0 = getEnumLabel(schema_6, optVal_0);
                 const isSelected = value_3 === optVal_0;
                 const isFocused_0 = optIdx_0 === accordionOptionIndex;
@@ -956,7 +967,7 @@ function ElicitationFormDialog({
           </Box>}
       </Box>;
   }
-  return <Dialog title={`MCP server \u201c${serverName}\u201d requests your input`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive={(!currentField || !!focusedButton) && !expandedAccordion} inputGuide={exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
+  return <Dialog title={`MCP server \u201c${serverName}\u201d requests your input`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive={(!currentField || !!focusedButton) && !expandedAccordion} inputGuide={(exitState: ExitState) => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
             <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
             <KeyboardShortcutHint shortcut="↑↓" action="navigate" />
             {currentField && <KeyboardShortcutHint shortcut="Backspace" action="unset" />}
@@ -1007,7 +1018,7 @@ function ElicitationURLDialog({
   const [focusedButton, setFocusedButton] = useState<'accept' | 'decline' | 'open' | 'action' | 'cancel'>('accept');
   const showCancel = waitingState?.showCancel ?? false;
   useNotifyAfterTimeout('AgenC needs your input', 'elicitation_url_dialog');
-  useRegisterOverlay('elicitation-url');
+  useRegisterOverlay('elicitation-url', true);
 
   // Keep refs in sync for use in abort handler (avoids re-registering listener)
   phaseRef.current = phase;
@@ -1096,7 +1107,7 @@ function ElicitationURLDialog({
   });
   if (phase === 'waiting') {
     const actionLabel = waitingState?.actionLabel ?? 'Continue without waiting';
-    return <Dialog title={`MCP server \u201c${serverName}\u201d \u2014 waiting for completion`} subtitle={`\n${message}`} color="permission" onCancel={() => onWaitingDismiss?.('cancel')} isCancelActive inputGuide={exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
+    return <Dialog title={`MCP server \u201c${serverName}\u201d \u2014 waiting for completion`} subtitle={`\n${message}`} color="permission" onCancel={() => onWaitingDismiss?.('cancel')} isCancelActive inputGuide={(exitState: ExitState) => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
               <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
               <KeyboardShortcutHint shortcut="\u2190\u2192" action="switch" />
             </Byline>}>
@@ -1139,7 +1150,7 @@ function ElicitationURLDialog({
         </Box>
       </Dialog>;
   }
-  return <Dialog title={`MCP server \u201c${serverName}\u201d wants to open a URL`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive inputGuide={exitState_0 => exitState_0.pending ? <Text>Press {exitState_0.keyName} again to exit</Text> : <Byline>
+  return <Dialog title={`MCP server \u201c${serverName}\u201d wants to open a URL`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive inputGuide={(exitState_0: ExitState) => exitState_0.pending ? <Text>Press {exitState_0.keyName} again to exit</Text> : <Byline>
             <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
             <KeyboardShortcutHint shortcut="\u2190\u2192" action="switch" />
           </Byline>}>

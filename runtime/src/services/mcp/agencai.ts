@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import axios from 'axios'
 import memoize from 'lodash-es/memoize.js'
 import { getOauthConfig } from 'src/constants/oauth.js'

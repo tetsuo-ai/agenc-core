@@ -9,8 +9,7 @@
     "src/utils/doctorDiagnostic.ts",
     "src/utils/doctorContextWarnings.ts",
     "src/components/sandbox/SandboxDoctorSection.tsx",
-    "src/services/mcp/doctor.ts",
-    "src/commands/mcp/doctorCommand.ts"
+    "src/services/mcp/doctor.ts"
   ],
   "targetFiles": [
     "runtime/src/commands/doctor/doctor.ts",
@@ -26,8 +25,7 @@
     "src/utils/doctorDiagnostic.ts": "runtime/src/diagnostics/doctor.ts",
     "src/utils/doctorContextWarnings.ts": "runtime/src/diagnostics/doctor.ts",
     "src/components/sandbox/SandboxDoctorSection.tsx": "runtime/src/diagnostics/doctor.ts",
-    "src/services/mcp/doctor.ts": "runtime/src/diagnostics/doctor.ts",
-    "src/commands/mcp/doctorCommand.ts": "runtime/src/commands/doctor/doctor.ts"
+    "src/services/mcp/doctor.ts": "runtime/src/diagnostics/doctor.ts"
   },
   "carriedBehavior": [
     "The slash command executes immediately and returns a grouped health report instead of routing through the turn loop.",
@@ -42,7 +40,7 @@
     "The React/Ink doctor screen is not ported; AgenC's current slash command contract is text output, so the grouped report renderer lives in runtime/src/diagnostics/doctor.ts.",
     "Installer, update, keybinding, package-manager, and global binary checks from the donor diagnostics are not carried because OB-04's item spec replaces them with AgenC daemon, provider, sandbox, MCP, and runtime artifact health checks.",
     "Context-warning donors are folded into AgenC-owned runtime/config/artifact checks. No donor memory-file naming or prompt-surface warning text is retained.",
-    "The donor MCP CLI subcommand is folded into /doctor rather than adding a separate agenc mcp doctor command in this item; runtime/src/commands/mcp.ts keeps the existing MCP status command."
+    "The donor MCP diagnostic checks are folded into /doctor. The legacy donor MCP command subdirectory was removed by GAP-MCP-04; runtime/src/commands/mcp.ts keeps the existing MCP status command."
   ],
   "validation": {
     "tests": [

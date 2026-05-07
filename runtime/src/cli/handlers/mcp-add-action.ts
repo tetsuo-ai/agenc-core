@@ -82,7 +82,7 @@ export async function runMcpAddAction(
   if (transport === "sse" || transport === "http") {
     const headers = options.header ? parseHeaders(options.header) : undefined;
     const callbackPort = options.callbackPort
-      ? Number.parseInt(options.callbackPort, 10)
+      ? parseCallbackPort(options.callbackPort)
       : undefined;
     const oauth =
       options.clientId || callbackPort || xaa
@@ -149,4 +149,12 @@ export async function runMcpAddAction(
     `Added stdio MCP server ${name} with command: ${commandOrUrl} ${args.join(" ")} to ${scope} config\n`,
   );
   stdout.write(`File modified: ${describeMcpConfigFilePath(scope)}\n`);
+}
+
+function parseCallbackPort(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new Error("Error: --callback-port must be a valid TCP port");
+  }
+  return parsed;
 }
