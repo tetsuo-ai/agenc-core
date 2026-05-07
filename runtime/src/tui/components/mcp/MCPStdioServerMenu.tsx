@@ -1,24 +1,23 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import figures from 'figures';
 import React, { useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, color, Text, useTheme } from '../../ink.js';
-import { getMcpConfigByName } from '../../../services/mcp/config';
-import { useMcpReconnect, useMcpToggleEnabled } from '../../../services/mcp/MCPConnectionManager';
-import { describeMcpConfigFilePath, filterMcpPromptsByServer } from '../../../services/mcp/utils';
+import { getMcpConfigByName } from '../../../services/mcp/config.js';
+import { useMcpReconnect, useMcpToggleEnabled } from '../../../services/mcp/MCPConnectionManager.js';
+import { describeMcpConfigFilePath, filterMcpPromptsByServer } from '../../../services/mcp/utils.js';
 import { useAppState } from '../../state/AppState.js';
+import type { AppState } from '../../state/AppStateStore.js';
 import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { capitalize } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { Select } from '../CustomSelect/select';
-import { Byline } from '../design-system/Byline';
-import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { Select } from '../CustomSelect/select.js';
+import { Byline } from '../design-system/Byline.js';
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { Spinner } from '../spinner/Spinner.js';
-import { CapabilitiesSection } from './CapabilitiesSection';
-import type { StdioServerInfo } from './types';
-import { handleReconnectError, handleReconnectResult } from './utils/reconnectHelpers';
+import { CapabilitiesSection } from './CapabilitiesSection.js';
+import type { StdioServerInfo } from './types.js';
+import { handleReconnectError, handleReconnectResult } from './utils/reconnectHelpers.js';
 type Props = {
   server: StdioServerInfo;
   serverToolsCount: number;
@@ -39,7 +38,7 @@ export function MCPStdioServerMenu({
 }: Props): React.ReactNode {
   const [theme] = useTheme();
   const exitState = useExitOnCtrlCDWithKeybindings();
-  const mcp = useAppState(s => s.mcp);
+  const mcp = useAppState((s: AppState) => s.mcp);
   const reconnectMcpServer = useMcpReconnect();
   const toggleMcpServer = useMcpToggleEnabled();
   const [isReconnecting, setIsReconnecting] = useState(false);
@@ -58,7 +57,7 @@ export function MCPStdioServerMenu({
 
   // Count MCP prompts for this server (skills are shown in /skills, not here)
   const serverCommandsCount = filterMcpPromptsByServer(mcp.commands, server.name).length;
-  const menuOptions = [];
+  const menuOptions: Array<{ label: string; value: string }> = [];
 
   // Only show "View tools" if server is not disabled and has tools
   if (server.client.type !== 'disabled' && serverToolsCount > 0) {
@@ -140,7 +139,7 @@ export function MCPStdioServerMenu({
         </Box>
 
         {menuOptions.length > 0 && <Box marginTop={1}>
-            <Select options={menuOptions} onChange={async value => {
+            <Select options={menuOptions} onChange={async (value: string) => {
           if (value === 'tools') {
             onViewTools();
           } else if (value === 'reconnectMcpServer') {

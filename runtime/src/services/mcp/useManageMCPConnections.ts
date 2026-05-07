@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { basename } from 'path'
 import { useCallback, useEffect, useRef } from 'react'
@@ -22,11 +20,7 @@ import type {
   ServerResource,
 } from './types.js'
 
-const clearSkillIndexCache = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? (
-      require('../skillSearch/localSearch.js') as typeof import('../skillSearch/localSearch.js')
-    ).clearSkillIndexCache
-  : null
+const clearSkillIndexCache: (() => void) | null = null
 
 import {
   PromptListChangedNotificationSchema,
@@ -143,12 +137,14 @@ export function useManageMCPConnections(
   isStrictMcpConfig = false,
 ) {
   const store = useAppStateStore()
-  const _authVersion = useAppState(s => s.authVersion)
+  const _authVersion = useAppState((s: AppState) => s.authVersion)
   // Incremented by /reload-plugins (refreshActivePlugins) to pick up newly
   // enabled plugin MCP servers. getAgenCCodeMcpConfigs() reads loadAllPlugins()
   // which has been cleared by refreshActivePlugins, so the effects below see
   // fresh plugin data on re-run.
-  const _pluginReconnectKey = useAppState(s => s.mcp.pluginReconnectKey)
+  const _pluginReconnectKey = useAppState(
+    (s: AppState) => s.mcp.pluginReconnectKey,
+  )
   const setAppState = useSetAppState()
 
   // Track active reconnection attempts to allow cancellation
@@ -195,6 +191,7 @@ export function useManageMCPConnections(
         })
       }
     }
+    return undefined
   }, [setAppState])
   const { addNotification } = useNotifications()
 
@@ -882,13 +879,16 @@ export function useManageMCPConnections(
       // Add MCP errors to plugin errors for UI visibility (deduplicated)
       addErrorsToAppState(setAppState, mcpErrors)
 
-      const configs = { ...agencCodeConfigs, ...dynamicMcpConfig }
+      const configs: Record<string, ScopedMcpServerConfig> = {
+        ...agencConfigs,
+        ...(dynamicMcpConfig ?? {}),
+      }
 
       // Start connecting to AgenC servers (don't wait - runs concurrently with Phase 2)
       // Filter out disabled servers to avoid unnecessary connection attempts
       const enabledConfigs = Object.fromEntries(
         Object.entries(configs).filter(([name]) => !isMcpServerDisabled(name)),
-      )
+      ) as Record<string, ScopedMcpServerConfig>
       getMcpToolsCommandsAndResources(
         onConnectionAttempt,
         enabledConfigs,
@@ -948,7 +948,7 @@ export function useManageMCPConnections(
             Object.entries(agencaiConfigs).filter(
               ([name]) => !isMcpServerDisabled(name),
             ),
-          )
+          ) as Record<string, ScopedMcpServerConfig>
           getMcpToolsCommandsAndResources(
             onConnectionAttempt,
             enabledAgenCaiConfigs,

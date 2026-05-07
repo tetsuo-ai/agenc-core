@@ -1,14 +1,9 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * MCP subcommand handlers — extracted from main.tsx for lazy loading.
  * These are dynamically imported only when the corresponding `agenc mcp *` command runs.
  */
 
-import { stat } from 'fs/promises';
 import pMap from 'p-map';
-import { cwd } from 'process';
-import React from 'react';
 import { MCPServerDesktopImportDialog } from '../../tui/components/MCPServerDesktopImportDialog.js';
 import { render } from '../../tui/ink.js';
 import { KeybindingSetup } from '../../tui/keybindings/KeybindingProviderSetup.js';
@@ -27,7 +22,6 @@ import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/type
 import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel } from '../../services/mcp/utils.js';
 import { AppStateProvider } from '../../tui/state/AppState.js';
 import { getCurrentProjectConfig, saveCurrentProjectConfig } from '../../utils/config.js';
-import { isFsInaccessible } from '../../utils/errors.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { safeParseJSON } from '../../utils/json.js';
 import { getPlatform } from '../../utils/platform.js';
@@ -140,38 +134,6 @@ async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig)
     }
   } catch (_error) {
     return '✗ Connection error';
-  }
-}
-
-// mcp serve (lines 4512–4532)
-export async function mcpServeHandler({
-  debug,
-  verbose
-}: {
-  debug?: boolean;
-  verbose?: boolean;
-}): Promise<void> {
-  const providedCwd = cwd();
-  logEvent('tengu_mcp_start', {});
-  try {
-    await stat(providedCwd);
-  } catch (error) {
-    if (isFsInaccessible(error)) {
-      cliError(`Error: Directory ${providedCwd} does not exist`);
-    }
-    throw error;
-  }
-  try {
-    const {
-      setup
-    } = await import('../../setup.js');
-    await setup(providedCwd, 'default', false, false, undefined, false);
-    const {
-      startMCPServer
-    } = await import('../../entrypoints/mcp.js');
-    await startMCPServer(providedCwd, debug ?? false, verbose ?? false);
-  } catch (error) {
-    cliError(`Error: Failed to start MCP server: ${error}`);
   }
 }
 

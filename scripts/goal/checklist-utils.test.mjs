@@ -233,8 +233,9 @@ const runtimeTsconfigSource = readFileSync(new URL("../../runtime/tsconfig.json"
 const runtimeTsupConfigSource = readFileSync(new URL("../../runtime/tsup.config.ts", import.meta.url), "utf8");
 const outputStylesSource = readFileSync(new URL("../../runtime/src/constants/outputStyles.ts", import.meta.url), "utf8");
 const todoWritePromptSource = readFileSync(new URL("../../runtime/src/tools/TodoWriteTool/prompt.ts", import.meta.url), "utf8");
-const mcpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp/mcp.tsx", import.meta.url), "utf8");
-const mcpXaaIdpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp/xaaIdpCommand.ts", import.meta.url), "utf8");
+const mcpCommandSource = readFileSync(new URL("../../runtime/src/commands/mcp.ts", import.meta.url), "utf8");
+const mcpAddActionSource = readFileSync(new URL("../../runtime/src/cli/handlers/mcp-add-action.ts", import.meta.url), "utf8");
+const mcpXaaSource = readFileSync(new URL("../../runtime/src/cli/handlers/mcp-xaa.ts", import.meta.url), "utf8");
 const cliPrintSource = readFileSync(new URL("../../runtime/src/cli/print.ts", import.meta.url), "utf8");
 assert(
   "complete.mjs hard-fails worktree removal failures",
@@ -484,7 +485,8 @@ assert(
   !/Follow-up|follow-up|workaround|WORKAROUND/.test(
     [
       mcpCommandSource,
-      mcpXaaIdpCommandSource,
+      mcpAddActionSource,
+      mcpXaaSource,
       cliPrintSource,
     ].join("\n"),
   ),

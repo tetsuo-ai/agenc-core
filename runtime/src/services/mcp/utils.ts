@@ -1,10 +1,9 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import { resolveAgencHome } from '../../config/env.js'
-import type { AgentMcpServerInfo } from '../../components/mcp/types.js'
+import type { AgentMcpServerInfo } from '../../tui/components/mcp/types.js'
 import type { Tool } from '../../tools/Tool.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { getCwd } from '../../utils/cwd.js'

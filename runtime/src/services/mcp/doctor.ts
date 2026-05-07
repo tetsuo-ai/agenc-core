@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ValidationError } from '../../utils/settings/validation.js'
 import { clearServerCache, connectToServer } from './client.js'
 import {
@@ -209,11 +207,14 @@ function getConfigSignature(config: ScopedMcpServerConfig): string {
     case 'sse':
     case 'http':
     case 'ws':
+    case 'sse-ide':
+    case 'ws-ide':
     case 'agencai-proxy':
       return `${config.scope}:${config.type}:${config.url}`
     case 'sdk':
       return `${config.scope}:${config.type}:${config.name}`
-    default:
+    case 'stdio':
+    case undefined:
       return `${config.scope}:${config.type ?? 'stdio'}:${config.command}:${JSON.stringify(config.args ?? [])}`
   }
 }

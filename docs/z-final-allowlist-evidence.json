@@ -4,8 +4,8 @@
   "tsPrune": {
     "command": "npx --yes --package ts-prune@0.10.3 ts-prune --error -p runtime/tsconfig.json",
     "ignoreFile": ".ts-prune-ignore",
-    "ignorePatternCount": 6211,
-    "sha256": "64fcac5605a6de8cd5b6584d4e95941a6b803f08d13f66017e7d6ea64b940165",
+    "ignorePatternCount": 6210,
+    "sha256": "11ad1771648518aad1a5e4380f7a94e7a13c7b99202f80682208895f933771a2",
     "rationale": "Each non-comment ignore line is an anchored regular expression for one current ts-prune output line. The gate filters only those exact lines, so a new unused export line fails unless the allowlist is deliberately updated."
   },
   "knip": {
@@ -22,9 +22,9 @@
       "runtime/src/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}",
       "runtime/tests/**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"
     ],
-    "ignoredRuntimeFileCount": 439,
+    "ignoredRuntimeFileCount": 424,
     "ignoredIssueEntryCount": 4499,
-    "configSha256": "2cf799c378e055f1c48bd143e066819df40aa0e1c19c3739dff6bf1621cf7a2c",
+    "configSha256": "4162691486dc909162034b4bff777a7177b4e67da5511797af21589bd74ea789",
     "issueIgnoreFile": ".knip-issues-ignore.json",
     "issueIgnoreSha256": "2c90046487235b8a1fadfcf71c93e4a64e68127a44ffe53f6cab13860231436d",
     "rationale": "The runtime workspace entry list names package, CLI, TUI, Linux launcher, build-script, and test entrypoints instead of treating all runtime source as entry surface. The ignoreFiles list covers exact retained file paths. The .knip.json ignoreIssues map is generated from the exact issue audit file as file/type coverage for genuine retained public or test support surface; the verifier also runs a raw Knip audit with ignoreIssues stripped and fails on any symbol-level issue not present in the exact audit file."

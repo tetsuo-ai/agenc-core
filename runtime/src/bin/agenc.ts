@@ -244,7 +244,7 @@ export function formatCliHelpText(): string {
     "       agenc agent attach <id>",
     "       agenc agent stop <id>",
     "       agenc agent logs <id>",
-    "       agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor>",
+    "       agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-project-choices|doctor|xaa>",
     "",
     "Commands:",
     "  init                                    Create .agenc/config.json and AGENC.md",

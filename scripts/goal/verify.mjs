@@ -6675,6 +6675,10 @@ async function gapGates(item) {
     assertGapMcpSlashCommandExpanded();
     return;
   }
+  if (item.title.includes("Resolve services/mcp/ donor-mirror tier")) {
+    assertGapMcpDonorMirrorTierResolved();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
@@ -6892,9 +6896,9 @@ function assertGapMcpBridgeConfigNamespaces() {
     failGate("GAP-MCP-01: config.toml editor must expose MCP server edits");
   }
 
-  const addCommandRel = "runtime/src/commands/mcp/addCommand.ts";
+  const addCommandRel = "runtime/src/cli/handlers/mcp-add-action.ts";
   const addCommand = readFileSync(path.join(root, addCommandRel), "utf8");
-  if (!/Configuration scope \(user or project\)[\s\S]*'user'/.test(addCommand)) {
+  if (!/options\.scope \?\? "user"/.test(addCommand)) {
     failGate("GAP-MCP-01: mcp add must default to live user config.toml scope");
   }
 
@@ -6916,6 +6920,209 @@ function assertGapMcpBridgeConfigNamespaces() {
   }
 
   pass("GAP-MCP-01: mcp add user config writes canonical config.toml mcp_servers");
+}
+
+function assertGapMcpDonorMirrorTierResolved() {
+  const absent = [
+    "runtime/src/commands/mcp/addCommand.ts",
+    "runtime/src/commands/mcp/addAction.ts",
+    "runtime/src/commands/mcp/doctorCommand.ts",
+    "runtime/src/commands/mcp/doctorCommand.test.ts",
+    "runtime/src/commands/mcp/index.ts",
+    "runtime/src/commands/mcp/mcp.tsx",
+    "runtime/src/commands/mcp/xaaIdpCommand.ts",
+    "runtime/src/entrypoints/mcp.ts",
+    "runtime/src/entrypoints/mcp.test.ts",
+    "runtime/src/tui/components/mcp/MCPAgentServerMenu.tsx",
+    "runtime/src/tui/components/mcp/MCPListPanel.tsx",
+    "runtime/src/tui/components/mcp/MCPReconnect.tsx",
+    "runtime/src/tui/components/mcp/MCPSettings.tsx",
+  ];
+  for (const rel of absent) {
+    if (existsSync(path.join(root, rel))) {
+      failGate(`GAP-MCP-04: stale donor-tier file still exists: ${rel}`);
+    }
+  }
+  if (existsSync(path.join(root, "runtime/src/commands/mcp"))) {
+    failGate("GAP-MCP-04: runtime/src/commands/mcp subdirectory must be deleted");
+  }
+
+  const requiredFiles = [
+    "runtime/src/cli/handlers/mcp-add-action.ts",
+    "runtime/src/cli/handlers/mcp-xaa.ts",
+    "runtime/src/tui/components/mcp/types.ts",
+  ];
+  for (const rel of requiredFiles) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-MCP-04: missing retained MCP owner file ${rel}`);
+    }
+  }
+
+  const noNocheckScopes = [
+    "runtime/src/services/mcp",
+    "runtime/src/tui/components/mcp",
+    "runtime/src/cli/handlers/mcp.tsx",
+    "runtime/src/cli/handlers/mcp-add-action.ts",
+    "runtime/src/cli/handlers/mcp-xaa.ts",
+  ];
+  for (const rel of noNocheckScopes) {
+    const abs = path.join(root, rel);
+    const files = statSync(abs).isDirectory() ? listSourceFiles(abs) : [rel];
+    for (const fileRel of files) {
+      const source = readFileSync(path.join(root, fileRel), "utf8");
+      if (source.startsWith("// @ts-nocheck") || source.includes("Moved-source note")) {
+        failGate(`GAP-MCP-04: temporary type boundary remains in ${fileRel}`);
+      }
+    }
+  }
+
+  const cliSource = readFileSync(path.join(root, "runtime/src/bin/mcp-cli.ts"), "utf8");
+  for (const needle of [
+    "\"xaa\"",
+    "Manage XAA IdP authentication",
+    "../cli/handlers/mcp-add-action.js",
+    "../cli/handlers/mcp-xaa.js",
+  ]) {
+    if (!cliSource.includes(needle)) {
+      failGate(`GAP-MCP-04: runtime/src/bin/mcp-cli.ts missing live CLI evidence: ${needle}`);
+    }
+  }
+
+  const agencSource = readFileSync(path.join(root, "runtime/src/bin/agenc.ts"), "utf8");
+  if (!/agenc mcp <serve\|add\|list\|get\|remove\|add-json\|add-from-agenc-desktop\|reset-project-choices\|doctor\|xaa>/.test(agencSource)) {
+    failGate("GAP-MCP-04: top-level agenc help must advertise agenc mcp xaa");
+  }
+
+  const xaaSource = readFileSync(path.join(root, "runtime/src/cli/handlers/mcp-xaa.ts"), "utf8");
+  for (const banned of ["process.exit", "cliError", "cliOk"]) {
+    if (xaaSource.includes(banned)) {
+      failGate(`GAP-MCP-04: mcp xaa handler must use injected IO, found ${banned}`);
+    }
+  }
+  for (const needle of [
+    "updateSettingsForSource(\"userSettings\"",
+    "MCP_XAA_IDP_CLIENT_SECRET",
+    "saveIdpClientSecret",
+    "saveIdpIdTokenFromJwt",
+    "getCachedIdpIdToken",
+    "clearIdpIdToken",
+    "clearIdpClientSecret",
+  ]) {
+    if (!xaaSource.includes(needle)) {
+      failGate(`GAP-MCP-04: mcp xaa handler missing behavior evidence: ${needle}`);
+    }
+  }
+
+  const handlersSource = readFileSync(path.join(root, "runtime/src/cli/handlers/mcp.tsx"), "utf8");
+  if (/mcpServeHandler/.test(handlersSource)) {
+    failGate("GAP-MCP-04: stale mcpServeHandler must be removed from CLI handlers");
+  }
+
+  const managePluginsSource = readFileSync(path.join(root, "runtime/src/commands/plugin/ManagePlugins.tsx"), "utf8");
+  if (!managePluginsSource.includes("../../tui/components/mcp/types.js")) {
+    failGate("GAP-MCP-04: ManagePlugins must import shared MCP types from the retained TUI owner");
+  }
+  for (const deletedComponent of [
+    "MCPAgentServerMenu",
+    "MCPListPanel",
+    "MCPReconnect",
+    "MCPSettings",
+  ]) {
+    if (managePluginsSource.includes(deletedComponent)) {
+      failGate(`GAP-MCP-04: ManagePlugins still references deleted ${deletedComponent}`);
+    }
+  }
+
+  const runtimeTsconfig = readFileSync(path.join(root, "runtime/tsconfig.json"), "utf8");
+  for (const staleExclude of [
+    "src/cli/handlers/mcp.tsx",
+    "src/commands/mcp/addCommand.ts",
+    "src/commands/mcp/doctorCommand.ts",
+    "src/commands/mcp/mcp.tsx",
+    "src/commands/mcp/xaaIdpCommand.ts",
+    "src/entrypoints/mcp.ts",
+    "src/services/mcp/MCPConnectionManager.tsx",
+    "src/services/mcp/doctor.ts",
+    "src/services/mcp/useManageMCPConnections.ts",
+    "src/tui/components/mcp/ElicitationDialog.tsx",
+    "src/tui/components/mcp/MCPReconnect.tsx",
+    "src/tui/components/mcp/MCPRemoteServerMenu.tsx",
+    "src/tui/components/mcp/MCPSettings.tsx",
+    "src/tui/components/mcp/MCPStdioServerMenu.tsx",
+    "src/tui/components/mcp/MCPToolDetailView.tsx",
+    "src/tui/components/mcp/MCPToolListView.tsx",
+    "src/tui/components/mcp/McpParsingWarnings.tsx",
+  ]) {
+    if (runtimeTsconfig.includes(`"${staleExclude}"`)) {
+      failGate(`GAP-MCP-04: runtime tsconfig still excludes ${staleExclude}`);
+    }
+  }
+
+  const referenceFiles = [
+    ".knip.json",
+    ".ts-prune-ignore",
+    "scripts/goal/checklist-utils.test.mjs",
+    "parity/GAP-TOOLS-04-parity.json",
+    "parity/OB-04-parity.json",
+    "AUDIT-FUNCTIONAL-GAPS-2026-05-07.md",
+  ];
+  const staleReferencePatterns = [
+    "runtime/src/commands/mcp/addCommand.ts",
+    "runtime/src/commands/mcp/doctorCommand.ts",
+    "runtime/src/commands/mcp/index.ts",
+    "runtime/src/commands/mcp/mcp.tsx",
+    "runtime/src/commands/mcp/xaaIdpCommand.ts",
+    "runtime/src/entrypoints/mcp.ts",
+    "src/commands/mcp/addCommand.ts",
+    "src/commands/mcp/doctorCommand.ts",
+    "src/commands/mcp/index.ts",
+    "src/commands/mcp/mcp.tsx",
+    "src/commands/mcp/xaaIdpCommand.ts",
+    "src/entrypoints/mcp.ts",
+    "MCPAgentServerMenu",
+    "MCPListPanel",
+    "MCPReconnect",
+    "MCPSettings",
+    "claudeai",
+  ];
+  for (const rel of referenceFiles) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    for (const pattern of staleReferencePatterns) {
+      if (source.includes(pattern)) {
+        failGate(`GAP-MCP-04: stale reference ${pattern} remains in ${rel}`);
+      }
+    }
+  }
+
+  const testSource = readFileSync(path.join(root, "runtime/src/bin/mcp-cli-management.test.ts"), "utf8");
+  for (const needle of [
+    "mcp xaa setup validates issuer and secret env before writing settings",
+    "mcp xaa setup writes settings through injected IO and clears stale issuer secrets",
+    "mcp xaa login supports cached, forced, and id-token paths",
+    "mcp xaa show and clear do not leak secrets or cached tokens",
+  ]) {
+    if (!testSource.includes(needle)) {
+      failGate(`GAP-MCP-04: missing xaa CLI regression test: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/bin/mcp-cli-management.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-04 targeted MCP CLI/XAA tests failed");
+  }
+
+  const checklistTest = run("node", ["scripts/goal/checklist-utils.test.mjs"]);
+  if (checklistTest.status !== 0) {
+    failGate("GAP-MCP-04 checklist utility consistency test failed");
+  }
+
+  pass("GAP-MCP-04: stale MCP donor tier deleted or absorbed into live AgenC owners");
 }
 
 function assertGapToolsNullStubToolsRemoved() {

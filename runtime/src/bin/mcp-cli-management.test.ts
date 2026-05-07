@@ -41,6 +41,34 @@ const configMocks = vi.hoisted(() => ({
   }),
 }));
 
+const xaaState = vi.hoisted(() => ({
+  settings: undefined as
+    | { issuer: string; clientId: string; callbackPort?: number }
+    | undefined,
+  cachedIdToken: undefined as string | undefined,
+  clientSecret: undefined as string | undefined,
+  saveSecretResult: { success: true } as { success: boolean; warning?: string },
+  clearedIdTokens: [] as string[],
+  clearedClientSecrets: [] as string[],
+  acquireIdpIdToken: vi.fn(async (options: {
+    onAuthorizationUrl?: (url: string) => void;
+  }) => {
+    options.onAuthorizationUrl?.("https://idp.test/login");
+  }),
+  savedJwt: undefined as string | undefined,
+  updateError: undefined as Error | undefined,
+}));
+
+const settingsMocks = vi.hoisted(() => ({
+  updateSettingsForSource: vi.fn((_source: string, update: {
+    xaaIdp?: { issuer: string; clientId: string; callbackPort?: number };
+  }) => {
+    if (xaaState.updateError) return { error: xaaState.updateError };
+    xaaState.settings = update.xaaIdp;
+    return {};
+  }),
+}));
+
 vi.mock("../cli/handlers/mcp.js", () => handlerMocks);
 vi.mock("../services/mcp/config.js", () => configMocks);
 vi.mock("../services/mcp/utils.js", () => ({
@@ -77,14 +105,37 @@ vi.mock("../services/mcp/auth.js", () => ({
   saveMcpClientSecret: vi.fn(),
 }));
 vi.mock("../services/mcp/xaaIdpLogin.js", () => ({
-  getXaaIdpSettings: vi.fn(() => undefined),
+  acquireIdpIdToken: xaaState.acquireIdpIdToken,
+  clearIdpClientSecret: vi.fn((issuer: string) => {
+    xaaState.clearedClientSecrets.push(issuer);
+    xaaState.clientSecret = undefined;
+  }),
+  clearIdpIdToken: vi.fn((issuer: string) => {
+    xaaState.clearedIdTokens.push(issuer);
+    xaaState.cachedIdToken = undefined;
+  }),
+  getCachedIdpIdToken: vi.fn(() => xaaState.cachedIdToken),
+  getIdpClientSecret: vi.fn(() => xaaState.clientSecret),
+  getXaaIdpSettings: vi.fn(() => xaaState.settings),
+  issuerKey: vi.fn((issuer: string) => issuer.replace(/\/+$/, "").toLowerCase()),
+  saveIdpClientSecret: vi.fn((_issuer: string, secret: string) => {
+    xaaState.clientSecret = secret;
+    return xaaState.saveSecretResult;
+  }),
+  saveIdpIdTokenFromJwt: vi.fn((_issuer: string, token: string) => {
+    xaaState.savedJwt = token;
+    xaaState.cachedIdToken = token;
+    return Date.UTC(2030, 0, 1);
+  }),
   isXaaEnabled: vi.fn(() => process.env.AGENC_ENABLE_XAA === "1"),
 }));
+vi.mock("../utils/settings/settings.js", () => settingsMocks);
 
 const originalEnv = {
   AGENC_ENABLE_XAA: process.env.AGENC_ENABLE_XAA,
   AGENC_HOME: process.env.AGENC_HOME,
   HOME: process.env.HOME,
+  MCP_XAA_IDP_CLIENT_SECRET: process.env.MCP_XAA_IDP_CLIENT_SECRET,
 };
 
 let agencHome: string;
@@ -94,6 +145,15 @@ beforeEach(async () => {
   process.env.AGENC_HOME = agencHome;
   process.env.HOME = agencHome;
   delete process.env.AGENC_ENABLE_XAA;
+  delete process.env.MCP_XAA_IDP_CLIENT_SECRET;
+  xaaState.settings = undefined;
+  xaaState.cachedIdToken = undefined;
+  xaaState.clientSecret = undefined;
+  xaaState.saveSecretResult = { success: true };
+  xaaState.clearedIdTokens = [];
+  xaaState.clearedClientSecrets = [];
+  xaaState.savedJwt = undefined;
+  xaaState.updateError = undefined;
 });
 
 afterEach(() => {
@@ -145,6 +205,7 @@ describe("AgenC MCP management CLI parsing", () => {
       "add-from-agenc-desktop",
       "reset-project-choices",
       "doctor",
+      "xaa",
     ]) {
       expect(parseAgenCMcpCliArgs(["mcp", command, "server"])).toEqual({
         kind: "management",
@@ -166,6 +227,7 @@ describe("AgenC MCP management CLI parsing", () => {
     expect(help).toContain("add-from-agenc-desktop");
     expect(help).toContain("reset-project-choices");
     expect(help).toContain("doctor");
+    expect(help).toContain("xaa");
     expect(help).toContain("--transport <stdio|sse|http>");
   });
 
@@ -305,6 +367,169 @@ describe("AgenC MCP management CLI parsing", () => {
     );
     await expect(readFile(join(agencHome, "config.toml"), "utf8")).rejects
       .toThrow();
+  });
+
+  test("mcp xaa setup validates issuer and secret env before writing settings", async () => {
+    const { io, output } = captureIo();
+
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: [
+            "xaa",
+            "setup",
+            "--issuer",
+            "http://idp.test",
+            "--client-id",
+            "agenc",
+          ],
+        },
+        { io },
+      ),
+    ).resolves.toBe(1);
+    expect(output().stderr).toContain("--issuer must use https://");
+    expect(settingsMocks.updateSettingsForSource).not.toHaveBeenCalled();
+
+    const second = captureIo();
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: [
+            "xaa",
+            "setup",
+            "--issuer",
+            "https://idp.test",
+            "--client-id",
+            "agenc",
+            "--client-secret",
+          ],
+        },
+        { io: second.io },
+      ),
+    ).resolves.toBe(1);
+    expect(second.output().stderr).toContain(
+      "MCP_XAA_IDP_CLIENT_SECRET env var",
+    );
+  });
+
+  test("mcp xaa setup writes settings through injected IO and clears stale issuer secrets", async () => {
+    xaaState.settings = {
+      issuer: "https://old-idp.test",
+      clientId: "old-client",
+    };
+    process.env.MCP_XAA_IDP_CLIENT_SECRET = "super-secret";
+    const { io, output } = captureIo();
+
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: [
+            "xaa",
+            "setup",
+            "--issuer",
+            "https://idp.test",
+            "--client-id",
+            "agenc",
+            "--client-secret",
+            "--callback-port",
+            "3456",
+          ],
+        },
+        { io },
+      ),
+    ).resolves.toBe(0);
+
+    expect(output().stdout).toContain(
+      "XAA IdP connection configured for https://idp.test",
+    );
+    expect(output().stderr).toBe("");
+    expect(xaaState.settings).toEqual({
+      issuer: "https://idp.test",
+      clientId: "agenc",
+      callbackPort: 3456,
+    });
+    expect(xaaState.clientSecret).toBe("super-secret");
+    expect(xaaState.clearedIdTokens).toEqual(["https://old-idp.test"]);
+    expect(xaaState.clearedClientSecrets).toEqual(["https://old-idp.test"]);
+  });
+
+  test("mcp xaa login supports cached, forced, and id-token paths", async () => {
+    xaaState.settings = {
+      issuer: "https://idp.test",
+      clientId: "agenc",
+    };
+    xaaState.cachedIdToken = "cached.jwt";
+    const cached = captureIo();
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["xaa", "login"] },
+        { io: cached.io },
+      ),
+    ).resolves.toBe(0);
+    expect(cached.output().stdout).toContain("Already logged in");
+
+    const forced = captureIo();
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["xaa", "login", "--force"] },
+        { io: forced.io },
+      ),
+    ).resolves.toBe(0);
+    expect(xaaState.acquireIdpIdToken).toHaveBeenCalled();
+    expect(forced.output().stdout).toContain("If the browser did not open");
+
+    const injected = captureIo();
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: ["xaa", "login", "--id-token", "manual.jwt"],
+        },
+        { io: injected.io },
+      ),
+    ).resolves.toBe(0);
+    expect(xaaState.savedJwt).toBe("manual.jwt");
+    expect(injected.output().stdout).toContain("id_token cached");
+  });
+
+  test("mcp xaa show and clear do not leak secrets or cached tokens", async () => {
+    xaaState.settings = {
+      issuer: "https://idp.test",
+      clientId: "agenc-client",
+      callbackPort: 3456,
+    };
+    xaaState.clientSecret = "super-secret";
+    xaaState.cachedIdToken = "cached.jwt";
+    const show = captureIo();
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["xaa", "show"] },
+        { io: show.io },
+      ),
+    ).resolves.toBe(0);
+
+    expect(show.output().stdout).toContain("Issuer:        https://idp.test");
+    expect(show.output().stdout).toContain("Client ID:     agenc-client");
+    expect(show.output().stdout).toContain("Client secret: (stored in keychain)");
+    expect(show.output().stdout).toContain("Logged in:     yes");
+    expect(show.output().stdout).not.toContain("super-secret");
+    expect(show.output().stdout).not.toContain("cached.jwt");
+
+    const clear = captureIo();
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["xaa", "clear"] },
+        { io: clear.io },
+      ),
+    ).resolves.toBe(0);
+    expect(clear.output().stdout).toContain("XAA IdP connection cleared");
+    expect(xaaState.settings).toBeUndefined();
+    expect(xaaState.clientSecret).toBeUndefined();
+    expect(xaaState.cachedIdToken).toBeUndefined();
   });
 
   test("preserves handler defaults for add-json and desktop import", async () => {

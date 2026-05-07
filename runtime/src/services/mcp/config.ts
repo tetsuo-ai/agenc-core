@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
@@ -1196,10 +1195,15 @@ export async function getAgenCCodeMcpConfigs(
   const filtered: Record<string, ScopedMcpServerConfig> = {}
 
   for (const [name, serverConfig] of Object.entries(configs)) {
-    if (!isMcpServerAllowedByPolicy(name, serverConfig as McpServerConfig)) {
+    if (
+      !isMcpServerAllowedByPolicy(
+        name,
+        serverConfig as unknown as McpServerConfig,
+      )
+    ) {
       continue
     }
-    filtered[name] = serverConfig as ScopedMcpServerConfig
+    filtered[name] = serverConfig as unknown as ScopedMcpServerConfig
   }
 
   return { servers: filtered, errors: mcpErrors }

@@ -52,7 +52,7 @@ The `agenc mcp serve` server-out path (AgenC-as-MCP-server) is real, typed, test
 - Two parallel config namespaces with no bridge: `~/.agenc.json` `mcpServers` (legacy zod) vs `~/.agenc/config.toml` `mcp_servers` (live TOML). User-facing `mcp add` (when wired) populates a key the live MCPManager will never read (GAP-MCP-01)
 - `agenc mcp` CLI only supports `serve`. `add`/`list`/`get`/`remove`/`add-json`/`add-from-agenc-desktop`/`reset-project-choices`/`doctor` handlers exist at `cli/handlers/mcp.tsx:102-460` but no parser wires them (GAP-MCP-02)
 - `/mcp` slash command is read-only status. `mcp-client/manager.ts:388 reconnectServer` is implemented and tested but no caller (GAP-MCP-03)
-- Whole `services/mcp/`, `commands/mcp/`, `tui/components/mcp/`, `cli/handlers/mcp.tsx`, `entrypoints/mcp.ts` tier carries `// @ts-nocheck` and is disconnected from the live binary (GAP-MCP-04)
+- GAP-MCP-04 resolved the stale MCP donor tier by deleting the dead command subdirectory and entrypoint, moving `mcp add` into the live CLI handler layer, wiring `mcp xaa`, and removing the retained `services/mcp`, TUI MCP, and CLI handler `// @ts-nocheck` boundaries.
 - MCP connection failure notifications (`useMcpConnectivityStatus`) live only in dead REPL.tsx (GAP-MCP-05)
 - Cross-process lockfile race in MCP auth refresh, TODO: before GA (GAP-MCP-06)
 
