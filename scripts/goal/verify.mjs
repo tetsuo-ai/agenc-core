@@ -2114,6 +2114,9 @@ const ITEM_EVIDENCE = {
     tests: [
       "runtime/src/prompts/agenc-md.test.ts",
       "runtime/src/prompts/project-instructions.test.ts",
+      "runtime/src/bin/agenc.test.ts",
+      "runtime/src/prompts/system-prompt.test.ts",
+      "runtime/src/conversation/multi-turn-context.contract.test.ts",
     ],
   },
   "PR-06": {
@@ -5393,6 +5396,9 @@ async function promptGates(item) {
         "--",
         "src/prompts/agenc-md.test.ts",
         "src/prompts/project-instructions.test.ts",
+        "src/bin/agenc.test.ts",
+        "src/prompts/system-prompt.test.ts",
+        "src/conversation/multi-turn-context.contract.test.ts",
       ],
       { cwd: path.join(root, "runtime") },
     );
