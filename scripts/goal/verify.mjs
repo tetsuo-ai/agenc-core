@@ -2097,7 +2097,24 @@ const ITEM_EVIDENCE = {
     files: [{ globUnder: "runtime/src/install-context", matching: /\.tsx?$/, minCount: 1 }],
   },
   "PR-02": {
-    grepPresent: [{ pattern: "AGENC\\.md", scope: "runtime/src/prompts" }],
+    files: [
+      "runtime/src/prompts/agenc-md.ts",
+      "runtime/src/prompts/project-instructions.ts",
+      "runtime/src/prompts/agenc-md.test.ts",
+      "runtime/src/prompts/project-instructions.test.ts",
+      "parity/PR-02-parity.json",
+    ],
+    grepPresent: [
+      { pattern: "loadTieredInstructions", scope: "runtime/src/prompts/agenc-md.ts" },
+      { pattern: "resolveIncludes", scope: "runtime/src/prompts/agenc-md.ts" },
+      { pattern: "loadProjectInstructionChain", scope: "runtime/src/prompts/project-instructions.ts" },
+      { pattern: "chain\\.at\\(-1\\)", scope: "runtime/src/prompts/project-instructions.ts" },
+      { pattern: "project-instruction-tiering", scope: "parity/PR-02-parity.json" },
+    ],
+    tests: [
+      "runtime/src/prompts/agenc-md.test.ts",
+      "runtime/src/prompts/project-instructions.test.ts",
+    ],
   },
   "PR-06": {
     files: [
@@ -5366,6 +5383,21 @@ async function promptGates(item) {
   if (id === "PR-02") {
     const found = grepRepo("AGENC\\.md", "runtime/src/prompts");
     if (!found) failGate("AGENC.md inclusion not referenced in runtime/src/prompts/");
+    if (!grepRepo("chain\\.at\\(-1\\)", "runtime/src/prompts/project-instructions.ts")) {
+      failGate("PR-02: loadProjectInstructions must return the closest project instruction file");
+    }
+    const vitest = run(
+      "npm",
+      [
+        "test",
+        "--",
+        "src/prompts/agenc-md.test.ts",
+        "src/prompts/project-instructions.test.ts",
+      ],
+      { cwd: path.join(root, "runtime") },
+    );
+    if (vitest.status !== 0) failGate("PR-02 targeted prompt tests failed");
+    pass("PR-02 targeted prompt tests passed");
     pass("AGENC.md inclusion present");
     return;
   }

@@ -1,0 +1,107 @@
+{
+  "item": "PR-02",
+  "status": "implemented",
+  "contractName": "agenc-md-inclusion",
+  "scope": "AgenC loads AGENC.md instruction tiers, expands bounded include directives, and injects the assembled project instructions into prompt assembly.",
+  "sourceRoot": "TUI/source reference",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/memdir/memdir.ts::loadMemoryPrompt",
+    "src/utils/claudemd.ts (branding-scan: allow upstream source citation)"
+  ],
+  "targetFiles": [
+    "runtime/src/prompts/agenc-md.ts",
+    "runtime/src/prompts/project-instructions.ts",
+    "runtime/src/bin/agenc.ts",
+    "runtime/src/conversation/multi-turn-context.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/prompts/agenc-md.test.ts",
+    "runtime/src/prompts/project-instructions.test.ts",
+    "runtime/src/bin/agenc.test.ts",
+    "runtime/src/conversation/multi-turn-context.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "project-instruction-tiering",
+      "source": "src/utils/claudemd.ts (branding-scan: allow upstream source citation)",
+      "target": "runtime/src/prompts/agenc-md.ts",
+      "requiredBehaviors": [
+        "Managed, user, project, and local instruction tiers load in deterministic low-to-high priority order.",
+        "The project tier walks from project root to current working directory and formats multiple project documents in source order.",
+        "Missing tiers are omitted without failing prompt assembly."
+      ],
+      "edgeCases": [
+        "An explicit empty project-root marker list scopes project discovery to the current working directory.",
+        "Project rule files are appended to the project tier when present."
+      ],
+      "tests": [
+        "runtime/src/prompts/agenc-md.test.ts",
+        "runtime/src/prompts/project-instructions.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "include-resolution",
+      "source": "src/utils/claudemd.ts (branding-scan: allow upstream source citation)",
+      "target": "runtime/src/prompts/agenc-md.ts",
+      "requiredBehaviors": [
+        "Instruction include directives expand inline before the tier is assembled.",
+        "Include resolution enforces realpath-aware project boundaries.",
+        "Rejected includes remain visible through structured warnings and rejection markers."
+      ],
+      "edgeCases": [
+        "Missing files, path escapes, circular includes, excessive depth, excessive bytes, null bytes, unreadable files, and non-regular files are rejected.",
+        "Symlinks to in-tree regular files are accepted while symlink escapes are rejected."
+      ],
+      "tests": [
+        "runtime/src/prompts/agenc-md.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "prompt-injection-wiring",
+      "source": "src/memdir/memdir.ts::loadMemoryPrompt",
+      "target": "runtime/src/bin/agenc.ts",
+      "requiredBehaviors": [
+        "Turn preparation loads tiered project instructions for the active workspace root.",
+        "Assembled project instructions are passed into system prompt construction as the dynamic project-instructions section.",
+        "Instruction warnings are exposed to the session warning sink for UI/status surfaces."
+      ],
+      "edgeCases": [
+        "Config-provided project-root markers and document byte caps override defaults.",
+        "Empty instruction content does not create an inert prompt section."
+      ],
+      "tests": [
+        "runtime/src/bin/agenc.test.ts",
+        "runtime/src/prompts/system-prompt.test.ts",
+        "runtime/src/conversation/multi-turn-context.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "closest-single-loader",
+      "source": "src/utils/claudemd.ts (branding-scan: allow upstream source citation)",
+      "target": "runtime/src/prompts/project-instructions.ts",
+      "requiredBehaviors": [
+        "The single-file project instruction loader returns the closest applicable AGENC.md entry when root and nested instruction files both exist.",
+        "The chain loader still returns every project document in root-to-current-directory order for tiered assembly."
+      ],
+      "edgeCases": [
+        "Nested override files shadow same-directory base files without dropping outer project documents from the chain."
+      ],
+      "tests": [
+        "runtime/src/prompts/project-instructions.test.ts",
+        "runtime/src/prompts/agenc-md.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "intentionalReductions": [
+    "AgenC uses AGENC.md and .agenc/rules names for product-owned instruction files.",
+    "Team memory, append-only daily-log mode, analytics cohort branches, and provider-specific feature flags are owned by the memory subsystem rather than this prompt-inclusion item.",
+    "The include syntax is explicit line-level @include to avoid routing normal @file mentions through prompt assembly."
+  ]
+}

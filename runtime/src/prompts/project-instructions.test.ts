@@ -85,6 +85,20 @@ describe("project-instructions (T10-B)", () => {
     expect(res!.rootDir).toBe(repoRoot);
   });
 
+  test("loadProjectInstructions returns the closest instruction file when nested docs exist", async () => {
+    const repoRoot = join(root, "proj");
+    const pkgDir = join(repoRoot, "packages", "worker");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
+
+    const res = await loadProjectInstructions({ cwd: pkgDir });
+
+    expect(res!.path).toBe(join(pkgDir, "AGENC.md"));
+    expect(res!.content).toBe("PKG");
+  });
+
   test("loadProjectInstructions prefers AGENC.override.md", async () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);

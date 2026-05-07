@@ -171,7 +171,7 @@ export async function loadProjectInstructions(
   opts: LoadProjectInstructionsOptions,
 ): Promise<ProjectInstructions | null> {
   const chain = await loadProjectInstructionChain(opts);
-  return chain[0] ?? null;
+  return chain.at(-1) ?? null;
 }
 
 function truncateContentToBytes(
