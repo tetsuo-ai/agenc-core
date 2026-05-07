@@ -4,7 +4,7 @@ import { clearSystemPromptSections } from '../../constants/systemPromptSections.
 import { logEvent } from '../../services/analytics/index.js'
 import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
-import { clearMemoryFileCaches } from '../../memory/project-memory.js'
+import { clearMemoryFileCaches } from '../../memory/index.js'
 import { getCwd } from '../../utils/cwd.js'
 import { findCanonicalGitRoot } from '../../utils/git.js'
 import { lazySchema } from '../../utils/lazySchema.js'

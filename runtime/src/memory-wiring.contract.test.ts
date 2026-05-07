@@ -15,6 +15,7 @@ describe("memory wiring contract", () => {
       "runtime/src/prompts/memory/index.ts",
       "runtime/src/prompts/memory/loader.ts",
       "runtime/src/prompts/memory/types.ts",
+      "runtime/src/services/extractMemories/memory-scan.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(false);
     }
@@ -70,14 +71,48 @@ describe("memory wiring contract", () => {
     expect(projectMemory).toContain("MEMORY_MENTION_SYNTAX");
     expect(projectMemory).toContain("./privacy.js");
     expect(fileReadTool).toContain("detectSessionFileType");
-    expect(fileReadTool).toContain("../../memory/project-memory.js");
+    expect(fileReadTool).toContain("../../memory/index.js");
     expect(fileReadTool).not.toContain("function detectSessionFileType");
-    expect(fileWriteTool).toContain("../../memory/privacy.js");
-    expect(fileEditTool).toContain("../../memory/privacy.js");
-    expect(teamMemorySync).toContain("../../memory/privacy.js");
+    expect(fileWriteTool).toContain("../../memory/index.js");
+    expect(fileEditTool).toContain("../../memory/index.js");
+    expect(teamMemorySync).toContain("../../memory/index.js");
     expect(attachments).toContain("getDurableMemorySearchDirs");
     expect(attachments).toContain("getGlobalMemoryPath");
     expect(filesystem).toContain("isGlobalMemoryPath");
+  });
+
+  it("routes runtime tool and code memory access through the public index", () => {
+    const directImportAllowlist = new Set([
+      "runtime/src/memdir/teamMemPaths.ts",
+      "runtime/src/memdir/teamMemPrompts.ts",
+    ]);
+    const directMemoryModuleImport =
+      /(?:from\s+|import\s*\(\s*)["'][^"']*memory\/(?:project-memory|agencmd|find-relevant|scan|age|paths|detection|privacy)\.js["']/g;
+    const offenders: string[] = [];
+
+    for (const file of listSourceFiles(resolve(root, "runtime/src"))) {
+      const rel = file.slice(root.length + 1);
+      if (
+        rel.startsWith("runtime/src/memory/") ||
+        directImportAllowlist.has(rel)
+      ) {
+        continue;
+      }
+      const matches = readFileSync(file, "utf8").match(directMemoryModuleImport);
+      if (matches) offenders.push(`${rel}: ${matches.join(", ")}`);
+    }
+
+    expect(offenders).toEqual([]);
+
+    for (const rel of [
+      "runtime/src/utils/attachments.ts",
+      "runtime/src/tools/FileReadTool/FileReadTool.ts",
+      "runtime/src/services/extractMemories/extractMemories.ts",
+    ]) {
+      expect(readFileSync(resolve(root, rel), "utf8"), rel).toContain(
+        "memory/index.js",
+      );
+    }
   });
 });
 
