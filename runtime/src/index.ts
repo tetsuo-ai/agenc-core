@@ -58,6 +58,7 @@ export {
   type RequestId,
 } from "./app-server/protocol/index.js";
 export {
+  AGENC_PORTAL_AUTH_METHODS,
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
   AGENC_PORTAL_CLIENT_CAPABILITIES,
   AGENC_PORTAL_CONNECTION_STATUSES,
@@ -67,8 +68,11 @@ export {
   AGENC_PORTAL_DEFAULT_REQUEST_TIMEOUT_MS,
   AGENC_PORTAL_METHODS,
   AGENC_PORTAL_PROTOCOL_VERSION,
+  isAgenCPortalAuthMethod,
   isAgenCPortalMethod,
   type AgenCPortalAgentSummary,
+  type AgenCPortalAuthMethod,
+  type AgenCPortalAuthState,
   type AgenCPortalClientCapability,
   type AgenCPortalConnectionStatus,
   type AgenCPortalConnectionState,
