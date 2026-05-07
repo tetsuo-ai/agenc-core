@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { AuthBackend } from "../auth/backend.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
@@ -336,15 +336,11 @@ describe("createProvider", () => {
       model: "amazon.nova-lite-v1:0",
       extra: {
         accessKeyId: "aws-access",
+        secretAccessKey: "aws-secret",
+        sessionToken: "aws-session",
         region: "us-west-2",
       },
     });
-    expect(readProviderFactoryOptions(provider).extra).not.toHaveProperty(
-      "secretAccessKey",
-    );
-    expect(readProviderFactoryOptions(provider).extra).not.toHaveProperty(
-      "sessionToken",
-    );
   });
 
   test("routes generic apiKey to Bedrock accessKeyId", () => {
@@ -372,12 +368,68 @@ describe("createProvider", () => {
       model: "amazon.nova-micro-v1:0",
       extra: {
         accessKeyId: "configured-access-key",
+        secretAccessKey: "configured-secret-key",
         region: "us-east-2",
       },
     });
-    expect(readProviderFactoryOptions(provider).extra).not.toHaveProperty(
-      "secretAccessKey",
+  });
+
+  test("recreates Bedrock provider from factory options with explicit credentials", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: {
+            message: {
+              role: "assistant",
+              content: [{ text: "recreated" }],
+            },
+          },
+          stopReason: "end_turn",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
     );
+    const provider = withEnv(
+      {
+        AWS_BEDROCK_ACCESS_KEY_ID: undefined,
+        AWS_ACCESS_KEY_ID: undefined,
+        AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
+        AWS_SECRET_ACCESS_KEY: undefined,
+        AWS_BEDROCK_SESSION_TOKEN: undefined,
+        AWS_SESSION_TOKEN: undefined,
+      },
+      () =>
+        createProvider("amazon-bedrock", {
+          apiKey: "configured-access-key",
+          model: "amazon.nova-pro-v1:0",
+          extra: {
+            secretAccessKey: "configured-secret-key",
+            sessionToken: "configured-session-token",
+            region: "us-west-2",
+            fetchImpl,
+          },
+        }),
+    );
+
+    const recreated = withEnv(
+      {
+        AWS_BEDROCK_ACCESS_KEY_ID: undefined,
+        AWS_ACCESS_KEY_ID: undefined,
+        AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
+        AWS_SECRET_ACCESS_KEY: undefined,
+        AWS_BEDROCK_SESSION_TOKEN: undefined,
+        AWS_SESSION_TOKEN: undefined,
+      },
+      () =>
+        createProvider("amazon-bedrock", readProviderFactoryOptions(provider)),
+    );
+
+    const response = await recreated.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("recreated");
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(new Headers(init?.headers as HeadersInit).get("x-amz-security-token"))
+      .toBe("configured-session-token");
   });
 
   test("preserves anthropic context-management config in factory state", () => {

@@ -311,7 +311,10 @@ function bedrockContentForMessage(message: LLMMessage): readonly BedrockContentB
   const text = nonBlankText(messageText(message));
   if (text !== undefined) {
     content.push({ text });
-  } else if (hasTextSerializableContent(message)) {
+  } else if (
+    hasTextSerializableContent(message) &&
+    (message.toolCalls?.length ?? 0) === 0
+  ) {
     content.push({ text: EMPTY_TEXT_PLACEHOLDER });
   }
   for (const toolCall of message.toolCalls ?? []) {
@@ -378,6 +381,14 @@ function buildToolConfig(
   toolChoice: LLMToolChoice | undefined,
 ): BedrockRequest["toolConfig"] | undefined {
   if (tools.length === 0 || toolChoice === "none") return undefined;
+  if (
+    typeof toolChoice === "object" &&
+    !tools.some((tool) => tool.function.name === toolChoice.name)
+  ) {
+    throw new Error(
+      `amazon-bedrock provider toolChoice references unavailable tool: ${toolChoice.name}`,
+    );
+  }
   const bedrockToolChoice = toBedrockToolChoice(toolChoice);
   const bedrockTools = tools.map((tool) => ({
     toolSpec: {

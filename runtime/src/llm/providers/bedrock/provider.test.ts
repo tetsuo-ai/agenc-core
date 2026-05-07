@@ -369,6 +369,89 @@ describe("providers/bedrock", () => {
     ]);
   });
 
+  it("serializes tool-call-only assistant turns without placeholder text", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        output: {
+          message: {
+            role: "assistant",
+            content: [{ text: "accepted" }],
+          },
+        },
+        stopReason: "end_turn",
+      }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+    });
+
+    await provider.chat([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          { id: "call-1", name: "lookup", arguments: "{\"query\":\"status\"}" },
+        ],
+      },
+    ]);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const request = JSON.parse(String(init?.body)) as {
+      messages: Array<{ content: Array<Record<string, unknown>> }>;
+    };
+    expect(request.messages[0]?.content).toEqual([
+      {
+        toolUse: {
+          toolUseId: "call-1",
+          name: "lookup",
+          input: { query: "status" },
+        },
+      },
+    ]);
+  });
+
+  it("rejects a filtered-out specific tool choice before sending", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+    });
+
+    await expect(
+      provider.chat(
+        [{ role: "user", content: "hello" }],
+        {
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "lookup",
+                description: "Look up a value.",
+                parameters: { type: "object", properties: {} },
+              },
+            },
+            {
+              type: "function",
+              function: {
+                name: "blocked",
+                description: "Blocked by routing.",
+                parameters: { type: "object", properties: {} },
+              },
+            },
+          ],
+          toolRouting: { allowedToolNames: ["lookup"] },
+          toolChoice: { type: "function", name: "blocked" },
+        },
+      ),
+    ).rejects.toThrow(/toolChoice references unavailable tool: blocked/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("fails closed on malformed replayed tool call arguments", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new BedrockProvider({
@@ -442,6 +525,55 @@ describe("providers/bedrock", () => {
     ]);
     expect(chunks).toEqual([
       { content: "Need a lookup.", done: false },
+      {
+        content: "",
+        done: true,
+        toolCalls: [
+          {
+            id: "toolu-1",
+            name: "lookup",
+            arguments: "{\"query\":\"status\"}",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("emits only the done chunk for tool-call-only stream responses", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        output: {
+          message: {
+            role: "assistant",
+            content: [
+              {
+                toolUse: {
+                  toolUseId: "toolu-1",
+                  name: "lookup",
+                  input: { query: "status" },
+                },
+              },
+            ],
+          },
+        },
+        stopReason: "tool_use",
+      }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+    });
+    const chunks: Array<Record<string, unknown>> = [];
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      (chunk) => chunks.push(chunk as unknown as Record<string, unknown>),
+    );
+
+    expect(response.content).toBe("");
+    expect(chunks).toEqual([
       {
         content: "",
         done: true,

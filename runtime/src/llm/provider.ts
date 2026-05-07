@@ -405,16 +405,6 @@ function readProviderRuntimeExtra(
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
 
-function readBedrockFactoryExtra(
-  source: Record<string, unknown> | undefined,
-): Record<string, unknown> | undefined {
-  const extra = readProviderRuntimeExtra(source);
-  if (!extra) return undefined;
-  delete extra.secretAccessKey;
-  delete extra.sessionToken;
-  return Object.keys(extra).length > 0 ? extra : undefined;
-}
-
 function readRuntimeExtra(
   extra: Record<string, unknown> | undefined,
 ): ProviderRuntimeExtra {
@@ -1163,7 +1153,7 @@ export function createProvider(
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
-      const factoryExtra = readBedrockFactoryExtra(
+      const factoryExtra = readProviderRuntimeExtra(
         cfg as unknown as Record<string, unknown>,
       );
       return markFactoryProvider(new BedrockProvider(cfg), {
