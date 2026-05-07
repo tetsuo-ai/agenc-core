@@ -233,9 +233,26 @@ const ITEM_EVIDENCE = {
     ],
     grepPresent: [
       { pattern: "btwCommand", scope: "runtime/src/commands/registry.ts" },
-      { pattern: "btwLocalCommand", scope: "runtime/src/commands.ts" },
+      { pattern: "modulePath: \"\\./commands/btw/index\\.js\"", scope: "runtime/src/commands.ts" },
       { pattern: "reg\\.has\\(\"btw\"\\)", scope: "runtime/src/commands/registry.test.ts" },
       { pattern: "interactive local JSX descriptor for /btw", scope: "runtime/src/commands/tui-command-list.test.ts" },
+    ],
+  },
+  "GAP-TUI-10": {
+    files: [
+      "runtime/src/commands/registry.ts",
+      "runtime/src/commands.ts",
+    ],
+    tests: [
+      "runtime/src/commands/registry.test.ts",
+      "runtime/src/commands/tui-command-list.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "legacyCommandSurfaces", scope: "runtime/src/commands/registry.ts" },
+      { pattern: "registeredLegacyCommandSurfaceNames", scope: "runtime/src/commands/registry.ts" },
+      { pattern: "legacyCommandOverrideMap", scope: "runtime/src/commands.ts" },
+      { pattern: "lazyCommand", scope: "runtime/src/commands.ts" },
+      { pattern: "projects registered legacy command surfaces", scope: "runtime/src/commands/tui-command-list.test.ts" },
     ],
   },
   "OC-06": {
@@ -6600,6 +6617,10 @@ async function gapGates(item) {
     assertGapTuiBtwRegisteredInDispatcher();
     return;
   }
+  if (item.title.includes("Wire or delete the orphaned commands/ subdirectories")) {
+    assertGapTuiOrphanedCommandsResolved();
+    return;
+  }
   if (item.title.includes("SyntheticOutputTool base singleton echoes input untouched")) {
     assertGapToolsSyntheticOutputToolValidation();
     return;
@@ -7476,17 +7497,17 @@ function assertGapTuiBtwRegisteredInDispatcher() {
   const missingEvidence = [
     [
       "/btw registry descriptor exists",
-      /const\s+btwCommand:\s+SlashCommand[\s\S]*name:\s*["']btw["'][\s\S]*immediate:\s*true/,
+      /registeredLegacyCommandSurfaceSpecs[\s\S]*name:\s*["']btw["'][\s\S]*immediate:\s*true/,
       registry,
     ],
     [
       "/btw is included in buildDefaultRegistry",
-      /CommandRegistry\.fromCommands\(\[[\s\S]*btwCommand[\s\S]*\]\)/,
+      /legacyCommandSurfaces[\s\S]*registeredLegacyCommandSurfaceSpecs[\s\S]*CommandRegistry\.fromCommands\(\[[\s\S]*\.\.\.legacyCommandSurfaces/,
       registry,
     ],
     [
       "/btw uses the existing local JSX command in the TUI command list",
-      /import\s+btwLocalCommand[\s\S]*LOCAL_JSX_COMMAND_OVERRIDES[\s\S]*btwLocalCommand\.name/,
+      /registeredLegacyCommandSurfaceSpecs[\s\S]*lazyCommand\(\{\s*\.\.\.spec,\s*modulePath:\s*spec\.tuiModulePath\s*\}\)/,
       commands,
     ],
     [
@@ -7523,6 +7544,174 @@ function assertGapTuiBtwRegisteredInDispatcher() {
     failGate("GAP-TUI-09 targeted /btw registry tests failed");
   }
   pass("GAP-TUI-09 targeted /btw registry tests passed");
+}
+
+function assertGapTuiOrphanedCommandsResolved() {
+  const rels = {
+    registry: "runtime/src/commands/registry.ts",
+    commands: "runtime/src/commands.ts",
+    registryTest: "runtime/src/commands/registry.test.ts",
+    tuiListTest: "runtime/src/commands/tui-command-list.test.ts",
+    commandSurfaceTest: "runtime/src/commands/command-surface.test.ts",
+  };
+  for (const rel of Object.values(rels)) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-10: missing ${rel}`);
+  }
+
+  const registry = readFileSync(path.join(root, rels.registry), "utf8");
+  const commands = readFileSync(path.join(root, rels.commands), "utf8");
+  const registryTest = readFileSync(path.join(root, rels.registryTest), "utf8");
+  const tuiListTest = readFileSync(path.join(root, rels.tuiListTest), "utf8");
+  const commandSurfaceTest = readFileSync(path.join(root, rels.commandSurfaceTest), "utf8");
+  const expectedNames = [
+    "agents",
+    "branch",
+    "remote-control",
+    "btw",
+    "buddy",
+    "chrome",
+    "color",
+    "desktop",
+    "dream",
+    "export",
+    "extra-usage",
+    "fast",
+    "feedback",
+    "heapdump",
+    "ide",
+    "knowledge",
+    "login",
+    "logout",
+    "mobile",
+    "output-style",
+    "passes",
+    "pr-comments",
+    "privacy-settings",
+    "rate-limit-options",
+    "remote-env",
+    "web-setup",
+    "rename",
+    "rewind",
+    "sandbox",
+    "session",
+    "stickers",
+    "tag",
+    "tasks",
+    "terminal-setup",
+    "theme",
+    "think-back",
+    "thinkback-play",
+    "upgrade",
+    "vim",
+    "voice",
+    "install",
+    "ultraplan",
+    "commit",
+    "review",
+    "ultrareview",
+  ];
+  const missingRegistryNames = expectedNames.filter(
+    name => !new RegExp(`name:\\s*["']${escapeRegExp(name)}["']`).test(registry),
+  );
+  const missingCommandNames = /registeredLegacyCommandSurfaceSpecs/.test(commands)
+    ? []
+    : expectedNames.filter(
+      name => !new RegExp(`name:\\s*["']${escapeRegExp(name)}["']`).test(commands),
+    );
+  const missingEvidence = [
+    [
+      "registry exposes registered legacy command surface names",
+      /export\s+function\s+registeredLegacyCommandSurfaceNames/,
+      registry,
+    ],
+    [
+      "registry protects against duplicate legacy command names",
+      /Duplicate legacy command surface registration/,
+      registry,
+    ],
+    [
+      "command projection uses lazy descriptors, not eager legacy imports",
+      /function\s+lazyCommand[\s\S]*loadLegacyCommand/,
+      commands,
+    ],
+    [
+      "shared legacy surface specs preserve prompt tool metadata",
+      /allowedTools:\s*\[\s*["']Bash\(git add:\*\)["'][\s\S]*contentLength:\s*0[\s\S]*source:\s*["']builtin["']/,
+      registry,
+    ],
+    [
+      "command projection maps shared specs to legacy descriptors",
+      /registeredLegacyCommandSurfaceSpecs\.map[\s\S]*lazyCommand\(\{\s*\.\.\.spec,\s*modulePath:\s*spec\.tuiModulePath\s*\}\)/,
+      commands,
+    ],
+    [
+      "registry dispatches legacy surfaces instead of placeholder errors",
+      /executeLegacyCommandSurface[\s\S]*loadLegacyCommandSurface[\s\S]*localResultToSlashResult/,
+      registry,
+    ],
+    [
+      "registry wires the real extra-usage noninteractive export",
+      /nonInteractiveExportName:\s*["']extraUsageNonInteractive["']/,
+      registry,
+    ],
+    [
+      "registry test covers legacy command surface names",
+      /registers legacy command surfaces that still have executable modules/,
+      registryTest,
+    ],
+    [
+      "registry test executes real local/prompt surfaces and blocks context-bound prompts",
+      /executes representable local legacy command surfaces[\s\S]*executes representable prompt legacy command surfaces[\s\S]*does not dispatch prompt legacy commands that need interactive context/,
+      registryTest,
+    ],
+    [
+      "TUI command-list test covers legacy descriptor projection",
+      /projects registered legacy command surfaces to executable descriptors/,
+      tuiListTest,
+    ],
+    [
+      "TUI command-list test locks full shared metadata and representative metadata",
+      /preserves shared metadata for every legacy command surface[\s\S]*preserves representative legacy descriptor metadata[\s\S]*keeps hidden legacy surfaces addressable/,
+      tuiListTest,
+    ],
+    [
+      "command-surface compatibility test covers no-mock registry imports",
+      /AgenC command surface compatibility[\s\S]*getCommandsSync\(\)[\s\S]*buildDefaultRegistry\(\)/,
+      commandSurfaceTest,
+    ],
+  ]
+    .filter(([, pattern, content]) => !pattern.test(content))
+    .map(([label]) => label);
+  if (missingRegistryNames.length > 0 || missingCommandNames.length > 0 || missingEvidence.length > 0) {
+    const details = [
+      ...missingEvidence,
+      ...missingRegistryNames.map(name => `registry missing /${name}`),
+      ...missingCommandNames.map(name => `commands.ts missing /${name}`),
+    ];
+    failGate(`GAP-TUI-10 evidence missing:\n  - ${details.join("\n  - ")}`);
+  }
+  if (
+    /name:\s*["']extra-usage-noninteractive["']/.test(registry) ||
+    /nonInteractiveOnlyLocalCommand/.test(registry) ||
+    /name:\s*["']extra-usage-noninteractive["']/.test(commands) ||
+    /nonInteractiveOnlyLocalCommand/.test(commands)
+  ) {
+    failGate("GAP-TUI-10: invented extra-usage-noninteractive registry surface remains");
+  }
+
+  pass("GAP-TUI-10: orphaned command surfaces are registered and projected");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/registry.test.ts",
+    "src/commands/tui-command-list.test.ts",
+    "src/commands/command-surface.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-10 targeted orphan-command tests failed");
+  }
+  pass("GAP-TUI-10 targeted orphan-command tests passed");
 }
 
 function subsystemDirGates(label, dir) {
