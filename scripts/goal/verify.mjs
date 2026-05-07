@@ -6815,6 +6815,13 @@ async function gapGates(item) {
     assertGapProvAmazonBedrockAdapter();
     return;
   }
+  if (
+    id === "GAP-DMN-05" ||
+    item.title.includes("Add `agenc-runtime reload` subcommand")
+  ) {
+    assertGapDmnDaemonReloadSubcommand();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
@@ -6952,6 +6959,161 @@ function assertGapProvAmazonBedrockAdapter() {
     failGate("GAP-PROV-01 targeted Amazon Bedrock provider tests failed");
   }
   pass("GAP-PROV-01 Amazon Bedrock provider is registered, signed, and tested");
+}
+
+function assertGapDmnDaemonReloadSubcommand() {
+  const cliRel = "runtime/src/app-server/daemon-cli.ts";
+  const cliSource = readFileSync(path.join(root, cliRel), "utf8");
+  for (const needle of [
+    '| "reload"',
+    'action === "reload"',
+    "reloadAgenCDaemon",
+    "requestAgenCDaemonReload",
+    'method: "daemon.reload"',
+    "daemonControl",
+    "reloadChain",
+    "AgenCDaemonReloadableAuthBackend",
+    "updateRuntimeConfig",
+    "updateSnapshotRetention",
+    "assertExpectedDaemonResponse",
+    "isDaemonReloadResult",
+    "startConfiguredDaemonMcpServer",
+    "closeDaemonMcpServerAfterReloadFailure",
+    "AgenC daemon reloaded configuration",
+    "AgenC daemon config reloaded",
+  ]) {
+    if (!cliSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${cliRel} missing reload evidence: ${needle}`);
+    }
+  }
+  for (const forbidden of [
+    "SIGUSR1",
+    "reloadPid",
+    "installAgenCDaemonConfigReloadHandler",
+  ]) {
+    if (cliSource.includes(forbidden)) {
+      failGate(`GAP-DMN-05: ${cliRel} retained rejected signal reload path: ${forbidden}`);
+    }
+  }
+
+  const dispatcherRel = "runtime/src/app-server/daemon-dispatcher.ts";
+  const dispatcherSource = readFileSync(path.join(root, dispatcherRel), "utf8");
+  for (const needle of [
+    "daemonControl",
+    'case "daemon.reload"',
+    "DAEMON_RELOAD_AUTHENTICATION_REQUIRED",
+  ]) {
+    if (!dispatcherSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${dispatcherRel} missing daemon.reload dispatcher evidence: ${needle}`);
+    }
+  }
+
+  const protocolRel = "runtime/src/app-server/protocol/index.ts";
+  const protocolSource = readFileSync(path.join(root, protocolRel), "utf8");
+  for (const needle of [
+    '"daemon.reload"',
+    "DaemonReloadResult",
+    "DaemonReloadMcpServerResult",
+  ]) {
+    if (!protocolSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${protocolRel} missing daemon.reload protocol evidence: ${needle}`);
+    }
+  }
+
+  const testRel = "runtime/src/app-server/daemon-cli.contract.test.ts";
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  for (const needle of [
+    'parseAgenCDaemonCliArgs(["daemon", "reload"])',
+    "reload reports a stopped daemon",
+    "reload cleans a stale daemon pid",
+    "reload command re-reads config and starts configured mcp.server without shutdown",
+    "reload failure preserves active auth and mcp.server state",
+    "reload fails without a daemon cookie and leaves the daemon running",
+    'provider: "remote"',
+    "AgenC MCP server listening",
+  ]) {
+    if (!testSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${testRel} missing reload regression: ${needle}`);
+    }
+  }
+  if (testSource.includes("SIGUSR1") || testSource.includes("reloadRequestedPids")) {
+    failGate(`GAP-DMN-05: ${testRel} retained rejected signal reload regression`);
+  }
+
+  const runnerRel = "runtime/src/app-server/background-agent-runner.ts";
+  const runnerSource = readFileSync(path.join(root, runnerRel), "utf8");
+  for (const needle of [
+    "AgenCDelegateBackgroundAgentRunnerRuntimeConfig",
+    "updateAuthBackend",
+    "createAgenCDaemonRuntimeAuthBackend(authBackend)",
+    "replaceBackend(authBackend)",
+  ]) {
+    if (!runnerSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${runnerRel} missing daemon reload auth-cache reset evidence: ${needle}`);
+    }
+  }
+
+  const runnerTestRel = "runtime/src/app-server/background-agent-runner.contract.test.ts";
+  const runnerTestSource = readFileSync(path.join(root, runnerTestRel), "utf8");
+  for (const needle of [
+    "updateRuntimeConfig resets active daemon runtime provider-key cache after auth reload",
+    "managed-key-before",
+    "managed-key-after",
+  ]) {
+    if (!runnerTestSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${runnerTestRel} missing provider-key cache reload regression: ${needle}`);
+    }
+  }
+
+  const vendingRel = "runtime/src/app-server/provider-key-vending.ts";
+  const vendingSource = readFileSync(path.join(root, vendingRel), "utf8");
+  for (const needle of [
+    "replaceBackend",
+    "clearVendedKeyCache",
+    "vendedKeys.clear()",
+  ]) {
+    if (!vendingSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${vendingRel} missing reload-aware provider-key cache evidence: ${needle}`);
+    }
+  }
+
+  const helpRel = "runtime/src/bin/agenc.ts";
+  const helpSource = readFileSync(path.join(root, helpRel), "utf8");
+  if (!helpSource.includes("agenc daemon <stop|status|reload|restart>")) {
+    failGate(`GAP-DMN-05: ${helpRel} missing top-level daemon reload help`);
+  }
+
+  const helpTestRel = "runtime/src/bin/agenc-help-surface.contract.test.ts";
+  const helpTestSource = readFileSync(path.join(root, helpTestRel), "utf8");
+  for (const needle of [
+    "advertises daemon reload in top-level daemon usage",
+    "agenc daemon <stop|status|reload|restart>",
+  ]) {
+    if (!helpTestSource.includes(needle)) {
+      failGate(`GAP-DMN-05: ${helpTestRel} missing top-level daemon reload help regression: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/app-server/daemon-cli.contract.test.ts",
+    "src/app-server/daemon-dispatcher.contract.test.ts",
+    "src/app-server/protocol.contract.test.ts",
+    "src/app-server/background-agent-runner.contract.test.ts",
+    "src/app-server/provider-key-vending.contract.test.ts",
+    "src/bin/agenc-help-surface.contract.test.ts",
+    "-t",
+    "daemon.reload|parses daemon subcommands|reload reports|reload cleans|reload command re-reads|reload failure preserves|reload fails without|protocol surface|publishes a schema|updateRuntimeConfig resets active daemon runtime provider-key cache after auth reload|replaces the backend and clears cached provider keys|advertises daemon reload in top-level daemon usage",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-DMN-05 targeted daemon reload tests failed");
+  }
+
+  pass("GAP-DMN-05 daemon reload subcommand evidence present");
 }
 
 function assertGapDmnDispatcherBootInjection() {

@@ -238,7 +238,7 @@ export function formatCliHelpText(): string {
     "       agenc state export <agent-id>",
     "       agenc state import",
     "       agenc daemon start [--foreground]",
-    "       agenc daemon <stop|status|restart>",
+    "       agenc daemon <stop|status|reload|restart>",
     "       agenc agent start <objective>",
     "       agenc agent list",
     "       agenc agent attach <id>",

@@ -1591,6 +1591,130 @@ describe("AgenC delegate background-agent runner", () => {
     expect(authBackend.vendKey).toHaveBeenCalledWith("grok", "daemon-session");
   });
 
+  it("updateRuntimeConfig resets active daemon runtime provider-key cache after auth reload", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const makeAuthBackend = (
+      kind: NonNullable<AuthBackend["kind"]>,
+      apiKey: string,
+    ): AuthBackend => ({
+      kind,
+      login: vi.fn(() => ({ authenticated: true, provider: kind })),
+      logout: vi.fn(() => ({ authenticated: false })),
+      whoami: vi.fn(() => ({ authenticated: true, provider: kind })),
+      vendKey: vi.fn((provider, sessionId) => ({
+        provider: String(provider),
+        sessionId,
+        apiKey,
+      })),
+      inferAgencModel: vi.fn(() => ({
+        provider: "agenc",
+        model: "agenc:grok",
+      })),
+      getSubscriptionTier: vi.fn(() => "pro"),
+    });
+    const initialAuthBackend = makeAuthBackend("local", "managed-key-before");
+    const reloadedAuthBackend = makeAuthBackend("remote", "managed-key-after");
+    const bootstrap = vi.fn(async () => ({
+      session,
+      shutdown,
+    })) as unknown as AgenCBootstrapFunction;
+    let launchCount = 0;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      authBackend: initialAuthBackend,
+      bootstrap,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => {
+        launchCount += 1;
+        return {
+          kind: "async_launched",
+          thread: {
+            threadId: `agent_auth_reload_${launchCount}`,
+            agentPath: `/root/agent_auth_reload_${launchCount}`,
+            join: vi.fn(() => new Promise(() => {})),
+          } as AgentThread,
+        };
+      }) as unknown as AgenCDelegateFunction,
+      argv: ["node", "agenc"],
+    });
+
+    await runner.startAgent({
+      objective: "before auth reload",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const firstRuntimeAuthBackend = vi.mocked(bootstrap).mock.calls[0]?.[0]
+      .authBackend;
+    if (firstRuntimeAuthBackend === undefined) {
+      throw new Error("expected first daemon runtime auth backend");
+    }
+    expect(firstRuntimeAuthBackend.kind).toBe("local");
+    await expect(
+      firstRuntimeAuthBackend.vendKey("grok", "daemon-session"),
+    ).resolves.toMatchObject({
+      provider: "grok",
+      sessionId: "daemon-session",
+      apiKey: "managed-key-before",
+    });
+    await expect(
+      firstRuntimeAuthBackend.vendKey("grok", "daemon-session"),
+    ).resolves.toMatchObject({
+      apiKey: "managed-key-before",
+    });
+    expect(initialAuthBackend.vendKey).toHaveBeenCalledTimes(1);
+
+    runner.updateRuntimeConfig({
+      authBackend: reloadedAuthBackend,
+    });
+
+    expect(firstRuntimeAuthBackend.kind).toBe("remote");
+    await expect(
+      firstRuntimeAuthBackend.vendKey("grok", "daemon-session"),
+    ).resolves.toMatchObject({
+      provider: "grok",
+      sessionId: "daemon-session",
+      apiKey: "managed-key-after",
+    });
+    expect(initialAuthBackend.vendKey).toHaveBeenCalledTimes(1);
+    expect(reloadedAuthBackend.vendKey).toHaveBeenCalledWith(
+      "grok",
+      "daemon-session",
+    );
+
+    await runner.startAgent({
+      objective: "after auth reload",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    const secondRuntimeAuthBackend = vi.mocked(bootstrap).mock.calls[1]?.[0]
+      .authBackend;
+    if (secondRuntimeAuthBackend === undefined) {
+      throw new Error("expected second daemon runtime auth backend");
+    }
+    expect(secondRuntimeAuthBackend).toBe(firstRuntimeAuthBackend);
+    expect(secondRuntimeAuthBackend.kind).toBe("remote");
+    await expect(
+      secondRuntimeAuthBackend.vendKey("grok", "daemon-session"),
+    ).resolves.toMatchObject({
+      provider: "grok",
+      sessionId: "daemon-session",
+      apiKey: "managed-key-after",
+    });
+    expect(initialAuthBackend.vendKey).toHaveBeenCalledTimes(1);
+    expect(reloadedAuthBackend.vendKey).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves active agent realtime bindings with daemon transport clients", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

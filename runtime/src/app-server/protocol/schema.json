@@ -41,6 +41,7 @@
     "health.ping",
     "health.ready",
     "health.stats",
+    "daemon.reload",
     "auth.login",
     "auth.whoami",
     "auth.logout"
@@ -1474,6 +1475,11 @@
       "additionalProperties": false,
       "properties": {}
     },
+    "DaemonReloadParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
     "AuthLoginParams": {
       "type": "object",
       "additionalProperties": false,
@@ -1589,6 +1595,9 @@
         },
         {
           "$ref": "#/definitions/HealthStatsRequest"
+        },
+        {
+          "$ref": "#/definitions/DaemonReloadRequest"
         },
         {
           "$ref": "#/definitions/AuthLoginRequest"
@@ -2532,6 +2541,25 @@
         },
         "params": {
           "$ref": "#/definitions/HealthStatsParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "DaemonReloadRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "daemon.reload"
+        },
+        "params": {
+          "$ref": "#/definitions/DaemonReloadParams"
         }
       },
       "required": ["jsonrpc", "id", "method"]

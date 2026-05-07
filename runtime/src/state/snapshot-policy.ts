@@ -116,7 +116,7 @@ export class AgenCSessionSnapshotPolicy {
   ) => SnapshotPolicyTimer;
   readonly #clearInterval: (timer: SnapshotPolicyTimer) => void;
   readonly #onError: (error: unknown) => void;
-  readonly #snapshotRetention: AgentRunRetentionPolicy | undefined;
+  #snapshotRetention: AgentRunRetentionPolicy | undefined;
   readonly #agencHome: string | undefined;
   readonly #outputRotation: ToolOutputRotationPolicy | undefined;
   readonly #sessions = new Map<string, SessionSnapshotState>();
@@ -161,6 +161,12 @@ export class AgenCSessionSnapshotPolicy {
     if (this.#periodicTimer === undefined) return;
     this.#clearInterval(this.#periodicTimer);
     this.#periodicTimer = undefined;
+  }
+
+  updateSnapshotRetention(
+    snapshotRetention: AgentRunRetentionPolicy | undefined,
+  ): void {
+    this.#snapshotRetention = snapshotRetention;
   }
 
   trackSession(sessionId: string, agentId?: string): void {
