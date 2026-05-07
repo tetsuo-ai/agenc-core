@@ -114,16 +114,8 @@ import {
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import { getLoggingSafeMcpBaseUrl } from './utils.js'
-/* eslint-disable @typescript-eslint/no-require-imports */
-const fetchMcpSkillsForClient = feature('MCP_SKILLS')
-  ? (
-    require('../../skills/mcpSkills.js') as typeof import('../../skills/mcpSkills.js')
-  ).fetchMcpSkillsForClient
-  : null
-
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { AssistantMessage } from 'src/types/message.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { classifyMcpToolForCollapse } from '../../tools/MCPTool/classifyForCollapse.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
 import { sleep } from '../../utils/sleep.js'
@@ -143,6 +135,44 @@ import type {
   ScopedMcpServerConfig,
   ServerResource,
 } from './types.js'
+
+type FetchMcpSkillsForClient = typeof import('../../skills/mcpSkills.js').fetchMcpSkillsForClient
+
+let loadedFetchMcpSkillsForClient: FetchMcpSkillsForClient | null = null
+let fetchMcpSkillsForClientPromise: Promise<FetchMcpSkillsForClient> | null =
+  null
+
+async function getFetchMcpSkillsForClient(): Promise<FetchMcpSkillsForClient | null> {
+  if (!feature('MCP_SKILLS')) return null
+  if (loadedFetchMcpSkillsForClient) return loadedFetchMcpSkillsForClient
+  fetchMcpSkillsForClientPromise ??= import('../../skills/mcpSkills.js').then(
+    module => {
+      loadedFetchMcpSkillsForClient = module.fetchMcpSkillsForClient
+      return loadedFetchMcpSkillsForClient
+    },
+  )
+  return fetchMcpSkillsForClientPromise
+}
+
+export async function fetchMcpSkillsForConnectedClient(
+  client: MCPServerConnection,
+): Promise<Command[]> {
+  const fetchMcpSkillsForClient = await getFetchMcpSkillsForClient()
+  return fetchMcpSkillsForClient?.(client) ?? []
+}
+
+export function clearMcpSkillsForClientCache(name: string): void {
+  if (!feature('MCP_SKILLS')) return
+  if (loadedFetchMcpSkillsForClient) {
+    loadedFetchMcpSkillsForClient.cache.delete(name)
+    return
+  }
+  if (fetchMcpSkillsForClientPromise) {
+    void fetchMcpSkillsForClientPromise.then(fetchMcpSkillsForClient => {
+      fetchMcpSkillsForClient.cache.delete(name)
+    })
+  }
+}
 
 /**
  * Custom error class to indicate that an MCP tool call failed due to
@@ -1410,9 +1440,7 @@ export const connectToServer = memoize(
         fetchToolsForClient.cache.delete(name)
         fetchResourcesForClient.cache.delete(name)
         fetchCommandsForClient.cache.delete(name)
-        if (feature('MCP_SKILLS')) {
-          fetchMcpSkillsForClient!.cache.delete(name)
-        }
+        clearMcpSkillsForClientCache(name)
 
         connectToServer.cache.delete(key)
         logMCPDebug(name, `Cleared connection cache for reconnection`)
@@ -1688,9 +1716,7 @@ export async function clearServerCache(
   fetchToolsForClient.cache.delete(name)
   fetchResourcesForClient.cache.delete(name)
   fetchCommandsForClient.cache.delete(name)
-  if (feature('MCP_SKILLS')) {
-    fetchMcpSkillsForClient!.cache.delete(name)
-  }
+  clearMcpSkillsForClientCache(name)
 }
 
 /**
@@ -2215,7 +2241,7 @@ export async function reconnectMcpServerImpl(
       fetchToolsForClient(client),
       fetchCommandsForClient(client),
       feature('MCP_SKILLS') && supportsResources
-        ? fetchMcpSkillsForClient!(client)
+        ? fetchMcpSkillsForConnectedClient(client)
         : Promise.resolve([]),
       supportsResources ? fetchResourcesForClient(client) : Promise.resolve([]),
     ])
@@ -2389,7 +2415,7 @@ export async function getMcpToolsCommandsAndResources(
         fetchCommandsForClient(client),
         // Discover skills from skill:// resources
         feature('MCP_SKILLS') && supportsResources
-          ? fetchMcpSkillsForClient!(client)
+          ? fetchMcpSkillsForConnectedClient(client)
           : Promise.resolve([]),
         // Fetch resources if supported
         supportsResources

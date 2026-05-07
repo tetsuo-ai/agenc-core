@@ -7,8 +7,10 @@ import { getSessionId } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import type { Tool } from '../../tools/Tool.js'
 import {
+  clearMcpSkillsForClientCache,
   clearServerCache,
   fetchCommandsForClient,
+  fetchMcpSkillsForConnectedClient,
   fetchResourcesForClient,
   fetchToolsForClient,
   getMcpToolsCommandsAndResources,
@@ -20,12 +22,6 @@ import type {
   ServerResource,
 } from './types.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const fetchMcpSkillsForClient = feature('MCP_SKILLS')
-  ? (
-      require('../../skills/mcpSkills.js') as typeof import('../../skills/mcpSkills.js')
-    ).fetchMcpSkillsForClient
-  : null
 const clearSkillIndexCache = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (
       require('../skillSearch/localSearch.js') as typeof import('../skillSearch/localSearch.js')
@@ -684,7 +680,7 @@ export function useManageMCPConnections(
                   const [mcpPrompts, mcpSkills] = await Promise.all([
                     fetchCommandsForClient(client),
                     feature('MCP_SKILLS')
-                      ? fetchMcpSkillsForClient!(client)
+                      ? fetchMcpSkillsForConnectedClient(client)
                       : Promise.resolve([]),
                   ])
                   updateServer({
@@ -722,13 +718,13 @@ export function useManageMCPConnections(
                     // Invalidate prompts cache as well: we write commands here,
                     // and a concurrent prompts/list_changed could otherwise have
                     // us stomp its fresh result with our cached stale one.
-                    fetchMcpSkillsForClient!.cache.delete(client.name)
+                    clearMcpSkillsForClientCache(client.name)
                     fetchCommandsForClient.cache.delete(client.name)
                     const [newResources, mcpPrompts, mcpSkills] =
                       await Promise.all([
                         fetchResourcesForClient(client),
                         fetchCommandsForClient(client),
-                        fetchMcpSkillsForClient!(client),
+                        fetchMcpSkillsForConnectedClient(client),
                       ])
                     updateServer({
                       ...client,

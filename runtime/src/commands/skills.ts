@@ -13,6 +13,7 @@ import type { Session } from "../session/session.js";
 import {
   safeExecute,
   type SlashCommand,
+  type SlashCommandAppStateBridge,
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
@@ -30,6 +31,12 @@ export interface SkillsSnapshot {
   readonly effectiveSkillRoots: ReadonlyArray<string>;
 }
 
+type AvailableSkillSnapshot = SkillsSnapshot["availableSkills"][number];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 function parseArgs(argsRaw: string): "list" | null {
   const first = argsRaw.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
   if (first === "" || first === "list" || first === "status") return "list";
@@ -44,8 +51,58 @@ function normalizeRoots(value: unknown): string[] {
   return [String(value)];
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function mcpSkillsFromAppState(
+  appStateBridge?: SlashCommandAppStateBridge,
+): AvailableSkillSnapshot[] {
+  const appState = appStateBridge?.getAppState?.();
+  if (!isRecord(appState)) return [];
+  const mcp = appState.mcp;
+  if (!isRecord(mcp) || !Array.isArray(mcp.commands)) return [];
+
+  return mcp.commands.flatMap((command): AvailableSkillSnapshot[] => {
+    if (
+      !isRecord(command) ||
+      command.loadedFrom !== "mcp" ||
+      typeof command.name !== "string" ||
+      command.name.length === 0
+    ) {
+      return [];
+    }
+    return [
+      {
+        name: command.name,
+        description: optionalString(command.description),
+        scope: optionalString(command.scope),
+        loadedFrom: "mcp",
+        userInvocable: optionalBoolean(command.userInvocable),
+        disableModelInvocation: optionalBoolean(command.disableModelInvocation),
+      },
+    ];
+  });
+}
+
+function mergeAvailableSkills(
+  skills: readonly AvailableSkillSnapshot[],
+  mcpSkills: readonly AvailableSkillSnapshot[],
+): AvailableSkillSnapshot[] {
+  const byName = new Map<string, AvailableSkillSnapshot>();
+  for (const skill of [...skills, ...mcpSkills]) {
+    if (!byName.has(skill.name)) byName.set(skill.name, skill);
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export async function collectSkillsSnapshot(
   session: Session,
+  appStateBridge?: SlashCommandAppStateBridge,
 ): Promise<SkillsSnapshot> {
   const services = session.services;
   const outcome = await services.skillsManager.skillsForConfig(
@@ -59,16 +116,17 @@ export async function collectSkillsSnapshot(
     invokedSkills: [...outcome.invokedSkills].sort((a, b) =>
       a.localeCompare(b),
     ),
-    availableSkills: [...(outcome.availableSkills ?? [])]
-      .map((skill) => ({
+    availableSkills: mergeAvailableSkills(
+      [...(outcome.availableSkills ?? [])].map((skill) => ({
         name: skill.name,
         description: skill.description,
         scope: skill.scope,
         loadedFrom: skill.loadedFrom,
         userInvocable: skill.userInvocable,
         disableModelInvocation: skill.disableModelInvocation,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name)),
+      })),
+      mcpSkillsFromAppState(appStateBridge),
+    ),
     effectiveSkillRoots: normalizeRoots(pluginView.effectiveSkillRoots()).sort(
       (a, b) => a.localeCompare(b),
     ),
@@ -108,7 +166,7 @@ export const skillsCommand: SlashCommand = {
       if (parseArgs(ctx.argsRaw) === null) {
         return { kind: "error", message: "Usage: /skills [list|status]" };
       }
-      const snapshot = await collectSkillsSnapshot(ctx.session);
+      const snapshot = await collectSkillsSnapshot(ctx.session, ctx.appState);
       return { kind: "text", text: formatSkillsSnapshot(snapshot) };
     }),
 };
