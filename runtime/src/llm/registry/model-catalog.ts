@@ -71,15 +71,17 @@ const TEXT_IMAGE_MODALITIES = Object.freeze([
 ] as const satisfies readonly ModelInputModality[]);
 const FAST_SPEED_TIER = Object.freeze(["fast"] as const);
 const NO_ADDITIONAL_SPEED_TIERS = Object.freeze([] as const);
+const OPENAI_FRIENDLY_PERSONALITY =
+  "You optimize for team morale and being a supportive teammate as much as code quality.";
+const OPENAI_PRAGMATIC_PERSONALITY =
+  "You are a deeply pragmatic, effective software engineer.";
 const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
   instructionsTemplate:
     `${PERSONALITY_PLACEHOLDER}\n\n${BASE_INSTRUCTIONS_PLACEHOLDER}`,
   instructionsVariables: Object.freeze({
-    personalityDefault: "",
-    personalityFriendly:
-      "You optimize for team morale and being a supportive teammate as much as code quality.",
-    personalityPragmatic:
-      "You are a deeply pragmatic, effective software engineer.",
+    personalityDefault: OPENAI_PRAGMATIC_PERSONALITY,
+    personalityFriendly: OPENAI_FRIENDLY_PERSONALITY,
+    personalityPragmatic: OPENAI_PRAGMATIC_PERSONALITY,
   }),
 });
 

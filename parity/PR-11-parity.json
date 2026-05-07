@@ -1,0 +1,235 @@
+{
+  "item": "PR-11",
+  "status": "implemented",
+  "contractName": "personality-integration-contract",
+  "scope": "AgenC contract tests for personality prompt integration and one-shot personality migration behavior.",
+  "sourceRoot": "local CX runtime donor checkout",
+  "targetRoot": "..",
+  "sourceCommit": "fbdbc6b2fea7522e9fc1fc87d88168b945507ad4",
+  "sourceFiles": [
+    "core/tests/suite/personality.rs",
+    "core/tests/suite/personality_migration.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/llm/registry/model-catalog.ts",
+    "runtime/src/personality/personality.contract.test.ts",
+    "runtime/src/personality/personality-migration.contract.test.ts",
+    "scripts/goal/verify.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/personality/personality.contract.test.ts",
+    "runtime/src/personality/personality-migration.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "personality-does-not-mutate-base-instructions-without-template",
+      "source": "core/tests/suite/personality.rs::personality_does_not_mutate_base_instructions_without_template",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "Model instruction resolution returns the original base instructions when the model has no personality template metadata.",
+        "Supplying a configured personality does not mutate or replace base instructions for models without personality templates."
+      ],
+      "edgeCases": [
+        "The base instruction string remains byte-for-byte unchanged after resolving friendly personality on an unsupported model."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "base-instructions-override-disables-personality-template",
+      "source": "core/tests/suite/personality.rs::base_instructions_override_disables_personality_template",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "An override-shaped model without template metadata returns override instructions directly.",
+        "Friendly personality cannot inject template text when the model metadata has no personality template."
+      ],
+      "edgeCases": [
+        "The override text is returned exactly rather than being prefixed or suffixed with a blank personality section."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "user-turn-personality-none-does-not-add-update-message",
+      "source": "core/tests/suite/personality.rs::user_turn_personality_none_does_not_add_update_message",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "A read-only text turn with no resolved personality sends no personality developer update message.",
+        "The assertion inspects the actual provider request emitted by AgenC's turn loop."
+      ],
+      "edgeCases": [
+        "A model that supports personality templates still emits no update when the turn personality is absent."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "config-personality-some-sets-instructions-template",
+      "source": "core/tests/suite/personality.rs::config_personality_some_sets_instructions_template",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "A configured friendly personality is baked into the first request's system instructions.",
+        "No personality developer update message is emitted on the first turn when config already supplies the personality."
+      ],
+      "edgeCases": [
+        "The provider request contains friendly template text in the system message and zero personality update developer messages."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "config-personality-none-sends-no-personality",
+      "source": "core/tests/suite/personality.rs::config_personality_none_sends_no_personality",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "Configured personality none removes personality template text from system instructions.",
+        "Configured personality none emits no personality developer update message."
+      ],
+      "edgeCases": [
+        "The provider request contains neither friendly nor pragmatic local template text and no raw personality placeholder."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "default-personality-is-pragmatic-without-config-toml",
+      "source": "core/tests/suite/personality.rs::default_personality_is_pragmatic_without_config_toml",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "A startup with no current config file and no explicit personality keeps config personality unset.",
+        "The first turn after bootstrap still sends pragmatic template text to the provider through model default personality metadata."
+      ],
+      "edgeCases": [
+        "No prior recorded session is required for the default pragmatic first-turn instructions."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "user-turn-personality-some-adds-update-message",
+      "source": "core/tests/suite/personality.rs::user_turn_personality_some_adds_update_message",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "A follow-up turn that changes personality to friendly injects a developer personality update before the user message.",
+        "The update contains the personality marker, preamble, and friendly template text."
+      ],
+      "edgeCases": [
+        "The first turn has no personality so the second turn must compare against an existing previous turn baseline."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "user-turn-personality-same-value-does-not-add-update-message",
+      "source": "core/tests/suite/personality.rs::user_turn_personality_same_value_does_not_add_update_message",
+      "target": "runtime/src/personality/personality.contract.test.ts",
+      "requiredBehaviors": [
+        "A follow-up turn with the same pragmatic personality does not inject a personality developer update.",
+        "The comparison uses the previous turn state recorded by the live AgenC turn loop."
+      ],
+      "edgeCases": [
+        "Two consecutive turns with pragmatic personality produce no second-turn personality marker."
+      ],
+      "tests": ["runtime/src/personality/personality.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "applies-when-sessions-exist-and-no-personality",
+      "source": "core/tests/suite/personality_migration.rs::no_marker_sessions_sets_personality",
+      "target": "runtime/src/personality/personality-migration.contract.test.ts",
+      "requiredBehaviors": [
+        "An active recorded session with no explicit personality applies the pragmatic migration.",
+        "The migration writes the marker and persists pragmatic personality to current config."
+      ],
+      "edgeCases": [
+        "The marker file contents are exactly v1 newline after an applied migration."
+      ],
+      "tests": ["runtime/src/personality/personality-migration.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality-migration.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "applies-when-only-archived-sessions-exist-and-no-personality",
+      "source": "core/tests/suite/personality_migration.rs::no_marker_archived_sessions_sets_personality",
+      "target": "runtime/src/personality/personality-migration.contract.test.ts",
+      "requiredBehaviors": [
+        "An archived recorded session also makes the no-personality migration eligible.",
+        "Archived-session migration persists pragmatic personality."
+      ],
+      "edgeCases": [
+        "The active-session list can be empty while the archived-session list still triggers the migration."
+      ],
+      "tests": ["runtime/src/personality/personality-migration.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality-migration.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "skips-when-marker-exists",
+      "source": "core/tests/suite/personality_migration.rs::migration_marker_exists_no_sessions_no_change",
+      "target": "runtime/src/personality/personality-migration.contract.test.ts",
+      "requiredBehaviors": [
+        "An existing migration marker short-circuits migration before config writes.",
+        "No current config file is created when marker short-circuits."
+      ],
+      "edgeCases": [
+        "The existing marker contents remain exactly v1 newline."
+      ],
+      "tests": ["runtime/src/personality/personality-migration.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality-migration.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "skips-when-personality-explicit",
+      "source": "core/tests/suite/personality_migration.rs::no_marker_explicit_global_personality_skips_migration",
+      "target": "runtime/src/personality/personality-migration.contract.test.ts",
+      "requiredBehaviors": [
+        "An explicit configured personality skips the pragmatic migration even when sessions exist.",
+        "The explicit personality value is preserved."
+      ],
+      "edgeCases": [
+        "The skip path still writes the migration marker with exact v1 newline contents."
+      ],
+      "tests": ["runtime/src/personality/personality-migration.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality-migration.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "skips-when-no-sessions",
+      "source": "core/tests/suite/personality_migration.rs::no_marker_no_sessions_no_change",
+      "target": "runtime/src/personality/personality-migration.contract.test.ts",
+      "requiredBehaviors": [
+        "No active or archived recorded sessions skips the pragmatic migration.",
+        "The no-session skip writes only the migration marker."
+      ],
+      "edgeCases": [
+        "No current config file is created on the no-session path."
+      ],
+      "tests": ["runtime/src/personality/personality-migration.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality-migration.contract.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "legacy-config-json-migrates-before-apply",
+      "source": "core/tests/suite/personality_migration.rs::no_marker_sessions_preserves_existing_config_fields",
+      "target": "runtime/src/personality/personality-migration.contract.test.ts",
+      "requiredBehaviors": [
+        "Legacy JSON config is migrated before the personality edit is applied.",
+        "Existing config fields are preserved alongside pragmatic personality in current TOML config."
+      ],
+      "edgeCases": [
+        "A backup of the legacy JSON config is created while config.toml receives the migrated value."
+      ],
+      "tests": ["runtime/src/personality/personality-migration.contract.test.ts"],
+      "commands": ["npm test -- src/personality/personality-migration.contract.test.ts"],
+      "status": "required"
+    }
+  ]
+}
