@@ -1,4 +1,4 @@
-import { execaSync, type ExecaSyncReturnValue } from 'execa'
+import { execaSync } from 'execa'
 import { join } from 'path'
 import { getAgenCConfigHomeDir } from '../envUtils.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
@@ -8,6 +8,12 @@ import {
   getUsername,
 } from './macOsKeychainHelpers.js'
 import type { SecureStorage, SecureStorageData } from './index.js'
+
+interface PowerShellResult {
+  readonly stdout?: string
+  readonly stderr?: string
+  readonly exitCode?: number
+}
 
 /**
  * Windows-specific secure storage implementation using DPAPI for new writes,
@@ -37,7 +43,7 @@ function shouldUseLegacyPasswordVault(): boolean {
 function runPowerShell(
   script: string,
   options?: { input?: string },
-): ExecaSyncReturnValue | null {
+): PowerShellResult | null {
   try {
     return execaSync('powershell.exe', ['-Command', script], {
       input: options?.input,
@@ -49,7 +55,7 @@ function runPowerShell(
 }
 
 function getFailureWarning(
-  result: ExecaSyncReturnValue | null,
+  result: PowerShellResult | null,
   fallback: string,
 ): string {
   const stderr = result?.stderr?.trim()

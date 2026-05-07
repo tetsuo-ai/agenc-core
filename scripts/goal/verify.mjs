@@ -307,6 +307,29 @@ const ITEM_EVIDENCE = {
       { pattern: "agenc daemon", scope: "scripts/goal/verify.mjs" },
     ],
   },
+  "WP-03": {
+    files: [
+      "runtime/src/app-server-protocol/index.ts",
+      "runtime/src/app-server-protocol/portal.contract.test.ts",
+      "runtime/src/app-server-protocol/portal-auth.contract.test.ts",
+      "runtime/src/index.ts",
+      "parity/WP-03-parity.json",
+      "scripts/goal/verify.mjs",
+      "scripts/goal/review.mjs",
+    ],
+    grepPresent: [
+      { pattern: "AGENC_PORTAL_AUTH_METHODS", scope: "runtime/src/app-server-protocol/index.ts" },
+      { pattern: "portal\\.auth\\.login", scope: "runtime/src/app-server-protocol/index.ts" },
+      { pattern: "AgenCPortalAuthState", scope: "runtime/src/app-server-protocol/index.ts" },
+      { pattern: "routes portal auth actions through the daemon AuthBackend token store", scope: "runtime/src/app-server-protocol/portal-auth.contract.test.ts" },
+      { pattern: "assertAgenCPortalAuthIntegration", scope: "scripts/goal/verify.mjs" },
+      { pattern: "id\\.startsWith\\(\"WP-\"\\).*agenc-portal", scope: "scripts/goal/review.mjs" },
+    ],
+    tests: [
+      "runtime/src/app-server-protocol/portal.contract.test.ts",
+      "runtime/src/app-server-protocol/portal-auth.contract.test.ts",
+    ],
+  },
   "MG-05": {
     files: [
       "package.json",
@@ -5797,6 +5820,10 @@ async function memoryGates(item) {
 }
 
 async function webPortalGates(item) {
+  if (id === "WP-03") {
+    assertAgenCPortalAuthIntegration();
+    return;
+  }
   // WP-* lives in a separate repo (agenc-portal). The local contract is a
   // shared-protocol surface in agenc-core; verify the protocol surface
   // exists and has any WP-related schema/types.
@@ -5813,6 +5840,75 @@ async function webPortalGates(item) {
     );
   }
   pass(`WP-*: portal protocol surface referenced (${id})`);
+}
+
+function assertAgenCPortalAuthIntegration() {
+  const portalRepo = path.resolve(mainCheckoutRoot(), "..", "agenc-portal");
+  const requiredPortalFiles = [
+    "src/daemon-connection.js",
+    "src/main.js",
+    "src/styles.css",
+    "scripts/check-scaffold.mjs",
+    "README.md",
+  ];
+  const missing = requiredPortalFiles.filter(
+    (rel) => !existsSync(path.join(portalRepo, rel)),
+  );
+  if (missing.length > 0) {
+    failGate(
+      `WP-03: agenc-portal auth integration missing file(s):\n  ${missing.join("\n  ")}`,
+    );
+  }
+
+  const daemonConnection = readFileSync(
+    path.join(portalRepo, "src/daemon-connection.js"),
+    "utf8",
+  );
+  const mainSource = readFileSync(path.join(portalRepo, "src/main.js"), "utf8");
+  const portalTest = readFileSync(
+    path.join(portalRepo, "scripts/check-scaffold.mjs"),
+    "utf8",
+  );
+  const requiredMarkers = [
+    [daemonConnection, "loginPortalAuth"],
+    [daemonConnection, "logoutPortalAuth"],
+    [daemonConnection, "auth.login"],
+    [daemonConnection, "auth.logout"],
+    [mainSource, "renderAuth"],
+    [mainSource, "loginPortal"],
+    [mainSource, "logoutPortal"],
+    [portalTest, "portal auth state must not expose AuthBackend tokens"],
+    [portalTest, "auth.login,auth.whoami,auth.whoami,auth.logout,auth.whoami"],
+  ];
+  const missingMarkers = requiredMarkers
+    .filter(([source, marker]) => !source.includes(marker))
+    .map(([, marker]) => marker);
+  if (missingMarkers.length > 0) {
+    failGate(
+      `WP-03: agenc-portal auth integration missing marker(s): ${missingMarkers.join(", ")}`,
+    );
+  }
+
+  const portalTestRun = run("npm", ["test"], { cwd: portalRepo, silent: true });
+  if (portalTestRun.status !== 0) {
+    failGate(
+      `WP-03: agenc-portal auth self-test failed:\n${portalTestRun.stderr || portalTestRun.stdout}`,
+    );
+  }
+
+  const runtimeTestRun = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/app-server-protocol/portal.contract.test.ts",
+    "src/app-server-protocol/portal-auth.contract.test.ts",
+  ]);
+  if (runtimeTestRun.status !== 0) {
+    failGate("WP-03: targeted portal auth contract tests failed");
+  }
+
+  pass("WP-03: portal auth contract and sibling repo self-test passed");
 }
 
 // Generic gate factory: subsystem must exist as a real directory under runtime/src,

@@ -469,10 +469,12 @@ process.exit(1);
 
 function collectCrossRepoEvidence(body) {
   const repos = [];
+  if (id.startsWith("WP-") && !repos.includes("agenc-portal")) repos.push("agenc-portal");
+  if (id.startsWith("IDE-") && !repos.includes("agenc-vscode")) repos.push("agenc-vscode");
   if (body.includes("agenc-sdk")) repos.push("agenc-sdk");
   if (body.includes("agenc-protocol")) repos.push("agenc-protocol");
   if (body.includes("agenc-plugin-kit")) repos.push("agenc-plugin-kit");
-  if (body.includes("agenc-portal")) repos.push("agenc-portal");
+  if (body.includes("agenc-portal") && !repos.includes("agenc-portal")) repos.push("agenc-portal");
   if (repos.length === 0) return "(none)";
 
   return repos.map((repo) => summarizeSiblingRepo(repo)).join("\n\n");
