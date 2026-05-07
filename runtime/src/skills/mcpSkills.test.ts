@@ -9,6 +9,7 @@ function connectedClient(
     readonly name?: string;
     readonly description?: string;
     readonly text?: string;
+    readonly readError?: Error;
   }[],
 ): MCPServerConnection {
   const request = vi.fn(async (request: { method: string; params?: { uri?: string } }) => {
@@ -19,6 +20,7 @@ function connectedClient(
     }
     if (request.method === "resources/read") {
       const resource = resources.find((candidate) => candidate.uri === request.params?.uri);
+      if (resource?.readError) throw resource.readError;
       return {
         contents:
           resource && resource.text !== undefined
@@ -101,5 +103,33 @@ Review $focus without running shell snippets: !\`echo nope\`
       description: "Triage incoming reports",
     });
     expect(skills[0]!.userFacingName?.()).toBe("Triage Skill");
+  });
+
+  it("keeps valid MCP skills when one resource fails to read", async () => {
+    const client = connectedClient([
+      {
+        uri: "skill://team/broken",
+        name: "broken",
+        readError: new Error("read failed"),
+      },
+      {
+        uri: "skill://team/valid",
+        name: "valid",
+        text: `---
+description: Valid skill
+---
+Use the valid skill.
+`,
+      },
+    ]);
+
+    fetchMcpSkillsForClient.cache.delete("Docs Server");
+    const skills = await fetchMcpSkillsForClient(client);
+
+    expect(skills).toHaveLength(1);
+    expect(skills[0]).toMatchObject({
+      name: "mcp__Docs_Server__valid",
+      description: "Valid skill",
+    });
   });
 });

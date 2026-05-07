@@ -140,7 +140,17 @@ export const fetchMcpSkillsForClient = memoizeWithLRU(
     try {
       const resources = await listSkillResources(client);
       const commands = await Promise.all(
-        resources.map((resource) => createCommandFromResource(client, resource)),
+        resources.map(async (resource) => {
+          try {
+            return await createCommandFromResource(client, resource);
+          } catch (error) {
+            logMCPError(
+              client.name,
+              `Skipped MCP skill resource ${resource.uri}: ${errorMessage(error)}`,
+            );
+            return null;
+          }
+        }),
       );
       return commands.filter((command): command is Command => command !== null);
     } catch (error) {

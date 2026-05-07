@@ -88,6 +88,7 @@
       ],
       "edgeCases": [
         "non-skill resources are ignored",
+        "a failed skill resource does not suppress other valid skills from the same server",
         "resource metadata supplies name and description fallbacks when frontmatter is sparse",
         "remote MCP skill markdown does not execute inline shell snippets during rendering"
       ],
