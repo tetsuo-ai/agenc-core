@@ -21,7 +21,7 @@ import type {
   Tools,
   ToolUseContext,
 } from '../Tool.js'
-import { toolMatchesName } from '../Tool.js'
+import { findToolByName, toolMatchesName } from '../Tool.js'
 import {
   completeAgentTask as completeAsyncAgent,
   createActivityDescriptionResolver,
@@ -153,10 +153,14 @@ export function resolveAgentTools(
       return toolName
     }) ?? [],
   )
+  const disallowedToolNames = Array.from(disallowedToolSet)
 
   // Filter available tools based on disallowed list
   const allowedAvailableTools = filteredAvailableTools.filter(
-    tool => !disallowedToolSet.has(tool.name),
+    tool =>
+      !disallowedToolNames.some(disallowedToolName =>
+        toolMatchesName(tool, disallowedToolName),
+      ),
   )
 
   // If tools is undefined or ['*'], allow all tools (after filtering disallowed)
@@ -170,11 +174,6 @@ export function resolveAgentTools(
       invalidTools: [],
       resolvedTools: allowedAvailableTools,
     }
-  }
-
-  const availableToolMap = new Map<string, Tool>()
-  for (const tool of allowedAvailableTools) {
-    availableToolMap.set(tool.name, tool)
   }
 
   const validTools: string[] = []
@@ -199,11 +198,11 @@ export function resolveAgentTools(
         validTools.push(toolSpec)
         continue
       }
-      // For main thread, filtering was skipped so Agent is in availableToolMap —
+      // For main thread, filtering was skipped so Agent is in available tools —
       // fall through to normal resolution below.
     }
 
-    const tool = availableToolMap.get(toolName)
+    const tool = findToolByName(allowedAvailableTools, toolName)
     if (tool) {
       validTools.push(toolSpec)
       if (!resolvedToolsSet.has(tool)) {

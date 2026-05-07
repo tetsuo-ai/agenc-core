@@ -550,7 +550,10 @@ function isDesktopSupportedPlatform(): boolean {
 }
 
 function isBridgeCommandEnabled(): boolean {
-  return feature("BRIDGE_MODE") && isBridgeEnabled();
+  if (feature("BRIDGE_MODE")) {
+    return isBridgeEnabled();
+  }
+  return false;
 }
 
 function isExtraUsageAllowed(): boolean {

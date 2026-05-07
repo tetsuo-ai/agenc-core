@@ -6,15 +6,8 @@ import { isMcpTool } from '../../../services/mcp/utils.js';
 import type { Tool, Tools } from '../../../tools/Tool.js';
 import { filterToolsForAgent } from '../../../tools/AgentTool/agentToolUtils.js';
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js';
-import { BashTool } from '../../../tools/BashTool/BashTool.js';
 import { ExitPlanModeV2Tool } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
-import { FileEditTool } from '../../../tools/FileEditTool/FileEditTool.js';
-import { FileReadTool } from '../../../tools/FileReadTool/FileReadTool.js';
-import { FileWriteTool } from '../../../tools/FileWriteTool/FileWriteTool.js';
-import { GlobTool } from '../../../tools/GlobTool/GlobTool.js';
-import { GrepTool } from '../../../tools/GrepTool/GrepTool.js';
 import { ListMcpResourcesTool } from '../../../tools/ListMcpResourcesTool/ListMcpResourcesTool.js';
-import { NotebookEditTool } from '../../../tools/NotebookEditTool/NotebookEditTool.js';
 import { ReadMcpResourceTool } from '../../../tools/ReadMcpResourceTool/ReadMcpResourceTool.js';
 import { TaskOutputTool } from '../../../tools/TaskOutputTool/TaskOutputTool.js';
 import { TaskStopTool } from '../../../tools/TaskStopTool/TaskStopTool.js';
@@ -50,15 +43,15 @@ function getToolBuckets(): ToolBuckets {
   return {
     READ_ONLY: {
       name: 'Read-only tools',
-      toolNames: new Set([GlobTool.name, GrepTool.name, ExitPlanModeV2Tool.name, FileReadTool.name, WebFetchTool.name, TodoWriteTool.name, WebSearchTool.name, TaskStopTool.name, TaskOutputTool.name, ListMcpResourcesTool.name, ReadMcpResourceTool.name])
+      toolNames: new Set(['Glob', 'Grep', ExitPlanModeV2Tool.name, 'FileRead', WebFetchTool.name, TodoWriteTool.name, WebSearchTool.name, TaskStopTool.name, TaskOutputTool.name, ListMcpResourcesTool.name, ReadMcpResourceTool.name])
     },
     EDIT: {
       name: 'Edit tools',
-      toolNames: new Set([FileEditTool.name, FileWriteTool.name, NotebookEditTool.name])
+      toolNames: new Set(['Edit', 'Write', 'NotebookEdit'])
     },
     EXECUTION: {
       name: 'Execution tools',
-      toolNames: new Set([BashTool.name, "external" === 'ant' ? TungstenTool.name : undefined].filter(n => n !== undefined))
+      toolNames: new Set(['system.bash', "external" === 'ant' ? TungstenTool.name : undefined].filter(n => n !== undefined))
     },
     MCP: {
       name: 'MCP tools',

@@ -3,12 +3,15 @@
 import { toolMatchesName, type Tool, type Tools } from './tools/Tool.js'
 import { AgentTool } from './tools/AgentTool/AgentTool.js'
 import { SkillTool } from './tools/SkillTool/SkillTool.js'
-import { BashTool } from './tools/BashTool/BashTool.js'
-import { FileEditTool } from './tools/FileEditTool/FileEditTool.js'
-import { FileReadTool } from './tools/FileReadTool/FileReadTool.js'
-import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
-import { GlobTool } from './tools/GlobTool/GlobTool.js'
-import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
+import {
+  CanonicalBashTool,
+  CanonicalFileEditTool,
+  CanonicalFileReadTool,
+  CanonicalFileWriteTool,
+  CanonicalGlobTool,
+  CanonicalGrepTool,
+  CanonicalNotebookEditTool,
+} from './tools/canonicalToolSurface.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
@@ -48,7 +51,6 @@ import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'
 import { ExitPlanModeV2Tool } from './tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
 import { TestingPermissionTool } from './tools/testing/TestingPermissionTool.js'
-import { GrepTool } from './tools/GrepTool/GrepTool.js'
 // Lazy require to break circular dependency: tools.ts -> TeamCreateTool/TeamDeleteTool -> ... -> tools.ts
 /* eslint-disable @typescript-eslint/no-require-imports */
 const getTeamCreateTool = () =>
@@ -184,16 +186,16 @@ export function getAllBaseTools(): Tools {
   return [
     AgentTool,
     TaskOutputTool,
-    BashTool,
+    CanonicalBashTool,
     // Ant-native builds have bfs/ugrep embedded in the bun binary (same ARGV0
     // trick as ripgrep). When available, find/grep in AgenC's shell are aliased
     // to these fast tools, so the dedicated Glob/Grep tools are unnecessary.
-    ...(hasEmbeddedSearchTools() ? [] : [GlobTool, GrepTool]),
+    ...(hasEmbeddedSearchTools() ? [] : [CanonicalGlobTool, CanonicalGrepTool]),
     ExitPlanModeV2Tool,
-    FileReadTool,
-    FileEditTool,
-    FileWriteTool,
-    NotebookEditTool,
+    CanonicalFileReadTool,
+    CanonicalFileEditTool,
+    CanonicalFileWriteTool,
+    CanonicalNotebookEditTool,
     WebFetchTool,
     TodoWriteTool,
     WebSearchTool,
@@ -272,7 +274,11 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
       }
       return filterToolsByDenyRules(replSimple, permissionContext)
     }
-    const simpleTools: Tool[] = [BashTool, FileReadTool, FileEditTool]
+    const simpleTools: Tool[] = [
+      CanonicalBashTool,
+      CanonicalFileReadTool,
+      CanonicalFileEditTool,
+    ]
     // When coordinator mode is also active, include AgentTool and TaskStopTool
     // so the coordinator gets Task+TaskStop (via useMergedTools filtering) and
     // workers get Bash/Read/Edit (via filterToolsForAgent filtering).

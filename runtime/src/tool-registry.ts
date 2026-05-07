@@ -620,10 +620,6 @@ export function buildToolRegistry(
       id: "coding",
       tools: codingTools,
       visibleByDefault: ["system.searchTools"],
-      stringArgumentFields: {
-        "system.grep": "pattern",
-        "system.glob": "pattern",
-      },
     },
     {
       id: "shell",

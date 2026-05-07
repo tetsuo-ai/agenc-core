@@ -162,7 +162,6 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   "system.delete": "path",
   Glob: "pattern",
   Grep: "pattern",
-  "system.glob": "pattern",
   exec: "code",
 };
 

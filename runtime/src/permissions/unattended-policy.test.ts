@@ -12,9 +12,16 @@ import { createEmptyToolPermissionContext } from "./types.js";
 
 describe("unattended permission policy", () => {
   test("normalizes aliases, trims entries, and removes duplicates", () => {
-    expect(normalizeUnattendedToolList([" read ", "FileRead", "", "grep"])).toEqual([
+    const removedGrepName = ["system", "grep"].join(".");
+    const removedGlobName = ["system", "glob"].join(".");
+
+    expect(normalizeUnattendedToolList([" read ", "FileRead", "", "grep", removedGrepName, removedGlobName, "Bash", "FileEdit", "FileWrite"])).toEqual([
       "FileRead",
-      "system.grep",
+      "Grep",
+      "Glob",
+      "system.bash",
+      "Edit",
+      "Write",
     ]);
   });
 
@@ -40,7 +47,7 @@ describe("unattended permission policy", () => {
     expect(next.mode).toBe("unattended");
     expect(next.unattendedPolicy).toEqual({
       allowlist: ["FileRead"],
-      denylist: ["Bash"],
+      denylist: ["system.bash"],
     });
     expect(base.mode).toBe("default");
   });
@@ -56,7 +63,7 @@ describe("unattended permission policy", () => {
 
     expect(resolveUnattendedPermissionDecision(context, "Bash")).toMatchObject({
       behavior: "deny",
-      toolName: "Bash",
+      toolName: "system.bash",
     });
     expect(resolveUnattendedPermissionDecision(context, "read")).toMatchObject({
       behavior: "allow",

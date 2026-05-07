@@ -147,6 +147,25 @@ export interface ToolLike {
   };
 }
 
+const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =
+  new Map<string, readonly string[]>([
+    ["system.bash", Object.freeze(["system.bash", "Bash"] as const)],
+    ["FileRead", Object.freeze(["FileRead", "Read"] as const)],
+    ["Edit", Object.freeze(["Edit", "FileEdit"] as const)],
+    ["Write", Object.freeze(["Write", "FileWrite"] as const)],
+    ["Grep", Object.freeze(["Grep", "system.grep"] as const)],
+    ["Glob", Object.freeze(["Glob", "system.glob"] as const)],
+  ]);
+
+export function toolNameAliases(toolName: string): readonly string[] {
+  const aliases = TOOL_PERMISSION_ALIASES.get(toolName);
+  if (aliases !== undefined) return aliases;
+  for (const values of TOOL_PERMISSION_ALIASES.values()) {
+    if (values.includes(toolName)) return values;
+  }
+  return Object.freeze([toolName] as const);
+}
+
 /**
  * Parse an MCP-qualified tool name like `mcp__server__tool` into
  * structured parts. Returns null when the input is not MCP-shaped.
@@ -190,7 +209,9 @@ export function matchRule(
       : `mcp__${tool.mcpInfo.serverName}`
     : tool.name;
 
-  if (rule.ruleValue.toolName === toolNameForMatch) return true;
+  if (toolNameAliases(toolNameForMatch).includes(rule.ruleValue.toolName)) {
+    return true;
+  }
 
   const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName);
   const toolInfo = mcpInfoFromString(toolNameForMatch);
@@ -296,7 +317,7 @@ export function getRuleByContentsForTool(
   }
   for (const rule of rules) {
     if (
-      rule.ruleValue.toolName === toolName &&
+      toolNameAliases(toolName).includes(rule.ruleValue.toolName) &&
       rule.ruleValue.ruleContent !== undefined &&
       rule.ruleBehavior === behavior
     ) {

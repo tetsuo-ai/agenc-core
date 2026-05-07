@@ -6655,10 +6655,372 @@ async function gapGates(item) {
     assertGapToolsToolSearchRecoveryCategory();
     return;
   }
+  if (item.title.includes("Consolidate dual tool implementations")) {
+    assertGapToolsConsolidatedToolSurfaces();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapToolsConsolidatedToolSurfaces() {
+  const curatedDaemonProviderFiles = [
+    "runtime/src/tools/system/coding.ts",
+    "runtime/src/tool-registry.ts",
+    "runtime/src/llm/types.ts",
+    "runtime/src/tools/concurrency.ts",
+    "runtime/src/permissions/unattended-policy.ts",
+    "runtime/src/permissions/unattended-policy.test.ts",
+    "runtime/src/prompts/permissions-prompt.test.ts",
+    "runtime/src/tools/system/notebook-edit.ts",
+    "runtime/src/tui/input/processBashCommand.tsx",
+    "runtime/src/utils/promptShellExecution.ts",
+    "runtime/src/utils/attachments.ts",
+    "runtime/src/utils/messages.ts",
+    "runtime/src/tui/components/agents/ToolSelector.tsx",
+    "runtime/src/tui/components/permissions/PermissionRequest.tsx",
+    "runtime/src/app-server/agent-cli.contract.test.ts",
+    "runtime/src/app-server/background-agent-runner.contract.test.ts",
+    "runtime/src/app-server/protocol.contract.test.ts",
+    "runtime/src/agents/run-agent.test.ts",
+  ];
+  for (const rel of curatedDaemonProviderFiles) {
+    const abs = path.join(root, rel);
+    if (!existsSync(abs)) {
+      failGate(`GAP-TOOLS-04: missing required evidence file ${rel}`);
+    }
+    const source = readFileSync(abs, "utf8");
+    if (/\bsystem\.(grep|glob)\b/.test(source)) {
+      failGate(`GAP-TOOLS-04: stale provider-facing search alias remains in ${rel}`);
+    }
+  }
+
+  const coding = readFileSync(
+    path.join(root, "runtime/src/tools/system/coding.ts"),
+    "utf8",
+  );
+  if (/name:\s*["']system\.(grep|glob)["']/.test(coding)) {
+    failGate("GAP-TOOLS-04: duplicate system.grep/system.glob tool implementation remains");
+  }
+  if (!/createGitAndRepoTools\(config\)/.test(coding) || !/createToolSearchTool\(config\)/.test(coding)) {
+    failGate("GAP-TOOLS-04: coding tools must still expose deferred discovery and code-intelligence tools");
+  }
+
+  const unattendedPolicy = readFileSync(
+    path.join(root, "runtime/src/permissions/unattended-policy.ts"),
+    "utf8",
+  );
+  if (!/grep:\s*["']Grep["']/.test(unattendedPolicy) || !/glob:\s*["']Glob["']/.test(unattendedPolicy)) {
+    failGate("GAP-TOOLS-04: unattended grep/glob aliases must normalize to canonical Grep/Glob");
+  }
+
+  const registryTestRel = "runtime/src/tool-registry.test.ts";
+  const registryTest = readFileSync(path.join(root, registryTestRel), "utf8");
+  const requiredRegistryEvidence = [
+    "NotebookEdit is registered only through the model-facing surface",
+    "expect(notebookEditTools).toHaveLength(1)",
+    "not.toContain(\"system.grep\")",
+    "not.toContain(\"system.glob\")",
+    "\"Read\"",
+    "\"Bash\"",
+    "\"FileEdit\"",
+    "\"FileWrite\"",
+    "\"FileReadTool\"",
+    "family: \"coding\"",
+    "deferred: true",
+  ];
+  const missingRegistryEvidence = requiredRegistryEvidence.filter(
+    (needle) => !registryTest.includes(needle),
+  );
+  if (missingRegistryEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 registry test evidence missing:\n  - ${missingRegistryEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const oldStackTestRel = "runtime/src/tools/tool-surface-consolidation.test.ts";
+  const oldStackTest = readFileSync(path.join(root, oldStackTestRel), "utf8");
+  const requiredOldStackEvidence = [
+    "base tools register canonical implementations for duplicated families",
+    "REPL primitive tools use the canonical search and file surfaces",
+    "CanonicalBashTool",
+    "CanonicalFileReadTool",
+    "CanonicalNotebookEditTool",
+    "not.toMatch",
+    "system.bash enforces command-specific permission rules",
+    "system.bash honors legacy Bash permission aliases with precedence",
+    "canonical Bash schema rejects unsupported legacy control fields",
+    "canonical Bash and daemon system.bash share execution behavior",
+    "canonical Bash failure marks tool_result as error",
+    "canonical Bash wrapper forwards system Bash progress updates",
+    "canonical Bash truncates large output without persisted-output recovery",
+    "canonical wrappers preserve search/read classification hooks",
+    "canonical file wrappers enforce session read-before-edit",
+    "file attachments read through canonical FileRead implementation",
+    "directory attachments render through canonical Bash implementation",
+    "canonical NotebookEdit uses shared session-backed implementation",
+    "canonical NotebookEdit prefers exact numeric cell IDs over index fallback",
+    "canonical NotebookEdit defaults sparse metadata language to python",
+    "canonical NotebookEdit defaults empty metadata language to python",
+    "canonical NotebookEdit delete does not require new_source",
+    "canonical Write, Grep, and Glob wrappers execute shared system tools",
+    "canonical result mapping preserves rich contentItems",
+    "legacy tool aliases resolve to canonical agent tools",
+    "file attachments truncate after canonical FileRead size errors",
+    "file attachments return null after canonical FileRead non-size errors",
+    "changed-file attachments stop after canonical FileRead errors",
+    "changed-file attachments skip canonical notebook and PDF media",
+    "changed-file attachments preserve standalone canonical image media",
+  ];
+  const missingOldStackEvidence = requiredOldStackEvidence.filter(
+    (needle) => !oldStackTest.includes(needle),
+  );
+  if (missingOldStackEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 old-stack test evidence missing:\n  - ${missingOldStackEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const evaluatorTestRel = "runtime/src/permissions/evaluator.test.ts";
+  const evaluatorTest = readFileSync(path.join(root, evaluatorTestRel), "utf8");
+  const requiredEvaluatorEvidence = [
+    "system.bash whole-tool ask does not auto-allow without sandbox execution",
+    "real system.bash remains ask-gated when sandbox auto-allow is requested",
+  ];
+  const missingEvaluatorEvidence = requiredEvaluatorEvidence.filter(
+    (needle) => !evaluatorTest.includes(needle),
+  );
+  if (missingEvaluatorEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 evaluator test evidence missing:\n  - ${missingEvaluatorEvidence.join("\n  - ")}`,
+    );
+  }
+
+  const rootStackSources = [
+    "runtime/src/tools.ts",
+    "runtime/src/tools/REPLTool/primitiveTools.ts",
+  ];
+  for (const rel of rootStackSources) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (
+      /tools\/(?:BashTool|FileReadTool|FileEditTool|FileWriteTool|GrepTool|GlobTool|NotebookEditTool)\/(?:BashTool|FileReadTool|FileEditTool|FileWriteTool|GrepTool|GlobTool|NotebookEditTool)\.js/.test(source)
+    ) {
+      failGate(`GAP-TOOLS-04: old-stack entrypoint still imports duplicate implementation in ${rel}`);
+    }
+    if (!source.includes("canonicalToolSurface.js")) {
+      failGate(`GAP-TOOLS-04: old-stack entrypoint must register canonical tool surface in ${rel}`);
+    }
+  }
+
+  const canonicalSurface = readFileSync(
+    path.join(root, "runtime/src/tools/canonicalToolSurface.ts"),
+    "utf8",
+  );
+  const requiredCanonicalSurfaceEvidence = [
+    "createFileReadTool",
+    "createFileEditTool",
+    "createFileWriteTool",
+    "createGrepTool",
+    "createGlobTool",
+    "createSystemNotebookEditTool",
+    "SESSION_ID_ARG",
+    "contentItemsToToolResultBlocks",
+    "renderToolResultMessage",
+    "extractSearchText",
+    "name: \"system.bash\"",
+    "name: \"FileRead\"",
+  ];
+  const missingCanonicalSurfaceEvidence = requiredCanonicalSurfaceEvidence.filter(
+    (needle) => !canonicalSurface.includes(needle),
+  );
+  if (missingCanonicalSurfaceEvidence.length > 0) {
+    failGate(
+      `GAP-TOOLS-04 canonical surface evidence missing:\n  - ${missingCanonicalSurfaceEvidence.join("\n  - ")}`,
+    );
+  }
+  const modelFacingTools = readFileSync(
+    path.join(root, "runtime/src/bin/model-facing-tools.ts"),
+    "utf8",
+  );
+  if (!modelFacingTools.includes("createSystemNotebookEditTool")) {
+    failGate("GAP-TOOLS-04: model-facing NotebookEdit must use the shared system implementation");
+  }
+  const oldExecutableImportSources = [
+    "runtime/src/tui/input/processBashCommand.tsx",
+    "runtime/src/utils/promptShellExecution.ts",
+    "runtime/src/utils/attachments.ts",
+    "runtime/src/utils/messages.ts",
+    "runtime/src/tui/components/agents/ToolSelector.tsx",
+    "runtime/src/tui/components/permissions/PermissionRequest.tsx",
+  ];
+  const oldExecutableImplementationImportPattern =
+    /tools\/(?:BashTool\/BashTool|FileReadTool\/FileReadTool|FileEditTool\/FileEditTool|FileWriteTool\/FileWriteTool|GrepTool\/GrepTool|GlobTool\/GlobTool|NotebookEditTool\/NotebookEditTool)(?:\.js)?(?=["';])/;
+  for (const rel of oldExecutableImportSources) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (oldExecutableImplementationImportPattern.test(source)) {
+      failGate(`GAP-TOOLS-04: live TUI/runtime path still imports an old executable tool implementation in ${rel}`);
+    }
+  }
+  const presentationOnlyOldExecutableImports = new Set([
+    "runtime/src/tui/components/BashModeProgress.tsx",
+    "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx",
+    "runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx",
+    "runtime/src/tui/components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/hooks.ts",
+  ]);
+  const oldExecutableImports = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    const rel = path.relative(root, abs);
+    if (!/\.(?:ts|tsx)$/.test(rel)) continue;
+    if (/(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.tsx?$/.test(rel) || rel.includes("/__tests__/")) continue;
+    const lines = readFileSync(abs, "utf8").split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+      const trimmed = lines[index].trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      if (!oldExecutableImplementationImportPattern.test(lines[index])) continue;
+      if (/^import\s+type\b/.test(trimmed)) continue;
+      if (presentationOnlyOldExecutableImports.has(rel)) continue;
+      oldExecutableImports.push(`${rel}:${index + 1}: ${trimmed}`);
+    }
+  }
+  if (oldExecutableImports.length > 0) {
+    failGate(
+      `GAP-TOOLS-04: live old duplicated tool implementation imports remain:\n  - ${oldExecutableImports.join("\n  - ")}`,
+    );
+  }
+  const oldExecutableCallPattern = /\b(?:BashTool|FileReadTool|FileEditTool|FileWriteTool|GrepTool|GlobTool|NotebookEditTool)\.call\s*\(/;
+  const oldExecutableCalls = [];
+  for (const abs of walkFiles(path.join(root, "runtime/src"))) {
+    const rel = path.relative(root, abs);
+    if (!/\.(?:ts|tsx)$/.test(rel)) continue;
+    if (/(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.tsx?$/.test(rel) || rel.includes("/__tests__/")) continue;
+    const lines = readFileSync(abs, "utf8").split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+      const trimmed = lines[index].trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      if (oldExecutableCallPattern.test(lines[index])) {
+        oldExecutableCalls.push(`${rel}:${index + 1}: ${trimmed}`);
+      }
+    }
+  }
+  if (oldExecutableCalls.length > 0) {
+    failGate(
+      `GAP-TOOLS-04: live old duplicated tool .call usage remains:\n  - ${oldExecutableCalls.join("\n  - ")}`,
+    );
+  }
+  const bashNameSource = readFileSync(
+    path.join(root, "runtime/src/tools/BashTool/toolName.ts"),
+    "utf8",
+  );
+  const readNameSource = readFileSync(
+    path.join(root, "runtime/src/tools/FileReadTool/prompt.ts"),
+    "utf8",
+  );
+  if (!/BASH_TOOL_NAME\s*=\s*["']system\.bash["']/.test(bashNameSource)) {
+    failGate("GAP-TOOLS-04: Bash tool-name constant must use system.bash");
+  }
+  if (!/FILE_READ_TOOL_NAME\s*=\s*["']FileRead["']/.test(readNameSource)) {
+    failGate("GAP-TOOLS-04: file-read tool-name constant must use FileRead");
+  }
+
+  const parityRel = "parity/GAP-TOOLS-04-parity.json";
+  const parityPath = path.join(root, parityRel);
+  if (!existsSync(parityPath)) {
+    failGate(`GAP-TOOLS-04: missing required evidence file ${parityRel}`);
+  }
+  let parity;
+  try {
+    parity = JSON.parse(readFileSync(parityPath, "utf8"));
+  } catch (error) {
+    failGate(`GAP-TOOLS-04: parity artifact is not valid JSON: ${error?.message || error}`);
+  }
+  const oldStack = parity?.oldStackConsolidation;
+  const canonical = parity?.daemonProviderContract?.canonicalSurfaces;
+  const removed = parity?.daemonProviderContract?.removedProviderSearchAliases;
+  if (
+    parity?.item !== "GAP-TOOLS-04" ||
+    parity?.status !== "implemented" ||
+    oldStack?.status !== "canonical-wrappers-registered" ||
+    oldStack?.canonicalOldInterfaceSurface !== "runtime/src/tools/canonicalToolSurface.ts" ||
+    !Array.isArray(oldStack?.entrypoints) ||
+    !oldStack.entrypoints.includes("runtime/src/tools.ts") ||
+    !oldStack.entrypoints.includes("runtime/src/tools/REPLTool/primitiveTools.ts") ||
+    !Array.isArray(canonical) ||
+    !canonical.includes("Grep") ||
+    !canonical.includes("Glob") ||
+    !canonical.includes("NotebookEdit") ||
+    !Array.isArray(removed) ||
+    !removed.includes("system.grep") ||
+    !removed.includes("system.glob")
+  ) {
+    failGate("GAP-TOOLS-04: parity artifact must record the canonical provider and old-stack surfaces");
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/tool-registry.test.ts",
+    "src/tools/system/grep.test.ts",
+    "src/tools/system/glob.test.ts",
+    "src/tools/tool-surface-consolidation.test.ts",
+    "src/permissions/evaluator.test.ts",
+    "src/permissions/rules.test.ts",
+    "src/permissions/unattended-policy.test.ts",
+    "src/prompts/permissions-prompt.test.ts",
+    "src/app-server/agent-cli.contract.test.ts",
+    "src/app-server/background-agent-runner.contract.test.ts",
+    "src/tui/parity/permission-request-routing.test.ts",
+    "src/tui/input/processBashCommand.test.tsx",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TOOLS-04 targeted tool-surface consolidation tests failed");
+  }
+
+  const promptShellTest = run("bun", [
+    "test",
+    "runtime/src/utils/promptShellExecution.test.ts",
+  ]);
+  if (promptShellTest.status !== 0) {
+    failGate("GAP-TOOLS-04 prompt shell canonical Bash test failed");
+  }
+
+  const protocolVitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/app-server/protocol.contract.test.ts",
+    "-t",
+    "validates all request-bearing methods through the published schema",
+  ]);
+  if (protocolVitest.status !== 0) {
+    failGate("GAP-TOOLS-04 targeted daemon protocol validation test failed");
+  }
+
+  const agentVitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/agents/run-agent.test.ts",
+    "-t",
+    "tracks parent registry visibility when hidden coding tools are discovered later",
+  ]);
+  if (agentVitest.status !== 0) {
+    failGate("GAP-TOOLS-04 targeted subagent tool-filtering test failed");
+  }
+
+  pass("GAP-TOOLS-04: daemon/provider-facing tool surfaces are consolidated");
 }
 
 function assertGapToolsToolSearchRecoveryCategory() {

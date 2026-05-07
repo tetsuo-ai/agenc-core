@@ -34,6 +34,7 @@ import {
 } from "./types.js";
 import { createUnattendedPermissionPolicy } from "./unattended-policy.js";
 import type { Session } from "../session/session.js";
+import { createBashTool } from "../tools/system/bash.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -216,6 +217,45 @@ describe("hasPermissionsToUseTool — step 1b ask rule", () => {
     };
     const result = await hasPermissionsToUseTool(tool, {}, sandboxCtx);
     expect(result.behavior).toBe("allow");
+  });
+
+  it("system.bash whole-tool ask does not auto-allow without sandbox execution", async () => {
+    const tool = makeTool({
+      name: "system.bash",
+      checkPermissions: () => ({
+        behavior: "allow" as const,
+        updatedInput: { command: "sandboxed" },
+      }),
+    });
+    const { context } = buildHarness({
+      askRules: [{ toolName: "Bash" }],
+    });
+    const sandboxCtx: ToolEvaluatorContext = {
+      ...context,
+      autoAllowBashIfSandboxed: true,
+      shouldUseSandbox: () => true,
+    };
+    const result = await hasPermissionsToUseTool(tool, {}, sandboxCtx);
+    expect(result.behavior).toBe("ask");
+  });
+
+  it("real system.bash remains ask-gated when sandbox auto-allow is requested", async () => {
+    const { context } = buildHarness({
+      askRules: [{ toolName: "Bash" }],
+    });
+    const sandboxCtx: ToolEvaluatorContext = {
+      ...context,
+      autoAllowBashIfSandboxed: true,
+      shouldUseSandbox: () => true,
+    };
+
+    const result = await hasPermissionsToUseTool(
+      createBashTool(),
+      { command: "ls" },
+      sandboxCtx,
+    );
+
+    expect(result.behavior).toBe("ask");
   });
 });
 
@@ -473,7 +513,7 @@ describe("hasPermissionsToUseTool — unattended policy", () => {
     if (result.behavior === "ask") {
       expect(result.decisionReason).toMatchObject({
         type: "other",
-        reason: "unattended pause: Bash",
+        reason: "unattended pause: system.bash",
       });
     }
   });

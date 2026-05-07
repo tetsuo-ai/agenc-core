@@ -162,11 +162,11 @@ describe("getPermissionsSection", () => {
 
   test("unattended mode describes allow, deny, and pause behavior", () => {
     const out = getPermissionsSection(
-      unattendedCtx(["FileRead", "system.grep"], ["system.bash"]),
+      unattendedCtx(["FileRead", "Grep"], ["system.bash"]),
     );
     expect(out).not.toBeNull();
     expect(out).toContain("# Permission Mode: unattended");
-    expect(out).toContain("Unattended allowlist: FileRead, system.grep");
+    expect(out).toContain("Unattended allowlist: FileRead, Grep");
     expect(out).toContain("Unattended denylist: system.bash");
     expect(out).toContain("Any other tool pauses the agent");
   });

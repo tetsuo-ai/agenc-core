@@ -141,7 +141,7 @@ describe("agenc agent start CLI", () => {
         "agent",
         "start",
         "--unattended-allow",
-        "FileRead,system.grep",
+        "FileRead,Grep",
         "--unattended-deny=exec_command",
         "build",
         "it",
@@ -149,7 +149,7 @@ describe("agenc agent start CLI", () => {
     ).toEqual({
       kind: "start",
       objective: "build it",
-      unattendedAllow: ["FileRead", "system.grep"],
+      unattendedAllow: ["FileRead", "Grep"],
       unattendedDeny: ["exec_command"],
     });
     expect(
