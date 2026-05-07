@@ -8,17 +8,28 @@
  * portal repository while the daemon protocol is still defined by agenc-core.
  * WP-03 adds auth read/mutation methods that must reuse the daemon
  * AuthBackend state instead of creating a portal-specific token store.
+ * WP-04 adds the session/agent workspace controls for attaching, reading
+ * agent transcripts, and sending messages through existing daemon methods.
  */
 
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
+  type AgentAttachParams,
+  type AgentLogsParams,
   type AgenCDaemonMethod,
+  type AgenCDaemonRequestWithParams,
   type InitializeParams,
+  type JsonObject,
+  type MessageContent,
+  type MessageSendParams,
+  type RequestId,
+  type SessionAttachParams,
 } from "../app-server/protocol/index.js";
 import type { AuthBackendKind, AuthIdentity } from "../auth/backend.js";
 
-export const AGENC_PORTAL_PROTOCOL_VERSION = "0.2.0" as const;
+export const AGENC_PORTAL_PROTOCOL_VERSION = "0.3.0" as const;
+export const AGENC_PORTAL_CLIENT_ID = "agenc-portal" as const;
 export const AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT =
   "ws://127.0.0.1:7766/" as const;
 export const AGENC_PORTAL_DEFAULT_REMOTE_DAEMON_ENDPOINT =
@@ -36,6 +47,8 @@ export const AGENC_PORTAL_METHODS = [
   "session.attach",
   "agent.list",
   "agent.attach",
+  "agent.logs",
+  "message.send",
 ] as const satisfies readonly AgenCDaemonMethod[];
 
 export type AgenCPortalMethod = (typeof AGENC_PORTAL_METHODS)[number];
@@ -47,6 +60,8 @@ export const AGENC_PORTAL_CLIENT_CAPABILITIES = [
   "portal.auth.logout",
   "portal.session.attach",
   "portal.agent.attach",
+  "portal.transcript.read",
+  "portal.message.send",
 ] as const;
 
 export type AgenCPortalClientCapability =
@@ -59,6 +74,8 @@ export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.auth.logout": true,
   "portal.session.attach": true,
   "portal.agent.attach": true,
+  "portal.transcript.read": true,
+  "portal.message.send": true,
 } as const satisfies Record<AgenCPortalClientCapability, true>;
 
 export const AGENC_PORTAL_AUTH_METHODS = [
@@ -69,6 +86,33 @@ export const AGENC_PORTAL_AUTH_METHODS = [
 
 export type AgenCPortalAuthMethod =
   (typeof AGENC_PORTAL_AUTH_METHODS)[number];
+
+export type AgenCPortalSessionAttachRequest = AgenCDaemonRequestWithParams<
+  "session.attach",
+  SessionAttachParams
+>;
+
+export type AgenCPortalAgentAttachRequest = AgenCDaemonRequestWithParams<
+  "agent.attach",
+  AgentAttachParams
+>;
+
+export type AgenCPortalAgentLogsRequest = AgenCDaemonRequestWithParams<
+  "agent.logs",
+  AgentLogsParams
+>;
+
+export type AgenCPortalMessageSendRequest = AgenCDaemonRequestWithParams<
+  "message.send",
+  MessageSendParams
+>;
+
+export interface AgenCPortalMessageSendOptions {
+  readonly sessionId: string;
+  readonly content: MessageContent;
+  readonly clientMessageId?: string;
+  readonly metadata?: JsonObject;
+}
 
 export interface AgenCPortalDaemonInitializeRequest {
   readonly jsonrpc: typeof JSON_RPC_VERSION;
@@ -83,7 +127,7 @@ export function createAgenCPortalDaemonInitializeRequest(
   const params: InitializeParams = {
     protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
     protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
-    clientName: "agenc-portal",
+    clientName: AGENC_PORTAL_CLIENT_ID,
     capabilities: AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
     ...(authCookie !== undefined && authCookie !== null
       ? { authCookie }
@@ -99,6 +143,64 @@ export function createAgenCPortalDaemonInitializeRequest(
 
 export const AGENC_PORTAL_DAEMON_INITIALIZE_REQUEST =
   createAgenCPortalDaemonInitializeRequest();
+
+export function createAgenCPortalSessionAttachRequest(
+  sessionId: string,
+  clientId: string = AGENC_PORTAL_CLIENT_ID,
+  id: RequestId = "session.attach",
+): AgenCPortalSessionAttachRequest {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "session.attach",
+    params: { sessionId, clientId },
+  };
+}
+
+export function createAgenCPortalAgentAttachRequest(
+  agentId: string,
+  clientId: string = AGENC_PORTAL_CLIENT_ID,
+  id: RequestId = "agent.attach",
+): AgenCPortalAgentAttachRequest {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "agent.attach",
+    params: { agentId, clientId },
+  };
+}
+
+export function createAgenCPortalAgentLogsRequest(
+  agentId: string,
+  id: RequestId = "agent.logs",
+): AgenCPortalAgentLogsRequest {
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "agent.logs",
+    params: { agentId },
+  };
+}
+
+export function createAgenCPortalMessageSendRequest(
+  options: AgenCPortalMessageSendOptions,
+  id: RequestId = "message.send",
+): AgenCPortalMessageSendRequest {
+  const params: MessageSendParams = {
+    sessionId: options.sessionId,
+    content: options.content,
+    ...(options.clientMessageId !== undefined
+      ? { clientMessageId: options.clientMessageId }
+      : {}),
+    ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
+  };
+  return {
+    jsonrpc: JSON_RPC_VERSION,
+    id,
+    method: "message.send",
+    params,
+  };
+}
 
 export const AGENC_PORTAL_CONNECTION_STATUSES = [
   "disconnected",
@@ -134,6 +236,7 @@ export interface AgenCPortalAuthState {
 
 export interface AgenCPortalSessionSummary {
   readonly sessionId: string;
+  readonly agentId: string | null;
   readonly title: string;
   readonly cwd: string | null;
   readonly status: "idle" | "running" | "waiting" | "stopped";
@@ -148,6 +251,29 @@ export interface AgenCPortalAgentSummary {
   readonly updatedAt: string;
 }
 
+export interface AgenCPortalTranscriptSession {
+  readonly sessionId: string;
+  readonly itemCount: number;
+  readonly transcript: string;
+  readonly rolloutPath?: string;
+  readonly source?: string;
+}
+
+export interface AgenCPortalTranscriptSnapshot {
+  readonly agentId: string;
+  readonly transcript: string;
+  readonly sessions: readonly AgenCPortalTranscriptSession[];
+  readonly updatedAt: string;
+}
+
+export interface AgenCPortalComposerState {
+  readonly sessionId: string | null;
+  readonly draft: string;
+  readonly sending: boolean;
+  readonly lastMessageId: string | null;
+  readonly error: string | null;
+}
+
 export interface AgenCPortalDashboardSnapshot {
   readonly protocolVersion: typeof AGENC_PORTAL_PROTOCOL_VERSION;
   readonly connection: AgenCPortalConnectionTarget | null;
@@ -155,6 +281,8 @@ export interface AgenCPortalDashboardSnapshot {
   readonly auth: AgenCPortalAuthState;
   readonly sessions: readonly AgenCPortalSessionSummary[];
   readonly agents: readonly AgenCPortalAgentSummary[];
+  readonly transcript: AgenCPortalTranscriptSnapshot | null;
+  readonly composer: AgenCPortalComposerState;
 }
 
 export function isAgenCPortalMethod(
