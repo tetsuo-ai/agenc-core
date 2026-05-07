@@ -96,6 +96,8 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput?(input: unknown): number;
+  listMcpClients?(): readonly unknown[];
+  listMcpTools?(): readonly unknown[];
 }
 
 export type AgenCDaemonBackedTuiSession<

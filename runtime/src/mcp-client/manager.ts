@@ -14,6 +14,10 @@ import type {
   MCPServerMutationResult,
   MCPToolBridge,
 } from "./types.js";
+import type {
+  ConnectedMCPServer,
+  ScopedMcpServerConfig,
+} from "../services/mcp/types.js";
 import type { Tool } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
@@ -62,6 +66,10 @@ interface StartupGate {
   reason(): string | undefined;
 }
 
+export type MCPConnectionState =
+  | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
+  | { readonly type: "failed"; readonly error?: string };
+
 function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
@@ -97,6 +105,91 @@ function toToolCatalogPolicyConfig(
   };
 }
 
+function toScopedMcpServerConfig(
+  config: MCPServerConfig,
+): ScopedMcpServerConfig {
+  const scope = "dynamic" as const;
+  const transport = config.transport ?? "stdio";
+
+  if (transport === "sse") {
+    return {
+      type: "sse",
+      url: config.endpoint ?? "",
+      ...(config.headers !== undefined ? { headers: config.headers } : {}),
+      scope,
+    };
+  }
+
+  if (transport === "http") {
+    return {
+      type: "http",
+      url: config.endpoint ?? "",
+      ...(config.headers !== undefined ? { headers: config.headers } : {}),
+      scope,
+    };
+  }
+
+  if (transport === "websocket" || transport === "ws") {
+    return {
+      type: "ws",
+      url: config.endpoint ?? "",
+      ...(config.headers !== undefined ? { headers: config.headers } : {}),
+      scope,
+    };
+  }
+
+  return {
+    type: "stdio",
+    command: config.command ?? config.name,
+    args: config.args ?? [],
+    ...(config.env !== undefined ? { env: config.env } : {}),
+    scope,
+  };
+}
+
+function readClientCapabilities(
+  client: unknown,
+): ConnectedMCPServer["capabilities"] {
+  try {
+    return (
+      client as {
+        getServerCapabilities?: () =>
+          | ConnectedMCPServer["capabilities"]
+          | undefined;
+      }
+    ).getServerCapabilities?.() ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function readClientServerInfo(
+  client: unknown,
+): ConnectedMCPServer["serverInfo"] {
+  try {
+    return (
+      client as {
+        getServerVersion?: () => ConnectedMCPServer["serverInfo"] | undefined;
+      }
+    ).getServerVersion?.();
+  } catch {
+    return undefined;
+  }
+}
+
+function readClientInstructions(client: unknown): string | undefined {
+  try {
+    const instructions = (
+      client as { getInstructions?: () => string | undefined }
+    ).getInstructions?.();
+    return typeof instructions === "string" && instructions.length > 0
+      ? instructions
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Manages multiple external MCP server connections.
  *
@@ -119,6 +212,9 @@ export class MCPManager {
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
   private readonly promptBridges: Map<string, MCPPromptBridge> = new Map();
+  private readonly connectedConnections: Map<string, ConnectedMCPServer> =
+    new Map();
+  private readonly connectionStates: Map<string, MCPConnectionState> = new Map();
   /**
    * Per-server `InitializeResult.instructions` blob captured at connect
    * time. Consumed by the per-turn `mcp_instructions_delta` attachment
@@ -140,6 +236,7 @@ export class MCPManager {
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
     this.logger = logger;
+    this.resetConnectionStates();
   }
 
   /**
@@ -164,6 +261,22 @@ export class MCPManager {
     this.elicitationHandlers = handlers;
   }
 
+  getConnectionState(name: string): MCPConnectionState | undefined {
+    const config = this.getServerConfig(name);
+    if (config?.enabled === false) return { type: "disabled" };
+    if (this.bridges.has(name)) return { type: "connected" };
+    return this.connectionStates.get(name);
+  }
+
+  private resetConnectionStates(): void {
+    this.connectionStates.clear();
+    for (const config of this.configs) {
+      this.connectionStates.set(config.name, {
+        type: config.enabled === false ? "disabled" : "pending",
+      });
+    }
+  }
+
   /**
    * Connect to all enabled MCP servers and create tool bridges.
    * Failures on individual servers are logged but don't block others
@@ -176,6 +289,7 @@ export class MCPManager {
    * connect-timeout.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+    this.resetConnectionStates();
     const enabledConfigs = this.configs.filter((c) => c.enabled !== false);
 
     if (enabledConfigs.length === 0) {
@@ -219,7 +333,12 @@ export class MCPManager {
       const cfg = enabledConfigs[i];
       if (result.status === "fulfilled") {
         successCount++;
+        this.connectionStates.set(cfg.name, { type: "connected" });
       } else {
+        this.connectionStates.set(cfg.name, {
+          type: "failed",
+          error: errMessage(result.reason),
+        });
         failures.push({ name: cfg.name, reason: result.reason });
         this.logger.error(
           `Failed to connect to MCP server "${cfg.name}":`,
@@ -273,7 +392,9 @@ export class MCPManager {
     this.bridges.clear();
     this.resourceBridges.clear();
     this.promptBridges.clear();
+    this.connectedConnections.clear();
     this.serverInstructions.clear();
+    this.resetConnectionStates();
     this.logger.info("All MCP servers disconnected");
   }
 
@@ -315,6 +436,10 @@ export class MCPManager {
    */
   getConnectedServers(): string[] {
     return Array.from(this.bridges.keys());
+  }
+
+  getConnectedConnection(name: string): ConnectedMCPServer | undefined {
+    return this.connectedConnections.get(name);
   }
 
   /**
@@ -397,6 +522,7 @@ export class MCPManager {
       };
     }
     if (config.enabled === false) {
+      this.connectionStates.set(name, { type: "disabled" });
       return {
         serverName: name,
         success: false,
@@ -405,16 +531,22 @@ export class MCPManager {
       };
     }
 
+    this.connectionStates.set(name, { type: "pending" });
     await this.disconnectServer(name, "before reconnect");
 
     try {
       const bridge = await this.connectServer(config);
+      this.connectionStates.set(name, { type: "connected" });
       return {
         serverName: name,
         success: true,
         toolCount: bridge.tools.length,
       };
     } catch (error) {
+      this.connectionStates.set(name, {
+        type: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
       return {
         serverName: name,
         success: false,
@@ -457,6 +589,7 @@ export class MCPManager {
     }
     config.enabled = false;
     await this.disconnectServer(name, "after disable");
+    this.connectionStates.set(name, { type: "disabled" });
     return {
       serverName: name,
       success: true,
@@ -493,6 +626,7 @@ export class MCPManager {
     if (!result.success) {
       await this.disconnectServer(nextConfig.name, "after failed add");
       this.configs = previousConfigs;
+      this.connectionStates.delete(nextConfig.name);
     }
     return result;
   }
@@ -610,16 +744,11 @@ export class MCPManager {
       // Capture the server's `InitializeResult.instructions` blob if any.
       // The MCP SDK stores it after `client.connect()` completes; the
       // value is immutable for the lifetime of the connection.
-      try {
-        const instructions = (
-          client as { getInstructions?: () => string | undefined }
-        ).getInstructions?.();
-        if (typeof instructions === "string" && instructions.length > 0) {
-          this.serverInstructions.set(config.name, instructions);
-        }
-      } catch {
-        // Best-effort capture — the producer simply emits no block for
-        // this server when the SDK call throws.
+      const capabilities = readClientCapabilities(client);
+      const serverInfo = readClientServerInfo(client);
+      const instructions = readClientInstructions(client);
+      if (instructions !== undefined) {
+        this.serverInstructions.set(config.name, instructions);
       }
       const rawBridge = await createToolBridge(
         client,
@@ -699,6 +828,19 @@ export class MCPManager {
         );
       }
 
+      this.connectedConnections.set(config.name, {
+        type: "connected",
+        name: config.name,
+        client: client as never,
+        capabilities,
+        ...(serverInfo !== undefined ? { serverInfo } : {}),
+        ...(instructions !== undefined ? { instructions } : {}),
+        config: toScopedMcpServerConfig(config),
+        cleanup: async () => {
+          await this.disconnectServer(config.name, "via connected connection cleanup");
+        },
+      });
+      this.connectionStates.set(config.name, { type: "connected" });
       return bridge;
     } catch (error) {
       try {
@@ -731,6 +873,7 @@ export class MCPManager {
 
   private async disconnectServer(name: string, reason: string): Promise<void> {
     const existing = this.bridges.get(name);
+    this.connectedConnections.delete(name);
     if (existing) {
       this.bridges.delete(name);
       this.serverInstructions.delete(name);

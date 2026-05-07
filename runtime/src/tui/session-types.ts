@@ -131,6 +131,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
   listMcpClients?(): readonly MCPServerConnection[];
+  listMcpTools?(): readonly unknown[];
 }
 
 type MutableCompactProgressSession = {

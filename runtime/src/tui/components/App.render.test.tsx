@@ -42,6 +42,7 @@ const providerProbe = {
   costThresholdDialogProps: [] as Array<Record<string, unknown>>,
   messageProps: [] as Array<Record<string, unknown>>,
   messageSelectorProps: [] as Array<Record<string, unknown>>,
+  mcpConnectivityProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
     clearBuffer(): void;
     resetHistory(): void;
@@ -321,6 +322,12 @@ vi.mock("../hooks/useGlobalKeybindings.js", async () => {
   };
 });
 
+vi.mock("../hooks/notifs/useMcpConnectivityStatus.js", () => ({
+  useMcpConnectivityStatus: (props: Record<string, unknown>) => {
+    providerProbe.mcpConnectivityProps.push(props);
+  },
+}));
+
 vi.mock("./Messages.js", async () => {
   const React = await import("react");
   return {
@@ -385,6 +392,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onExit,
       vimMode,
       setVimMode,
+      mcpClients,
+      getToolUseContext,
     }: {
       input: string;
       onSubmit: (input: string, helpers: {
@@ -397,6 +406,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onExit?: () => void;
       vimMode?: unknown;
       setVimMode?: unknown;
+      mcpClients?: unknown;
+      getToolUseContext?: unknown;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
       providerProbe.promptProps.push({
@@ -406,6 +417,8 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onExit,
         vimMode,
         setVimMode,
+        mcpClients,
+        getToolUseContext,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -465,6 +478,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.costThresholdDialogProps.length = 0;
   providerProbe.messageSelectorProps.length = 0;
   providerProbe.messageProps.length = 0;
+  providerProbe.mcpConnectivityProps.length = 0;
   providerProbe.promptProps.length = 0;
   providerProbe.promptSubmits.length = 0;
   providerProbe.inkExit.mockClear?.();
@@ -567,6 +581,7 @@ function createSession(): AgenCBridgeSession {
       collaborationMode: { model: "test-model" },
     },
     listMcpClients: () => [],
+    listMcpTools: () => [],
   };
 }
 
@@ -640,6 +655,163 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         vimMode: "INSERT",
         setVimMode: expect.any(Function),
       }),
+    );
+  });
+
+  test("passes live MCP clients and tools through the App shell", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const failedClient = {
+      name: "files",
+      type: "failed",
+      config: {
+        type: "stdio",
+        command: "npx",
+        args: ["server"],
+        scope: "user",
+      },
+      error: "spawn ENOENT",
+    } as const;
+    const mcpTool = {
+      name: "mcp.files.search",
+      description: "Search files",
+      inputSchema: { type: "object", properties: {} },
+      execute: vi.fn(async () => ({ content: "ok" })),
+    };
+    const mcpClients = [failedClient];
+    const mcpTools = [mcpTool];
+    const session = {
+      ...createSession(),
+      listMcpClients: vi.fn(() => mcpClients),
+      listMcpTools: vi.fn(() => mcpTools),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        expect(providerProbe.mcpConnectivityProps.at(-1)).toEqual({
+          mcpClients,
+        });
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        expect(promptProps).toEqual(
+          expect.objectContaining({
+            mcpClients,
+            getToolUseContext: expect.any(Function),
+          }),
+        );
+
+        const context = (promptProps.getToolUseContext as (
+          messages: unknown[],
+          newMessages: unknown[],
+          abortController: AbortController,
+        ) => {
+          readonly options: {
+            readonly tools: readonly unknown[];
+            readonly mcpClients: readonly unknown[];
+            readonly refreshTools: () => readonly unknown[];
+          };
+        })([], [], new AbortController());
+
+        expect(context.options.mcpClients).toBe(mcpClients);
+        expect(context.options.tools).toContain(mcpTool);
+        expect(context.options.refreshTools()).toContain(mcpTool);
+      },
+    );
+  });
+
+  test("refreshes MCP clients and tools when same-metadata objects are replaced", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    let notifySessionEvent: (() => void) | undefined;
+    let generation = 0;
+    const firstClient = {
+      name: "files",
+      type: "connected",
+      config: {
+        type: "stdio",
+        command: "npx",
+        args: ["server"],
+        scope: "user",
+      },
+      capabilities: { tools: {} },
+      client: { setNotificationHandler: vi.fn() },
+      cleanup: vi.fn(async () => {}),
+    } as const;
+    const secondClient = {
+      ...firstClient,
+      client: { setNotificationHandler: vi.fn() },
+      cleanup: vi.fn(async () => {}),
+    };
+    const firstTool = {
+      name: "mcp.files.search",
+      description: "Search files",
+      inputSchema: { type: "object", properties: {} },
+      execute: vi.fn(async () => ({ content: "first" })),
+    };
+    const secondTool = {
+      name: "mcp.files.search",
+      description: "Search files",
+      inputSchema: { type: "object", properties: {} },
+      execute: vi.fn(async () => ({ content: "second" })),
+    };
+    const clientGenerations = [[firstClient], [secondClient]];
+    const toolGenerations = [[firstTool], [secondTool]];
+    const session = {
+      ...createSession(),
+      subscribeToEvents: vi.fn((callback: () => void) => {
+        notifySessionEvent = callback;
+        return () => {};
+      }),
+      listMcpClients: vi.fn(() => clientGenerations[generation]),
+      listMcpTools: vi.fn(() => toolGenerations[generation]),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        let promptProps = providerProbe.promptProps.at(-1)!;
+        let context = (promptProps.getToolUseContext as (
+          messages: unknown[],
+          newMessages: unknown[],
+          abortController: AbortController,
+        ) => {
+          readonly options: {
+            readonly tools: readonly unknown[];
+            readonly mcpClients: readonly unknown[];
+          };
+        })([], [], new AbortController());
+
+        expect(context.options.mcpClients).toBe(clientGenerations[0]);
+        expect(context.options.tools).toContain(firstTool);
+
+        generation = 1;
+        notifySessionEvent?.();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        promptProps = providerProbe.promptProps.at(-1)!;
+        context = (promptProps.getToolUseContext as (
+          messages: unknown[],
+          newMessages: unknown[],
+          abortController: AbortController,
+        ) => {
+          readonly options: {
+            readonly tools: readonly unknown[];
+            readonly mcpClients: readonly unknown[];
+          };
+        })([], [], new AbortController());
+
+        expect(context.options.mcpClients).toBe(clientGenerations[1]);
+        expect(context.options.tools).toContain(secondTool);
+        expect(context.options.tools).not.toContain(firstTool);
+      },
     );
   });
 
