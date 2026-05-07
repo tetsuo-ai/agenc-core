@@ -247,7 +247,7 @@ assert(
 );
 
 const zPurgecGateStart = verifySource.indexOf('if (id === "Z-PURGEC")');
-const zPurgecGateEnd = verifySource.indexOf('if (id === "Z-PURGEFINAL")');
+const zPurgecGateEnd = verifySource.indexOf('if (id === "Z-PURGEFINAL"', zPurgecGateStart);
 const zPurgecGateSource = zPurgecGateStart === -1 || zPurgecGateEnd === -1
   ? ""
   : verifySource.slice(zPurgecGateStart, zPurgecGateEnd);
@@ -296,6 +296,18 @@ assert(
   reviewSource.includes("Z-PURGEFINAL is the final purge-state marker") &&
     reviewSource.includes("root npm test command is not the completion gate") &&
     reviewSource.includes("Do reject if verify.mjs Z-PURGEFINAL fails"),
+);
+const zFinalTsPruneGateSource = extractFunctionSource(verifySource, "assertZFinalTsPruneClean");
+assert(
+  "verify.mjs Z-FINAL runs ts-prune against runtime tsconfig",
+  verifySource.includes('const Z_FINAL_TS_PRUNE_PROJECT = "runtime/tsconfig.json";') &&
+    /"ts-prune",\s*"--error",\s*"-p",\s*Z_FINAL_TS_PRUNE_PROJECT/.test(zFinalTsPruneGateSource),
+);
+assert(
+  "verify.mjs Z-FINAL filters ts-prune through explicit ignore file",
+  verifySource.includes('const Z_FINAL_TS_PRUNE_IGNORE_REL = ".ts-prune-ignore";') &&
+    zFinalTsPruneGateSource.includes("readZFinalTsPruneIgnorePatterns()") &&
+    zFinalTsPruneGateSource.includes("collectUnignoredTsPruneLines("),
 );
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

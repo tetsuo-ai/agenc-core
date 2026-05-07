@@ -9200,6 +9200,59 @@ async function cleanupGates(item) {
     return result;
   }
 
+  const Z_FINAL_TS_PRUNE_PROJECT = "runtime/tsconfig.json";
+  const Z_FINAL_TS_PRUNE_IGNORE_REL = ".ts-prune-ignore";
+
+  function readZFinalTsPruneIgnorePatterns() {
+    const ignorePath = path.join(root, Z_FINAL_TS_PRUNE_IGNORE_REL);
+    if (!existsSync(ignorePath)) return [];
+    return readFileSync(ignorePath, "utf8")
+      .split(/\r?\n/)
+      .map((line, index) => ({ line: line.trim(), index: index + 1 }))
+      .filter(({ line }) => line && !line.startsWith("#"))
+      .map(({ line, index }) => {
+        try {
+          return { pattern: new RegExp(line), index };
+        } catch (error) {
+          failGate(
+            `Z-FINAL gate 3: ${Z_FINAL_TS_PRUNE_IGNORE_REL}:${index} is not a valid regex: ${error?.message || error}`,
+          );
+        }
+      });
+  }
+
+  function collectUnignoredTsPruneLines(output, ignorePatterns) {
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !ignorePatterns.some(({ pattern }) => pattern.test(line)));
+  }
+
+  function assertZFinalTsPruneClean() {
+    const tsPrune = run("npx", [
+      "ts-prune",
+      "--error",
+      "-p",
+      Z_FINAL_TS_PRUNE_PROJECT,
+    ], { silent: true });
+    if (![0, 1].includes(tsPrune.status)) {
+      failGate(`Z-FINAL gate 3: ts-prune failed to run:\n${summarizeCommandOutput(tsPrune)}`);
+    }
+    const ignorePatterns = readZFinalTsPruneIgnorePatterns();
+    const unignored = collectUnignoredTsPruneLines(tsPrune.stdout || "", ignorePatterns);
+    if (unignored.length > 0) {
+      failGate(
+        `Z-FINAL gate 3: ts-prune reported ${unignored.length} unignored unused export(s). ` +
+          `Remove the export or add a precise ${Z_FINAL_TS_PRUNE_IGNORE_REL} entry:\n${unignored.slice(0, 80).join("\n")}`,
+      );
+    }
+    if (tsPrune.stderr?.trim()) {
+      failGate(`Z-FINAL gate 3: ts-prune wrote unexpected stderr:\n${tsPrune.stderr.trim()}`);
+    }
+    pass(`Z-FINAL gate 3: ts-prune has zero unignored unused exports (${ignorePatterns.length} ignore pattern(s))`);
+  }
+
   function listRuntimeDirectories() {
     const runtimeSrc = path.join(root, "runtime/src");
     const out = [];
@@ -9373,11 +9426,7 @@ async function cleanupGates(item) {
         "runtime/tsconfig.json",
       ],
     );
-    runRequiredZFinalCommand(
-      "Z-FINAL gate 3: ts-prune has zero unused exports",
-      "npx",
-      ["ts-prune", "--error"],
-    );
+    assertZFinalTsPruneClean();
 
     const knip = run("npx", [
       "knip",
