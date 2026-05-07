@@ -58,6 +58,9 @@ describe("memory wiring contract", () => {
     const agencmd = readFileSync(resolve(root, "runtime/src/memory/agencmd.ts"), "utf8");
     const projectMemory = readFileSync(resolve(root, "runtime/src/memory/project-memory.ts"), "utf8");
     const fileReadTool = readFileSync(resolve(root, "runtime/src/tools/FileReadTool/FileReadTool.ts"), "utf8");
+    const fileWriteTool = readFileSync(resolve(root, "runtime/src/tools/FileWriteTool/FileWriteTool.ts"), "utf8");
+    const fileEditTool = readFileSync(resolve(root, "runtime/src/tools/FileEditTool/FileEditTool.ts"), "utf8");
+    const teamMemorySync = readFileSync(resolve(root, "runtime/src/services/teamMemorySync/index.ts"), "utf8");
     const attachments = readFileSync(resolve(root, "runtime/src/utils/attachments.ts"), "utf8");
     const filesystem = readFileSync(resolve(root, "runtime/src/utils/permissions/filesystem.ts"), "utf8");
 
@@ -65,9 +68,13 @@ describe("memory wiring contract", () => {
     expect(agencmd).toContain("globalMemEntry");
     expect(projectMemory).toContain("getProjectMemoryPathForSelector");
     expect(projectMemory).toContain("MEMORY_MENTION_SYNTAX");
+    expect(projectMemory).toContain("./privacy.js");
     expect(fileReadTool).toContain("detectSessionFileType");
     expect(fileReadTool).toContain("../../memory/project-memory.js");
     expect(fileReadTool).not.toContain("function detectSessionFileType");
+    expect(fileWriteTool).toContain("../../memory/privacy.js");
+    expect(fileEditTool).toContain("../../memory/privacy.js");
+    expect(teamMemorySync).toContain("../../memory/privacy.js");
     expect(attachments).toContain("getDurableMemorySearchDirs");
     expect(attachments).toContain("getGlobalMemoryPath");
     expect(filesystem).toContain("isGlobalMemoryPath");
