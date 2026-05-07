@@ -10,10 +10,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
+  AGENTS_PROJECT_INSTRUCTION_FILE,
+  CLAUDE_PROJECT_INSTRUCTION_FILE,
   DEFAULT_PROJECT_DOC_MAX_BYTES,
   findProjectRoot,
   loadProjectInstructionChain,
   loadProjectInstructions,
+  PRIMARY_PROJECT_INSTRUCTION_FILE,
   resolveInstructionFile,
 } from "./project-instructions.js";
 
@@ -68,6 +71,34 @@ describe("project-instructions (T10-B)", () => {
     writeFileSync(join(dir, "AGENC.override.md"), "override");
     const p = await resolveInstructionFile(dir);
     expect(p?.endsWith("AGENC.override.md")).toBe(true);
+  });
+
+  test("resolveInstructionFile prefers AGENC.md over fallback files", async () => {
+    const dir = join(root, "d");
+    mkdirSync(dir);
+    writeFileSync(join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE), "primary");
+    writeFileSync(join(dir, AGENTS_PROJECT_INSTRUCTION_FILE), "agents");
+    writeFileSync(join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE), "old");
+
+    const p = await resolveInstructionFile(dir);
+
+    expect(p).toBe(join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE));
+  });
+
+  test("resolveInstructionFile falls back to AGENTS.md then CLAUDE.md", async () => {
+    const dir = join(root, "d");
+    mkdirSync(dir);
+    writeFileSync(join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE), "old");
+
+    expect(await resolveInstructionFile(dir)).toBe(
+      join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE),
+    );
+
+    writeFileSync(join(dir, AGENTS_PROJECT_INSTRUCTION_FILE), "agents");
+
+    expect(await resolveInstructionFile(dir)).toBe(
+      join(dir, AGENTS_PROJECT_INSTRUCTION_FILE),
+    );
   });
 
   test("resolveInstructionFile ignores non-AgenC instruction files", async () => {

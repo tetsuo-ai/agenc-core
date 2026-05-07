@@ -1,136 +1,135 @@
-import { c as _c } from "react-compiler-runtime";
-import React from 'react';
+import React, { useEffect } from 'react';
+
 import { logEvent } from '../../services/analytics/index.js';
-import { Box, Link, Text } from '../ink.js';
 import type { ExternalAgenCMdInclude } from '../../memory/index.js';
-import { saveCurrentProjectConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { saveCurrentProjectConfig } from '../../utils/config.js';
+import { Box, Link, Text } from '../ink.js';
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
+
 type Props = {
   onDone(): void;
   isStandaloneDialog?: boolean;
   externalIncludes?: ExternalAgenCMdInclude[];
 };
-export function AgenCMdExternalIncludesDialog(t0: Props) {
-  const $ = _c(18);
-  const {
-    onDone,
-    isStandaloneDialog,
-    externalIncludes
-  } = t0;
-  let t1: [];
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = [];
-    $[0] = t1;
-  } else {
-    t1 = $[0];
+
+const EXTERNAL_INCLUDE_OPTIONS = [
+  {
+    label: 'Yes, allow external imports',
+    value: 'yes',
+  },
+  {
+    label: 'No, disable external imports',
+    value: 'no',
+  },
+] as const;
+
+export type ExternalIncludeDecision =
+  (typeof EXTERNAL_INCLUDE_OPTIONS)[number]['value'];
+
+type ApplyDecisionDeps = {
+  log?: typeof logEvent;
+  saveConfig?: typeof saveCurrentProjectConfig;
+};
+
+export function applyAgenCMdExternalIncludeDecision(
+  value: ExternalIncludeDecision,
+  deps: ApplyDecisionDeps = {},
+): void {
+  const log = deps.log ?? logEvent;
+  const saveConfig = deps.saveConfig ?? saveCurrentProjectConfig;
+
+  if (value === 'no') {
+    log('tengu_agenc_md_external_includes_dialog_declined', {});
+    saveConfig(current => ({
+      ...current,
+      hasAgenCMdExternalIncludesApproved: false,
+      hasAgenCMdExternalIncludesWarningShown: true,
+    }));
+    return;
   }
-  React.useEffect(_temp, t1);
-  let t2;
-  if ($[1] !== onDone) {
-    t2 = (value: 'yes' | 'no') => {
-      if (value === "no") {
-        logEvent("tengu_claude_md_external_includes_dialog_declined", {});
-        saveCurrentProjectConfig(_temp2);
-      } else {
-        logEvent("tengu_claude_md_external_includes_dialog_accepted", {});
-        saveCurrentProjectConfig(_temp3);
-      }
-      onDone();
-    };
-    $[1] = onDone;
-    $[2] = t2;
-  } else {
-    t2 = $[2];
-  }
-  const handleSelection = t2;
-  let t3;
-  if ($[3] !== handleSelection) {
-    t3 = () => {
-      handleSelection("no");
-    };
-    $[3] = handleSelection;
-    $[4] = t3;
-  } else {
-    t3 = $[4];
-  }
-  const handleEscape = t3;
-  const t4 = !isStandaloneDialog;
-  const t5 = !isStandaloneDialog;
-  let t6;
-  if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
-    t6 = <Text>This project's AGENC.md imports files outside the current working directory. Never allow this for third-party repositories.</Text>;
-    $[5] = t6;
-  } else {
-    t6 = $[5];
-  }
-  let t7;
-  if ($[6] !== externalIncludes) {
-    t7 = externalIncludes && externalIncludes.length > 0 && <Box flexDirection="column"><Text dimColor={true}>External imports:</Text>{externalIncludes.map(_temp4)}</Box>;
-    $[6] = externalIncludes;
-    $[7] = t7;
-  } else {
-    t7 = $[7];
-  }
-  let t8;
-  if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t8 = <Text dimColor={true}>Important: Only use AgenC with files you trust. Accessing untrusted files may pose security risks{" "}<Link url="https://agenc.tech/docs/en/security" />{" "}</Text>;
-    $[8] = t8;
-  } else {
-    t8 = $[8];
-  }
-  let t9;
-  if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
-    t9 = [{
-      label: "Yes, allow external imports",
-      value: "yes"
-    }, {
-      label: "No, disable external imports",
-      value: "no"
-    }];
-    $[9] = t9;
-  } else {
-    t9 = $[9];
-  }
-  let t10;
-  if ($[10] !== handleSelection) {
-    t10 = <Select options={t9} onChange={(value_0: string) => handleSelection(value_0 as 'yes' | 'no')} />;
-    $[10] = handleSelection;
-    $[11] = t10;
-  } else {
-    t10 = $[11];
-  }
-  let t11;
-  if ($[12] !== handleEscape || $[13] !== t10 || $[14] !== t4 || $[15] !== t5 || $[16] !== t7) {
-    t11 = <Dialog title="Allow external AGENC.md file imports?" color="warning" onCancel={handleEscape} hideBorder={t4} hideInputGuide={t5}>{t6}{t7}{t8}{t10}</Dialog>;
-    $[12] = handleEscape;
-    $[13] = t10;
-    $[14] = t4;
-    $[15] = t5;
-    $[16] = t7;
-    $[17] = t11;
-  } else {
-    t11 = $[17];
-  }
-  return t11;
-}
-function _temp4(include: ExternalAgenCMdInclude, i: number) {
-  return <Text key={i} dimColor={true}>{"  "}{include.path}</Text>;
-}
-function _temp3(current_0: any) {
-  return {
-    ...current_0,
-    hasAgenCMdExternalIncludesApproved: true,
-    hasAgenCMdExternalIncludesWarningShown: true
-  };
-}
-function _temp2(current: any) {
-  return {
+
+  log('tengu_agenc_md_external_includes_dialog_accepted', {});
+  saveConfig(current => ({
     ...current,
-    hasAgenCMdExternalIncludesApproved: false,
-    hasAgenCMdExternalIncludesWarningShown: true
-  };
+    hasAgenCMdExternalIncludesApproved: true,
+    hasAgenCMdExternalIncludesWarningShown: true,
+  }));
 }
-function _temp() {
-  logEvent("tengu_claude_md_includes_dialog_shown", {});
+
+export type AgenCMdExternalIncludesDialogViewProps = {
+  isStandaloneDialog?: boolean;
+  externalIncludes?: ExternalAgenCMdInclude[];
+  onSelect(value: ExternalIncludeDecision): void;
+  onCancel(): void;
+};
+
+export function AgenCMdExternalIncludesDialogView({
+  isStandaloneDialog,
+  externalIncludes,
+  onSelect,
+  onCancel,
+}: AgenCMdExternalIncludesDialogViewProps) {
+  return (
+    <Dialog
+      title="Allow external AGENC.md file imports?"
+      color="warning"
+      onCancel={onCancel}
+      hideBorder={!isStandaloneDialog}
+      hideInputGuide={!isStandaloneDialog}
+    >
+      <Text>
+        This project's AGENC.md imports files outside the current working
+        directory. Never allow this for third-party repositories.
+      </Text>
+      {externalIncludes && externalIncludes.length > 0 ? (
+        <Box flexDirection="column">
+          <Text dimColor>External imports:</Text>
+          {externalIncludes.map((include, index) => (
+            <Text key={`${include.parent}:${include.path}:${index}`} dimColor>
+              {'  '}
+              {include.path}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+      <Text dimColor>
+        Important: Only use AgenC with files you trust. Accessing untrusted
+        files may pose security risks{' '}
+        <Link url="https://agenc.tech/docs/en/security" />{' '}
+      </Text>
+      <Select
+        options={[...EXTERNAL_INCLUDE_OPTIONS]}
+        onChange={(value: string) => onSelect(value as ExternalIncludeDecision)}
+      />
+    </Dialog>
+  );
+}
+
+export function AgenCMdExternalIncludesDialog({
+  onDone,
+  isStandaloneDialog,
+  externalIncludes,
+}: Props) {
+  useEffect(() => {
+    logEvent('tengu_agenc_md_includes_dialog_shown', {});
+  }, []);
+
+  const handleSelection = (value: ExternalIncludeDecision) => {
+    applyAgenCMdExternalIncludeDecision(value);
+    onDone();
+  };
+
+  const handleEscape = () => {
+    handleSelection('no');
+  };
+
+  return (
+    <AgenCMdExternalIncludesDialogView
+      isStandaloneDialog={isStandaloneDialog}
+      externalIncludes={externalIncludes}
+      onSelect={handleSelection}
+      onCancel={handleEscape}
+    />
+  );
 }

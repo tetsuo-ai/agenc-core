@@ -583,6 +583,39 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     expect(tiers.project?.content).toContain("<!-- @include extra.md -->");
   });
 
+  test("loadTieredInstructions prefers AGENC.md and falls back to AGENTS.md or CLAUDE.md", async () => {
+    const home = join(tmp, "home");
+    const repoRoot = join(tmp, "repo");
+    const nested = join(repoRoot, "nested");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT-AGENTS");
+    writeFileSync(join(repoRoot, "CLAUDE.md"), "ROOT-OLD");
+    writeFileSync(join(nested, "AGENC.md"), "NESTED-AGENC");
+
+    let tiers = await loadTieredInstructions({
+      cwd: nested,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+    });
+    expect(tiers.project?.content).toContain("ROOT-AGENTS");
+    expect(tiers.project?.content).toContain("NESTED-AGENC");
+    expect(tiers.project?.content).not.toContain("ROOT-OLD");
+    expect(tiers.project?.path).toBe(join(nested, "AGENC.md"));
+
+    rmSync(join(nested, "AGENC.md"), { force: true });
+    rmSync(join(repoRoot, "AGENTS.md"), { force: true });
+
+    tiers = await loadTieredInstructions({
+      cwd: nested,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+    });
+    expect(tiers.project?.content).toContain("ROOT-OLD");
+    expect(tiers.project?.path).toBe(join(repoRoot, "CLAUDE.md"));
+  });
+
   test("loadTieredInstructions walks project docs from root to cwd", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");
@@ -623,6 +656,26 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("loadTieredInstructions finds local tier from project root without project instructions", async () => {
+    const home = join(tmp, "home");
+    const repoRoot = join(tmp, "repo");
+    const nested = join(repoRoot, "packages", "api");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENC.local.md"), "LOCAL-ROOT");
+
+    const tiers = await loadTieredInstructions({
+      cwd: nested,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+    });
+
+    expect(tiers.project).toBeNull();
+    expect(tiers.local?.path).toBe(join(repoRoot, "AGENC.local.md"));
+    expect(tiers.local?.content).toBe("LOCAL-ROOT");
   });
 
   test("loadTieredInstructions honors an explicit empty marker list as cwd-only", async () => {
