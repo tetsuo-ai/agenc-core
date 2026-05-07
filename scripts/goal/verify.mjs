@@ -5842,6 +5842,7 @@ async function memoryGates(item) {
       ["runtime/src/components/memory/MemoryFileSelector.tsx", "../../memory/project-memory.js"],
       ["runtime/src/tui/components/memory/MemoryFileSelector.tsx", "../../../memory/project-memory.js"],
       ["runtime/src/tui/components/FeedbackSurvey/useMemorySurvey.tsx", "../../../memory/project-memory.js"],
+      ["runtime/src/tools/FileReadTool/FileReadTool.ts", "../../memory/project-memory.js"],
       ["parity/MM-03-parity.json", "project-memory-api"],
     ];
     for (const [rel, symbol] of requiredSymbols) {
@@ -5859,6 +5860,10 @@ async function memoryGates(item) {
       failGate(
         `MM-03: direct memory/detection imports remain:\n  ${directDetectionImports.map((f) => path.relative(root, f)).join("\n  ")}`,
       );
+    }
+    const fileReadTool = readFileSync(path.join(root, "runtime/src/tools/FileReadTool/FileReadTool.ts"), "utf8");
+    if (/function\s+detectSessionFileType\b/.test(fileReadTool)) {
+      failGate("MM-03: FileReadTool still carries a shadow detectSessionFileType implementation");
     }
 
     const vitest = run("npm", [

@@ -31,7 +31,7 @@ import type {
 } from '../types/logs.js'
 import type { Message } from '../types/message.js'
 import { renameRecordingForSession } from './asciicast.js'
-import { clearMemoryFileCaches } from '../memory/project-memory.js' // branding-scan: allow upstream mirror import path
+import { clearMemoryFileCaches } from '../memory/project-memory.js'
 import {
   type AttributionState,
   attributionRestoreStateFromLog,

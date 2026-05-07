@@ -73,7 +73,7 @@ import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../component
 import { getSystemPrompt } from '../../constants/prompts.js';
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../../context.js';
-import { getMemoryFiles } from '../../memory/project-memory.js'; // branding-scan: allow upstream mirror import path
+import { getMemoryFiles } from '../../memory/project-memory.js';
 import { startBackgroundHousekeeping } from '../../utils/backgroundHousekeeping.js';
 import { getTotalCost, saveCurrentSessionCosts, resetCostState, restoreCostStateForSession, bindCacheStatsResetHook, setActiveCostSessionId } from '../../cost/tracker.js';
 import { useCostSummary } from '../../cost/hook.js';
