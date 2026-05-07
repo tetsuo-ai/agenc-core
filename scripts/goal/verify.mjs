@@ -2030,7 +2030,10 @@ const ITEM_EVIDENCE = {
     ],
     tests: [
       "runtime/src/llm/wire/tools.test.ts",
+      "runtime/src/llm/wire/chat-completions.test.ts",
+      "runtime/src/llm/wire/messages-anthropic.test.ts",
       "runtime/src/llm/wire/responses-openai.test.ts",
+      "runtime/src/llm/wire/responses-xai.test.ts",
     ],
   },
   "MM-06": {
@@ -5253,7 +5256,19 @@ async function promptGates(item) {
     if (!grepRepo("toAnthropicTools", "runtime/src/llm/wire/messages-anthropic.ts")) {
       failGate("PR-06: Messages builder must use central tool conversion");
     }
-    const vitest = run("npm", ["test", "--", "src/llm/wire/tools.test.ts"], { cwd: path.join(root, "runtime") });
+    const vitest = run(
+      "npm",
+      [
+        "test",
+        "--",
+        "src/llm/wire/tools.test.ts",
+        "src/llm/wire/chat-completions.test.ts",
+        "src/llm/wire/messages-anthropic.test.ts",
+        "src/llm/wire/responses-openai.test.ts",
+        "src/llm/wire/responses-xai.test.ts",
+      ],
+      { cwd: path.join(root, "runtime") },
+    );
     if (vitest.status !== 0) failGate("PR-06 targeted wire tool tests failed");
     pass("PR-06 targeted wire tool tests passed");
     pass("PR-06: tool description injection is centralized in llm/wire/tools");
