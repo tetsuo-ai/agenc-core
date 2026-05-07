@@ -65,6 +65,7 @@ describe("AgenC portal protocol contract", () => {
   it("declares dashboard, auth, and background workspace capabilities needed by the sibling portal repo", () => {
     expect(AGENC_PORTAL_CLIENT_CAPABILITIES).toEqual([
       "portal.dashboard.read",
+      "portal.mobile.status.read",
       "portal.auth.read",
       "portal.auth.login",
       "portal.auth.logout",
@@ -78,6 +79,7 @@ describe("AgenC portal protocol contract", () => {
     ]);
     expect(AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS).toEqual({
       "portal.dashboard.read": true,
+      "portal.mobile.status.read": true,
       "portal.auth.read": true,
       "portal.auth.login": true,
       "portal.auth.logout": true,

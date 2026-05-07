@@ -12,6 +12,7 @@
  * agent transcripts, and sending messages through existing daemon methods.
  * WP-05 adds dashboard controls for listing, starting, and stopping
  * background agents through the same daemon JSON-RPC contract.
+ * WP-06 adds a compact read-only mobile status projection for phone check-ins.
  */
 
 import {
@@ -63,6 +64,7 @@ export type AgenCPortalMethod = (typeof AGENC_PORTAL_METHODS)[number];
 
 export const AGENC_PORTAL_CLIENT_CAPABILITIES = [
   "portal.dashboard.read",
+  "portal.mobile.status.read",
   "portal.auth.read",
   "portal.auth.login",
   "portal.auth.logout",
@@ -80,6 +82,7 @@ export type AgenCPortalClientCapability =
 
 export const AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS = {
   "portal.dashboard.read": true,
+  "portal.mobile.status.read": true,
   "portal.auth.read": true,
   "portal.auth.login": true,
   "portal.auth.logout": true,
@@ -386,6 +389,245 @@ export interface AgenCPortalDashboardSnapshot {
   readonly backgroundAgents: AgenCPortalBackgroundAgentDashboardState;
   readonly transcript: AgenCPortalTranscriptSnapshot | null;
   readonly composer: AgenCPortalComposerState;
+}
+
+export type AgenCPortalAgentStatus = AgenCPortalAgentSummary["status"];
+export type AgenCPortalSessionStatus = AgenCPortalSessionSummary["status"];
+
+export interface AgenCPortalMobileStatusCounts {
+  readonly totalAgents: number;
+  readonly totalSessions: number;
+  readonly attentionAgents: number;
+  readonly attentionSessions: number;
+  readonly agents: Readonly<Record<AgenCPortalAgentStatus, number>>;
+  readonly sessions: Readonly<Record<AgenCPortalSessionStatus, number>>;
+}
+
+export interface AgenCPortalMobileAgentCheckIn {
+  readonly agentId: string;
+  readonly objective: string;
+  readonly status: AgenCPortalAgentStatus;
+  readonly activeSessionId: string | null;
+  readonly sessionTitle: string | null;
+  readonly needsAttention: boolean;
+  readonly updatedAt: string;
+}
+
+export interface AgenCPortalMobileSessionCheckIn {
+  readonly sessionId: string;
+  readonly agentId: string | null;
+  readonly title: string;
+  readonly status: AgenCPortalSessionStatus;
+  readonly needsAttention: boolean;
+  readonly updatedAt: string;
+}
+
+export interface AgenCPortalMobileConnectionState {
+  readonly status: AgenCPortalConnectionStatus;
+  readonly initialized: boolean;
+}
+
+export interface AgenCPortalMobileAuthState {
+  readonly authenticated: boolean;
+}
+
+export interface AgenCPortalMobileStatusTruncation {
+  readonly agents: boolean;
+  readonly sessions: boolean;
+}
+
+export interface AgenCPortalMobileStatusSnapshot {
+  readonly protocolVersion: typeof AGENC_PORTAL_PROTOCOL_VERSION;
+  readonly generatedAt: string;
+  readonly connection: AgenCPortalMobileConnectionState;
+  readonly auth: AgenCPortalMobileAuthState;
+  readonly counts: AgenCPortalMobileStatusCounts;
+  readonly agents: readonly AgenCPortalMobileAgentCheckIn[];
+  readonly sessions: readonly AgenCPortalMobileSessionCheckIn[];
+  readonly truncated: AgenCPortalMobileStatusTruncation;
+}
+
+export interface AgenCPortalMobileStatusOptions {
+  readonly now?: string;
+  readonly maxAgents?: number;
+  readonly maxSessions?: number;
+}
+
+const AGENC_PORTAL_MOBILE_DEFAULT_LIMIT = 5;
+const AGENC_PORTAL_MOBILE_GENERATED_AT_FALLBACK =
+  "1970-01-01T00:00:00.000Z";
+
+function createAgentStatusCounts(): Record<AgenCPortalAgentStatus, number> {
+  return {
+    idle: 0,
+    running: 0,
+    stopping: 0,
+    stopped: 0,
+    error: 0,
+  };
+}
+
+function createSessionStatusCounts(): Record<AgenCPortalSessionStatus, number> {
+  return {
+    idle: 0,
+    running: 0,
+    waiting: 0,
+    stopped: 0,
+  };
+}
+
+function normalizeMobileLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return AGENC_PORTAL_MOBILE_DEFAULT_LIMIT;
+  }
+  return Math.max(0, Math.floor(value));
+}
+
+function compareUpdatedAtDescThenId(
+  leftUpdatedAt: string,
+  leftId: string,
+  rightUpdatedAt: string,
+  rightId: string,
+): number {
+  const leftTime = Date.parse(leftUpdatedAt);
+  const rightTime = Date.parse(rightUpdatedAt);
+  const normalizedLeftTime = Number.isFinite(leftTime) ? leftTime : 0;
+  const normalizedRightTime = Number.isFinite(rightTime) ? rightTime : 0;
+  if (normalizedLeftTime !== normalizedRightTime) {
+    return normalizedRightTime - normalizedLeftTime;
+  }
+  return leftId.localeCompare(rightId);
+}
+
+function mobileSessionNeedsAttention(
+  session: AgenCPortalSessionSummary | null,
+): boolean {
+  return session?.status === "waiting";
+}
+
+function mobileAgentNeedsAttention(
+  agent: AgenCPortalAgentSummary,
+  activeSession: AgenCPortalSessionSummary | null,
+): boolean {
+  return (
+    agent.status === "error" ||
+    mobileSessionNeedsAttention(activeSession)
+  );
+}
+
+function collectMobileAgents(
+  snapshot: AgenCPortalDashboardSnapshot,
+): AgenCPortalAgentSummary[] {
+  const agentsById = new Map<string, AgenCPortalAgentSummary>();
+  for (const agent of snapshot.agents) {
+    agentsById.set(agent.agentId, agent);
+  }
+  for (const agent of snapshot.backgroundAgents.agents) {
+    if (!agentsById.has(agent.agentId)) {
+      agentsById.set(agent.agentId, agent);
+    }
+  }
+  return [...agentsById.values()];
+}
+
+export function createAgenCPortalMobileStatusSnapshot(
+  snapshot: AgenCPortalDashboardSnapshot,
+  options: AgenCPortalMobileStatusOptions = {},
+): AgenCPortalMobileStatusSnapshot {
+  const maxAgents = normalizeMobileLimit(options.maxAgents);
+  const maxSessions = normalizeMobileLimit(options.maxSessions);
+  const sessionsById = new Map(
+    snapshot.sessions.map((session) => [session.sessionId, session]),
+  );
+  const agentStatusCounts = createAgentStatusCounts();
+  const sessionStatusCounts = createSessionStatusCounts();
+  const sourceAgents = collectMobileAgents(snapshot);
+
+  let attentionAgents = 0;
+  const agents = sourceAgents
+    .map((agent): AgenCPortalMobileAgentCheckIn => {
+      const activeSession =
+        agent.activeSessionId !== null
+          ? sessionsById.get(agent.activeSessionId) ?? null
+          : null;
+      const needsAttention = mobileAgentNeedsAttention(agent, activeSession);
+      agentStatusCounts[agent.status] += 1;
+      if (needsAttention) {
+        attentionAgents += 1;
+      }
+      return {
+        agentId: agent.agentId,
+        objective: agent.objective,
+        status: agent.status,
+        activeSessionId: agent.activeSessionId,
+        sessionTitle: activeSession?.title ?? null,
+        needsAttention,
+        updatedAt: agent.updatedAt,
+      };
+    })
+    .sort((left, right) =>
+      compareUpdatedAtDescThenId(
+        left.updatedAt,
+        left.agentId,
+        right.updatedAt,
+        right.agentId,
+      ),
+    );
+
+  let attentionSessions = 0;
+  const sessions = snapshot.sessions
+    .map((session): AgenCPortalMobileSessionCheckIn => {
+      const needsAttention = mobileSessionNeedsAttention(session);
+      sessionStatusCounts[session.status] += 1;
+      if (needsAttention) {
+        attentionSessions += 1;
+      }
+      return {
+        sessionId: session.sessionId,
+        agentId: session.agentId,
+        title: session.title,
+        status: session.status,
+        needsAttention,
+        updatedAt: session.updatedAt,
+      };
+    })
+    .sort((left, right) =>
+      compareUpdatedAtDescThenId(
+        left.updatedAt,
+        left.sessionId,
+        right.updatedAt,
+        right.sessionId,
+      ),
+    );
+
+  return {
+    protocolVersion: AGENC_PORTAL_PROTOCOL_VERSION,
+    generatedAt:
+      options.now ??
+      snapshot.connectionState.updatedAt ??
+      AGENC_PORTAL_MOBILE_GENERATED_AT_FALLBACK,
+    connection: {
+      status: snapshot.connectionState.status,
+      initialized: snapshot.connectionState.initialized,
+    },
+    auth: {
+      authenticated: snapshot.auth.authenticated,
+    },
+    counts: {
+      totalAgents: sourceAgents.length,
+      totalSessions: snapshot.sessions.length,
+      attentionAgents,
+      attentionSessions,
+      agents: agentStatusCounts,
+      sessions: sessionStatusCounts,
+    },
+    agents: agents.slice(0, maxAgents),
+    sessions: sessions.slice(0, maxSessions),
+    truncated: {
+      agents: agents.length > maxAgents,
+      sessions: sessions.length > maxSessions,
+    },
+  };
 }
 
 export function isAgenCPortalMethod(
