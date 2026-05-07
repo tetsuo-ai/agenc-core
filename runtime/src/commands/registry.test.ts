@@ -171,6 +171,37 @@ describe("CommandRegistry — fromCommands()", () => {
   });
 });
 
+describe("CommandRegistry — dynamic command replacement", () => {
+  it("replaces one dynamic source without rebuilding the registry", () => {
+    const reg = CommandRegistry.fromCommands([mkCmd("help")]);
+    const first = mkCmd("sample:hello", ["sample:hi"]);
+    const second = mkCmd("sample:bye");
+
+    reg.replaceDynamicCommands("plugins", [first]);
+    expect(reg.find("sample:hello")).toBe(first);
+    expect(reg.find("sample:hi")).toBe(first);
+    expect(reg.has("help")).toBe(true);
+
+    reg.replaceDynamicCommands("plugins", [second]);
+    expect(reg.find("sample:hello")).toBeUndefined();
+    expect(reg.find("sample:hi")).toBeUndefined();
+    expect(reg.find("sample:bye")).toBe(second);
+    expect(reg.has("help")).toBe(true);
+  });
+
+  it("keeps the previous dynamic source when replacement collides", () => {
+    const reg = CommandRegistry.fromCommands([mkCmd("help")]);
+    const first = mkCmd("sample:hello");
+    reg.replaceDynamicCommands("plugins", [first]);
+
+    expect(() =>
+      reg.replaceDynamicCommands("plugins", [mkCmd("help")]),
+    ).toThrow(/duplicate command name/i);
+    expect(reg.find("sample:hello")).toBe(first);
+    expect(reg.find("help")).toBeDefined();
+  });
+});
+
 describe("buildDefaultRegistry()", () => {
   it("includes help and status", () => {
     const reg = buildDefaultRegistry();

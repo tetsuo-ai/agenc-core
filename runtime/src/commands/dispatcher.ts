@@ -239,6 +239,7 @@ export async function dispatchSlashCommand(
   const invocationCtx: SlashCommandContext = {
     ...ctx,
     argsRaw: parsed.argsRaw,
+    commandRegistry: registry,
   };
 
   let result: SlashCommandResult;

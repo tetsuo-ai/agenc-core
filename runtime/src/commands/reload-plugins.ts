@@ -5,6 +5,7 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import type { AgenCConfig, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
+import type { Command } from "../commands.js";
 import { refreshActivePlugins } from "../plugins/registration/manager.js";
 
 export interface ActivePluginRefreshResult {
@@ -17,6 +18,8 @@ export interface ActivePluginRefreshResult {
   readonly lsp_count: number;
   readonly output_style_count: number;
   readonly error_count: number;
+  readonly commands?: readonly Command[];
+  readonly skills?: readonly Command[];
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
   readonly lsp_servers?: Readonly<Record<string, LspServerConfigInput>>;
 }
@@ -108,6 +111,83 @@ async function defaultActivePluginRefresher(
   return refreshActivePlugins(ctx);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function promptBlockText(block: unknown): string | null {
+  if (typeof block === "string") return block;
+  if (!isRecord(block)) return null;
+  if (block.type === "text" && typeof block.text === "string") {
+    return block.text;
+  }
+  return null;
+}
+
+function promptContentFromBlocks(blocks: unknown): string {
+  if (!Array.isArray(blocks)) {
+    return promptBlockText(blocks) ?? "";
+  }
+  return blocks
+    .map(promptBlockText)
+    .filter((text): text is string => text !== null && text.length > 0)
+    .join("\n");
+}
+
+function pluginCommandToSlashCommand(command: Command): SlashCommand | null {
+  if (command.type !== "prompt") return null;
+  return {
+    name: command.name,
+    description: command.description,
+    ...(command.aliases ? { aliases: [...command.aliases] } : {}),
+    ...(command.isEnabled ? { isEnabled: command.isEnabled } : {}),
+    ...(command.userInvocable !== undefined
+      ? { userInvocable: command.userInvocable }
+      : {}),
+    ...(command.isSensitive !== undefined ? { sensitive: command.isSensitive } : {}),
+    execute: (ctx) =>
+      safeExecute(async () => {
+        if (typeof command.getPromptForCommand !== "function") {
+          return {
+            kind: "error",
+            message: `/${command.name} cannot render prompt content.`,
+          };
+        }
+        const blocks = await command.getPromptForCommand(ctx.argsRaw, {
+          sessionId: ctx.session.conversationId,
+          cwd: ctx.cwd,
+          home: ctx.home,
+          agencHome: ctx.agencHome,
+          session: ctx.session,
+          configStore: ctx.configStore,
+        });
+        const content = promptContentFromBlocks(blocks);
+        if (content.length === 0) {
+          return {
+            kind: "error",
+            message: `/${command.name} produced no prompt content.`,
+          };
+        }
+        return {
+          kind: "prompt",
+          content: `<command-name>${command.name}</command-name>\n${content}`,
+        };
+      }),
+  };
+}
+
+function refreshDispatcherPluginCommands(
+  ctx: SlashCommandContext,
+  result: ActivePluginRefreshResult,
+): void {
+  const registry = ctx.commandRegistry;
+  if (typeof registry?.replaceDynamicCommands !== "function") return;
+  const commands = [...(result.commands ?? []), ...(result.skills ?? [])]
+    .map(pluginCommandToSlashCommand)
+    .filter((command): command is SlashCommand => command !== null);
+  registry.replaceDynamicCommands("plugins", commands);
+}
+
 function plural(count: number, label: string): string {
   return `${count} ${label}${count === 1 ? "" : "s"}`;
 }
@@ -135,6 +215,7 @@ export async function reloadPluginSurfaces(
   await refreshRemoteUserSettingsIfNeeded();
   await clearRuntimeCommandCaches(ctx);
   const result = await (activePluginRefresherForTesting ?? defaultActivePluginRefresher)(ctx);
+  refreshDispatcherPluginCommands(ctx, result);
 
   const configStore = ctx.configStore ?? ctx.session.services.configStore;
   const config = configStore?.current?.();
