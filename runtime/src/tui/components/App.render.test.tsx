@@ -34,6 +34,7 @@ const providerProbe = {
   }>,
   globalKeybindingProps: [] as Array<Record<string, unknown>>,
   messageProps: [] as Array<Record<string, unknown>>,
+  messageSelectorProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
     clearBuffer(): void;
     resetHistory(): void;
@@ -290,12 +291,29 @@ vi.mock("./Messages.js", async () => {
   };
 });
 
+vi.mock("./MessageSelector.js", async () => {
+  const React = await import("react");
+  return {
+    MessageSelector: (props: Record<string, unknown>) => {
+      providerProbe.messageSelectorProps.push(props);
+      const messages = props.messages as readonly unknown[];
+      return React.createElement(
+        "ink-text",
+        null,
+        `message-selector:${messages.length}`,
+      );
+    },
+  };
+});
+
 vi.mock("./PromptInput/PromptInput.js", async () => {
   const React = await import("react");
   return {
     default: ({
       input,
       onSubmit,
+      onShowMessageSelector,
+      onMessageActionsEnter,
       vimMode,
       setVimMode,
     }: {
@@ -305,11 +323,19 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         resetHistory(): void;
         setCursorOffset(offset: number): void;
       }) => Promise<void>;
+      onShowMessageSelector?: () => void;
+      onMessageActionsEnter?: () => void;
       vimMode?: unknown;
       setVimMode?: unknown;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
-      providerProbe.promptProps.push({ input, vimMode, setVimMode });
+      providerProbe.promptProps.push({
+        input,
+        onShowMessageSelector,
+        onMessageActionsEnter,
+        vimMode,
+        setVimMode,
+      });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
   };
@@ -570,6 +596,65 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             verbose: true,
             showAllInTranscript: true,
             hidePastThinking: true,
+          }),
+        );
+      },
+    );
+  });
+
+  test("opens the message selector from PromptInput callbacks", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    providerProbe.messageProps.length = 0;
+    providerProbe.messageSelectorProps.length = 0;
+    providerProbe.promptProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1);
+        expect(promptProps).toEqual(
+          expect.objectContaining({
+            onShowMessageSelector: expect.any(Function),
+            onMessageActionsEnter: expect.any(Function),
+          }),
+        );
+
+        (promptProps!.onMessageActionsEnter as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.messageSelectorProps.at(-1)).toEqual(
+          expect.objectContaining({
+            messages: [],
+            onRestoreMessage: expect.any(Function),
+            onClose: expect.any(Function),
+          }),
+        );
+        expect(providerProbe.messageProps.at(-1)).toEqual(
+          expect.objectContaining({
+            isMessageSelectorVisible: true,
+          }),
+        );
+
+        const selectorProps = providerProbe.messageSelectorProps.at(-1)!;
+        await (selectorProps.onRestoreMessage as (message: unknown) => Promise<void>)({
+          type: "user",
+          uuid: "user-message",
+          message: {
+            role: "user",
+            content: "revise this",
+          },
+        });
+        (selectorProps.onClose as () => void)();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.promptProps.at(-1)).toEqual(
+          expect.objectContaining({
+            input: "revise this",
           }),
         );
       },
