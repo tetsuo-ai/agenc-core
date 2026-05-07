@@ -17,7 +17,11 @@ import { readLastConsolidatedAt } from '../../services/autoDream/consolidationLo
 import { useAppState } from '../../state/AppState.js';
 import { getAgentMemoryDir } from '../../tools/AgentTool/agentMemory.js';
 import { openPath } from '../../utils/browser.js';
-import { getMemoryFiles, type MemoryFileInfo } from '../../memory/agencmd.js';
+import {
+  getMemoryFiles,
+  getProjectMemoryPathForSelector,
+  type MemoryFileInfo,
+} from '../../memory/project-memory.js';
 import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatRelativeTimeAgo } from '../../utils/format.js';
@@ -25,7 +29,6 @@ import { projectIsInGitRepo } from '../../utils/memory/versions.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { Select } from '../CustomSelect/index.js';
 import { ListItem } from '../design-system/ListItem.js';
-import { getProjectMemoryPathForSelector } from './memoryFileSelectorPaths.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null;
