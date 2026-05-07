@@ -135,6 +135,42 @@ describe("AgenC daemon AuthBackend integration", () => {
     expect(calls).toEqual([{ daemonConnection }]);
   });
 
+  it("keeps pre-marked daemon socket identity during initialize", async () => {
+    const peerConnection: AuthDaemonSocketIdentity = {
+      transport: "daemon",
+      verifiedBy: "peerUid",
+      peerUid: 1000,
+    };
+    let initializeAuthCalls = 0;
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      initializeAuthenticator: () => {
+        initializeAuthCalls += 1;
+        return {
+          transport: "daemon",
+          verifiedBy: "cookie",
+          cookie: "verified",
+          peerUid: null,
+        };
+      },
+      authBackend: makeAuthBackend([]),
+    });
+    const connection = dispatcher.createConnection();
+    connection.markDaemonSocketIdentity(peerConnection);
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "init",
+        method: "initialize",
+        params: { protocol: { version: "1.0.0" } },
+      }),
+    ).resolves.toMatchObject({ result: { type: "initialized" } });
+
+    expect(initializeAuthCalls).toBe(0);
+    expect(connection.daemonSocketIdentity).toBe(peerConnection);
+  });
+
   it("fails auth methods explicitly when no AuthBackend is configured", async () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager(),

@@ -1,8 +1,9 @@
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
@@ -10,9 +11,17 @@ import {
   AgenCUnixSocketServer,
   defaultAgenCDaemonSocketPath,
   prepareAgenCUnixSocketPath,
+  resolveAgenCPrivateUnixSocketOwnerUid,
 } from "./transport/unix-socket.js";
+import { compileAndLoadAgenCNativePeerCredentialBinding } from "./transport/peer-credentials.js";
 
 const itUnix = process.platform === "win32" ? it.skip : it;
+const itLinuxNative =
+  process.platform === "linux" &&
+  typeof process.getuid === "function" &&
+  hasNativePeerCredentialBuildInputs()
+    ? it
+    : it.skip;
 
 function nextChunk(socket: NodeJS.ReadableStream): Promise<string> {
   return new Promise((resolve) => {
@@ -34,6 +43,19 @@ async function waitForSocketClose(socket: Socket): Promise<"closed" | "open"> {
 
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-unix-socket-"));
+}
+
+function hasNativePeerCredentialBuildInputs(): boolean {
+  const includeCandidates = [
+    "/usr/include/node/node_api.h",
+    resolve(dirname(process.execPath), "..", "include", "node", "node_api.h"),
+  ];
+  if (!includeCandidates.some((candidate) => existsSync(candidate))) {
+    return false;
+  }
+  return spawnSync("cc", ["--version"], {
+    stdio: "ignore",
+  }).status === 0;
 }
 
 describe("AgenC Unix socket transport", () => {
@@ -65,6 +87,12 @@ describe("AgenC Unix socket transport", () => {
     const server = new AgenCUnixSocketServer({
       socketPath,
       onMessage: async (message, connection) => {
+        const currentUid =
+          typeof process.getuid === "function" ? process.getuid() : null;
+        if (connection.peerUid !== null) {
+          expect(connection.peerUid).toBe(currentUid);
+        }
+        expect(connection.privateSocketOwnerUid).toBe(currentUid);
         expect(message).toEqual({
           jsonrpc: JSON_RPC_VERSION,
           id: 1,
@@ -81,6 +109,9 @@ describe("AgenC Unix socket transport", () => {
 
     await server.listen();
     expect(existsSync(socketPath)).toBe(true);
+    await expect(resolveAgenCPrivateUnixSocketOwnerUid(socketPath)).resolves.toBe(
+      typeof process.getuid === "function" ? process.getuid() : null,
+    );
 
     const client = createConnection(socketPath);
     await once(client, "connect");
@@ -96,6 +127,66 @@ describe("AgenC Unix socket transport", () => {
     await server.close();
     expect(existsSync(socketPath)).toBe(false);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  itLinuxNative("loads native SO_PEERCRED from an accepted Unix socket", async () => {
+    const dir = await tempDir();
+    const cacheDir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const binding = compileAndLoadAgenCNativePeerCredentialBinding({
+      cacheDir,
+      platform: "linux",
+    });
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      allowRuntimeNativePeerCredentialBuild: false,
+      nativePeerCredentialBinding: binding,
+      onMessage: async (_message, connection) => {
+        expect(connection.peerUid).toBe(process.getuid?.());
+        await connection.send({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "native-peer",
+          result: { accepted: true },
+        });
+      },
+    });
+
+    await server.listen();
+    try {
+      const client = createConnection(socketPath);
+      await once(client, "connect");
+      client.write(
+        '{"jsonrpc":"2.0","id":"native-peer","method":"agent.list","params":{}}\n',
+      );
+      await expect(nextChunk(client)).resolves.toBe(
+        '{"jsonrpc":"2.0","id":"native-peer","result":{"accepted":true}}\n',
+      );
+      client.end();
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+      await rm(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  itUnix("does not use non-private socket ownership as same-user proof", async () => {
+    const dir = await tempDir();
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: () => {},
+    });
+
+    await server.listen();
+    try {
+      await chmod(dir, 0o755);
+      await expect(
+        resolveAgenCPrivateUnixSocketOwnerUid(socketPath),
+      ).resolves.toBeNull();
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   itUnix("authenticates the first socket message before dispatch", async () => {
@@ -147,6 +238,17 @@ describe("AgenC Unix socket transport", () => {
         "CONNECTION_AUTHENTICATION_FAILED",
       );
       await expect(waitForSocketClose(rejected)).resolves.toBe("closed");
+      expect(onMessage).not.toHaveBeenCalled();
+
+      const nonInitialize = createConnection(socketPath);
+      await once(nonInitialize, "connect");
+      nonInitialize.write(
+        '{"jsonrpc":"2.0","id":"not-init","method":"agent.list","params":{"authCookie":"socket-cookie"}}\n',
+      );
+      await expect(nextChunk(nonInitialize)).resolves.toContain(
+        "CONNECTION_AUTHENTICATION_FAILED",
+      );
+      await expect(waitForSocketClose(nonInitialize)).resolves.toBe("closed");
       expect(onMessage).not.toHaveBeenCalled();
 
       const accepted = createConnection(socketPath);

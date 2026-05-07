@@ -322,7 +322,10 @@ export class AgenCDaemonJsonRpcDispatcher {
             serverVersion: AGENC_DAEMON_PROTOCOL_VERSION,
           });
         }
-        if (this.#initializeAuthenticator !== undefined) {
+        if (
+          this.#initializeAuthenticator !== undefined &&
+          connection.daemonSocketIdentity === undefined
+        ) {
           const authResult =
             await this.#initializeAuthenticator(initializeParams);
           if (!authResult) {
