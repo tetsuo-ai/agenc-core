@@ -315,6 +315,30 @@ export function createSessionMcpService(
         config: config as Pick<AgenCConfig, "mcp_servers"> | undefined,
         env: options.env,
       }),
+    reconnectServer:
+      typeof manager.reconnectServer === "function"
+        ? manager.reconnectServer.bind(manager)
+        : undefined,
+    enableServer:
+      typeof manager.enableServer === "function"
+        ? manager.enableServer.bind(manager)
+        : undefined,
+    disableServer:
+      typeof manager.disableServer === "function"
+        ? manager.disableServer.bind(manager)
+        : undefined,
+    addServer:
+      typeof manager.addServer === "function"
+        ? manager.addServer.bind(manager)
+        : undefined,
+    getTools:
+      typeof manager.getTools === "function"
+        ? manager.getTools.bind(manager)
+        : undefined,
+    getToolsByServer:
+      typeof manager.getToolsByServer === "function"
+        ? manager.getToolsByServer.bind(manager)
+        : undefined,
     isConnected:
       typeof manager.isConnected === "function"
         ? manager.isConnected.bind(manager)

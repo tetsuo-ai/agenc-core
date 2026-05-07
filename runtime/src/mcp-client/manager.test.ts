@@ -436,6 +436,135 @@ describe("MCPManager", () => {
     });
   });
 
+  it("failed reconnect leaves the server disconnected", async () => {
+    const initialBridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("client1")
+      .mockRejectedValueOnce(new Error("refused"));
+    mockCreateToolBridge.mockResolvedValueOnce(initialBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    const result = await manager.reconnectServer("srv1");
+
+    expect(result).toEqual({
+      serverName: "srv1",
+      success: false,
+      toolCount: 0,
+      error: "refused",
+    });
+    expect(initialBridge.dispose).toHaveBeenCalledOnce();
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getToolsByServer("srv1")).toEqual([]);
+  });
+
+  it("enables a configured disabled server and connects it", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1", { enabled: false })]);
+    const result = await manager.enableServer("srv1");
+
+    expect(result).toEqual({
+      serverName: "srv1",
+      success: true,
+      toolCount: 1,
+    });
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+    expect(manager.getServerConfig("srv1")?.enabled).toBe(true);
+  });
+
+  it("disables a configured server and disposes all live bridges", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    const resourceBridge = makeMockResourceBridge("srv1", [{ uri: "file://a" }]);
+    const promptBridge = makeMockPromptBridge("srv1", [{ name: "prompt" }]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    mockCreateResourceBridge.mockResolvedValueOnce(resourceBridge);
+    mockCreatePromptBridge.mockResolvedValueOnce(promptBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    const result = await manager.disableServer("srv1");
+
+    expect(result).toEqual({
+      serverName: "srv1",
+      success: true,
+      toolCount: 0,
+    });
+    expect(bridge.dispose).toHaveBeenCalledOnce();
+    expect(resourceBridge.dispose).toHaveBeenCalledOnce();
+    expect(promptBridge.dispose).toHaveBeenCalledOnce();
+    expect(manager.getConnectedServers()).toEqual([]);
+    expect(manager.getToolsByServer("srv1")).toEqual([]);
+    expect(manager.getServerConfig("srv1")?.enabled).toBe(false);
+  });
+
+  it("adds a session server and rejects duplicate or invalid names", async () => {
+    const bridge = makeMockBridge("added", ["toolA"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([]);
+    await expect(
+      manager.addServer({ name: "bad name", command: "node", args: [] }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("Invalid MCP server name"),
+    });
+
+    await expect(
+      manager.addServer({ name: "added", command: "node", args: ["server.js"] }),
+    ).resolves.toEqual({
+      serverName: "added",
+      success: true,
+      toolCount: 1,
+    });
+    expect(manager.getServerConfig("added")).toMatchObject({
+      name: "added",
+      command: "node",
+      args: ["server.js"],
+    });
+    await expect(
+      manager.addServer({ name: "added", command: "node", args: [] }),
+    ).resolves.toMatchObject({
+      success: false,
+      error: 'MCP server "added" is already configured.',
+    });
+  });
+
+  it("rolls back a failed session add so the server name can be retried", async () => {
+    const bridge = makeMockBridge("added", ["toolA"]);
+    mockCreateMCPConnection
+      .mockRejectedValueOnce(new Error("no such command"))
+      .mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([]);
+    await expect(
+      manager.addServer({ name: "added", command: "missing", args: [] }),
+    ).resolves.toEqual({
+      serverName: "added",
+      success: false,
+      toolCount: 0,
+      error: "no such command",
+    });
+    expect(manager.getServerConfig("added")).toBeUndefined();
+
+    await expect(
+      manager.addServer({ name: "added", command: "node", args: ["server.js"] }),
+    ).resolves.toEqual({
+      serverName: "added",
+      success: true,
+      toolCount: 1,
+    });
+    expect(manager.getServerConfig("added")).toMatchObject({
+      name: "added",
+      command: "node",
+    });
+  });
+
   // --------------------------------------------------------------------------
   // T9 D: I-20 (aggregate failure) + I-50 (cancellable) + I-73 (name shadowing)
   // --------------------------------------------------------------------------
