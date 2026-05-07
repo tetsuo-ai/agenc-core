@@ -37,7 +37,8 @@ import { maybePrewarmAgentTaskRegistration } from "../session/agent-task-lifecyc
 import { scheduleProviderStartupPrewarm } from "../session/startup-prewarm.js";
 import type { IndexSnapshot } from "../session/session-store.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
-import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import type { LLMContentPart } from "../llm/types.js";
+import { responseItemToLlmMessage } from "../session/message-history-conversion.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import {
   AGENC_STARTUP_PREWARM_DURATION_METRIC,
@@ -49,11 +50,6 @@ import {
   type RolloutReconstruction,
 } from "../session/rollout-reconstruction.js";
 import type { Session, SessionState } from "../session/session.js";
-
-type RolloutContentPart = Extract<
-  ResponseItem["content"],
-  ReadonlyArray<unknown>
->[number];
 
 export type ConversationPrewarmState =
   | "not_started"
@@ -921,72 +917,6 @@ function cloneResponseHistory(
   }));
 }
 
-function cloneLlmHistory(history: ReadonlyArray<ResponseItem>): LLMMessage[] {
-  return history.map((message) => ({
-    role: message.role,
-    content: cloneLlmContent(message.content),
-    ...(message.phase === "commentary" || message.phase === "final_answer"
-      ? { phase: message.phase }
-      : {}),
-    ...(message.toolCallId !== undefined
-      ? { toolCallId: message.toolCallId }
-      : {}),
-    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
-  }));
-}
-
-function cloneDocumentPartFromRollout(
-  part: RolloutContentPart,
-): Extract<LLMContentPart, { type: "document" }> | null {
-  if (part.type !== "document") return null;
-  const source =
-    part.source && typeof part.source === "object"
-      ? (part.source as Record<string, unknown>)
-      : null;
-  if (
-    source?.type !== "base64" ||
-    source.media_type !== "application/pdf" ||
-    typeof source.data !== "string"
-  ) {
-    return null;
-  }
-  return {
-    type: "document",
-    source: {
-      type: "base64",
-      media_type: "application/pdf",
-      data: source.data,
-    },
-    ...(typeof part.title === "string" ? { title: part.title } : {}),
-    ...(typeof part.filename === "string" ? { filename: part.filename } : {}),
-    ...(typeof part.fallbackText === "string"
-      ? { fallbackText: part.fallbackText }
-      : {}),
-    ...(typeof part.fallbackTextTruncated === "boolean"
-      ? { fallbackTextTruncated: part.fallbackTextTruncated }
-      : {}),
-    ...(typeof part.fallbackTextError === "string"
-      ? { fallbackTextError: part.fallbackTextError }
-      : {}),
-  };
-}
-
-function cloneLlmContent(content: ResponseItem["content"]): LLMMessage["content"] {
-  if (typeof content === "string") return content;
-  return content
-    .filter(
-      (part): part is LLMContentPart =>
-        (part.type === "text" && typeof part.text === "string") ||
-        (part.type === "image_url" &&
-          typeof (part as { image_url?: { url?: unknown } }).image_url?.url ===
-            "string") ||
-        cloneDocumentPartFromRollout(part) !== null,
-    )
-    .map((part) => {
-      if (part.type === "text") return { type: "text", text: part.text };
-      if (part.type === "document") {
-        return cloneDocumentPartFromRollout(part) ?? part;
-      }
-      return { type: "image_url", image_url: { url: part.image_url.url } };
-    });
+function cloneLlmHistory(history: ReadonlyArray<ResponseItem>) {
+  return history.map(responseItemToLlmMessage);
 }

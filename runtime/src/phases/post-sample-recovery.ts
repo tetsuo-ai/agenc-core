@@ -69,7 +69,11 @@ type CollapseRuntimeMessage = Omit<
   readonly originalRole?: LLMMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
-  readonly toolCalls?: readonly { readonly id: string; readonly name: string }[];
+  readonly toolCalls?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly arguments?: string;
+  }[];
   readonly phase?: string;
   readonly type?: string;
   readonly message?: {
@@ -161,6 +165,7 @@ function toCollapseRuntimeMessages(
             toolCalls: message.toolCalls.map((call) => ({
               id: call.id,
               name: call.name,
+              arguments: call.arguments,
             })),
           }
         : {}),

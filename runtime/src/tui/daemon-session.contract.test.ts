@@ -112,9 +112,12 @@ import {
 } from "./components/App.js";
 import { installCompactProgressControls } from "./session-types.js";
 import type {
+  AgenCDaemonInternalMethod,
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
   JsonObject,
+  SessionPartialCompactFromMessageResult,
+  SessionRewindConversationToMessageResult,
 } from "../app-server/protocol/index.js";
 import { JSON_RPC_VERSION } from "../app-server/protocol/index.js";
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
@@ -170,8 +173,9 @@ describe("compact progress controls", () => {
 
 function createClient(): AgenCDaemonTuiClient & {
   readonly requests: Array<{
-    readonly method: AgenCDaemonMethod;
+    readonly method: AgenCDaemonMethod | AgenCDaemonInternalMethod;
     readonly params?: JsonObject;
+    readonly signal?: AbortSignal;
   }>;
   connectionState: AgenCDaemonConnectionState | null;
   emitConnection(state: AgenCDaemonConnectionState): void;
@@ -184,18 +188,42 @@ function createClient(): AgenCDaemonTuiClient & {
     (state: AgenCDaemonConnectionState) => void
   >();
   const requests: Array<{
-    readonly method: AgenCDaemonMethod;
+    readonly method: AgenCDaemonMethod | AgenCDaemonInternalMethod;
     readonly params?: JsonObject;
+    readonly signal?: AbortSignal;
   }> = [];
   return {
     requests,
     connectionState: null,
-    async request<Method extends AgenCDaemonMethod>(
-      method: Method,
+    async request(
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
       params?: JsonObject,
-    ): Promise<AgenCDaemonResultByMethod[Method]> {
-      requests.push({ method, params });
-      return {} as AgenCDaemonResultByMethod[Method];
+      options?: { readonly signal?: AbortSignal },
+    ): Promise<
+      | AgenCDaemonResultByMethod[AgenCDaemonMethod]
+      | SessionPartialCompactFromMessageResult
+      | SessionRewindConversationToMessageResult
+    > {
+      requests.push({
+        method,
+        params,
+        ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+      });
+      if (method === "session.partialCompactFromMessage") {
+        return {
+          sessionId: "session_1",
+          ok: true,
+          eventAlreadyEmitted: true,
+        };
+      }
+      if (method === "session.rewindConversationToMessage") {
+        return {
+          sessionId: "session_1",
+          ok: true,
+          eventAlreadyEmitted: true,
+        };
+      }
+      return {} as AgenCDaemonResultByMethod[AgenCDaemonMethod];
     },
     subscribeToSessionEvents: (sessionId, cb) => {
       let sessionListeners = listeners.get(sessionId);
@@ -312,6 +340,7 @@ describe("AgenC TUI daemon session adapter", () => {
 
   it("sends TUI user input through message.stream", async () => {
     const client = createClient();
+    const abortController = new AbortController();
     const session = createDaemonTuiSession({
       baseSession: createBaseSession(),
       client,
@@ -345,6 +374,73 @@ describe("AgenC TUI daemon session adapter", () => {
       {
         method: "session.clear",
         params: { sessionId: "session_1" },
+      },
+    ]);
+  });
+
+  it("partially compacts daemon-owned session history through the internal TUI RPC", async () => {
+    const client = createClient();
+    const abortController = new AbortController();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      session.partialCompactFromMessage({
+        messageOrdinal: 2,
+        direction: "up_to",
+        feedback: "keep decisions",
+        signal: abortController.signal,
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "session_1",
+      ok: true,
+      eventAlreadyEmitted: true,
+    });
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.partialCompactFromMessage",
+        params: {
+          sessionId: "session_1",
+          messageOrdinal: 2,
+          direction: "up_to",
+          feedback: "keep decisions",
+        },
+        signal: abortController.signal,
+      },
+    ]);
+  });
+
+  it("rewinds daemon-owned session history through the internal TUI RPC", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(
+      session.rewindConversationToMessage({
+        messageOrdinal: 1,
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "session_1",
+      ok: true,
+      eventAlreadyEmitted: true,
+    });
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.rewindConversationToMessage",
+        params: {
+          sessionId: "session_1",
+          messageOrdinal: 1,
+        },
       },
     ]);
   });

@@ -75,6 +75,18 @@ export const AGENC_DAEMON_METHODS = [
 
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 
+export const AGENC_DAEMON_INTERNAL_METHODS = [
+  "session.partialCompactFromMessage",
+  "session.rewindConversationToMessage",
+] as const;
+
+export type AgenCDaemonInternalMethod =
+  (typeof AGENC_DAEMON_INTERNAL_METHODS)[number];
+
+export type AgenCDaemonKnownMethod =
+  | AgenCDaemonMethod
+  | AgenCDaemonInternalMethod;
+
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "commandExec.outputDelta",
   "event.message_chunk",
@@ -107,6 +119,16 @@ export interface AgenCDaemonMethodSpec<
   readonly description: string;
 }
 
+export interface AgenCDaemonInternalMethodSpec<
+  Method extends AgenCDaemonInternalMethod = AgenCDaemonInternalMethod,
+> {
+  readonly method: Method;
+  readonly direction: "client-to-server";
+  readonly params: "required";
+  readonly result: "object";
+  readonly description: string;
+}
+
 export interface AgenCDaemonNotificationSpec<
   Method extends AgenCDaemonNotificationMethod = AgenCDaemonNotificationMethod,
 > {
@@ -119,6 +141,14 @@ export interface AgenCDaemonNotificationSpec<
 function defineMethodSpecs<
   const Spec extends {
     readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
+  },
+>(spec: Spec): Spec {
+  return spec;
+}
+
+function defineInternalMethodSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonInternalMethod]: AgenCDaemonInternalMethodSpec<Method>;
   },
 >(spec: Spec): Spec {
   return spec;
@@ -387,6 +417,25 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
   },
 });
 
+export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
+  "session.partialCompactFromMessage": {
+    method: "session.partialCompactFromMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to summarize a selected range of daemon-owned session history.",
+  },
+  "session.rewindConversationToMessage": {
+    method: "session.rewindConversationToMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to rewind daemon-owned session history before a selected prompt.",
+  },
+});
+
 export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
   "commandExec.outputDelta": {
     method: "commandExec.outputDelta",
@@ -494,6 +543,18 @@ export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
   return Object.prototype.hasOwnProperty.call(AGENC_DAEMON_METHOD_SPECS, value);
 }
 
+export function isAgenCDaemonKnownMethod(
+  value: string,
+): value is AgenCDaemonKnownMethod {
+  return (
+    isAgenCDaemonMethod(value) ||
+    Object.prototype.hasOwnProperty.call(
+      AGENC_DAEMON_INTERNAL_METHOD_SPECS,
+      value,
+    )
+  );
+}
+
 export function isAgenCDaemonNotificationMethod(
   value: string,
 ): value is AgenCDaemonNotificationMethod {
@@ -590,6 +651,18 @@ export interface SessionTerminateParams extends JsonObject {
 
 export interface SessionClearParams extends JsonObject {
   readonly sessionId: string;
+}
+
+export interface SessionPartialCompactFromMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+  readonly direction: "from" | "up_to";
+  readonly feedback?: string;
+}
+
+export interface SessionRewindConversationToMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
 }
 
 export type MessageContentBlock =
@@ -1217,6 +1290,24 @@ export interface SessionClearResult extends JsonObject {
   readonly clearedAt: string;
 }
 
+export interface SessionPartialCompactFromMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly event?: JsonObject;
+}
+
+export interface SessionRewindConversationToMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly event?: JsonObject;
+}
+
 export interface MessageSendResult extends JsonObject {
   readonly messageId: string;
   readonly acceptedAt: string;
@@ -1374,6 +1465,15 @@ export interface AgenCDaemonResultByMethod {
   readonly "auth.whoami": AuthWhoamiResult;
   readonly "auth.logout": AuthLogoutResult;
 }
+
+export interface AgenCDaemonInternalResultByMethod {
+  readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
+  readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
+}
+
+export type AgenCDaemonKnownResultByMethod =
+  AgenCDaemonResultByMethod &
+  AgenCDaemonInternalResultByMethod;
 
 export type AgenCDaemonSuccessResponse<
   Method extends AgenCDaemonMethod = AgenCDaemonMethod,

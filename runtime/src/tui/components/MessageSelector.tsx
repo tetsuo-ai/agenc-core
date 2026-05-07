@@ -18,6 +18,8 @@ import { stripDisplayTags } from '../../utils/displayTags.js'; // upstream-impor
 import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type OptionWithDescription, Select } from './CustomSelect/select';
 import { Spinner } from './spinner/Spinner.js';
+import { selectableUserMessagesFilter } from './message-selector-filter.js';
+export { selectableUserMessagesFilter } from './message-selector-filter.js';
 function isTextBlock(block: ContentBlockParam): block is TextBlockParam {
   return block.type === 'text';
 }
@@ -25,7 +27,7 @@ import * as path from 'path';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { FileEditOutput } from '../../tools/FileEditTool/types.js';
 import type { Output as FileWriteToolOutput } from '../../tools/FileWriteTool/FileWriteTool.js';
-import { BASH_STDERR_TAG, BASH_STDOUT_TAG, COMMAND_MESSAGE_TAG, LOCAL_COMMAND_STDERR_TAG, LOCAL_COMMAND_STDOUT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../constants/xml'; // upstream-import: keep target is owned by another Z-PURGE item
+import { COMMAND_MESSAGE_TAG } from '../../constants/xml'; // upstream-import: keep target is owned by another Z-PURGE item
 import { count } from '../../utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatRelativeTimeAgo, truncate } from '../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Theme } from '../../utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -120,14 +122,12 @@ export function MessageSelector({
       ...summarizeInputProps,
       onChange: setSummarizeFromFeedback
     });
-    if ("external" === 'ant') {
-      baseOptions.push({
-        value: 'summarize_up_to',
-        label: 'Summarize up to here',
-        ...summarizeInputProps,
-        onChange: setSummarizeUpToFeedback
-      });
-    }
+    baseOptions.push({
+      value: 'summarize_up_to',
+      label: 'Summarize up to here',
+      ...summarizeInputProps,
+      onChange: setSummarizeUpToFeedback
+    });
     baseOptions.push({
       value: 'nevermind',
       label: 'Never mind'
@@ -766,33 +766,6 @@ function computeDiffStatsBetweenMessages(messages: Message[], fromMessageId: UUI
     deletions
   };
 }
-export function selectableUserMessagesFilter(message: Message): message is UserMessage {
-  if (message.type !== 'user') {
-    return false;
-  }
-  if (Array.isArray(message.message.content) && message.message.content[0]?.type === 'tool_result') {
-    return false;
-  }
-  if (isSyntheticMessage(message)) {
-    return false;
-  }
-  if (message.isMeta) {
-    return false;
-  }
-  if (message.isCompactSummary || message.isVisibleInTranscriptOnly) {
-    return false;
-  }
-  const content = message.message.content;
-  const lastBlock = typeof content === 'string' ? null : content[content.length - 1];
-  const messageText = typeof content === 'string' ? content.trim() : lastBlock && isTextBlock(lastBlock) ? lastBlock.text.trim() : '';
-
-  // Filter out non-user-authored messages (command outputs, task notifications, ticks).
-  if (messageText.indexOf(`<${LOCAL_COMMAND_STDOUT_TAG}>`) !== -1 || messageText.indexOf(`<${LOCAL_COMMAND_STDERR_TAG}>`) !== -1 || messageText.indexOf(`<${BASH_STDOUT_TAG}>`) !== -1 || messageText.indexOf(`<${BASH_STDERR_TAG}>`) !== -1 || messageText.indexOf(`<${TASK_NOTIFICATION_TAG}>`) !== -1 || messageText.indexOf(`<${TICK_TAG}>`) !== -1 || messageText.indexOf(`<${TEAMMATE_MESSAGE_TAG}`) !== -1) {
-    return false;
-  }
-  return true;
-}
-
 /**
  * Checks if all messages after the given index are synthetic (interruptions, cancels, etc.)
  * or non-meaningful content. Returns true if there's nothing meaningful to confirm -
