@@ -34,6 +34,8 @@ import type {
   MessageContent,
   PermissionListParams,
   PermissionListResult,
+  SessionClearParams,
+  SessionClearResult,
   SessionSummary,
   ToolApproveParams,
   ToolCancelParams,
@@ -978,6 +980,42 @@ export class AgenCDaemonAgentManager {
       );
     }
     return { requestId: params.requestId, resolved };
+  }
+
+  async clearSessionHistory(
+    params: SessionClearParams,
+  ): Promise<SessionClearResult> {
+    const clearedAt = this.#now();
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.clear requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.clearAgentSession === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.clear requires a background runner",
+      );
+    }
+
+    const session = await this.#sessionManager.getSession(params.sessionId);
+    if (session === null || !isActiveSession(session)) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon session not found or closed: ${params.sessionId}`,
+      );
+    }
+
+    await this.#runner.clearAgentSession(session.agentId, {
+      sessionId: params.sessionId,
+      clearedAt,
+    });
+    return {
+      sessionId: params.sessionId,
+      cleared: true,
+      clearedAt,
+    };
   }
 
   async streamAgentMessage(params: {

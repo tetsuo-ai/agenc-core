@@ -104,6 +104,10 @@ import {
   startAgenCDaemonPromptAgent,
   stopAgenCDaemonPromptAgent,
 } from "../app-server-client/index.js";
+import {
+  emitLocalTuiPhaseEvent,
+  emitLocalTuiSlashResult,
+} from "./tui-local-events.js";
 import type {
   AgentCreateParams,
   AgentStopParams,
@@ -2149,34 +2153,14 @@ type TuiSessionShape = {
   ) => Promise<void>;
   enqueueIdleInput?: (input: unknown) => number;
   subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+  emitPhaseEvent?: (event: PhaseEvent) => void;
+  clearDaemonSession?: () => Promise<void>;
   getInitialTranscriptEvents?: () => readonly unknown[];
 };
 
 type LocalTuiSlashOutcome =
   | { readonly kind: "handled" }
   | { readonly kind: "prompt"; readonly content: string };
-
-function emitLocalTuiSlashResult(
-  subscribers: Iterable<(event: unknown) => void>,
-  input: string,
-  result:
-    | { readonly kind: "text"; readonly text: string }
-    | { readonly kind: "compact"; readonly text: string }
-    | { readonly kind: "prompt"; readonly content: string }
-    | { readonly kind: "skip" }
-    | { readonly kind: "exit"; readonly code: number }
-    | { readonly kind: "error"; readonly message: string },
-): void {
-  const event = {
-    type: "slash_result",
-    input,
-    result,
-    timestamp: Date.now(),
-  };
-  for (const subscriber of subscribers) {
-    subscriber(event);
-  }
-}
 
 async function handleLocalTuiSlashCommand(params: {
   readonly message: string;
@@ -2382,6 +2366,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
       queuedInputCount += blocks.length;
       return queuedInputCount;
     },
+    emitPhaseEvent: (event) => {
+      emitLocalTuiPhaseEvent(liveSession, subscribers, event);
+    },
     subscribeToEvents: (cb) => {
       subscribers.add(cb);
       if (liveSession !== null) {
@@ -2450,6 +2437,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       opts?: { readonly displayUserMessage?: string | null },
     ) => Promise<void>;
     subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
+    emitPhaseEvent?: (event: PhaseEvent) => void;
   },
 >(
   session: Session,
@@ -2464,6 +2452,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
   const originalSubmit = session.submit?.bind(session);
   if (originalSubmit === undefined) return session;
   const originalSubscribe = session.subscribeToEvents?.bind(session);
+  const originalEmitPhaseEvent = session.emitPhaseEvent?.bind(session);
   const localSubscribers = new Set<(event: unknown) => void>();
   let wrapped!: Session;
   wrapped = {
@@ -2496,6 +2485,13 @@ function wrapDaemonTuiSessionWithPromptPreparation<
         unsubscribeOriginal?.();
       };
     }) as Session["subscribeToEvents"],
+    emitPhaseEvent: ((event: PhaseEvent) => {
+      emitLocalTuiPhaseEvent(
+        { emitPhaseEvent: originalEmitPhaseEvent },
+        localSubscribers,
+        event,
+      );
+    }) as Session["emitPhaseEvent"],
   };
   return wrapped;
 }

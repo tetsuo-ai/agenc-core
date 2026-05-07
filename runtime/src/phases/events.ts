@@ -14,6 +14,7 @@ import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 
 export type PhaseEvent =
   | { readonly type: "turn_start"; readonly turnIndex: number }
+  | { readonly type: "history_cleared"; readonly timestamp: number }
   | {
       readonly type: "assistant_text";
       readonly content: string;

@@ -16,6 +16,7 @@
  */
 
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import type { PhaseEvent } from "../phases/events.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { Session } from "../session/session.js";
 import {
@@ -39,6 +40,27 @@ interface ClearableApprovalStore {
 
 interface ClearableNetworkApproval {
   clearSessionHosts?: () => void;
+}
+
+interface ClearableSessionState {
+  history?: unknown;
+}
+
+interface ClearableStateLock {
+  with?: (fn: (state: ClearableSessionState) => unknown) => Promise<unknown>;
+}
+
+interface ClearableSessionShape {
+  readonly state?: ClearableStateLock;
+  readonly services?: Record<string, unknown> & {
+    toolApprovals?: ClearableApprovalStore;
+    networkApproval?: ClearableNetworkApproval;
+  };
+  readonly budgetTracker?: { resetSamplingGate?: () => void } | null;
+  readonly denialTracking?: Record<string, unknown> | null;
+  clearProviderResponseId?: () => void;
+  emitPhaseEvent?: (event: PhaseEvent) => void;
+  clearDaemonSession?: () => Promise<void>;
 }
 
 /** Best-effort reset of any sidecar instance that exposes `reset()`. */
@@ -67,26 +89,29 @@ function hasActiveTurn(session: Session): boolean {
  * verify behaviour without going through `safeExecute`.
  */
 export async function clearSession(session: Session): Promise<void> {
-  await session.state.with((s) => {
-    // Replace the history array in place so any cached ref the caller
-    // holds sees the same object but emptied. The session's history is
-    // declared as `unknown[]` — mutate by length.
-    (s.history as unknown[]).length = 0;
-  });
+  const clearable = session as unknown as ClearableSessionShape;
+  if (typeof clearable.clearDaemonSession === "function") {
+    await clearable.clearDaemonSession();
+  } else if (typeof clearable.state?.with === "function") {
+    await clearable.state.with((s) => {
+      if (Array.isArray(s.history)) {
+        // Replace the history array in place so any cached ref the caller
+        // holds sees the same object but emptied. The session's history is
+        // declared as `unknown[]` — mutate by length.
+        s.history.length = 0;
+      }
+    });
+  }
 
   clearSystemPromptSections();
 
   // Clearing conversation history must also sever provider continuation
   // ids; otherwise the next Responses turn can be sent with an orphaned
   // previous_response_id that no longer matches the local transcript.
-  (session as unknown as { clearProviderResponseId?: () => void })
-    .clearProviderResponseId?.();
+  clearable.clearProviderResponseId?.();
 
   // Reset sidecars if present on services (e.g. memory/cost).
-  const svc = session.services as unknown as Record<string, unknown> & {
-    toolApprovals?: ClearableApprovalStore;
-    networkApproval?: ClearableNetworkApproval;
-  };
+  const svc = clearable.services ?? {};
   for (const key of [
     "memorySidecar",
     "costSidecar",
@@ -102,14 +127,28 @@ export async function clearSession(session: Session): Promise<void> {
   svc.networkApproval?.clearSessionHosts?.();
 
   // Budget tracker has no `reset()` but exposes sampling-gate reset.
-  if (session.budgetTracker) {
-    session.budgetTracker.resetSamplingGate?.();
-  }
+  clearable.budgetTracker?.resetSamplingGate?.();
 
   // T11 W4: reset permission denial tracking in place so the evaluator
   // continues to observe a single shared reference across turns.
-  if (session.denialTracking) {
-    Object.assign(session.denialTracking, freshDenialTracking());
+  if (clearable.denialTracking) {
+    Object.assign(clearable.denialTracking, freshDenialTracking());
+  }
+}
+
+function clearSessionPublishesHistoryCleared(session: Session): boolean {
+  return typeof (session as unknown as ClearableSessionShape)
+    .clearDaemonSession === "function";
+}
+
+function emitHistoryCleared(session: Session): void {
+  try {
+    (session as unknown as ClearableSessionShape).emitPhaseEvent?.({
+      type: "history_cleared",
+      timestamp: Date.now(),
+    });
+  } catch {
+    // Transcript notification is best-effort; the clear itself already succeeded.
   }
 }
 
@@ -129,6 +168,9 @@ export const clearCommand: SlashCommand = {
         };
       }
       await clearSession(ctx.session);
+      if (!clearSessionPublishesHistoryCleared(ctx.session)) {
+        emitHistoryCleared(ctx.session);
+      }
       return { kind: "text", text: "Session cleared." };
     }),
 };

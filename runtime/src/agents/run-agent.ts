@@ -856,6 +856,7 @@ function parentAgentPathFor(agentPath: string): string {
 }
 
 function drainChildMailbox(live: LiveAgent): {
+  readonly clearHistory?: boolean;
   readonly interruptReason?: string;
   readonly nextUserMessage?: string | readonly LLMContentPart[];
 } {
@@ -866,6 +867,7 @@ function drainChildMailbox(live: LiveAgent): {
 
   const passthrough: InterAgentCommunication[] = [];
   const nextTurnParts: Array<string | readonly LLMContentPart[]> = [];
+  let clearHistory = false;
   let shouldTriggerTurn = false;
 
   for (const item of drained) {
@@ -882,6 +884,13 @@ function drainChildMailbox(live: LiveAgent): {
             ? item.content
             : "interrupt";
       return { interruptReason: reason };
+    }
+    if (kind === "history_clear") {
+      clearHistory = true;
+      passthrough.length = 0;
+      nextTurnParts.length = 0;
+      shouldTriggerTurn = false;
+      continue;
     }
     passthrough.push(item);
     shouldTriggerTurn ||= item.triggerTurn;
@@ -905,10 +914,41 @@ function drainChildMailbox(live: LiveAgent): {
         break;
       }
     }
-    return {};
+    return clearHistory ? { clearHistory } : {};
   }
 
-  return { nextUserMessage: mergeChildInputParts(nextTurnParts) };
+  return {
+    ...(clearHistory ? { clearHistory } : {}),
+    nextUserMessage: mergeChildInputParts(nextTurnParts),
+  };
+}
+
+export function drainChildMailboxForTesting(live: LiveAgent): ReturnType<
+  typeof drainChildMailbox
+> {
+  return drainChildMailbox(live);
+}
+
+interface ChildConversationHistorySession {
+  readonly state: {
+    with(
+      fn: (state: { history: unknown[] }) => void | Promise<void>,
+    ): Promise<unknown>;
+  };
+  clearProviderResponseId(): void;
+}
+
+export async function clearChildConversationHistory(
+  childSession: ChildConversationHistorySession,
+  live: Pick<LiveAgent, "messages">,
+  initialHistory: LLMMessage[],
+): Promise<void> {
+  await childSession.state.with((state) => {
+    state.history.length = 0;
+  });
+  childSession.clearProviderResponseId();
+  initialHistory.length = 0;
+  live.messages.length = 0;
 }
 
 function isLlmContentParts(value: unknown): value is readonly LLMContentPart[] {
@@ -1808,6 +1848,10 @@ export async function* runAgent(
           merged.abort(pendingChildInput.interruptReason);
         }
         break;
+      }
+      if (pendingChildInput.clearHistory) {
+        await clearChildConversationHistory(childSession, live, history);
+        assistantText = "";
       }
       if (pendingChildInput.nextUserMessage !== undefined) {
         nextUserMessage = pendingChildInput.nextUserMessage;

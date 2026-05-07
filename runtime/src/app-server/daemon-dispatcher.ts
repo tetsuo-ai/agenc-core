@@ -63,6 +63,7 @@ import {
   type RequestId,
   type SessionAttachParams,
   type SessionAttachResult,
+  type SessionClearParams,
   type SessionListParams,
   type ThreadRealtimeAppendAudioParams,
   type ThreadRealtimeAppendTextParams,
@@ -119,6 +120,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "cancelTool"
     | "createAgent"
     | "denyTool"
+    | "clearSessionHistory"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -167,6 +169,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "cancelTool"
     | "createAgent"
     | "denyTool"
+    | "clearSessionHistory"
     | "respondToElicitation"
     | "getAgentLogs"
     | "listAgents"
@@ -395,6 +398,13 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.attach":
         return this.#attachSession(id, connection, params);
+      case "session.clear":
+        return successResponse(
+          id,
+          await this.#agentManager.clearSessionHistory(
+            validateSessionClearParams(params),
+          ),
+        );
       case "message.send":
         return this.#sendMessage(id, params);
       case "message.stream":
@@ -1093,6 +1103,15 @@ function validateSessionAttachParams(params: JsonObject): SessionAttachParams {
   });
   validateRequiredString(validated, "session.attach", "sessionId");
   return validated as SessionAttachParams;
+}
+
+function validateSessionClearParams(params: JsonObject): SessionClearParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.clear",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.clear", "sessionId");
+  return validated as SessionClearParams;
 }
 
 function validateMessageSendParams(params: JsonObject): MessageSendParams {

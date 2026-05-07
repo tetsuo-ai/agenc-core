@@ -47,6 +47,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.attach",
   "session.detach",
   "session.terminate",
+  "session.clear",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -215,6 +216,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Terminate a daemon-owned session.",
+  },
+  "session.clear": {
+    method: "session.clear",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Clear a daemon-owned session's conversation history.",
   },
   "message.send": {
     method: "message.send",
@@ -578,6 +586,10 @@ export interface SessionDetachParams extends JsonObject {
 export interface SessionTerminateParams extends JsonObject {
   readonly sessionId: string;
   readonly reason?: string;
+}
+
+export interface SessionClearParams extends JsonObject {
+  readonly sessionId: string;
 }
 
 export type MessageContentBlock =
@@ -1022,6 +1034,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams>
   | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
+  | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<
@@ -1198,6 +1211,12 @@ export interface SessionTerminateResult extends JsonObject {
   readonly reason?: string;
 }
 
+export interface SessionClearResult extends JsonObject {
+  readonly sessionId: string;
+  readonly cleared: true;
+  readonly clearedAt: string;
+}
+
 export interface MessageSendResult extends JsonObject {
   readonly messageId: string;
   readonly acceptedAt: string;
@@ -1330,6 +1349,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.attach": SessionAttachResult;
   readonly "session.detach": SessionDetachResult;
   readonly "session.terminate": SessionTerminateResult;
+  readonly "session.clear": SessionClearResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
   readonly "thread/realtime/start": ThreadRealtimeStartResponse;

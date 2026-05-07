@@ -2700,6 +2700,94 @@ describe("AgenC delegate background-agent runner", () => {
     expect(emitted).toEqual([]);
   });
 
+  it("clears daemon-owned agent history before emitting history_cleared", async () => {
+    const shutdown = vi.fn(async () => {});
+    const parentHistory = [{ role: "user", content: "old parent turn" }];
+    const clearProviderResponseId = vi.fn();
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+      state: {
+        with: vi.fn(async (fn: (state: { history: unknown[] }) => void) =>
+          fn({ history: parentHistory }),
+        ),
+      },
+      services: {},
+      clearProviderResponseId,
+    };
+    const clearConversationHistory = vi.fn(async () => {});
+    const control = {
+      shutdown: vi.fn(async () => {}),
+      clearConversationHistory,
+    };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      live: {
+        messages: [{ role: "assistant", content: "old child reply" }],
+      },
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emit = vi.fn(async () => {});
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit,
+    });
+
+    await runner.clearAgentSession("agent_live", {
+      sessionId: "session_1",
+      clearedAt: "2026-05-01T12:00:01.000Z",
+    });
+
+    expect(parentHistory).toEqual([]);
+    expect(clearProviderResponseId).toHaveBeenCalledTimes(1);
+    expect(clearConversationHistory).toHaveBeenCalledWith("agent_live");
+    expect(clearConversationHistory.mock.invocationCallOrder[0]).toBeLessThan(
+      emit.mock.invocationCallOrder[0]!,
+    );
+    expect(emit).toHaveBeenCalledWith({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_1",
+        agentId: "agent_live",
+        eventId: "history-cleared-session_1-2026-05-01T12:00:01.000Z",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+        event: {
+          id: "history-cleared-session_1-2026-05-01T12:00:01.000Z",
+          type: "history_cleared",
+          acceptedAt: "2026-05-01T12:00:01.000Z",
+          payload: { timestamp: Date.parse("2026-05-01T12:00:01.000Z") },
+        },
+      },
+    });
+  });
+
   it("reports live status freshness from thread status changes", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {

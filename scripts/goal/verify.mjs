@@ -118,6 +118,27 @@ const ITEM_EVIDENCE = {
       { pattern: "assertZc15ChecklistHandoffClarified", scope: "scripts/goal/verify.mjs" },
     ],
   },
+  "GAP-TUI-03": {
+    files: [
+      "runtime/src/commands/clear.ts",
+      "runtime/src/phases/events.ts",
+      "runtime/src/bin/agenc.ts",
+      "runtime/src/bin/tui-local-events.ts",
+      "runtime/src/tui/session-transcript.ts",
+      "runtime/src/tui/session-types.ts",
+      "runtime/src/tui/daemon-session.ts",
+    ],
+    tests: [
+      "runtime/src/commands/clear.test.ts",
+      "runtime/src/bin/tui-local-events.test.ts",
+      "runtime/src/tui/parity/session-transcript.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "history_cleared", scope: "runtime/src/commands/clear.ts" },
+      { pattern: "emitLocalTuiPhaseEvent", scope: "runtime/src/bin/agenc.ts" },
+      { pattern: "isHistoryClearedEvent", scope: "runtime/src/tui/session-transcript.ts" },
+    ],
+  },
   "OC-06": {
     files: [
       "runtime/src/tui/vim/types.ts",
@@ -6452,6 +6473,10 @@ async function gapGates(item) {
     assertGapTuiMessageSelectorCallbacks();
     return;
   }
+  if (item.title.includes("/clear must emit daemon event")) {
+    assertGapTuiClearHistoryEvent();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
@@ -6565,6 +6590,152 @@ function assertGapTuiMessageSelectorCallbacks() {
     failGate("GAP-TUI-02 targeted App render test failed");
   }
   pass("GAP-TUI-02 targeted App render test passed");
+}
+
+function assertGapTuiClearHistoryEvent() {
+  const clearRel = "runtime/src/commands/clear.ts";
+  const phaseRel = "runtime/src/phases/events.ts";
+  const binRel = "runtime/src/bin/agenc.ts";
+  const localEventsRel = "runtime/src/bin/tui-local-events.ts";
+  const transcriptRel = "runtime/src/tui/session-transcript.ts";
+  const sessionTypesRel = "runtime/src/tui/session-types.ts";
+  const daemonSessionRel = "runtime/src/tui/daemon-session.ts";
+  const protocolRel = "runtime/src/app-server/protocol/index.ts";
+  const protocolSchemaRel = "runtime/src/app-server/protocol/schema.json";
+  const dispatcherRel = "runtime/src/app-server/daemon-dispatcher.ts";
+  const agentLifecycleRel = "runtime/src/app-server/agent-lifecycle.ts";
+  const backgroundRunnerRel = "runtime/src/app-server/background-agent-runner.ts";
+  const controlRel = "runtime/src/agents/control.ts";
+  const runAgentRel = "runtime/src/agents/run-agent.ts";
+  const threadManagerRel = "runtime/src/agents/thread-manager.ts";
+  const clearTestRel = "runtime/src/commands/clear.test.ts";
+  const localEventsTestRel = "runtime/src/bin/tui-local-events.test.ts";
+  const transcriptTestRel = "runtime/src/tui/parity/session-transcript.test.ts";
+  const daemonSessionTestRel = "runtime/src/tui/daemon-session.contract.test.ts";
+  const protocolTestRel = "runtime/src/app-server/protocol.contract.test.ts";
+  const agentLifecycleTestRel = "runtime/src/app-server/agent-lifecycle.contract.test.ts";
+  const backgroundRunnerTestRel = "runtime/src/app-server/background-agent-runner.contract.test.ts";
+  const controlTestRel = "runtime/src/agents/control.test.ts";
+  const runAgentMailboxTestRel = "runtime/src/agents/run-agent-mailbox.test.ts";
+  const requiredFiles = [
+    clearRel,
+    phaseRel,
+    binRel,
+    localEventsRel,
+    transcriptRel,
+    sessionTypesRel,
+    daemonSessionRel,
+    protocolRel,
+    protocolSchemaRel,
+    dispatcherRel,
+    agentLifecycleRel,
+    backgroundRunnerRel,
+    controlRel,
+    runAgentRel,
+    threadManagerRel,
+    clearTestRel,
+    localEventsTestRel,
+    transcriptTestRel,
+    daemonSessionTestRel,
+    protocolTestRel,
+    agentLifecycleTestRel,
+    backgroundRunnerTestRel,
+    controlTestRel,
+    runAgentMailboxTestRel,
+  ];
+  for (const rel of requiredFiles) {
+    if (!existsSync(path.join(root, rel))) failGate(`GAP-TUI-03: missing ${rel}`);
+  }
+
+  const clear = readFileSync(path.join(root, clearRel), "utf8");
+  const phase = readFileSync(path.join(root, phaseRel), "utf8");
+  const bin = readFileSync(path.join(root, binRel), "utf8");
+  const localEvents = readFileSync(path.join(root, localEventsRel), "utf8");
+  const transcript = readFileSync(path.join(root, transcriptRel), "utf8");
+  const sessionTypes = readFileSync(path.join(root, sessionTypesRel), "utf8");
+  const daemonSession = readFileSync(path.join(root, daemonSessionRel), "utf8");
+  const protocol = readFileSync(path.join(root, protocolRel), "utf8");
+  const protocolSchema = readFileSync(path.join(root, protocolSchemaRel), "utf8");
+  const dispatcher = readFileSync(path.join(root, dispatcherRel), "utf8");
+  const agentLifecycle = readFileSync(path.join(root, agentLifecycleRel), "utf8");
+  const backgroundRunner = readFileSync(path.join(root, backgroundRunnerRel), "utf8");
+  const control = readFileSync(path.join(root, controlRel), "utf8");
+  const runAgent = readFileSync(path.join(root, runAgentRel), "utf8");
+  const threadManager = readFileSync(path.join(root, threadManagerRel), "utf8");
+  const clearTest = readFileSync(path.join(root, clearTestRel), "utf8");
+  const localEventsTest = readFileSync(path.join(root, localEventsTestRel), "utf8");
+  const transcriptTest = readFileSync(path.join(root, transcriptTestRel), "utf8");
+  const daemonSessionTest = readFileSync(path.join(root, daemonSessionTestRel), "utf8");
+  const protocolTest = readFileSync(path.join(root, protocolTestRel), "utf8");
+  const agentLifecycleTest = readFileSync(path.join(root, agentLifecycleTestRel), "utf8");
+  const backgroundRunnerTest = readFileSync(path.join(root, backgroundRunnerTestRel), "utf8");
+  const controlTest = readFileSync(path.join(root, controlTestRel), "utf8");
+  const runAgentMailboxTest = readFileSync(path.join(root, runAgentMailboxTestRel), "utf8");
+
+  const requiredEvidence = [
+    ["clear command emits history_cleared", clear, /type:\s*["']history_cleared["']/],
+    ["clear command uses emitPhaseEvent", clear, /emitPhaseEvent\?\.\(/],
+    ["clear command tolerates missing state lock", clear, /state\?\.with/],
+    ["phase event typing declares history_cleared", phase, /type:\s*["']history_cleared["'];\s*readonly\s+timestamp:\s*number/],
+    ["bin imports local TUI event helpers", bin, /emitLocalTuiPhaseEvent/],
+    ["bin wrapper exposes emitPhaseEvent", bin, /emitPhaseEvent:\s*\(event\)\s*=>/],
+    ["local event helper isolates subscribers", localEvents, /try\s*\{[\s\S]*subscriber\(event\)[\s\S]*\}\s*catch/],
+    ["local phase helper forwards before local broadcast", localEvents, /target\.emitPhaseEvent\(event\)/],
+    ["local slash helper emits slash_result", localEvents, /type:\s*["']slash_result["']/],
+    ["session transcript detects history clear", transcript, /function\s+isHistoryClearedEvent/],
+    ["session transcript reset clears keys", transcript, /keys\.clear\(\)/],
+    ["session transcript append resets state", transcript, /events:\s*\[action\.event\]/],
+    ["session type exposes emitPhaseEvent", sessionTypes, /emitPhaseEvent\?\(event:\s*PhaseEvent\):\s*void/],
+    ["daemon session type exposes emitPhaseEvent", daemonSession, /emitPhaseEvent\?\(event:\s*PhaseEvent\):\s*void/],
+    ["daemon session exposes clearDaemonSession", daemonSession, /clearDaemonSession:\s*async\s*\(\)\s*=>[\s\S]*session\.clear/],
+    ["protocol declares session.clear", protocol, /["']session\.clear["']/],
+    ["protocol schema declares session.clear", protocolSchema, /["']session\.clear["']/],
+    ["dispatcher routes session.clear", dispatcher, /case\s+["']session\.clear["'][\s\S]*clearSessionHistory/],
+    ["agent lifecycle clears daemon session via runner", agentLifecycle, /clearSessionHistory[\s\S]*clearAgentSession/],
+    ["background runner emits history_cleared", backgroundRunner, /type:\s*["']history_cleared["']/],
+    ["background runner clears live child through control", backgroundRunner, /clearConversationHistory\(agentId\)/],
+    ["agent control exposes clearConversationHistory", control, /clearConversationHistory\(threadId:\s*ThreadId\)/],
+    ["thread manager supports clear history op", threadManager, /type:\s*["']clear_conversation_history["']/],
+    ["runAgent handles history_clear mailbox boundary", runAgent, /kind\s*===\s*["']history_clear["']/],
+    ["clear test covers bridge-like session", clearTest, /bridge-like sessions without local history state/],
+    ["clear test asserts active turn does not emit", clearTest, /emitPhaseEvent\)\.not\.toHaveBeenCalled/],
+    ["clear test covers daemon delegation", clearTest, /delegates daemon-backed sessions/],
+    ["local event test asserts order", localEventsTest, /before slash_result/],
+    ["local event test asserts no double broadcast", localEventsTest, /double-broadcasting/],
+    ["transcript test covers history clear", transcriptTest, /history_cleared/],
+    ["transcript test covers dedupe reset", transcriptTest, /reused-after-clear/],
+    ["daemon session test covers session.clear request", daemonSessionTest, /clears daemon-owned session history through session\.clear/],
+    ["protocol test covers session.clear", protocolTest, /method:\s*["']session\.clear["']/],
+    ["agent lifecycle test covers session.clear route", agentLifecycleTest, /routes session\.clear to the runner/],
+    ["background runner test covers clear event", backgroundRunnerTest, /clears daemon-owned agent history/],
+    ["control test covers history boundary", controlTest, /queues a history boundary/],
+    ["runAgent mailbox test covers fresh next input", runAgentMailboxTest, /keeps only fresh follow-up input/],
+  ];
+  const missingEvidence = requiredEvidence
+    .filter(([, source, pattern]) => !pattern.test(source))
+    .map(([label]) => label);
+  if (missingEvidence.length > 0) {
+    failGate(`GAP-TUI-03 evidence missing:\n  - ${missingEvidence.join("\n  - ")}`);
+  }
+
+  pass("GAP-TUI-03: clear history event evidence present");
+  const vitest = run("npm", [
+    "--workspace=@tetsuo-ai/runtime",
+    "test",
+    "--",
+    "src/commands/clear.test.ts",
+    "src/bin/tui-local-events.test.ts",
+    "src/tui/parity/session-transcript.test.ts",
+    "src/tui/daemon-session.contract.test.ts",
+    "src/app-server/agent-lifecycle.contract.test.ts",
+    "src/app-server/background-agent-runner.contract.test.ts",
+    "src/agents/control.test.ts",
+    "src/agents/run-agent-mailbox.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-TUI-03 targeted clear/transcript tests failed");
+  }
+  pass("GAP-TUI-03 targeted clear/transcript tests passed");
 }
 
 function subsystemDirGates(label, dir) {

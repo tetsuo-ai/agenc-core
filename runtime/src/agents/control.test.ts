@@ -341,6 +341,25 @@ describe("AgentControl", () => {
     );
   });
 
+  it("clearConversationHistory() clears live messages and queues a history boundary", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const live = await control.spawn({ parentPath: "/root" });
+    live.messages.push({ role: "assistant", content: "old reply" });
+
+    await control.clearConversationHistory(live.agentId);
+
+    expect(live.messages).toEqual([]);
+    expect(live.downInbox.drain()).toEqual([
+      expect.objectContaining({
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "history_clear" },
+      }),
+    ]);
+  });
+
   it("appendMessage() sends non-turn-triggering message", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();

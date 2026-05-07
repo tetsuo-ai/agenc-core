@@ -23,6 +23,7 @@ export type ThreadManagerOp =
       readonly type: "inter_agent_communication";
       readonly communication: Omit<InterAgentCommunication, "seq" | "direction">;
     }
+  | { readonly type: "clear_conversation_history" }
   | { readonly type: "append_message"; readonly message: string }
   | { readonly type: "interrupt"; readonly reason?: string }
   | { readonly type: "shutdown"; readonly reason?: string }
@@ -561,6 +562,12 @@ async function submitToSession(
     case "user_input":
       await session.submit(op.input);
       return session.conversationId;
+    case "clear_conversation_history":
+      await session.state.with((state) => {
+        state.history.length = 0;
+      });
+      session.clearProviderResponseId();
+      return session.conversationId;
     case "inter_agent_communication":
       session.mailbox.send({
         ...op.communication,
@@ -610,6 +617,17 @@ async function submitToLiveAgent(
           metadata: { kind: "user_input", inputContent: op.input },
         });
       }
+      return live.agentId;
+    case "clear_conversation_history":
+      live.messages.length = 0;
+      live.downInbox.send({
+        author: live.agentPath,
+        recipient: live.agentPath,
+        content: "",
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "history_clear" },
+      });
       return live.agentId;
     case "inter_agent_communication":
       live.downInbox.send({

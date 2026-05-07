@@ -25,6 +25,7 @@ import type {
   RequestUserInputEvent,
   RequestUserInputResponse,
 } from "../elicitation/types.js";
+import type { PhaseEvent } from "../phases/events.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 import {
   createRealtimeTuiControls,
@@ -73,6 +74,8 @@ export interface AgenCTuiBridgeSession {
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
+  emitPhaseEvent?(event: PhaseEvent): void;
+  clearDaemonSession?(): Promise<void>;
   readonly realtime?: AgenCRealtimeTuiControls;
   submit?(
     message: string,
@@ -278,6 +281,9 @@ export function createDaemonTuiSession<
         serverName,
         response,
       } satisfies ElicitationRespondParams),
+    clearDaemonSession: async () => {
+      await client.request("session.clear", { sessionId });
+    },
     subscribeToEvents: (cb) => {
       eventSubscribers.add(cb);
       ensureDaemonEventsSubscribed();

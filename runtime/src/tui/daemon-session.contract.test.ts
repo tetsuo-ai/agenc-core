@@ -296,6 +296,25 @@ describe("AgenC TUI daemon session adapter", () => {
     });
   });
 
+  it("clears daemon-owned session history through session.clear", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await session.clearDaemonSession?.();
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.clear",
+        params: { sessionId: "session_1" },
+      },
+    ]);
+  });
+
   it("exposes realtime controls that route through the daemon thread RPC surface", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

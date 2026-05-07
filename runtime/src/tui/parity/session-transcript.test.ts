@@ -126,6 +126,59 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
+  test("treats history_cleared as a transcript boundary and resets event dedupe", () => {
+    const transcript = adaptTranscriptEvents(
+      [
+        {
+          id: "reused-after-clear",
+          msg: { type: "user_message", payload: { message: "before" } },
+        },
+        {
+          id: "tool-start",
+          msg: {
+            type: "exec_command_begin",
+            payload: { callId: "exec-1", command: "npm test" },
+          },
+        },
+        {
+          id: "delta",
+          msg: { type: "agent_message_delta", payload: { delta: "streaming" } },
+        },
+        {
+          id: "clear-1",
+          type: "history_cleared",
+          timestamp: 1,
+        },
+        {
+          id: "between-clears",
+          msg: { type: "user_message", payload: { message: "between" } },
+        },
+        {
+          id: "clear-2",
+          type: "history_cleared",
+          timestamp: 2,
+        },
+        {
+          id: "reused-after-clear",
+          msg: { type: "user_message", payload: { message: "after" } },
+        },
+      ],
+      [{ role: "user", content: "startup" }],
+    );
+
+    expect(transcript.messages).toHaveLength(1);
+    expect(transcript.messages.at(0)).toMatchObject({
+      type: "user",
+      message: { content: "after" },
+    });
+    expect(transcript.streamingText).toBeNull();
+    expect(transcript.isStreaming).toBe(false);
+    expect(transcript.currentTurnId).toBeNull();
+    expect(transcript.inProgressToolUseIDs.size).toBe(0);
+    expect([...transcript.toolNames]).toEqual([]);
+    expect(transcript.streamingToolUses).toEqual([]);
+  });
+
   test("interleaves realtime transcript completions and item notifications with surrounding text transcript", () => {
     const transcript = adaptTranscriptEvents([
       {

@@ -668,6 +668,42 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("routes session.clear to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-clear-restored",
+      agentId: "agent-clear-restored",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const clearAgentSession = vi.fn(async () => {});
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:06:00.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        clearAgentSession,
+      },
+    });
+
+    await expect(
+      agents.clearSessionHistory({ sessionId: "session-clear-restored" }),
+    ).resolves.toEqual({
+      sessionId: "session-clear-restored",
+      cleared: true,
+      clearedAt: "2026-05-01T12:06:00.000Z",
+    });
+    expect(clearAgentSession).toHaveBeenCalledWith("agent-clear-restored", {
+      sessionId: "session-clear-restored",
+      clearedAt: "2026-05-01T12:06:00.000Z",
+    });
+  });
+
   it("rebinds restored runtime events so terminal status updates persist", async () => {
     const home = mkdtempSync(join(tmpdir(), "agenc-agent-restore-events-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-agent-restore-events-cwd-"));
@@ -3122,6 +3158,61 @@ describe("AgenC background agent lifecycle", () => {
         message: "message.send requires a background runner",
         data: { code: "BACKGROUND_RUNNER_UNAVAILABLE" },
       },
+    });
+  });
+
+  it("dispatches session.clear through JSON-RPC to daemon-owned history", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_rpc_clear",
+      agentId: "agent_rpc_clear",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const clearAgentSession = vi.fn(async () => {});
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({
+        sessionManager: sessions,
+        now: () => "2026-05-01T12:06:00.000Z",
+        runner: {
+          startAgent: async () => ({
+            agentId: "unused",
+            startedAt: "2026-05-01T12:00:00.000Z",
+            status: "running",
+          }),
+          clearAgentSession,
+        },
+      }),
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init-clear",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "portal-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "clear-session",
+        method: "session.clear",
+        params: { sessionId: "session_rpc_clear" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "clear-session",
+      result: {
+        sessionId: "session_rpc_clear",
+        cleared: true,
+        clearedAt: "2026-05-01T12:06:00.000Z",
+      },
+    });
+    expect(clearAgentSession).toHaveBeenCalledWith("agent_rpc_clear", {
+      sessionId: "session_rpc_clear",
+      clearedAt: "2026-05-01T12:06:00.000Z",
     });
   });
 
