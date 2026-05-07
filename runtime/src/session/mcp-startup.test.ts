@@ -360,6 +360,60 @@ describe("mcp-startup session-owned manager helpers", () => {
     expect(service.getServerForTool?.("mcp.github.search")).toBe("github");
   });
 
+  it("forwards live slash command MCP manager controls", async () => {
+    const manager = {
+      reconnectServer: vi.fn(async (name: string) => ({
+        serverName: name,
+        success: true,
+        toolCount: 2,
+      })),
+      enableServer: vi.fn(async (name: string) => ({
+        serverName: name,
+        success: true,
+        toolCount: 1,
+      })),
+      disableServer: vi.fn(async (name: string) => ({
+        serverName: name,
+        success: true,
+        toolCount: 0,
+      })),
+      addServer: vi.fn(async (config: { readonly name: string }) => ({
+        serverName: config.name,
+        success: true,
+        toolCount: 1,
+      })),
+      getTools: vi.fn(() => [{ name: "mcp.github.search" }]),
+      getToolsByServer: vi.fn((name: string) =>
+        name === "github" ? [{ name: "mcp.github.search" }] : [],
+      ),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager);
+
+    await expect(service.reconnectServer?.("github")).resolves.toMatchObject({
+      success: true,
+      toolCount: 2,
+    });
+    await expect(service.enableServer?.("github")).resolves.toMatchObject({
+      success: true,
+      toolCount: 1,
+    });
+    await expect(service.disableServer?.("github")).resolves.toMatchObject({
+      success: true,
+      toolCount: 0,
+    });
+    await expect(
+      service.addServer?.({ name: "local", command: "node" }),
+    ).resolves.toMatchObject({
+      serverName: "local",
+      success: true,
+    });
+    expect(service.getTools?.()).toEqual([{ name: "mcp.github.search" }]);
+    expect(service.getToolsByServer?.("github")).toEqual([
+      { name: "mcp.github.search" },
+    ]);
+  });
+
   it("surfaces effective connected-server instructions instead of an empty stub", async () => {
     const manager = {
       getConnectedServers: vi.fn(() => ["github"]),

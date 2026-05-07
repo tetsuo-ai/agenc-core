@@ -6671,10 +6671,110 @@ async function gapGates(item) {
     assertGapMcpCliSubcommandsWired();
     return;
   }
+  if (item.title.includes("Expand /mcp slash command")) {
+    assertGapMcpSlashCommandExpanded();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapMcpSlashCommandExpanded() {
+  const commandRel = "runtime/src/commands/mcp.ts";
+  const commandSource = readFileSync(path.join(root, commandRel), "utf8");
+  const requiredCommandEvidence = [
+    "parseMcpArgs",
+    "collectMcpToolStatus",
+    "formatMcpToolStatus",
+    "reconnectServer",
+    "enableServer",
+    "disableServer",
+    "addServer",
+    "This does not edit config.toml",
+  ];
+  for (const needle of requiredCommandEvidence) {
+    if (!commandSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${commandRel} missing /mcp expansion evidence: ${needle}`);
+    }
+  }
+
+  const managerRel = "runtime/src/mcp-client/manager.ts";
+  const managerSource = readFileSync(path.join(root, managerRel), "utf8");
+  for (const needle of [
+    "async enableServer",
+    "async disableServer",
+    "async addServer",
+    "disconnectServer",
+  ]) {
+    if (!managerSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${managerRel} missing manager mutation evidence: ${needle}`);
+    }
+  }
+
+  const serviceRel = "runtime/src/session/mcp-startup.ts";
+  const serviceSource = readFileSync(path.join(root, serviceRel), "utf8");
+  for (const needle of [
+    "reconnectServer",
+    "enableServer",
+    "disableServer",
+    "addServer",
+    "getToolsByServer",
+  ]) {
+    if (!serviceSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${serviceRel} does not forward ${needle}`);
+    }
+  }
+
+  const testRel = "runtime/src/commands/mcp.test.ts";
+  const testSource = readFileSync(path.join(root, testRel), "utf8");
+  for (const needle of [
+    "parses management subcommands and quoted add args",
+    "lists all MCP tools or tools for one server",
+    "sanitizes MCP tool output to one line per tool",
+    "reports reconnect, enable, and disable results",
+    "adds a stdio MCP server for the current session only",
+  ]) {
+    if (!testSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${testRel} missing slash command test: ${needle}`);
+    }
+  }
+
+  const managerTestRel = "runtime/src/mcp-client/manager.test.ts";
+  const managerTestSource = readFileSync(path.join(root, managerTestRel), "utf8");
+  for (const needle of [
+    "failed reconnect leaves the server disconnected",
+    "enables a configured disabled server and connects it",
+    "disables a configured server and disposes all live bridges",
+    "adds a session server and rejects duplicate or invalid names",
+    "rolls back a failed session add so the server name can be retried",
+  ]) {
+    if (!managerTestSource.includes(needle)) {
+      failGate(`GAP-MCP-03: ${managerTestRel} missing manager mutation test: ${needle}`);
+    }
+  }
+
+  const startupTestRel = "runtime/src/session/mcp-startup.test.ts";
+  const startupTestSource = readFileSync(path.join(root, startupTestRel), "utf8");
+  if (!startupTestSource.includes("forwards live slash command MCP manager controls")) {
+    failGate(`GAP-MCP-03: ${startupTestRel} missing session facade forwarding test`);
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/commands/mcp.test.ts",
+    "src/mcp-client/manager.test.ts",
+    "src/session/mcp-startup.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-MCP-03 targeted /mcp slash command tests failed");
+  }
+
+  pass("GAP-MCP-03: /mcp slash command manages live MCP servers and tools");
 }
 
 function assertGapMcpCliSubcommandsWired() {

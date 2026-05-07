@@ -11,6 +11,7 @@ import type {
   MCPElicitationHandlers,
   MCPReconnectResult,
   MCPServerConfig,
+  MCPServerMutationResult,
   MCPToolBridge,
 } from "./types.js";
 import type { Tool } from "./_deps/tools-types.js";
@@ -404,43 +405,7 @@ export class MCPManager {
       };
     }
 
-    const existing = this.bridges.get(name);
-    if (existing) {
-      this.bridges.delete(name);
-      this.serverInstructions.delete(name);
-      try {
-        await existing.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP server "${name}" before reconnect:`,
-          error,
-        );
-      }
-    }
-    const existingResource = this.resourceBridges.get(name);
-    if (existingResource) {
-      this.resourceBridges.delete(name);
-      try {
-        await existingResource.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP resource bridge for "${name}" before reconnect:`,
-          error,
-        );
-      }
-    }
-    const existingPrompt = this.promptBridges.get(name);
-    if (existingPrompt) {
-      this.promptBridges.delete(name);
-      try {
-        await existingPrompt.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP prompt bridge for "${name}" before reconnect:`,
-          error,
-        );
-      }
-    }
+    await this.disconnectServer(name, "before reconnect");
 
     try {
       const bridge = await this.connectServer(config);
@@ -457,6 +422,79 @@ export class MCPManager {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  async enableServer(name: string): Promise<MCPServerMutationResult> {
+    const config = this.getServerConfig(name);
+    if (!config) {
+      return {
+        serverName: name,
+        success: false,
+        toolCount: 0,
+        error: `MCP server "${name}" is not configured.`,
+      };
+    }
+    config.enabled = true;
+    if (this.bridges.has(name)) {
+      return {
+        serverName: name,
+        success: true,
+        toolCount: this.getToolsByServer(name).length,
+      };
+    }
+    return this.reconnectServer(name);
+  }
+
+  async disableServer(name: string): Promise<MCPServerMutationResult> {
+    const config = this.getServerConfig(name);
+    if (!config) {
+      return {
+        serverName: name,
+        success: false,
+        toolCount: 0,
+        error: `MCP server "${name}" is not configured.`,
+      };
+    }
+    config.enabled = false;
+    await this.disconnectServer(name, "after disable");
+    return {
+      serverName: name,
+      success: true,
+      toolCount: 0,
+    };
+  }
+
+  async addServer(config: MCPServerConfig): Promise<MCPServerMutationResult> {
+    if (!isValidMcpServerName(config.name)) {
+      return {
+        serverName: config.name,
+        success: false,
+        toolCount: 0,
+        error: `Invalid MCP server name "${config.name}". Names can only contain letters, numbers, hyphens, and underscores.`,
+      };
+    }
+    if (this.getServerConfig(config.name)) {
+      return {
+        serverName: config.name,
+        success: false,
+        toolCount: 0,
+        error: `MCP server "${config.name}" is already configured.`,
+      };
+    }
+    const nextConfig: MCPServerConfig = {
+      ...config,
+      ...(config.args !== undefined ? { args: [...config.args] } : {}),
+      ...(config.headers !== undefined ? { headers: { ...config.headers } } : {}),
+      ...(config.env !== undefined ? { env: { ...config.env } } : {}),
+    };
+    const previousConfigs = this.configs;
+    this.configs = [...previousConfigs, nextConfig];
+    const result = await this.reconnectServer(nextConfig.name);
+    if (!result.success) {
+      await this.disconnectServer(nextConfig.name, "after failed add");
+      this.configs = previousConfigs;
+    }
+    return result;
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -690,6 +728,48 @@ export class MCPManager {
       );
     }
   }
+
+  private async disconnectServer(name: string, reason: string): Promise<void> {
+    const existing = this.bridges.get(name);
+    if (existing) {
+      this.bridges.delete(name);
+      this.serverInstructions.delete(name);
+      try {
+        await existing.dispose();
+      } catch (error) {
+        this.logger.warn?.(
+          `Error disposing MCP server "${name}" ${reason}:`,
+          error,
+        );
+      }
+    } else {
+      this.serverInstructions.delete(name);
+    }
+    const existingResource = this.resourceBridges.get(name);
+    if (existingResource) {
+      this.resourceBridges.delete(name);
+      try {
+        await existingResource.dispose();
+      } catch (error) {
+        this.logger.warn?.(
+          `Error disposing MCP resource bridge for "${name}" ${reason}:`,
+          error,
+        );
+      }
+    }
+    const existingPrompt = this.promptBridges.get(name);
+    if (existingPrompt) {
+      this.promptBridges.delete(name);
+      try {
+        await existingPrompt.dispose();
+      } catch (error) {
+        this.logger.warn?.(
+          `Error disposing MCP prompt bridge for "${name}" ${reason}:`,
+          error,
+        );
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -698,6 +778,10 @@ export class MCPManager {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isValidMcpServerName(name: string): boolean {
+  return /^[a-zA-Z0-9_-]+$/.test(name);
 }
 
 /**
