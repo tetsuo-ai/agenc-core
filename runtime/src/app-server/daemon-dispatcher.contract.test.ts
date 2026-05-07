@@ -43,6 +43,106 @@ async function initialize(connection: {
 }
 
 describe("AgenC daemon session lifecycle dispatcher", () => {
+  it("requires initialization before daemon.reload", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      initializeAuthenticator: () => true,
+      daemonControl: {
+        reloadConfig: () => ({
+          reloaded: true,
+          configReloadedAt: "2026-05-01T09:00:00.000Z",
+          mcpServer: { status: "disabled" },
+        }),
+      },
+    });
+    const connection = dispatcher.createConnection();
+
+    await expect(
+      connection.dispatch(request("reload", "daemon.reload")),
+    ).resolves.toMatchObject({
+      error: { data: { code: "CONNECTION_NOT_INITIALIZED" } },
+    });
+  });
+
+  it("routes daemon.reload through authenticated daemon control", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      initializeAuthenticator: (params) => params.authCookie === "cookie",
+      daemonControl: {
+        reloadConfig: () => ({
+          reloaded: true,
+          configReloadedAt: "2026-05-01T09:00:00.000Z",
+          mcpServer: {
+            status: "listening",
+            url: "http://127.0.0.1:4567/mcp",
+          },
+        }),
+      },
+    });
+    const connection = dispatcher.createConnection();
+    await expect(
+      connection.dispatch(
+        request("init", "initialize", {
+          protocol: { version: "1.0.0" },
+          authCookie: "cookie",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      result: { type: "initialized", protocolVersion: "1.0.0" },
+    });
+
+    await expect(
+      connection.dispatch(request("reload", "daemon.reload")),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "reload",
+      result: {
+        reloaded: true,
+        configReloadedAt: "2026-05-01T09:00:00.000Z",
+        mcpServer: {
+          status: "listening",
+          url: "http://127.0.0.1:4567/mcp",
+        },
+      },
+    });
+  });
+
+  it("rejects daemon.reload when daemon control lacks an authenticated transport", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      daemonControl: {
+        reloadConfig: () => ({
+          reloaded: true,
+          configReloadedAt: "2026-05-01T09:00:00.000Z",
+          mcpServer: { status: "disabled" },
+        }),
+      },
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch(request("reload", "daemon.reload")),
+    ).resolves.toMatchObject({
+      error: { data: { code: "DAEMON_RELOAD_AUTHENTICATION_REQUIRED" } },
+    });
+  });
+
+  it("reports daemon.reload as unimplemented without daemon control", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+      initializeAuthenticator: () => true,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch(request("reload", "daemon.reload")),
+    ).resolves.toMatchObject({
+      error: { code: -32601 },
+    });
+  });
+
   it("routes session.create through a minimal initialized dispatcher", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_default"]),

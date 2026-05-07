@@ -92,7 +92,10 @@ import type {
 } from "../conversation/realtime/conversation.js";
 import type { RealtimeStartupContextSessionLike } from "../conversation/realtime/context.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
-import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
+import {
+  createAgenCDaemonRuntimeAuthBackend,
+  type AgenCDaemonRuntimeAuthBackend,
+} from "./provider-key-vending.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -339,19 +342,26 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly clearBudgetTimer?: (timer: AgenCAgentBudgetTimer) => void;
 }
 
+export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
+  AgenCDelegateBackgroundAgentRunnerOptions,
+  "agentBudget" | "realtimeCallClient" | "realtimeConnectTransport"
+> & {
+  readonly authBackend: AuthBackend | undefined;
+};
+
 export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentRunner {
   readonly #bootstrap: AgenCBootstrapFunction;
   readonly #delegate: AgenCDelegateFunction;
   readonly #runAgent: AgenCRunAgentFunction;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
-  readonly #authBackend: AuthBackend | undefined;
-  readonly #agentBudget: AgentBudgetConfig | undefined;
+  #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
+  #agentBudget: AgentBudgetConfig | undefined;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #argv: readonly string[] | undefined;
   readonly #now: () => string;
   readonly #budgetNowMs: () => number;
-  readonly #realtimeCallClient: AgenCRealtimeCallClient | undefined;
-  readonly #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
+  #realtimeCallClient: AgenCRealtimeCallClient | undefined;
+  #realtimeConnectTransport: AgenCBackgroundRealtimeTransportConnector;
   readonly #setBudgetTimer: (
     callback: () => void,
     delayMs: number,
@@ -371,10 +381,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#delegate = options.delegateFn ?? delegate;
     this.#runAgent = options.runAgentFn ?? runAgent;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
-    this.#authBackend =
-      options.authBackend === undefined
-        ? undefined
-        : createAgenCDaemonRuntimeAuthBackend(options.authBackend);
+    this.updateAuthBackend(options.authBackend);
     this.#agentBudget = options.agentBudget;
     this.#env = options.env;
     this.#argv = options.argv;
@@ -389,6 +396,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#clearBudgetTimer =
       options.clearBudgetTimer ??
       ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
+  }
+
+  updateRuntimeConfig(
+    options: AgenCDelegateBackgroundAgentRunnerRuntimeConfig,
+  ): void {
+    this.updateAuthBackend(options.authBackend);
+    this.#agentBudget = options.agentBudget;
+    this.#realtimeCallClient = options.realtimeCallClient;
+    this.#realtimeConnectTransport =
+      options.realtimeConnectTransport ?? unavailableRealtimeTransport;
+  }
+
+  updateAuthBackend(authBackend: AuthBackend | undefined): void {
+    if (authBackend === undefined) {
+      this.#authBackend = undefined;
+      return;
+    }
+    if (this.#authBackend === undefined) {
+      this.#authBackend = createAgenCDaemonRuntimeAuthBackend(authBackend);
+      return;
+    }
+    this.#authBackend.replaceBackend(authBackend);
   }
 
   async startAgent(

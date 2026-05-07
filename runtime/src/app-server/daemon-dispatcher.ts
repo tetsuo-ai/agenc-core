@@ -56,6 +56,7 @@ import {
   type CommandExecStartParams,
   type CommandExecTerminateParams,
   type CommandExecWriteParams,
+  type DaemonReloadResult,
   type ElicitationRespondParams,
   type FuzzyFileSearchParams,
   type InitializeParams,
@@ -166,6 +167,9 @@ export interface AgenCDaemonDispatcherOptions {
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
   readonly commandExec?: AgenCCommandExec;
   readonly authBackend?: AuthBackend;
+  readonly daemonControl?: {
+    reloadConfig(): DaemonReloadResult | Promise<DaemonReloadResult>;
+  };
   readonly health?: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly realtime?: AgenCRealtimeRpcHandlers;
   readonly healthStateCounter?: AgenCHealthStateCounter;
@@ -229,6 +233,11 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
   readonly #commandExec: AgenCCommandExec;
   readonly #authHandlers: AgenCDaemonAuthHandlers | undefined;
+  readonly #daemonControl:
+    | {
+        reloadConfig(): DaemonReloadResult | Promise<DaemonReloadResult>;
+      }
+    | undefined;
   readonly #health: Pick<AgenCDaemonHealthService, "ping" | "ready" | "stats">;
   readonly #realtime: AgenCRealtimeRpcHandlers;
   readonly #now: () => string;
@@ -253,6 +262,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
         : undefined;
+    this.#daemonControl = options.daemonControl;
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -591,6 +601,8 @@ export class AgenCDaemonJsonRpcDispatcher {
         return successResponse(id, this.#health.ready());
       case "health.stats":
         return successResponse(id, await this.#health.stats());
+      case "daemon.reload":
+        return this.#reloadDaemonConfig(id);
       case "auth.login":
       case "auth.whoami":
       case "auth.logout":
@@ -602,6 +614,25 @@ export class AgenCDaemonJsonRpcDispatcher {
           `daemon method is not implemented yet: ${method}`,
         );
     }
+  }
+
+  async #reloadDaemonConfig(id: RequestId): Promise<AgenCDaemonResponse> {
+    if (this.#daemonControl === undefined) {
+      return errorResponse(
+        id,
+        -32601,
+        "daemon method is not implemented yet: daemon.reload",
+      );
+    }
+    if (this.#initializeAuthenticator === undefined) {
+      return errorResponse(
+        id,
+        -32000,
+        "daemon reload requires authenticated daemon transport",
+        { code: "DAEMON_RELOAD_AUTHENTICATION_REQUIRED" },
+      );
+    }
+    return successResponse(id, await this.#daemonControl.reloadConfig());
   }
 
   async #dispatchAuthMethod(

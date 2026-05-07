@@ -68,6 +68,7 @@ export const AGENC_DAEMON_METHODS = [
   "health.ping",
   "health.ready",
   "health.stats",
+  "daemon.reload",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -393,6 +394,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "optional",
     result: "object",
     description: "Read daemon uptime, session counts, and memory usage.",
+  },
+  "daemon.reload": {
+    method: "daemon.reload",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Reload daemon configuration in the running process.",
   },
   "auth.login": {
     method: "auth.login",
@@ -1146,6 +1154,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithoutParams<"health.ping">
   | AgenCDaemonRequestWithoutParams<"health.ready">
   | AgenCDaemonRequestWithoutParams<"health.stats">
+  | AgenCDaemonRequestWithoutParams<"daemon.reload">
   | AgenCDaemonRequestWithoutParams<"auth.login">
   | AgenCDaemonRequestWithoutParams<"auth.whoami">
   | AgenCDaemonRequestWithoutParams<"auth.logout">;
@@ -1396,6 +1405,17 @@ export interface HealthStatsResult extends JsonObject {
   readonly state?: HealthStateStats;
 }
 
+export interface DaemonReloadMcpServerResult extends JsonObject {
+  readonly status: "disabled" | "unsupported" | "listening";
+  readonly url?: string;
+}
+
+export interface DaemonReloadResult extends JsonObject {
+  readonly reloaded: true;
+  readonly configReloadedAt: string;
+  readonly mcpServer: DaemonReloadMcpServerResult;
+}
+
 export interface AuthIdentity extends JsonObject {
   readonly accountId?: string;
   readonly email?: string;
@@ -1461,6 +1481,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "health.ping": HealthPingResult;
   readonly "health.ready": HealthReadyResult;
   readonly "health.stats": HealthStatsResult;
+  readonly "daemon.reload": DaemonReloadResult;
   readonly "auth.login": AuthLoginResult;
   readonly "auth.whoami": AuthWhoamiResult;
   readonly "auth.logout": AuthLogoutResult;

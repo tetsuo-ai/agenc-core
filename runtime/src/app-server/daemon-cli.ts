@@ -1,13 +1,14 @@
 /**
  * AgenC daemon CLI controls.
  *
- * F-03i owns the local process controls only: start, stop, status, restart,
- * and the pid file. Request dispatch and health probes are wired by later
- * daemon rows.
+ * F-03i owns the local process controls only: start, stop, status, reload,
+ * restart, and the pid file. Request dispatch and health probes are wired by
+ * later daemon rows.
  */
 
 import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -22,6 +23,7 @@ import {
 import {
   AgenCDelegateBackgroundAgentRunner,
   type AgenCBackgroundAgentRunner,
+  type AgenCDelegateBackgroundAgentRunnerRuntimeConfig,
 } from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCCommandExecService } from "./command-exec.js";
@@ -36,9 +38,14 @@ import {
   type AgenCRealtimeHeadersProvider,
 } from "./realtime-transport.js";
 import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
   type AgentStatus,
   type AgentToolOutputLog,
+  type AgenCDaemonErrorResponse,
+  type AgenCDaemonResponse,
+  type AgenCDaemonSuccessResponse,
+  type DaemonReloadResult,
   type JsonObject,
   type JsonValue,
   type SessionStatus,
@@ -64,7 +71,10 @@ import { loadConfig } from "../config/loader.js";
 import { resolveProviderBaseURL } from "../config/env.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
-import { startMcpServerFromConfig } from "../mcp/server/start.js";
+import {
+  resolveMcpServeDefaults,
+  startMcpServerFromConfig,
+} from "../mcp/server/start.js";
 import {
   recoverDaemonStateOnStartup,
   type DaemonStartupRecoveryReport,
@@ -100,6 +110,9 @@ export const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
 export const AGENC_DAEMON_WEBSOCKET_HOST_ENV = "AGENC_DAEMON_WEBSOCKET_HOST";
 export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
 export const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
+export const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
+  "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
+const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -113,6 +126,7 @@ export const AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH =
   DEFAULT_DAEMON_WEBSOCKET_URL.pathname;
 
 export type AgenCDaemonCliAction =
+  | "reload"
   | "restart"
   | "run"
   | "start"
@@ -271,7 +285,7 @@ export function resolveAgenCDaemonSnapshotPath(
 
 export function formatAgenCDaemonCliHelpText(): string {
   return [
-    "Usage: agenc daemon <start|stop|status|restart>",
+    "Usage: agenc daemon <start|stop|status|reload|restart>",
     "       agenc daemon start --foreground",
     "",
     "Commands:",
@@ -279,12 +293,14 @@ export function formatAgenCDaemonCliHelpText(): string {
     "  start --foreground    Run the daemon in the current process",
     "  stop                  Stop the local AgenC daemon",
     "  status                Show local AgenC daemon status",
+    "  reload                Reload daemon configuration in place",
     "  restart               Stop and start the local AgenC daemon",
     "",
     "Examples:",
     "  agenc daemon status",
     "  agenc daemon start",
     "  agenc daemon start --foreground",
+    "  agenc daemon reload",
     "  agenc daemon restart",
   ].join("\n");
 }
@@ -305,6 +321,7 @@ export function parseAgenCDaemonCliArgs(
     action === "start" ||
     action === "stop" ||
     action === "status" ||
+    action === "reload" ||
     action === "restart" ||
     action === "run"
   ) {
@@ -364,6 +381,8 @@ async function runAgenCDaemonAction(
       return stopAgenCDaemon(host, io, options.stopTimeoutMs ?? 2000);
     case "status":
       return statusAgenCDaemon(host, io);
+    case "reload":
+      return reloadAgenCDaemon(host, io);
     case "restart": {
       await stopAgenCDaemon(host, io, options.stopTimeoutMs ?? 2000, {
         quietWhenStopped: true,
@@ -456,6 +475,195 @@ async function statusAgenCDaemon(
   return 1;
 }
 
+async function reloadAgenCDaemon(
+  host: AgenCDaemonCliHost,
+  io: AgenCDaemonCliIo,
+): Promise<number> {
+  const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+  const pid = await readAgenCDaemonPid(pidPath);
+  if (pid === null) {
+    io.stdout.write("AgenC daemon stopped\n");
+    return 1;
+  }
+  if (!host.isPidRunning(pid)) {
+    await removeAgenCDaemonPid(pidPath);
+    io.stdout.write("AgenC daemon stopped\n");
+    return 1;
+  }
+
+  try {
+    await requestAgenCDaemonReload(host);
+  } catch (error) {
+    io.stderr.write(
+      `agenc: daemon reload failed (pid ${pid}): ${formatCleanupError(error)}\n`,
+    );
+    return 1;
+  }
+  io.stdout.write(`AgenC daemon reloaded configuration (pid ${pid})\n`);
+  return 0;
+}
+
+async function requestAgenCDaemonReload(
+  host: AgenCDaemonCliHost,
+): Promise<DaemonReloadResult> {
+  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+  const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+  const authCookie = await readAgenCDaemonCookie(cookiePath);
+  const timeoutMs = resolveAgenCDaemonRequestTimeoutMs(host.env);
+  const responses = await sendAgenCDaemonJsonLineRequests(socketPath, timeoutMs, [
+    {
+      jsonrpc: JSON_RPC_VERSION,
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
+        clientName: "agenc-daemon-cli",
+        authCookie,
+        capabilities: {},
+      },
+    },
+    {
+      jsonrpc: JSON_RPC_VERSION,
+      id: 2,
+      method: "daemon.reload",
+      params: {},
+    },
+  ]);
+  const initializeResponse = responses[0];
+  if (initializeResponse === undefined) {
+    throw new Error("daemon did not return an initialize response");
+  }
+  assertExpectedDaemonResponse(initializeResponse, 1, "initialize");
+  if (isDaemonErrorResponse(initializeResponse)) {
+    throw new Error(initializeResponse.error.message);
+  }
+  const reloadResponse = responses[1];
+  if (reloadResponse === undefined) {
+    throw new Error("daemon did not return a daemon.reload response");
+  }
+  assertExpectedDaemonResponse(reloadResponse, 2, "daemon.reload");
+  if (isDaemonErrorResponse(reloadResponse)) {
+    throw new Error(reloadResponse.error.message);
+  }
+  const result = (reloadResponse as AgenCDaemonSuccessResponse<"daemon.reload">)
+    .result;
+  if (!isDaemonReloadResult(result)) {
+    throw new Error("daemon returned a malformed daemon.reload result");
+  }
+  return result;
+}
+
+function resolveAgenCDaemonRequestTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const configured = env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV]?.trim();
+  if (configured === undefined || configured.length === 0) {
+    return DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+  }
+  const timeoutMs = Number.parseInt(configured, 10);
+  if (
+    !Number.isInteger(timeoutMs) ||
+    String(timeoutMs) !== configured ||
+    timeoutMs <= 0
+  ) {
+    throw new Error(
+      `${AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV} must be a positive integer`,
+    );
+  }
+  return timeoutMs;
+}
+
+async function readAgenCDaemonCookie(cookiePath: string): Promise<string> {
+  try {
+    const cookie = (await readFile(cookiePath, "utf8")).trim();
+    if (cookie.length > 0) return cookie;
+  } catch (error) {
+    if (asNodeError(error).code !== "ENOENT") throw error;
+  }
+  throw new Error(`daemon cookie is not available at ${cookiePath}`);
+}
+
+function sendAgenCDaemonJsonLineRequests(
+  socketPath: string,
+  timeoutMs: number,
+  requests: readonly object[],
+): Promise<readonly AgenCDaemonResponse[]> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    const responses: AgenCDaemonResponse[] = [];
+    let buffer = "";
+    let nextRequestIndex = 0;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      finish(
+        new Error(`Timed out waiting for daemon response at ${socketPath}`),
+      );
+    }, timeoutMs);
+
+    const finish = (
+      error: Error | null,
+      responseList?: readonly AgenCDaemonResponse[],
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      if (error !== null) {
+        reject(error);
+        return;
+      }
+      resolve(responseList!);
+    };
+    const writeNextRequest = () => {
+      const request = requests[nextRequestIndex];
+      if (request === undefined) return;
+      nextRequestIndex += 1;
+      socket.write(`${JSON.stringify(request)}\n`);
+    };
+
+    socket.setEncoding("utf8");
+    socket.once("connect", writeNextRequest);
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      while (true) {
+        const newline = buffer.indexOf("\n");
+        if (newline < 0) return;
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line.length === 0) continue;
+        try {
+          const message = JSON.parse(line) as JsonValue;
+          if (!isJsonObject(message) || !isJsonRpcResponse(message)) {
+            continue;
+          }
+          const response = message as AgenCDaemonResponse;
+          responses.push(response);
+          if (
+            isDaemonErrorResponse(response) ||
+            responses.length >= requests.length
+          ) {
+            finish(null, responses);
+            return;
+          }
+          writeNextRequest();
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+      }
+    });
+    socket.once("error", (error) => {
+      finish(error);
+    });
+    socket.once("close", () => {
+      finish(
+        new Error(`Daemon connection closed before response at ${socketPath}`),
+      );
+    });
+  });
+}
+
 async function runAgenCDaemonForeground(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
@@ -472,6 +680,10 @@ async function runAgenCDaemonForeground(
   if (authStartup === null) {
     return 1;
   }
+  let activeConfig = authStartup.config;
+  const reloadableAuthBackend = new AgenCDaemonReloadableAuthBackend(
+    authStartup.authBackend,
+  );
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   let webSocketListenOptions: AgenCDaemonWebSocketListenOptions;
   try {
@@ -492,7 +704,7 @@ async function runAgenCDaemonForeground(
     startupRecovery = recoverAgenCDaemonStartupState(
       authStartup.daemonHome,
       process.cwd(),
-      authStartup.config,
+      activeConfig,
     );
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
   } catch (error) {
@@ -513,40 +725,25 @@ async function runAgenCDaemonForeground(
   const cleanup = new AgenCCleanupRegistry();
   let shuttingDown = false;
   let runner = options.runner;
+  let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
   if (runner === undefined) {
-    const realtimeBaseUrl = resolveAgenCDaemonRealtimeBaseUrl(
-      host.env,
-      authStartup.config,
-    );
-    const realtimeHeaders = createAgenCDaemonRealtimeHeaderResolver(
-      authStartup.authBackend,
-      host.env,
-    );
-    const realtimeCallClient = new AgenCRealtimeCallClient({
-      baseUrl: realtimeBaseUrl,
-      defaultHeaders: realtimeHeaders,
-    });
-    const realtimeWebSocketTransport =
-      new AgenCRealtimeWebSocketTransportConnector({
-        baseUrl: realtimeBaseUrl,
-        defaultHeaders: realtimeHeaders,
-      });
-    runner = new AgenCDelegateBackgroundAgentRunner({
+    configuredRunner = new AgenCDelegateBackgroundAgentRunner({
       env: host.env,
       argv: [host.execPath, host.entrypointPath, "--autonomous"],
-      authBackend: authStartup.authBackend,
-      agentBudget: authStartup.config.agent?.budget,
-      realtimeCallClient,
-      realtimeConnectTransport: (request) =>
-        realtimeWebSocketTransport.connect(request),
+      ...createAgenCDaemonDelegateRunnerRuntimeConfig(
+        host,
+        activeConfig,
+        reloadableAuthBackend,
+      ),
     });
+    runner = configuredRunner;
   }
   let snapshotPolicies: AgenCDaemonSnapshotPolicyRegistry;
   try {
     snapshotPolicies = new AgenCDaemonSnapshotPolicyRegistry({
       agencHome: authStartup.daemonHome,
       defaultCwd: process.cwd(),
-      snapshotRetention: authStartup.config.agent?.retention,
+      snapshotRetention: activeConfig.agent?.retention,
       periodicIntervalMs: options.snapshotPeriodicIntervalMs,
       onError: (error) =>
         io.stderr.write(
@@ -685,12 +882,69 @@ async function runAgenCDaemonForeground(
     resolveThread: (threadId) =>
       runner.resolveRealtimeThread?.(threadId) ?? null,
   });
+  let activeMcpServer = inactiveDaemonMcpServerHandle(activeConfig);
+  let reloadChain = Promise.resolve<DaemonReloadResult | null>(null);
+  const reloadConfig = (): Promise<DaemonReloadResult> => {
+    reloadChain = reloadChain
+      .catch(() => null)
+      .then(async () => {
+        if (shuttingDown) {
+          throw new Error("daemon is shutting down");
+        }
+        const next = await resolveAgenCDaemonAuthStartup(host, io);
+        const nextMcpServer =
+          activeMcpServer.fingerprint === daemonMcpServerFingerprint(next.config)
+            ? activeMcpServer
+            : await startConfiguredDaemonMcpServer(next.config, io);
+        const previousMcpServer = activeMcpServer;
+        let adopted = false;
+        try {
+          reloadableAuthBackend.replace(next.authBackend);
+          configuredRunner?.updateRuntimeConfig(
+            createAgenCDaemonDelegateRunnerRuntimeConfig(
+              host,
+              next.config,
+              reloadableAuthBackend,
+            ),
+          );
+          snapshotPolicies.updateSnapshotRetention(
+            next.config.agent?.retention,
+          );
+          activeConfig = next.config;
+          activeMcpServer = nextMcpServer;
+          adopted = true;
+        } finally {
+          if (!adopted && nextMcpServer !== previousMcpServer) {
+            await closeDaemonMcpServerAfterReloadFailure(nextMcpServer, io);
+          }
+        }
+        if (previousMcpServer !== nextMcpServer) {
+          await closeReplacedDaemonMcpServer(previousMcpServer, io);
+        }
+        const result: DaemonReloadResult = {
+          reloaded: true,
+          configReloadedAt: new Date().toISOString(),
+          mcpServer: daemonMcpServerReloadResult(activeMcpServer),
+        };
+        io.stderr.write("AgenC daemon config reloaded\n");
+        return result;
+      });
+    return reloadChain.then((result) => {
+      if (result === null) {
+        throw new Error("daemon reload did not produce a result");
+      }
+      return result;
+    });
+  };
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager,
     clientMultiplexer,
     sessionManager,
     commandExec,
-    authBackend: authStartup.authBackend,
+    authBackend: reloadableAuthBackend,
+    daemonControl: {
+      reloadConfig,
+    },
     health,
     realtime,
     initializeAuthenticator: (params) =>
@@ -817,19 +1071,23 @@ async function runAgenCDaemonForeground(
   cleanup.register("daemon-websocket", async () => {
     await webSocketServer.close();
   });
+  cleanup.register("daemon-mcp-server", async () => {
+    await activeMcpServer.close();
+  });
 
+  const signalProcess = options.signalProcess ?? process;
   const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
     shuttingDown = true;
     io.stderr.write(`${summarizeAgenCShutdown(event)}\n`);
-  }, options.signalProcess ?? process);
+  }, signalProcess);
   let exitCode = 0;
   let cleanupContext:
     | { readonly reason: "daemon_shutdown" }
     | Awaited<typeof shutdownSignal.completed> = { reason: "daemon_shutdown" };
   try {
-    if (
-      !(await startConfiguredDaemonMcpServer(authStartup.config, cleanup, io))
-    ) {
+    try {
+      activeMcpServer = await startConfiguredDaemonMcpServer(activeConfig, io);
+    } catch {
       exitCode = 1;
       return exitCode;
     }
@@ -866,33 +1124,94 @@ async function runAgenCDaemonForeground(
   return exitCode;
 }
 
+interface AgenCDaemonMcpServerHandle {
+  readonly fingerprint: string;
+  readonly status: "disabled" | "unsupported" | "listening";
+  readonly url?: string;
+  close(): Promise<void>;
+}
+
 async function startConfiguredDaemonMcpServer(
   config: AgenCConfig,
-  cleanup: AgenCCleanupRegistry,
   io: AgenCDaemonCliIo,
-): Promise<boolean> {
+): Promise<AgenCDaemonMcpServerHandle> {
   try {
     const result = await startMcpServerFromConfig(config, {
       cwd: process.cwd(),
     });
+    const fingerprint = daemonMcpServerFingerprint(config);
     if (result.kind === "disabled") {
-      return true;
+      return inactiveDaemonMcpServerHandle(config, "disabled");
     }
     if (result.kind === "unsupported") {
       io.stderr.write(
         `agenc: ${result.reason}; skipping daemon MCP autostart\n`,
       );
-      return true;
+      return inactiveDaemonMcpServerHandle(config, "unsupported");
     }
 
-    cleanup.register("daemon-mcp-server", () => result.server.close());
     io.stderr.write(`AgenC MCP server listening on ${result.server.url}\n`);
-    return true;
+    return {
+      fingerprint,
+      status: "listening",
+      url: result.server.url,
+      close: () => result.server.close(),
+    };
   } catch (error) {
     io.stderr.write(
       `agenc: daemon MCP server start failed: ${formatCleanupError(error)}\n`,
     );
-    return false;
+    throw error;
+  }
+}
+
+function inactiveDaemonMcpServerHandle(
+  config?: AgenCConfig,
+  status: "disabled" | "unsupported" = "disabled",
+): AgenCDaemonMcpServerHandle {
+  return {
+    fingerprint: config === undefined ? "unconfigured" : daemonMcpServerFingerprint(config),
+    status,
+    close: async () => {},
+  };
+}
+
+function daemonMcpServerFingerprint(config: AgenCConfig): string {
+  return JSON.stringify(resolveMcpServeDefaults(config.mcp?.server));
+}
+
+function daemonMcpServerReloadResult(
+  handle: AgenCDaemonMcpServerHandle,
+): DaemonReloadResult["mcpServer"] {
+  return {
+    status: handle.status,
+    ...(handle.url !== undefined ? { url: handle.url } : {}),
+  };
+}
+
+async function closeReplacedDaemonMcpServer(
+  handle: AgenCDaemonMcpServerHandle,
+  io: AgenCDaemonCliIo,
+): Promise<void> {
+  try {
+    await handle.close();
+  } catch (error) {
+    io.stderr.write(
+      `agenc: replaced daemon MCP server close failed: ${formatCleanupError(error)}\n`,
+    );
+  }
+}
+
+async function closeDaemonMcpServerAfterReloadFailure(
+  handle: AgenCDaemonMcpServerHandle,
+  io: AgenCDaemonCliIo,
+): Promise<void> {
+  try {
+    await handle.close();
+  } catch (error) {
+    io.stderr.write(
+      `agenc: rejected daemon MCP server close failed: ${formatCleanupError(error)}\n`,
+    );
   }
 }
 
@@ -962,7 +1281,7 @@ interface AgenCDaemonSnapshotPolicyEntry {
 class AgenCDaemonSnapshotPolicyRegistry {
   readonly #agencHome: string;
   readonly #defaultCwd: string;
-  readonly #snapshotRetention: AgentRunRetentionConfig | undefined;
+  #snapshotRetention: AgentRunRetentionConfig | undefined;
   readonly #periodicIntervalMs: number;
   readonly #onError: (error: unknown) => void;
   readonly #policies = new Map<string, AgenCDaemonSnapshotPolicyEntry>();
@@ -1012,6 +1331,15 @@ class AgenCDaemonSnapshotPolicyRegistry {
   flushPeriodic(): void {
     for (const entry of this.#policies.values()) {
       entry.policy.flushPeriodic();
+    }
+  }
+
+  updateSnapshotRetention(
+    snapshotRetention: AgentRunRetentionConfig | undefined,
+  ): void {
+    this.#snapshotRetention = snapshotRetention;
+    for (const entry of this.#policies.values()) {
+      entry.policy.updateSnapshotRetention(snapshotRetention);
     }
   }
 
@@ -1735,6 +2063,79 @@ interface AgenCDaemonAuthStartup {
   readonly authBackend: AuthBackend;
 }
 
+class AgenCDaemonReloadableAuthBackend implements AuthBackend {
+  #current: AuthBackend;
+
+  constructor(initial: AuthBackend) {
+    this.#current = initial;
+  }
+
+  get kind(): AuthBackend["kind"] {
+    return this.#current.kind;
+  }
+
+  replace(next: AuthBackend): void {
+    this.#current = next;
+  }
+
+  login(params?: Parameters<AuthBackend["login"]>[0]) {
+    return this.#current.login(params);
+  }
+
+  logout(params?: Parameters<AuthBackend["logout"]>[0]) {
+    return this.#current.logout(params);
+  }
+
+  whoami(params?: Parameters<AuthBackend["whoami"]>[0]) {
+    return this.#current.whoami(params);
+  }
+
+  vendKey(
+    provider: Parameters<AuthBackend["vendKey"]>[0],
+    sessionId: Parameters<AuthBackend["vendKey"]>[1],
+  ) {
+    return this.#current.vendKey(provider, sessionId);
+  }
+
+  inferAgencModel(params?: Parameters<AuthBackend["inferAgencModel"]>[0]) {
+    return this.#current.inferAgencModel(params);
+  }
+
+  getSubscriptionTier(
+    params?: Parameters<AuthBackend["getSubscriptionTier"]>[0],
+  ) {
+    return this.#current.getSubscriptionTier(params);
+  }
+}
+
+function createAgenCDaemonDelegateRunnerRuntimeConfig(
+  host: AgenCDaemonCliHost,
+  config: AgenCConfig,
+  authBackend: AuthBackend,
+): AgenCDelegateBackgroundAgentRunnerRuntimeConfig {
+  const realtimeBaseUrl = resolveAgenCDaemonRealtimeBaseUrl(host.env, config);
+  const realtimeHeaders = createAgenCDaemonRealtimeHeaderResolver(
+    authBackend,
+    host.env,
+  );
+  const realtimeCallClient = new AgenCRealtimeCallClient({
+    baseUrl: realtimeBaseUrl,
+    defaultHeaders: realtimeHeaders,
+  });
+  const realtimeWebSocketTransport =
+    new AgenCRealtimeWebSocketTransportConnector({
+      baseUrl: realtimeBaseUrl,
+      defaultHeaders: realtimeHeaders,
+    });
+  return {
+    authBackend,
+    agentBudget: config.agent?.budget,
+    realtimeCallClient,
+    realtimeConnectTransport: (request) =>
+      realtimeWebSocketTransport.connect(request),
+  };
+}
+
 export function resolveAgenCDaemonRealtimeBaseUrl(
   env: NodeJS.ProcessEnv,
   config?: AgenCConfig,
@@ -1770,25 +2171,32 @@ async function tryResolveAgenCDaemonAuthStartup(
   io: AgenCDaemonCliIo,
 ): Promise<AgenCDaemonAuthStartup | null> {
   try {
-    const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
-    const loadedConfig = await loadConfig({
-      home: daemonHome,
-      onWarn: (message) => io.stderr.write(`${message}\n`),
-    });
-    return {
-      daemonHome,
-      config: loadedConfig.config,
-      authBackend: createAuthBackend(loadedConfig.config, {
-        agencHome: daemonHome,
-        env: host.env,
-      }),
-    };
+    return await resolveAgenCDaemonAuthStartup(host, io);
   } catch (error) {
     io.stderr.write(
       `agenc: daemon auth backend initialization failed: ${formatCleanupError(error)}\n`,
     );
     return null;
   }
+}
+
+async function resolveAgenCDaemonAuthStartup(
+  host: AgenCDaemonCliHost,
+  io: AgenCDaemonCliIo,
+): Promise<AgenCDaemonAuthStartup> {
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  const loadedConfig = await loadConfig({
+    home: daemonHome,
+    onWarn: (message) => io.stderr.write(`${message}\n`),
+  });
+  return {
+    daemonHome,
+    config: loadedConfig.config,
+    authBackend: createAuthBackend(loadedConfig.config, {
+      agencHome: daemonHome,
+      env: host.env,
+    }),
+  };
 }
 
 async function waitForPidExit(
@@ -1889,6 +2297,57 @@ export function createNodeDaemonCliHost(): AgenCDaemonCliHost {
 
 function asNodeError(error: unknown): NodeJS.ErrnoException {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonRpcResponse(message: JsonObject): boolean {
+  return (
+    typeof message.id === "string" ||
+    typeof message.id === "number" ||
+    message.id === null
+  );
+}
+
+function isDaemonErrorResponse(
+  response: AgenCDaemonResponse,
+): response is AgenCDaemonErrorResponse {
+  return "error" in response;
+}
+
+function assertExpectedDaemonResponse(
+  response: AgenCDaemonResponse,
+  expectedId: number,
+  method: string,
+): void {
+  if (response.jsonrpc !== JSON_RPC_VERSION) {
+    throw new Error(
+      `daemon returned an unsupported JSON-RPC version for ${method}`,
+    );
+  }
+  if (response.id !== expectedId) {
+    throw new Error(`daemon returned a mismatched response id for ${method}`);
+  }
+}
+
+function isDaemonReloadResult(value: JsonValue | undefined): value is DaemonReloadResult {
+  if (!isJsonObject(value)) return false;
+  if (value.reloaded !== true || typeof value.configReloadedAt !== "string") {
+    return false;
+  }
+  const mcpServer = value.mcpServer;
+  if (!isJsonObject(mcpServer)) return false;
+  const status = mcpServer.status;
+  if (
+    status !== "disabled" &&
+    status !== "unsupported" &&
+    status !== "listening"
+  ) {
+    return false;
+  }
+  return mcpServer.url === undefined || typeof mcpServer.url === "string";
 }
 
 function daemonShuttingDownResponse(message: JsonObject): JsonObject {

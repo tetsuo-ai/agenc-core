@@ -155,20 +155,24 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
 }
 
 function createSignalProcess() {
-  const listeners = new Map<AgenCShutdownSignal, Set<() => void>>();
+  type TestDaemonSignal = AgenCShutdownSignal;
+  const listeners = new Map<TestDaemonSignal, Set<() => void>>();
+  const addListener = (signal: TestDaemonSignal, listener: () => void) => {
+    let set = listeners.get(signal);
+    if (set === undefined) {
+      set = new Set();
+      listeners.set(signal, set);
+    }
+    set.add(listener);
+  };
   return {
     once: (signal: AgenCShutdownSignal, listener: () => void) => {
-      let set = listeners.get(signal);
-      if (set === undefined) {
-        set = new Set();
-        listeners.set(signal, set);
-      }
-      set.add(listener);
+      addListener(signal, listener);
     },
-    removeListener: (signal: AgenCShutdownSignal, listener: () => void) => {
+    removeListener: (signal: TestDaemonSignal, listener: () => void) => {
       listeners.get(signal)?.delete(listener);
     },
-    emit(signal: AgenCShutdownSignal): void {
+    emit(signal: TestDaemonSignal): void {
       for (const listener of [...(listeners.get(signal) ?? [])]) {
         listener();
       }
@@ -483,6 +487,10 @@ describe("AgenC daemon CLI", () => {
       kind: "command",
       action: "restart",
     });
+    expect(parseAgenCDaemonCliArgs(["daemon", "reload"])).toEqual({
+      kind: "command",
+      action: "reload",
+    });
     expect(parseAgenCDaemonCliArgs(["daemon", "bogus"])).toEqual({
       kind: "error",
       message: "unknown daemon command: bogus",
@@ -492,6 +500,7 @@ describe("AgenC daemon CLI", () => {
   it("documents foreground daemon mode and ships supervisor templates", async () => {
     const helpText = formatAgenCDaemonCliHelpText();
     expect(helpText).toContain("agenc daemon start --foreground");
+    expect(helpText).toContain("agenc daemon reload");
     expect(helpText).toContain("Run the daemon in the current process");
 
     const repoRoot = resolve(process.cwd(), "..");
@@ -603,6 +612,248 @@ describe("AgenC daemon CLI", () => {
     ).resolves.toBe(0);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
     expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("reload reports a stopped daemon", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+
+    await expect(
+      runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+    ).resolves.toBe(1);
+
+    expect(io.stdoutText()).toContain("AgenC daemon stopped");
+    expect(host.terminatedPids).toEqual([]);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("reload cleans a stale daemon pid", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await writeAgenCDaemonPid(pidPath, 4400);
+
+    await expect(
+      runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+    ).resolves.toBe(1);
+
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(io.stdoutText()).toContain("AgenC daemon stopped");
+    expect(host.terminatedPids).toEqual([]);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("reload command re-reads config and starts configured mcp.server without shutdown", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const updateRuntimeConfig = vi.spyOn(
+      AgenCDelegateBackgroundAgentRunner.prototype,
+      "updateRuntimeConfig",
+    );
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie,
+        timeoutMs: 1000,
+      });
+      await expect(client.request("auth.whoami")).resolves.toMatchObject({
+        authenticated: false,
+      });
+
+      await writeFile(
+        join(agencHome, "config.toml"),
+        `
+[auth]
+backend = "remote"
+
+[mcp.server]
+enabled = true
+transport = "sse"
+port = 0
+
+[agent.budget]
+token_cap = 123
+        `,
+      );
+
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+
+      expect(host.terminatedPids).toEqual([]);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4100);
+      expect(io.stdoutText()).toContain(
+        "AgenC daemon reloaded configuration (pid 4100)",
+      );
+      await expect(client.request("auth.whoami")).resolves.toMatchObject({
+        authenticated: false,
+        provider: "remote",
+        identity: {
+          daemon: {
+            transport: "daemon",
+            verifiedBy: "cookie",
+            cookie: "verified",
+            peerUid: null,
+          },
+        },
+      });
+      expect(io.stderrText()).toMatch(
+        /AgenC MCP server listening on http:\/\/127\.0\.0\.1:\d+\/mcp/,
+      );
+      expect(updateRuntimeConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentBudget: expect.objectContaining({ token_cap: 123 }),
+          realtimeConnectTransport: expect.any(Function),
+        }),
+      );
+      expect(updateRuntimeConfig.mock.calls.at(-1)?.[0].authBackend?.kind).toBe(
+        "remote",
+      );
+      expect(io.stderrText()).toContain("AgenC daemon config reloaded");
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+      updateRuntimeConfig.mockRestore();
+    }
+  });
+
+  it("reload failure preserves active auth and mcp.server state", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    await writeFile(
+      join(agencHome, "config.toml"),
+      `
+[mcp.server]
+enabled = true
+transport = "sse"
+port = 0
+      `,
+    );
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie,
+        timeoutMs: 1000,
+      });
+      await expect(client.request("auth.whoami")).resolves.toEqual({
+        authenticated: false,
+        identity: {
+          daemon: {
+            transport: "daemon",
+            verifiedBy: "cookie",
+            cookie: "verified",
+            peerUid: null,
+          },
+        },
+      });
+      expect(
+        io.stderrText().match(/AgenC MCP server listening/g) ?? [],
+      ).toHaveLength(1);
+
+      await writeFile(
+        join(agencHome, "config.toml"),
+        `
+[auth]
+backend = "remote"
+
+[mcp.server]
+enabled = true
+transport = "sse"
+host = "0.0.0.0"
+port = 0
+        `,
+      );
+
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(1);
+
+      expect(io.stderrText()).toContain("agenc: daemon reload failed");
+      await expect(client.request("auth.whoami")).resolves.toEqual({
+        authenticated: false,
+        identity: {
+          daemon: {
+            transport: "daemon",
+            verifiedBy: "cookie",
+            cookie: "verified",
+            peerUid: null,
+          },
+        },
+      });
+      expect(
+        io.stderrText().match(/AgenC MCP server listening/g) ?? [],
+      ).toHaveLength(1);
+      expect(host.terminatedPids).toEqual([]);
+      await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4100);
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("reload fails without a daemon cookie and leaves the daemon running", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(4400);
+    await writeAgenCDaemonPid(pidPath, 4400);
+
+    await expect(
+      runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+    ).resolves.toBe(1);
+
+    expect(io.stderrText()).toContain("daemon cookie is not available");
+    expect(host.terminatedPids).toEqual([]);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4400);
 
     await rm(agencHome, { recursive: true, force: true });
   });

@@ -7,7 +7,7 @@ function makeAuthBackend(vendKey: AuthBackend["vendKey"]): AuthBackend {
     login: vi.fn(() => ({ authenticated: true, provider: "local" })),
     logout: vi.fn(() => ({ authenticated: false })),
     whoami: vi.fn(() => ({ authenticated: true, provider: "local" })),
-    vendKey,
+    vendKey: vi.fn(vendKey),
     inferAgencModel: vi.fn(() => ({
       provider: "agenc",
       model: "agenc:grok",
@@ -54,6 +54,38 @@ describe("AgenC daemon provider-key vending", () => {
     const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
 
     expect(wrapped.kind).toBe("remote");
+  });
+
+  it("replaces the backend and clears cached provider keys", async () => {
+    const initialBackend: AuthBackend = {
+      ...makeAuthBackend((provider, sessionId) => ({
+        provider: String(provider),
+        sessionId,
+        apiKey: "managed-key-before",
+      })),
+      kind: "local",
+    };
+    const nextBackend: AuthBackend = {
+      ...makeAuthBackend((provider, sessionId) => ({
+        provider: String(provider),
+        sessionId,
+        apiKey: "managed-key-after",
+      })),
+      kind: "remote",
+    };
+    const wrapped = createAgenCDaemonRuntimeAuthBackend(initialBackend);
+
+    await expect(wrapped.vendKey("grok", "session-1")).resolves.toMatchObject({
+      apiKey: "managed-key-before",
+    });
+    wrapped.replaceBackend(nextBackend);
+
+    expect(wrapped.kind).toBe("remote");
+    await expect(wrapped.vendKey("grok", "session-1")).resolves.toMatchObject({
+      apiKey: "managed-key-after",
+    });
+    expect(initialBackend.vendKey).toHaveBeenCalledTimes(1);
+    expect(nextBackend.vendKey).toHaveBeenCalledTimes(1);
   });
 
   it("retries a provider-key vend after the AuthBackend rejects", async () => {
