@@ -5942,11 +5942,49 @@ async function memoryGates(item) {
     return;
   }
   if (id === "MM-05") {
-    // Memory hot-reload via FW-01.
-    const found = grepRepo("memoryReload|hot.reload|hotReload", "runtime/src/memory") ||
-                  grepRepo("memoryReload|hot.reload|hotReload", "runtime/src/memdir");
-    if (!found) failGate("MM-05: memory hot-reload not found");
-    pass("MM-05: memory hot-reload referenced");
+    const requiredSymbols = [
+      ["runtime/src/memory/extraction-triggers.ts", "memoryExtractionVisibleRange"],
+      ["runtime/src/memory/extraction-triggers.ts", "hasSuccessfulMemoryWrite"],
+      ["runtime/src/memory/extraction-triggers.ts", "isMainMemoryExtractionContext"],
+      ["runtime/src/memory/extraction-triggers.ts", "isMemoryExtractionDisabledByEnv"],
+      ["runtime/src/memory/extraction-triggers.ts", "shouldDeferForEligibleTurnCadence"],
+      ["runtime/src/memory/extraction-triggers.test.ts", "memory extraction triggers"],
+      ["runtime/src/services/extractMemories/extractMemories.ts", "../../memory/extraction-triggers.js"],
+      ["runtime/src/services/extractMemories/extractMemories.ts", "createMemoryExtractionTriggerState"],
+      ["runtime/src/services/extractMemories/extractMemories.ts", "hasSuccessfulMemoryWrite"],
+      ["runtime/src/services/extractMemories/extractMemories.ts", "shouldDeferForEligibleTurnCadence"],
+      ["runtime/src/query/stopHooks.ts", "executeAutoDream"],
+      ["parity/MM-05-parity.json", "memory-extraction-triggers"],
+    ];
+    for (const [rel, symbol] of requiredSymbols) {
+      const file = path.join(root, rel);
+      if (!existsSync(file)) failGate(`MM-05: ${rel} missing`);
+      const source = readFileSync(file, "utf8");
+      if (!source.includes(symbol)) {
+        failGate(`MM-05: ${symbol} missing from ${rel}`);
+      }
+    }
+
+    const legacyStopHooks = readFileSync(path.join(root, "runtime/src/query/stopHooks.ts"), "utf8");
+    if (
+      legacyStopHooks.includes("executeExtractMemories") ||
+      legacyStopHooks.includes("EXTRACT_MEMORIES")
+    ) {
+      failGate("MM-05: legacy query stopHooks must not call memory extraction without a Session/TurnContext");
+    }
+
+    const vitest = run("npm", [
+      "test",
+      "--workspace",
+      "@tetsuo-ai/runtime",
+      "--",
+      "--run",
+      "src/memory/extraction-triggers.test.ts",
+      "src/services/extractMemories/extractMemories.test.ts",
+      "src/phases/commit.test.ts",
+    ]);
+    if (vitest.status !== 0) failGate("MM-05 targeted Vitest suite failed");
+    pass("MM-05: memory extraction triggers verified");
     return;
   }
   if (id === "MM-07" || id === "MM-08") {

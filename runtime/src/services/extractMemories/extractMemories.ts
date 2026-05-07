@@ -28,7 +28,16 @@ import type { delegate as delegateFn } from "../../agents/delegate.js";
 import type { ensureAgentControl as ensureAgentControlFn } from "../../bin/delegate-tool.js";
 import { SESSION_ALLOWED_ROOTS_ARG } from "../../agents/_deps/filesystem-args.js";
 import type { AgentPath } from "../../agents/registry.js";
-import { isEnvTruthy } from "../../utils/envUtils.js";
+import {
+  createMemoryExtractionTriggerState,
+  hasSuccessfulMemoryWrite,
+  isMainMemoryExtractionContext,
+  isMemoryExtractionDisabledByEnv,
+  memoryExtractionVisibleRange,
+  parseMemoryToolArguments,
+  shouldDeferForEligibleTurnCadence,
+  type MemoryExtractionTriggerState,
+} from "../../memory/extraction-triggers.js";
 import { formatMemoryManifest, scanMemoryFiles } from "./memory-scan.js";
 import {
   AUTO_MEMORY_INDEX_FILE,
@@ -98,11 +107,10 @@ interface VisibleRange {
 }
 
 interface ExtractionLane {
-  processedVisibleCount: number;
+  trigger: MemoryExtractionTriggerState;
   inProgress: boolean;
   lastAccessedAt: number;
   pendingContext: QueuedExtraction | undefined;
-  turnsSinceLastExtraction: number;
 }
 
 interface ChildWriteTracker {
@@ -149,37 +157,6 @@ function snapshotContext(context: ExtractMemoriesContext): ExtractMemoriesContex
         : {}),
     })),
   };
-}
-
-function visibleRange(
-  messages: readonly LLMMessage[],
-  processedVisibleCount: number,
-): VisibleRange {
-  const visibleMessages = messages.filter(
-    (message) => message.role === "user" || message.role === "assistant",
-  );
-  const currentVisibleCount = visibleMessages.length;
-  const unprocessedMessages =
-    currentVisibleCount < processedVisibleCount
-      ? visibleMessages
-      : visibleMessages.slice(processedVisibleCount);
-  return {
-    visibleMessages,
-    unprocessedMessages,
-    currentVisibleCount,
-  };
-}
-
-function parseToolArguments(raw: string | undefined): Record<string, unknown> {
-  if (!raw || raw.trim().length === 0) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 function memoryRoot(memoryDir: string): string {
@@ -333,31 +310,6 @@ export function createAutoMemoryToolPolicy(memoryDir: string): ChildToolPolicy {
 
 export const createAutoMemCanUseTool = createAutoMemoryToolPolicy
 
-function successfulDirectMemoryWrite(
-  messages: readonly LLMMessage[],
-  completedToolResults: readonly CompletedToolResultRecord[],
-  memoryDir: string,
-): boolean {
-  const completedByCallId = new Map(
-    completedToolResults
-      .filter((record) => record.isError !== true)
-      .map((record) => [record.callId, record]),
-  );
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const toolCall of message.toolCalls ?? []) {
-      if (!WRITE_TOOL_NAMES.has(toolCall.name)) continue;
-      const record = completedByCallId.get(toolCall.id);
-      if (!record) continue;
-      if (record.toolName !== toolCall.name) continue;
-      const args = parseToolArguments(toolCall.arguments);
-      const filePath = resolveDirectMemoryWritePath(args.file_path, memoryDir);
-      if (filePath) return true;
-    }
-  }
-  return false;
-}
-
 function createChildWriteTracker(memoryDir: string): ChildWriteTracker {
   const pathsByCallId = new Map<string, string>();
   const savedPaths = new Set<string>();
@@ -367,7 +319,7 @@ function createChildWriteTracker(memoryDir: string): ChildWriteTracker {
     failedWrite: false,
     onProgress(event) {
       if (event.kind === "tool_call" && WRITE_TOOL_NAMES.has(event.toolName)) {
-        const args = parseToolArguments(event.arguments);
+        const args = parseMemoryToolArguments(event.arguments);
         const filePath = resolveMemoryPath(args.file_path, memoryDir);
         if (filePath) {
           pathsByCallId.set(event.callId, filePath);
@@ -436,25 +388,6 @@ async function defaultRunChild(
   };
 }
 
-function extractionDisabledByEnv(env: MemoryPathEnv | undefined): boolean {
-  return isEnvTruthy((env ?? process.env).AGENC_DISABLE_EXTRACT_MEMORIES);
-}
-
-function isMainAgentContext(ctx: TurnContext): boolean {
-  if ((ctx.depth ?? 0) > 0) return false;
-  const source = ctx.sessionSource as unknown;
-  if (source === "cli_subagent") return false;
-  return !(
-    typeof source === "object" &&
-    source !== null &&
-    (source as { kind?: unknown }).kind === "subagent"
-  );
-}
-
-function resolveMinEligibleTurns(deps: ExtractMemoriesDependencies): number {
-  return Math.max(1, Math.trunc(deps.minEligibleTurns ?? 1));
-}
-
 export function initExtractMemories(
   deps: ExtractMemoriesDependencies = {},
 ): void {
@@ -486,11 +419,10 @@ export function initExtractMemories(
       return existing;
     }
     const created: ExtractionLane = {
-      processedVisibleCount: 0,
+      trigger: createMemoryExtractionTriggerState(),
       inProgress: false,
       lastAccessedAt: Date.now(),
       pendingContext: undefined,
-      turnsSinceLastExtraction: 0,
     };
     lanes.set(key, created);
     return created;
@@ -513,29 +445,35 @@ export function initExtractMemories(
     lane: ExtractionLane,
     isTrailingRun = false,
   ): Promise<void> {
-    const range = visibleRange(
+    const range: VisibleRange = memoryExtractionVisibleRange(
       queued.context.messages,
-      lane.processedVisibleCount,
+      lane.trigger.processedVisibleCount,
     );
     const newMessageCount = range.unprocessedMessages.length;
     if (newMessageCount === 0) return;
 
     if (
-      successfulDirectMemoryWrite(
-        range.unprocessedMessages,
-        queued.context.completedToolResults,
-        memoryDir,
-      )
+      hasSuccessfulMemoryWrite({
+        messages: range.unprocessedMessages,
+        completedToolResults: queued.context.completedToolResults,
+        writeToolNames: WRITE_TOOL_NAMES,
+        resolveMemoryPath: (value) =>
+          resolveDirectMemoryWritePath(value, memoryDir),
+      })
     ) {
-      lane.processedVisibleCount = range.currentVisibleCount;
+      lane.trigger.processedVisibleCount = range.currentVisibleCount;
       return;
     }
 
-    if (!isTrailingRun) {
-      lane.turnsSinceLastExtraction += 1;
-      if (lane.turnsSinceLastExtraction < resolveMinEligibleTurns(deps)) return;
+    if (
+      shouldDeferForEligibleTurnCadence({
+        state: lane.trigger,
+        minEligibleTurns: deps.minEligibleTurns,
+        isTrailingRun,
+      })
+    ) {
+      return;
     }
-    lane.turnsSinceLastExtraction = 0;
 
     const tracker = createChildWriteTracker(memoryDir);
     const existingMemories = formatMemoryManifest(
@@ -569,7 +507,7 @@ export function initExtractMemories(
       return;
     }
 
-    lane.processedVisibleCount = range.currentVisibleCount;
+    lane.trigger.processedVisibleCount = range.currentVisibleCount;
     const savedPaths = [...tracker.savedPaths].filter(
       (path) => basename(path) !== AUTO_MEMORY_INDEX_FILE,
     );
@@ -582,8 +520,8 @@ export function initExtractMemories(
     context: ExtractMemoriesContext,
     appendSavedMemories?: AppendSavedMemoriesFn,
   ): Promise<void> {
-    if (!isMainAgentContext(context.ctx)) return;
-    if (extractionDisabledByEnv(deps.env)) return;
+    if (!isMainMemoryExtractionContext(context.ctx)) return;
+    if (isMemoryExtractionDisabledByEnv(deps.env)) return;
 
     const queued: QueuedExtraction = {
       context: snapshotContext(context),
