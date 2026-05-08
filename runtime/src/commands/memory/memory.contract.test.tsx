@@ -78,12 +78,14 @@ describe("memory command contract", () => {
     );
     expect(registry).toContain('from "./memory/slash.js"');
 
-    const commandSurface = readFileSync(
-      resolve(root, "runtime/src/commands.ts"),
-      "utf8",
+    // The /memory surface is wired through registry.ts's legacy command
+    // surfaces list (the upstream LOCAL_JSX_COMMAND_OVERRIDES code path
+    // was removed in the legacy-surfaces refactor in commit 3547fde7).
+    // The module is still loadable via tuiModulePath: "./commands/memory/index.js".
+    const memoryRegistryEntry = registry.match(
+      /name:\s*"memory"[^}]*tuiModulePath:\s*"\.\/commands\/memory\/index\.js"/,
     );
-    expect(commandSurface).toContain('from "./commands/memory/index.js"');
-    expect(commandSurface).toContain("LOCAL_JSX_COMMAND_OVERRIDES");
+    expect(memoryRegistryEntry).not.toBeNull();
 
     const memoryIndex = readFileSync(
       resolve(root, "runtime/src/commands/memory/index.ts"),

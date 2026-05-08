@@ -112,7 +112,6 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     }
 
     expect(commands.get("agents")?.type).toBe("local-jsx");
-    expect(commands.get("dream")?.type).toBe("prompt");
     expect(commands.get("rewind")?.type).toBe("local");
     expect(commands.get("commit")?.type).toBe("prompt");
     expect(commands.get("install")?.type).toBe("local-jsx");
@@ -204,12 +203,11 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     const commands = new Map(getCommandsSync().map((cmd) => [cmd.name, cmd]));
     const paletteNames = new Set(listTuiCommandList().map((cmd) => cmd.name));
 
-    for (const name of [
-      "heapdump",
-      "output-style",
-      "rate-limit-options",
-      "thinkback-play",
-    ]) {
+    // /heapdump is the only hidden legacy surface still wired in after the
+    // upstream-product cleanup. /output-style /rate-limit-options
+    // /thinkback-play and the others were deleted because their
+    // gates make them effectively unreachable in AgenC's distribution.
+    for (const name of ["heapdump"]) {
       expect(commands.get(name)?.isHidden).toBe(true);
       expect(paletteNames.has(name)).toBe(false);
     }

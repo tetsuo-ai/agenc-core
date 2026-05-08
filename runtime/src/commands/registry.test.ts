@@ -305,14 +305,17 @@ describe("buildDefaultRegistry()", () => {
     const reg = buildDefaultRegistry();
     const names = registeredLegacyCommandSurfaceNames();
     expect(names).toContain("agents");
-    expect(names).toContain("dream");
-    expect(names).toContain("voice");
+    // Upstream-product commands /dream, /voice, /chrome, /desktop, etc.
+    // were intentionally removed in the cleanup pass — they're gated to
+    // build-flavors AgenC's distribution doesn't ship. The remaining
+    // legacy commands all map to executable modules.
+    expect(names).toContain("btw");
+    expect(names).toContain("buddy");
     for (const name of names) {
       expect(reg.has(name)).toBe(true);
     }
     expect(reg.has("remote-control")).toBe(true);
     expect(reg.has("rc")).toBe(true);
-    expect(reg.has("web-setup")).toBe(true);
     expect(reg.has("terminal-setup")).toBe(true);
   });
 
