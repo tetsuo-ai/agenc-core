@@ -20,6 +20,13 @@ import {
   agencTelemetry,
   toMetricTags,
 } from "../observability/telemetry.js";
+import {
+  AUTOCOMPACT_BUFFER_TOKENS,
+  getAutoCompactThreshold,
+  getEffectiveContextWindowSize,
+  isAutoCompactEnabled,
+} from "../services/compact/autoCompact.js";
+import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
 
 export const compactCommand: SlashCommand = {
   name: "compact",
@@ -493,16 +500,24 @@ async function runContextUsage(params: {
 }): Promise<AgenCContextUsageResult> {
   const finishTelemetry = startCompactTelemetry("context_usage");
   try {
+    // Use the FULL history snapshot — including the system message
+    // (which embeds AGENC.md, project instructions, and the dynamic
+    // permissions/sandbox section) — so /context shows what the
+    // model actually receives. The previous implementation filtered
+    // via messagesAfterAgenCBoundary which strips the system message
+    // and produces an under-count.
     const sourceMessages = params.session.snapshotHistoryMessages();
-    const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
+    const messages = toAgenCRuntimeMessages(sourceMessages);
     const toolUseContext = buildAgenCToolUseContext(
       params.session,
       params.ctx,
       { querySource: "context" },
     );
+    const tools = params.session.services.registry.toLLMTools();
     const commandContext = {
       ...toolUseContext,
       messages,
+      tools,
       options: {
         ...toolUseContext.options,
         customSystemPrompt: undefined,
@@ -581,26 +596,181 @@ function messagesAfterAgenCBoundary(
   return messages.map((item) => ({ ...item }));
 }
 
+interface ContextUsageInputs {
+  /**
+   * The full conversation message history (must include the system
+   * message and any AGENC.md content already merged into it). Used
+   * with the family-aware token estimator from llm/token-estimation,
+   * the same one auto-compaction uses, so the displayed numbers
+   * match the threshold the auto-compactor will actually evaluate.
+   */
+  readonly messages: RuntimeMessage[];
+  /**
+   * The tool catalog the model is being told about. Counted as JSON
+   * (which is how tools are serialized on the wire) so the display
+   * accounts for tool overhead. The previous estimator excluded this
+   * entirely and reported numbers far below what the model sees.
+   */
+  readonly tools: readonly LLMTool[];
+  /** Provider hint forwarded to the family-aware estimator. */
+  readonly providerHint?: { readonly provider?: string; readonly model?: string };
+  /**
+   * The model id used for window/threshold lookups. When undefined or
+   * empty, falls back to the table-driven default in
+   * lookupContextWindowForModel (128k).
+   */
+  readonly model?: string;
+  /**
+   * The configured hard limit for this session, when present.
+   * Overrides the model-string lookup. This is the
+   * AGENC_AUTO_COMPACT_WINDOW env or providers.<slug>.context_window_tokens
+   * value flowing through CompactContext.options.contextWindowTokens.
+   */
+  readonly contextWindowTokens?: number;
+}
+
+interface ContextUsageBreakdown {
+  readonly hardLimit: number;
+  readonly compactionThreshold: number;
+  readonly autoCompactEnabled: boolean;
+  readonly messagesTokens: number;
+  readonly toolsTokens: number;
+  readonly totalUsed: number;
+  readonly freeUntilCompact: number;
+  readonly freeUntilHardLimit: number;
+}
+
+/**
+ * Compute the four-field breakdown {@link contextUsageCall} renders.
+ * Pure function so it can be unit-tested without spinning up a
+ * session, and so the math lives in one place rather than embedded in
+ * the rendering code.
+ *
+ * Reuse over duplication:
+ *   - getEffectiveContextWindowSize / getAutoCompactThreshold come
+ *     from services/compact/autoCompact (same helpers the live
+ *     auto-compactor uses to decide whether to fire). We MUST display
+ *     the same numbers it will act on.
+ *   - roughTokenCountEstimationForMessages comes from
+ *     llm/token-estimation (family-aware: different model families
+ *     pick different bytes/token ratios). Replaces the old chars/4
+ *     heuristic that under-counted dense code blobs by ~30%.
+ */
+export function computeContextUsageBreakdown(
+  inputs: ContextUsageInputs,
+): ContextUsageBreakdown {
+  // Use the same threshold helpers the auto-compactor uses so the
+  // displayed numbers match what will actually fire.
+  const lookup = inputs.contextWindowTokens !== undefined && inputs.contextWindowTokens > 0
+    ? { options: { contextWindowTokens: inputs.contextWindowTokens, mainLoopModel: inputs.model } }
+    : (inputs.model ?? "");
+  const hardLimit = getEffectiveContextWindowSize(
+    typeof lookup === "string" ? lookup : (lookup as never),
+  );
+  const autoCompactEnabled = isAutoCompactEnabled();
+  const compactionThreshold = autoCompactEnabled
+    ? getAutoCompactThreshold(typeof lookup === "string" ? lookup : (lookup as never))
+    : hardLimit;
+  const messagesTokens = roughTokenCountEstimationForMessages(
+    inputs.messages,
+    inputs.providerHint,
+  );
+  const toolsTokens = estimateToolCatalogTokens(inputs.tools);
+  const totalUsed = messagesTokens + toolsTokens;
+  return {
+    hardLimit,
+    compactionThreshold,
+    autoCompactEnabled,
+    messagesTokens,
+    toolsTokens,
+    totalUsed,
+    freeUntilCompact: Math.max(0, compactionThreshold - totalUsed),
+    freeUntilHardLimit: Math.max(0, hardLimit - totalUsed),
+  };
+}
+
+/**
+ * Token estimate for the model-facing tool catalog. Tools are
+ * serialized to JSON on the wire (one object per tool with name,
+ * description, input schema), so a JSON-length / 4 estimate is the
+ * cheapest faithful proxy. This is intentionally an over-estimate vs
+ * the family-aware tokenizer for messages — the catalog is shorter
+ * than the conversation, and over-counting tool overhead is the
+ * conservative direction (the model sees this overhead too).
+ */
+function estimateToolCatalogTokens(tools: readonly LLMTool[]): number {
+  if (tools.length === 0) return 0;
+  // Stringify is best-effort: schemas can contain unserializable
+  // values in tests, in which case we fall back to summing the
+  // declared name+description lengths so we don't return zero.
+  try {
+    return Math.ceil(JSON.stringify(tools).length / 4);
+  } catch {
+    let chars = 0;
+    for (const tool of tools) {
+      chars += (tool.function?.name ?? "").length;
+      chars += (tool.function?.description ?? "").length;
+    }
+    return Math.ceil(chars / 4);
+  }
+}
+
+function formatContextUsageReport(breakdown: ContextUsageBreakdown): string {
+  const used = breakdown.totalUsed.toLocaleString();
+  const hard = breakdown.hardLimit.toLocaleString();
+  const threshold = breakdown.compactionThreshold.toLocaleString();
+  const usedPct = breakdown.hardLimit > 0
+    ? Math.min(100, Math.round((breakdown.totalUsed / breakdown.hardLimit) * 100))
+    : 0;
+  const lines: string[] = [
+    `Context: ${used} / ${hard} tokens (${usedPct}% of hard limit)`,
+    `  • messages: ${breakdown.messagesTokens.toLocaleString()} tokens`,
+    `  • tool catalog: ${breakdown.toolsTokens.toLocaleString()} tokens`,
+  ];
+  if (breakdown.autoCompactEnabled) {
+    lines.push(
+      `  • compaction threshold: ${threshold} tokens (${breakdown.freeUntilCompact.toLocaleString()} until auto-compact fires)`,
+    );
+  } else {
+    lines.push(
+      `  • auto-compact: disabled (hard limit applies; ${breakdown.freeUntilHardLimit.toLocaleString()} tokens free)`,
+    );
+  }
+  return lines.join("\n");
+}
+
 async function contextUsageCall(
   _args: string,
   context: {
     readonly messages?: RuntimeMessage[];
     readonly options?: {
       readonly contextWindowTokens?: number;
+      readonly mainLoopModel?: string;
+      readonly tools?: readonly LLMTool[];
     };
+    readonly provider?: { readonly name?: string };
+    readonly tools?: readonly LLMTool[];
   }
 ): Promise<{ readonly value: string }> {
-  const messages = context.messages ?? [];
-  const used = roughRuntimeTokenCount(messages);
-  const window = context.options?.contextWindowTokens ?? 0;
-  const percent = window > 0
-    ? Math.min(100, Math.round((used / window) * 100))
-    : 0;
-  return {
-    value: window > 0
-      ? `Context: ${used.toLocaleString()} / ${window.toLocaleString()} tokens (${percent}%)`
-      : `Context: ${used.toLocaleString()} estimated tokens`,
-  };
+  const breakdown = computeContextUsageBreakdown({
+    messages: context.messages ?? [],
+    tools: context.tools ?? context.options?.tools ?? [],
+    ...(context.options?.mainLoopModel !== undefined
+      ? { model: context.options.mainLoopModel }
+      : {}),
+    ...(context.options?.contextWindowTokens !== undefined
+      ? { contextWindowTokens: context.options.contextWindowTokens }
+      : {}),
+    providerHint: {
+      ...(context.provider?.name !== undefined
+        ? { provider: context.provider.name }
+        : {}),
+      ...(context.options?.mainLoopModel !== undefined
+        ? { model: context.options.mainLoopModel }
+        : {}),
+    },
+  });
+  return { value: formatContextUsageReport(breakdown) };
 }
 
 function startCompactTelemetry(
@@ -1040,17 +1210,9 @@ function envForToolUseContext(
   };
 }
 
-function roughRuntimeTokenCount(messages: readonly RuntimeMessage[]): number {
-  return Math.ceil(
-    messages.reduce(
-      (total, message) => total + runtimeMessageText(message).length,
-      0,
-    ) / 4,
-  );
-}
-
-function runtimeMessageText(message: RuntimeMessage): string {
-  const content = message.message?.content ?? message.content ?? "";
-  if (typeof content === "string") return content;
-  return JSON.stringify(content ?? "");
-}
+// roughRuntimeTokenCount removed — its naive chars/4 estimator
+// excluded the system prompt and tool catalog, producing displays
+// that didn't match what auto-compact decided. /context now flows
+// through computeContextUsageBreakdown which reuses the family-aware
+// roughTokenCountEstimationForMessages and the same threshold
+// helpers as autoCompact.

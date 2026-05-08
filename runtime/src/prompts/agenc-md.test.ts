@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   assembleTieredInstructions,
+  clearTieredInstructionsCacheForTesting,
   formatTieredInstructionWarnings,
   isPathWithin,
   loadTieredInstructions,
@@ -29,6 +30,10 @@ describe("agenc-md (T10-B tiered + @include)", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "agenc-md-"));
+    // Clear the mtime cache so tests are independent. Each test
+    // mints a fresh tmpdir, but because the cache is module-scope it
+    // would otherwise persist across runs in the same process.
+    clearTieredInstructionsCacheForTesting();
   });
   afterEach(() => {
     if (tmp) rmSync(tmp, { recursive: true, force: true });
@@ -696,5 +701,133 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     });
     expect(tiers.project?.content).toBe("PKG");
     expect(tiers.project?.path).toBe(join(pkgDir, "AGENC.md"));
+  });
+
+  describe("mtime-keyed cache (avoids re-reading AGENC.md every turn)", () => {
+    test("returns the same TieredInstructions object on a second call when files are unchanged", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, "AGENC.md"), "first");
+
+      const opts = {
+        cwd: repo,
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+      };
+      const a = await loadTieredInstructions(opts);
+      const b = await loadTieredInstructions(opts);
+
+      // Reference equality is the strongest signal that the cache
+      // returned the same object — no re-read happened. (Even an
+      // unchanged disk would synthesize a new TieredInstructions
+      // object if loadTieredInstructionsUncached ran again.)
+      expect(b).toBe(a);
+      expect(a.project?.content).toBe("first");
+    });
+
+    test("invalidates when an AGENC.md mtime advances", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, "AGENC.md"), "first");
+
+      const opts = {
+        cwd: repo,
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+      };
+      const a = await loadTieredInstructions(opts);
+      expect(a.project?.content).toBe("first");
+
+      // Force a future mtime so node's millisecond-resolution stat
+      // sees a meaningful difference even on filesystems that round
+      // mtimes (HFS+, ext4 with old kernels). 2 seconds in the future
+      // is far above any practical filesystem rounding.
+      const futureMs = Math.floor(Date.now() / 1000) + 2;
+      writeFileSync(join(repo, "AGENC.md"), "second");
+      execFileSync("touch", ["-d", `@${futureMs}`, join(repo, "AGENC.md")]);
+
+      const b = await loadTieredInstructions(opts);
+      expect(b).not.toBe(a);
+      expect(b.project?.content).toBe("second");
+    });
+
+    test("invalidates when a previously-missing AGENC.md is created mid-session", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      // No AGENC.md yet.
+
+      const opts = {
+        cwd: repo,
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+        projectRootMarkers: [],
+      };
+      const a = await loadTieredInstructions(opts);
+      expect(a.project).toBeNull();
+
+      // Operator creates an AGENC.md mid-session.
+      writeFileSync(join(repo, "AGENC.md"), "freshly authored");
+
+      const b = await loadTieredInstructions(opts);
+      expect(b.project?.content).toBe("freshly authored");
+    });
+
+    test("invalidates when AGENC.md is deleted mid-session", async () => {
+      const home = join(tmp, "home");
+      const repo = join(tmp, "repo");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), "{}");
+      writeFileSync(join(repo, "AGENC.md"), "transient");
+
+      const opts = {
+        cwd: repo,
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+      };
+      const a = await loadTieredInstructions(opts);
+      expect(a.project?.content).toBe("transient");
+
+      rmSync(join(repo, "AGENC.md"));
+
+      const b = await loadTieredInstructions(opts);
+      expect(b.project).toBeNull();
+    });
+
+    test("different cwds get independent cache entries", async () => {
+      const home = join(tmp, "home");
+      const repoA = join(tmp, "repoA");
+      const repoB = join(tmp, "repoB");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(repoA, { recursive: true });
+      mkdirSync(repoB, { recursive: true });
+      writeFileSync(join(repoA, "package.json"), "{}");
+      writeFileSync(join(repoB, "package.json"), "{}");
+      writeFileSync(join(repoA, "AGENC.md"), "from A");
+      writeFileSync(join(repoB, "AGENC.md"), "from B");
+
+      const baseOpts = {
+        homeDir: home,
+        managedPath: join(tmp, "none-managed"),
+      };
+      const a1 = await loadTieredInstructions({ ...baseOpts, cwd: repoA });
+      const b1 = await loadTieredInstructions({ ...baseOpts, cwd: repoB });
+      const a2 = await loadTieredInstructions({ ...baseOpts, cwd: repoA });
+      const b2 = await loadTieredInstructions({ ...baseOpts, cwd: repoB });
+
+      expect(a1.project?.content).toBe("from A");
+      expect(b1.project?.content).toBe("from B");
+      expect(a2).toBe(a1);
+      expect(b2).toBe(b1);
+    });
   });
 });

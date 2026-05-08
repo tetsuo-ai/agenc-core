@@ -459,12 +459,206 @@ async function appendUnconditionalRules(
 }
 
 /**
+ * mtime-keyed cache for {@link loadTieredInstructions}.
+ *
+ * Audit finding: prepareTurnRuntimeInputs reloads AGENC.md every turn,
+ * even when the file is unchanged. Across 80 turns of a session that's
+ * 80× the disk I/O + 80× the @include resolution + 80× the rules-dir
+ * scan for content that did not change.
+ *
+ * Strategy: cache the resolved {@link TieredInstructions} keyed by
+ * (cwd, managedPath, homeDir). On lookup, stat the four tier paths
+ * recorded in the cached result; if every path's mtime matches, the
+ * cached value is returned without re-reading. Any mismatch — or a
+ * file appearing/disappearing — invalidates the entry and re-loads.
+ *
+ * The four-stat probe is O(filesystem-attr-lookup) which is dominated
+ * by syscall overhead, NOT by content read. On typical filesystems
+ * this completes in &lt;1ms vs ~5-50ms for the full re-read+@include
+ * walk on a moderately sized project.
+ *
+ * Exposed as a separate module-scope state so tests can clear it via
+ * {@link clearTieredInstructionsCacheForTesting}.
+ */
+type CachedTieredInstructions = {
+  readonly fingerprint: string;
+  readonly cachedPaths: ReadonlyArray<{ readonly path: string; readonly mtimeMs: number }>;
+  readonly result: TieredInstructions;
+};
+
+const tieredInstructionsCache = new Map<string, CachedTieredInstructions>();
+
+function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string {
+  // managedPath + homeDir resolution mirrors the body of
+  // loadTieredInstructions so a key generated here always matches the
+  // key the live call site would compute.
+  const managedPath =
+    opts.managedPath ??
+    process.env.AGENC_MANAGED_INSTRUCTIONS ??
+    DEFAULT_MANAGED_INSTRUCTION_PATH;
+  const home = opts.homeDir ?? homedir();
+  // includeMaxDepth/Bytes also affect output, but most callers use the
+  // defaults; key them too so a caller bumping the budget never gets a
+  // stale shorter-budget result.
+  const includeMaxDepth = opts.includeMaxDepth ?? DEFAULT_INCLUDE_MAX_DEPTH;
+  const includeMaxBytes = opts.includeMaxBytes ?? DEFAULT_INCLUDE_MAX_BYTES;
+  return [
+    opts.cwd,
+    managedPath,
+    home,
+    includeMaxDepth,
+    includeMaxBytes,
+    opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
+    JSON.stringify(opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS),
+  ].join("|");
+}
+
+async function statMtimeMs(path: string): Promise<number | null> {
+  try {
+    const result = await stat(path);
+    return Number.isFinite(result.mtimeMs) ? result.mtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
+async function cachedTierPathsMatchDisk(
+  cached: CachedTieredInstructions,
+): Promise<boolean> {
+  // Negative cache marker: paths with mtimeMs === -1 represent "no
+  // file existed at this tier on the previous load." Re-stat such
+  // paths to detect a NEWLY appearing file (mtime present now → diff,
+  // re-load).
+  for (const entry of cached.cachedPaths) {
+    const live = await statMtimeMs(entry.path);
+    if (entry.mtimeMs === -1) {
+      if (live !== null) return false; // a file appeared at this tier
+    } else if (live === null) {
+      return false; // file went missing
+    } else if (live !== entry.mtimeMs) {
+      return false; // mtime advanced
+    }
+  }
+  return true;
+}
+
+function snapshotTierPaths(
+  result: TieredInstructions,
+): Array<{ path: string; mtimeMs: number }> {
+  // Track which file paths backed each tier so we can detect change
+  // on the next call. A null tier means "no file was found here";
+  // record the path that WOULD have been read with mtimeMs: -1 so a
+  // newly-created file invalidates the cache.
+  const entries: Array<{ path: string; mtimeMs: number }> = [];
+  for (const tier of [result.managed, result.user, result.project, result.local]) {
+    if (tier !== null) {
+      entries.push({ path: tier.path, mtimeMs: 0 });
+    }
+  }
+  return entries;
+}
+
+/** Test-only: drop all cached entries. Used by mtime-cache tests. */
+export function clearTieredInstructionsCacheForTesting(): void {
+  tieredInstructionsCache.clear();
+}
+
+/**
  * Load all four tiers for a given working directory.
  *
  * Missing tiers come back as `null` — callers filter/concat via
  * {@link assembleTieredInstructions}.
+ *
+ * Result is cached and re-validated by mtime: subsequent calls with
+ * the same cwd / homeDir / managedPath return the cached
+ * {@link TieredInstructions} without re-reading any file as long as
+ * none of the previously-loaded tier files have changed on disk.
+ * See {@link tieredInstructionsCache} for the invalidation contract.
  */
 export async function loadTieredInstructions(
+  opts: LoadTieredInstructionsOptions,
+): Promise<TieredInstructions> {
+  const cacheKey = tieredInstructionsCacheKey(opts);
+  const cached = tieredInstructionsCache.get(cacheKey);
+  if (cached !== undefined && (await cachedTierPathsMatchDisk(cached))) {
+    return cached.result;
+  }
+  const result = await loadTieredInstructionsUncached(opts);
+  // Re-stat the loaded paths to capture the mtime AT the time the
+  // content was read — using stat() inline below would race with a
+  // concurrent writer. We stat once here; the subsequent
+  // cachedTierPathsMatchDisk call on the next turn re-stats and
+  // compares to this snapshot.
+  const tierPaths = snapshotTierPaths(result);
+  const cachedPaths: Array<{ path: string; mtimeMs: number }> = [];
+  for (const entry of tierPaths) {
+    const live = await statMtimeMs(entry.path);
+    cachedPaths.push({ path: entry.path, mtimeMs: live ?? -1 });
+  }
+  // Also probe the canonical tier paths that came back as `null` so a
+  // newly-created AGENC.md (e.g. user runs `touch AGENC.md` mid-session)
+  // forces a re-load on the next turn.
+  for (const candidate of canonicalTierPaths(opts)) {
+    if (cachedPaths.some((entry) => entry.path === candidate)) continue;
+    cachedPaths.push({ path: candidate, mtimeMs: -1 });
+  }
+  tieredInstructionsCache.set(cacheKey, {
+    fingerprint: cacheKey,
+    cachedPaths,
+    result,
+  });
+  return result;
+}
+
+/**
+ * The set of paths that loadTieredInstructions COULD have read for a
+ * given options bundle, regardless of whether each tier actually
+ * existed. Used to seed the negative cache so a newly-appearing
+ * AGENC.md (user creates one mid-session) invalidates correctly.
+ *
+ * Note: the project-tier file lives at the project ROOT (resolved by
+ * an ancestor walk from cwd), not necessarily at cwd itself. We
+ * include `cwd/AGENC.md` here as the most common case AND every
+ * ancestor up to the home dir; that's a small bounded probe set
+ * (typically &lt;10 directories on a real path) and catches the case
+ * where the operator creates a project-tier AGENC.md anywhere up the
+ * chain.
+ */
+function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
+  const home = opts.homeDir ?? homedir();
+  const managedPath =
+    opts.managedPath ??
+    process.env.AGENC_MANAGED_INSTRUCTIONS ??
+    DEFAULT_MANAGED_INSTRUCTION_PATH;
+  const agencHome = join(home, ".agenc");
+  const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
+  const cwdLocal = join(opts.cwd, LOCAL_INSTRUCTION_FILENAME);
+  const ancestorAgencMds = ancestorAgencMdCandidates(opts.cwd, home);
+  return [managedPath, userPrimary, cwdLocal, ...ancestorAgencMds];
+}
+
+/**
+ * Probe the ancestor chain from cwd up to (and including) home for
+ * AGENC.md candidate paths. Bounded by depth-30 so we never walk an
+ * unexpectedly deep path tree.
+ */
+function ancestorAgencMdCandidates(cwd: string, home: string): string[] {
+  const candidates: string[] = [];
+  let current = resolve(cwd);
+  const homeResolved = resolve(home);
+  let depth = 0;
+  while (depth < 30) {
+    candidates.push(join(current, USER_INSTRUCTION_FILENAME));
+    if (current === homeResolved) break;
+    const parent = pathDir(current);
+    if (parent === current) break; // root reached
+    current = parent;
+    depth += 1;
+  }
+  return candidates;
+}
+
+async function loadTieredInstructionsUncached(
   opts: LoadTieredInstructionsOptions,
 ): Promise<TieredInstructions> {
   const includeMaxDepth = opts.includeMaxDepth ?? DEFAULT_INCLUDE_MAX_DEPTH;

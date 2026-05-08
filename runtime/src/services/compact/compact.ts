@@ -139,13 +139,16 @@ export async function compactConversation(
   const normalizedMessages = stripImagesFromMessages(messages);
   const preCompactTokenCount = estimateMessagesTokens(normalizedMessages, context);
   const keepCount = chooseKeepCount(normalizedMessages);
-  const messagesToSummarize = normalizedMessages.slice(
-    0,
-    Math.max(0, normalizedMessages.length - keepCount),
-  );
-  const messagesToKeep = normalizedMessages.slice(
-    Math.max(0, normalizedMessages.length - keepCount),
-  );
+  // chooseKeepCount picks a positional split. resolveAtomicSliceIndex
+  // walks that index forward past any leading `role: "tool"` message
+  // so the kept suffix never starts with a tool_result whose parent
+  // assistant tool_call lives in the summarized prefix. Without this
+  // adjustment the kept suffix is provider-invalid (every openai-
+  // compatible endpoint 400s on an orphaned tool message).
+  const candidateSplit = Math.max(0, normalizedMessages.length - keepCount);
+  const splitIndex = resolveAtomicSliceIndex(normalizedMessages, candidateSplit);
+  const messagesToSummarize = normalizedMessages.slice(0, splitIndex);
+  const messagesToKeep = normalizedMessages.slice(splitIndex);
   const summary = await summarizeMessages(
     messagesToSummarize.length > 0 ? messagesToSummarize : normalizedMessages,
     context,
@@ -345,6 +348,52 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 function chooseKeepCount(messages: readonly RuntimeMessage[]): number {
   if (messages.length <= 2) return 0;
   return Math.min(4, Math.max(1, Math.floor(messages.length * 0.2)));
+}
+
+/**
+ * Resolve the message-list slice index where compaction can split
+ * messages into [summarized prefix | kept verbatim suffix] WITHOUT
+ * orphaning a `role: "tool"` message whose matching assistant
+ * `tool_calls` parent lives in the prefix.
+ *
+ * Why: the model's wire-level contract requires every `role: "tool"`
+ * message to follow an assistant message that carries the matching
+ * `tool_calls[].id` (this is enforced by every openai-compatible
+ * provider — the request 400s otherwise). The previous behavior was
+ * to slice purely by position, so a tool_call at index N-1 could end
+ * up summarized while its tool_result at N was kept verbatim. The
+ * tool-turn-validator strips those orphans downstream, but by then
+ * the summary already references work whose evidence is gone.
+ *
+ * Algorithm: starting at the candidate index, walk forward past any
+ * leading `role: "tool"` messages until we land on the first non-tool
+ * message. Tool-result messages MUST be preceded by their parent
+ * assistant in the same kept slice (or summarized along with the
+ * parent), so any leading tool result in the candidate suffix is
+ * proof the parent is in the prefix — drop it forward into the
+ * summarized side.
+ *
+ * Returns the resolved slice index (0..messages.length). Always
+ * returns a value ≥ candidateIndex (we never widen the kept suffix
+ * past what chooseKeepCount asked for; we only narrow it).
+ */
+export function resolveAtomicSliceIndex(
+  messages: readonly RuntimeMessage[],
+  candidateIndex: number,
+): number {
+  if (candidateIndex <= 0 || candidateIndex >= messages.length) {
+    return Math.max(0, Math.min(candidateIndex, messages.length));
+  }
+  let index = candidateIndex;
+  while (index < messages.length && isToolRoleMessage(messages[index]!)) {
+    index += 1;
+  }
+  return index;
+}
+
+function isToolRoleMessage(message: RuntimeMessage): boolean {
+  const role = message.role ?? message.message?.role ?? message.originalRole;
+  return role === "tool" || message.toolCallId !== undefined;
 }
 
 function formatForSummary(message: RuntimeMessage): string {

@@ -7,6 +7,7 @@ import {
   manualCompactCall,
   partialCompactConversation,
   partialCompactConversationAsync,
+  resolveAtomicSliceIndex,
 } from "./compact.js";
 import type { CompactionResult, RuntimeMessage } from "./types.js";
 
@@ -255,6 +256,87 @@ describe("compact service", () => {
   });
 });
 
+describe("resolveAtomicSliceIndex (compaction tool-pair atomicity)", () => {
+  // Audit finding: compaction sliced positionally, so a tool_call at
+  // index N-1 could be summarized while its matching tool_result at
+  // index N was kept verbatim. The kept suffix then started with an
+  // orphaned `role: "tool"` message, which every openai-compatible
+  // provider rejects with a 400. Pin the resolver here.
+
+  test("walks the candidate split forward past leading tool-result messages", () => {
+    const messages: RuntimeMessage[] = [
+      message("user1"),
+      message("assistant tool-calling", "assistant"),
+      toolResultMessage("call-1", "result-1"),
+      message("user2"),
+    ];
+
+    // Naive split at index 2 would put "tool result" first in the
+    // kept suffix → orphaned. Resolver must walk forward to 3.
+    expect(resolveAtomicSliceIndex(messages, 2)).toBe(3);
+  });
+
+  test("leaves a clean user-boundary split untouched", () => {
+    const messages: RuntimeMessage[] = [
+      message("user1"),
+      message("assistant1", "assistant"),
+      message("user2"),
+      message("assistant2", "assistant"),
+    ];
+    // Splitting between message-pairs at index 2 is already clean.
+    expect(resolveAtomicSliceIndex(messages, 2)).toBe(2);
+  });
+
+  test("walks past consecutive tool-result messages from a multi-tool turn", () => {
+    const messages: RuntimeMessage[] = [
+      message("user1"),
+      message("assistant multi-tool", "assistant"),
+      toolResultMessage("call-1", "result-1"),
+      toolResultMessage("call-2", "result-2"),
+      toolResultMessage("call-3", "result-3"),
+      message("user2"),
+    ];
+    // Naive split at index 2 has THREE leading tool results — all
+    // must be moved into the summarized prefix.
+    expect(resolveAtomicSliceIndex(messages, 2)).toBe(5);
+  });
+
+  test("clamps to messages.length when the candidate is past the end", () => {
+    const messages: RuntimeMessage[] = [message("user1")];
+    expect(resolveAtomicSliceIndex(messages, 5)).toBe(1);
+  });
+
+  test("clamps non-positive candidates to 0", () => {
+    const messages: RuntimeMessage[] = [message("user1"), message("user2")];
+    expect(resolveAtomicSliceIndex(messages, -3)).toBe(0);
+    expect(resolveAtomicSliceIndex(messages, 0)).toBe(0);
+  });
+
+  test("manual compact preserves tool-pair atomicity end-to-end", async () => {
+    // Integration test: the orchestrator must resolve the slice via
+    // resolveAtomicSliceIndex so messagesToKeep never starts with a
+    // role:"tool" message. Without the fix, the kept suffix begins
+    // with an orphaned tool_result.
+    const messages: RuntimeMessage[] = [
+      createUserMessage({ content: "Inspect src/a.ts" }),
+      message("running tool", "assistant"),
+      toolResultMessage("call-1", "ls output"),
+      createUserMessage({ content: "Pending: run tests" }),
+    ];
+    const result = await manualCompactCall("keep decisions", {
+      messages,
+      options: { contextWindowTokens: 200 },
+    });
+    const kept = result.compactionResult.messagesToKeep ?? [];
+    if (kept.length > 0) {
+      const firstKept = kept[0]!;
+      const role = firstKept.role ?? firstKept.message?.role;
+      expect(role).not.toBe("tool");
+      expect(firstKept.toolCallId).toBeUndefined();
+    }
+  });
+});
+
 function message(
   content: string,
   role: NonNullable<RuntimeMessage["role"]> = "user",
@@ -264,6 +346,16 @@ function message(
     type: role,
     content,
     message: { role, content },
+  };
+}
+
+function toolResultMessage(toolCallId: string, content: string): RuntimeMessage {
+  return {
+    role: "tool",
+    type: "tool",
+    toolCallId,
+    content,
+    message: { role: "tool", content },
   };
 }
 
