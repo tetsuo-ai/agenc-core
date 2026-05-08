@@ -111,6 +111,14 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
   enqueueIdleInput?(input: LLMMessage): number;
+  /**
+   * Interrupt the active turn (if any) for this session. Used by the
+   * TUI's CancelRequestHandler when the user presses ESC. Daemon-backed
+   * sessions issue a `session.cancelTurn` RPC; in-process sessions can
+   * fire their AbortController directly. No-op when the session is
+   * idle.
+   */
+  cancelActiveTurn?(reason?: string): Promise<void>;
   abortTerminal?(reason: string): void;
   flushEventLog?(): Promise<void> | void;
   emit?(event: Event | { readonly kind: string; readonly [key: string]: unknown }): void;

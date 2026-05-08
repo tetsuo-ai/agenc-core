@@ -68,6 +68,7 @@ import {
   type RequestId,
   type SessionAttachParams,
   type SessionAttachResult,
+  type SessionCancelTurnParams,
   type SessionClearParams,
   type SessionCreateParams,
   type SessionDetachParams,
@@ -127,6 +128,7 @@ export interface AgenCDaemonDispatcherOptions {
     AgenCDaemonAgentManager,
     | "approveTool"
     | "attachAgent"
+    | "cancelSessionTurn"
     | "cancelTool"
     | "createAgent"
     | "denyTool"
@@ -187,6 +189,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     AgenCDaemonAgentManager,
     | "approveTool"
     | "attachAgent"
+    | "cancelSessionTurn"
     | "cancelTool"
     | "createAgent"
     | "denyTool"
@@ -450,6 +453,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.clearSessionHistory(
             validateSessionClearParams(params),
+          ),
+        );
+      case "session.cancelTurn":
+        return successResponse(
+          id,
+          await this.#agentManager.cancelSessionTurn(
+            validateSessionCancelTurnParams(params),
           ),
         );
       case "session.partialCompactFromMessage":
@@ -1311,6 +1321,17 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   });
   validateRequiredString(validated, "session.clear", "sessionId");
   return validated as SessionClearParams;
+}
+
+function validateSessionCancelTurnParams(
+  params: JsonObject,
+): SessionCancelTurnParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.cancelTurn",
+    stringFields: ["sessionId", "reason"],
+  });
+  validateRequiredString(validated, "session.cancelTurn", "sessionId");
+  return validated as SessionCancelTurnParams;
 }
 
 function validateSessionPartialCompactFromMessageParams(

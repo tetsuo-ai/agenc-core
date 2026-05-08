@@ -320,6 +320,20 @@ export function createDaemonTuiSession<
     clearDaemonSession: async () => {
       await client.request("session.clear", { sessionId });
     },
+    cancelActiveTurn: async (reason?: string) => {
+      // Best-effort: a closed/disconnected daemon socket throws. The
+      // user pressed ESC — they want the turn to stop, but a thrown
+      // error here doesn't help them. Swallow and let the next health
+      // check / event surface the disconnection separately.
+      try {
+        await client.request("session.cancelTurn", {
+          sessionId,
+          ...(reason !== undefined ? { reason } : {}),
+        });
+      } catch {
+        // best-effort
+      }
+    },
     partialCompactFromMessage: async (params) =>
       client.request("session.partialCompactFromMessage", {
         sessionId,

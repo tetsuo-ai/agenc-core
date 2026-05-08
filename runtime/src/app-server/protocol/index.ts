@@ -48,6 +48,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.cancelTurn",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -254,6 +255,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Clear a daemon-owned session's conversation history.",
+  },
+  "session.cancelTurn": {
+    method: "session.cancelTurn",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Interrupt the active turn for a daemon-owned session. Fires the agent's AbortController and signals run-turn to abort with reason='interrupted'.",
   },
   "message.send": {
     method: "message.send",
@@ -673,6 +682,11 @@ export interface SessionTerminateParams extends JsonObject {
 
 export interface SessionClearParams extends JsonObject {
   readonly sessionId: string;
+}
+
+export interface SessionCancelTurnParams extends JsonObject {
+  readonly sessionId: string;
+  readonly reason?: string;
 }
 
 export interface SessionPartialCompactFromMessageParams extends JsonObject {
@@ -1130,6 +1144,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
+  | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<
@@ -1313,6 +1328,17 @@ export interface SessionClearResult extends JsonObject {
   readonly clearedAt: string;
 }
 
+export interface SessionCancelTurnResult extends JsonObject {
+  readonly sessionId: string;
+  /**
+   * `true` when an active turn was found and interrupted; `false` when
+   * no turn was running (idle session). Either response is normal —
+   * idle is not an error.
+   */
+  readonly cancelled: boolean;
+  readonly reason?: string;
+}
+
 export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly sessionId: string;
   readonly ok: boolean;
@@ -1476,6 +1502,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.detach": SessionDetachResult;
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
+  readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
   readonly "thread/realtime/start": ThreadRealtimeStartResponse;

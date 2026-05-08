@@ -34,6 +34,8 @@ import type {
   MessageContent,
   PermissionListParams,
   PermissionListResult,
+  SessionCancelTurnParams,
+  SessionCancelTurnResult,
   SessionClearParams,
   SessionClearResult,
   SessionPartialCompactFromMessageParams,
@@ -936,6 +938,38 @@ export class AgenCDaemonAgentManager {
       reasonCode: "rpc_denied",
     });
     return { requestId: params.requestId, decision: "denied" };
+  }
+
+  /**
+   * Interrupt the active turn for a daemon-owned session. Resolves to
+   * `{ cancelled: false }` for an idle session (no error — pressing
+   * ESC at the prompt is a no-op, not a failure). Resolves to
+   * `{ cancelled: true }` when the agent's interrupt was dispatched.
+   *
+   * Implementation: find the agent owning this session, then ask the
+   * background runner to fire `AgentControl.interrupt(agentId, reason)`,
+   * which signals the agent's AbortController and cascades to
+   * descendant subagents.
+   */
+  async cancelSessionTurn(
+    params: SessionCancelTurnParams,
+  ): Promise<SessionCancelTurnResult> {
+    const reason = params.reason ?? "interrupted";
+    if (this.#sessionManager === undefined || this.#runner === undefined) {
+      return { sessionId: params.sessionId, cancelled: false, reason };
+    }
+    const session = await this.#sessionManager.getSession(params.sessionId);
+    if (session === null || !isActiveSession(session)) {
+      return { sessionId: params.sessionId, cancelled: false, reason };
+    }
+    if (this.#runner.interruptAgentTurn === undefined) {
+      return { sessionId: params.sessionId, cancelled: false, reason };
+    }
+    const cancelled = await this.#runner.interruptAgentTurn(
+      session.agentId,
+      reason,
+    );
+    return { sessionId: params.sessionId, cancelled, reason };
   }
 
   async cancelTool(params: ToolCancelParams): Promise<ToolDecisionResult> {

@@ -21,6 +21,7 @@
     "session.detach",
     "session.terminate",
     "session.clear",
+    "session.cancelTurn",
     "message.send",
     "message.stream",
     "thread/realtime/start",
@@ -379,6 +380,20 @@
         "sessionId": {
           "type": "string",
           "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionCancelTurnParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
         }
       },
       "required": ["sessionId"]
@@ -1537,6 +1552,9 @@
           "$ref": "#/definitions/SessionClearRequest"
         },
         {
+          "$ref": "#/definitions/SessionCancelTurnRequest"
+        },
+        {
           "$ref": "#/definitions/MessageSendRequest"
         },
         {
@@ -2161,6 +2179,25 @@
         },
         "params": {
           "$ref": "#/definitions/SessionClearParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionCancelTurnRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.cancelTurn"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionCancelTurnParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

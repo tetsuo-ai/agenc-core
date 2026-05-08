@@ -244,6 +244,14 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentToolCancelParams,
   ): Promise<boolean>;
+  /**
+   * Interrupt the agent's currently-running turn (if any). Resolves to
+   * `true` when an active turn was found and the agent's
+   * AbortController was fired; `false` when the agent was idle.
+   * Implementation MUST cascade to descendants so subagent turns are
+   * also stopped — see {@link AgentControl.interrupt}.
+   */
+  interruptAgentTurn?(agentId: string, reason: string): Promise<boolean>;
   respondToElicitation?(
     agentId: string,
     params: AgenCBackgroundAgentElicitationResponseParams,
@@ -901,6 +909,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       agentId,
       params.reason ?? `tool.cancel:${params.requestId}`,
     );
+    active.lastActiveAt = this.#now();
+    return true;
+  }
+
+  /**
+   * Interrupt the agent's active turn. Returns `true` when the agent
+   * was found and the interrupt was dispatched (mirrors `cancelTool`'s
+   * shape). The interrupt cascades to descendants (subagents) via
+   * {@link AgentControl.interrupt} and fires the agent's
+   * AbortController so the run-turn loop observes it on next tick.
+   * When the agent was idle the interrupt is harmless.
+   */
+  async interruptAgentTurn(agentId: string, reason: string): Promise<boolean> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return false;
+    active.control.interrupt(agentId, reason);
     active.lastActiveAt = this.#now();
     return true;
   }

@@ -16,6 +16,7 @@ import PromptInput from "./PromptInput/PromptInput.js";
 import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
+import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import {
   type AppState,
@@ -1487,6 +1488,48 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     () => buildToolUseConfirmQueue(permissionRequests, availableTools),
     [permissionRequests, availableTools],
   );
+
+  // Per-turn AbortController. CancelRequestHandler reads
+  // `abortSignal !== undefined && !aborted` as "is there a turn to
+  // cancel right now," so we must (a) populate it when streaming starts
+  // and (b) fire/clear it when ESC fires or the turn naturally ends.
+  // We do NOT auto-abort when streaming ends — the user pressing ESC
+  // after a turn finished is a no-op, which is correct behavior. The
+  // signal is also handed to local-jsx command contexts so command
+  // implementations can cooperatively cancel.
+  const [turnAbortController, setTurnAbortController] =
+    useState<AbortController | null>(null);
+  useEffect(() => {
+    if (transcript.isStreaming) {
+      setTurnAbortController((prev) =>
+        prev === null || prev.signal.aborted ? new AbortController() : prev,
+      );
+    } else {
+      // Drop the reference once the turn naturally ends; do not abort
+      // (the run-turn already finished cleanly).
+      setTurnAbortController(null);
+    }
+  }, [transcript.isStreaming]);
+  const handleTurnCancel = useCallback(() => {
+    // Fire the local signal first so the CancelRequestHandler observes
+    // an aborted signal (gate flips off), then ask the daemon to
+    // interrupt the active turn. Errors from the RPC are swallowed
+    // inside cancelActiveTurn — pressing ESC must never surface an RPC
+    // failure to the user.
+    if (turnAbortController !== null && !turnAbortController.signal.aborted) {
+      turnAbortController.abort("user_interrupt");
+    }
+    void props.session.cancelActiveTurn?.("interrupted");
+  }, [turnAbortController, props.session]);
+  const handleAgentsKilledNoOp = useCallback(() => {
+    // App.tsx (daemon-mode shell) does not currently track local
+    // background agents the way REPL.tsx does. Background agents in
+    // daemon mode are owned by the daemon and torn down via
+    // cancelActiveTurn cascade (control.interrupt cascades to
+    // descendants). This callback is a hook for future per-agent
+    // notifications surfaced from the TUI side.
+  }, []);
+
   useMcpConnectivityStatus({ mcpClients: mcpClients as MCPServerConnection[] });
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
@@ -1707,6 +1750,28 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           showAllInTranscript={showAllInTranscript}
           setShowAllInTranscript={setShowAllInTranscript}
           messageCount={transcript.messages.length}
+        />
+      ) : null}
+      {!onboarding.active ? (
+        <CancelRequestHandler
+          // The queue setter is a no-op for daemon-mode: permission
+          // requests are owned by the daemon and resolved via the
+          // session.cancelTurn cascade (control.interrupt clears
+          // pendingApprovals server-side). The UI dialog disappears
+          // when the daemon's permission promise settles.
+          setToolUseConfirmQueue={() => {}}
+          onCancel={handleTurnCancel}
+          onAgentsKilled={handleAgentsKilledNoOp}
+          isMessageSelectorVisible={isMessageSelectorVisible}
+          screen={screen as never}
+          {...(turnAbortController !== null
+            ? { abortSignal: turnAbortController.signal }
+            : {})}
+          isSearchingHistory={isSearchingHistory}
+          isHelpOpen={helpOpen}
+          inputMode={mode as never}
+          inputValue={input}
+          streamMode={transcript.isStreaming ? ("requesting" as never) : undefined}
         />
       ) : null}
       {onboarding.active ? (
