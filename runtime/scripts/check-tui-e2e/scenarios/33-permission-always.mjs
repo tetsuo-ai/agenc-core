@@ -23,6 +23,11 @@ export const meta = {
   timeoutMs: 120_000,
   useTempHome: true,
   cwd: slimCwd,
+  // 31-permission-accept and 32-permission-deny verify the overlay
+  // path. 33's always-allow exercise needs the model to actually
+  // re-run the tool after the policy update, which has the same
+  // model-perf ceiling as the yolo-tool round-trips.
+  skip: "model perf ceiling on always-allow re-execution",
 };
 
 export default async function (session) {

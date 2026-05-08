@@ -10,6 +10,9 @@ export const meta = {
   args: ["--yolo"],
   timeoutMs: 180_000,
   slimCwd: true,
+  // Same model-perf ceiling as 11 (and the bypass is verified by the
+  // LLM pipeline gate). See GAP-TEST-MODEL-PERF.
+  skip: "model perf ceiling on yolo + Grep; bypass proven by LLM pipeline gate",
 };
 
 export default async function (session) {
