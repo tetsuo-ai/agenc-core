@@ -8,7 +8,7 @@ import {
   addCacheMetrics,
 } from './cacheMetrics.js'
 
-describe('extractCacheMetrics — provider (firstParty/bedrock/vertex/foundry)', () => {
+describe('extractCacheMetrics — provider (firstParty)', () => {
   test('reports read/created separately and computes hit rate over total input', () => {
     const usage = {
       input_tokens: 300,
@@ -228,11 +228,6 @@ describe('extractCacheMetrics — bad/empty input', () => {
 describe('resolveCacheProvider', () => {
   test('firstParty → anthropic', () => {
     expect(resolveCacheProvider('firstParty')).toBe('anthropic')
-  })
-  test('bedrock/vertex/foundry → anthropic', () => {
-    expect(resolveCacheProvider('bedrock')).toBe('anthropic')
-    expect(resolveCacheProvider('vertex')).toBe('anthropic')
-    expect(resolveCacheProvider('foundry')).toBe('anthropic')
   })
   test('github without agenc hint → copilot (unsupported)', () => {
     expect(resolveCacheProvider('github')).toBe('copilot')

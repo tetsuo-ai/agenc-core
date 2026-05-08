@@ -1087,10 +1087,20 @@ export const AccountInfoSchema = lazySchema(() =>
       tokenSource: z.string().optional(),
       apiKeySource: z.string().optional(),
       apiProvider: z
-        .enum(['firstParty', 'bedrock', 'vertex', 'foundry'])
+        .enum([
+          'firstParty',
+          'openai',
+          'gemini',
+          'github',
+          'agenc',
+          'nvidia-nim',
+          'minimax',
+          'mistral',
+          'xai',
+        ])
         .optional()
         .describe(
-          'Active API backend. provider OAuth login only applies when "firstParty"; for 3P providers the other fields are absent and auth is external (AWS creds, gcloud ADC, etc.).',
+          'Active API backend. provider OAuth login only applies when "firstParty"; hosted and compatible providers use external credentials.',
         ),
     })
     .describe("Information about the logged in user's account."),

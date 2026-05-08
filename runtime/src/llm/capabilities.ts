@@ -276,6 +276,23 @@ function isGeminiThinkingModel(model: string): boolean {
   return matchesModelFamily(model, /(?:^|[/:])gemini-2\.5(?:$|[-_.:])/);
 }
 
+const HOSTED_CHAT_COMPATIBLE_CAPABILITIES = {
+  supportsToolUse: true,
+  supportsPromptCaching: false,
+  supportsContextEdits: false,
+  supportsImageInput: false,
+  supportsAudioInput: false,
+  supportsAudioOutput: false,
+  supportsStructuredOutput: false,
+  supportsStructuredOutputWithTools: false,
+  supportsProviderNativeWebSearch: false,
+  supportsExtendedThinking: false,
+  acceptsImageHistory: false,
+  acceptsAudioHistory: false,
+  acceptsThinkingHistory: false,
+  acceptsReasoningEffort: false,
+} satisfies ProviderCapabilityDefinition;
+
 const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinition>> = {
   grok: {
     supportsToolUse: true,
@@ -416,6 +433,10 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
     acceptsThinkingHistory: isGeminiThinkingModel,
     acceptsReasoningEffort: false,
   },
+  mistral: HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+  "nvidia-nim": HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+  minimax: HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+  github: HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
   "amazon-bedrock": {
     supportsToolUse: true,
     supportsPromptCaching: false,

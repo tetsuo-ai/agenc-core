@@ -14,17 +14,23 @@ function getProviderLabel(): string {
     case 'firstParty':
       // branding-scan: allow real provider display label
       return 'provider API'
-    case 'bedrock':
-      return 'AWS Bedrock'
-    case 'vertex':
-      return 'Google Vertex'
-    case 'foundry':
-      return 'Azure Foundry'
     case 'openai':
       // branding-scan: allow real provider display label
       return 'provider-compatible API'
     case 'gemini':
       return 'Gemini API'
+    case 'github':
+      return 'GitHub Copilot API'
+    case 'mistral':
+      return 'Mistral API'
+    case 'nvidia-nim':
+      return 'NVIDIA NIM API'
+    case 'minimax':
+      return 'MiniMax API'
+    case 'agenc':
+      return 'AgenC API'
+    case 'xai':
+      return 'xAI API'
     default:
       return 'API'
   }

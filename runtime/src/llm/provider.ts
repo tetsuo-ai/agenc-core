@@ -30,6 +30,10 @@ import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
+import { MistralProvider } from "./providers/mistral/index.js";
+import { NvidiaNimProvider } from "./providers/nvidia-nim/index.js";
+import { MiniMaxProvider } from "./providers/minimax/index.js";
+import { GitHubProvider } from "./providers/github/index.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
@@ -1009,7 +1013,15 @@ function buildCommonConfig(
 function buildOpenAICompatibleProvider(
   provider: Extract<
     ProviderName,
-    "lmstudio" | "openai-compatible" | "openrouter" | "groq" | "deepseek"
+    | "lmstudio"
+    | "openai-compatible"
+    | "openrouter"
+    | "groq"
+    | "deepseek"
+    | "mistral"
+    | "nvidia-nim"
+    | "minimax"
+    | "github"
   >,
   opts: ProviderFactoryOptions,
   input: {
@@ -1386,6 +1398,42 @@ export function createProvider(
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: DeepSeekProvider,
+      });
+    case "mistral":
+      return buildOpenAICompatibleProvider("mistral", opts, {
+        envBaseURL: process.env.MISTRAL_BASE_URL,
+        envModel: process.env.MISTRAL_MODEL,
+        envModelLabel: "MISTRAL_MODEL",
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: MistralProvider,
+      });
+    case "nvidia-nim":
+      return buildOpenAICompatibleProvider("nvidia-nim", opts, {
+        envBaseURL: process.env.NVIDIA_BASE_URL,
+        envModel: process.env.NVIDIA_MODEL,
+        envModelLabel: "NVIDIA_MODEL",
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: NvidiaNimProvider,
+      });
+    case "minimax":
+      return buildOpenAICompatibleProvider("minimax", opts, {
+        envBaseURL: process.env.MINIMAX_BASE_URL,
+        envModel: process.env.MINIMAX_MODEL,
+        envModelLabel: "MINIMAX_MODEL",
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: MiniMaxProvider,
+      });
+    case "github":
+      return buildOpenAICompatibleProvider("github", opts, {
+        envBaseURL: process.env.GITHUB_BASE_URL,
+        envModel: process.env.GITHUB_MODEL,
+        envModelLabel: "GITHUB_MODEL",
+        apiKeyMode: "required",
+        useResponsesApi: false,
+        providerCtor: GitHubProvider,
       });
     case "gemini": {
       const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");

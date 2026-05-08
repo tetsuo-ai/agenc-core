@@ -5,17 +5,30 @@ import {
   applyProviderFlagFromArgs,
   VALID_PROVIDERS,
 } from './providerFlag.js'
+import { getAPIProvider } from './model/providers.js'
 
 const ENV_KEYS = [
   'AGENC_USE_OPENAI',
   'AGENC_USE_GEMINI',
   'AGENC_USE_GITHUB',
+  'AGENC_USE_MISTRAL',
+  'AGENC_USE_MINIMAX',
   'AGENC_USE_BEDROCK',
   'AGENC_USE_VERTEX',
+  'AGENC_USE_FOUNDRY',
   'OPENAI_BASE_URL',
   'OPENAI_API_KEY',
   'OPENAI_MODEL',
+  'XAI_API_KEY',
   'GEMINI_MODEL',
+  'GITHUB_MODEL',
+  'MISTRAL_MODEL',
+  'NVIDIA_NIM',
+  'NVIDIA_BASE_URL',
+  'NVIDIA_MODEL',
+  'MINIMAX_BASE_URL',
+  'MINIMAX_API_KEY',
+  'MINIMAX_MODEL',
 ]
 
 const originalEnv: Record<string, string | undefined> = {}
@@ -31,12 +44,24 @@ const RESET_KEYS = [
   'AGENC_USE_OPENAI',
   'AGENC_USE_GEMINI',
   'AGENC_USE_GITHUB',
+  'AGENC_USE_MISTRAL',
+  'AGENC_USE_MINIMAX',
   'AGENC_USE_BEDROCK',
   'AGENC_USE_VERTEX',
+  'AGENC_USE_FOUNDRY',
   'OPENAI_BASE_URL',
   'OPENAI_API_KEY',
   'OPENAI_MODEL',
+  'XAI_API_KEY',
   'GEMINI_MODEL',
+  'GITHUB_MODEL',
+  'MISTRAL_MODEL',
+  'NVIDIA_NIM',
+  'NVIDIA_BASE_URL',
+  'NVIDIA_MODEL',
+  'MINIMAX_BASE_URL',
+  'MINIMAX_API_KEY',
+  'MINIMAX_MODEL',
 ] as const
 
 beforeEach(() => {
@@ -126,22 +151,114 @@ describe('applyProviderFlag - github', () => {
     expect(result.error).toBeUndefined()
     expect(process.env.AGENC_USE_GITHUB).toBe('1')
   })
-})
 
-describe('applyProviderFlag - bedrock', () => {
-  test('sets AGENC_USE_BEDROCK=1', () => {
-    const result = applyProviderFlag('bedrock', [])
-    expect(result.error).toBeUndefined()
-    expect(process.env.AGENC_USE_BEDROCK).toBe('1')
+  test('sets GITHUB_MODEL when --model is provided', () => {
+    applyProviderFlag('github', ['--model', 'github:copilot'])
+    expect(process.env.GITHUB_MODEL).toBe('github:copilot')
+    expect(process.env.OPENAI_MODEL).toBeUndefined()
   })
 })
 
-describe('applyProviderFlag - vertex', () => {
-  test('sets AGENC_USE_VERTEX=1', () => {
-    const result = applyProviderFlag('vertex', [])
+describe('applyProviderFlag - mistral', () => {
+  test('sets AGENC_USE_MISTRAL=1 and MISTRAL_MODEL when --model is provided', () => {
+    const result = applyProviderFlag('mistral', ['--model', 'devstral-latest'])
     expect(result.error).toBeUndefined()
-    expect(process.env.AGENC_USE_VERTEX).toBe('1')
+    expect(process.env.AGENC_USE_MISTRAL).toBe('1')
+    expect(process.env.MISTRAL_MODEL).toBe('devstral-latest')
+    expect(process.env.OPENAI_MODEL).toBeUndefined()
   })
+})
+
+describe('applyProviderFlag - nvidia-nim', () => {
+  test('sets provider-specific NVIDIA defaults', () => {
+    const result = applyProviderFlag('nvidia-nim', [])
+    expect(result.error).toBeUndefined()
+    expect(process.env.NVIDIA_NIM).toBe('1')
+    expect(process.env.NVIDIA_BASE_URL).toBe('https://integrate.api.nvidia.com/v1')
+    expect(process.env.NVIDIA_MODEL).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
+    expect(process.env.AGENC_USE_OPENAI).toBeUndefined()
+    expect(process.env.OPENAI_BASE_URL).toBeUndefined()
+    expect(process.env.OPENAI_MODEL).toBeUndefined()
+  })
+
+  test('sets NVIDIA_MODEL when --model is provided', () => {
+    applyProviderFlag('nvidia-nim', ['--model', 'nvidia/custom-model'])
+    expect(process.env.NVIDIA_MODEL).toBe('nvidia/custom-model')
+  })
+})
+
+describe('applyProviderFlag - minimax', () => {
+  test('sets provider-specific MiniMax defaults', () => {
+    const result = applyProviderFlag('minimax', [])
+    expect(result.error).toBeUndefined()
+    expect(process.env.AGENC_USE_MINIMAX).toBe('1')
+    expect(process.env.MINIMAX_BASE_URL).toBe('https://api.minimax.io/v1')
+    expect(process.env.MINIMAX_MODEL).toBe('MiniMax-M2.5')
+    expect(process.env.AGENC_USE_OPENAI).toBeUndefined()
+    expect(process.env.OPENAI_BASE_URL).toBeUndefined()
+    expect(process.env.OPENAI_MODEL).toBeUndefined()
+  })
+
+  test('sets MINIMAX_MODEL when --model is provided', () => {
+    applyProviderFlag('minimax', ['--model', 'MiniMax-M2.7'])
+    expect(process.env.MINIMAX_MODEL).toBe('MiniMax-M2.7')
+  })
+})
+
+describe('applyProviderFlag - removed legacy providers', () => {
+  test.each(['bedrock', 'vertex', 'foundry'] as const)('rejects %s', provider => {
+    const result = applyProviderFlag(provider, [])
+    expect(result.error).toContain(provider)
+    expect(process.env.AGENC_USE_BEDROCK).toBeUndefined()
+    expect(process.env.AGENC_USE_VERTEX).toBeUndefined()
+    expect(process.env.AGENC_USE_FOUNDRY).toBeUndefined()
+  })
+})
+
+describe('applyProviderFlag - provider precedence cleanup', () => {
+  test('clears stale NVIDIA_NIM when switching providers', () => {
+    process.env.NVIDIA_NIM = '1'
+
+    const result = applyProviderFlag('github', ['--model', 'github:copilot'])
+
+    expect(result.error).toBeUndefined()
+    expect(process.env.NVIDIA_NIM).toBeUndefined()
+    expect(process.env.AGENC_USE_GITHUB).toBe('1')
+    expect(getAPIProvider()).toBe('github')
+  })
+
+  test.each([
+    {
+      provider: 'mistral',
+      model: 'devstral-latest',
+      expected: 'mistral',
+    },
+    {
+      provider: 'github',
+      model: 'github:copilot',
+      expected: 'github',
+    },
+    {
+      provider: 'openai',
+      model: 'gpt-4o',
+      expected: 'openai',
+    },
+  ] as const)(
+    'lets explicit $provider beat ambient MiniMax credentials',
+    ({ provider, model, expected }) => {
+      process.env.MINIMAX_API_KEY = 'ambient-minimax-key'
+
+      const result = applyProviderFlag(provider, [
+        '--provider',
+        provider,
+        '--model',
+        model,
+      ])
+
+      expect(result.error).toBeUndefined()
+      expect(getAPIProvider()).toBe(expected)
+    },
+  )
 })
 
 describe('applyProviderFlag - ollama', () => {

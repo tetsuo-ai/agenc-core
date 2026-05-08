@@ -22,6 +22,10 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   groq: "llama-3.3-70b-versatile",
   deepseek: "deepseek-reasoner",
   gemini: "gemini-2.5-pro",
+  mistral: "devstral-latest",
+  "nvidia-nim": "nvidia/llama-3.1-nemotron-70b-instruct",
+  minimax: "MiniMax-M2.5",
+  github: "gpt-4o",
   "amazon-bedrock": "amazon.nova-pro-v1:0",
   agenc: "agenc",
 } as const);
@@ -39,6 +43,10 @@ export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   groq: "https://api.groq.com/openai/v1",
   deepseek: "https://api.deepseek.com/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
+  mistral: "https://api.mistral.ai/v1",
+  "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+  minimax: "https://api.minimax.io/v1",
+  github: "https://api.githubcopilot.com",
   "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
   agenc: "https://api.agenc.tech/v1",
 } as const satisfies Readonly<Record<BuiltInProviderSlug, string>>);
@@ -57,6 +65,10 @@ export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   groq: "GROQ_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
   gemini: "GEMINI_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  "nvidia-nim": "NVIDIA_API_KEY",
+  minimax: "MINIMAX_API_KEY",
+  github: "GITHUB_TOKEN",
   "amazon-bedrock": "AWS_ACCESS_KEY_ID",
 });
 
@@ -98,6 +110,13 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ]),
   deepseek: Object.freeze(["deepseek-reasoner"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
+  mistral: Object.freeze(["devstral-latest", "mistral-medium-latest"]),
+  "nvidia-nim": Object.freeze([
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "meta/llama-3.1-8b-instruct",
+  ]),
+  minimax: Object.freeze(["MiniMax-M2.5", "MiniMax-M2.7"]),
+  github: Object.freeze(["gpt-4o", "gpt-5.4", "github:copilot"]),
   "amazon-bedrock": Object.freeze([
     "amazon.nova-pro-v1:0",
     "amazon.nova-lite-v1:0",
@@ -132,6 +151,10 @@ const PROVIDER_DISPLAY_NAMES: Readonly<Record<BuiltInProviderSlug, string>> =
     groq: "Groq",
     deepseek: "DeepSeek",
     gemini: "Gemini",
+    mistral: "Mistral",
+    "nvidia-nim": "NVIDIA NIM",
+    minimax: "MiniMax",
+    github: "GitHub Copilot",
     "amazon-bedrock": "Amazon Bedrock",
     agenc: "AgenC",
   });

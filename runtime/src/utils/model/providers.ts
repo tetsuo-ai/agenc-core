@@ -3,14 +3,11 @@
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-import { shouldUseCodexTransport } from '../../services/api/providerConfig.js'
+import { shouldUseProviderCodeTransport } from '../../services/api/providerConfig.js'
 import { isEnvTruthy } from '../envUtils.js'
 
 export type APIProvider =
   | 'firstParty'
-  | 'bedrock'
-  | 'vertex'
-  | 'foundry'
   | 'openai'
   | 'gemini'
   | 'github'
@@ -21,21 +18,6 @@ export type APIProvider =
   | 'xai'
 
 export function getAPIProvider(): APIProvider {
-  if (isEnvTruthy(process.env.NVIDIA_NIM)) {
-    return 'nvidia-nim'
-  }
-  // MiniMax is signalled by a real API key, not a '1'/'true' flag. Using
-  // isEnvTruthy() here silently treated every MiniMax user as 'firstParty'
-  // (or 'openai' once they set AGENC_USE_OPENAI via the profile),
-  // making every provider-kind-specific branch for 'minimax' elsewhere in
-  // the codebase unreachable. Presence check is the correct signal.
-  if (typeof process.env.MINIMAX_API_KEY === 'string' && process.env.MINIMAX_API_KEY.trim() !== '') {
-    return 'minimax'
-  }
-  // xAI is signalled by a real API key (same pattern as MiniMax)
-  if (typeof process.env.XAI_API_KEY === 'string' && process.env.XAI_API_KEY.trim() !== '') {
-    return 'xai'
-  }
   return isEnvTruthy(process.env.AGENC_USE_GEMINI)
     ? 'gemini'
     :
@@ -43,16 +25,18 @@ export function getAPIProvider(): APIProvider {
     ? 'mistral'
     : isEnvTruthy(process.env.AGENC_USE_GITHUB)
       ? 'github'
-      : isEnvTruthy(process.env.AGENC_USE_OPENAI)
-        ? isCodexModel()
-          ? 'agenc'
-          : 'openai'
-        : isEnvTruthy(process.env.AGENC_USE_BEDROCK)
-          ? 'bedrock'
-          : isEnvTruthy(process.env.AGENC_USE_VERTEX)
-            ? 'vertex'
-            : isEnvTruthy(process.env.AGENC_USE_FOUNDRY)
-              ? 'foundry'
+      : isEnvTruthy(process.env.AGENC_USE_MINIMAX)
+        ? 'minimax'
+        : typeof process.env.XAI_API_KEY === 'string' && process.env.XAI_API_KEY.trim() !== ''
+          ? 'xai'
+          : isEnvTruthy(process.env.AGENC_USE_OPENAI)
+          ? isAgenCModel()
+            ? 'agenc'
+            : 'openai'
+          : isEnvTruthy(process.env.NVIDIA_NIM)
+            ? 'nvidia-nim'
+            : typeof process.env.MINIMAX_API_KEY === 'string' && process.env.MINIMAX_API_KEY.trim() !== ''
+              ? 'minimax'
               : 'firstParty'
 }
 
@@ -64,8 +48,8 @@ export function usesAnthropicAccountFlow(): boolean {
  * Returns true when the GitHub provider should use provider's native API
  * format instead of the openai-compatible shim.
  *
- * Enabled when AGENC_USE_GITHUB=1 and the model string contains "agenc-"
- * anywhere (handles bare names like "claude-sonnet-4" and compound formats like
+ * Enabled when AGENC_USE_GITHUB=1 and the model string contains a provider-native
+ * model ID (handles bare names like "claude-sonnet-4" and compound formats like
  * "github:copilot:claude-sonnet-4" or any future provider-prefixed variants).
  *
  * api.githubcopilot.com supports provider native format for AgenC models,
@@ -74,14 +58,24 @@ export function usesAnthropicAccountFlow(): boolean {
  */
 export function isGithubNativeAnthropicMode(resolvedModel?: string): boolean {
   if (!isEnvTruthy(process.env.AGENC_USE_GITHUB)) return false
-  const model = resolvedModel?.trim() || process.env.OPENAI_MODEL?.trim() || ''
-  return model.toLowerCase().includes('agenc-')
+  const model =
+    resolvedModel?.trim() ||
+    process.env.GITHUB_MODEL?.trim() ||
+    process.env.OPENAI_MODEL?.trim() ||
+    ''
+  return model.toLowerCase().includes('claude-')
 }
-function isCodexModel(): boolean {
-  return shouldUseCodexTransport(
-    process.env.OPENAI_MODEL || '',
+function isAgenCModel(): boolean {
+  const model = process.env.OPENAI_MODEL || ''
+  return isAgenCShortcutAlias(model) || shouldUseProviderCodeTransport(
+    model,
     process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE,
   )
+}
+
+function isAgenCShortcutAlias(model: string): boolean {
+  const base = model.trim().toLowerCase().split('?', 1)[0] ?? ''
+  return base === 'agencplan' || base === 'agencspark'
 }
 
 export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {

@@ -6880,10 +6880,343 @@ async function gapGates(item) {
     assertGapDmnDaemonReloadSubcommand();
     return;
   }
+  if (
+    id === "GAP-PROV-02" ||
+    item.title.includes("Implement or remove Vertex AI / Foundry / NVIDIA NIM / MiniMax / Mistral")
+  ) {
+    assertGapProvUnsupportedProvidersResolved();
+    return;
+  }
   failGate(
     `GAP item "${item.title}" has no specific gate branch. ` +
       `Add one to gapGates() in scripts/goal/verify.mjs with concrete evidence for the row.`,
   );
+}
+
+function assertGapProvUnsupportedProvidersResolved() {
+  const legacyProviderRel = "runtime/src/utils/model/providers.ts";
+  const legacyProviderSource = readFileSync(path.join(root, legacyProviderRel), "utf8");
+  for (const forbidden of [
+    "| 'bedrock'",
+    "| 'vertex'",
+    "| 'foundry'",
+    "AGENC_USE_BEDROCK",
+    "AGENC_USE_VERTEX",
+    "AGENC_USE_FOUNDRY",
+  ]) {
+    if (legacyProviderSource.includes(forbidden)) {
+      failGate(`GAP-PROV-02: ${legacyProviderRel} still advertises unsupported provider surface: ${forbidden}`);
+    }
+  }
+
+  const providerFiles = [
+    "runtime/src/llm/providers/mistral/index.ts",
+    "runtime/src/llm/providers/nvidia-nim/index.ts",
+    "runtime/src/llm/providers/minimax/index.ts",
+    "runtime/src/llm/providers/github/index.ts",
+  ];
+  for (const rel of providerFiles) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-PROV-02: concrete provider adapter missing: ${rel}`);
+    }
+  }
+
+  const factoryRel = "runtime/src/llm/provider.ts";
+  const factorySource = readFileSync(path.join(root, factoryRel), "utf8");
+  for (const needle of [
+    "MistralProvider",
+    "NvidiaNimProvider",
+    "MiniMaxProvider",
+    "GitHubProvider",
+    'case "mistral"',
+    'case "nvidia-nim"',
+    'case "minimax"',
+    'case "github"',
+  ]) {
+    if (!factorySource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${factoryRel} missing provider factory evidence: ${needle}`);
+    }
+  }
+  for (const [provider, nextProvider] of [
+    ["mistral", "nvidia-nim"],
+    ["nvidia-nim", "minimax"],
+    ["minimax", "github"],
+    ["github", "gemini"],
+  ]) {
+    const startNeedle = `case "${provider}"`;
+    const endNeedle = `case "${nextProvider}"`;
+    const start = factorySource.indexOf(startNeedle);
+    const end = factorySource.indexOf(endNeedle, start + startNeedle.length);
+    if (start === -1 || end === -1) {
+      failGate(`GAP-PROV-02: ${factoryRel} missing provider case bounds for ${provider}`);
+    }
+    const snippet = factorySource.slice(start, end);
+    for (const forbidden of ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"]) {
+      if (snippet.includes(forbidden)) {
+        failGate(`GAP-PROV-02: ${factoryRel} ${provider} case still falls back to unrelated shared env: ${forbidden}`);
+      }
+    }
+  }
+
+  const discoveryRel = "runtime/src/llm/discovery/provider-discovery.ts";
+  const discoverySource = readFileSync(path.join(root, discoveryRel), "utf8");
+  for (const forbidden of [
+    'return ["NVIDIA_API_KEY", "OPENAI_API_KEY"]',
+    'return ["MINIMAX_API_KEY", "OPENAI_API_KEY"]',
+    'return ["GITHUB_TOKEN", "GH_TOKEN", "OPENAI_API_KEY"]',
+    "firstNonEmptyString(params.env.MISTRAL_BASE_URL) ??\n        firstNonEmptyString(params.env.OPENAI_BASE_URL)",
+    "firstNonEmptyString(params.env.NVIDIA_BASE_URL) ??\n        firstNonEmptyString(params.env.OPENAI_BASE_URL)",
+    "firstNonEmptyString(params.env.MINIMAX_BASE_URL) ??\n        firstNonEmptyString(params.env.OPENAI_BASE_URL)",
+    "firstNonEmptyString(params.env.GITHUB_BASE_URL) ??\n        firstNonEmptyString(params.env.OPENAI_BASE_URL)",
+  ]) {
+    if (discoverySource.includes(forbidden)) {
+      failGate(`GAP-PROV-02: ${discoveryRel} still falls back to unrelated shared env: ${forbidden}`);
+    }
+  }
+
+  for (const [rel, forbiddenNeedles] of [
+    ["runtime/src/utils/model/agent.ts", ["provider === 'bedrock'", "getBedrockRegionPrefix", "applyBedrockRegionPrefix"]],
+    ["runtime/src/tui/components/dialogs/CostThresholdDialog.tsx", ["case 'bedrock'", "AWS Bedrock"]],
+    ["runtime/src/services/api/cacheMetrics.ts", ["provider === 'bedrock'", "provider === 'vertex'", "provider === 'foundry'"]],
+    ["runtime/src/services/api/cacheMetrics.test.ts", ["bedrock/vertex/foundry", "resolveCacheProvider('bedrock')", "resolveCacheProvider('vertex')", "resolveCacheProvider('foundry')"]],
+    ["runtime/src/services/api/anthropic.ts", ["provider !== 'bedrock'", "provider !== 'vertex'", "provider !== 'foundry'", "getAPIProvider() === 'bedrock'", "getAPIProvider() !== 'bedrock'", "getBedrockExtraBodyParamsBetas", "getInferenceProfileBackingModel", "ENABLE_PROMPT_CACHING_1H_BEDROCK"]],
+    ["runtime/src/services/api/client.ts", ["AGENC_USE_BEDROCK", "AGENC_USE_VERTEX", "AGENC_USE_FOUNDRY", "providerBedrock", "providerVertex", "providerFoundry"]],
+    ["runtime/src/utils/providerFlag.ts", ["'bedrock'", "'vertex'", "'foundry'", "case 'bedrock'", "case 'vertex'", "case 'foundry'"]],
+    ["runtime/src/entrypoints/sdk/coreSchemas.ts", ["'bedrock'", "'vertex'", "'foundry'"]],
+    ["runtime/src/entrypoints/sdk/coreTypes.generated.ts", ['"bedrock"', '"vertex"', '"foundry"']],
+  ]) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    for (const forbidden of forbiddenNeedles) {
+      if (source.includes(forbidden)) {
+        failGate(`GAP-PROV-02: ${rel} retained unsupported legacy provider branch: ${forbidden}`);
+      }
+    }
+  }
+
+  const capabilitiesRel = "runtime/src/llm/capabilities.ts";
+  const capabilitiesSource = readFileSync(path.join(root, capabilitiesRel), "utf8");
+  for (const needle of [
+    "HOSTED_CHAT_COMPATIBLE_CAPABILITIES",
+    "mistral: HOSTED_CHAT_COMPATIBLE_CAPABILITIES",
+    '"nvidia-nim": HOSTED_CHAT_COMPATIBLE_CAPABILITIES',
+    "minimax: HOSTED_CHAT_COMPATIBLE_CAPABILITIES",
+    "github: HOSTED_CHAT_COMPATIBLE_CAPABILITIES",
+  ]) {
+    if (!capabilitiesSource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${capabilitiesRel} missing hosted compatible capability evidence: ${needle}`);
+    }
+  }
+
+  const clientRel = "runtime/src/services/api/client.ts";
+  const clientSource = readFileSync(path.join(root, clientRel), "utf8");
+  for (const needle of [
+    "const apiProvider = getAPIProvider()",
+    "resolveShimSelectedProvider(",
+    "apiProvider !== 'firstParty'",
+    "createOpenAiShimClient",
+    "selectedProvider: resolveShimSelectedProvider(apiProvider)",
+    "process.env.GITHUB_BASE_URL?.replace",
+    "stripForwardedAuthHeaders(defaultHeaders)",
+  ]) {
+    if (!clientSource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${clientRel} missing provider-resolved shim route evidence: ${needle}`);
+    }
+  }
+
+  const shimRel = "runtime/src/services/api/openaiShim.ts";
+  const shimSource = readFileSync(path.join(root, shimRel), "utf8");
+  for (const needle of [
+    "resolveSelectedProviderOverride(",
+    "selectedProvider?: SelectedShimProvider",
+    "options.selectedProvider",
+    "requireSelectedProviderApiKey(",
+    "firstProviderEnvString(process.env.MISTRAL_BASE_URL)",
+    "firstProviderEnvString(process.env.MISTRAL_API_KEY)",
+    "firstProviderEnvString(process.env.MISTRAL_MODEL)",
+    "firstProviderEnvString(process.env.NVIDIA_BASE_URL)",
+    "firstProviderEnvString(process.env.NVIDIA_API_KEY)",
+    "firstProviderEnvString(process.env.NVIDIA_MODEL)",
+    "process.env.AGENC_USE_MINIMAX",
+    "firstProviderEnvString(process.env.MINIMAX_BASE_URL)",
+    "firstProviderEnvString(process.env.MINIMAX_API_KEY)",
+    "firstProviderEnvString(process.env.MINIMAX_MODEL)",
+    "firstProviderEnvString(process.env.GITHUB_BASE_URL)",
+    "firstProviderEnvString(process.env.GITHUB_TOKEN)",
+    "firstProviderEnvString(process.env.GITHUB_MODEL)",
+  ]) {
+    if (!shimSource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${shimRel} missing provider-specific shim env mapping: ${needle}`);
+    }
+  }
+  for (const forbidden of [
+    "process.env.MISTRAL_BASE_URL ?? 'https://api.mistral.ai/v1'",
+    "process.env.MISTRAL_API_KEY && !process.env.OPENAI_API_KEY",
+    "process.env.MISTRAL_MODEL && !process.env.OPENAI_MODEL",
+    "process.env.NVIDIA_API_KEY && !process.env.OPENAI_API_KEY",
+    "process.env.NVIDIA_MODEL && !process.env.OPENAI_MODEL",
+    "process.env.MINIMAX_API_KEY && !process.env.OPENAI_API_KEY",
+    "process.env.MINIMAX_MODEL && !process.env.OPENAI_MODEL",
+    "process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''",
+    "process.env.GITHUB_MODEL && !process.env.OPENAI_MODEL",
+  ]) {
+    if (shimSource.includes(forbidden)) {
+      failGate(`GAP-PROV-02: ${shimRel} retained stale shared-env fallback in selected provider route: ${forbidden}`);
+    }
+  }
+
+  const modelRel = "runtime/src/utils/model/model.ts";
+  const modelSource = readFileSync(path.join(root, modelRel), "utf8");
+  for (const needle of [
+    "process.env.GITHUB_MODEL || 'github:copilot'",
+    "process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'",
+    "process.env.MINIMAX_MODEL || 'MiniMax-M2.5'",
+    "process.env.MISTRAL_MODEL || 'devstral-latest'",
+  ]) {
+    if (!modelSource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${modelRel} missing provider-specific model helper evidence: ${needle}`);
+    }
+  }
+  for (const forbidden of [
+    "process.env.OPENAI_MODEL || 'github:copilot'",
+    "process.env.OPENAI_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'",
+    "process.env.OPENAI_MODEL || 'MiniMax-M2.5'",
+    "getAPIProvider() === 'foundry'",
+  ]) {
+    if (modelSource.includes(forbidden)) {
+      failGate(`GAP-PROV-02: ${modelRel} retained stale shared model helper fallback: ${forbidden}`);
+    }
+  }
+
+  const providerDetectionRel = "runtime/src/utils/model/providers.ts";
+  const providerDetectionSource = readFileSync(path.join(root, providerDetectionRel), "utf8");
+  for (const needle of [
+    "isEnvTruthy(process.env.AGENC_USE_MISTRAL)",
+    "isEnvTruthy(process.env.AGENC_USE_GITHUB)",
+    "isEnvTruthy(process.env.AGENC_USE_OPENAI)",
+    "isEnvTruthy(process.env.NVIDIA_NIM)",
+    "process.env.MINIMAX_API_KEY",
+  ]) {
+    if (!providerDetectionSource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${providerDetectionRel} missing provider precedence evidence: ${needle}`);
+    }
+  }
+  if (
+    providerDetectionSource.indexOf("isEnvTruthy(process.env.NVIDIA_NIM)") <
+    providerDetectionSource.indexOf("isEnvTruthy(process.env.AGENC_USE_OPENAI)")
+  ) {
+    failGate(`GAP-PROV-02: ${providerDetectionRel} lets NVIDIA_NIM beat explicit provider flags`);
+  }
+  if (
+    providerDetectionSource.indexOf("process.env.MINIMAX_API_KEY") <
+    providerDetectionSource.indexOf("isEnvTruthy(process.env.AGENC_USE_OPENAI)")
+  ) {
+    failGate(`GAP-PROV-02: ${providerDetectionRel} lets ambient MINIMAX_API_KEY beat explicit provider flags`);
+  }
+
+  const registryRel = "runtime/src/llm/registry/provider-info.ts";
+  const registrySource = readFileSync(path.join(root, registryRel), "utf8");
+  for (const needle of [
+    "https://api.mistral.ai/v1",
+    "https://integrate.api.nvidia.com/v1",
+    "https://api.minimax.io/v1",
+    "https://api.githubcopilot.com",
+    "MISTRAL_API_KEY",
+    "NVIDIA_API_KEY",
+    "MINIMAX_API_KEY",
+    "GITHUB_TOKEN",
+  ]) {
+    if (!registrySource.includes(needle)) {
+      failGate(`GAP-PROV-02: ${registryRel} missing provider registry evidence: ${needle}`);
+    }
+  }
+
+  const providerTestRel = "runtime/src/llm/provider.test.ts";
+  const parityTestRel = "runtime/src/llm/provider-parity.test.ts";
+  const discoveryTestRel = "runtime/src/llm/discovery/provider-discovery.test.ts";
+  const capabilitiesTestRel = "runtime/src/llm/capabilities.test.ts";
+  const legacyProviderTestRel = "runtime/src/utils/model/providers.test.ts";
+  const agentTestRel = "runtime/src/utils/model/agent.test.ts";
+  const providerFlagTestRel = "runtime/src/utils/providerFlag.test.ts";
+  const clientTestRel = "runtime/src/services/api/client.test.ts";
+  const modelShimProviderTestRel = "runtime/src/utils/model/model.openai-shim-providers.test.ts";
+  const providerTestSource = readFileSync(path.join(root, providerTestRel), "utf8");
+  const parityTestSource = readFileSync(path.join(root, parityTestRel), "utf8");
+  const discoveryTestSource = readFileSync(path.join(root, discoveryTestRel), "utf8");
+  const capabilitiesTestSource = readFileSync(path.join(root, capabilitiesTestRel), "utf8");
+  const legacyProviderTestSource = readFileSync(path.join(root, legacyProviderTestRel), "utf8");
+  const agentTestSource = readFileSync(path.join(root, agentTestRel), "utf8");
+  const providerFlagTestSource = readFileSync(path.join(root, providerFlagTestRel), "utf8");
+  const clientTestSource = readFileSync(path.join(root, clientTestRel), "utf8");
+  const modelShimProviderTestSource = readFileSync(path.join(root, modelShimProviderTestRel), "utf8");
+  for (const [rel, source, needles] of [
+    [providerTestRel, providerTestSource, ["MistralProvider", "NvidiaNimProvider", "MiniMaxProvider", "GitHubProvider", "requires provider-specific auth", "normalizes GitHub Copilot aliases case-insensitively"]],
+    [parityTestRel, parityTestSource, ['provider: "mistral"', 'provider: "nvidia-nim"', 'provider: "minimax"', 'provider: "github"']],
+    [discoveryTestRel, discoveryTestSource, ["MISTRAL_API_KEY", "NVIDIA_API_KEY", "MINIMAX_API_KEY", "GITHUB_TOKEN", "does not treat shared credentials as hosted provider credentials"]],
+    [capabilitiesTestRel, capabilitiesTestSource, ["tracks hosted chat-compatible adapter capabilities", '"mistral"', '"nvidia-nim"', '"minimax"', '"github"', "supportsToolUse: true"]],
+    [legacyProviderTestRel, legacyProviderTestSource, ["AGENC_USE_MISTRAL", "NVIDIA_NIM", "MINIMAX_API_KEY", "takes precedence over ambient MiniMax credentials", "explicit openai flag takes precedence over stale NVIDIA_NIM", "bare provider-native model"]],
+    [agentTestRel, agentTestSource, ["haiku alias inherits parent model for Mistral provider", "haiku alias inherits parent model for NVIDIA NIM provider", "haiku alias inherits parent model for MiniMax provider"]],
+    [providerFlagTestRel, providerFlagTestSource, ["removed legacy providers", "foundry", "clears stale NVIDIA_NIM when switching providers", "ambient MiniMax credentials", "sets provider-specific NVIDIA defaults", "sets provider-specific MiniMax defaults", "GITHUB_MODEL", "MISTRAL_MODEL"]],
+    [clientTestRel, clientTestSource, ["routes env-only $name requests through the provider-compatible shim", "does not leak stale shared env into selected $name shim requests", "explicit $name selection takes precedence over ambient MiniMax credentials at request routing", "GitHub native provider mode uses provider-specific base URL", "fails before fetch when selected $name shim credentials are missing", "strips first-party auth headers before hosted provider shim requests", "stale-openai-key", "stale-openai-model", "MISTRAL_API_KEY", "NVIDIA_NIM", "MINIMAX_API_KEY", "GITHUB_TOKEN", "https://api.mistral.ai/v1/chat/completions", "http://127.0.0.1:19081/v1/chat/completions", "http://127.0.0.1:19082/v1/chat/completions", "https://models.github.ai/inference/chat/completions"]],
+    [modelShimProviderTestRel, modelShimProviderTestSource, ["--provider $provider --model feeds model helper paths", "GITHUB_MODEL", "NVIDIA_MODEL", "MINIMAX_MODEL", "MISTRAL_MODEL", "wrong-openai-model"]],
+  ]) {
+    for (const needle of needles) {
+      if (!source.includes(needle)) {
+        failGate(`GAP-PROV-02: ${rel} missing focused test evidence: ${needle}`);
+      }
+    }
+  }
+  for (const removedProviderNeedle of ["return 'bedrock'", "return 'vertex'", "return 'foundry'"]) {
+    if (modelShimProviderTestSource.includes(removedProviderNeedle)) {
+      failGate(`GAP-PROV-02: ${modelShimProviderTestRel} retained removed provider mock branch: ${removedProviderNeedle}`);
+    }
+  }
+
+  const inventedDomainPatterns = [
+    /[.]example\b/i,
+    /\bexample[.](?:com|net|org|test|invalid)\b/i,
+  ];
+  for (const [rel, source] of [
+    [clientTestRel, clientTestSource],
+    [providerTestRel, providerTestSource],
+    [discoveryTestRel, discoveryTestSource],
+  ]) {
+    for (const pattern of inventedDomainPatterns) {
+      if (pattern.test(source)) {
+        failGate(`GAP-PROV-02: ${rel} contains reserved example-domain URL; use loopback/private or real provider domains`);
+      }
+    }
+  }
+
+  const providerVitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "--",
+    "vitest",
+    "run",
+    "src/llm/provider.test.ts",
+    "src/llm/provider-parity.test.ts",
+    "src/llm/discovery/provider-discovery.test.ts",
+    "src/llm/capabilities.test.ts",
+  ]);
+  if (providerVitest.status !== 0) {
+    failGate("GAP-PROV-02: focused LLM provider tests failed");
+  }
+
+  const legacyProviderTests = run("bun", [
+    "test",
+    "--max-concurrency=1",
+    "runtime/src/utils/model/providers.test.ts",
+    "runtime/src/utils/model/agent.test.ts",
+    "runtime/src/utils/model/model.openai-shim-providers.test.ts",
+    "runtime/src/services/api/cacheMetrics.test.ts",
+    "runtime/src/utils/providerFlag.test.ts",
+    "runtime/src/services/api/client.test.ts",
+  ]);
+  if (legacyProviderTests.status !== 0) {
+    failGate("GAP-PROV-02: focused legacy provider surface tests failed");
+  }
+
+  pass("GAP-PROV-02: unsupported provider enum entries removed and concrete provider adapters verified");
 }
 
 function assertGapProvAmazonBedrockAdapter() {

@@ -46,6 +46,29 @@ function normalizeModelSetting(value: unknown): ModelName | ModelAlias | undefin
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+function getActiveProviderModelEnv(provider = getAPIProvider()): ModelName | undefined {
+  switch (provider) {
+    case 'gemini':
+      return process.env.GEMINI_MODEL
+    case 'mistral':
+      return process.env.MISTRAL_MODEL
+    case 'github':
+      return process.env.GITHUB_MODEL
+    case 'nvidia-nim':
+      return process.env.NVIDIA_MODEL
+    case 'minimax':
+      return process.env.MINIMAX_MODEL
+    case 'openai':
+    case 'agenc':
+    case 'xai':
+      return process.env.OPENAI_MODEL
+    case 'firstParty':
+      return process.env.ANTHROPIC_MODEL
+    default:
+      return undefined
+  }
+}
+
 export function getSmallFastModel(): ModelName {
   if (process.env.ANTHROPIC_SMALL_FAST_MODEL) return process.env.ANTHROPIC_SMALL_FAST_MODEL
   // For Gemini provider, use a fast model
@@ -66,17 +89,15 @@ export function getSmallFastModel(): ModelName {
   }
   // For GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.OPENAI_MODEL || 'github:copilot'
+    return process.env.GITHUB_MODEL || 'github:copilot'
   }
-  // NVIDIA NIM — OPENAI_MODEL carries the user's active NIM model; use a
-  // small Meta Llama variant as the conservative fallback.
+  // NVIDIA NIM — use the provider-specific model env from --provider.
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.OPENAI_MODEL || 'meta/llama-3.1-8b-instruct'
+    return process.env.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct'
   }
-  // MiniMax — OPENAI_MODEL carries the active MiniMax model; fall back to
-  // the fastest tier (M2.5-highspeed) when missing.
+  // MiniMax — fall back to the fastest tier (M2.5-highspeed) when missing.
   if (getAPIProvider() === 'minimax') {
-    return process.env.OPENAI_MODEL || 'MiniMax-M2.5-highspeed'
+    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5-highspeed'
   }
   // xAI — OPENAI_MODEL carries the active Grok model; fall back to grok-3.
   if (getAPIProvider() === 'xai') {
@@ -119,25 +140,9 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     // Read the model env var that matches the active provider to prevent
     // cross-provider leaks (e.g. ANTHROPIC_MODEL sent to the openai API).
     //
-    // All openai-shim providers (openai, agenc, github, nvidia-nim, minimax)
-    // set AGENC_USE_OPENAI=1 + OPENAI_MODEL via
-    // applyProviderProfileToProcessEnv. Earlier this check only included
-    // openai/github — agenc/nvidia-nim/minimax fell through to the stale
-    // settings.model, so switching from (say) Moonshot to Agenc kept firing
-    // `kimi-k2.6` at the Agenc endpoint and getting 400s.
     const provider = getAPIProvider()
-    const isOpenAIShimProvider =
-      provider === 'openai' ||
-      provider === 'agenc' ||
-      provider === 'github' ||
-      provider === 'nvidia-nim' ||
-      provider === 'minimax' ||
-      provider === 'xai'
     specifiedModel =
-      (provider === 'gemini' ? process.env.GEMINI_MODEL : undefined) ||
-      (provider === 'mistral' ? process.env.MISTRAL_MODEL : undefined) ||
-      (isOpenAIShimProvider ? process.env.OPENAI_MODEL : undefined) ||
-      (provider === 'firstParty' ? process.env.ANTHROPIC_MODEL : undefined) ||
+      getActiveProviderModelEnv(provider) ||
       setting ||
       undefined
   }
@@ -197,23 +202,22 @@ export function getDefaultOpusModel(): ModelName {
   }
   // GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.OPENAI_MODEL || 'github:copilot'
+    return process.env.GITHUB_MODEL || 'github:copilot'
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.OPENAI_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
+    return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
   }
   // MiniMax — flagship tier for "opus"-equivalent.
   if (getAPIProvider() === 'minimax') {
-    return process.env.OPENAI_MODEL || 'MiniMax-M2.7'
+    return process.env.MINIMAX_MODEL || 'MiniMax-M2.7'
   }
   // xAI — flagship Grok model for "opus"-equivalent.
   if (getAPIProvider() === 'xai') {
     return process.env.OPENAI_MODEL || 'grok-4'
   }
-  // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
-  // since 3P availability lags firstParty and these will diverge again at
-  // the next model launch. Keep 3P on Opus 4.6 until they roll out 4.7.
+  // Other third-party provider API modes may lag firstParty model launches, so
+  // keep their generic fallback on Opus 4.6 until they roll out 4.7.
   if (getAPIProvider() !== 'firstParty') {
     return getModelStrings().opus46
   }
@@ -243,15 +247,15 @@ export function getDefaultSonnetModel(): ModelName {
   }
   // GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.OPENAI_MODEL || 'github:copilot'
+    return process.env.GITHUB_MODEL || 'github:copilot'
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.OPENAI_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
+    return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
   }
   // MiniMax — mid tier for "sonnet"-equivalent.
   if (getAPIProvider() === 'minimax') {
-    return process.env.OPENAI_MODEL || 'MiniMax-M2.5'
+    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5'
   }
   // xAI — flagship Grok model for "sonnet"-equivalent.
   if (getAPIProvider() === 'xai') {
@@ -283,7 +287,7 @@ export function getDefaultHaikuModel(): ModelName {
   }
   // GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.OPENAI_MODEL || 'github:copilot'
+    return process.env.GITHUB_MODEL || 'github:copilot'
   }
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
@@ -291,11 +295,11 @@ export function getDefaultHaikuModel(): ModelName {
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.OPENAI_MODEL || 'meta/llama-3.1-8b-instruct'
+    return process.env.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct'
   }
   // MiniMax — fastest tier for "haiku"-equivalent.
   if (getAPIProvider() === 'minimax') {
-    return process.env.OPENAI_MODEL || 'MiniMax-M2.5-highspeed'
+    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5-highspeed'
   }
   // xAI — faster Grok model for "haiku"-equivalent.
   if (getAPIProvider() === 'xai') {
@@ -349,8 +353,8 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   if (getAPIProvider() === 'github') {
     const settings = getSettings_DEPRECATED() || {}
     return (
+      normalizeModelSetting(process.env.GITHUB_MODEL) ||
       normalizeModelSetting(settings.model) ||
-      normalizeModelSetting(process.env.OPENAI_MODEL) ||
       'github:copilot'
     )
   }
@@ -372,6 +376,12 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   // xAI provider: always use the configured Grok model (default grok-4)
   if (getAPIProvider() === 'xai') {
     return process.env.OPENAI_MODEL || 'grok-4'
+  }
+  if (getAPIProvider() === 'nvidia-nim') {
+    return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
+  }
+  if (getAPIProvider() === 'minimax') {
+    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5'
   }
 
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
@@ -832,11 +842,6 @@ export function modelDisplayString(model: ModelSetting): string {
 
 // @[MODEL LAUNCH]: Add a marketing name mapping for the new model below.
 export function getMarketingNameForModel(modelId: string): string | undefined {
-  if (getAPIProvider() === 'foundry') {
-    // deployment ID is user-defined in Foundry, so it may have no relation to the actual model
-    return undefined
-  }
-
   const has1m = modelId.toLowerCase().includes('[1m]')
   const canonical = getCanonicalName(modelId)
 
