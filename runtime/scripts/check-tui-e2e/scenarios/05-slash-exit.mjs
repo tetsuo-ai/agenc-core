@@ -19,7 +19,12 @@ export const meta = {
 export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
-  await session.submitSlashCommand("/exit");
+  // Trailing space ends the slash-prefix match so the typeahead picker
+  // closes; Enter then submits the literal command instead of the picker's
+  // highlighted suggestion (which can be /exit-worktree, not /exit).
+  await session.type("/exit ");
+  await sleep(150);
+  session.send("\r");
   // Wait up to 8s for the PTY to exit on its own.
   const start = Date.now();
   while (Date.now() - start < 8_000) {
