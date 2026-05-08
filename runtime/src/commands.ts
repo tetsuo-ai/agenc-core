@@ -351,8 +351,48 @@ function withLazyDynamicMetadata<T extends CommandBase>(
   return command;
 }
 
+// Literal-import map for legacy command modules. Variable specifiers
+// (e.g. `import(params.modulePath)` where modulePath is a string field)
+// are silently externalized by tsup, leaving the bundled artifact to
+// crash with "Cannot find module" at runtime. Parallel map to
+// LEGACY_COMMAND_LOADERS in commands/registry.ts — that one is keyed by
+// modulePath relative to runtime/src/commands/, this one is keyed by
+// tuiModulePath relative to runtime/src/.
+const LEGACY_TUI_COMMAND_LOADERS: Record<string, () => Promise<LazyCommandModule>> = {
+  "./commands/agents/index.js": () => import("./commands/agents/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/branch/index.js": () => import("./commands/branch/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/bridge/index.js": () => import("./commands/bridge/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/btw/index.js": () => import("./commands/btw/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/buddy/index.js": () => import("./commands/buddy/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/color/index.js": () => import("./commands/color/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/commit.js": () => import("./commands/commit.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/export/index.js": () => import("./commands/export/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/heapdump/index.js": () => import("./commands/heapdump/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/ide/index.js": () => import("./commands/ide/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/install.js": () => import("./commands/install.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/knowledge/index.js": () => import("./commands/knowledge/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/login/index.js": () => import("./commands/login/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/logout/index.js": () => import("./commands/logout/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/memory/index.js": () => import("./commands/memory/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/pr_comments/index.js": () => import("./commands/pr_comments/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/rename/index.js": () => import("./commands/rename/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/review.js": () => import("./commands/review.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/rewind/index.js": () => import("./commands/rewind/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/sandbox-toggle/index.js": () => import("./commands/sandbox-toggle/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/tasks/index.js": () => import("./commands/tasks/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/terminalSetup/index.js": () => import("./commands/terminalSetup/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/theme/index.js": () => import("./commands/theme/index.js") as unknown as Promise<LazyCommandModule>,
+  "./commands/vim/index.js": () => import("./commands/vim/index.js") as unknown as Promise<LazyCommandModule>,
+};
+
 async function loadLegacyCommand(params: LazyCommandParams): Promise<Command> {
-  const loaded = await import(params.modulePath) as LazyCommandModule;
+  const loader = LEGACY_TUI_COMMAND_LOADERS[params.modulePath];
+  if (loader === undefined) {
+    throw new Error(
+      `/${params.name} modulePath ${params.modulePath} is not registered in LEGACY_TUI_COMMAND_LOADERS — add it to the literal-import map in commands.ts`,
+    );
+  }
+  const loaded = await loader();
   const exported = params.exportName === undefined
     ? loaded.default
     : loaded[params.exportName];
@@ -582,13 +622,18 @@ function commandArray(value: unknown): Command[] {
   return Array.isArray(value) ? (value as Command[]) : [];
 }
 
+// Loader-based command source. The previous variant accepted a string
+// modulePath and called `await import(modulePath)`, which tsup cannot
+// statically discover and silently externalizes. The replacement
+// accepts a literal-import loader so the bundler sees the specifier at
+// build time.
 async function callCommandSource(
-  modulePath: string,
+  loadModule: () => Promise<Record<string, unknown>>,
   exportName: string,
   ...args: readonly unknown[]
 ): Promise<Command[]> {
   try {
-    const loaded = await import(modulePath) as Record<string, unknown>;
+    const loaded = await loadModule();
     const fn = loaded[exportName];
     if (typeof fn !== "function") return [];
     return commandArray(await fn(...args));
@@ -601,11 +646,12 @@ async function loadProductionCommandSources(
   cwd: string,
   config?: PluginConfigSurface,
 ): Promise<readonly Command[]> {
-  const skillsModulePath = "./skills/loadSkillsDir.js";
-  const bundledSkillsModulePath = "./skills/bundledSkills.js";
-  const builtinPluginsModulePath = "./plugins/builtinPlugins.js";
-  const workflowCommandsModulePath =
-    "./tools/WorkflowTool/createWorkflowCommand.js";
+  const loadSkills = () =>
+    import("./skills/loadSkillsDir.js") as unknown as Promise<Record<string, unknown>>;
+  const loadBundledSkills = () =>
+    import("./skills/bundledSkills.js") as unknown as Promise<Record<string, unknown>>;
+  const loadBuiltinPlugins = () =>
+    import("./plugins/builtinPlugins.js") as unknown as Promise<Record<string, unknown>>;
 
   const [
     skillDirCommands,
@@ -614,16 +660,21 @@ async function loadProductionCommandSources(
     builtinPluginSkills,
     pluginCommands,
     pluginSkills,
-    workflowCommands,
   ] = await Promise.all([
-    callCommandSource(skillsModulePath, "getSkillDirCommands", cwd),
-    callCommandSource(skillsModulePath, "getDynamicSkills"),
-    callCommandSource(bundledSkillsModulePath, "getBundledSkills"),
-    callCommandSource(builtinPluginsModulePath, "getBuiltinPluginSkillCommands"),
+    callCommandSource(loadSkills, "getSkillDirCommands", cwd),
+    callCommandSource(loadSkills, "getDynamicSkills"),
+    callCommandSource(loadBundledSkills, "getBundledSkills"),
+    callCommandSource(loadBuiltinPlugins, "getBuiltinPluginSkillCommands"),
     loadPluginCommands({ cwd, config }),
     loadPluginSkills({ cwd, config }),
-    callCommandSource(workflowCommandsModulePath, "getWorkflowCommands", cwd),
   ]);
+  // The workflow-commands source previously loaded
+  // ./tools/WorkflowTool/createWorkflowCommand.js — that module was
+  // removed during the runtime migration, so the dynamic import always
+  // failed and returned []. Dropped from the loader list now that tsup
+  // needs literal specifiers; if the workflow source returns, add a
+  // literal-import loader and a corresponding bundle entry.
+  const workflowCommands: readonly Command[] = [];
 
   return [
     ...bundledSkills,

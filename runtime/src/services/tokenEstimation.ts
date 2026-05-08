@@ -554,17 +554,18 @@ async function loadBedrockRuntimeModule(
     return options.loadBedrockRuntimeModule();
   }
   try {
-    return (await importOptionalRuntimeModule(
-      "@aws-sdk/client-bedrock-runtime",
-    )) as BedrockRuntimeModule;
+    // Literal specifier so tsup discovers @aws-sdk/client-bedrock-runtime
+    // as an external dep at bundle time. The previous indirection
+    // through importOptionalRuntimeModule(specifier) defeated static
+    // discovery because the parameter type was string — tsup could not
+    // see what was being imported.
+    return (await import(
+      "@aws-sdk/client-bedrock-runtime"
+    )) as unknown as BedrockRuntimeModule;
   } catch (error) {
     options.logError?.(error);
     return null;
   }
-}
-
-function importOptionalRuntimeModule(specifier: string): Promise<unknown> {
-  return import(specifier);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

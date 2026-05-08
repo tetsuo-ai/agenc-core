@@ -58,9 +58,11 @@ interface CacheStatsTracker {
 }
 
 async function loadCacheStatsTracker(): Promise<CacheStatsTracker> {
-  const trackerModulePath: string =
-    "../services/api/cacheStatsTracker.js";
-  return import(trackerModulePath) as Promise<CacheStatsTracker>;
+  // Literal import specifier so tsup can statically discover and bundle
+  // this module. Variable specifiers (e.g. `import(modulePath)` where
+  // modulePath is a const string) are silently skipped by the bundler
+  // and crash at runtime with "Cannot find module".
+  return import("../services/api/cacheStatsTracker.js") as Promise<CacheStatsTracker>;
 }
 
 function formatCompactNumber(n: number): string {

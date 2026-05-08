@@ -4,12 +4,6 @@ import { AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 
 const SEND_MESSAGE_TOOL_NAME = 'SendMessage'
-const authModulePath = '../../utils/auth.js'
-const forkSubagentModulePath =
-  './forkSubagent.js'
-const teammateModulePath = '../../utils/teammate.js'
-const teammateContextModulePath =
-  '../../utils/teammateContext.js'
 
 function isEnvTruthy(envVar: string | boolean | undefined): boolean {
   if (!envVar) return false
@@ -37,9 +31,12 @@ function hasEmbeddedSearchTools(): boolean {
   )
 }
 
+// Literal-import specifiers so tsup discovers and bundles these modules.
+// Variable specifiers (e.g. `import(authModulePath)` where authModulePath
+// is a const string) get silently externalized by the bundler.
 async function getSubscriptionTypeSafe(): Promise<string | null> {
   try {
-    const auth = (await import(authModulePath)) as {
+    const auth = (await import('../../utils/auth.js')) as {
       getSubscriptionType?: () => string | null
     }
     return auth.getSubscriptionType?.() ?? null
@@ -50,7 +47,7 @@ async function getSubscriptionTypeSafe(): Promise<string | null> {
 
 async function isForkSubagentEnabledSafe(): Promise<boolean> {
   try {
-    const forkSubagent = (await import(forkSubagentModulePath)) as {
+    const forkSubagent = (await import('./forkSubagent.js')) as {
       isForkSubagentEnabled?: () => boolean
     }
     return forkSubagent.isForkSubagentEnabled?.() ?? false
@@ -61,7 +58,7 @@ async function isForkSubagentEnabledSafe(): Promise<boolean> {
 
 async function isTeammateSafe(): Promise<boolean> {
   try {
-    const teammate = (await import(teammateModulePath)) as {
+    const teammate = (await import('../../utils/teammate.js')) as {
       isTeammate?: () => boolean
     }
     return teammate.isTeammate?.() ?? false
@@ -72,7 +69,7 @@ async function isTeammateSafe(): Promise<boolean> {
 
 async function isInProcessTeammateSafe(): Promise<boolean> {
   try {
-    const teammateContext = (await import(teammateContextModulePath)) as {
+    const teammateContext = (await import('../../utils/teammateContext.js')) as {
       isInProcessTeammate?: () => boolean
     }
     return teammateContext.isInProcessTeammate?.() ?? false

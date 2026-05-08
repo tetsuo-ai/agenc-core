@@ -183,10 +183,6 @@ type MarkdownAgentFile = {
 type SettingSourceWithLocal = SettingSource | 'localSettings'
 type SettingSourceEnabled = (source: SettingSourceWithLocal) => boolean
 
-const settingsConstantsModulePath =
-  '../../utils/settings/constants.js'
-const sharedMarkdownLoaderModulePath =
-  '../../utils/markdownConfigLoader.js'
 const VALID_MEMORY_SCOPES = ['user', 'project', 'local'] as const
 const MEMORY_TOOLS = [
   FILE_WRITE_TOOL_NAME,
@@ -526,7 +522,8 @@ function collectMarkdownFiles(dir: string, visitedDirs = new Set<string>()): str
 
 async function getSettingSourceEnabled(): Promise<SettingSourceEnabled> {
   try {
-    const module = (await import(settingsConstantsModulePath)) as {
+    // Literal specifier so tsup discovers the module at bundle time.
+    const module = (await import('../../utils/settings/constants.js')) as {
       isSettingSourceEnabled?: SettingSourceEnabled
     }
     if (typeof module.isSettingSourceEnabled === 'function') {
@@ -570,7 +567,8 @@ async function loadSharedMarkdownAgentFiles(
   cwd: string,
 ): Promise<MarkdownAgentFile[] | null> {
   try {
-    const module = (await import(sharedMarkdownLoaderModulePath)) as {
+    // Literal specifier so tsup discovers the module at bundle time.
+    const module = (await import('../../utils/markdownConfigLoader.js')) as {
       loadMarkdownFilesForSubdir: {
         (subdir: string, cwd: string): Promise<MarkdownAgentFile[]>
         cache: { clear?: () => void }
@@ -737,8 +735,8 @@ async function initializeAgentMemorySnapshots(
   const memoryAgents = agents.filter(agent => agent.memory === 'user')
   if (memoryAgents.length === 0) return
   try {
-    const snapshotModulePath = './agentMemorySnapshot.js'
-    const snapshots = await import(snapshotModulePath)
+    // Literal specifier so tsup discovers the module at bundle time.
+    const snapshots = await import('./agentMemorySnapshot.js')
     await Promise.all(
       memoryAgents.map(async agent => {
         const result = await snapshots.checkAgentMemorySnapshot(

@@ -70,16 +70,14 @@ function isEnvTruthy(value: string | undefined): boolean {
 
 async function loadRemoteSettingsSync(): Promise<RemoteSettingsSync | null> {
   if (remoteSettingsSyncForTesting) return remoteSettingsSyncForTesting;
-  const settingsSyncModulePath: string =
-    "../services/settingsSync/index.js";
-  const settingsChangeModulePath: string =
-    "../utils/settings/changeDetector.js";
   try {
+    // Literal specifiers so tsup discovers and bundles these modules.
+    // Variable-specifier dynamic imports are skipped by the bundler.
     const [settingsSync, changeDetector] = await Promise.all([
-      import(settingsSyncModulePath) as Promise<{
+      import("../services/settingsSync/index.js") as Promise<{
         redownloadUserSettings?: () => Promise<boolean>;
       }>,
-      import(settingsChangeModulePath) as Promise<{
+      import("../utils/settings/changeDetector.js") as Promise<{
         settingsChangeDetector?: {
           notifyChange?: (source: "userSettings") => void;
         };
