@@ -2,29 +2,27 @@
  * Permission overlay "always allow" scenario.
  *
  * Default mode. Triggers Bash, hits the overlay, sends "2\\r" to accept
- * + record "always allow for this tool/path". Asserts the Bash command
- * runs (marker appears).
+ * + record "always allow for this tool/path". The harness uses temp
+ * HOME isolation so the policy entry doesn't leak.
  *
- * Side-effect: this writes an "always allow Bash in <cwd>" entry to the
- * permission policy file. Phase C temp HOME isolation will keep this
- * scoped per-scenario; until then, this scenario leaves a small policy
- * tail in the user's real ~/.agenc state. Acceptable trade-off; the
- * entry is benign.
+ * Uses a SLIM cwd (mkdtemp under /tmp with a single trivial file) so
+ * the daemon's project-context auto-load doesn't bloat the token
+ * budget. With agenc-core's runtime/ as cwd, AGENC.md and surrounding
+ * files pushed >237k tokens and starved compaction; in /tmp/<empty>
+ * the budget fits comfortably.
  */
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-slim-"));
+writeFileSync(path.join(slimCwd, "README.md"), "test cwd\n", "utf8");
+
 export const meta = {
   description: "Permission overlay (default mode): always-allow runs the tool.",
   timeoutMs: 120_000,
   useTempHome: true,
-  // 31 and 32 pass with temp HOME isolation. 33 hits a context-overflow
-  // crash in the daemon: after always-allow, the model's post-tool turn
-  // includes the entire agenc-core project context (auto-loaded at
-  // session start because cwd is the runtime dir). Token total reaches
-  // 237k vs the configured 236k compact threshold; mid_turn_compact
-  // is skipped, the model can't respond, and the spinner runs forever.
-  // Fix needs either a slimmer cwd for this scenario or a smaller
-  // context window in the cloned temp config. Filed as
-  // GAP-TEST-CONTEXT-BLOAT.
-  skip: "blocked on temp HOME context bloat from auto-loaded project; see GAP-TEST-CONTEXT-BLOAT",
+  cwd: slimCwd,
 };
 
 export default async function (session) {

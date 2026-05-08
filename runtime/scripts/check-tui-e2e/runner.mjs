@@ -75,6 +75,7 @@ async function runScenario(scenario) {
   const session = new TuiSession({
     args: scenario.meta.args ?? [],
     useTempHome: scenario.meta.useTempHome === true,
+    ...(scenario.meta.cwd ? { cwd: scenario.meta.cwd } : {}),
   });
   const debug = process.env.TUI_E2E_DEBUG === "1";
   const timeoutMs = scenario.meta.timeoutMs ?? DEFAULT_TIMEOUT_MS;

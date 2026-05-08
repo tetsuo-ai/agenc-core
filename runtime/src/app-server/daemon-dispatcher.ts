@@ -1165,6 +1165,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "provider",
       "profile",
       "instructions",
+      "permissionMode",
     ],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     objectFields: ["metadata"],
@@ -1176,6 +1177,19 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "initialContent",
       validated.initialContent,
     );
+  }
+  if (validated.permissionMode !== undefined) {
+    const value = validated.permissionMode;
+    if (
+      value !== "default" &&
+      value !== "plan" &&
+      value !== "acceptEdits" &&
+      value !== "bypassPermissions"
+    ) {
+      throw invalidParams(
+        `agent.create param 'permissionMode' must be one of "default" | "plan" | "acceptEdits" | "bypassPermissions"`,
+      );
+    }
   }
   return validated as AgentCreateParams;
 }
