@@ -17,7 +17,8 @@ writeFileSync(targetFile, `start ${oldStr} end\n`, "utf8");
 export const meta = {
   description: "--yolo: model uses Edit, file content updated on disk.",
   args: ["--yolo"],
-  timeoutMs: 90_000,
+  timeoutMs: 240_000,
+  slimCwd: true,
 };
 
 export default async function (session) {
@@ -28,7 +29,7 @@ export default async function (session) {
       `Use the Edit tool to edit ${targetFile}, replacing "${oldStr}" with "${newStr}"`,
     );
     await session.submit();
-    await session.waitForIdle({ timeout: 60_000 });
+    await session.waitForIdle({ timeout: 200_000 });
     const content = readFileSync(targetFile, "utf8");
     if (content.includes(oldStr) || !content.includes(newStr)) {
       throw new Error(

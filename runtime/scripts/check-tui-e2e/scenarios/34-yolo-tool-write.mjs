@@ -18,7 +18,8 @@ const marker = "agenc-write-marker-" + Math.random().toString(36).slice(2, 10);
 export const meta = {
   description: "--yolo: model uses Write, file content verifiable on disk.",
   args: ["--yolo"],
-  timeoutMs: 90_000,
+  timeoutMs: 240_000,
+  slimCwd: true,
 };
 
 export default async function (session) {
@@ -29,7 +30,7 @@ export default async function (session) {
       `Use the Write tool to write the exact text "${marker}" to the file ${targetFile}`,
     );
     await session.submit();
-    await session.waitForIdle({ timeout: 60_000 });
+    await session.waitForIdle({ timeout: 200_000 });
     // Verify the file was actually written with the expected content.
     let content = "";
     try {

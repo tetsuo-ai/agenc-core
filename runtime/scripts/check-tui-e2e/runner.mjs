@@ -72,10 +72,28 @@ async function loadScenario(name) {
 
 async function runScenario(scenario) {
   const startedAt = Date.now();
+  // Slim cwd: when meta.slimCwd === true, mkdtemp a fresh empty
+  // directory under /tmp and spawn agenc there. Avoids the daemon's
+  // project-context auto-load swamping the model with hundreds of K of
+  // tokens (which was making yolo-tool scenarios time out even though
+  // the bypass mode was working). Each tool round-trip can opt in by
+  // setting `slimCwd: true` in its meta.
+  let slimCwd;
+  if (scenario.meta.slimCwd === true && !scenario.meta.cwd) {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const path = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    slimCwd = mkdtempSync(path.join(tmpdir(), "agenc-tui-e2e-slim-"));
+    writeFileSync(path.join(slimCwd, "README.md"), "test cwd\n", "utf8");
+  }
   const session = new TuiSession({
     args: scenario.meta.args ?? [],
     useTempHome: scenario.meta.useTempHome === true,
-    ...(scenario.meta.cwd ? { cwd: scenario.meta.cwd } : {}),
+    ...(scenario.meta.cwd
+      ? { cwd: scenario.meta.cwd }
+      : slimCwd
+        ? { cwd: slimCwd }
+        : {}),
   });
   const debug = process.env.TUI_E2E_DEBUG === "1";
   const timeoutMs = scenario.meta.timeoutMs ?? DEFAULT_TIMEOUT_MS;

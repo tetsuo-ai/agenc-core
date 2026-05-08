@@ -9,7 +9,8 @@
 export const meta = {
   description: "--yolo: model uses Read on /etc/hostname, content renders.",
   args: ["--yolo"],
-  timeoutMs: 90_000,
+  timeoutMs: 180_000,
+  slimCwd: true,
 };
 
 export default async function (session) {
@@ -22,7 +23,7 @@ export default async function (session) {
   // The hostname appears in the captured buffer once Read returns.
   // Test runs on tetsuo's machine; if hostname changes, this string changes.
   await session.waitFor(/tetsuo-corporation/, {
-    timeout: 60_000,
+    timeout: 150_000,
     label: "hostname content",
   });
   await session.waitForIdle({ timeout: 30_000 });

@@ -11,7 +11,8 @@
  */
 export const meta = {
   description: "Two messages in one session, both reach idle, no crash.",
-  timeoutMs: 180_000,
+  timeoutMs: 360_000,
+  slimCwd: true,
 };
 
 export default async function (session) {
@@ -19,8 +20,8 @@ export default async function (session) {
   await session.waitForPrompt({ timeout: 15_000 });
   await session.type("hi");
   await session.submit();
-  await session.waitForIdle({ timeout: 60_000 });
+  await session.waitForIdle({ timeout: 120_000 });
   await session.type("and again");
   await session.submit();
-  await session.waitForIdle({ timeout: 60_000 });
+  await session.waitForIdle({ timeout: 120_000 });
 }

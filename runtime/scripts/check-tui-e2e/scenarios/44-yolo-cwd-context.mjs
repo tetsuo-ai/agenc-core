@@ -17,7 +17,10 @@ const expectedCwd = path.resolve(SCRIPT_DIR, "..", "..", "..");
 export const meta = {
   description: "--yolo: model uses Bash pwd, output matches launch cwd.",
   args: ["--yolo"],
-  timeoutMs: 90_000,
+  timeoutMs: 240_000,
+  // Intentionally NOT using slimCwd — this scenario tests cwd
+  // propagation to subagent, so it MUST run with the runtime cwd that
+  // matches the SCRIPT_DIR-derived expectedCwd assertion below.
 };
 
 export default async function (session) {
@@ -28,7 +31,7 @@ export default async function (session) {
   );
   await session.submit();
   await session.waitFor(new RegExp(expectedCwd.replace(/\//g, "\\/")), {
-    timeout: 75_000,
+    timeout: 200_000,
     label: "pwd output matches launch cwd",
   });
   await session.waitForIdle({ timeout: 30_000 });

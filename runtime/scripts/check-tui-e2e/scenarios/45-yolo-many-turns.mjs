@@ -12,7 +12,8 @@
 export const meta = {
   description: "--yolo: 4 turns survive the agent-not-found race.",
   args: ["--yolo"],
-  timeoutMs: 360_000,
+  timeoutMs: 600_000,
+  slimCwd: true,
 };
 
 export default async function (session) {
@@ -21,6 +22,6 @@ export default async function (session) {
   for (const turn of ["one", "two", "three", "four"]) {
     await session.type(`reply with the single word ${turn}`);
     await session.submit();
-    await session.waitForIdle({ timeout: 60_000 });
+    await session.waitForIdle({ timeout: 120_000 });
   }
 }

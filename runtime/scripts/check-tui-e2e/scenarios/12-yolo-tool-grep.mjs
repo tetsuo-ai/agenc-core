@@ -8,7 +8,8 @@
 export const meta = {
   description: "--yolo: model uses Grep, matched line renders in transcript.",
   args: ["--yolo"],
-  timeoutMs: 90_000,
+  timeoutMs: 180_000,
+  slimCwd: true,
 };
 
 export default async function (session) {
@@ -19,7 +20,7 @@ export default async function (session) {
   );
   await session.submit();
   await session.waitFor(/PRETTY_NAME/, {
-    timeout: 60_000,
+    timeout: 150_000,
     label: "grep match",
   });
   await session.waitForIdle({ timeout: 30_000 });

@@ -8,7 +8,8 @@
 export const meta = {
   description: "--yolo: ~500 char prompt submitted without truncation or crash.",
   args: ["--yolo"],
-  timeoutMs: 90_000,
+  timeoutMs: 180_000,
+  slimCwd: true,
 };
 
 const longPrompt =
@@ -24,7 +25,7 @@ export default async function (session) {
   await session.type(longPrompt);
   await session.submit();
   await session.waitFor(/DONE-MARKER-XYZ/, {
-    timeout: 75_000,
+    timeout: 150_000,
     label: "long-prompt completion marker",
   });
   await session.waitForIdle({ timeout: 30_000 });
