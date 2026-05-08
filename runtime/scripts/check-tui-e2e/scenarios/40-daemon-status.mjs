@@ -18,8 +18,10 @@ export const meta = {
   timeoutMs: 10_000,
 };
 
-export default async function () {
-  const result = await new Promise((resolve, reject) => {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function statusOnce() {
+  return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [BIN_AGENC, "daemon", "status"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
@@ -31,19 +33,32 @@ export default async function () {
     child.on("close", (code) => resolve({ code, stdout, stderr }));
     child.on("error", reject);
   });
-  if (result.code !== 0) {
+}
+
+export default async function () {
+  // Earlier scenarios that spawn `agenc` subprocesses can transiently make
+  // the daemon look down between their connect/disconnect cycles. Retry
+  // a few times before declaring failure; if the daemon is genuinely down
+  // we'll see consistent failures.
+  let lastResult = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    lastResult = await statusOnce();
+    if (lastResult.code === 0 && /running/.test(lastResult.stdout)) break;
+    await sleep(500);
+  }
+  if (lastResult.code !== 0) {
     throw new Error(
-      `daemon status exited ${result.code}; stderr: ${result.stderr.slice(0, 200)}`,
+      `daemon status exited ${lastResult.code} after retries; stderr: ${lastResult.stderr.slice(0, 200)}`,
     );
   }
-  if (!/running/.test(result.stdout)) {
+  if (!/running/.test(lastResult.stdout)) {
     throw new Error(
-      `daemon status did not report running: "${result.stdout}"`,
+      `daemon status did not report running after retries: "${lastResult.stdout}"`,
     );
   }
-  if (!/pid\s+\d+/.test(result.stdout)) {
+  if (!/pid\s+\d+/.test(lastResult.stdout)) {
     throw new Error(
-      `daemon status did not include PID: "${result.stdout}"`,
+      `daemon status did not include PID: "${lastResult.stdout}"`,
     );
   }
 }
