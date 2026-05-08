@@ -734,7 +734,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "mistral",
     model: "devstral-latest",
-    env: { MISTRAL_API_KEY: "mistral-test" },
+    apiKey: "mistral-test",
+    env: { MISTRAL_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -750,7 +751,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "nvidia-nim",
     model: "nvidia/llama-3.1-nemotron-70b-instruct",
-    env: { NVIDIA_API_KEY: "nvidia-test" },
+    apiKey: "nvidia-test",
+    env: { NVIDIA_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -769,7 +771,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "minimax",
     model: "MiniMax-M2.5",
-    env: { MINIMAX_API_KEY: "minimax-test" },
+    apiKey: "minimax-test",
+    env: { MINIMAX_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
@@ -785,7 +788,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "github",
     model: "gpt-4o",
-    env: { GITHUB_TOKEN: "github-test" },
+    apiKey: "github-test",
+    env: { GITHUB_TOKEN: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>

@@ -856,23 +856,36 @@ describe("createProvider", () => {
         }),
     );
     const mistral = withEnv(
-      { MISTRAL_API_KEY: "mistral-test" },
-      () => createProvider("mistral", { model: "devstral-latest" }),
+      { MISTRAL_API_KEY: undefined },
+      () =>
+        createProvider("mistral", {
+          apiKey: "mistral-test",
+          model: "devstral-latest",
+        }),
     );
     const nvidiaNim = withEnv(
-      { NVIDIA_API_KEY: "nvidia-test" },
+      { NVIDIA_API_KEY: undefined },
       () =>
         createProvider("nvidia-nim", {
+          apiKey: "nvidia-test",
           model: "nvidia/llama-3.1-nemotron-70b-instruct",
         }),
     );
     const minimax = withEnv(
-      { MINIMAX_API_KEY: "minimax-test" },
-      () => createProvider("minimax", { model: "MiniMax-M2.5" }),
+      { MINIMAX_API_KEY: undefined },
+      () =>
+        createProvider("minimax", {
+          apiKey: "minimax-test",
+          model: "MiniMax-M2.5",
+        }),
     );
     const github = withEnv(
-      { GITHUB_TOKEN: "github-test" },
-      () => createProvider("github", { model: "github:copilot" }),
+      { GITHUB_TOKEN: undefined },
+      () =>
+        createProvider("github", {
+          apiKey: "github-test",
+          model: "github:copilot",
+        }),
     );
 
     expect(compatible).toBeInstanceOf(OpenAICompatibleProvider);
@@ -912,12 +925,20 @@ describe("createProvider", () => {
 
   test("normalizes GitHub Copilot aliases case-insensitively", () => {
     const bare = withEnv(
-      { GITHUB_TOKEN: "github-test" },
-      () => createProvider("github", { model: "GitHub:Copilot" }),
+      { GITHUB_TOKEN: undefined },
+      () =>
+        createProvider("github", {
+          apiKey: "github-test",
+          model: "GitHub:Copilot",
+        }),
     );
     const compound = withEnv(
-      { GITHUB_TOKEN: "github-test" },
-      () => createProvider("github", { model: "GitHub:Copilot:gpt-5.4" }),
+      { GITHUB_TOKEN: undefined },
+      () =>
+        createProvider("github", {
+          apiKey: "github-test",
+          model: "GitHub:Copilot:gpt-5.4",
+        }),
     );
 
     expect((bare as unknown as { config: OpenAIProviderConfig }).config.model)
@@ -1347,12 +1368,13 @@ describe("createProvider", () => {
     {
       name: "mistral",
       env: {
-        MISTRAL_API_KEY: "mistral-test",
+        MISTRAL_API_KEY: undefined,
         MISTRAL_BASE_URL: undefined,
         MISTRAL_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "mistral-test",
       model: undefined,
       expectedBaseURL: "https://api.mistral.ai/v1",
       expectedModel: "devstral-latest",
@@ -1364,12 +1386,13 @@ describe("createProvider", () => {
     {
       name: "nvidia-nim",
       env: {
-        NVIDIA_API_KEY: "nvidia-test",
+        NVIDIA_API_KEY: undefined,
         NVIDIA_BASE_URL: undefined,
         NVIDIA_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "nvidia-test",
       model: undefined,
       expectedBaseURL: "https://integrate.api.nvidia.com/v1",
       expectedModel: "nvidia/llama-3.1-nemotron-70b-instruct",
@@ -1381,12 +1404,13 @@ describe("createProvider", () => {
     {
       name: "minimax",
       env: {
-        MINIMAX_API_KEY: "minimax-test",
+        MINIMAX_API_KEY: undefined,
         MINIMAX_BASE_URL: undefined,
         MINIMAX_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "minimax-test",
       model: undefined,
       expectedBaseURL: "https://api.minimax.io/v1",
       expectedModel: "MiniMax-M2.5",
@@ -1398,13 +1422,14 @@ describe("createProvider", () => {
     {
       name: "github",
       env: {
-        GITHUB_TOKEN: "github-test",
+        GITHUB_TOKEN: undefined,
         GITHUB_BASE_URL: undefined,
         GITHUB_MODEL: undefined,
         OPENAI_API_KEY: "sk-openai",
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "github-test",
       model: undefined,
       expectedBaseURL: "https://api.githubcopilot.com",
       expectedModel: "gpt-4o",
