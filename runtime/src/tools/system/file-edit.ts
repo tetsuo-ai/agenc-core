@@ -66,6 +66,28 @@ const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
 const READ_BEFORE_WRITE_ERROR =
   "File has not been read yet. Read it first before writing to it.";
 
+const SESSION_ID_MISSING_ERROR =
+  "file_edit was invoked without a session id. The runtime injects this automatically; if you are calling the tool from a unit test, pass __testBypassSessionGuard:true to opt out of read-before-write enforcement.";
+
+/**
+ * Test-only opt-out of the read-before-write session guard. Production
+ * callers must NEVER set this — the canonical tool surface
+ * (canonicalToolSurface.ts) injects SESSION_ID_ARG automatically via
+ * getSessionId(). Tests that exercise the tool at the execute boundary
+ * without spinning up a full session lifecycle can pass
+ * `__testBypassSessionGuard:true`.
+ *
+ * The previous behavior silently skipped the read-before-write check
+ * whenever sessionId was undefined, which masked any production code
+ * path that lost the session id (e.g., a future SDK consumer that
+ * bypasses canonicalToolSurface). Failing loud is safer.
+ */
+const TEST_BYPASS_SESSION_GUARD_ARG = "__testBypassSessionGuard";
+
+function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
+  return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
+}
+
 // Verbatim from AgenC FileEditTool/prompt.ts:20-27.
 const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
 
@@ -422,11 +444,80 @@ async function writeFileCreatingParents(
   await writeFile(absolutePath, content, "utf8");
 }
 
+/**
+ * Sentinel thrown by writeFilePreservingSnapshot when the on-disk
+ * mtime advanced between the snapshot read and the write. The caller
+ * surfaces this as a clean error result so the model knows the edit
+ * was rejected because of a concurrent modification, NOT a transient
+ * I/O failure.
+ */
+class ConcurrentFileModificationError extends Error {
+  readonly code = "concurrent_file_modification" as const;
+  constructor(public readonly path: string) {
+    super(
+      `${path} was modified between snapshot read and write — refusing to overwrite to avoid silent data loss.`,
+    );
+    this.name = "ConcurrentFileModificationError";
+  }
+}
+
+/**
+ * Convert any thrown error from a writeFilePreservingSnapshot call
+ * into a model-facing error message. Concurrent-modification errors
+ * get a specific recovery hint (re-Read the file); other errors fall
+ * through to the generic "Failed to write file" prefix.
+ */
+function formatWriteFileError(err: unknown): string {
+  if (err instanceof ConcurrentFileModificationError) {
+    return [
+      `${err.path} was modified by another writer between Read and Edit.`,
+      "The edit was rejected to prevent silent data loss.",
+      "Re-Read the file to refresh its contents, then retry the edit.",
+    ].join(" ");
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return `Failed to write file: ${message}`;
+}
+
 async function writeFilePreservingSnapshot(
   absolutePath: string,
   content: string,
   snapshot: FileSnapshot,
 ): Promise<void> {
+  // Re-stat immediately before the write to detect concurrent edits
+  // that landed between the snapshot read and now. This narrows the
+  // TOCTOU window to a single syscall pair (stat then write). It is
+  // not bulletproof — a writer that sneaks in between the stat and
+  // the writeFile syscall here would still race — but it eliminates
+  // the multi-await window where the runtime did a snapshot, then a
+  // session-cache lookup, then an mtime check, then validate edit,
+  // then write, all interleaved with other awaits.
+  //
+  // Skipped for non-existing files (snapshot.exists === false) because
+  // the caller routes those through writeFileCreatingParents instead;
+  // this codepath is for "edit an existing file we just snapshotted."
+  if (snapshot.exists) {
+    try {
+      const current = await stat(absolutePath);
+      if (
+        typeof current.mtimeMs === "number" &&
+        Number.isFinite(current.mtimeMs) &&
+        current.mtimeMs > snapshot.mtimeMs
+      ) {
+        throw new ConcurrentFileModificationError(absolutePath);
+      }
+    } catch (err) {
+      if (err instanceof ConcurrentFileModificationError) throw err;
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") {
+        // File was deleted between snapshot and write — treat as
+        // concurrent modification.
+        throw new ConcurrentFileModificationError(absolutePath);
+      }
+      // Unexpected stat failure — fall through and let writeFile
+      // surface the underlying error.
+    }
+  }
   await writeFile(
     absolutePath,
     encodeForOriginalFormat(content, snapshot.lineEndings),
@@ -741,9 +832,14 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // Read-before-write enforcement. Existing files require a full read
       // snapshot; partial offset/limit reads do not authorize edits.
       //
-      // Skipped when no sessionId was injected (headless / unit-test path) so
-      // unit tests don't have to fake a session lifecycle.
+      // Production callers MUST inject a session id via SESSION_ID_ARG
+      // (canonicalToolSurface.ts:mapCanonicalInput does this from
+      // getSessionId() automatically). The previous behavior silently
+      // skipped this check when sessionId was undefined, which masked
+      // any production path that lost the session id. Tests can opt
+      // out explicitly via __testBypassSessionGuard:true.
       const sessionId = resolveSessionId(rawArgs);
+      const bypassSessionGuard = shouldBypassSessionGuard(rawArgs);
       let recordedSnapshot: ReturnType<typeof getSessionReadSnapshot> =
         undefined;
       if (sessionId !== undefined) {
@@ -751,6 +847,8 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         if (!isFullSessionRead(recordedSnapshot)) {
           return errorResult(READ_BEFORE_WRITE_ERROR);
         }
+      } else if (!bypassSessionGuard) {
+        return errorResult(SESSION_ID_MISSING_ERROR);
       }
 
       // Modification-time staleness check. We compare the file's
@@ -793,8 +891,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
             snapshot,
           );
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return errorResult(`Failed to write file: ${message}`);
+          return errorResult(formatWriteFileError(err));
         }
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
         notifyLspFileChanged(absoluteFilePath, new_string);
@@ -822,8 +919,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       try {
         await writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return errorResult(`Failed to write file: ${message}`);
+        return errorResult(formatWriteFileError(err));
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
@@ -1020,7 +1116,13 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         }
       }
 
+      // Read-before-write enforcement (mirrors the Edit tool path).
+      // Production callers MUST inject a session id via SESSION_ID_ARG;
+      // tests opt out via __testBypassSessionGuard:true. Failing loud
+      // here surfaces any production code path that lost the session
+      // id; the previous silent skip hid that class of bug.
       const sessionId = resolveSessionId(rawArgs);
+      const bypassSessionGuard = shouldBypassSessionGuard(rawArgs);
       let recordedSnapshot: ReturnType<typeof getSessionReadSnapshot> =
         undefined;
       if (sessionId !== undefined) {
@@ -1028,6 +1130,8 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         if (!isFullSessionRead(recordedSnapshot)) {
           return errorResult(READ_BEFORE_WRITE_ERROR);
         }
+      } else if (!bypassSessionGuard) {
+        return errorResult(SESSION_ID_MISSING_ERROR);
       }
 
       if (sessionId !== undefined) {
@@ -1058,8 +1162,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             snapshot,
           );
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return errorResult(`Failed to write file: ${message}`);
+          return errorResult(formatWriteFileError(err));
         }
         await snapshotPostWrite(sessionId, absoluteFilePath, firstEdit.new_string);
         notifyLspFileChanged(absoluteFilePath, firstEdit.new_string);
@@ -1085,7 +1188,30 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
           edit.replace_all,
         );
         if ("error" in applied) {
-          return errorResult(`Edit ${i + 1} failed: ${applied.error}`);
+          // MultiEdit is all-or-nothing — when one edit fails the
+          // file is left untouched. Tell the model exactly which
+          // edits would have applied AND that nothing was written.
+          // The previous message ("Edit N failed: <reason>") didn't
+          // surface the all-or-nothing semantic, so weak local
+          // models (qwen, llama) loop: they re-emit the same broken
+          // edit while assuming earlier edits already landed.
+          const total = edits.length;
+          const failedIndex = i + 1;
+          const validatedBefore = i; // edits 1..i were applied to the in-memory buffer
+          const parts: string[] = [
+            `Edit ${failedIndex} of ${total} failed: ${applied.error}.`,
+          ];
+          if (validatedBefore > 0) {
+            parts.push(
+              `Edits 1..${validatedBefore} validated before edit ${failedIndex} failed.`,
+            );
+          }
+          parts.push(
+            "MultiEdit is all-or-nothing: the file was NOT written. Re-emit the full edit list with edit",
+            String(failedIndex),
+            "corrected.",
+          );
+          return errorResult(parts.join(" "));
         }
         updated = applied.updated;
         replacements += applied.replacements;
@@ -1094,8 +1220,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       try {
         await writeFilePreservingSnapshot(absoluteFilePath, updated, snapshot);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return errorResult(`Failed to write file: ${message}`);
+        return errorResult(formatWriteFileError(err));
       }
 
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);

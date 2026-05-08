@@ -732,6 +732,7 @@ describe("Edit tool", () => {
       file_path: file,
       old_string: "beta",
       new_string: "gamma",
+      __testBypassSessionGuard: true,
     });
 
     expect(result.isError).toBeUndefined();
@@ -847,18 +848,36 @@ describe("Edit tool", () => {
     expect(() => JSON.parse(result.content)).toThrow();
   });
 
-  test("read-gate is skipped when no sessionId is injected (headless path)", async () => {
+  test("read-gate is skipped only when __testBypassSessionGuard is set", async () => {
     const file = join(root, "headless.txt");
     await writeFile(file, "hi\n", "utf8");
     const tool = createFileEditTool({ allowedPaths: [root] });
 
-    const result = await tool.execute({
+    // Without the bypass flag AND without SESSION_ID_ARG, the tool
+    // must REFUSE the edit. Production callers always inject
+    // SESSION_ID_ARG via canonicalToolSurface.mapCanonicalInput; the
+    // previous silent-skip on undefined sessionId let any production
+    // path that lost the session id slip past the read-before-write
+    // safety. Failing loud is the safer default.
+    const refused = await tool.execute({
       file_path: file,
       old_string: "hi",
       new_string: "yo",
     });
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toContain("session id");
+    await expect(readFile(file, "utf8")).resolves.toBe("hi\n");
 
-    expect(result.isError).toBeUndefined();
+    // With the bypass flag, the read-before-write check is skipped
+    // and the edit applies — this is the explicit opt-out for unit
+    // tests that don't fake a full session lifecycle.
+    const allowed = await tool.execute({
+      file_path: file,
+      old_string: "hi",
+      new_string: "yo",
+      __testBypassSessionGuard: true,
+    });
+    expect(allowed.isError).toBeUndefined();
     await expect(readFile(file, "utf8")).resolves.toBe("yo\n");
   });
 
@@ -1035,7 +1054,18 @@ describe("Edit tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("Edit 2 failed");
+    // The richer message must spell out:
+    //   - which edit failed (index of N)
+    //   - which earlier edits would have validated
+    //   - that the file was NOT written (all-or-nothing)
+    // so the model can recover by re-emitting the full edit list with
+    // the broken edit corrected. Pinning these substrings prevents a
+    // future regression to the terse "Edit N failed: ..." form that
+    // looped weak local models.
+    expect(result.content).toContain("Edit 2 of 2 failed");
+    expect(result.content).toContain("Edits 1..1 validated");
+    expect(result.content).toContain("file was NOT written");
+    expect(result.content).toContain("Re-emit the full edit list");
     await expect(readFile(file, "utf8")).resolves.toBe(original);
   });
 

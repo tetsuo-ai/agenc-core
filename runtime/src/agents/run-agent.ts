@@ -1140,7 +1140,16 @@ export function buildFilteredRegistry(
         };
       }
 
-      const parsedArgs = parseToolCallArguments(toolCall.arguments);
+      const parseResult = parseToolCallArguments(toolCall.arguments);
+      if (!parseResult.ok) {
+        // Surface the parse failure explicitly so weak models can
+        // recover instead of looping on "field X required" feedback.
+        return {
+          content: formatToolArgumentsParseError(toolCall.name, parseResult),
+          isError: true,
+        };
+      }
+      const parsedArgs = parseResult.args;
       const wrappedTool = wrappedByName.get(toolCall.name);
       if (wrappedTool) {
         const result = await wrappedTool.execute(parsedArgs);
@@ -1229,15 +1238,61 @@ function resolveSessionMaxAgentDepth(parent: Session): number {
   );
 }
 
-function parseToolCallArguments(raw: string | undefined): Record<string, unknown> {
+type ParsedToolCallArguments =
+  | { readonly ok: true; readonly args: Record<string, unknown> }
+  | { readonly ok: false; readonly error: string; readonly raw: string };
+
+/**
+ * Parse a tool_call's `arguments` JSON string into a plain object.
+ *
+ * Returns a discriminated result instead of silently coercing parse
+ * failures into `{}`. The previous behavior — return {} on JSON parse
+ * failure — let weak local models (qwen, llama family) loop on the
+ * same broken tool call: the runtime would dispatch the empty args,
+ * the tool would respond "field X required," the model would
+ * interpret that as "I need to add field X" and re-emit the SAME
+ * broken JSON. With this surfaced parse error the caller can route
+ * the model back to the right correction: "your JSON didn't parse,
+ * here's the input I saw, please re-emit valid JSON."
+ *
+ * Non-object roots (arrays, strings, null, numbers) are also surfaced
+ * as errors — tool arguments must be a JSON object per the
+ * function-calling contract used by all openai-compatible providers.
+ */
+function parseToolCallArguments(raw: string | undefined): ParsedToolCallArguments {
+  const text = raw ?? "{}";
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw ?? "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
+    parsed = JSON.parse(text);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `JSON parse failed: ${message}`, raw: text };
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error:
+        "tool_call arguments must be a JSON object (got " +
+        (Array.isArray(parsed) ? "array" : typeof parsed) +
+        ")",
+      raw: text,
+    };
+  }
+  return { ok: true, args: parsed as Record<string, unknown> };
+}
+
+function formatToolArgumentsParseError(
+  toolName: string,
+  parsed: Extract<ParsedToolCallArguments, { ok: false }>,
+): string {
+  // The trailing instruction is what unsticks weak models from a
+  // re-emit loop. Without it qwen/llama tend to re-send the same
+  // broken JSON ("the model says I need field X — let me try again").
+  return [
+    `tool_call arguments for ${toolName} could not be parsed: ${parsed.error}.`,
+    `Received raw arguments: ${parsed.raw}`,
+    "Please re-emit the tool_call with valid JSON object arguments.",
+  ].join("\n");
 }
 
 function injectChildToolArgs(

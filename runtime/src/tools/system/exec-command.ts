@@ -390,7 +390,27 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             : {}),
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
         });
-        const isError = output.exitCode !== null && output.exitCode !== 0;
+        // exitCode === null has three meaningful sub-cases. The
+        // reliable discriminator is `process_id !== undefined`:
+        //   - process_id set    → process is still alive (YIELDED to
+        //                         caller; can resume via write_stdin).
+        //                         `timedOut` is NOT a kill marker here —
+        //                         it just means the yield window
+        //                         elapsed. Not an error.
+        //   - process_id absent + timedOut    → configured timeout
+        //                                       fired AND process was
+        //                                       killed. Error.
+        //   - process_id absent + !timedOut   → terminated by external
+        //                                       signal (SIGKILL/OOM/
+        //                                       sandbox kill). Error.
+        // Previously isError was `exitCode !== null && exitCode !== 0`,
+        // which evaluated to false for ALL null-exitCode cases and
+        // produced a silent success on signal kill.
+        const stillAlive =
+          output.exitCode === null && output.process_id !== undefined;
+        const isError =
+          (output.exitCode !== null && output.exitCode !== 0) ||
+          (output.exitCode === null && !stillAlive);
         return {
           content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,

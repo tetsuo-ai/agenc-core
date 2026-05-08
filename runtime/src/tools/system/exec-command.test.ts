@@ -44,6 +44,36 @@ function failedExecOutput(stderr: string, exitCode: number): ExecCommandToolOutp
   };
 }
 
+function timedOutExecOutput(partialStdout: string): ExecCommandToolOutput {
+  return {
+    output: partialStdout,
+    stdout: partialStdout,
+    stderr: "",
+    exitCode: null,
+    exit_code: null,
+    durationMs: 5_000,
+    wall_time_seconds: 5.0,
+    timedOut: true,
+    truncated: true,
+    original_token_count: 5,
+  };
+}
+
+function signalKilledExecOutput(partialStdout: string): ExecCommandToolOutput {
+  return {
+    output: partialStdout,
+    stdout: partialStdout,
+    stderr: "",
+    exitCode: null,
+    exit_code: null,
+    durationMs: 42,
+    wall_time_seconds: 0.042,
+    timedOut: false,
+    truncated: false,
+    original_token_count: 2,
+  };
+}
+
 const require = createRequire(import.meta.url);
 const hasPtySupport = (() => {
   try {
@@ -215,6 +245,74 @@ describe("exec_command tool", () => {
       wall_time_seconds: 0.012,
       exit_code: 2,
       output: "compiler failed\n",
+    });
+  });
+
+  test("flags signal-killed exec (exitCode null, not timeout) as isError with explicit signal_terminated marker", async () => {
+    const manager: UnifiedExecProcessManagerLike = {
+      maxTimeoutMs: 30_000,
+      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+        async () => signalKilledExecOutput("partial output\n"),
+      ),
+      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
+        async () => completedExecOutput(""),
+      ),
+      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+    };
+    const tool = createExecCommandTool({
+      cwd: root,
+      allowedPaths: [root],
+      unifiedExecManager: manager,
+    });
+
+    const result = await tool.execute({ cmd: "npm test", workdir: root });
+
+    // The previous behavior reported isError=undefined for null exitCode,
+    // making a SIGKILL'd test runner look like a passing test. Pin
+    // isError=true and require an explicit signal_terminated=true marker
+    // in both content and codeModeResult so the model can distinguish
+    // clean exits from killed processes.
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/^partial output/);
+    expect(result.content).toContain("signal_terminated=true");
+    expect(result.content).not.toContain("exit_code=");
+    expect(result.codeModeResult).toMatchObject({
+      signal_terminated: true,
+      output: "partial output\n",
+    });
+    expect(result.codeModeResult).not.toHaveProperty("exit_code");
+  });
+
+  test("flags timed-out exec (exitCode null, timedOut true) as isError with timed_out marker", async () => {
+    const manager: UnifiedExecProcessManagerLike = {
+      maxTimeoutMs: 30_000,
+      execCommand: vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+        async () => timedOutExecOutput("slow output\n"),
+      ),
+      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
+        async () => completedExecOutput(""),
+      ),
+      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+    };
+    const tool = createExecCommandTool({
+      cwd: root,
+      allowedPaths: [root],
+      unifiedExecManager: manager,
+    });
+
+    const result = await tool.execute({
+      cmd: "while true; do echo hi; done",
+      workdir: root,
+      timeout_ms: 5_000,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/^slow output/);
+    expect(result.content).toContain("timed_out=true");
+    expect(result.content).not.toContain("signal_terminated=true");
+    expect(result.codeModeResult).toMatchObject({
+      timed_out: true,
+      output: "slow output\n",
     });
   });
 
