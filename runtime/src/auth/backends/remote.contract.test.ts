@@ -546,6 +546,42 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
+  it("preserves Bedrock credential fields from HTTP key vending responses", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          provider: "amazon-bedrock",
+          sessionId: "session-1",
+          apiKey: " managed-aws-access ",
+          secretAccessKey: " managed-aws-secret ",
+          sessionToken: " managed-aws-session ",
+          region: " us-west-2 ",
+        }),
+        { status: 200 },
+      ),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: {
+        [REMOTE_AUTH_URL_ENV]: "http://127.0.0.1:9010/vend-key",
+        [REMOTE_AUTH_TOKEN_ENV]: "remote-token",
+      },
+      fetchImpl,
+    });
+
+    await expect(
+      backend.vendKey("amazon-bedrock", "session-1"),
+    ).resolves.toEqual({
+      provider: "amazon-bedrock",
+      sessionId: "session-1",
+      apiKey: "managed-aws-access",
+      secretAccessKey: "managed-aws-secret",
+      sessionToken: "managed-aws-session",
+      region: "us-west-2",
+    });
+  });
+
   it("rejects remote key responses for a different session or provider", async () => {
     const providerMismatch = new RemoteAuthBackend({
       managedKeysEnabled: true,

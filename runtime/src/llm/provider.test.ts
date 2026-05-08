@@ -18,6 +18,7 @@ import {
   isFactoryProvider,
   KNOWN_PROVIDER_NAMES,
   normalizeProviderName,
+  prepareProviderSwitch,
   readProviderFactoryOptions,
   readProviderIdentity,
   resolveProviderNameFromEnv,
@@ -155,23 +156,25 @@ describe("createProvider", () => {
         AWS_BEDROCK_SESSION_TOKEN: undefined,
         AWS_SESSION_TOKEN: undefined,
       };
-      if (info?.apiKeyEnvVar !== undefined) {
-        env[info.apiKeyEnvVar] = "registry-test-key";
-      }
-      if (name === "amazon-bedrock") {
-        env.AWS_SECRET_ACCESS_KEY = "registry-secret-key";
-      }
-
-      const provider = withEnv(env, () =>
-        name === "agenc"
-          ? createProvider(name, {
+      const providerOptions = name === "agenc"
+        ? {
+          extra: {
+            authBackend,
+            sessionId: "session-1",
+          },
+        }
+        : name === "amazon-bedrock"
+          ? {
+            apiKey: "registry-test-key",
             extra: {
-              authBackend,
-              sessionId: "session-1",
+              secretAccessKey: "registry-secret-key",
             },
-          })
-          : createProvider(name, {}),
-      );
+          }
+          : info?.apiKeyEnvVar !== undefined
+            ? { apiKey: "registry-test-key" }
+            : {};
+
+      const provider = withEnv(env, () => createProvider(name, providerOptions));
 
       const options = readProviderFactoryOptions(provider);
       expect(options.model).toBe(info?.defaultModel);
@@ -184,10 +187,11 @@ describe("createProvider", () => {
   test("routes 'openai' to OpenAIProvider", () => {
     const provider = withEnv(
       {
-        OPENAI_API_KEY: "sk-test",
+        OPENAI_API_KEY: undefined,
       },
       () =>
         createProvider("openai", {
+          apiKey: "sk-test",
           model: "gpt-5.4",
         }),
     );
@@ -195,14 +199,578 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test.each([
+    { name: "grok", model: "grok-4-fast" },
+    { name: "openai", model: "gpt-5" },
+    { name: "anthropic", model: "claude-opus-4-7" },
+    { name: "lmstudio", model: "gpt-4o-mini" },
+    { name: "openai-compatible", model: "local-model" },
+    { name: "openrouter", model: "openai/gpt-5" },
+    { name: "groq", model: "llama-3.3-70b-versatile" },
+    { name: "deepseek", model: "deepseek-reasoner" },
+    { name: "gemini", model: "gemini-2.5-pro" },
+    {
+      name: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+    },
+  ] as const)(
+    "vends concrete provider keys through AuthBackend for '$name'",
+    async (entry) => {
+      const { name, model } = entry;
+      const extra = "extra" in entry ? entry.extra : undefined;
+      const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+        provider,
+        sessionId,
+        apiKey: `vended-${provider}-key`,
+        ...(provider === "amazon-bedrock"
+          ? {
+            secretAccessKey: "vended-aws-secret",
+            sessionToken: "vended-aws-session",
+            region: "us-west-2",
+          }
+          : {}),
+      }));
+      const vendingAuthBackend: AuthBackend = {
+        ...authBackend,
+        vendKey,
+      };
+
+      const provider = createProvider(name, {
+        model,
+        extra: {
+          authBackend: vendingAuthBackend,
+          sessionId: "session-vend",
+          ...(extra ?? {}),
+        },
+      });
+
+      expect(provider.name).toBe(name);
+      expect(isFactoryProvider(provider)).toBe(true);
+      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+        provider: name,
+        model,
+      });
+      expect(vendKey).toHaveBeenCalledWith(name, "session-vend");
+    },
+  );
+
+  test("defaults model metadata on AuthBackend-vended providers without explicit model", () => {
+    const provider = withEnv(
+      {
+        OPENAI_MODEL: undefined,
+      },
+      () =>
+        createProvider("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-default-model",
+          },
+        }),
+    );
+
+    expect((provider as unknown as { config: { model: string } }).config.model)
+      .toBe("gpt-5");
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
+  });
+
+  test("prepares AuthBackend-vended provider switches without explicit model", () => {
+    const prepared = withEnv(
+      {
+        OPENAI_MODEL: undefined,
+      },
+      () =>
+        prepareProviderSwitch("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-switch-default-model",
+          },
+        }),
+    );
+
+    expect(prepared.provider).toBe("openai");
+    expect(prepared.model).toBe("gpt-5");
+    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
+  });
+
+  test("keeps env model metadata on AuthBackend-vended providers without explicit model", async () => {
+    const provider = withEnv(
+      {
+        OPENAI_MODEL: "gpt-5.4",
+      },
+      () =>
+        createProvider("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-env-model",
+          },
+        }),
+    );
+    const prepared = withEnv(
+      {
+        OPENAI_MODEL: "gpt-5.4",
+      },
+      () =>
+        prepareProviderSwitch("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-env-model-switch",
+          },
+        }),
+    );
+
+    expect((provider as unknown as { config: { model: string } }).config.model)
+      .toBe("gpt-5.4");
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5.4");
+    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    expect(prepared.model).toBe("gpt-5.4");
+    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5.4");
+  });
+
+  test("uses AuthBackend-vended keys on delegated compatible requests", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl_1",
+          model: "openai/gpt-5",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: "delegated",
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: {
+            prompt_tokens: 4,
+            completion_tokens: 1,
+            total_tokens: 5,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: "vended-openrouter-key",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("openrouter", {
+      model: "openai/gpt-5",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-chat",
+        fetchImpl,
+      },
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("delegated");
+    expect(vendKey).toHaveBeenCalledWith("openrouter", "session-chat");
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const headers = init?.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer vended-openrouter-key");
+  });
+
+  test("uses AuthBackend-vended Bedrock credentials on delegated requests", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: {
+            message: {
+              role: "assistant",
+              content: [{ text: "bedrock delegated" }],
+            },
+          },
+          stopReason: "end_turn",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: "vended-aws-access",
+      secretAccessKey: "vended-aws-secret",
+      sessionToken: "vended-aws-session",
+      region: "us-west-2",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("amazon-bedrock", {
+      model: "amazon.nova-pro-v1:0",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-bedrock",
+        secretAccessKey: "stale-aws-secret",
+        sessionToken: "stale-aws-session",
+        region: "us-east-1",
+        fetchImpl,
+      },
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("bedrock delegated");
+    expect(vendKey).toHaveBeenCalledWith("amazon-bedrock", "session-bedrock");
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse",
+    );
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-amz-security-token")).toBe("vended-aws-session");
+    expect(headers.get("authorization")).toContain(
+      "Credential=vended-aws-access/",
+    );
+  });
+
+  test("uses AuthBackend-vended Bedrock access key with explicit non-access credentials", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: {
+            message: {
+              role: "assistant",
+              content: [{ text: "bedrock real contract" }],
+            },
+          },
+          stopReason: "end_turn",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: "vended-aws-access",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("amazon-bedrock", {
+      model: "amazon.nova-pro-v1:0",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-bedrock-real-contract",
+        secretAccessKey: "explicit-aws-secret",
+        sessionToken: "explicit-aws-session",
+        region: "us-west-2",
+        fetchImpl,
+      },
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("bedrock real contract");
+    expect(vendKey).toHaveBeenCalledWith(
+      "amazon-bedrock",
+      "session-bedrock-real-contract",
+    );
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse",
+    );
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-amz-security-token")).toBe("explicit-aws-session");
+    expect(headers.get("authorization")).toContain(
+      "Credential=vended-aws-access/",
+    );
+  });
+
+  test.each([
+    {
+      label: "provider",
+      vended: {
+        provider: "anthropic",
+        sessionId: "session-mismatch",
+        apiKey: "vended-openai-key",
+      },
+      expected: /returned provider "anthropic"/,
+    },
+    {
+      label: "sessionId",
+      vended: {
+        provider: "openai",
+        sessionId: "other-session",
+        apiKey: "vended-openai-key",
+      },
+      expected: /returned session "other-session"/,
+    },
+  ])(
+    "rejects AuthBackend-vended provider keys with mismatched $label",
+    async ({ vended, expected }) => {
+      const vendingAuthBackend: AuthBackend = {
+        ...authBackend,
+        vendKey: vi.fn(async () => vended),
+      };
+      const provider = createProvider("openai", {
+        model: "gpt-5.4",
+        extra: {
+          authBackend: vendingAuthBackend,
+          sessionId: "session-mismatch",
+        },
+      });
+
+      await expect(provider.getExecutionProfile?.()).rejects.toThrow(expected);
+    },
+  );
+
+  test("rejects empty AuthBackend-vended provider keys", async () => {
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: " ",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("openai", {
+      model: "gpt-5.4",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-empty",
+      },
+    });
+
+    await expect(provider.getExecutionProfile?.()).rejects.toThrow(
+      /AuthBackend\.vendKey\(\) returned an empty key/,
+    );
+  });
+
+  test("retries AuthBackend vending after transient delegate failures", async () => {
+    const vendKey = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary vending failure"))
+      .mockResolvedValueOnce({
+        provider: "openai",
+        sessionId: "session-retry",
+        apiKey: "vended-openai-key",
+      });
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("openai", {
+      model: "gpt-5.4",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-retry",
+      },
+    });
+
+    await expect(provider.getExecutionProfile?.()).rejects.toThrow(
+      /temporary vending failure/,
+    );
+    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    expect(vendKey).toHaveBeenCalledTimes(2);
+  });
+
+  test("re-vends AuthBackend keys after vended expiry", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+        provider,
+        sessionId,
+        apiKey: `vended-openai-key-${vendKey.mock.calls.length}`,
+        expiresAt: new Date(Date.now() + 1_000).toISOString(),
+      }));
+      const vendingAuthBackend: AuthBackend = {
+        ...authBackend,
+        vendKey,
+      };
+      const provider = createProvider("openai", {
+        model: "gpt-5.4",
+        extra: {
+          authBackend: vendingAuthBackend,
+          sessionId: "session-expiry",
+        },
+      });
+
+      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+        provider: "openai",
+        model: "gpt-5.4",
+      });
+      vi.setSystemTime(new Date("2026-01-01T00:00:02.000Z"));
+      await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+        provider: "openai",
+        model: "gpt-5.4",
+      });
+
+      expect(vendKey).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("preserves optional provider hooks on AuthBackend-vended providers that support them", () => {
+    const grok = createProvider("grok", {
+      model: "grok-4-fast",
+      extra: {
+        authBackend,
+        sessionId: "session-hooks",
+      },
+    });
+    const openai = createProvider("openai", {
+      model: "gpt-5.4",
+      extra: {
+        authBackend,
+        sessionId: "session-hooks-openai",
+      },
+    });
+
+    expect(typeof grok.prewarmStartup).toBe("function");
+    expect(typeof grok.retrieveStoredResponse).toBe("function");
+    expect(typeof grok.deleteStoredResponse).toBe("function");
+    expect(openai.prewarmStartup).toBeUndefined();
+    expect(typeof openai.retrieveStoredResponse).toBe("function");
+    expect(typeof openai.deleteStoredResponse).toBe("function");
+  });
+
+  test.each([
+    {
+      name: "anthropic",
+      model: "claude-opus-4-7",
+    },
+    {
+      name: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+    },
+  ] as const)(
+    "does not expose unsupported optional provider hooks on AuthBackend-vended $name providers",
+    ({ name, model }) => {
+      const provider = createProvider(name, {
+        model,
+        extra: {
+          authBackend,
+          sessionId: `session-no-hooks-${name}`,
+        },
+      });
+
+      expect(provider.prewarmStartup).toBeUndefined();
+      expect(provider.retrieveStoredResponse).toBeUndefined();
+      expect(provider.deleteStoredResponse).toBeUndefined();
+    },
+  );
+
+  test("recreates AuthBackend-vended providers from readProviderFactoryOptions", async () => {
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: "vended-openrouter-key",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("openrouter", {
+      model: "openai/gpt-5",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-rebuild",
+      },
+    });
+
+    const options = readProviderFactoryOptions(provider);
+    expect(options.apiKey).toBeUndefined();
+    expect(options.extra?.authBackend).toBe(vendingAuthBackend);
+    expect(options.extra).toMatchObject({
+      sessionId: "session-rebuild",
+    });
+
+    const rebuilt = createProvider("openrouter", options);
+    await expect(rebuilt.getExecutionProfile?.()).resolves.toMatchObject({
+      provider: "openrouter",
+      model: "openai/gpt-5",
+    });
+    expect(vendKey).toHaveBeenCalledWith("openrouter", "session-rebuild");
+  });
+
+  test("coalesces concurrent AuthBackend vending for a cold provider", async () => {
+    let resolveVend!: () => void;
+    const vendKey = vi.fn((provider: string, sessionId: string) =>
+      new Promise<Awaited<ReturnType<AuthBackend["vendKey"]>>>((resolve) => {
+        resolveVend = () =>
+          resolve({
+            provider,
+            sessionId,
+            apiKey: "vended-openai-key",
+          });
+      }),
+    );
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("openai", {
+      model: "gpt-5.4",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-concurrent",
+      },
+    });
+
+    const firstProfile = provider.getExecutionProfile?.();
+    const secondProfile = provider.getExecutionProfile?.();
+    expect(firstProfile).toBeDefined();
+    expect(secondProfile).toBeDefined();
+    expect(vendKey).toHaveBeenCalledTimes(1);
+
+    resolveVend();
+    await Promise.all([firstProfile, secondProfile]);
+    expect(vendKey).toHaveBeenCalledTimes(1);
+  });
+
+  test("authBackend without sessionId in factory options fails before vending", () => {
+    const vendKey = vi.fn(authBackend.vendKey);
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+
+    expect(() =>
+      createProvider("openai", {
+        model: "gpt-5.4",
+        extra: {
+          authBackend: vendingAuthBackend,
+        },
+      }),
+    ).toThrow(/sessionId/);
+    expect(vendKey).not.toHaveBeenCalled();
+  });
+
   test("preserves openai-compatible context budget metadata", async () => {
     const provider = withEnv(
       {
-        OPENAI_API_KEY: "local-token",
+        OPENAI_API_KEY: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
       },
       () =>
         createProvider("openai", {
+          apiKey: "local-token",
           model: "qwen-local",
           extra: {
             useResponsesApi: false,
@@ -228,10 +796,11 @@ describe("createProvider", () => {
   test("preserves the live provider identity on openai-compatible providers", () => {
     const provider = withEnv(
       {
-        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_API_KEY: undefined,
       },
       () =>
         createProvider("openrouter", {
+          apiKey: "or-test",
           model: "openai/gpt-5",
         }),
     );
@@ -246,16 +815,28 @@ describe("createProvider", () => {
       () => createProvider("openai-compatible", { model: "self-hosted-coder" }),
     );
     const openrouter = withEnv(
-      { OPENROUTER_API_KEY: "or-test" },
-      () => createProvider("openrouter", { model: "openai/gpt-5" }),
+      { OPENROUTER_API_KEY: undefined },
+      () =>
+        createProvider("openrouter", {
+          apiKey: "or-test",
+          model: "openai/gpt-5",
+        }),
     );
     const groq = withEnv(
-      { GROQ_API_KEY: "groq-test" },
-      () => createProvider("groq", { model: "llama-3.3-70b-versatile" }),
+      { GROQ_API_KEY: undefined },
+      () =>
+        createProvider("groq", {
+          apiKey: "groq-test",
+          model: "llama-3.3-70b-versatile",
+        }),
     );
     const deepseek = withEnv(
-      { DEEPSEEK_API_KEY: "deepseek-test" },
-      () => createProvider("deepseek", { model: "deepseek-reasoner" }),
+      { DEEPSEEK_API_KEY: undefined },
+      () =>
+        createProvider("deepseek", {
+          apiKey: "deepseek-test",
+          model: "deepseek-reasoner",
+        }),
     );
 
     expect(compatible).toBeInstanceOf(OpenAICompatibleProvider);
@@ -272,8 +853,12 @@ describe("createProvider", () => {
 
   test("adds the required OpenRouter routing headers", () => {
     const provider = withEnv(
-      { OPENROUTER_API_KEY: "or-test" },
-      () => createProvider("openrouter", { model: "openai/gpt-5" }),
+      { OPENROUTER_API_KEY: undefined },
+      () =>
+        createProvider("openrouter", {
+          apiKey: "or-test",
+          model: "openai/gpt-5",
+        }),
     );
 
     expect(
@@ -288,10 +873,10 @@ describe("createProvider", () => {
   test("uses the documented openai default model when no model override is supplied", () => {
     const provider = withEnv(
       {
-        OPENAI_API_KEY: "sk-test",
+        OPENAI_API_KEY: undefined,
         OPENAI_MODEL: undefined,
       },
-      () => createProvider("openai", {}),
+      () => createProvider("openai", { apiKey: "sk-test" }),
     );
     expect(provider).toBeInstanceOf(OpenAIProvider);
     expect(
@@ -302,10 +887,11 @@ describe("createProvider", () => {
   test("routes 'anthropic' to AnthropicProvider", () => {
     const provider = withEnv(
       {
-        ANTHROPIC_API_KEY: "anthropic-test",
+        ANTHROPIC_API_KEY: undefined,
       },
       () =>
         createProvider("anthropic", {
+          apiKey: "anthropic-test",
           model: "claude-sonnet-4.5",
         }),
     );
@@ -319,13 +905,22 @@ describe("createProvider", () => {
         AWS_BEDROCK_ACCESS_KEY_ID: undefined,
         AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
         AWS_BEDROCK_SESSION_TOKEN: undefined,
-        AWS_ACCESS_KEY_ID: "aws-access",
-        AWS_SECRET_ACCESS_KEY: "aws-secret",
-        AWS_SESSION_TOKEN: "aws-session",
-        AWS_BEDROCK_REGION: "us-west-2",
-        AWS_BEDROCK_MODEL: "amazon.nova-lite-v1:0",
+        AWS_ACCESS_KEY_ID: undefined,
+        AWS_SECRET_ACCESS_KEY: undefined,
+        AWS_SESSION_TOKEN: undefined,
+        AWS_BEDROCK_REGION: undefined,
+        AWS_BEDROCK_MODEL: undefined,
       },
-      () => createProvider("amazon-bedrock", {}),
+      () =>
+        createProvider("amazon-bedrock", {
+          apiKey: "aws-access",
+          model: "amazon.nova-lite-v1:0",
+          extra: {
+            secretAccessKey: "aws-secret",
+            sessionToken: "aws-session",
+            region: "us-west-2",
+          },
+        }),
     );
 
     expect(provider).toBeInstanceOf(BedrockProvider);
@@ -368,6 +963,36 @@ describe("createProvider", () => {
       model: "amazon.nova-micro-v1:0",
       extra: {
         accessKeyId: "configured-access-key",
+        secretAccessKey: "configured-secret-key",
+        region: "us-east-2",
+      },
+    });
+  });
+
+  test("keeps Bedrock accessKeyId precedence over generic apiKey", () => {
+    const provider = withEnv(
+      {
+        AWS_BEDROCK_ACCESS_KEY_ID: undefined,
+        AWS_ACCESS_KEY_ID: undefined,
+        AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
+        AWS_SECRET_ACCESS_KEY: undefined,
+        AWS_BEDROCK_MODEL: undefined,
+      },
+      () =>
+        createProvider("amazon-bedrock", {
+          apiKey: "generic-access-key",
+          model: "amazon.nova-micro-v1:0",
+          extra: {
+            accessKeyId: "specific-access-key",
+            secretAccessKey: "configured-secret-key",
+            region: "us-east-2",
+          },
+        }),
+    );
+
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      extra: {
+        accessKeyId: "specific-access-key",
         secretAccessKey: "configured-secret-key",
         region: "us-east-2",
       },
@@ -435,10 +1060,11 @@ describe("createProvider", () => {
   test("preserves anthropic context-management config in factory state", () => {
     const provider = withEnv(
       {
-        ANTHROPIC_API_KEY: "anthropic-test",
+        ANTHROPIC_API_KEY: undefined,
       },
       () =>
         createProvider("anthropic", {
+          apiKey: "anthropic-test",
           model: "claude-sonnet-4.5",
           extra: {
             contextManagement: {
@@ -461,10 +1087,10 @@ describe("createProvider", () => {
   test("uses the documented anthropic default model when no model override is supplied", () => {
     const provider = withEnv(
       {
-        ANTHROPIC_API_KEY: "anthropic-test",
+        ANTHROPIC_API_KEY: undefined,
         ANTHROPIC_MODEL: undefined,
       },
-      () => createProvider("anthropic", {}),
+      () => createProvider("anthropic", { apiKey: "anthropic-test" }),
     );
     expect(provider).toBeInstanceOf(AnthropicProvider);
     expect(
@@ -495,7 +1121,7 @@ describe("createProvider", () => {
       env: {
         OLLAMA_BASE_URL: undefined,
         OLLAMA_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -507,8 +1133,8 @@ describe("createProvider", () => {
       env: {
         LMSTUDIO_BASE_URL: undefined,
         LMSTUDIO_MODEL: "qwen2.5-coder:7b",
-        OPENAI_API_KEY: undefined,
-        OPENAI_BASE_URL: undefined,
+        OPENAI_API_KEY: "wrong-openai-token",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -522,9 +1148,10 @@ describe("createProvider", () => {
     {
       name: "lmstudio",
       env: {
-        OPENAI_BASE_URL: "http://localhost:1234/v1",
-        OPENAI_API_KEY: "local-token",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
+        OPENAI_API_KEY: "wrong-openai-token",
       },
+      apiKey: "local-token",
       model: "qwen2.5-coder:7b",
       expectedBaseURL: "http://localhost:1234/v1",
       expectedModel: "qwen2.5-coder:7b",
@@ -536,8 +1163,11 @@ describe("createProvider", () => {
     {
       name: "lmstudio",
       env: {
-        LMSTUDIO_API_KEY: "lmstudio-secret",
+        LMSTUDIO_BASE_URL: undefined,
+        LMSTUDIO_API_KEY: "ignored-lmstudio-secret",
+        OPENAI_BASE_URL: undefined,
       },
+      apiKey: "lmstudio-secret",
       model: "qwen2.5-coder:7b",
       expectedBaseURL: "http://localhost:1234/v1",
       expectedModel: "qwen2.5-coder:7b",
@@ -552,10 +1182,11 @@ describe("createProvider", () => {
         OPENAI_COMPATIBLE_API_KEY: undefined,
         OPENAI_COMPATIBLE_BASE_URL: undefined,
         OPENAI_COMPATIBLE_MODEL: "self-hosted-coder",
-        OPENAI_API_KEY: "local-token",
+        OPENAI_API_KEY: "wrong-openai-token",
         OPENAI_BASE_URL: "http://127.0.0.1:9000/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "local-token",
       model: undefined,
       expectedBaseURL: "http://127.0.0.1:9000/v1",
       expectedModel: "self-hosted-coder",
@@ -567,84 +1198,103 @@ describe("createProvider", () => {
     {
       name: "openrouter",
       env: {
-        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_API_KEY: undefined,
         OPENROUTER_BASE_URL: undefined,
         OPENROUTER_MODEL: "openai/gpt-5",
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "or-test",
       model: undefined,
       expectedBaseURL: "https://openrouter.ai/api/v1",
       expectedModel: "openai/gpt-5",
       expectedUseResponsesApi: false,
+      assertApiKey: true,
+      expectedApiKey: "or-test",
     },
     {
       name: "openrouter",
       env: {
-        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_API_KEY: undefined,
         OPENAI_BASE_URL: undefined,
       },
+      apiKey: "or-test",
       model: "openai/gpt-5-mini",
       expectedBaseURL: "https://openrouter.ai/api/v1",
       expectedModel: "openai/gpt-5-mini",
       expectedUseResponsesApi: false,
+      assertApiKey: true,
+      expectedApiKey: "or-test",
     },
     {
       name: "groq",
       env: {
-        GROQ_API_KEY: "groq-test",
+        GROQ_API_KEY: undefined,
         GROQ_BASE_URL: undefined,
         GROQ_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "groq-test",
       model: undefined,
       expectedBaseURL: "https://api.groq.com/openai/v1",
       expectedModel: "llama-3.3-70b-versatile",
       expectedUseResponsesApi: false,
+      assertApiKey: true,
+      expectedApiKey: "groq-test",
     },
     {
       name: "groq",
       env: {
-        GROQ_API_KEY: "groq-test",
+        GROQ_API_KEY: undefined,
         OPENAI_BASE_URL: undefined,
       },
+      apiKey: "groq-test",
       model: "llama-3.3-70b-versatile",
       expectedBaseURL: "https://api.groq.com/openai/v1",
       expectedModel: "llama-3.3-70b-versatile",
       expectedUseResponsesApi: false,
+      assertApiKey: true,
+      expectedApiKey: "groq-test",
     },
     {
       name: "deepseek",
       env: {
-        DEEPSEEK_API_KEY: "deepseek-test",
+        DEEPSEEK_API_KEY: undefined,
         DEEPSEEK_BASE_URL: undefined,
         DEEPSEEK_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
+      apiKey: "deepseek-test",
       model: undefined,
       expectedBaseURL: "https://api.deepseek.com/v1",
       expectedModel: "deepseek-reasoner",
       expectedUseResponsesApi: false,
+      assertApiKey: true,
+      expectedApiKey: "deepseek-test",
     },
     {
       name: "deepseek",
       env: {
-        DEEPSEEK_API_KEY: "deepseek-test",
+        DEEPSEEK_API_KEY: undefined,
         OPENAI_BASE_URL: undefined,
       },
+      apiKey: "deepseek-test",
       model: "deepseek-reasoner",
       expectedBaseURL: "https://api.deepseek.com/v1",
       expectedModel: "deepseek-reasoner",
       expectedUseResponsesApi: false,
+      assertApiKey: true,
+      expectedApiKey: "deepseek-test",
     },
     {
       name: "gemini",
       env: {
-        GEMINI_API_KEY: "gemini-test",
+        GEMINI_API_KEY: undefined,
         GEMINI_BASE_URL: undefined,
       },
+      apiKey: "gemini-test",
       model: "gemini-2.5-pro",
       expectedBaseURL: "https://generativelanguage.googleapis.com/v1beta",
       expectedModel: "gemini-2.5-pro",
@@ -656,10 +1306,11 @@ describe("createProvider", () => {
     {
       name: "gemini",
       env: {
-        GEMINI_API_KEY: "gemini-test",
+        GEMINI_API_KEY: undefined,
         GEMINI_BASE_URL:
           "https://generativelanguage.googleapis.com/v1beta/openai",
       },
+      apiKey: "gemini-test",
       model: "gemini-2.5-pro",
       expectedBaseURL: "https://generativelanguage.googleapis.com/v1beta",
       expectedModel: "gemini-2.5-pro",
@@ -673,6 +1324,7 @@ describe("createProvider", () => {
     ({
       name,
       env,
+      apiKey,
       model,
       expectedBaseURL,
       expectedModel,
@@ -682,7 +1334,10 @@ describe("createProvider", () => {
       expectedApiKey,
     }) => {
       const provider = withEnv(env, () =>
-        createProvider(name, model ? { model } : {}),
+        createProvider(name, {
+          ...(apiKey !== undefined ? { apiKey } : {}),
+          ...(model !== undefined ? { model } : {}),
+        }),
       );
       if (name === "ollama") {
         expect(provider).toBeInstanceOf(OllamaProvider);
@@ -710,10 +1365,11 @@ describe("createProvider", () => {
   test("tracks the canonical provider identity and rebuild options on openai-compatible providers", () => {
     const provider = withEnv(
       {
-        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_API_KEY: undefined,
       },
       () =>
         createProvider("openrouter", {
+          apiKey: "or-test",
           model: "openai/gpt-5-mini",
           baseURL: "https://router.example/api/v1",
         }),
@@ -730,10 +1386,11 @@ describe("createProvider", () => {
   test("tracks generic openai-compatible provider identity and rebuild options", () => {
     const provider = withEnv(
       {
-        OPENAI_COMPATIBLE_API_KEY: "local-token",
+        OPENAI_COMPATIBLE_API_KEY: undefined,
       },
       () =>
         createProvider("openai-compatible", {
+          apiKey: "local-token",
           model: "self-hosted-coder",
           baseURL: "http://127.0.0.1:9000/v1",
         }),
@@ -774,6 +1431,44 @@ describe("createProvider", () => {
       authMode: "oauth",
       organization: "org-test",
       project: "proj-test",
+      oauth: {
+        accessToken: "oauth-access",
+        refreshToken: "oauth-refresh",
+      },
+    });
+  });
+
+  test("does not vend AuthBackend keys for OAuth config", () => {
+    const vendKey = vi.fn(() => {
+      throw new Error("vendKey should not run for oauth");
+    });
+    const oauthAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+      },
+      () =>
+        createProvider("openai", {
+          model: "gpt-5.4",
+          extra: {
+            authBackend: oauthAuthBackend,
+            sessionId: "session-oauth",
+            authMode: "oauth",
+            oauth: {
+              accessToken: "oauth-access",
+              refreshToken: "oauth-refresh",
+            },
+          },
+        }),
+    );
+
+    expect(provider).toBeInstanceOf(OpenAIProvider);
+    expect(vendKey).not.toHaveBeenCalled();
+    expect(readProviderFactoryOptions(provider).extra).toMatchObject({
+      authMode: "oauth",
       oauth: {
         accessToken: "oauth-access",
         refreshToken: "oauth-refresh",
@@ -827,17 +1522,34 @@ describe("createProvider", () => {
     },
   );
 
-  test("uses OPENAI_API_KEY as LMStudio-compatible auth fallback", () => {
+  test("does not use OPENAI_API_KEY as LMStudio-compatible auth fallback", () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: "sk-openai",
-        LMSTUDIO_API_KEY: undefined,
+        LMSTUDIO_API_KEY: "lmstudio-env-token",
         LMSTUDIO_MODEL: "qwen2.5-coder:7b",
       },
       () => createProvider("lmstudio", {}),
     );
 
-    expect(readProviderFactoryOptions(provider).apiKey).toBe("sk-openai");
+    expect(readProviderFactoryOptions(provider).apiKey).toBeUndefined();
+  });
+
+  test("does not use OPENAI_BASE_URL as LMStudio-compatible base URL fallback", () => {
+    const provider = withEnv(
+      {
+        LMSTUDIO_BASE_URL: undefined,
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
+      },
+      () =>
+        createProvider("lmstudio", {
+          model: "qwen2.5-coder:7b",
+        }),
+    );
+
+    const config = (provider as unknown as { config: OpenAIProviderConfig })
+      .config;
+    expect(config.baseURL).toBe("http://localhost:1234/v1");
   });
 
   test("'grok' without apiKey throws explanatory error", () => {
@@ -882,10 +1594,10 @@ describe("createProvider", () => {
   test("'openrouter' uses the registry default model without an override", () => {
     const provider = withEnv(
       {
-        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_API_KEY: undefined,
         OPENROUTER_MODEL: undefined,
       },
-      () => createProvider("openrouter", {}),
+      () => createProvider("openrouter", { apiKey: "or-test" }),
     );
 
     expect(readProviderFactoryOptions(provider).model).toBe("openai/gpt-5");
