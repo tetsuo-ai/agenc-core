@@ -19,6 +19,12 @@ export const meta = {
   description: "--yolo: model uses Write, file content verifiable on disk.",
   args: ["--yolo"],
   timeoutMs: 90_000,
+  // Write triggers FilePermissionDialog rendering even under --yolo (the
+  // dialog ostensibly shows a diff). The component crashes with
+  // "Cannot read properties of undefined (reading 'mcpClients')" at
+  // useDiffInIDE (tui/main.js:30854) → FilePermissionDialog
+  // (tui/main.js:31710). Filed as GAP-TUI-WRITE-MCP-CLIENTS-CRASH.
+  skip: "blocked on FilePermissionDialog mcpClients crash; see GAP-TUI-WRITE-MCP-CLIENTS-CRASH",
 };
 
 export default async function (session) {

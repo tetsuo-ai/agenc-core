@@ -295,12 +295,14 @@ export class TuiSession {
   /**
    * Wait for the permission overlay to appear in the captured output. The
    * overlay shows when the model invokes a side-effecting tool in default
-   * mode and the policy requires user approval. The signature line is
-   * "Do you want to proceed?" followed by "1. Yes / 2. Yes, and don't ask
-   * again ... / 3. No".
+   * mode and the policy requires user approval. The signature is the
+   * "Do you want to proceed?" line, but the TUI renders it with per-word
+   * cursor-position codes (`[1C` to advance one column) that stripAnsi
+   * strips, leaving "Doyouwanttoproceed?" with no spaces. The matcher
+   * accepts either form.
    */
   async waitForPermissionOverlay({ timeout = 60_000 } = {}) {
-    return this.waitFor(/Do you want to proceed\?/, {
+    return this.waitFor(/Do\s*you\s*want\s*to\s*proceed\?/, {
       timeout,
       label: "permission overlay",
     });
