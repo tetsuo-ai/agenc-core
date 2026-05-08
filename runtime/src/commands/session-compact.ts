@@ -12,7 +12,10 @@ import type { Session } from "../session/session.js";
 import { llmMessageToResponseItem } from "../session/message-history-conversion.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { modelContextWindow } from "../session/turn-context.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  createEmptyToolPermissionContext,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   AGENC_COMPACT_CALL_METRIC,
@@ -21,12 +24,16 @@ import {
   toMetricTags,
 } from "../observability/telemetry.js";
 import {
-  AUTOCOMPACT_BUFFER_TOKENS,
   getAutoCompactThreshold,
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
 } from "../services/compact/autoCompact.js";
 import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
+import { assembleSystemPrompt } from "../prompts/system-prompt.js";
+import {
+  assembleTieredInstructions,
+  loadTieredInstructions,
+} from "../prompts/agenc-md.js";
 
 export const compactCommand: SlashCommand = {
   name: "compact",
@@ -500,20 +507,35 @@ async function runContextUsage(params: {
 }): Promise<AgenCContextUsageResult> {
   const finishTelemetry = startCompactTelemetry("context_usage");
   try {
-    // Use the FULL history snapshot — including the system message
-    // (which embeds AGENC.md, project instructions, and the dynamic
-    // permissions/sandbox section) — so /context shows what the
-    // model actually receives. The previous implementation filtered
-    // via messagesAfterAgenCBoundary which strips the system message
-    // and produces an under-count.
+    // The session's history (snapshotHistoryMessages) starts AFTER
+    // the synthetic system message; durableHistoryStartIndex in
+    // run-turn.ts strips it before the snapshot is recorded. So to
+    // count what the model actually receives on the next turn we
+    // have to RECONSTRUCT the per-turn system prompt and prepend it
+    // ourselves. Reuses the same assembleSystemPrompt + tiered
+    // loader (mtime-cached after Phase 3 sg-4) that runSingleTurn
+    // calls — no parallel assembly path.
+    const tools = params.session.services.registry.toLLMTools();
+    const enabledToolNames = new Set(tools.map((tool) => tool.function.name));
+    const projectInstructions = await loadProjectInstructionsForContext(
+      params.ctx.cwd,
+    );
+    const systemMessage = await buildSyntheticSystemMessage({
+      session: params.session,
+      ctx: params.ctx,
+      projectInstructions,
+      enabledToolNames,
+    });
     const sourceMessages = params.session.snapshotHistoryMessages();
-    const messages = toAgenCRuntimeMessages(sourceMessages);
+    const conversationMessages = toAgenCRuntimeMessages(sourceMessages);
+    const messages = systemMessage !== null
+      ? [systemMessage, ...conversationMessages]
+      : conversationMessages;
     const toolUseContext = buildAgenCToolUseContext(
       params.session,
       params.ctx,
       { querySource: "context" },
     );
-    const tools = params.session.services.registry.toLLMTools();
     const commandContext = {
       ...toolUseContext,
       messages,
@@ -532,6 +554,66 @@ async function runContextUsage(params: {
   } catch (error) {
     finishTelemetry("error");
     throw error;
+  }
+}
+
+/**
+ * Resolve the project-tier AGENC.md (and tiered chain) for the
+ * current cwd in the same shape runSingleTurn passes to
+ * assembleSystemPrompt. Goes through the mtime-cached
+ * loadTieredInstructions, so on a warm cache this is a few stat()
+ * syscalls. Failures are best-effort: /context must never throw on
+ * a missing/malformed AGENC.md.
+ */
+async function loadProjectInstructionsForContext(
+  cwd: string | undefined,
+): Promise<string> {
+  if (cwd === undefined) return "";
+  try {
+    const tiered = await loadTieredInstructions({ cwd });
+    return assembleTieredInstructions(tiered);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Build a synthetic role:"system" RuntimeMessage that mirrors the
+ * system prompt the next turn would carry. Used by /context so the
+ * displayed token count includes AGENC.md + the assembler's static
+ * head + dynamic sections (permissions, env-info, etc.). Returns
+ * null if assembly fails — /context falls back to counting only
+ * conversation + tools, which is still an improvement over the old
+ * chars/4 heuristic.
+ */
+async function buildSyntheticSystemMessage(opts: {
+  readonly session: Session;
+  readonly ctx: TurnContext;
+  readonly projectInstructions: string;
+  readonly enabledToolNames: ReadonlySet<string>;
+}): Promise<RuntimeMessage | null> {
+  try {
+    let permissionContext: ToolPermissionContext | null = null;
+    try {
+      permissionContext = opts.session.permissionModeRegistry.current();
+    } catch {
+      permissionContext = null;
+    }
+    const assembled = await assembleSystemPrompt({
+      session: opts.session,
+      ctx: opts.ctx,
+      projectInstructions: opts.projectInstructions,
+      enabledToolNames: opts.enabledToolNames,
+      ...(permissionContext !== null ? { permissionContext } : {}),
+    });
+    return {
+      role: "system",
+      type: "system",
+      content: assembled.text,
+      message: { role: "system", content: assembled.text },
+    };
+  } catch {
+    return null;
   }
 }
 

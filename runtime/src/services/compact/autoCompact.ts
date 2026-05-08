@@ -29,16 +29,6 @@ export const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000;
 export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000;
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
 
-/**
- * Last-resort context window when neither the live config window
- * (CompactContext.options.contextWindowTokens) nor the
- * AGENC_AUTO_COMPACT_WINDOW env override is available, AND the model
- * id matches no entry in the openai-compatible table or any family
- * literal. Kept for backward-compat as a named export, but the actual
- * default is now sourced from {@link lookupContextWindowForModel} so
- * qwen/llama/gemma/mistral/etc. don't silently collapse to 32k.
- */
-const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_000;
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3;
 
 export async function autoCompactIfNeeded(

@@ -1,4 +1,12 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+// session-compact.ts now imports from system-prompt.ts (to count the
+// per-turn system message in /context) and that pulls in `bun:bundle`
+// transitively. Mock it so vitest can load the module without a Bun
+// runtime in the test harness.
+vi.mock("bun:bundle", () => ({
+  feature: () => false,
+}));
 
 import { computeContextUsageBreakdown } from "./session-compact.js";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
