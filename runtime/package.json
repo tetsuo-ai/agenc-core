@@ -32,8 +32,9 @@
     "check:runtime-ownership": "node scripts/check-runtime-ownership.mjs",
     "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
+    "check:tui-e2e": "node scripts/check-tui-e2e/runner.mjs",
     "test": "vitest run",
-    "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup",
+    "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup && npm run check:tui-e2e",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
