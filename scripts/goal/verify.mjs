@@ -172,6 +172,7 @@ const ITEM_EVIDENCE = {
       { pattern: "uses AuthBackend-vended keys on delegated compatible requests", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "keeps Bedrock accessKeyId precedence over generic apiKey", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "does not use OPENAI_API_KEY as LMStudio-compatible auth fallback", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "does not use OPENAI_BASE_URL as LMStudio-compatible base URL fallback", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "does not vend AuthBackend keys for OAuth config", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "uses AuthBackend-vended Bedrock credentials on delegated requests", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "re-vends AuthBackend keys after vended expiry", scope: "runtime/src/llm/provider.test.ts" },
@@ -7031,9 +7032,11 @@ function assertGapProvProviderKeysThroughAuthBackend() {
   }
 
   const providerSource = readFileSync(path.join(root, providerRel), "utf8");
+  const keyBearingEnvName = "[A-Z0-9_]*(?:API_KEY|ACCESS_KEY|SESSION_TOKEN)";
   const forbiddenProviderPatterns = [
-    /process\.env\.[A-Z0-9_]*(?:API_KEY|ACCESS_KEY|SESSION_TOKEN)/,
-    /process\.env\[["'][A-Z0-9_]*(?:API_KEY|ACCESS_KEY|SESSION_TOKEN)["']\]/,
+    new RegExp(`process\\.env(?:\\?\\.|\\.)\\s*${keyBearingEnvName}\\b`),
+    /process\.env(?:\?\.)?\s*\[/,
+    new RegExp(`\\b(?:const|let|var)\\s*\\{[^}]*${keyBearingEnvName}[^}]*\\}\\s*=\\s*process\\.env\\b`, "s"),
     /process\.env\[[^\]]*apiKeyEnvLabel[^\]]*\]/,
     /resolveApiKey\(process\.env\)/,
     /\benvApiKey\b/,
@@ -7042,6 +7045,22 @@ function assertGapProvProviderKeysThroughAuthBackend() {
   for (const pattern of forbiddenProviderPatterns) {
     if (pattern.test(providerSource)) {
       failGate(`GAP-PROV-03: ${providerRel} still contains forbidden key-read pattern ${pattern}`);
+    }
+  }
+  for (const match of providerSource.matchAll(
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\.env\b/g,
+  )) {
+    const alias = match[1];
+    const escapedAlias = escapeRegExp(alias);
+    const aliasForbiddenPatterns = [
+      new RegExp(`\\b${escapedAlias}(?:\\?\\.|\\.)\\s*${keyBearingEnvName}\\b`),
+      new RegExp(`\\b${escapedAlias}(?:\\?\\.)?\\s*\\[`),
+      new RegExp(`\\b(?:const|let|var)\\s*\\{[^}]*${keyBearingEnvName}[^}]*\\}\\s*=\\s*${escapedAlias}\\b`, "s"),
+    ];
+    for (const pattern of aliasForbiddenPatterns) {
+      if (pattern.test(providerSource)) {
+        failGate(`GAP-PROV-03: ${providerRel} still contains aliased key-read pattern ${pattern}`);
+      }
     }
   }
 
@@ -7067,6 +7086,7 @@ function assertGapProvProviderKeysThroughAuthBackend() {
     "retries AuthBackend vending after transient delegate failures",
     "keeps Bedrock accessKeyId precedence over generic apiKey",
     "does not use OPENAI_API_KEY as LMStudio-compatible auth fallback",
+    "does not use OPENAI_BASE_URL as LMStudio-compatible base URL fallback",
     "does not vend AuthBackend keys for OAuth config",
     "re-vends AuthBackend keys after vended expiry",
     "preserves optional provider hooks on AuthBackend-vended providers",

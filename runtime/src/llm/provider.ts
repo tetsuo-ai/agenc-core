@@ -1281,9 +1281,7 @@ export function createProvider(
     }
     case "lmstudio":
       return buildOpenAICompatibleProvider("lmstudio", opts, {
-        envBaseURL:
-          process.env.LMSTUDIO_BASE_URL ??
-          process.env.OPENAI_BASE_URL,
+        envBaseURL: process.env.LMSTUDIO_BASE_URL,
         envModel: process.env.LMSTUDIO_MODEL,
         envModelLabel: "LMSTUDIO_MODEL",
         apiKeyMode: "optional",

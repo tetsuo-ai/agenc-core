@@ -962,8 +962,8 @@ describe("createProvider", () => {
       env: {
         LMSTUDIO_BASE_URL: undefined,
         LMSTUDIO_MODEL: "qwen2.5-coder:7b",
-        OPENAI_API_KEY: undefined,
-        OPENAI_BASE_URL: undefined,
+        OPENAI_API_KEY: "wrong-openai-token",
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -977,7 +977,7 @@ describe("createProvider", () => {
     {
       name: "lmstudio",
       env: {
-        OPENAI_BASE_URL: "http://localhost:1234/v1",
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
         OPENAI_API_KEY: "wrong-openai-token",
       },
       apiKey: "local-token",
@@ -1362,6 +1362,23 @@ describe("createProvider", () => {
     );
 
     expect(readProviderFactoryOptions(provider).apiKey).toBeUndefined();
+  });
+
+  test("does not use OPENAI_BASE_URL as LMStudio-compatible base URL fallback", () => {
+    const provider = withEnv(
+      {
+        LMSTUDIO_BASE_URL: undefined,
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+      },
+      () =>
+        createProvider("lmstudio", {
+          model: "qwen2.5-coder:7b",
+        }),
+    );
+
+    const config = (provider as unknown as { config: OpenAIProviderConfig })
+      .config;
+    expect(config.baseURL).toBe("http://localhost:1234/v1");
   });
 
   test("'grok' without apiKey throws explanatory error", () => {
