@@ -118,10 +118,18 @@ async function main() {
   console.log("");
 
   const failed = [];
+  const skipped = [];
   let passed = 0;
   for (const name of names) {
     const scenario = await loadScenario(name);
     process.stdout.write(`  ${color("dim", "→")} ${name} … `);
+    if (scenario.meta.skip) {
+      console.log(
+        `${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`,
+      );
+      skipped.push({ name, reason: scenario.meta.skip });
+      continue;
+    }
     const result = await runScenario(scenario);
     if (result.ok) {
       passed += 1;
@@ -147,14 +155,23 @@ async function main() {
   }
 
   console.log("");
+  const totalRan = passed + failed.length;
+  const skipNote = skipped.length > 0 ? `, ${skipped.length} skipped` : "";
   if (failed.length === 0) {
-    console.log(color("green", `✓ ${passed}/${names.length} passed`));
+    console.log(
+      color("green", `✓ ${passed}/${totalRan} passed${skipNote}`),
+    );
+    if (skipped.length > 0) {
+      for (const s of skipped) {
+        console.log(`    ${color("yellow", "skip")} ${s.name}: ${s.reason}`);
+      }
+    }
     return 0;
   }
   console.log(
     color(
       "red",
-      `✗ ${failed.length}/${names.length} failed (${passed} passed)`,
+      `✗ ${failed.length}/${totalRan} failed (${passed} passed${skipNote})`,
     ),
   );
   for (const f of failed) {
