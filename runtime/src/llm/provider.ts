@@ -4,14 +4,18 @@
  * @module
  */
 
-import { resolveApiKey } from "./_deps/env.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import type { GrokProviderConfig } from "./providers/grok/types.js";
 import { OllamaProvider } from "./providers/ollama/adapter.js";
 import type { OllamaProviderConfig } from "./providers/ollama/types.js";
-import type { LLMProvider, LLMProviderConfig, LLMTool } from "./types.js";
+import type {
+  LLMProvider,
+  LLMProviderConfig,
+  LLMProviderExecutionProfile,
+  LLMTool,
+} from "./types.js";
 import { OpenAIProvider } from "./providers/openai/adapter.js";
 import type { OpenAIProviderConfig } from "./providers/openai/types.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
@@ -279,19 +283,393 @@ function requireModel(
   return model;
 }
 
-function requireApiKey(
+function resolveFactoryApiKey(
+  opts: ProviderFactoryOptions,
+  explicitApiKey?: string,
+): string | undefined {
+  return firstNonEmpty(
+    explicitApiKey,
+    opts.apiKey,
+  );
+}
+
+function requireFactoryApiKey(
   provider: ProviderName,
-  explicitApiKey: string | undefined,
-  envVarName: string,
-  ...envCandidates: Array<string | undefined>
+  opts: ProviderFactoryOptions,
+  explicitApiKey?: string,
 ): string {
-  const apiKey = firstNonEmpty(explicitApiKey, ...envCandidates);
-  if (!apiKey) {
+  const apiKey = resolveFactoryApiKey(opts, explicitApiKey);
+  if (apiKey === undefined) {
     throw new Error(
-      `${provider} provider requires apiKey — set ${envVarName} or pass apiKey in factory options`,
+      `${provider} provider requires apiKey — pass apiKey or authBackend/sessionId in factory options`,
     );
   }
   return apiKey;
+}
+
+const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
+  "grok",
+  "openai",
+  "anthropic",
+  "lmstudio",
+  "openai-compatible",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "gemini",
+  "amazon-bedrock",
+]);
+const DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS = 5 * 60 * 1000;
+
+interface AuthVendedDelegate {
+  readonly instance: LLMProvider;
+  readonly expiresAtMs: number;
+}
+
+interface AuthVendedProviderCapabilities {
+  readonly prewarmStartup?: true;
+  readonly storedResponses?: true;
+}
+
+class AuthVendedProvider implements LLMProvider {
+  readonly name: string;
+  readonly config: {
+    readonly model: string;
+    readonly baseURL?: string;
+  };
+  readonly prewarmStartup?: LLMProvider["prewarmStartup"];
+  readonly retrieveStoredResponse?: LLMProvider["retrieveStoredResponse"];
+  readonly deleteStoredResponse?: LLMProvider["deleteStoredResponse"];
+  readonly #provider: ProviderName;
+  readonly #opts: ProviderFactoryOptions;
+  readonly #authBackend: AuthBackend;
+  readonly #sessionId: string;
+  #delegate: AuthVendedDelegate | undefined;
+  #delegatePromise: Promise<AuthVendedDelegate> | undefined;
+
+  constructor(params: {
+    readonly provider: ProviderName;
+    readonly opts: ProviderFactoryOptions;
+    readonly authBackend: AuthBackend;
+    readonly sessionId: string;
+  }) {
+    this.name = params.provider;
+    this.#provider = params.provider;
+    this.#opts = stripConcreteProviderAuthOptions(params.opts);
+    this.#authBackend = params.authBackend;
+    this.#sessionId = params.sessionId;
+    this.config = {
+      model: this.#opts.model ?? defaultModelFor(params.provider),
+      ...(this.#opts.baseURL !== undefined ? { baseURL: this.#opts.baseURL } : {}),
+    };
+    const capabilities = authVendedProviderCapabilities(params.provider);
+    if (capabilities.prewarmStartup) {
+      this.prewarmStartup = async (startupParams) =>
+        (await this.delegate()).instance.prewarmStartup?.(startupParams);
+    }
+    if (capabilities.storedResponses) {
+      this.retrieveStoredResponse = async (responseId) => {
+        const delegate = (await this.delegate()).instance;
+        if (!delegate.retrieveStoredResponse) {
+          throw new Error(`${this.name} provider does not support stored responses`);
+        }
+        return delegate.retrieveStoredResponse(responseId);
+      };
+      this.deleteStoredResponse = async (responseId) => {
+        const delegate = (await this.delegate()).instance;
+        if (!delegate.deleteStoredResponse) {
+          throw new Error(`${this.name} provider does not support stored responses`);
+        }
+        return delegate.deleteStoredResponse(responseId);
+      };
+    }
+  }
+
+  async chat(
+    messages: Parameters<LLMProvider["chat"]>[0],
+    options?: Parameters<LLMProvider["chat"]>[1],
+  ): ReturnType<LLMProvider["chat"]> {
+    return (await this.delegate()).instance.chat(messages, options);
+  }
+
+  async chatStream(
+    messages: Parameters<LLMProvider["chatStream"]>[0],
+    onChunk: Parameters<LLMProvider["chatStream"]>[1],
+    options?: Parameters<LLMProvider["chatStream"]>[2],
+  ): ReturnType<LLMProvider["chatStream"]> {
+    return (await this.delegate()).instance.chatStream(messages, onChunk, options);
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return (await this.delegate()).instance.healthCheck();
+  }
+
+  async getExecutionProfile(): Promise<LLMProviderExecutionProfile> {
+    const { instance: delegate } = await this.delegate();
+    const profile = await delegate.getExecutionProfile?.();
+    return profile ?? {
+      provider: this.#provider,
+      model: this.config.model,
+    };
+  }
+
+  private async delegate(): Promise<AuthVendedDelegate> {
+    if (
+      this.#delegate !== undefined &&
+      this.#delegate.expiresAtMs > Date.now()
+    ) {
+      return this.#delegate;
+    }
+    this.#delegatePromise ??= this.createDelegate()
+      .then((delegate) => {
+        this.#delegate = delegate;
+        return delegate;
+      })
+      .catch((error) => {
+        this.#delegate = undefined;
+        throw error;
+      })
+      .finally(() => {
+        this.#delegatePromise = undefined;
+      });
+    return this.#delegatePromise;
+  }
+
+  private async createDelegate(): Promise<AuthVendedDelegate> {
+    const vended = await this.#authBackend.vendKey(
+      this.#provider,
+      this.#sessionId,
+    );
+    if (vended.provider !== this.#provider) {
+      throw new Error(
+        `${this.#provider} provider AuthBackend.vendKey() returned provider "${vended.provider}"`,
+      );
+    }
+    if (vended.sessionId !== this.#sessionId) {
+      throw new Error(
+        `${this.#provider} provider AuthBackend.vendKey() returned session "${vended.sessionId}"`,
+      );
+    }
+    const apiKey = firstNonEmpty(vended.apiKey);
+    if (apiKey === undefined) {
+      throw new Error(
+        `${this.#provider} provider AuthBackend.vendKey() returned an empty key`,
+      );
+    }
+    const options = cloneProviderFactoryOptions(this.#opts);
+    const extra = mergeAuthVendedProviderExtra(
+      this.#provider,
+      options.extra,
+      vended as Record<string, unknown>,
+    );
+    return {
+      instance: createProvider(this.#provider, {
+        ...options,
+        apiKey,
+        ...(extra !== undefined ? { extra } : {}),
+      }),
+      expiresAtMs:
+        parseAuthVendedExpiresAtMs(vended.expiresAt) ??
+        Date.now() + DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS,
+    };
+  }
+}
+
+function authVendedProviderCapabilities(
+  provider: ProviderName,
+): AuthVendedProviderCapabilities {
+  switch (provider) {
+    case "grok":
+      return { prewarmStartup: true, storedResponses: true };
+    case "openai":
+    case "lmstudio":
+    case "openai-compatible":
+    case "openrouter":
+    case "groq":
+    case "deepseek":
+    case "gemini":
+      return { storedResponses: true };
+    default:
+      return {};
+  }
+}
+
+function parseAuthVendedExpiresAtMs(expiresAt: string | undefined): number | undefined {
+  if (expiresAt === undefined) return undefined;
+  const parsed = Date.parse(expiresAt);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function concreteProviderExplicitApiKey(
+  provider: ProviderName,
+  opts: ProviderFactoryOptions,
+): string | undefined {
+  return provider === "amazon-bedrock"
+    ? firstNonEmpty(readString(opts.extra, "accessKeyId"), opts.apiKey)
+    : firstNonEmpty(opts.apiKey);
+}
+
+function stripConcreteProviderAuthExtra(
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!extra) return undefined;
+  const stripped = Object.fromEntries(
+    Object.entries(extra)
+      .filter(
+        ([key]) =>
+          key !== "authBackend" &&
+          key !== "sessionId" &&
+          key !== "subscriptionTier",
+      )
+      .map(([key, value]) => [key, cloneExtraValue(value)]),
+  );
+  return Object.keys(stripped).length > 0 ? stripped : undefined;
+}
+
+function stripConcreteProviderAuthOptions(
+  opts: ProviderFactoryOptions,
+): ProviderFactoryOptions {
+  const extra = stripConcreteProviderAuthExtra(opts.extra);
+  return {
+    ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
+    ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+    ...(opts.tools ? { tools: [...opts.tools] } : {}),
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(extra !== undefined ? { extra } : {}),
+  };
+}
+
+function authVendedProviderFactoryOptions(params: {
+  readonly provider: ProviderName;
+  readonly opts: ProviderFactoryOptions;
+  readonly authBackend: AuthBackend;
+  readonly sessionId: string;
+}): ProviderFactoryOptions {
+  const stripped = stripConcreteProviderAuthOptions(params.opts);
+  return {
+    ...stripped,
+    model: resolveAuthVendedProviderModel(params.provider, stripped.model),
+    extra: {
+      ...(stripped.extra ?? {}),
+      authBackend: params.authBackend,
+      sessionId: params.sessionId,
+    },
+  };
+}
+
+function resolveAuthVendedProviderModel(
+  provider: ProviderName,
+  explicitModel: string | undefined,
+): string {
+  switch (provider) {
+    case "grok":
+      return firstNonEmpty(explicitModel, process.env.AGENC_MODEL) ??
+        defaultModelFor(provider);
+    case "openai":
+      return firstNonEmpty(explicitModel, process.env.OPENAI_MODEL) ??
+        defaultModelFor(provider);
+    case "anthropic":
+      return firstNonEmpty(explicitModel, process.env.ANTHROPIC_MODEL) ??
+        defaultModelFor(provider);
+    case "lmstudio":
+      return firstNonEmpty(explicitModel, process.env.LMSTUDIO_MODEL) ??
+        defaultModelFor(provider);
+    case "openai-compatible":
+      return firstNonEmpty(
+        explicitModel,
+        process.env.OPENAI_COMPATIBLE_MODEL,
+        process.env.OPENAI_MODEL,
+      ) ?? defaultModelFor(provider);
+    case "openrouter":
+      return firstNonEmpty(explicitModel, process.env.OPENROUTER_MODEL) ??
+        defaultModelFor(provider);
+    case "groq":
+      return firstNonEmpty(explicitModel, process.env.GROQ_MODEL) ??
+        defaultModelFor(provider);
+    case "deepseek":
+      return firstNonEmpty(explicitModel, process.env.DEEPSEEK_MODEL) ??
+        defaultModelFor(provider);
+    case "gemini":
+      return firstNonEmpty(explicitModel, process.env.GEMINI_MODEL) ??
+        defaultModelFor(provider);
+    case "amazon-bedrock":
+      return firstNonEmpty(explicitModel, process.env.AWS_BEDROCK_MODEL) ??
+        defaultModelFor(provider);
+    default:
+      return defaultModelFor(provider);
+  }
+}
+
+function mergeAuthVendedProviderExtra(
+  provider: ProviderName,
+  extra: Record<string, unknown> | undefined,
+  vended: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (provider !== "amazon-bedrock") return extra;
+  const nonCredentialExtra = extra
+    ? Object.fromEntries(
+      Object.entries(extra)
+        .filter(([key]) => key !== "accessKeyId")
+        .map(([key, value]) => [key, cloneExtraValue(value)]),
+    )
+    : {};
+  const bedrockExtra = {
+    ...nonCredentialExtra,
+    ...(readString(vended, "secretAccessKey") !== undefined
+      ? { secretAccessKey: readString(vended, "secretAccessKey") }
+      : {}),
+    ...(readString(vended, "sessionToken") !== undefined
+      ? { sessionToken: readString(vended, "sessionToken") }
+      : {}),
+    ...(readString(vended, "region") !== undefined
+      ? { region: readString(vended, "region") }
+      : {}),
+  };
+  return Object.keys(bedrockExtra).length > 0 ? bedrockExtra : undefined;
+}
+
+function createAuthVendedProviderIfNeeded(
+  provider: ProviderName,
+  opts: ProviderFactoryOptions,
+): LLMProvider | undefined {
+  if (!AUTH_VENDED_PROVIDER_NAMES.has(provider)) return undefined;
+  if (concreteProviderExplicitApiKey(provider, opts) !== undefined) {
+    return undefined;
+  }
+  if (hasFactoryOAuthAccessToken(opts)) return undefined;
+  const authBackend = readAuthBackendExtra(opts.extra);
+  if (authBackend === undefined) return undefined;
+  const sessionId = firstNonEmpty(readString(opts.extra, "sessionId"));
+  if (sessionId === undefined) {
+    throw new Error(
+      `${provider} provider requires sessionId in factory options extra to vend a provider key`,
+    );
+  }
+  const factoryOptions = authVendedProviderFactoryOptions({
+    provider,
+    opts,
+    authBackend,
+    sessionId,
+  });
+  return markFactoryProvider(
+    new AuthVendedProvider({
+      provider,
+      opts: factoryOptions,
+      authBackend,
+      sessionId,
+    }),
+    {
+      provider,
+      options: factoryOptions,
+    },
+  );
+}
+
+function hasFactoryOAuthAccessToken(opts: ProviderFactoryOptions): boolean {
+  if (readString(opts.extra, "authMode") !== "oauth") return false;
+  const oauth = readRecord(opts.extra, "oauth");
+  return firstNonEmpty(readString(oauth, "accessToken")) !== undefined;
 }
 
 function normalizeBaseURL(baseURL: string | undefined): string | undefined {
@@ -324,7 +702,7 @@ function cloneProviderFactoryOptions(
         extra: Object.fromEntries(
           Object.entries(options.extra).map(([key, value]) => [
             key,
-            cloneExtraValue(value),
+            key === "authBackend" ? value : cloneExtraValue(value),
           ]),
         ),
       }
@@ -650,8 +1028,6 @@ function buildOpenAICompatibleProvider(
     readonly envBaseURL?: string;
     readonly envModel?: string;
     readonly envModelLabel: string;
-    readonly envApiKey?: string;
-    readonly alternateApiKeys?: readonly string[];
     readonly apiKeyMode: "required" | "optional";
     readonly useResponsesApi: boolean;
     readonly providerCtor?: new (config: OpenAIProviderConfig) => LLMProvider;
@@ -673,25 +1049,9 @@ function buildOpenAICompatibleProvider(
     extra.oauth.accessToken.trim().length > 0
       ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
       : undefined;
-  const apiKey = oauthConfig
-    ? firstNonEmpty(
-      opts.apiKey,
-      input.envApiKey,
-      ...(input.alternateApiKeys ?? []),
-    )
-    : input.apiKeyMode === "required"
-    ? requireApiKey(
-      provider,
-      opts.apiKey,
-      apiKeyEnvLabel,
-      input.envApiKey,
-      ...(input.alternateApiKeys ?? []),
-    )
-    : firstNonEmpty(
-      opts.apiKey,
-      input.envApiKey,
-      ...(input.alternateApiKeys ?? []),
-    );
+  const apiKey = oauthConfig || input.apiKeyMode === "optional"
+    ? resolveFactoryApiKey(opts)
+    : requireFactoryApiKey(provider, opts);
 
   const cfg: OpenAIProviderConfig = {
     ...buildCommonConfig(extra),
@@ -742,6 +1102,8 @@ export function createProvider(
   name: ProviderName,
   opts: ProviderFactoryOptions,
 ): LLMProvider {
+  const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
+  if (authVendedProvider !== undefined) return authVendedProvider;
   const extra = readRuntimeExtra(opts.extra);
   switch (name) {
     case "agenc": {
@@ -800,12 +1162,7 @@ export function createProvider(
       return provider;
     }
     case "grok": {
-      const apiKey = opts.apiKey ?? resolveApiKey(process.env);
-      if (!apiKey) {
-        throw new Error(
-          `grok provider requires apiKey — set ${apiKeyEnvVarFor("grok")} in the environment`,
-        );
-      }
+      const apiKey = requireFactoryApiKey("grok", opts);
       const model = requireModel(
         "grok",
         opts.model,
@@ -872,13 +1229,8 @@ export function createProvider(
           ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
           : undefined;
       const apiKey = oauthConfig
-        ? firstNonEmpty(opts.apiKey, process.env[apiKeyEnvLabel])
-        : requireApiKey(
-          "openai",
-          opts.apiKey,
-          apiKeyEnvLabel,
-          process.env[apiKeyEnvLabel],
-        );
+        ? resolveFactoryApiKey(opts)
+        : requireFactoryApiKey("openai", opts);
       const cfg: OpenAIProviderConfig = {
         ...buildCommonConfig(extra),
         ...(apiKey !== undefined ? { apiKey } : {}),
@@ -925,13 +1277,7 @@ export function createProvider(
       });
     }
     case "anthropic": {
-      const apiKeyEnvLabel = apiKeyEnvVarFor("anthropic");
-      const apiKey = requireApiKey(
-        "anthropic",
-        opts.apiKey,
-        apiKeyEnvLabel,
-        process.env[apiKeyEnvLabel],
-      );
+      const apiKey = requireFactoryApiKey("anthropic", opts);
       const model = requireModel(
         "anthropic",
         opts.model,
@@ -1006,17 +1352,9 @@ export function createProvider(
     }
     case "lmstudio":
       return buildOpenAICompatibleProvider("lmstudio", opts, {
-        envBaseURL:
-          process.env.LMSTUDIO_BASE_URL ??
-          (!process.env.LMSTUDIO_API_KEY && process.env.OPENAI_API_KEY
-            ? process.env.OPENAI_BASE_URL
-            : undefined),
+        envBaseURL: process.env.LMSTUDIO_BASE_URL,
         envModel: process.env.LMSTUDIO_MODEL,
         envModelLabel: "LMSTUDIO_MODEL",
-        envApiKey: process.env.LMSTUDIO_API_KEY,
-        alternateApiKeys: process.env.OPENAI_API_KEY
-          ? [process.env.OPENAI_API_KEY]
-          : [],
         apiKeyMode: "optional",
         useResponsesApi: false,
         providerCtor: LMStudioProvider,
@@ -1030,10 +1368,6 @@ export function createProvider(
         envModel:
           process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL,
         envModelLabel: "OPENAI_COMPATIBLE_MODEL",
-        envApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
-        alternateApiKeys: process.env.OPENAI_API_KEY
-          ? [process.env.OPENAI_API_KEY]
-          : [],
         apiKeyMode: "optional",
         useResponsesApi: false,
         providerCtor: OpenAICompatibleProvider,
@@ -1043,7 +1377,6 @@ export function createProvider(
         envBaseURL: process.env.OPENROUTER_BASE_URL,
         envModel: process.env.OPENROUTER_MODEL,
         envModelLabel: "OPENROUTER_MODEL",
-        envApiKey: process.env.OPENROUTER_API_KEY,
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: OpenRouterProvider,
@@ -1053,7 +1386,6 @@ export function createProvider(
         envBaseURL: process.env.GROQ_BASE_URL,
         envModel: process.env.GROQ_MODEL,
         envModelLabel: "GROQ_MODEL",
-        envApiKey: process.env.GROQ_API_KEY,
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: GroqProvider,
@@ -1063,7 +1395,6 @@ export function createProvider(
         envBaseURL: process.env.DEEPSEEK_BASE_URL,
         envModel: process.env.DEEPSEEK_MODEL,
         envModelLabel: "DEEPSEEK_MODEL",
-        envApiKey: process.env.DEEPSEEK_API_KEY,
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: DeepSeekProvider,
@@ -1113,12 +1444,7 @@ export function createProvider(
       });
     case "gemini": {
       const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
-      const apiKey = requireApiKey(
-        "gemini",
-        opts.apiKey,
-        apiKeyEnvLabel,
-        process.env[apiKeyEnvLabel],
-      );
+      const apiKey = requireFactoryApiKey("gemini", opts);
       const model = requireModel(
         "gemini",
         opts.model,
@@ -1164,28 +1490,18 @@ export function createProvider(
         process.env.AWS_REGION,
         process.env.AWS_DEFAULT_REGION,
       ) ?? "us-east-1";
-      const accessKeyId = requireApiKey(
+      const accessKeyId = requireFactoryApiKey(
         "amazon-bedrock",
-        firstNonEmpty(extra.accessKeyId, opts.apiKey),
-        "AWS_ACCESS_KEY_ID",
-        process.env.AWS_BEDROCK_ACCESS_KEY_ID,
-        process.env.AWS_ACCESS_KEY_ID,
+        opts,
+        extra.accessKeyId,
       );
-      const secretAccessKey = firstNonEmpty(
-        extra.secretAccessKey,
-        process.env.AWS_BEDROCK_SECRET_ACCESS_KEY,
-        process.env.AWS_SECRET_ACCESS_KEY,
-      );
+      const secretAccessKey = firstNonEmpty(extra.secretAccessKey);
       if (secretAccessKey === undefined) {
         throw new Error(
-          "amazon-bedrock provider requires secretAccessKey — set AWS_SECRET_ACCESS_KEY or pass secretAccessKey in factory options extra",
+          "amazon-bedrock provider requires secretAccessKey in factory options extra",
         );
       }
-      const sessionToken = firstNonEmpty(
-        extra.sessionToken,
-        process.env.AWS_BEDROCK_SESSION_TOKEN,
-        process.env.AWS_SESSION_TOKEN,
-      );
+      const sessionToken = firstNonEmpty(extra.sessionToken);
       const model = requireModel(
         "amazon-bedrock",
         opts.model,

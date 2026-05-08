@@ -152,6 +152,57 @@ const ITEM_EVIDENCE = {
       { pattern: "case \"amazon-bedrock\"", scope: "runtime/src/llm/provider.ts" },
     ],
   },
+  "GAP-PROV-03": {
+    files: [
+      "runtime/src/auth/backend.ts",
+      "runtime/src/auth/backends/remote.ts",
+      "runtime/src/llm/provider.ts",
+    ],
+    tests: [
+      "runtime/src/auth/backends/remote.contract.test.ts",
+      "runtime/src/llm/provider.test.ts",
+      "runtime/src/llm/provider-parity.test.ts",
+      "runtime/src/llm/provider.integration.test.ts",
+      "runtime/src/session/session.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "resolveFactoryApiKey", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "requireFactoryApiKey", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "authBackend\\.vendKey\\(", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "AuthBackend\\.vendKey\\(\\)", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "mergeAuthVendedProviderExtra", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "resolveAuthVendedProviderModel", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "secretAccessKey", scope: "runtime/src/auth/backend.ts" },
+      { pattern: "preserves Bedrock credential fields from HTTP key vending responses", scope: "runtime/src/auth/backends/remote.contract.test.ts" },
+      { pattern: "vends concrete provider keys through AuthBackend", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "defaults model metadata on AuthBackend-vended providers without explicit model", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "prepares AuthBackend-vended provider switches without explicit model", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "keeps env model metadata on AuthBackend-vended providers without explicit model", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "uses AuthBackend-vended keys on delegated compatible requests", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "keeps Bedrock accessKeyId precedence over generic apiKey", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "does not use OPENAI_API_KEY as LMStudio-compatible auth fallback", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "does not use OPENAI_BASE_URL as LMStudio-compatible base URL fallback", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "does not vend AuthBackend keys for OAuth config", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "uses AuthBackend-vended Bedrock credentials on delegated requests", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "uses AuthBackend-vended Bedrock access key with explicit non-access credentials", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "rejects AuthBackend-vended provider keys with mismatched", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "re-vends AuthBackend keys after vended expiry", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "preserves optional provider hooks on AuthBackend-vended providers", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "does not expose unsupported optional provider hooks", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "recreates AuthBackend-vended providers from readProviderFactoryOptions", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "coalesces concurrent AuthBackend vending", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "authBackend without sessionId", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "retries AuthBackend vending after transient delegate failures", scope: "runtime/src/llm/provider.test.ts" },
+    ],
+    grepNotPresent: [
+      { pattern: "process\\.env\\.[A-Z0-9_]*(API_KEY|ACCESS_KEY|SESSION_TOKEN)", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "process\\.env\\[[\"'][A-Z0-9_]*(API_KEY|ACCESS_KEY|SESSION_TOKEN)[\"']\\]", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "process\\.env\\[[^\\]]*apiKeyEnvLabel[^\\]]*\\]", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "resolveApiKey\\(process\\.env\\)", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "envApiKey", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "alternateApiKeys", scope: "runtime/src/llm/provider.ts" },
+    ],
+  },
   "GAP-TUI-03": {
     files: [
       "runtime/src/commands/clear.ts",
@@ -6816,6 +6867,13 @@ async function gapGates(item) {
     return;
   }
   if (
+    id === "GAP-PROV-03" ||
+    item.title.includes("Replace direct env reads in llm/provider.ts")
+  ) {
+    assertGapProvProviderKeysThroughAuthBackend();
+    return;
+  }
+  if (
     id === "GAP-DMN-05" ||
     item.title.includes("Add `agenc-runtime reload` subcommand")
   ) {
@@ -7296,6 +7354,131 @@ function assertGapProvAmazonBedrockAdapter() {
     failGate("GAP-PROV-01 targeted Amazon Bedrock provider tests failed");
   }
   pass("GAP-PROV-01 Amazon Bedrock provider is registered, signed, and tested");
+}
+
+function assertGapProvProviderKeysThroughAuthBackend() {
+  const providerRel = "runtime/src/llm/provider.ts";
+  const providerTestRel = "runtime/src/llm/provider.test.ts";
+  const parityTestRel = "runtime/src/llm/provider-parity.test.ts";
+  const integrationTestRel = "runtime/src/llm/provider.integration.test.ts";
+  const sessionTestRel = "runtime/src/session/session.test.ts";
+  const remoteContractTestRel = "runtime/src/auth/backends/remote.contract.test.ts";
+
+  for (const rel of [
+    providerRel,
+    providerTestRel,
+    parityTestRel,
+    integrationTestRel,
+    sessionTestRel,
+    remoteContractTestRel,
+  ]) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-PROV-03: missing ${rel}`);
+    }
+  }
+
+  const providerSource = readFileSync(path.join(root, providerRel), "utf8");
+  const keyBearingEnvName = "[A-Z0-9_]*(?:API_KEY|ACCESS_KEY|SESSION_TOKEN)";
+  const forbiddenProviderPatterns = [
+    new RegExp(`process\\.env(?:\\?\\.|\\.)\\s*${keyBearingEnvName}\\b`),
+    /process\.env(?:\?\.)?\s*\[/,
+    new RegExp(`\\b(?:const|let|var)\\s*\\{[^}]*${keyBearingEnvName}[^}]*\\}\\s*=\\s*process\\.env\\b`, "s"),
+    /process\.env\[[^\]]*apiKeyEnvLabel[^\]]*\]/,
+    /resolveApiKey\(process\.env\)/,
+    /\benvApiKey\b/,
+    /\balternateApiKeys\b/,
+  ];
+  for (const pattern of forbiddenProviderPatterns) {
+    if (pattern.test(providerSource)) {
+      failGate(`GAP-PROV-03: ${providerRel} still contains forbidden key-read pattern ${pattern}`);
+    }
+  }
+  for (const match of providerSource.matchAll(
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\.env\b/g,
+  )) {
+    const alias = match[1];
+    const escapedAlias = escapeRegExp(alias);
+    const aliasForbiddenPatterns = [
+      new RegExp(`\\b${escapedAlias}(?:\\?\\.|\\.)\\s*${keyBearingEnvName}\\b`),
+      new RegExp(`\\b${escapedAlias}(?:\\?\\.)?\\s*\\[`),
+      new RegExp(`\\b(?:const|let|var)\\s*\\{[^}]*${keyBearingEnvName}[^}]*\\}\\s*=\\s*${escapedAlias}\\b`, "s"),
+    ];
+    for (const pattern of aliasForbiddenPatterns) {
+      if (pattern.test(providerSource)) {
+        failGate(`GAP-PROV-03: ${providerRel} still contains aliased key-read pattern ${pattern}`);
+      }
+    }
+  }
+
+  for (const needle of [
+    "resolveFactoryApiKey",
+    "authBackend.vendKey(",
+    "AuthBackend.vendKey()",
+    "requireFactoryApiKey",
+    "mergeAuthVendedProviderExtra",
+    "resolveAuthVendedProviderModel",
+    "authBackend/sessionId in factory options",
+  ]) {
+    if (!providerSource.includes(needle)) {
+      failGate(`GAP-PROV-03: ${providerRel} missing AuthBackend key-routing evidence: ${needle}`);
+    }
+  }
+
+  const providerTestSource = readFileSync(path.join(root, providerTestRel), "utf8");
+  for (const needle of [
+    "vends concrete provider keys through AuthBackend",
+    "defaults model metadata on AuthBackend-vended providers without explicit model",
+    "prepares AuthBackend-vended provider switches without explicit model",
+    "keeps env model metadata on AuthBackend-vended providers without explicit model",
+    "uses AuthBackend-vended keys on delegated compatible requests",
+    "uses AuthBackend-vended Bedrock credentials on delegated requests",
+    "uses AuthBackend-vended Bedrock access key with explicit non-access credentials",
+    "rejects AuthBackend-vended provider keys with mismatched",
+    "rejects empty AuthBackend-vended provider keys",
+    "retries AuthBackend vending after transient delegate failures",
+    "keeps Bedrock accessKeyId precedence over generic apiKey",
+    "does not use OPENAI_API_KEY as LMStudio-compatible auth fallback",
+    "does not use OPENAI_BASE_URL as LMStudio-compatible base URL fallback",
+    "does not vend AuthBackend keys for OAuth config",
+    "re-vends AuthBackend keys after vended expiry",
+    "preserves optional provider hooks on AuthBackend-vended providers",
+    "does not expose unsupported optional provider hooks",
+    "recreates AuthBackend-vended providers from readProviderFactoryOptions",
+    "coalesces concurrent AuthBackend vending",
+    "authBackend without sessionId",
+  ]) {
+    if (!providerTestSource.includes(needle)) {
+      failGate(`GAP-PROV-03: ${providerTestRel} missing regression evidence: ${needle}`);
+    }
+  }
+
+  for (const [rel, needle] of [
+    [parityTestRel, "apiKey: \"openai-test\""],
+    [integrationTestRel, "apiKey: () => process.env.OPENAI_API_KEY"],
+    [sessionTestRel, "uses AuthBackend-managed keys when switching providers without BYOK"],
+    [remoteContractTestRel, "preserves Bedrock credential fields from HTTP key vending responses"],
+  ]) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (!source.includes(needle)) {
+      failGate(`GAP-PROV-03: ${rel} missing explicit-key/AuthBackend regression evidence: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/auth/backends/remote.contract.test.ts",
+    "src/llm/provider.test.ts",
+    "src/llm/provider-parity.test.ts",
+    "src/llm/provider.integration.test.ts",
+    "src/session/session.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-PROV-03 targeted provider AuthBackend key-routing tests failed");
+  }
+  pass("GAP-PROV-03 provider factory key reads route through explicit options or AuthBackend");
 }
 
 function assertGapDmnDaemonReloadSubcommand() {

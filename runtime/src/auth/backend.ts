@@ -76,6 +76,9 @@ export interface AuthVendedKey extends AuthJsonObject {
   readonly sessionId: AuthSessionId;
   readonly apiKey: string;
   readonly expiresAt?: string;
+  readonly secretAccessKey?: string;
+  readonly sessionToken?: string;
+  readonly region?: string;
 }
 
 export interface AuthInferAgencModelParams extends AuthSessionRef {
