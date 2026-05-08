@@ -14,6 +14,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import {
@@ -1120,14 +1121,39 @@ export class FileThreadStore implements ThreadStore {
 
   private withRegistryLock<T>(fn: () => T): T {
     mkdirSync(dirname(this.registryPath), { recursive: true });
-    const deadline = Date.now() + 2_000;
+    // Generous lock-acquisition window. Daemons under realistic load can hold
+    // the lock for several seconds while writing the rollout file, so a 2s
+    // ceiling produces spurious conflicts and leaves orphaned lock dirs
+    // behind every time agent.create is killed mid-run. Pair this with the
+    // stale-lock reclaim below so a hard-killed previous holder can never
+    // wedge the project.
+    const deadline = Date.now() + 30_000;
+    const holderFile = join(this.registryLockPath, "holder.pid");
     while (true) {
       try {
         mkdirSync(this.registryLockPath);
+        // Stamp our pid so a subsequent acquirer can detect orphaned locks.
+        try {
+          writeFileSync(holderFile, `${process.pid}`, "utf8");
+        } catch {
+          // Best-effort: writing the pid is purely diagnostic. The lock
+          // itself is the directory's existence; pid metadata is recovery
+          // information.
+        }
         break;
       } catch (err) {
         const code = (err as { code?: string }).code;
-        if (code !== "EEXIST" || Date.now() >= deadline) {
+        if (code !== "EEXIST") {
+          throw new ThreadStoreConflictError(
+            `failed to acquire registry lock ${this.registryLockPath}`,
+          );
+        }
+        if (this.tryReclaimStaleLock(holderFile)) {
+          // Reclaim returned true: the prior holder is dead and we removed
+          // its lock dir. Loop again to mkdirSync ours.
+          continue;
+        }
+        if (Date.now() >= deadline) {
           throw new ThreadStoreConflictError(
             `failed to acquire registry lock ${this.registryLockPath}`,
           );
@@ -1140,6 +1166,56 @@ export class FileThreadStore implements ThreadStore {
       return fn();
     } finally {
       rmSync(this.registryLockPath, { recursive: true, force: true });
+    }
+  }
+
+  private tryReclaimStaleLock(holderFile: string): boolean {
+    let holderPid: number | null = null;
+    try {
+      const raw = readFileSync(holderFile, "utf8").trim();
+      const parsed = Number.parseInt(raw, 10);
+      if (Number.isInteger(parsed) && parsed > 0) holderPid = parsed;
+    } catch {
+      // No holder file means the lock predates the pid-stamping or was
+      // partially written. Treat as reclaimable if older than the staleness
+      // threshold below.
+    }
+    if (holderPid !== null) {
+      try {
+        // Signal 0 probes liveness without delivering anything.
+        process.kill(holderPid, 0);
+        // Holder is alive: not stale.
+        return false;
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code !== "ESRCH") {
+          // Some other error (EPERM = process exists but is owned by
+          // another user). Be conservative and don't reclaim.
+          return false;
+        }
+        // ESRCH: pid doesn't exist. Reclaim.
+      }
+    } else {
+      // No holder pid stamp. Either the lock is from a prior code path
+      // that didn't stamp pids, or the holder crashed before the stamp
+      // completed. In both cases the holder is gone; reclaim aggressively
+      // after a brief grace window so a freshly mkdir'd lock has time to
+      // get its pid stamp written before we'd reclaim it from a healthy
+      // sibling acquirer in a parallel session.
+      try {
+        const stats = statSync(this.registryLockPath);
+        if (Date.now() - stats.mtimeMs < 5_000) return false;
+      } catch {
+        // The lock dir vanished between EEXIST and stat. The next mkdir
+        // call will succeed; signal that by returning true.
+        return true;
+      }
+    }
+    try {
+      rmSync(this.registryLockPath, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
     }
   }
 
