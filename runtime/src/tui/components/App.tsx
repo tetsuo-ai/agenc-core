@@ -1205,9 +1205,70 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         }
       }
       setPastedContents({});
+      // Slash-command interception. Without this, /<name> input is forwarded
+      // to the model as plain text and the model responds with hallucinated
+      // generic text instead of running the command. Local + prompt commands
+      // are dispatched here; local-jsx commands fall through to the model
+      // (their dialog mounting is a separate path that's not yet wired into
+      // this submit handler).
+      if (text.startsWith("/") && text.length > 1) {
+        try {
+          const [{ parseSlashCommand, dispatchSlashCommand }, { buildDefaultRegistry }] =
+            await Promise.all([
+              import("../../commands/dispatcher.js"),
+              import("../../commands/registry.js"),
+            ]);
+          const parsed = parseSlashCommand(text);
+          if (parsed) {
+            const registry = buildDefaultRegistry();
+            const found = registry.find(parsed.name);
+            // Only intercept SlashCommand-shaped (execute(ctx)) commands.
+            // local-jsx and prompt commands have a different shape and
+            // continue to fall through to the model for now.
+            if (found && typeof (found as { execute?: unknown }).execute === "function") {
+              const outcome = await dispatchSlashCommand(parsed, {
+                session: props.session,
+                argsRaw: parsed.argsRaw,
+                cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd(),
+                home: process.env.HOME ?? "",
+                ...(props.session.services?.configStore
+                  ? { configStore: props.session.services.configStore }
+                  : {}),
+                commandRegistry: registry,
+              }, registry);
+              const result = outcome.result;
+              const text =
+                result.kind === "text"
+                  ? result.text
+                  : result.kind === "error"
+                    ? `Error: ${result.message}`
+                    : null;
+              if (text !== null) {
+                setToolJSX({
+                  jsx: (
+                    <Box
+                      flexDirection="column"
+                      paddingX={1}
+                      borderStyle="round"
+                      borderColor={result.kind === "error" ? "red" : "gray"}
+                    >
+                      <Text>{text}</Text>
+                    </Box>
+                  ),
+                  shouldHidePromptInput: false,
+                });
+              }
+              return;
+            }
+          }
+        } catch (err) {
+          // Fall through to the model on dispatch errors so the user
+          // doesn't lose their input.
+        }
+      }
       await props.session.submit?.(value);
     },
-    [pastedContents, props.session],
+    [pastedContents, props.session, setToolJSX],
   );
   useInitialSubmit(
     props.session,

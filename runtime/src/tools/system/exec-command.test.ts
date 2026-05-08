@@ -174,8 +174,10 @@ describe("exec_command tool", () => {
         workdir: root,
       }),
     );
-    expect(result.content).toContain("Process exited with code 0");
-    expect(result.content).toContain("Output:\nran");
+    // Output now leads, footer carries metadata. See exec-result-format.ts
+    // for why the order was inverted.
+    expect(result.content).toMatch(/^ran/);
+    expect(result.content).toContain("[exec exit_code=0");
     expect(result.codeModeResult).toMatchObject({
       wall_time_seconds: 0.001,
       exit_code: 0,
@@ -204,10 +206,11 @@ describe("exec_command tool", () => {
     const result = await tool.execute({ cmd: "make", workdir: root });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("Wall time: 0.0120 seconds");
-    expect(result.content).toContain("Process exited with code 2");
-    expect(result.content).toContain("Original token count: 3");
-    expect(result.content).toContain("Output:\ncompiler failed\n");
+    // Output leads, footer carries metadata.
+    expect(result.content).toMatch(/^compiler failed/);
+    expect(result.content).toContain("exit_code=2");
+    expect(result.content).toContain("wall_time=0.0120s");
+    expect(result.content).toContain("tokens=3");
     expect(result.codeModeResult).toMatchObject({
       wall_time_seconds: 0.012,
       exit_code: 2,
@@ -266,8 +269,10 @@ describe("exec_command tool", () => {
         const startedBody = started.codeModeResult as { session_id?: number };
         expect(started.isError).toBeUndefined();
         expect(startedBody.session_id).toEqual(expect.any(Number));
+        // session_id is now in the compact footer rather than a free-text
+        // line. See exec-result-format.ts for the format change.
         expect(started.content).toContain(
-          `Process running with session ID ${startedBody.session_id}`,
+          `session_id=${startedBody.session_id}`,
         );
 
         const echoed = await writeStdin.execute({

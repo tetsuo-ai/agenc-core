@@ -228,10 +228,12 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    // The model-facing content follows unified-exec output: status
-    // headers plus the captured stdout/stderr.
-    expect(result.content).toContain("Process exited with code 0");
-    expect(result.content).toContain("Output:\nagenc-runtime");
+    // The model-facing content puts captured stdout first, followed by a
+    // compact metadata footer. See exec-result-format.ts for why the
+    // order was inverted (Grok was retrying tool calls when the metadata
+    // header obscured the actual output).
+    expect(result.content).toContain("agenc-runtime");
+    expect(result.content).toContain("[exec exit_code=0");
   });
 
   test("dispatch wraps plain-string arguments using the consolidated registry surface", async () => {
@@ -244,8 +246,8 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("Process exited with code 0");
-    expect(result.content).toContain("Output:\nagenc-plain-string");
+    expect(result.content).toContain("agenc-plain-string");
+    expect(result.content).toContain("[exec exit_code=0");
   });
 
   test("model-facing Task tools keep string id dispatch in the registry", async () => {
