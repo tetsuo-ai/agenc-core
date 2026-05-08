@@ -896,6 +896,9 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).resolves.toBe(false);
     await expect(
+      runner.interruptAgentTurn("run-budget-token", "user_interrupt"),
+    ).resolves.toBe(false);
+    await expect(
       runner.respondToElicitation("run-budget-token", {
         requestId: "elicitation-after-budget",
         kind: "accept",

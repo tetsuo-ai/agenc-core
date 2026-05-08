@@ -712,6 +712,117 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("routes session.cancelTurn to the runner's interruptAgentTurn for an active session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-cancel-active",
+      agentId: "agent-cancel-active",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const interruptAgentTurn = vi.fn(async () => true);
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:07:00.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        interruptAgentTurn,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-cancel-active",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-cancel-active"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.cancelSessionTurn({
+        sessionId: "session-cancel-active",
+        reason: "user_interrupt",
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-cancel-active",
+      cancelled: true,
+      reason: "user_interrupt",
+    });
+    expect(interruptAgentTurn).toHaveBeenCalledWith(
+      "agent-cancel-active",
+      "user_interrupt",
+    );
+  });
+
+  it("session.cancelTurn returns cancelled=false for an unknown session (idle no-op)", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    const interruptAgentTurn = vi.fn(async () => false);
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:07:00.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        interruptAgentTurn,
+      },
+    });
+
+    await expect(
+      agents.cancelSessionTurn({ sessionId: "nope" }),
+    ).resolves.toEqual({
+      sessionId: "nope",
+      cancelled: false,
+      reason: "interrupted",
+    });
+    expect(interruptAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it("session.cancelTurn defaults reason to 'interrupted' when caller omits one", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-cancel-default",
+      agentId: "agent-cancel-default",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const interruptAgentTurn = vi.fn(async () => true);
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:07:00.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        interruptAgentTurn,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-cancel-default",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-cancel-default"],
+      runtimeAvailable: true,
+    });
+
+    await agents.cancelSessionTurn({ sessionId: "session-cancel-default" });
+    expect(interruptAgentTurn).toHaveBeenCalledWith(
+      "agent-cancel-default",
+      "interrupted",
+    );
+  });
+
   it("rejects session.clear for recovered agents without live runtime", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({

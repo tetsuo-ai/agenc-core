@@ -378,6 +378,70 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("interrupts the active turn through session.cancelTurn", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await session.cancelActiveTurn?.("interrupted");
+
+    expect(client.requests).toEqual([
+      {
+        method: "session.cancelTurn",
+        params: { sessionId: "session_1", reason: "interrupted" },
+      },
+    ]);
+  });
+
+  it("session.cancelTurn omits reason when none is supplied", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await session.cancelActiveTurn?.();
+
+    expect(client.requests).toEqual([
+      { method: "session.cancelTurn", params: { sessionId: "session_1" } },
+    ]);
+  });
+
+  it("session.cancelTurn swallows daemon RPC failures so ESC never surfaces an error", async () => {
+    const baseClient = createClient();
+    // Wrap the fixture's request with a thrower for cancelTurn so we can
+    // assert that pressing ESC against a disconnected daemon does NOT
+    // bubble. Other methods stay on the original implementation.
+    const originalRequest = baseClient.request.bind(baseClient);
+    const client = {
+      ...baseClient,
+      request: async (
+        method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+        params?: JsonObject,
+        options?: { readonly signal?: AbortSignal },
+      ) => {
+        if (method === "session.cancelTurn") {
+          throw new Error("daemon disconnected");
+        }
+        return originalRequest(method, params, options);
+      },
+    } as AgenCDaemonTuiClient;
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(session.cancelActiveTurn?.("interrupted")).resolves.toBeUndefined();
+  });
+
   it("partially compacts daemon-owned session history through the internal TUI RPC", async () => {
     const client = createClient();
     const abortController = new AbortController();

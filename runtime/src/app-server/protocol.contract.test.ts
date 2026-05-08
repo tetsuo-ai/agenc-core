@@ -71,6 +71,7 @@ const expectedMethods = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.cancelTurn",
   "message.send",
   "message.stream",
   "thread/realtime/start",
