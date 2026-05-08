@@ -1205,26 +1205,109 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         }
       }
       setPastedContents({});
-      // Slash-command interception. Without this, /<name> input is forwarded
-      // to the model as plain text and the model responds with hallucinated
-      // generic text instead of running the command. Local + prompt commands
-      // are dispatched here; local-jsx commands fall through to the model
-      // (their dialog mounting is a separate path that's not yet wired into
-      // this submit handler).
+      // Slash-command interception. The daemon-backed TUI does not have
+      // any server-side slash-command dispatch — every / input would
+      // otherwise be forwarded to the model as plain text and the model
+      // would respond with generic prose instead of running the command.
+      //
+      // Three command shapes route through here:
+      //   1. SlashCommand-shape (execute(ctx)) — built-ins like /skills,
+      //      /usage, /cost, /version, /effort, /wiki, /help, /status.
+      //      Result.kind = "text" / "error" rendered in a bordered overlay.
+      //   2. local-jsx — registered via legacy specs (/agents, /branch,
+      //      /buddy, /color, /export, /ide, /login, /logout, /rename,
+      //      /tasks, /sandbox, etc.). Loads the module, calls call(),
+      //      mounts the returned JSX dialog via setToolJSX. The dialog's
+      //      onDone unmounts.
+      //   3. prompt — /commit, /review, /pr-comments. Renders the prompt
+      //      template via getPromptForCommand and resubmits the resulting
+      //      text to the model as a fresh user turn.
       if (text.startsWith("/") && text.length > 1) {
         try {
-          const [{ parseSlashCommand, dispatchSlashCommand }, { buildDefaultRegistry }] =
-            await Promise.all([
-              import("../../commands/dispatcher.js"),
-              import("../../commands/registry.js"),
-            ]);
+          const [
+            { parseSlashCommand, dispatchSlashCommand },
+            {
+              buildDefaultRegistry,
+              registeredLegacyCommandSurfaceSpecs,
+              executeLegacyCommandSurfaceForTui,
+            },
+          ] = await Promise.all([
+            import("../../commands/dispatcher.js"),
+            import("../../commands/registry.js"),
+          ]);
           const parsed = parseSlashCommand(text);
           if (parsed) {
             const registry = buildDefaultRegistry();
+            // Build a renderResult helper used by both legacy and
+            // built-in dispatch paths.
+            const renderResult = (
+              result:
+                | { kind: "text"; text: string }
+                | { kind: "error"; message: string }
+                | { kind: "skip" }
+                | { kind: "compact"; text: string }
+                | { kind: "prompt"; content: string },
+            ): void => {
+              if (result.kind === "skip") return;
+              const display =
+                result.kind === "text" || result.kind === "compact"
+                  ? result.text
+                  : result.kind === "error"
+                    ? `Error: ${result.message}`
+                    : null;
+              if (display === null) return;
+              setToolJSX({
+                jsx: (
+                  <Box
+                    flexDirection="column"
+                    paddingX={1}
+                    borderStyle="round"
+                    borderColor={result.kind === "error" ? "red" : "gray"}
+                  >
+                    <Text>{display}</Text>
+                  </Box>
+                ),
+                shouldHidePromptInput: false,
+              });
+            };
+
+            // Check legacy specs first — they cover local-jsx and prompt
+            // shapes that dispatchSlashCommand can't handle correctly
+            // because executeLegacyCommandSurface returns errors for
+            // those types in headless mode.
+            const legacySpec = registeredLegacyCommandSurfaceSpecs.find(
+              (spec) =>
+                spec.name === parsed.name ||
+                (Array.isArray(spec.aliases) && spec.aliases.includes(parsed.name)),
+            );
+            if (legacySpec !== undefined) {
+              const tuiHandlers = {
+                mountJsx: (jsx: unknown, opts?: { shouldHidePromptInput?: boolean }) => {
+                  setToolJSX({
+                    jsx: jsx as never,
+                    shouldHidePromptInput: opts?.shouldHidePromptInput ?? true,
+                  });
+                },
+                unmountJsx: () => {
+                  setToolJSX(null);
+                },
+                submitPromptToModel: async (content: string) => {
+                  await props.session.submit?.(content);
+                },
+                toolUseContext: getToolUseContext([], [], new AbortController()),
+              };
+              const result = await executeLegacyCommandSurfaceForTui(
+                legacySpec,
+                parsed.argsRaw,
+                tuiHandlers.toolUseContext,
+                tuiHandlers,
+              );
+              renderResult(result as never);
+              return;
+            }
+
+            // Fall back to the SlashCommand-shape dispatcher for built-ins.
             const found = registry.find(parsed.name);
-            // Only intercept SlashCommand-shaped (execute(ctx)) commands.
-            // local-jsx and prompt commands have a different shape and
-            // continue to fall through to the model for now.
             if (found && typeof (found as { execute?: unknown }).execute === "function") {
               const outcome = await dispatchSlashCommand(parsed, {
                 session: props.session,
@@ -1236,28 +1319,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                   : {}),
                 commandRegistry: registry,
               }, registry);
-              const result = outcome.result;
-              const text =
-                result.kind === "text"
-                  ? result.text
-                  : result.kind === "error"
-                    ? `Error: ${result.message}`
-                    : null;
-              if (text !== null) {
-                setToolJSX({
-                  jsx: (
-                    <Box
-                      flexDirection="column"
-                      paddingX={1}
-                      borderStyle="round"
-                      borderColor={result.kind === "error" ? "red" : "gray"}
-                    >
-                      <Text>{text}</Text>
-                    </Box>
-                  ),
-                  shouldHidePromptInput: false,
-                });
-              }
+              renderResult(outcome.result as never);
               return;
             }
           }
@@ -1268,7 +1330,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
       await props.session.submit?.(value);
     },
-    [pastedContents, props.session, setToolJSX],
+    [pastedContents, props.session, setToolJSX, getToolUseContext],
   );
   useInitialSubmit(
     props.session,

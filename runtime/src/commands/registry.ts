@@ -706,12 +706,40 @@ function promptBlocksToText(blocks: readonly unknown[]): string {
     .join("\n\n");
 }
 
+/**
+ * Optional TUI-bound side-effect handlers that the dispatcher uses to
+ * route command results to the interactive surface. When present:
+ *   - local-jsx commands mount their returned JSX via mountJsx() and the
+ *     dispatcher returns a synthetic { kind: "skip" } so the caller doesn't
+ *     try to render an empty result.
+ *   - prompt commands resolve their getPromptForCommand template and
+ *     resubmit the rendered text to the model via submitPromptToModel(),
+ *     also returning { kind: "skip" }.
+ * When omitted (headless callers, tests, scripts), the dispatcher
+ * preserves its previous behavior — local-jsx returns a clean error
+ * because there's nowhere to mount the dialog, and prompt returns the
+ * rendered text in a { kind: "prompt" } payload for the caller to
+ * handle.
+ */
+export interface LegacyCommandTuiHandlers {
+  mountJsx(jsx: unknown, opts?: { shouldHidePromptInput?: boolean }): void;
+  unmountJsx(): void;
+  submitPromptToModel(content: string): Promise<void>;
+  /**
+   * Per-invocation LocalJSXCommandContext / ToolUseContext composite the
+   * TUI builds for the current session. Passed verbatim to the command's
+   * call() function alongside the onDone callback.
+   */
+  toolUseContext: unknown;
+}
+
 async function executeLegacyCommandSurface(
   params: LegacyCommandSurfaceSpec,
   argsRaw: string,
   context: unknown,
+  tuiHandlers?: LegacyCommandTuiHandlers,
 ) {
-  if (params.type === "prompt" && params.dispatchPrompt !== true) {
+  if (params.type === "prompt" && params.dispatchPrompt !== true && tuiHandlers === undefined) {
     return {
       kind: "error" as const,
       message: `/${params.name} requires the interactive prompt command surface.`,
@@ -736,10 +764,35 @@ async function executeLegacyCommandSurface(
     };
   }
   if (descriptor.type === "local-jsx") {
-    return {
-      kind: "error" as const,
-      message: `/${params.name} requires the interactive TUI command surface.`,
+    if (tuiHandlers === undefined) {
+      return {
+        kind: "error" as const,
+        message: `/${params.name} requires the interactive TUI command surface.`,
+      };
+    }
+    const loaded = (await descriptor.load()) as {
+      call: (
+        onDone: (result?: string, opts?: unknown) => void,
+        ctx: unknown,
+        args: string,
+      ) => Promise<unknown>;
     };
+    // The onDone callback dismisses the JSX overlay. Some commands fire
+    // it eagerly with a status string (e.g. "Cannot rename: ..."); others
+    // hand off to a long-lived dialog and never call onDone. In both
+    // cases we want to dismiss when the dialog signals completion.
+    const onDone = () => {
+      try {
+        tuiHandlers.unmountJsx();
+      } catch {
+        // best-effort cleanup
+      }
+    };
+    const jsx = await loaded.call(onDone, tuiHandlers.toolUseContext, argsRaw);
+    if (jsx !== null && jsx !== undefined) {
+      tuiHandlers.mountJsx(jsx, { shouldHidePromptInput: true });
+    }
+    return { kind: "skip" as const };
   }
   if (descriptor.type === "local") {
     const loaded = await descriptor.load();
@@ -753,10 +806,34 @@ async function executeLegacyCommandSurface(
     };
   }
   const blocks = await descriptor.getPromptForCommand(argsRaw, context as never);
-  return {
-    kind: "prompt" as const,
-    content: promptBlocksToText(blocks),
-  };
+  const content = promptBlocksToText(blocks);
+  if (tuiHandlers !== undefined) {
+    // Submit the rendered prompt as a fresh user turn so the model
+    // actually executes the command (instead of seeing the prompt
+    // template displayed as inert text).
+    await tuiHandlers.submitPromptToModel(content);
+    return { kind: "skip" as const };
+  }
+  return { kind: "prompt" as const, content };
+}
+
+/**
+ * TUI-aware dispatcher: runs a slash command with an interactive
+ * surface so local-jsx dialogs mount and prompt templates are
+ * resubmitted to the model. Falls back to the headless dispatch path
+ * for any command not in the legacy-surface specs (built-in
+ * SlashCommand-shape commands like /skills, /usage, /cost, /help).
+ *
+ * Returns the dispatch outcome so the caller can render a text/error
+ * fallback for anything that didn't take effect via tuiHandlers.
+ */
+export async function executeLegacyCommandSurfaceForTui(
+  params: LegacyCommandSurfaceSpec,
+  argsRaw: string,
+  context: unknown,
+  tuiHandlers: LegacyCommandTuiHandlers,
+) {
+  return executeLegacyCommandSurface(params, argsRaw, context, tuiHandlers);
 }
 
 export const registeredLegacyCommandSurfaceSpecs = [
