@@ -92,7 +92,7 @@ describe("ToolOutput variants", () => {
     expect(out.variant?.kind).toBe("function");
   });
 
-  test("mcp variant: preserves structured content and emits wall-time header", () => {
+  test("mcp variant: preserves structured content and emits trailing wall-time footer", () => {
     const structured = {
       content: [
         { type: "text" as const, text: "hi there" } satisfies MCPContentItem,
@@ -108,11 +108,14 @@ describe("ToolOutput variants", () => {
       durationMs: 250,
     });
     expect(out.variant?.kind).toBe("mcp");
-    expect(toText(out)).toContain("Wall time: 0.2500 seconds\nOutput:");
-    expect(toText(out)).toContain("hi there");
+    const text = toText(out);
+    // Output leads, footer trails. The model must see the actual content
+    // before any timing metadata or it triggers retry loops.
+    expect(text.startsWith("hi there")).toBe(true);
+    expect(text).toContain("[mcp wall_time=0.2500s]");
   });
 
-  test("exec variant: composes chunk/exit/process sections", () => {
+  test("exec variant: output leads, footer trails with exit/wall/chunk metadata", () => {
     const out = execToolOutput({
       callId: "c1",
       toolName,
@@ -125,11 +128,13 @@ describe("ToolOutput variants", () => {
     });
     expect(out.variant?.kind).toBe("exec");
     const text = toText(out);
-    expect(text).toContain("Chunk ID: chunk-abc");
-    expect(text).toContain("Wall time: 0.1250 seconds");
-    expect(text).toContain("Process exited with code 0");
-    expect(text).toContain("Output:");
-    expect(text).toContain("stdout body");
+    expect(text.startsWith("stdout body")).toBe(true);
+    expect(text).toContain("exit_code=0");
+    expect(text).toContain("wall_time=0.1250s");
+    expect(text).toContain("chunk_id=chunk-abc");
+    // The footer must be on its own line, after a blank separator, and
+    // wrapped in the [exec ...] marker.
+    expect(text).toMatch(/\n\n\[exec [^\]]+\]$/);
   });
 
   test("exec variant: 400KB truncation applied with marker", () => {
@@ -181,15 +186,16 @@ describe("ToolOutput variants", () => {
     expect(toText(out)).toBe(JSON.stringify(tools));
   });
 
-  test("aborted variant: shell tools get Wall-time-prefixed message", () => {
+  test("aborted variant: shell tools get output-first cancellation with footer", () => {
     const shellName = parseToolName("system.bash");
     const out = abortedToolOutput(shellName, payload, 500);
     // Note: signature is (callId, toolName, payload, elapsedMs)
     void out;
     const real = abortedToolOutput("c1", shellName, payload, 500);
     expect(real.variant?.kind).toBe("aborted");
-    expect(toText(real)).toContain("Wall time: 0.5 seconds");
-    expect(toText(real)).toContain("aborted by user");
+    const text = toText(real);
+    expect(text.startsWith("aborted by user")).toBe(true);
+    expect(text).toContain("[exec wall_time=0.5s aborted=true]");
     expect(successForLogging(real)).toBe(false);
   });
 

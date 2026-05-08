@@ -519,7 +519,8 @@ function buildFunctionToolOutput(opts: {
 
 /**
  * Preserves the full MCP structured content and wall time. `toText()`
- * synthesizes the "Wall time: N.NNNN seconds\nOutput:" header.
+ * emits output first followed by a compact `[mcp wall_time=...]` footer
+ * (see mcpResponseText for the rationale).
  */
 export function mcpToolOutput(opts: {
   readonly callId: string;
@@ -692,7 +693,10 @@ function abortMessage(toolName: ToolName, elapsedMs: number): string {
     "system.bash",
   ]);
   if (shellTools.has(toolName.name) || shellTools.has(toolNameDisplay(toolName))) {
-    return `Wall time: ${seconds} seconds\naborted by user`;
+    // Output-first format matches execResponseText so the model sees
+    // the abort signal as the primary content and the timing as a
+    // trailing footer (avoids the leading-metadata retry pattern).
+    return `aborted by user\n\n[exec wall_time=${seconds}s aborted=true]`;
   }
   return `aborted by user after ${seconds}s`;
 }
@@ -797,14 +801,15 @@ export function successForLogging(output: ToolOutput): boolean {
 }
 
 /**
- * Prepends the wall-time header and runs the image-detail sanitizer on
- * nested image items.
+ * Composes the MCP tool-result text. Output leads, compact metadata
+ * footer trails — same rationale as execResponseText (a leading
+ * "Wall time: ... / Output:" header looks like an incomplete result to
+ * the model and triggers retry loops).
  */
 function mcpResponseText(
   variant: Extract<ToolOutputVariant, { kind: "mcp" }>,
 ): string {
   const wallTimeSeconds = variant.wallTimeMs / 1000;
-  const header = `Wall time: ${wallTimeSeconds.toFixed(4)} seconds\nOutput:`;
   const items = sanitizeOriginalImageDetail(
     variant.originalImageDetailSupported,
     variant.structured.content,
@@ -820,33 +825,41 @@ function mcpResponseText(
       return "";
     })
     .join("\n");
-  if (body.length === 0) return header;
-  return `${header}\n${body}`;
+  const footer = `[mcp wall_time=${wallTimeSeconds.toFixed(4)}s]`;
+  if (body.length === 0) return footer;
+  return `${body}\n\n${footer}`;
 }
 
 /**
- * Applies the 400KB cap (I-15) and composes the chunk/exit/process sections.
+ * Applies the 400KB cap (I-15) and composes the output + compact metadata
+ * footer. Output leads, footer trails — see exec-result-format.ts for the
+ * matching sibling formatter and the rationale (Grok interpreted a
+ * leading multi-line metadata header as an incomplete tool result and
+ * re-emitted the same exec_command three times in a row).
  */
 function execResponseText(
   variant: Extract<ToolOutputVariant, { kind: "exec" }>,
 ): string {
   const sections: string[] = [];
-  if (variant.chunkId && variant.chunkId.length > 0) {
-    sections.push(`Chunk ID: ${variant.chunkId}`);
+  sections.push(execTruncatedOutput(variant));
+
+  const footerLines: string[] = [];
+  if (variant.exitCode !== undefined) {
+    footerLines.push(`exit_code=${variant.exitCode}`);
   }
   const wallTimeSeconds = variant.wallTimeMs / 1000;
-  sections.push(`Wall time: ${wallTimeSeconds.toFixed(4)} seconds`);
-  if (variant.exitCode !== undefined) {
-    sections.push(`Process exited with code ${variant.exitCode}`);
+  footerLines.push(`wall_time=${wallTimeSeconds.toFixed(4)}s`);
+  if (variant.originalTokenCount !== undefined) {
+    footerLines.push(`tokens=${variant.originalTokenCount}`);
   }
   if (variant.processId !== undefined) {
-    sections.push(`Process running with session ID ${variant.processId}`);
+    footerLines.push(`session_id=${variant.processId}`);
   }
-  if (variant.originalTokenCount !== undefined) {
-    sections.push(`Original token count: ${variant.originalTokenCount}`);
+  if (variant.chunkId && variant.chunkId.length > 0) {
+    footerLines.push(`chunk_id=${variant.chunkId}`);
   }
-  sections.push("Output:");
-  sections.push(execTruncatedOutput(variant));
+  sections.push("");
+  sections.push(`[exec ${footerLines.join(" ")}]`);
   return sections.join("\n");
 }
 
