@@ -19,11 +19,6 @@ export const meta = {
   description: "--yolo: model uses Write, file content verifiable on disk.",
   args: ["--yolo"],
   timeoutMs: 90_000,
-  // FilePermissionDialog crash is fixed (GAP-TUI-WRITE-MCP-CLIENTS-CRASH).
-  // Write still doesn't produce the file because guardian arbiter
-  // approvalPolicy='untrusted' blocks the tool invocation before it
-  // reaches the disk. Same root as GAP-PE-GUARDIAN-YOLO-LEAK.
-  skip: "blocked on guardian arbiter overlay; see GAP-PE-GUARDIAN-YOLO-LEAK",
 };
 
 export default async function (session) {
