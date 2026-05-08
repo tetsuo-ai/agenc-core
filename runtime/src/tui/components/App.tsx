@@ -1339,6 +1339,32 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           ]);
           const parsed = parseSlashCommand(text);
           if (parsed) {
+            // Echo the slash-command input to the transcript so the user
+            // sees what they typed. Without this the dispatcher
+            // intercepts `/foo` silently and only the result overlay
+            // appears, leaving no audit trail of what the user invoked.
+            // We emit a user_message event directly (instead of routing
+            // through props.session.submit) because submit forwards to
+            // the model — which we explicitly do not want for a slash
+            // command.
+            try {
+              const internalId =
+                typeof props.session.nextInternalSubId === "function"
+                  ? props.session.nextInternalSubId()
+                  : `slash-echo-${Date.now()}`;
+              props.session.emit?.({
+                id: internalId,
+                msg: {
+                  type: "user_message",
+                  payload: {
+                    displayText: text,
+                    message: text,
+                  },
+                },
+              });
+            } catch {
+              // best-effort echo; don't block dispatch on telemetry
+            }
             const registry = buildDefaultRegistry();
             // Build a renderResult helper used by both legacy and
             // built-in dispatch paths.
