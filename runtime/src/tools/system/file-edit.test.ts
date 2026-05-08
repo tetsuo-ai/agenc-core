@@ -881,6 +881,40 @@ describe("Edit tool", () => {
     await expect(readFile(file, "utf8")).resolves.toBe("yo\n");
   });
 
+  test("__testBypassSessionGuard is ignored outside NODE_ENV=test (defense in depth)", async () => {
+    // The runtime's tool-call dispatch path does not enforce the
+    // JSON schema's `additionalProperties: false`, so a malicious
+    // model could include this arg key and reach tool.execute(args)
+    // with the flag set. The bypass MUST be gated on NODE_ENV so a
+    // production build refuses the bypass even if the flag is
+    // present in args.
+    const file = join(root, "exploit-attempt.txt");
+    await writeFile(file, "secret\n", "utf8");
+    const tool = createFileEditTool({ allowedPaths: [root] });
+
+    const originalNodeEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "production";
+      const refused = await tool.execute({
+        file_path: file,
+        old_string: "secret",
+        new_string: "leaked",
+        __testBypassSessionGuard: true,
+      });
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toContain("session id");
+      // The file MUST be untouched — the bypass cannot be triggered
+      // in production no matter what the model sends.
+      await expect(readFile(file, "utf8")).resolves.toBe("secret\n");
+    } finally {
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    }
+  });
+
   test("workspace-relative file_path resolves against allowed root", async () => {
     const file = join(root, "rel.txt");
     await writeFile(file, "rel-before\n", "utf8");

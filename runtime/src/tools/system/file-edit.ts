@@ -77,6 +77,14 @@ const SESSION_ID_MISSING_ERROR =
  * without spinning up a full session lifecycle can pass
  * `__testBypassSessionGuard:true`.
  *
+ * Defense in depth: the flag is ONLY honored when NODE_ENV === "test".
+ * The runtime's tool-call dispatch path does not enforce the JSON
+ * schema's `additionalProperties: false`, so a malicious model could
+ * include this arg key and reach `tool.execute(args)` with the flag
+ * set. Gating on NODE_ENV closes that vector — in production builds
+ * the flag is always treated as absent regardless of what the model
+ * sends.
+ *
  * The previous behavior silently skipped the read-before-write check
  * whenever sessionId was undefined, which masked any production code
  * path that lost the session id (e.g., a future SDK consumer that
@@ -85,6 +93,7 @@ const SESSION_ID_MISSING_ERROR =
 const TEST_BYPASS_SESSION_GUARD_ARG = "__testBypassSessionGuard";
 
 function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
+  if (process.env.NODE_ENV !== "test") return false;
   return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
 }
 

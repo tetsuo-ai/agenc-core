@@ -325,31 +325,64 @@ function applyBuiltinVisibility(
   return withMetadata(tool, { deferred: true });
 }
 
+type ToolCallArgumentsParse =
+  | { readonly ok: true; readonly args: Record<string, unknown> }
+  | { readonly ok: false; readonly error: string; readonly raw: string };
+
+/**
+ * Parse a tool_call's `arguments` JSON string into a plain object.
+ *
+ * Accepts the existing string-field fallback (when a tool registers
+ * itself in `stringArgumentFields`, a model that emits a bare string
+ * gets that string mapped onto the configured field — e.g. Bash with
+ * `command`). For tools WITHOUT a string-field fallback, JSON parse
+ * failures and non-object roots now surface as a clean error instead
+ * of being silently coerced to `{}`. Previously the silent coercion
+ * let weak local models loop on broken JSON: they only saw "field X
+ * required" feedback from downstream tools and re-emitted the same
+ * malformed input. See run-agent.ts for the matching subagent path.
+ */
 function parseToolCallArguments(
   toolCall: LLMToolCall,
   stringArgumentFields: Readonly<Record<string, string>>,
-): Record<string, unknown> {
+): ToolCallArgumentsParse {
   const raw = toolCall.arguments ?? "";
   if (!raw || raw.trim().length === 0) {
-    return {};
+    return { ok: true, args: {} };
   }
+  const stringField = stringArgumentFields[toolCall.name];
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    if (stringField && raw.trim().length > 0) {
+      return { ok: true, args: { [stringField]: raw } };
     }
-    if (typeof parsed === "string") {
-      const field = stringArgumentFields[toolCall.name];
-      return field ? { [field]: parsed } : {};
-    }
-    return {};
-  } catch {
-    const field = stringArgumentFields[toolCall.name];
-    if (field && raw.trim().length > 0) {
-      return { [field]: raw };
-    }
-    return {};
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: `JSON parse failed: ${message}`,
+      raw,
+    };
   }
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    return { ok: true, args: parsed as Record<string, unknown> };
+  }
+  if (typeof parsed === "string") {
+    if (stringField) return { ok: true, args: { [stringField]: parsed } };
+    return {
+      ok: false,
+      error: "tool_call arguments must be a JSON object (got string)",
+      raw,
+    };
+  }
+  const kind =
+    parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed;
+  return {
+    ok: false,
+    error: `tool_call arguments must be a JSON object (got ${kind})`,
+    raw,
+  };
 }
 
 function parseCodeModeNestedToolArguments(
@@ -862,11 +895,25 @@ export function buildToolRegistry(
         };
       }
       try {
-        const args = parseToolCallArguments(
+        const parseResult = parseToolCallArguments(
           toolCall,
           builtinSurface.stringArgumentFields,
         );
-        return await executeConfiguredTool(spec, toolCall.id, args);
+        if (!parseResult.ok) {
+          const truncated =
+            parseResult.raw.length > 200
+              ? `${parseResult.raw.slice(0, 200)}…`
+              : parseResult.raw;
+          return {
+            content: [
+              `tool_call arguments for ${toolCall.name} could not be parsed: ${parseResult.error}.`,
+              `Received raw arguments: ${truncated}`,
+              "Please re-emit the tool_call with valid JSON object arguments.",
+            ].join("\n"),
+            isError: true,
+          };
+        }
+        return await executeConfiguredTool(spec, toolCall.id, parseResult.args);
       } catch (error) {
         return {
           content: safeStringify({

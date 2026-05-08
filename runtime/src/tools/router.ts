@@ -672,7 +672,24 @@ export class ToolRouter {
       source: opts.source ?? "direct",
     };
     const rawArgs = rawPayloadArguments(routed.payload);
-    const parsedArgs = parseToolArgsWithBigInt(rawArgs) ?? {};
+    const parsedArgs = parseToolArgsWithBigInt(rawArgs);
+    if (parsedArgs === null) {
+      // Surface the parse failure explicitly so weak local models
+      // recover instead of looping on "field X required" feedback
+      // from downstream tools. The previous silent-coerce to {}
+      // hid the parse error and let qwen/llama re-emit the same
+      // broken JSON. See run-agent.ts:formatToolArgumentsParseError
+      // for the matching subagent-dispatch helper.
+      const truncated = rawArgs.length > 200 ? `${rawArgs.slice(0, 200)}…` : rawArgs;
+      return {
+        content: [
+          `tool_call arguments for ${toolCall.name} could not be parsed as a JSON object.`,
+          `Received raw arguments: ${truncated}`,
+          "Please re-emit the tool_call with valid JSON object arguments.",
+        ].join("\n"),
+        isError: true,
+      };
+    }
     let executionArgs = parsedArgs;
     let forcedApprovalReason: string | undefined;
     let preHookPermissionDecision: MergedHookPermissionDecision | undefined;

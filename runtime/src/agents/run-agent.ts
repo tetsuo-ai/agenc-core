@@ -1269,12 +1269,15 @@ function parseToolCallArguments(raw: string | undefined): ParsedToolCallArgument
     return { ok: false, error: `JSON parse failed: ${message}`, raw: text };
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const kind =
+      parsed === null
+        ? "null"
+        : Array.isArray(parsed)
+          ? "array"
+          : typeof parsed;
     return {
       ok: false,
-      error:
-        "tool_call arguments must be a JSON object (got " +
-        (Array.isArray(parsed) ? "array" : typeof parsed) +
-        ")",
+      error: `tool_call arguments must be a JSON object (got ${kind})`,
       raw: text,
     };
   }
