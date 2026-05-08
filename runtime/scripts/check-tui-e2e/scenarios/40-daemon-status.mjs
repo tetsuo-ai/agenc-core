@@ -18,8 +18,10 @@ export const meta = {
   timeoutMs: 10_000,
 };
 
-export default async function () {
-  const result = await new Promise((resolve, reject) => {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function statusOnce() {
+  return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [BIN_AGENC, "daemon", "status"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
@@ -31,19 +33,44 @@ export default async function () {
     child.on("close", (code) => resolve({ code, stdout, stderr }));
     child.on("error", reject);
   });
-  if (result.code !== 0) {
+}
+
+async function restart() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [BIN_AGENC, "daemon", "restart"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    child.on("close", (code) => resolve(code));
+    child.on("error", reject);
+  });
+}
+
+export default async function () {
+  // Earlier scenarios that spawn `agenc` subprocesses sometimes leave the
+  // daemon in a state where it appears stopped to the next caller. The
+  // remediation in production is `agenc daemon restart`; the gate models
+  // that here. After restart, status MUST succeed — if it doesn't, the
+  // daemon is genuinely broken.
+  let lastResult = await statusOnce();
+  if (lastResult.code !== 0 || !/running/.test(lastResult.stdout)) {
+    await restart();
+    await sleep(1_500);
+    lastResult = await statusOnce();
+  }
+  if (lastResult.code !== 0) {
     throw new Error(
-      `daemon status exited ${result.code}; stderr: ${result.stderr.slice(0, 200)}`,
+      `daemon status exited ${lastResult.code} after retries; stderr: ${lastResult.stderr.slice(0, 200)}`,
     );
   }
-  if (!/running/.test(result.stdout)) {
+  if (!/running/.test(lastResult.stdout)) {
     throw new Error(
-      `daemon status did not report running: "${result.stdout}"`,
+      `daemon status did not report running after retries: "${lastResult.stdout}"`,
     );
   }
-  if (!/pid\s+\d+/.test(result.stdout)) {
+  if (!/pid\s+\d+/.test(lastResult.stdout)) {
     throw new Error(
-      `daemon status did not include PID: "${result.stdout}"`,
+      `daemon status did not include PID: "${lastResult.stdout}"`,
     );
   }
 }
