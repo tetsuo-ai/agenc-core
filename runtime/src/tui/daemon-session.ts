@@ -469,7 +469,7 @@ async function maybeBridgeDaemonElicitation(
           : payload.callId,
         callId: payload.callId,
         turnId: payload.turnId,
-        questions: jsonObjectArray(payload.questions) as RequestUserInputEvent["questions"],
+        questions: jsonObjectArray(payload.questions) as unknown as RequestUserInputEvent["questions"],
       });
     } catch {
       response = null;
@@ -499,7 +499,7 @@ async function maybeBridgeDaemonElicitation(
         serverName: payload.serverName,
         requestId: payload.requestId,
         turnId: payload.turnId,
-        request: payload.request as McpElicitationRequestEvent["request"],
+        request: payload.request as unknown as McpElicitationRequestEvent["request"],
       })
       .catch((): McpElicitationResponse => ({ action: "cancel" }));
     if (isMcpUrlCompletionResponse(response)) return;
@@ -536,7 +536,7 @@ function buildDaemonApprovalCtx(
         arguments: JSON.stringify(input),
       },
       source: "direct",
-    } as ApprovalCtx["invocation"],
+    } as unknown as ApprovalCtx["invocation"],
     callId,
     toolName,
     turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
