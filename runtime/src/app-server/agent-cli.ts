@@ -127,7 +127,16 @@ export interface AgenCJsonLineDaemonClientOptions {
   readonly userHome?: string;
 }
 
-const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
+// 30s default: most RPCs return in milliseconds, but agent.create blocks on
+// the runtime bootstrap (provider init, MCP startup, sandbox/permission registry,
+// rollout file open, child-process spawn). On a cold daemon under realistic load
+// the bootstrap takes 5-15s. The previous 2s default silently failed cold-path
+// agent.create with "Timed out waiting for daemon response" while the daemon
+// was still finishing the spawn; the client error then left a stale
+// threads.json.lock dir behind that wedged subsequent runs. Override per
+// invocation with AGENC_DAEMON_REQUEST_TIMEOUT_MS for read-only smoke checks
+// where a faster failure is preferable.
+const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
 const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
