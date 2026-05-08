@@ -436,6 +436,16 @@ class AuthVendedProvider implements LLMProvider {
       this.#provider,
       this.#sessionId,
     );
+    if (vended.provider !== this.#provider) {
+      throw new Error(
+        `${this.#provider} provider AuthBackend.vendKey() returned provider "${vended.provider}"`,
+      );
+    }
+    if (vended.sessionId !== this.#sessionId) {
+      throw new Error(
+        `${this.#provider} provider AuthBackend.vendKey() returned session "${vended.sessionId}"`,
+      );
+    }
     const apiKey = firstNonEmpty(vended.apiKey);
     if (apiKey === undefined) {
       throw new Error(
@@ -632,21 +642,22 @@ function createAuthVendedProviderIfNeeded(
       `${provider} provider requires sessionId in factory options extra to vend a provider key`,
     );
   }
+  const factoryOptions = authVendedProviderFactoryOptions({
+    provider,
+    opts,
+    authBackend,
+    sessionId,
+  });
   return markFactoryProvider(
     new AuthVendedProvider({
       provider,
-      opts,
+      opts: factoryOptions,
       authBackend,
       sessionId,
     }),
     {
       provider,
-      options: authVendedProviderFactoryOptions({
-        provider,
-        opts,
-        authBackend,
-        sessionId,
-      }),
+      options: factoryOptions,
     },
   );
 }

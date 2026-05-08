@@ -292,6 +292,43 @@ describe("createProvider", () => {
     expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
   });
 
+  test("keeps env model metadata on AuthBackend-vended providers without explicit model", async () => {
+    const provider = withEnv(
+      {
+        OPENAI_MODEL: "gpt-5.4",
+      },
+      () =>
+        createProvider("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-env-model",
+          },
+        }),
+    );
+    const prepared = withEnv(
+      {
+        OPENAI_MODEL: "gpt-5.4",
+      },
+      () =>
+        prepareProviderSwitch("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-env-model-switch",
+          },
+        }),
+    );
+
+    expect((provider as unknown as { config: { model: string } }).config.model)
+      .toBe("gpt-5.4");
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5.4");
+    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+    });
+    expect(prepared.model).toBe("gpt-5.4");
+    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5.4");
+  });
+
   test("uses AuthBackend-vended keys on delegated compatible requests", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
@@ -459,6 +496,44 @@ describe("createProvider", () => {
       "Credential=vended-aws-access/",
     );
   });
+
+  test.each([
+    {
+      label: "provider",
+      vended: {
+        provider: "anthropic",
+        sessionId: "session-mismatch",
+        apiKey: "vended-openai-key",
+      },
+      expected: /returned provider "anthropic"/,
+    },
+    {
+      label: "sessionId",
+      vended: {
+        provider: "openai",
+        sessionId: "other-session",
+        apiKey: "vended-openai-key",
+      },
+      expected: /returned session "other-session"/,
+    },
+  ])(
+    "rejects AuthBackend-vended provider keys with mismatched $label",
+    async ({ vended, expected }) => {
+      const vendingAuthBackend: AuthBackend = {
+        ...authBackend,
+        vendKey: vi.fn(async () => vended),
+      };
+      const provider = createProvider("openai", {
+        model: "gpt-5.4",
+        extra: {
+          authBackend: vendingAuthBackend,
+          sessionId: "session-mismatch",
+        },
+      });
+
+      await expect(provider.getExecutionProfile?.()).rejects.toThrow(expected);
+    },
+  );
 
   test("rejects empty AuthBackend-vended provider keys", async () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
