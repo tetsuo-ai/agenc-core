@@ -73,6 +73,10 @@ import { getTotalCost } from "../../cost/tracker.js";
 import { logEvent } from "../../services/analytics/index.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
 import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
+import {
+  createFileStateCacheWithSizeLimit,
+  READ_FILE_STATE_CACHE_SIZE,
+} from "../../utils/fileStateCache.js";
 import { fileHistoryRewind } from "../../utils/fileHistory.js";
 import { getCurrentWorktreeSession } from "../../utils/worktree.js";
 import {
@@ -1221,7 +1225,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         getAppState: () => appStateStore.getState(),
         getToolPermissionContext: async () => toolPermissionContext,
         messages,
-        readFileState: new Map<string, unknown>(),
+        readFileState: createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE),
         options: {
           commands,
           tools: availableTools,

@@ -28,6 +28,7 @@ import type {
   SlashCommand,
 } from "./types.js";
 import type { Command, LocalCommandResult } from "../commands.js";
+import { buildLegacyOnDone } from "./legacy-on-done.js";
 import helpCommand from "./help.js";
 import statusCommand from "./status.js";
 import initCommand from "./init.js";
@@ -794,37 +795,10 @@ async function executeLegacyCommandSurface(
     };
     // The onDone callback dismisses the JSX overlay. Some commands fire
     // it eagerly with a status string (e.g. "Cannot rename: ..."); others
-    // hand off to a long-lived dialog and never call onDone. In both
-    // cases we want to dismiss when the dialog signals completion. When
-    // a result string is passed, surface it to the TUI before unmounting
-    // so the user actually sees the success/error confirmation.
-    const onDone = (result?: string, opts?: unknown) => {
-      try {
-        if (
-          typeof result === "string" &&
-          result.length > 0 &&
-          typeof tuiHandlers.notifyResult === "function"
-        ) {
-          const display =
-            opts !== null &&
-            typeof opts === "object" &&
-            typeof (opts as { display?: unknown }).display === "string"
-              ? ((opts as { display: string }).display)
-              : undefined;
-          tuiHandlers.notifyResult(
-            result,
-            display !== undefined ? { display } : undefined,
-          );
-        }
-      } catch {
-        // best-effort
-      }
-      try {
-        tuiHandlers.unmountJsx();
-      } catch {
-        // best-effort cleanup
-      }
-    };
+    // hand off to a long-lived dialog and never call onDone.
+    // buildLegacyOnDone encapsulates the notifyResult-vs-unmount routing —
+    // see its docstring for the React-batching reasoning.
+    const onDone = buildLegacyOnDone(tuiHandlers);
     const jsx = await loaded.call(onDone, tuiHandlers.toolUseContext, argsRaw);
     if (jsx !== null && jsx !== undefined) {
       tuiHandlers.mountJsx(jsx, { shouldHidePromptInput: true });
