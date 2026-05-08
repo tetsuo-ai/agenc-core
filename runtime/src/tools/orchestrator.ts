@@ -629,9 +629,22 @@ export async function orchestrateToolCall<T>(
       : { kind: "default" as const });
   const normalizedSandboxPermissions =
     normalizeSandboxPermissionsRequest(resolvedSandboxPermissions);
+  // Extract the session-wide permission mode so the arbiter can short-
+  // circuit under --yolo (mode === bypassPermissions). Without this the
+  // arbiter ran a separate approvalPolicy gate that ignored mode and
+  // surfaced "approve every call" overlays even after the user opted
+  // out at the mode level. See GAP-PE-GUARDIAN-YOLO-LEAK.
+  const sessionMode = (opts.approvalCtx.invocation as {
+    session?: { permissionModeRegistry?: { current?: () => unknown } };
+  }).session?.permissionModeRegistry?.current?.();
+  const isBypassPermissionsMode =
+    typeof sessionMode === "object" &&
+    sessionMode !== null &&
+    (sessionMode as { mode?: string }).mode === "bypassPermissions";
   const toolRequirement = classifyToolApproval(opts.tool, {
     approvalPolicy: effectiveApprovalPolicy,
     sandboxMode: opts.sandboxMode,
+    ...(isBypassPermissionsMode ? { bypassPermissions: true } : {}),
     ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
     ...(opts.mcpServerTrusted !== undefined
       ? { mcpServerTrusted: opts.mcpServerTrusted }
