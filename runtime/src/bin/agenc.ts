@@ -2101,8 +2101,9 @@ type EarlyInputCapture = {
 
 async function startTuiEarlyInputCapture(): Promise<() => string> {
   try {
-    const specifier = "../tui/ink/vendored/earlyInput.js";
-    const mod = (await import(specifier)) as EarlyInputCapture;
+    const mod = (await import(
+      "../utils/earlyInput.js"
+    )) as EarlyInputCapture;
     mod.startCapturingEarlyInput?.();
     return () => mod.consumeEarlyInput?.({ restoreRawMode: true }) ?? "";
   } catch {
