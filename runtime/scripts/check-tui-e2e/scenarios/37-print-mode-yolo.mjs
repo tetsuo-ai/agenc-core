@@ -35,14 +35,20 @@ export default async function () {
       reject(new Error("yolo print mode exceeded timeout"));
     }, 80_000).unref();
   });
+  // Strip the noisy config-migration banner so the assertion error
+  // surfaces the actual cause.
+  const cleanStderr = result.stderr
+    .split("\n")
+    .filter((line) => !line.includes("[agenc:config-migration]"))
+    .join("\n");
   if (result.code !== 0) {
     throw new Error(
-      `yolo print mode exited code=${result.code}; stderr: ${result.stderr.slice(0, 400)}`,
+      `yolo print mode exited code=${result.code}; stderr: ${cleanStderr.slice(0, 600)}`,
     );
   }
   if (result.stdout.trim().length === 0) {
     throw new Error(
-      `yolo print mode produced no stdout; stderr: ${result.stderr.slice(0, 400)}`,
+      `yolo print mode produced no stdout; stderr: ${cleanStderr.slice(0, 600)}`,
     );
   }
 }

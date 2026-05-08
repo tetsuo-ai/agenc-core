@@ -187,7 +187,24 @@ async function dumpFailureLog(scenario, result) {
 }
 
 async function main() {
-  const names = await discoverScenarios();
+  let names = await discoverScenarios();
+  // Optional filter: --filter <substr>  or  --range <lo>-<hi>
+  const argv = process.argv.slice(2);
+  const filterIndex = argv.findIndex((a) => a === "--filter");
+  if (filterIndex >= 0 && argv[filterIndex + 1] !== undefined) {
+    const needle = argv[filterIndex + 1];
+    names = names.filter((n) => n.includes(needle));
+  }
+  const rangeIndex = argv.findIndex((a) => a === "--range");
+  if (rangeIndex >= 0 && argv[rangeIndex + 1] !== undefined) {
+    const [lo, hi] = argv[rangeIndex + 1].split("-").map((s) => Number.parseInt(s, 10));
+    names = names.filter((n) => {
+      const m = /^(\d+)-/.exec(n);
+      if (!m) return false;
+      const num = Number.parseInt(m[1], 10);
+      return num >= lo && num <= hi;
+    });
+  }
   if (names.length === 0) {
     console.log(color("yellow", "no scenarios found under scenarios/"));
     return 0;
