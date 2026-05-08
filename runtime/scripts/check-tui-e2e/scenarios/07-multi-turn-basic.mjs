@@ -12,10 +12,6 @@
 export const meta = {
   description: "Two messages in one session, both reach idle, no crash.",
   timeoutMs: 180_000,
-  // getAgentSnapshot fix covers the common race; multi-turn now passes
-  // most of the time but still flakes through a secondary eviction
-  // path. See GAP-DMN-AGENT-LIFECYCLE-EVICT.
-  skip: "secondary eviction path; flaky after getAgentSnapshot fix; see GAP-DMN-AGENT-LIFECYCLE-EVICT",
 };
 
 export default async function (session) {

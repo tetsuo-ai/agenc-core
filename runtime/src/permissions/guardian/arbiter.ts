@@ -93,6 +93,14 @@ export interface GuardianClassifyToolOptions {
   readonly payload?: ToolPayload;
   readonly mcpServerTrusted?: (server: string) => boolean;
   readonly granular?: GranularApprovalConfig;
+  /**
+   * Set when the session-wide permission mode is `bypassPermissions`
+   * (the `--yolo` flag). Short-circuits the arbiter to `skip` for every
+   * tool — the user opted out of approval gating and approvalPolicy
+   * being `untrusted` shouldn't override that. Mirrors the bypass
+   * short-circuits in permissions/bash.ts and the filesystem helpers.
+   */
+  readonly bypassPermissions?: boolean;
 }
 
 export interface ApprovalDecision {
@@ -110,6 +118,14 @@ export function classifyToolApproval(
     return { kind: "forbidden", reason: "tool denylisted for this session" };
   }
   if (opts.toolAllowlist?.has(name)) {
+    return { kind: "skip", bypassSandbox: false };
+  }
+  // Permission-mode bypass: under `--yolo` (mode === bypassPermissions)
+  // every approval gate should skip, regardless of approvalPolicy.
+  // Without this, approvalPolicy="untrusted" surfaces a "approve every
+  // call" overlay even though the user opted out at the mode level.
+  // See GAP-PE-GUARDIAN-YOLO-LEAK.
+  if (opts.bypassPermissions === true) {
     return { kind: "skip", bypassSandbox: false };
   }
 

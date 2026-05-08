@@ -18,9 +18,6 @@ export const meta = {
   description: "--yolo: model uses Edit, file content updated on disk.",
   args: ["--yolo"],
   timeoutMs: 90_000,
-  // Model uses FileRead before Edit; FileRead hits guardian arbiter
-  // residual overlay (same root as GAP-PE-GUARDIAN-YOLO-LEAK).
-  skip: "blocked on FileRead guardian arbiter overlay; see GAP-PE-GUARDIAN-YOLO-LEAK",
 };
 
 export default async function (session) {
