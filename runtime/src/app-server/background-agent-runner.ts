@@ -64,7 +64,6 @@ import {
   DENIED,
   type ReviewDecision,
 } from "../permissions/review-decision.js";
-import { isFinal } from "../agents/status.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -511,12 +510,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   ): Promise<AgenCBackgroundAgentSnapshot | null> {
     const active = this.#active.get(agentId);
     if (active === undefined) return null;
-    if (
-      hasCurrentStatus(active.thread) &&
-      isFinal(active.thread.currentStatus)
-    ) {
-      return null;
-    }
+    // The active map is the source of truth for "agent exists." A turn
+    // reaching a `final` thread status (completed / cancelled / failed
+    // mid-turn) does NOT mean the agent has been stopped — only
+    // `stopAgent` removes from `#active`. Returning null here used to
+    // mislead AgentLifecycle.#refreshAgentFromRunner into evicting the
+    // agent from `state.agents`, so the next user turn's `message.stream`
+    // resolved to AGENT_NOT_FOUND and crashed the TUI client. Snapshot
+    // the real status; let the caller decide whether to re-engage.
     return {
       status: active.status,
       lastActiveAt: active.lastActiveAt,
