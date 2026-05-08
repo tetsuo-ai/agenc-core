@@ -123,6 +123,7 @@ async function runScenario(scenario) {
   const session = new TuiSession({
     args: scenario.meta.args ?? [],
     useTempHome: scenario.meta.useTempHome === true,
+    ...(scenario.meta.env ? { env: scenario.meta.env } : {}),
     ...(scenario.meta.cwd
       ? { cwd: scenario.meta.cwd }
       : slimCwd
