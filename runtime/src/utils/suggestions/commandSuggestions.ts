@@ -9,6 +9,7 @@ import {
 } from '../../commands.js'
 import type { SuggestionItem } from '../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import { getSkillUsageScore } from './skillUsageTracking.js'
+import { compareSuggestionsByPriority } from './sortBySearchPriority.js'
 
 // Treat these characters as word separators for command search
 const SEPARATORS = /[:_-]/g
@@ -442,56 +443,13 @@ export function generateCommandSuggestions(
     return { r, name, aliases, usage }
   })
 
-  const sortedResults = withMeta.sort((a, b) => {
-    const aName = a.name
-    const bName = b.name
-    const aAliases = a.aliases
-    const bAliases = b.aliases
-
-    // Check for exact name match (highest priority)
-    const aExactName = aName === query
-    const bExactName = bName === query
-    if (aExactName && !bExactName) return -1
-    if (bExactName && !aExactName) return 1
-
-    // Check for exact alias match
-    const aExactAlias = aAliases.some(alias => alias === query)
-    const bExactAlias = bAliases.some(alias => alias === query)
-    if (aExactAlias && !bExactAlias) return -1
-    if (bExactAlias && !aExactAlias) return 1
-
-    // Check for prefix name match
-    const aPrefixName = aName.startsWith(query)
-    const bPrefixName = bName.startsWith(query)
-    if (aPrefixName && !bPrefixName) return -1
-    if (bPrefixName && !aPrefixName) return 1
-    // Among prefix name matches, prefer the shorter name (closer to exact)
-    if (aPrefixName && bPrefixName && aName.length !== bName.length) {
-      return aName.length - bName.length
-    }
-
-    // Check for prefix alias match
-    const aPrefixAlias = aAliases.find(alias => alias.startsWith(query))
-    const bPrefixAlias = bAliases.find(alias => alias.startsWith(query))
-    if (aPrefixAlias && !bPrefixAlias) return -1
-    if (bPrefixAlias && !aPrefixAlias) return 1
-    // Among prefix alias matches, prefer the shorter alias
-    if (
-      aPrefixAlias &&
-      bPrefixAlias &&
-      aPrefixAlias.length !== bPrefixAlias.length
-    ) {
-      return aPrefixAlias.length - bPrefixAlias.length
-    }
-
-    // For similar match types, use Fuse score with usage as tiebreaker
-    const scoreDiff = (a.r.score ?? 0) - (b.r.score ?? 0)
-    if (Math.abs(scoreDiff) > 0.1) {
-      return scoreDiff
-    }
-    // For similar Fuse scores, prefer more frequently used skills
-    return b.usage - a.usage
-  })
+  const sortedResults = withMeta.sort((a, b) =>
+    compareSuggestionsByPriority(
+      { name: a.name, aliases: a.aliases, usage: a.usage, score: a.r.score },
+      { name: b.name, aliases: b.aliases, usage: b.usage, score: b.r.score },
+      query,
+    ),
+  )
 
   // Map search results to suggestion items
   // Note: We intentionally don't deduplicate here because commands with the same name
