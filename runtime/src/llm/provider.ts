@@ -14,10 +14,6 @@ import type {
   LLMProvider,
   LLMProviderConfig,
   LLMProviderExecutionProfile,
-  LLMProviderStartupPrewarmHandle,
-  LLMProviderStartupPrewarmParams,
-  LLMStoredResponse,
-  LLMStoredResponseDeleteResult,
   LLMTool,
 } from "./types.js";
 import { OpenAIProvider } from "./providers/openai/adapter.js";
@@ -326,8 +322,16 @@ interface AuthVendedDelegate {
   readonly expiresAtMs: number;
 }
 
+interface AuthVendedProviderCapabilities {
+  readonly prewarmStartup?: true;
+  readonly storedResponses?: true;
+}
+
 class AuthVendedProvider implements LLMProvider {
   readonly name: string;
+  readonly prewarmStartup?: LLMProvider["prewarmStartup"];
+  readonly retrieveStoredResponse?: LLMProvider["retrieveStoredResponse"];
+  readonly deleteStoredResponse?: LLMProvider["deleteStoredResponse"];
   readonly #provider: ProviderName;
   readonly #opts: ProviderFactoryOptions;
   readonly #authBackend: AuthBackend;
@@ -346,6 +350,27 @@ class AuthVendedProvider implements LLMProvider {
     this.#opts = stripConcreteProviderAuthOptions(params.opts);
     this.#authBackend = params.authBackend;
     this.#sessionId = params.sessionId;
+    const capabilities = authVendedProviderCapabilities(params.provider);
+    if (capabilities.prewarmStartup) {
+      this.prewarmStartup = async (startupParams) =>
+        (await this.delegate()).instance.prewarmStartup?.(startupParams);
+    }
+    if (capabilities.storedResponses) {
+      this.retrieveStoredResponse = async (responseId) => {
+        const delegate = (await this.delegate()).instance;
+        if (!delegate.retrieveStoredResponse) {
+          throw new Error(`${this.name} provider does not support stored responses`);
+        }
+        return delegate.retrieveStoredResponse(responseId);
+      };
+      this.deleteStoredResponse = async (responseId) => {
+        const delegate = (await this.delegate()).instance;
+        if (!delegate.deleteStoredResponse) {
+          throw new Error(`${this.name} provider does not support stored responses`);
+        }
+        return delegate.deleteStoredResponse(responseId);
+      };
+    }
   }
 
   async chat(
@@ -374,32 +399,6 @@ class AuthVendedProvider implements LLMProvider {
       provider: this.#provider,
       model: this.#opts.model ?? defaultModelFor(this.#provider),
     };
-  }
-
-  async prewarmStartup(
-    params: LLMProviderStartupPrewarmParams,
-  ): Promise<LLMProviderStartupPrewarmHandle | void> {
-    return (await this.delegate()).instance.prewarmStartup?.(params);
-  }
-
-  async retrieveStoredResponse(
-    responseId: string,
-  ): Promise<LLMStoredResponse> {
-    const delegate = (await this.delegate()).instance;
-    if (!delegate.retrieveStoredResponse) {
-      throw new Error(`${this.name} provider does not support stored responses`);
-    }
-    return delegate.retrieveStoredResponse(responseId);
-  }
-
-  async deleteStoredResponse(
-    responseId: string,
-  ): Promise<LLMStoredResponseDeleteResult> {
-    const delegate = (await this.delegate()).instance;
-    if (!delegate.deleteStoredResponse) {
-      throw new Error(`${this.name} provider does not support stored responses`);
-    }
-    return delegate.deleteStoredResponse(responseId);
   }
 
   private async delegate(): Promise<AuthVendedDelegate> {
@@ -454,6 +453,25 @@ class AuthVendedProvider implements LLMProvider {
   }
 }
 
+function authVendedProviderCapabilities(
+  provider: ProviderName,
+): AuthVendedProviderCapabilities {
+  switch (provider) {
+    case "grok":
+      return { prewarmStartup: true, storedResponses: true };
+    case "openai":
+    case "lmstudio":
+    case "openai-compatible":
+    case "openrouter":
+    case "groq":
+    case "deepseek":
+    case "gemini":
+      return { storedResponses: true };
+    default:
+      return {};
+  }
+}
+
 function parseAuthVendedExpiresAtMs(expiresAt: string | undefined): number | undefined {
   if (expiresAt === undefined) return undefined;
   const parsed = Date.parse(expiresAt);
@@ -497,6 +515,22 @@ function stripConcreteProviderAuthOptions(
     ...(opts.tools ? { tools: [...opts.tools] } : {}),
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(extra !== undefined ? { extra } : {}),
+  };
+}
+
+function authVendedProviderFactoryOptions(params: {
+  readonly opts: ProviderFactoryOptions;
+  readonly authBackend: AuthBackend;
+  readonly sessionId: string;
+}): ProviderFactoryOptions {
+  const stripped = stripConcreteProviderAuthOptions(params.opts);
+  return {
+    ...stripped,
+    extra: {
+      ...(stripped.extra ?? {}),
+      authBackend: params.authBackend,
+      sessionId: params.sessionId,
+    },
   };
 }
 
@@ -560,7 +594,11 @@ function createAuthVendedProviderIfNeeded(
     }),
     {
       provider,
-      options: stripConcreteProviderAuthOptions(opts),
+      options: authVendedProviderFactoryOptions({
+        opts,
+        authBackend,
+        sessionId,
+      }),
     },
   );
 }
@@ -601,7 +639,7 @@ function cloneProviderFactoryOptions(
         extra: Object.fromEntries(
           Object.entries(options.extra).map(([key, value]) => [
             key,
-            cloneExtraValue(value),
+            key === "authBackend" ? value : cloneExtraValue(value),
           ]),
         ),
       }

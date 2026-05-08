@@ -176,6 +176,10 @@ const ITEM_EVIDENCE = {
       { pattern: "uses AuthBackend-vended Bedrock credentials on delegated requests", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "re-vends AuthBackend keys after vended expiry", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "preserves optional provider hooks on AuthBackend-vended providers", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "does not expose unsupported optional provider hooks", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "recreates AuthBackend-vended providers from readProviderFactoryOptions", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "coalesces concurrent AuthBackend vending", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "authBackend without sessionId", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "retries AuthBackend vending after transient delegate failures", scope: "runtime/src/llm/provider.test.ts" },
     ],
     grepNotPresent: [
@@ -7066,6 +7070,10 @@ function assertGapProvProviderKeysThroughAuthBackend() {
     "does not vend AuthBackend keys for OAuth config",
     "re-vends AuthBackend keys after vended expiry",
     "preserves optional provider hooks on AuthBackend-vended providers",
+    "does not expose unsupported optional provider hooks",
+    "recreates AuthBackend-vended providers from readProviderFactoryOptions",
+    "coalesces concurrent AuthBackend vending",
+    "authBackend without sessionId",
   ]) {
     if (!providerTestSource.includes(needle)) {
       failGate(`GAP-PROV-03: ${providerTestRel} missing regression evidence: ${needle}`);
