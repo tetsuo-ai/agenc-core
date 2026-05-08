@@ -611,11 +611,61 @@ type LegacyCommandModule = {
   readonly [key: string]: unknown;
 };
 
+/**
+ * Literal-specifier import map for legacy command surfaces. tsup's static
+ * analyzer can ONLY discover `import("./literal/path.js")` calls — a
+ * dynamic `import(params.modulePath)` (which is what this code USED to
+ * do) silently drops every dependent module from the bundle, leading to
+ * runtime "Cannot find module" failures the moment the user dispatches
+ * any of these legacy slash commands.
+ *
+ * Adding a new legacy command requires adding it to BOTH:
+ *   1. registeredLegacyCommandSurfaceSpecs (presentation metadata)
+ *   2. this map (the actual import that the bundler discovers)
+ *
+ * Removing a command requires removing both halves; gate 3.6
+ * (scanner-evasion + dynamic-upstream-import guard) catches any
+ * regression that re-introduces `import(<variable>)` here.
+ */
+const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>> = {
+  "./agents/index.js": () => import("./agents/index.js"),
+  "./branch/index.js": () => import("./branch/index.js"),
+  "./bridge/index.js": () => import("./bridge/index.js"),
+  "./btw/index.js": () => import("./btw/index.js"),
+  "./buddy/index.js": () => import("./buddy/index.js"),
+  "./color/index.js": () => import("./color/index.js"),
+  "./export/index.js": () => import("./export/index.js"),
+  "./extra-usage/index.js": () => import("./extra-usage/index.js"),
+  "./heapdump/index.js": () => import("./heapdump/index.js"),
+  "./ide/index.js": () => import("./ide/index.js"),
+  "./knowledge/index.js": () => import("./knowledge/index.js"),
+  "./login/index.js": () => import("./login/index.js"),
+  "./logout/index.js": () => import("./logout/index.js"),
+  "./memory/index.js": () => import("./memory/index.js"),
+  "./pr_comments/index.js": () => import("./pr_comments/index.js"),
+  "./rename/index.js": () => import("./rename/index.js"),
+  "./rewind/index.js": () => import("./rewind/index.js"),
+  "./sandbox-toggle/index.js": () => import("./sandbox-toggle/index.js"),
+  "./tasks/index.js": () => import("./tasks/index.js"),
+  "./terminalSetup/index.js": () => import("./terminalSetup/index.js"),
+  "./theme/index.js": () => import("./theme/index.js"),
+  "./vim/index.js": () => import("./vim/index.js"),
+  "./install.js": () => import("./install.js"),
+  "./commit.js": () => import("./commit.js"),
+  "./review.js": () => import("./review.js"),
+};
+
 async function loadLegacyCommandSurface(
   params: LegacyCommandSurfaceSpec,
   exportName: string | undefined = params.exportName,
 ): Promise<Command> {
-  const loaded = await import(params.modulePath) as LegacyCommandModule;
+  const loader = LEGACY_COMMAND_LOADERS[params.modulePath];
+  if (loader === undefined) {
+    throw new Error(
+      `/${params.name} modulePath ${params.modulePath} is not registered in LEGACY_COMMAND_LOADERS — add it to the literal-import map in registry.ts`,
+    );
+  }
+  const loaded = await loader();
   const exported = exportName === undefined
     ? loaded.default
     : loaded[exportName];

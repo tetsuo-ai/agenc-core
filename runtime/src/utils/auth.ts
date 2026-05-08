@@ -2031,3 +2031,5 @@ class GcpCredentialsTimeoutError extends Error {}
 export const getproviderApiKey = getAnthropicApiKey
 export const getproviderApiKeyWithSource = getAnthropicApiKeyWithSource
 export const isproviderAuthEnabled = isAnthropicAuthEnabled
+// /login imports hasproviderApiKeyAuth — alias the underlying check.
+export const hasproviderApiKeyAuth = hasAnthropicApiKeyAuth
