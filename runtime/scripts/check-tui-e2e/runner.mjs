@@ -37,6 +37,40 @@ function restartDaemon() {
   return result.status === 0;
 }
 
+/**
+ * Probe the user's default daemon socket. Returns true if the daemon is up
+ * and responsive. Some scenarios (notably the `useTempHome` ones) tear down
+ * a temp daemon, and on rare timing the user's main daemon ends up
+ * unreachable for the next scenario; without this probe the next
+ * default-HOME scenario fails with ECONNREFUSED. Cheap (`agenc daemon
+ * status` exits in <500ms when the daemon is alive).
+ */
+function isDefaultDaemonAlive() {
+  const result = spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "status"],
+    { encoding: "utf8", timeout: 5_000 },
+  );
+  return result.status === 0;
+}
+
+function ensureDefaultDaemon() {
+  if (isDefaultDaemonAlive()) return true;
+  // Auto-respawn the default daemon — `daemon start` is idempotent if a
+  // healthy daemon is already running. Wait briefly for the socket to
+  // bind so the next scenario doesn't race the spawn.
+  spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "start"],
+    { encoding: "utf8", timeout: 15_000 },
+  );
+  for (let i = 0; i < 20; i += 1) {
+    if (isDefaultDaemonAlive()) return true;
+    spawnSync("sleep", ["0.25"]);
+  }
+  return false;
+}
+
 const COLORS = {
   reset: "\x1b[0m",
   red: "\x1b[31m",
@@ -177,6 +211,22 @@ async function main() {
         `${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`,
       );
       skipped.push({ name, reason: scenario.meta.skip });
+      continue;
+    }
+    // Scenarios that don't isolate via temp HOME share the user's default
+    // daemon. If a prior scenario killed it (autostart hiccup, lock
+    // contention, or a temp-HOME teardown that mis-targeted the default
+    // socket), respawn before continuing. useTempHome scenarios spawn
+    // their own daemon and must not be touched here.
+    if (scenario.meta.useTempHome !== true && !ensureDefaultDaemon()) {
+      console.log(
+        `${color("red", "FAIL")} ${color("dim", "(default daemon not reachable; could not respawn)")}`,
+      );
+      failed.push({
+        name,
+        error: new Error("default daemon not reachable; respawn failed"),
+        logPath: null,
+      });
       continue;
     }
     const result = await runScenario(scenario);
