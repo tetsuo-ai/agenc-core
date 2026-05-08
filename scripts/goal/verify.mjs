@@ -6953,8 +6953,10 @@ function assertGapProvUnsupportedProvidersResolved() {
   const clientSource = readFileSync(path.join(root, clientRel), "utf8");
   for (const needle of [
     "const apiProvider = getAPIProvider()",
+    "resolveShimSelectedProvider(",
     "apiProvider !== 'firstParty'",
     "createOpenAiShimClient",
+    "selectedProvider: resolveShimSelectedProvider(apiProvider)",
     "stripForwardedAuthHeaders(defaultHeaders)",
   ]) {
     if (!clientSource.includes(needle)) {
@@ -6965,7 +6967,9 @@ function assertGapProvUnsupportedProvidersResolved() {
   const shimRel = "runtime/src/services/api/openaiShim.ts";
   const shimSource = readFileSync(path.join(root, shimRel), "utf8");
   for (const needle of [
-    "resolveSelectedProviderOverride()",
+    "resolveSelectedProviderOverride(",
+    "selectedProvider?: SelectedShimProvider",
+    "options.selectedProvider",
     "requireSelectedProviderApiKey(",
     "firstProviderEnvString(process.env.MISTRAL_BASE_URL)",
     "firstProviderEnvString(process.env.MISTRAL_API_KEY)",
@@ -7093,7 +7097,7 @@ function assertGapProvUnsupportedProvidersResolved() {
     [legacyProviderTestRel, legacyProviderTestSource, ["AGENC_USE_MISTRAL", "NVIDIA_NIM", "MINIMAX_API_KEY", "takes precedence over ambient MiniMax credentials", "explicit openai flag takes precedence over stale NVIDIA_NIM", "bare provider-native model"]],
     [agentTestRel, agentTestSource, ["haiku alias inherits parent model for Mistral provider", "haiku alias inherits parent model for NVIDIA NIM provider", "haiku alias inherits parent model for MiniMax provider"]],
     [providerFlagTestRel, providerFlagTestSource, ["removed legacy providers", "foundry", "clears stale NVIDIA_NIM when switching providers", "ambient MiniMax credentials", "sets provider-specific NVIDIA defaults", "sets provider-specific MiniMax defaults", "GITHUB_MODEL", "MISTRAL_MODEL"]],
-    [clientTestRel, clientTestSource, ["routes env-only $name requests through the provider-compatible shim", "does not leak stale shared env into selected $name shim requests", "fails before fetch when selected $name shim credentials are missing", "strips first-party auth headers before hosted provider shim requests", "stale-openai-key", "stale-openai-model", "MISTRAL_API_KEY", "NVIDIA_NIM", "MINIMAX_API_KEY", "GITHUB_TOKEN", "https://api.mistral.ai/v1/chat/completions", "http://127.0.0.1:19081/v1/chat/completions", "http://127.0.0.1:19082/v1/chat/completions", "https://models.github.ai/inference/chat/completions"]],
+    [clientTestRel, clientTestSource, ["routes env-only $name requests through the provider-compatible shim", "does not leak stale shared env into selected $name shim requests", "explicit $name selection takes precedence over ambient MiniMax credentials at request routing", "fails before fetch when selected $name shim credentials are missing", "strips first-party auth headers before hosted provider shim requests", "stale-openai-key", "stale-openai-model", "MISTRAL_API_KEY", "NVIDIA_NIM", "MINIMAX_API_KEY", "GITHUB_TOKEN", "https://api.mistral.ai/v1/chat/completions", "http://127.0.0.1:19081/v1/chat/completions", "http://127.0.0.1:19082/v1/chat/completions", "https://models.github.ai/inference/chat/completions"]],
     [modelShimProviderTestRel, modelShimProviderTestSource, ["--provider $provider --model feeds model helper paths", "GITHUB_MODEL", "NVIDIA_MODEL", "MINIMAX_MODEL", "MISTRAL_MODEL", "wrong-openai-model"]],
   ]) {
     for (const needle of needles) {
@@ -7108,14 +7112,19 @@ function assertGapProvUnsupportedProvidersResolved() {
     }
   }
 
-  const inventedDomainSuffix = [".", "example"].join("");
+  const inventedDomainPatterns = [
+    /[.]example\b/i,
+    /\bexample[.](?:com|net|org|test|invalid)\b/i,
+  ];
   for (const [rel, source] of [
     [clientTestRel, clientTestSource],
     [providerTestRel, providerTestSource],
     [discoveryTestRel, discoveryTestSource],
   ]) {
-    if (source.includes(inventedDomainSuffix)) {
-      failGate(`GAP-PROV-02: ${rel} contains invented example-domain suffix; use loopback/private or real provider domains`);
+    for (const pattern of inventedDomainPatterns) {
+      if (pattern.test(source)) {
+        failGate(`GAP-PROV-02: ${rel} contains reserved example-domain URL; use loopback/private or real provider domains`);
+      }
     }
   }
 
@@ -7136,6 +7145,7 @@ function assertGapProvUnsupportedProvidersResolved() {
 
   const legacyProviderTests = run("bun", [
     "test",
+    "--max-concurrency=1",
     "runtime/src/utils/model/providers.test.ts",
     "runtime/src/utils/model/agent.test.ts",
     "runtime/src/utils/model/model.openai-shim-providers.test.ts",

@@ -91,6 +91,17 @@ type SecretValueSource = Partial<{
   MISTRAL_API_KEY: string
 }>
 
+type SelectedShimProvider =
+  | 'firstParty'
+  | 'openai'
+  | 'gemini'
+  | 'github'
+  | 'agenc'
+  | 'nvidia-nim'
+  | 'minimax'
+  | 'mistral'
+  | 'xai'
+
 const GITHUB_COPILOT_BASE = 'https://api.githubcopilot.com'
 const DEFAULT_MISTRAL_MODEL = 'devstral-latest'
 const DEFAULT_NVIDIA_NIM_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
@@ -138,6 +149,25 @@ function firstProviderEnvString(value: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+function hasNonMiniMaxProviderSelection(): boolean {
+  return (
+    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
+    isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
+    isEnvTruthy(process.env.AGENC_USE_GITHUB) ||
+    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
+    isEnvTruthy(process.env.NVIDIA_NIM) ||
+    firstProviderEnvString(process.env.XAI_API_KEY) !== undefined
+  )
+}
+
+function hasOpenAiCompatibleProviderSelection(): boolean {
+  return (
+    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
+    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
+    firstProviderEnvString(process.env.XAI_API_KEY) !== undefined
+  )
+}
+
 function requireSelectedProviderApiKey(
   providerName: string,
   envLabel: string,
@@ -147,76 +177,130 @@ function requireSelectedProviderApiKey(
   throw new Error(`${envLabel} is required for ${providerName} provider`)
 }
 
-function resolveSelectedProviderOverride():
-  | { model: string; baseURL: string; apiKey: string }
-  | undefined {
+function buildMistralProviderOverride(): {
+  model: string
+  baseURL: string
+  apiKey: string
+} {
+  return {
+    model:
+      firstProviderEnvString(process.env.MISTRAL_MODEL) ??
+      DEFAULT_MISTRAL_MODEL,
+    baseURL:
+      firstProviderEnvString(process.env.MISTRAL_BASE_URL) ??
+      'https://api.mistral.ai/v1',
+    apiKey: requireSelectedProviderApiKey(
+      'Mistral',
+      'MISTRAL_API_KEY',
+      firstProviderEnvString(process.env.MISTRAL_API_KEY),
+    ),
+  }
+}
+
+function buildNvidiaNimProviderOverride(): {
+  model: string
+  baseURL: string
+  apiKey: string
+} {
+  return {
+    model:
+      firstProviderEnvString(process.env.NVIDIA_MODEL) ??
+      DEFAULT_NVIDIA_NIM_MODEL,
+    baseURL:
+      firstProviderEnvString(process.env.NVIDIA_BASE_URL) ??
+      'https://integrate.api.nvidia.com/v1',
+    apiKey: requireSelectedProviderApiKey(
+      'NVIDIA NIM',
+      'NVIDIA_API_KEY',
+      firstProviderEnvString(process.env.NVIDIA_API_KEY),
+    ),
+  }
+}
+
+function buildMiniMaxProviderOverride(): {
+  model: string
+  baseURL: string
+  apiKey: string
+} {
+  return {
+    model:
+      firstProviderEnvString(process.env.MINIMAX_MODEL) ??
+      DEFAULT_MINIMAX_MODEL,
+    baseURL:
+      firstProviderEnvString(process.env.MINIMAX_BASE_URL) ??
+      'https://api.minimax.io/v1',
+    apiKey: requireSelectedProviderApiKey(
+      'MiniMax',
+      'MINIMAX_API_KEY',
+      firstProviderEnvString(process.env.MINIMAX_API_KEY),
+    ),
+  }
+}
+
+function buildGithubProviderOverride(): {
+  model: string
+  baseURL: string
+  apiKey: string
+} {
+  return {
+    model:
+      firstProviderEnvString(process.env.GITHUB_MODEL) ??
+      DEFAULT_GITHUB_MODEL,
+    baseURL:
+      firstProviderEnvString(process.env.GITHUB_BASE_URL) ??
+      GITHUB_COPILOT_BASE,
+    apiKey:
+      requireSelectedProviderApiKey(
+        'GitHub',
+        'GITHUB_TOKEN or GH_TOKEN',
+        firstProviderEnvString(process.env.GITHUB_TOKEN) ??
+          firstProviderEnvString(process.env.GH_TOKEN),
+      ),
+  }
+}
+
+function resolveSelectedProviderOverride(
+  selectedProvider?: SelectedShimProvider,
+): { model: string; baseURL: string; apiKey: string } | undefined {
+  if (selectedProvider) {
+    switch (selectedProvider) {
+      case 'mistral':
+        return buildMistralProviderOverride()
+      case 'nvidia-nim':
+        return buildNvidiaNimProviderOverride()
+      case 'minimax':
+        return buildMiniMaxProviderOverride()
+      case 'github':
+        return buildGithubProviderOverride()
+      default:
+        return undefined
+    }
+  }
+
   if (isEnvTruthy(process.env.AGENC_USE_MISTRAL)) {
-    return {
-      model:
-        firstProviderEnvString(process.env.MISTRAL_MODEL) ??
-        DEFAULT_MISTRAL_MODEL,
-      baseURL:
-        firstProviderEnvString(process.env.MISTRAL_BASE_URL) ??
-        'https://api.mistral.ai/v1',
-      apiKey: requireSelectedProviderApiKey(
-        'Mistral',
-        'MISTRAL_API_KEY',
-        firstProviderEnvString(process.env.MISTRAL_API_KEY),
-      ),
-    }
-  }
-
-  if (isEnvTruthy(process.env.NVIDIA_NIM)) {
-    return {
-      model:
-        firstProviderEnvString(process.env.NVIDIA_MODEL) ??
-        DEFAULT_NVIDIA_NIM_MODEL,
-      baseURL:
-        firstProviderEnvString(process.env.NVIDIA_BASE_URL) ??
-        'https://integrate.api.nvidia.com/v1',
-      apiKey: requireSelectedProviderApiKey(
-        'NVIDIA NIM',
-        'NVIDIA_API_KEY',
-        firstProviderEnvString(process.env.NVIDIA_API_KEY),
-      ),
-    }
-  }
-
-  if (
-    isEnvTruthy(process.env.AGENC_USE_MINIMAX) ||
-    firstProviderEnvString(process.env.MINIMAX_API_KEY)
-  ) {
-    return {
-      model:
-        firstProviderEnvString(process.env.MINIMAX_MODEL) ??
-        DEFAULT_MINIMAX_MODEL,
-      baseURL:
-        firstProviderEnvString(process.env.MINIMAX_BASE_URL) ??
-        'https://api.minimax.io/v1',
-      apiKey: requireSelectedProviderApiKey(
-        'MiniMax',
-        'MINIMAX_API_KEY',
-        firstProviderEnvString(process.env.MINIMAX_API_KEY),
-      ),
-    }
+    return buildMistralProviderOverride()
   }
 
   if (isEnvTruthy(process.env.AGENC_USE_GITHUB)) {
-    return {
-      model:
-        firstProviderEnvString(process.env.GITHUB_MODEL) ??
-        DEFAULT_GITHUB_MODEL,
-      baseURL:
-        firstProviderEnvString(process.env.GITHUB_BASE_URL) ??
-        GITHUB_COPILOT_BASE,
-      apiKey:
-        requireSelectedProviderApiKey(
-          'GitHub',
-          'GITHUB_TOKEN or GH_TOKEN',
-          firstProviderEnvString(process.env.GITHUB_TOKEN) ??
-            firstProviderEnvString(process.env.GH_TOKEN),
-        ),
-    }
+    return buildGithubProviderOverride()
+  }
+
+  if (isEnvTruthy(process.env.AGENC_USE_MINIMAX)) {
+    return buildMiniMaxProviderOverride()
+  }
+
+  if (
+    isEnvTruthy(process.env.NVIDIA_NIM) &&
+    !hasOpenAiCompatibleProviderSelection()
+  ) {
+    return buildNvidiaNimProviderOverride()
+  }
+
+  if (
+    firstProviderEnvString(process.env.MINIMAX_API_KEY) &&
+    !hasNonMiniMaxProviderSelection()
+  ) {
+    return buildMiniMaxProviderOverride()
   }
 
   return undefined
@@ -1822,11 +1906,10 @@ class OpenAiShimMessages {
     }
 
     const isGemini = isGeminiMode()
-    const isMiniMax = !!process.env.MINIMAX_API_KEY
     const apiKey =
       this.providerOverride?.apiKey ??
       process.env.OPENAI_API_KEY ??
-      (isMiniMax ? process.env.MINIMAX_API_KEY : '')
+      ''
     const configuredAuthHeaderValue = process.env.OPENAI_AUTH_HEADER_VALUE?.trim()
     const customAuthHeader = process.env.OPENAI_AUTH_HEADER?.trim()
     const hasCustomAuthHeader = Boolean(
@@ -2362,11 +2445,13 @@ export function createOpenAiShimClient(options: {
   timeout?: number
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   providerOverride?: { model: string; baseURL: string; apiKey: string }
+  selectedProvider?: SelectedShimProvider
 }): unknown {
   hydrateGeminiAccessTokenFromSecureStorage()
   hydrateGithubModelsTokenFromSecureStorage()
   const providerOverride =
-    options.providerOverride ?? resolveSelectedProviderOverride()
+    options.providerOverride ??
+    resolveSelectedProviderOverride(options.selectedProvider)
 
   // When Gemini provider is active, map Gemini env vars to provider-compatible ones
   // so the existing providerConfig.ts infrastructure picks them up correctly.

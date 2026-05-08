@@ -68,6 +68,26 @@ function stripForwardedAuthHeaders(
   return safeHeaders
 }
 
+function hasProviderEnvValue(value: string | undefined): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function resolveShimSelectedProvider(
+  apiProvider: ReturnType<typeof getAPIProvider>,
+): ReturnType<typeof getAPIProvider> {
+  if (isEnvTruthy(process.env.AGENC_USE_GEMINI)) return 'gemini'
+  if (isEnvTruthy(process.env.AGENC_USE_MISTRAL)) return 'mistral'
+  if (isEnvTruthy(process.env.AGENC_USE_GITHUB)) return 'github'
+  if (isEnvTruthy(process.env.AGENC_USE_MINIMAX)) return 'minimax'
+  if (hasProviderEnvValue(process.env.XAI_API_KEY)) return 'xai'
+  if (isEnvTruthy(process.env.AGENC_USE_OPENAI)) {
+    return apiProvider === 'agenc' ? 'agenc' : 'openai'
+  }
+  if (isEnvTruthy(process.env.NVIDIA_NIM)) return 'nvidia-nim'
+  if (hasProviderEnvValue(process.env.MINIMAX_API_KEY)) return 'minimax'
+  return apiProvider
+}
+
 export async function getproviderClient({
   apiKey,
   maxRetries,
@@ -183,6 +203,7 @@ export async function getproviderClient({
       defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
       maxRetries,
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      selectedProvider: resolveShimSelectedProvider(apiProvider),
     }) as unknown as provider
   }
   // Determine authentication method based on available tokens

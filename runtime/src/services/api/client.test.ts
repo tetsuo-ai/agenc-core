@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { getproviderClient } from './client.js'
+import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
 type FetchType = typeof globalThis.fetch
+type GetProviderClient = typeof import('./client.js')['getproviderClient']
 
 type ShimClient = {
   beta: {
@@ -13,6 +13,7 @@ type ShimClient = {
 
 const originalFetch = globalThis.fetch
 const originalMacro = (globalThis as Record<string, unknown>).MACRO
+let getproviderClient: GetProviderClient
 const originalEnv = {
   AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
   AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
@@ -41,6 +42,7 @@ const originalEnv = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_BASE: process.env.OPENAI_API_BASE,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
+  XAI_API_KEY: process.env.XAI_API_KEY,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
   ANTHROPIC_CUSTOM_HEADERS: process.env.ANTHROPIC_CUSTOM_HEADERS,
@@ -54,7 +56,8 @@ function restoreEnv(key: string, value: string | undefined): void {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  mock.restore()
   ;(globalThis as Record<string, unknown>).MACRO = { VERSION: 'test-version' }
   process.env.AGENC_USE_GEMINI = '1'
   process.env.GEMINI_API_KEY = 'gemini-test-key'
@@ -84,12 +87,17 @@ beforeEach(() => {
   delete process.env.OPENAI_BASE_URL
   delete process.env.OPENAI_API_BASE
   delete process.env.OPENAI_MODEL
+  delete process.env.XAI_API_KEY
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.ANTHROPIC_AUTH_TOKEN
   delete process.env.ANTHROPIC_CUSTOM_HEADERS
+
+  const nonce = `${Date.now()}-${Math.random()}`
+  ;({ getproviderClient } = await import(`./client.js?client-test=${nonce}`))
 })
 
 afterEach(() => {
+  mock.restore()
   ;(globalThis as Record<string, unknown>).MACRO = originalMacro
   restoreEnv('AGENC_USE_OPENAI', originalEnv.AGENC_USE_OPENAI)
   restoreEnv('AGENC_USE_GEMINI', originalEnv.AGENC_USE_GEMINI)
@@ -118,6 +126,7 @@ afterEach(() => {
   restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
   restoreEnv('OPENAI_API_BASE', originalEnv.OPENAI_API_BASE)
   restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
+  restoreEnv('XAI_API_KEY', originalEnv.XAI_API_KEY)
   restoreEnv('ANTHROPIC_API_KEY', originalEnv.ANTHROPIC_API_KEY)
   restoreEnv('ANTHROPIC_AUTH_TOKEN', originalEnv.ANTHROPIC_AUTH_TOKEN)
   restoreEnv('ANTHROPIC_CUSTOM_HEADERS', originalEnv.ANTHROPIC_CUSTOM_HEADERS)
@@ -281,6 +290,124 @@ test.each([
     expect(response).toMatchObject({
       role: 'assistant',
       model,
+    })
+  },
+)
+
+test.each([
+  {
+    name: 'openai',
+    env: {
+      AGENC_USE_OPENAI: '1',
+      OPENAI_API_KEY: 'openai-test-key',
+      OPENAI_BASE_URL: 'http://127.0.0.1:19084/v1',
+      OPENAI_MODEL: 'gpt-4o',
+    },
+    requestModel: 'gpt-4o',
+    expectedUrl: 'http://127.0.0.1:19084/v1/chat/completions',
+    expectedAuth: 'Bearer openai-test-key',
+    expectedModel: 'gpt-4o',
+  },
+  {
+    name: 'GitHub',
+    env: {
+      AGENC_USE_GITHUB: '1',
+      GITHUB_TOKEN: 'github-test-token',
+      GITHUB_BASE_URL: 'https://models.github.ai/inference',
+      GITHUB_MODEL: 'openai/gpt-4.1',
+    },
+    requestModel: 'stale-request-model',
+    expectedUrl: 'https://models.github.ai/inference/chat/completions',
+    expectedAuth: 'Bearer github-test-token',
+    expectedModel: 'openai/gpt-4.1',
+  },
+  {
+    name: 'Mistral',
+    env: {
+      AGENC_USE_MISTRAL: '1',
+      MISTRAL_API_KEY: 'mistral-provider-key',
+      MISTRAL_BASE_URL: 'https://api.mistral.ai/v1',
+      MISTRAL_MODEL: 'devstral-latest',
+    },
+    requestModel: 'stale-request-model',
+    expectedUrl: 'https://api.mistral.ai/v1/chat/completions',
+    expectedAuth: 'Bearer mistral-provider-key',
+    expectedModel: 'devstral-latest',
+  },
+] as const)(
+  'explicit $name selection takes precedence over ambient MiniMax credentials at request routing',
+  async ({ env, requestModel, expectedUrl, expectedAuth, expectedModel }) => {
+    let capturedUrl: string | undefined
+    let capturedHeaders: Headers | undefined
+    let capturedBody: Record<string, unknown> | undefined
+
+    delete process.env.AGENC_USE_GEMINI
+    process.env.MINIMAX_API_KEY = 'ambient-minimax-key'
+    process.env.MINIMAX_BASE_URL = 'http://127.0.0.1:19082/v1'
+    process.env.MINIMAX_MODEL = 'MiniMax-ambient-model'
+    for (const [key, value] of Object.entries(env)) {
+      process.env[key] = value
+    }
+
+    globalThis.fetch = (async (input, init) => {
+      capturedUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
+      capturedHeaders = new Headers(init?.headers)
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+
+      return new Response(
+        JSON.stringify({
+          id: 'chatcmpl-compatible',
+          model: expectedModel,
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: 'ok',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: {
+            prompt_tokens: 8,
+            completion_tokens: 3,
+            total_tokens: 11,
+          },
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      )
+    }) as FetchType
+
+    const client = (await getproviderClient({
+      maxRetries: 0,
+      model: requestModel,
+    })) as unknown as ShimClient
+
+    const response = await client.beta.messages.create({
+      model: requestModel,
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    })
+
+    expect(capturedUrl).toBe(expectedUrl)
+    expect(capturedHeaders?.get('authorization')).toBe(expectedAuth)
+    expect(capturedHeaders?.get('authorization')).not.toBe(
+      'Bearer ambient-minimax-key',
+    )
+    expect(capturedBody?.model).toBe(expectedModel)
+    expect(response).toMatchObject({
+      role: 'assistant',
+      model: expectedModel,
     })
   },
 )
@@ -549,7 +676,7 @@ test('strips provider-specific custom headers before sending provider-compatible
 
   process.env.AGENC_USE_OPENAI = '1'
   process.env.OPENAI_API_KEY = 'openai-test-key'
-  process.env.OPENAI_BASE_URL = 'http://example.test/v1'
+  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:19083/v1'
   process.env.OPENAI_MODEL = 'gpt-4o'
   process.env.ANTHROPIC_CUSTOM_HEADERS = [
     'anthropic-version: 2023-06-01',
@@ -656,7 +783,7 @@ test('strips provider-specific custom headers on providerOverride shim requests 
     maxRetries: 0,
     providerOverride: {
       model: 'gpt-4o',
-      baseURL: 'http://example.test/v1',
+      baseURL: 'http://127.0.0.1:19085/v1',
       apiKey: 'provider-test-key',
     },
   })) as unknown as ShimClient
