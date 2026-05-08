@@ -26,9 +26,9 @@ export default async function (session) {
   await session.submit();
   await session.waitForPermissionOverlay({ timeout: 60_000 });
   await session.alwaysAllowPermissionOverlay();
-  // Verifying that the tool actually re-ran would require disambiguating
-  // the marker-echoed-in-prompt from the marker-emitted-by-bash, same
-  // problem 32-permission-deny hit. We just verify the overlay closed and
-  // the TUI returned to idle.
-  await session.waitForIdle({ timeout: 60_000 });
+  // After always-allow, the TUI keeps repainting the busy title-bar OSC
+  // sequence while the model finishes its post-tool turn, which keeps the
+  // idle window from closing on a 1.2s default. Bump the window to 4s so
+  // the spinner-paint cadence registers as idle.
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 90_000 });
 }
