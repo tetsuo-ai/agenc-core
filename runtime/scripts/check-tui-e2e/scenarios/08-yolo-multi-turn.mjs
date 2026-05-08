@@ -9,13 +9,6 @@ export const meta = {
   description: "--yolo: two messages in one session, both reach idle.",
   args: ["--yolo"],
   timeoutMs: 180_000,
-  // BackgroundAgentRunner.getAgentSnapshot fix (which removed the
-  // early-null branch that caused AgentLifecycle to evict completed
-  // agents) covers the common race. Default-mode 07 reliably passes.
-  // --yolo 08 still flakes — there's a second eviction path through
-  // a different daemon-side handler that the snapshot fix didn't
-  // reach. Filed alongside 45 as GAP-DMN-AGENT-LIFECYCLE-EVICT.
-  skip: "secondary eviction path under --yolo; see GAP-DMN-AGENT-LIFECYCLE-EVICT",
 };
 
 export default async function (session) {

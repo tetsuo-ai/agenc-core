@@ -13,14 +13,6 @@ export const meta = {
   description: "--yolo: 4 turns survive the agent-not-found race.",
   args: ["--yolo"],
   timeoutMs: 360_000,
-  // BackgroundAgentRunner.getAgentSnapshot fix unblocks 2-turn
-  // sequences but 4-turn endurance still trips an additional eviction
-  // path in AgentLifecycle that the snapshot fix didn't reach. Need
-  // a defense-in-depth pass: agent-lifecycle.ts:1390-1393 should not
-  // delete from state.agents on null snapshot — but the runner has
-  // OTHER call sites that may legitimately produce a null. Filed as
-  // GAP-DMN-AGENT-LIFECYCLE-EVICT.
-  skip: "endurance eviction path beyond getAgentSnapshot fix; see GAP-DMN-AGENT-LIFECYCLE-EVICT",
 };
 
 export default async function (session) {
