@@ -19,11 +19,12 @@ export const meta = {
 export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
-  // Trailing space ends the slash-prefix match so the typeahead picker
-  // closes; Enter then submits the literal command instead of the picker's
-  // highlighted suggestion (which can be /exit-worktree, not /exit).
-  await session.type("/exit ");
-  await sleep(150);
+  // Type /exit and wait for the typeahead picker render to fully settle
+  // before pressing Enter. If we press Enter while the picker is still
+  // animating, the highlighted item is whatever was selected during prior
+  // narrowing (often /exit-worktree, not /exit).
+  await session.type("/exit");
+  await session.waitForIdle({ idleWindow: 600, timeout: 5_000 });
   session.send("\r");
   // Wait up to 8s for the PTY to exit on its own.
   const start = Date.now();
