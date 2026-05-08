@@ -9,6 +9,7 @@
  * parallelism would cause cross-contamination. Phase B will introduce
  * temp-HOME isolation and enable parallel execution.
  */
+import { spawnSync } from "node:child_process";
 import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,7 +17,25 @@ import { TuiSession } from "./harness.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIOS_DIR = path.join(SCRIPT_DIR, "scenarios");
+const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
+const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * Restart the user's daemon so each gate run starts from a clean session
+ * registry, fresh permission policy cache, no accumulated state from
+ * earlier runs. Without this, scenarios near the end of a multi-scenario
+ * run start failing with `Timed out waiting for daemon response` because
+ * the daemon's session/permission state has drifted.
+ */
+function restartDaemon() {
+  const result = spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "restart"],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  return result.status === 0;
+}
 
 const COLORS = {
   reset: "\x1b[0m",
@@ -115,6 +134,9 @@ async function main() {
   console.log(
     color("bold", `agenc TUI e2e gate (${names.length} scenarios)`),
   );
+  process.stdout.write(color("dim", "  restarting daemon for clean baseline ... "));
+  const restarted = restartDaemon();
+  console.log(color("dim", restarted ? "ok" : "skipped"));
   console.log("");
 
   const failed = [];
