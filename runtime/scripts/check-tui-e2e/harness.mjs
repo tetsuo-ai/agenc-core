@@ -23,9 +23,10 @@
  *     accumulate in the daemon. Phase B will introduce per-scenario
  *     temp-HOME isolation.
  */
-import { mkdir, readFile, writeFile, realpath } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile, realpath } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +91,62 @@ async function ensureProjectTrusted(projectPath) {
   }
 }
 
+/**
+ * Create a fresh `$HOME` for one scenario and copy the minimum config the
+ * runtime needs to start a fresh daemon there. This isolates daemon
+ * sockets, permission policy, session registries, and audit logs from
+ * the user's real `~/.agenc` so that mutating scenarios (always-allow,
+ * Write tool, etc.) don't pollute later scenarios or the operator's
+ * actual setup.
+ *
+ * What we copy:
+ *   - `config.toml` — provider / model / base URL settings.
+ *   - `auth.json` — vended credentials (may be absent on first-run boxes).
+ *
+ * What we deliberately don't copy: trust-projects (we'll trust the cwd
+ * fresh), permission policy, session state. Anything else should be
+ * stateless across daemon spawns.
+ */
+async function createTempHome() {
+  const home = await mkdtemp(path.join(tmpdir(), "agenc-tui-e2e-home-"));
+  const agencDir = path.join(home, ".agenc");
+  await mkdir(agencDir, { recursive: true });
+  const sourceConfig = path.join(homedir(), ".agenc", "config.toml");
+  const targetConfig = path.join(agencDir, "config.toml");
+  if (existsSync(sourceConfig)) {
+    await copyFile(sourceConfig, targetConfig);
+  }
+  const sourceAuth = path.join(homedir(), ".agenc", "auth.json");
+  const targetAuth = path.join(agencDir, "auth.json");
+  if (existsSync(sourceAuth)) {
+    await copyFile(sourceAuth, targetAuth);
+  }
+  return home;
+}
+
+/**
+ * Tear down a temp HOME: stop any daemon bound to its socket, delete the
+ * directory tree. Best-effort; failures are logged but don't block the
+ * scenario teardown.
+ */
+async function teardownTempHome(home) {
+  if (!home) return;
+  try {
+    spawnSync(
+      process.execPath,
+      [BIN_AGENC, "daemon", "stop"],
+      { encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 10_000 },
+    );
+  } catch {
+    // best-effort
+  }
+  try {
+    await rm(home, { recursive: true, force: true });
+  } catch {
+    // best-effort
+  }
+}
+
 // Same async-reply bytes the startup smoke injects. The TUI sends an
 // XTVERSION query and a DA1 query during cold start; if the harness does
 // not reply, the renderer hangs waiting on those.
@@ -132,12 +189,14 @@ export function stripAnsi(s) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class TuiSession {
-  constructor({ args = [], cols = 140, rows = 40, env = {}, cwd } = {}) {
+  constructor({ args = [], cols = 140, rows = 40, env = {}, cwd, useTempHome = false } = {}) {
     this.args = args;
     this.cols = cols;
     this.rows = rows;
-    this.env = { ...process.env, ...env };
+    this.envOverrides = { ...env };
     this.cwd = cwd ?? process.cwd();
+    this.useTempHome = useTempHome;
+    this.tempHome = null;
     this.term = null;
     this.buffer = "";
     this.exited = false;
@@ -167,13 +226,30 @@ export class TuiSession {
     if (this.term !== null) {
       throw new Error("TuiSession already started");
     }
-    await ensureProjectTrusted(this.cwd);
+    let env = { ...process.env, ...this.envOverrides };
+    if (this.useTempHome) {
+      this.tempHome = await createTempHome();
+      env = { ...env, HOME: this.tempHome };
+      // Trust file lives under HOME — recompute under the temp HOME so
+      // the trust dialog doesn't fire.
+      const tempTrust = path.join(this.tempHome, ".agenc", "trusted-projects.json");
+      await writeFile(
+        tempTrust,
+        JSON.stringify({
+          version: 1,
+          trustedProjects: [{ path: this.cwd, trustedAt: new Date().toISOString() }],
+        }, null, 2),
+        "utf8",
+      );
+    } else {
+      await ensureProjectTrusted(this.cwd);
+    }
     this.term = pty.spawn(process.execPath, [BIN_AGENC, ...this.args], {
       name: "xterm-256color",
       cols: this.cols,
       rows: this.rows,
       cwd: this.cwd,
-      env: this.env,
+      env,
     });
     this.term.onData((data) => {
       this.buffer += data;
@@ -397,6 +473,19 @@ export class TuiSession {
       this.term.kill("SIGTERM");
     } catch {
       // Already dead
+    }
+  }
+
+  /**
+   * Tear down per-scenario resources. Safe to call multiple times.
+   * If `useTempHome` was set, stops the daemon bound to the temp HOME and
+   * removes the directory tree.
+   */
+  async cleanup() {
+    if (this.tempHome !== null) {
+      const home = this.tempHome;
+      this.tempHome = null;
+      await teardownTempHome(home);
     }
   }
 

@@ -13,12 +13,8 @@
  */
 export const meta = {
   description: "Permission overlay (default mode): always-allow runs the tool.",
-  timeoutMs: 90_000,
-  // Writes a permanent "always allow Bash in <cwd>" entry to the daemon
-  // sqlite policy store, polluting state for subsequent scenarios. Needs
-  // per-scenario HOME isolation (GAP-TEST-08) to be re-runnable. Until
-  // then this scenario stays skipped.
-  skip: "writes persistent policy entry; needs GAP-TEST-08 temp HOME",
+  timeoutMs: 120_000,
+  useTempHome: true,
 };
 
 export default async function (session) {

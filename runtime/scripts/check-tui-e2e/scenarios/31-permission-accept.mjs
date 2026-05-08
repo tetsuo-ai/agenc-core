@@ -8,7 +8,8 @@
  */
 export const meta = {
   description: "Permission overlay (default mode): accept path runs the tool.",
-  timeoutMs: 90_000,
+  timeoutMs: 120_000,
+  useTempHome: true,
 };
 
 export default async function (session) {

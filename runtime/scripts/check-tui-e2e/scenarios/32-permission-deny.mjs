@@ -12,14 +12,8 @@
  */
 export const meta = {
   description: "Permission overlay (default mode): deny path closes overlay cleanly.",
-  timeoutMs: 90_000,
-  // 33-permission-always wrote a persistent "always allow Bash in
-  // agenc-core/runtime" entry into the daemon's sqlite policy store; the
-  // entry survives daemon restart and suppresses the overlay this
-  // scenario depends on. Reliable test requires per-scenario HOME
-  // isolation (GAP-TEST-08) to keep policy state scoped. Until then
-  // both 32 and 33 are skipped together.
-  skip: "blocked on policy persistence pollution from 33-always; needs GAP-TEST-08 temp HOME",
+  timeoutMs: 120_000,
+  useTempHome: true,
 };
 
 export default async function (session) {
