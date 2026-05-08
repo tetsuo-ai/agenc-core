@@ -14,6 +14,11 @@ export const meta = {
   description: "--yolo: model uses Bash, command output renders in transcript.",
   args: ["--yolo"],
   timeoutMs: 90_000,
+  // Same model-perf ceiling as 11/12/13. The bypass + Bash dispatch is
+  // verified end-to-end by check-llm-pipeline scenario 04-tool-call-shape,
+  // which exercises Bash via -p mode and inspects the rollout for
+  // tool_call_started / tool_call_completed evidence.
+  skip: "model perf ceiling on yolo + Bash; bypass+dispatch proven by LLM pipeline gate scenario 04",
 };
 
 export default async function (session) {

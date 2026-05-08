@@ -175,6 +175,11 @@ export type RouteCLIPlan =
       readonly kind: "oneShotCLI";
       readonly userMessage: string;
       readonly startupImages?: readonly string[];
+    }
+  | {
+      readonly kind: "errorAndExit";
+      readonly message: string;
+      readonly exitCode: number;
     };
 
 export interface ClassifyCLIOptions {
@@ -198,11 +203,20 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   const prompt = stripRoutingFlags(userArgv).join(" ").trim();
   const startupImages = extractFlagValues(userArgv, "--image");
 
-  // 1. `--resume <id>` / `-r <id>` always boots through the TUI resume path. Errors
+  // 1. `--resume <id>` / `-r <id>` boots through the TUI resume path. Errors
   //    inside `resumeTUI` (missing session, corrupt rollout, etc.) are
   //    surfaced via its return code; the caller owns emitting the
   //    `agenc: session not found: <id>` message.
+  //    Refuse this path in a non-TTY context: Ink can't read from a piped
+  //    stdin, so resuming there used to hang silently waiting for input.
   if (resumeId !== null && resumeId.length > 0) {
+    if (!opts.isTTY) {
+      return {
+        kind: "errorAndExit",
+        message: `agenc --resume requires an interactive terminal. Use 'agenc -p <prompt>' for headless one-shot calls.`,
+        exitCode: 2,
+      };
+    }
     return { kind: "resumeTUI", args: { resumeId } };
   }
 
@@ -284,5 +298,8 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
       return plan.startupImages === undefined
         ? opts.oneShotCLI(plan.userMessage)
         : opts.oneShotCLI(plan.userMessage, plan.startupImages);
+    case "errorAndExit":
+      process.stderr.write(`${plan.message}\n`);
+      return plan.exitCode;
   }
 }
