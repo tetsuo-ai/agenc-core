@@ -180,7 +180,11 @@ export class AgenCUnixSocketServer {
     // rejected with -32000 even though the connection's first message
     // legitimately authenticated. Gate everything on a single promise so
     // every subsequent message waits for the in-flight auth resolution.
-    let authResolution: Promise<void> = Promise.resolve();
+    // `resolvedAuth` is the sentinel for "no auth in flight"; equality
+    // against it identifies the very-first message that should claim the
+    // auth slot synchronously (before awaiting anything).
+    const resolvedAuth: Promise<void> = Promise.resolve();
+    let authResolution: Promise<void> = resolvedAuth;
     const clearAuthenticationTimeout = (): void => {
       if (authenticationTimeout !== undefined) {
         clearTimeout(authenticationTimeout);
@@ -201,20 +205,45 @@ export class AgenCUnixSocketServer {
       input: socket,
       output: socket,
       onMessage: async (message) => {
-        // Wait for any in-flight auth resolution before deciding the
-        // current message's path. If the previous message's auth check
-        // already accepted the connection, this message goes straight to
-        // the dispatcher; if it rejected, this message is short-circuited
-        // by closingUnauthenticated.
-        await authResolution;
-        if (!accepted) {
-          if (closingUnauthenticated) return;
-          // Claim the auth slot so any siblings queued behind us see the
-          // outcome of THIS message rather than starting their own check.
-          let resolveAuth!: () => void;
+        // Two-step gate to handle line-batched [initialize, method]
+        // messages that arrive in one TCP packet and trigger parallel
+        // onMessage handlers. The transport fires handlers via
+        // `Promise.resolve(onMessage(...))` without awaiting, so two
+        // handlers can race the `accepted` flag.
+        //
+        // Step 1 (sync): if no auth is in flight AND we're not yet
+        // accepted, CLAIM the auth slot synchronously by replacing the
+        // shared `authResolution` promise BEFORE any await. Whichever
+        // handler observes the still-resolved promise first wins; the
+        // sibling sees the new pending promise and waits on it instead.
+        //
+        // Step 2 (async): wait for whichever auth resolution is in
+        // flight, then check `accepted`/`closingUnauthenticated`.
+        let resolveAuth: (() => void) | undefined;
+        if (!accepted && authResolution === resolvedAuth) {
+          // We're the first message on this connection. Claim the slot.
           authResolution = new Promise((r) => {
             resolveAuth = r;
           });
+        } else {
+          await authResolution;
+        }
+        if (resolveAuth === undefined) {
+          // We waited for someone else's auth. They've already set
+          // accepted / closingUnauthenticated. Fall through to dispatch
+          // (or short-circuit if their auth failed).
+          if (closingUnauthenticated) return;
+          if (!accepted) return; // sibling rejected; we should also stop
+          await this.#options.onMessage(message, context);
+          return;
+        }
+        // We claimed the slot — run the auth check and resolve our
+        // promise so siblings can proceed.
+        try {
+          if (closingUnauthenticated) {
+            resolveAuth();
+            return;
+          }
           let authenticated = false;
           try {
             authenticated =
@@ -224,7 +253,6 @@ export class AgenCUnixSocketServer {
             clearAuthenticationTimeout();
             this.#options.onError?.(asNodeError(error), connectionId);
             socket.destroy();
-            resolveAuth();
             return;
           }
           if (!authenticated) {
@@ -234,12 +262,12 @@ export class AgenCUnixSocketServer {
               await this.#options.onAuthenticationFailed?.(message, context);
             } finally {
               socket.end();
-              resolveAuth();
             }
             return;
           }
           accepted = true;
           clearAuthenticationTimeout();
+        } finally {
           resolveAuth();
         }
         await this.#options.onMessage(message, context);
