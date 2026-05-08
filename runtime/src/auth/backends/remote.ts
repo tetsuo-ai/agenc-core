@@ -600,6 +600,15 @@ function parseRemoteAuthVendKeyResponse(
     ...(typeof record.expiresAt === "string" && record.expiresAt.length > 0
       ? { expiresAt: record.expiresAt }
       : {}),
+    ...(readTrimmedString(record.secretAccessKey) !== undefined
+      ? { secretAccessKey: readTrimmedString(record.secretAccessKey) }
+      : {}),
+    ...(readTrimmedString(record.sessionToken) !== undefined
+      ? { sessionToken: readTrimmedString(record.sessionToken) }
+      : {}),
+    ...(readTrimmedString(record.region) !== undefined
+      ? { region: readTrimmedString(record.region) }
+      : {}),
   };
 }
 

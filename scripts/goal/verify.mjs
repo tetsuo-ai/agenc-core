@@ -154,9 +154,12 @@ const ITEM_EVIDENCE = {
   },
   "GAP-PROV-03": {
     files: [
+      "runtime/src/auth/backend.ts",
+      "runtime/src/auth/backends/remote.ts",
       "runtime/src/llm/provider.ts",
     ],
     tests: [
+      "runtime/src/auth/backends/remote.contract.test.ts",
       "runtime/src/llm/provider.test.ts",
       "runtime/src/llm/provider-parity.test.ts",
       "runtime/src/llm/provider.integration.test.ts",
@@ -168,7 +171,12 @@ const ITEM_EVIDENCE = {
       { pattern: "authBackend\\.vendKey\\(", scope: "runtime/src/llm/provider.ts" },
       { pattern: "AuthBackend\\.vendKey\\(\\)", scope: "runtime/src/llm/provider.ts" },
       { pattern: "mergeAuthVendedProviderExtra", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "resolveAuthVendedProviderModel", scope: "runtime/src/llm/provider.ts" },
+      { pattern: "secretAccessKey", scope: "runtime/src/auth/backend.ts" },
+      { pattern: "preserves Bedrock credential fields from HTTP key vending responses", scope: "runtime/src/auth/backends/remote.contract.test.ts" },
       { pattern: "vends concrete provider keys through AuthBackend", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "defaults model metadata on AuthBackend-vended providers without explicit model", scope: "runtime/src/llm/provider.test.ts" },
+      { pattern: "prepares AuthBackend-vended provider switches without explicit model", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "uses AuthBackend-vended keys on delegated compatible requests", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "keeps Bedrock accessKeyId precedence over generic apiKey", scope: "runtime/src/llm/provider.test.ts" },
       { pattern: "does not use OPENAI_API_KEY as LMStudio-compatible auth fallback", scope: "runtime/src/llm/provider.test.ts" },
@@ -7019,6 +7027,7 @@ function assertGapProvProviderKeysThroughAuthBackend() {
   const parityTestRel = "runtime/src/llm/provider-parity.test.ts";
   const integrationTestRel = "runtime/src/llm/provider.integration.test.ts";
   const sessionTestRel = "runtime/src/session/session.test.ts";
+  const remoteContractTestRel = "runtime/src/auth/backends/remote.contract.test.ts";
 
   for (const rel of [
     providerRel,
@@ -7026,6 +7035,7 @@ function assertGapProvProviderKeysThroughAuthBackend() {
     parityTestRel,
     integrationTestRel,
     sessionTestRel,
+    remoteContractTestRel,
   ]) {
     if (!existsSync(path.join(root, rel))) {
       failGate(`GAP-PROV-03: missing ${rel}`);
@@ -7071,6 +7081,7 @@ function assertGapProvProviderKeysThroughAuthBackend() {
     "AuthBackend.vendKey()",
     "requireFactoryApiKey",
     "mergeAuthVendedProviderExtra",
+    "resolveAuthVendedProviderModel",
     "authBackend/sessionId in factory options",
   ]) {
     if (!providerSource.includes(needle)) {
@@ -7081,6 +7092,8 @@ function assertGapProvProviderKeysThroughAuthBackend() {
   const providerTestSource = readFileSync(path.join(root, providerTestRel), "utf8");
   for (const needle of [
     "vends concrete provider keys through AuthBackend",
+    "defaults model metadata on AuthBackend-vended providers without explicit model",
+    "prepares AuthBackend-vended provider switches without explicit model",
     "uses AuthBackend-vended keys on delegated compatible requests",
     "uses AuthBackend-vended Bedrock credentials on delegated requests",
     "uses AuthBackend-vended Bedrock access key with explicit non-access credentials",
@@ -7106,6 +7119,7 @@ function assertGapProvProviderKeysThroughAuthBackend() {
     [parityTestRel, "apiKey: \"openai-test\""],
     [integrationTestRel, "apiKey: () => process.env.OPENAI_API_KEY"],
     [sessionTestRel, "uses AuthBackend-managed keys when switching providers without BYOK"],
+    [remoteContractTestRel, "preserves Bedrock credential fields from HTTP key vending responses"],
   ]) {
     const source = readFileSync(path.join(root, rel), "utf8");
     if (!source.includes(needle)) {
@@ -7118,6 +7132,7 @@ function assertGapProvProviderKeysThroughAuthBackend() {
     "--workspace=@tetsuo-ai/runtime",
     "vitest",
     "run",
+    "src/auth/backends/remote.contract.test.ts",
     "src/llm/provider.test.ts",
     "src/llm/provider-parity.test.ts",
     "src/llm/provider.integration.test.ts",

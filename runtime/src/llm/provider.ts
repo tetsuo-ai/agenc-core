@@ -329,6 +329,10 @@ interface AuthVendedProviderCapabilities {
 
 class AuthVendedProvider implements LLMProvider {
   readonly name: string;
+  readonly config: {
+    readonly model: string;
+    readonly baseURL?: string;
+  };
   readonly prewarmStartup?: LLMProvider["prewarmStartup"];
   readonly retrieveStoredResponse?: LLMProvider["retrieveStoredResponse"];
   readonly deleteStoredResponse?: LLMProvider["deleteStoredResponse"];
@@ -350,6 +354,10 @@ class AuthVendedProvider implements LLMProvider {
     this.#opts = stripConcreteProviderAuthOptions(params.opts);
     this.#authBackend = params.authBackend;
     this.#sessionId = params.sessionId;
+    this.config = {
+      model: this.#opts.model ?? defaultModelFor(params.provider),
+      ...(this.#opts.baseURL !== undefined ? { baseURL: this.#opts.baseURL } : {}),
+    };
     const capabilities = authVendedProviderCapabilities(params.provider);
     if (capabilities.prewarmStartup) {
       this.prewarmStartup = async (startupParams) =>
@@ -397,7 +405,7 @@ class AuthVendedProvider implements LLMProvider {
     const profile = await delegate.getExecutionProfile?.();
     return profile ?? {
       provider: this.#provider,
-      model: this.#opts.model ?? defaultModelFor(this.#provider),
+      model: this.config.model,
     };
   }
 
@@ -519,6 +527,7 @@ function stripConcreteProviderAuthOptions(
 }
 
 function authVendedProviderFactoryOptions(params: {
+  readonly provider: ProviderName;
   readonly opts: ProviderFactoryOptions;
   readonly authBackend: AuthBackend;
   readonly sessionId: string;
@@ -526,12 +535,56 @@ function authVendedProviderFactoryOptions(params: {
   const stripped = stripConcreteProviderAuthOptions(params.opts);
   return {
     ...stripped,
+    model: resolveAuthVendedProviderModel(params.provider, stripped.model),
     extra: {
       ...(stripped.extra ?? {}),
       authBackend: params.authBackend,
       sessionId: params.sessionId,
     },
   };
+}
+
+function resolveAuthVendedProviderModel(
+  provider: ProviderName,
+  explicitModel: string | undefined,
+): string {
+  switch (provider) {
+    case "grok":
+      return firstNonEmpty(explicitModel, process.env.AGENC_MODEL) ??
+        defaultModelFor(provider);
+    case "openai":
+      return firstNonEmpty(explicitModel, process.env.OPENAI_MODEL) ??
+        defaultModelFor(provider);
+    case "anthropic":
+      return firstNonEmpty(explicitModel, process.env.ANTHROPIC_MODEL) ??
+        defaultModelFor(provider);
+    case "lmstudio":
+      return firstNonEmpty(explicitModel, process.env.LMSTUDIO_MODEL) ??
+        defaultModelFor(provider);
+    case "openai-compatible":
+      return firstNonEmpty(
+        explicitModel,
+        process.env.OPENAI_COMPATIBLE_MODEL,
+        process.env.OPENAI_MODEL,
+      ) ?? defaultModelFor(provider);
+    case "openrouter":
+      return firstNonEmpty(explicitModel, process.env.OPENROUTER_MODEL) ??
+        defaultModelFor(provider);
+    case "groq":
+      return firstNonEmpty(explicitModel, process.env.GROQ_MODEL) ??
+        defaultModelFor(provider);
+    case "deepseek":
+      return firstNonEmpty(explicitModel, process.env.DEEPSEEK_MODEL) ??
+        defaultModelFor(provider);
+    case "gemini":
+      return firstNonEmpty(explicitModel, process.env.GEMINI_MODEL) ??
+        defaultModelFor(provider);
+    case "amazon-bedrock":
+      return firstNonEmpty(explicitModel, process.env.AWS_BEDROCK_MODEL) ??
+        defaultModelFor(provider);
+    default:
+      return defaultModelFor(provider);
+  }
 }
 
 function mergeAuthVendedProviderExtra(
@@ -589,6 +642,7 @@ function createAuthVendedProviderIfNeeded(
     {
       provider,
       options: authVendedProviderFactoryOptions({
+        provider,
         opts,
         authBackend,
         sessionId,

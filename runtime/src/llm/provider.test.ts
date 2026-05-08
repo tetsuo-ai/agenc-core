@@ -18,6 +18,7 @@ import {
   isFactoryProvider,
   KNOWN_PROVIDER_NAMES,
   normalizeProviderName,
+  prepareProviderSwitch,
   readProviderFactoryOptions,
   readProviderIdentity,
   resolveProviderNameFromEnv,
@@ -252,6 +253,44 @@ describe("createProvider", () => {
       expect(vendKey).toHaveBeenCalledWith(name, "session-vend");
     },
   );
+
+  test("defaults model metadata on AuthBackend-vended providers without explicit model", () => {
+    const provider = withEnv(
+      {
+        OPENAI_MODEL: undefined,
+      },
+      () =>
+        createProvider("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-default-model",
+          },
+        }),
+    );
+
+    expect((provider as unknown as { config: { model: string } }).config.model)
+      .toBe("gpt-5");
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
+  });
+
+  test("prepares AuthBackend-vended provider switches without explicit model", () => {
+    const prepared = withEnv(
+      {
+        OPENAI_MODEL: undefined,
+      },
+      () =>
+        prepareProviderSwitch("openai", {
+          extra: {
+            authBackend,
+            sessionId: "session-switch-default-model",
+          },
+        }),
+    );
+
+    expect(prepared.provider).toBe("openai");
+    expect(prepared.model).toBe("gpt-5");
+    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
+  });
 
   test("uses AuthBackend-vended keys on delegated compatible requests", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
