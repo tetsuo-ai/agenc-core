@@ -8,12 +8,7 @@
 export const meta = {
   description: "--yolo: two messages in one session, both reach idle.",
   args: ["--yolo"],
-  timeoutMs: 120_000,
-  // Same 'agent not found' crash as 07 fires in --yolo on the second
-  // submit. The previous run's PASS was flake — daemon-side state from
-  // earlier scenarios momentarily masked the race. Filed alongside 07
-  // as GAP-DMN-AGENT-NOT-FOUND.
-  skip: "blocked on multi-turn 'agent not found' crash (--yolo too); see GAP-DMN-AGENT-NOT-FOUND",
+  timeoutMs: 180_000,
 };
 
 export default async function (session) {

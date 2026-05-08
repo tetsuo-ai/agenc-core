@@ -11,8 +11,7 @@
  */
 export const meta = {
   description: "Up arrow recalls previous input from history.",
-  timeoutMs: 60_000,
-  skip: "blocked on multi-turn agent-not-found crash; see GAP-DMN-AGENT-NOT-FOUND",
+  timeoutMs: 90_000,
 };
 
 export default async function (session) {

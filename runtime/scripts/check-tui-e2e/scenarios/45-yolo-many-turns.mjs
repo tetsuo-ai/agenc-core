@@ -12,8 +12,7 @@
 export const meta = {
   description: "--yolo: 4 turns survive the agent-not-found race.",
   args: ["--yolo"],
-  timeoutMs: 240_000,
-  skip: "blocked on multi-turn 'agent not found' crash; see GAP-DMN-AGENT-NOT-FOUND",
+  timeoutMs: 360_000,
 };
 
 export default async function (session) {

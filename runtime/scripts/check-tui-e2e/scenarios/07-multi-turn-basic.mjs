@@ -11,13 +11,7 @@
  */
 export const meta = {
   description: "Two messages in one session, both reach idle, no crash.",
-  timeoutMs: 120_000,
-  // The second submit reliably triggers `AgenC daemon agent not found:
-  // <id>` from handlePersistentDaemonMessage and crashes the TUI client
-  // (chunk-LQ3VSMDG.js:65847). Same class as today's late post-turn
-  // crash. Filed as GAP-DMN-AGENT-NOT-FOUND. Default mode only — yolo
-  // counterpart 08-yolo-multi-turn passes.
-  skip: "blocked on multi-turn 'agent not found' crash (default mode); see GAP-DMN-AGENT-NOT-FOUND",
+  timeoutMs: 180_000,
 };
 
 export default async function (session) {

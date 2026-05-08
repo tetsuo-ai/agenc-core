@@ -18,11 +18,6 @@ export const meta = {
   description: "--yolo: model uses Edit, file content updated on disk.",
   args: ["--yolo"],
   timeoutMs: 90_000,
-  // The model reads the file with FileRead before editing. FileRead under
-  // --yolo hits the same overlay-leak bug as Read/Glob (GAP-PE-YOLO-LEAK)
-  // and the scenario times out waiting for the dialog the harness can't
-  // see. Unblocks once GAP-PE-YOLO-LEAK lands.
-  skip: "blocked on FileRead --yolo overlay leak; see GAP-PE-YOLO-LEAK",
 };
 
 export default async function (session) {
