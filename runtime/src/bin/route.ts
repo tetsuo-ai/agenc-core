@@ -77,6 +77,8 @@ export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--yolo",
   "--continue",
   "-c",
+  "-p",
+  "--print",
   "--dangerously-bypass-approvals-and-sandbox",
   "--allow-dangerously-skip-permissions",
 ] as const);
@@ -187,6 +189,8 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   // treat as the prompt (after stripping routing flags).
   const userArgv = opts.argv.slice(2);
   const hasNoTuiFlag = userArgv.includes("--no-tui");
+  const hasPrintFlag =
+    userArgv.includes("-p") || userArgv.includes("--print");
   const hasContinueFlag =
     userArgv.includes("--continue") || userArgv.includes("-c");
   const resumeId =
@@ -209,7 +213,21 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return { kind: "continueTUI", args: {} };
   }
 
-  // 3. Piped stdin starts a daemon-backed one-shot agent and writes its ID.
+  // 3. `-p` / `--print` is the documented headless print-mode flag. It
+  //    must short-circuit BEFORE the TTY branches: in a TTY the user
+  //    explicitly asked for non-TUI mode, and combinations like
+  //    `agenc --yolo -p "<prompt>"` were previously being routed into
+  //    the Ink TUI (because -p was unrecognized and ended up baked into
+  //    `prompt` text), which then exited 1 with no error.
+  if (hasPrintFlag) {
+    return {
+      kind: "oneShotCLI",
+      userMessage: prompt,
+      ...(startupImages.length > 0 ? { startupImages } : {}),
+    };
+  }
+
+  // 4. Piped stdin starts a daemon-backed one-shot agent and writes its ID.
   if (!opts.isTTY) {
     return {
       kind: "oneShotCLI",
@@ -218,7 +236,7 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     };
   }
 
-  // 4. `--no-tui` is an explicit operator override. Even inside a TTY
+  // 5. `--no-tui` is an explicit operator override. Even inside a TTY
   //    the caller gets the daemon-backed single-shot path.
   if (hasNoTuiFlag) {
     return {
@@ -228,7 +246,7 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     };
   }
 
-  // 5. Interactive TTY -> boot the Ink TUI. Forward any argv prompt as
+  // 6. Interactive TTY -> boot the Ink TUI. Forward any argv prompt as
   //    daemon-backed startup input for the TUI attachment path.
   if (opts.isStdoutTTY) {
     const args: BootTUIArgs = {
@@ -238,7 +256,7 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
     return { kind: "bootTUI", args };
   }
 
-  // 6. Fallback - stdout is not a TTY (captured pipe, CI runner, etc.)
+  // 7. Fallback - stdout is not a TTY (captured pipe, CI runner, etc.)
   //    so the TUI would scribble escape codes into logs. Use the one-shot CLI.
   return {
     kind: "oneShotCLI",
