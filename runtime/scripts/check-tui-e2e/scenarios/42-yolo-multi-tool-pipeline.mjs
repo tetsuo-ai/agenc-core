@@ -9,6 +9,12 @@ export const meta = {
   description: "--yolo: model chains two Bash calls in a single turn.",
   args: ["--yolo"],
   timeoutMs: 120_000,
+  // The model (qwen3 via LMStudio) often only runs the first echo and
+  // narrates the second instead of actually invoking Bash for it. The
+  // chain pattern we need is provider/model-dependent and unstable in
+  // CI; either prompt-engineer harder or pin a more obedient model.
+  // Until then, skip.
+  skip: "model-dependent: chain not reliably triggered with current LMStudio config",
 };
 
 export default async function (session) {

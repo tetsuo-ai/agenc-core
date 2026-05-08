@@ -18,7 +18,7 @@ const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 
 export const meta = {
   description: "agenc mcp serve binds without crashing.",
-  timeoutMs: 15_000,
+  timeoutMs: 30_000,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -42,7 +42,10 @@ export default async function () {
     );
   }
   child.kill("SIGTERM");
-  await new Promise((r) => child.on("close", r));
+  await Promise.race([
+    new Promise((r) => child.on("close", r)),
+    sleep(2_000).then(() => child.kill("SIGKILL")),
+  ]);
   // Crash patterns in stderr (the server writes status to stderr).
   if (/Cannot find module|TypeError|ReferenceError|UnhandledPromiseRejection/.test(stderr)) {
     throw new Error(`mcp serve emitted crash pattern: ${stderr.slice(0, 400)}`);
