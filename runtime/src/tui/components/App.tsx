@@ -1121,6 +1121,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     props.session,
     props.initialUserMessages ?? [],
   );
+  // Refs for things the slash-command submit handler needs to read live
+  // without re-creating its stable useCallback closure on every render.
+  // transcriptMessagesRef gives /rename, /export, /copy, /diff, /btw a
+  // real conversation history (commands like /rename call
+  // getMessagesAfterCompactBoundary(context.messages); an empty array
+  // would crash them mid-flow).
+  const transcriptMessagesRef = useRef<readonly unknown[]>(transcript.messages);
+  useEffect(() => {
+    transcriptMessagesRef.current = transcript.messages;
+  }, [transcript.messages]);
   const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
   const setModel = useCallback(
@@ -1190,6 +1200,94 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   );
   const commands = useMemo(() => listTuiCommandList(), []);
   const agents = useMemo(() => listAgentRoleDefinitions(), []);
+
+  // Tool-use context builder. Declared above submit so the slash-command
+  // interceptor can read it without TDZ on first render. Also handed to
+  // PromptInput further down so non-slash flows keep their existing
+  // wiring. The `messages` parameter is passed through so commands like
+  // /rename, /export, /copy, /diff, /btw — which read context.messages —
+  // see real conversation history rather than the empty array the old
+  // call site passed.
+  const getToolUseContext = useCallback(
+    (
+      messages: unknown[],
+      _newMessages: unknown[],
+      abortController: AbortController,
+    ) =>
+      ({
+        abortController:
+          props.session.abortController ?? abortController ?? new AbortController(),
+        cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
+        getAppState: () => appStateStore.getState(),
+        getToolPermissionContext: async () => toolPermissionContext,
+        messages,
+        readFileState: new Map<string, unknown>(),
+        options: {
+          commands,
+          tools: availableTools,
+          mcpClients,
+          mcpResources: {},
+          isNonInteractiveSession: false,
+          refreshTools: refreshAvailableTools,
+        },
+        services: props.session.services,
+        session: props.session,
+        tools: availableTools,
+        setToolJSX,
+        mcpClients,
+      }) as any,
+    [
+      appStateStore,
+      commands,
+      availableTools,
+      mcpClients,
+      props.session,
+      refreshAvailableTools,
+      toolPermissionContext,
+      setToolJSX,
+    ],
+  );
+
+  // Transient-message helper. local-jsx commands (e.g. /color, /rename)
+  // pass a status string to onDone — without this, that string was
+  // silently dropped. Mount a bordered overlay with the message and
+  // auto-clear after ~3 seconds so the user can keep typing.
+  const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const showTransientResult = useCallback(
+    (text: string, opts?: { display?: string }) => {
+      if (transientResultTimerRef.current !== null) {
+        clearTimeout(transientResultTimerRef.current);
+        transientResultTimerRef.current = null;
+      }
+      const isError = (opts?.display ?? "").toLowerCase() === "error";
+      setToolJSX({
+        jsx: (
+          <Box
+            flexDirection="column"
+            paddingX={1}
+            borderStyle="round"
+            borderColor={isError ? "red" : "gray"}
+          >
+            <Text>{text}</Text>
+          </Box>
+        ),
+        shouldHidePromptInput: false,
+      });
+      transientResultTimerRef.current = setTimeout(() => {
+        transientResultTimerRef.current = null;
+        setToolJSX(null);
+      }, 3000);
+    },
+    [setToolJSX],
+  );
+  useEffect(() => {
+    return () => {
+      if (transientResultTimerRef.current !== null) {
+        clearTimeout(transientResultTimerRef.current);
+        transientResultTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const submit = useCallback(
     async (value: string) => {
@@ -1275,10 +1373,19 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             // shapes that dispatchSlashCommand can't handle correctly
             // because executeLegacyCommandSurface returns errors for
             // those types in headless mode.
+            const parsedNameLower = parsed.name.toLowerCase();
             const legacySpec = registeredLegacyCommandSurfaceSpecs.find(
-              (spec) =>
-                spec.name === parsed.name ||
-                (Array.isArray(spec.aliases) && spec.aliases.includes(parsed.name)),
+              (spec) => {
+                if (spec.name.toLowerCase() === parsedNameLower) return true;
+                if (Array.isArray(spec.aliases)) {
+                  for (const alias of spec.aliases) {
+                    if (typeof alias === "string" && alias.toLowerCase() === parsedNameLower) {
+                      return true;
+                    }
+                  }
+                }
+                return false;
+              },
             );
             if (legacySpec !== undefined) {
               const tuiHandlers = {
@@ -1294,7 +1401,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                 submitPromptToModel: async (content: string) => {
                   await props.session.submit?.(content);
                 },
-                toolUseContext: getToolUseContext([], [], new AbortController()),
+                notifyResult: (resultText: string, resultOpts?: { display?: string }) => {
+                  showTransientResult(resultText, resultOpts);
+                },
+                toolUseContext: getToolUseContext(
+                  transcriptMessagesRef.current as unknown[],
+                  [],
+                  new AbortController(),
+                ),
               };
               const result = await executeLegacyCommandSurfaceForTui(
                 legacySpec,
@@ -1330,7 +1444,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
       await props.session.submit?.(value);
     },
-    [pastedContents, props.session, setToolJSX, getToolUseContext],
+    [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult],
   );
   useInitialSubmit(
     props.session,
@@ -1339,43 +1453,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     props.initialUserMessages,
   );
 
-  const getToolUseContext = useCallback(
-    (
-      _messages: unknown[],
-      _newMessages: unknown[],
-      abortController: AbortController,
-    ) =>
-      ({
-        abortController:
-          props.session.abortController ?? abortController ?? new AbortController(),
-        cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
-        getAppState: () => appStateStore.getState(),
-        getToolPermissionContext: async () => toolPermissionContext,
-        options: {
-          commands,
-          tools: availableTools,
-          mcpClients,
-          mcpResources: {},
-          isNonInteractiveSession: false,
-          refreshTools: refreshAvailableTools,
-        },
-        services: props.session.services,
-        session: props.session,
-        tools: availableTools,
-        setToolJSX,
-        mcpClients,
-      }) as any,
-    [
-      appStateStore,
-      commands,
-      availableTools,
-      mcpClients,
-      props.session,
-      refreshAvailableTools,
-      toolPermissionContext,
-      setToolJSX,
-    ],
-  );
   const toolUseConfirmQueue = useMemo(
     () => buildToolUseConfirmQueue(permissionRequests, availableTools),
     [permissionRequests, availableTools],

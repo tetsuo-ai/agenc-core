@@ -726,6 +726,13 @@ export interface LegacyCommandTuiHandlers {
   unmountJsx(): void;
   submitPromptToModel(content: string): Promise<void>;
   /**
+   * Surfaces the optional result string a local-jsx command passes to its
+   * onDone callback (e.g. /color's "Session color set to: blue", /rename's
+   * "Cannot rename: ..."). The TUI binds this to a transient message
+   * append so success/error confirmations don't get silently swallowed.
+   */
+  notifyResult?(text: string, opts?: { display?: string }): void;
+  /**
    * Per-invocation LocalJSXCommandContext / ToolUseContext composite the
    * TUI builds for the current session. Passed verbatim to the command's
    * call() function alongside the onDone callback.
@@ -746,7 +753,15 @@ async function executeLegacyCommandSurface(
     };
   }
   const descriptor = await loadLegacyCommandSurface(params);
-  if (descriptor.type === "local-jsx" && params.nonInteractiveExportName) {
+  // Only fall back to the alternate `local` export when no interactive
+  // TUI handlers are available. When the TUI is driving the dispatch we
+  // always want the live JSX dialog (e.g. /export's interactive picker)
+  // rather than the headless plain-text alternate.
+  if (
+    tuiHandlers === undefined &&
+    descriptor.type === "local-jsx" &&
+    params.nonInteractiveExportName
+  ) {
     const alternate = await loadLegacyCommandSurface(
       params,
       params.nonInteractiveExportName,
@@ -780,8 +795,30 @@ async function executeLegacyCommandSurface(
     // The onDone callback dismisses the JSX overlay. Some commands fire
     // it eagerly with a status string (e.g. "Cannot rename: ..."); others
     // hand off to a long-lived dialog and never call onDone. In both
-    // cases we want to dismiss when the dialog signals completion.
-    const onDone = () => {
+    // cases we want to dismiss when the dialog signals completion. When
+    // a result string is passed, surface it to the TUI before unmounting
+    // so the user actually sees the success/error confirmation.
+    const onDone = (result?: string, opts?: unknown) => {
+      try {
+        if (
+          typeof result === "string" &&
+          result.length > 0 &&
+          typeof tuiHandlers.notifyResult === "function"
+        ) {
+          const display =
+            opts !== null &&
+            typeof opts === "object" &&
+            typeof (opts as { display?: unknown }).display === "string"
+              ? ((opts as { display: string }).display)
+              : undefined;
+          tuiHandlers.notifyResult(
+            result,
+            display !== undefined ? { display } : undefined,
+          );
+        }
+      } catch {
+        // best-effort
+      }
       try {
         tuiHandlers.unmountJsx();
       } catch {
