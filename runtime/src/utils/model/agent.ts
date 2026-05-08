@@ -49,9 +49,9 @@ export function getAgentModel(
   const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
 
   // Provider-aware model alias fallback for agents.
-  // AgenC-native providers (Bedrock, Vertex, Foundry, official provider API)
-  // have guaranteed haiku/sonnet model availability. Custom provider-compatible
-  // endpoints, openai-shim, Gemini, Mistral, and other providers may not have
+  // AgenC-native provider API modes have guaranteed haiku/sonnet model
+  // availability. Custom provider-compatible endpoints, openai-shim, Gemini,
+  // Mistral, and other providers may not have
   // equivalent models, causing "model not found" errors when resolving aliases.
   // For haiku/sonnet aliases on non-AgenC-native providers, inherit parent model.
   // Note: 'opus' is NOT included here because it's handled separately by

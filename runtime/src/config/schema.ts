@@ -2329,13 +2329,12 @@ export function resolveModelDisambiguated(
     const provider = slug.slice(0, colonIdx);
     const model = slug.slice(colonIdx + 1);
     const providerModels = providerCatalog[provider];
-    if (!providerModels) {
-      throw new UnknownModelError(slug, providerIds);
+    if (providerModels) {
+      if (!providerModels.includes(model)) {
+        throw new UnknownModelError(slug, providerIds);
+      }
+      return Object.freeze({ provider, model });
     }
-    if (!providerModels.includes(model)) {
-      throw new UnknownModelError(slug, providerIds);
-    }
-    return Object.freeze({ provider, model });
   }
 
   // Invert catalog: model → providers[].

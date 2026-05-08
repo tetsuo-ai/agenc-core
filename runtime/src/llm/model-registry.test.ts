@@ -124,6 +124,24 @@ describe("ModelRegistry", () => {
     expect(entry.cost.matchedKey).toBe("openai-compatible");
   });
 
+  it("keeps provider-owned model IDs with colons intact", () => {
+    const registry = new ModelRegistry({ config: defaultConfig() });
+
+    expect(registry.resolveSelection("amazon.nova-pro-v1:0", "grok")).toEqual({
+      provider: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+    });
+    expect(
+      registry.resolveSelection(
+        "amazon-bedrock:amazon.nova-pro-v1:0",
+        "grok",
+      ),
+    ).toEqual({
+      provider: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+    });
+  });
+
   it("preserves unknown-cost fallback without hiding registry misses", () => {
     const registry = new ModelRegistry({
       config: defaultConfig(),

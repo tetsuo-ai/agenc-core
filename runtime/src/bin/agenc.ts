@@ -2077,8 +2077,7 @@ async function loadCreateDaemonTuiSession(): Promise<
     clientId: string;
   }) => Promise<unknown>
 > {
-  const specifier = "../tui/daemon-session.js";
-  const mod = (await import(specifier)) as {
+  const mod = (await import("../tui/daemon-session.js")) as {
     readonly createDaemonTuiSession: (opts: {
       baseSession: unknown;
       client: unknown;
@@ -2102,8 +2101,9 @@ type EarlyInputCapture = {
 
 async function startTuiEarlyInputCapture(): Promise<() => string> {
   try {
-    const specifier = "../tui/ink/vendored/earlyInput.js";
-    const mod = (await import(specifier)) as EarlyInputCapture;
+    const mod = (await import(
+      "../utils/earlyInput.js"
+    )) as EarlyInputCapture;
     mod.startCapturingEarlyInput?.();
     return () => mod.consumeEarlyInput?.({ restoreRawMode: true }) ?? "";
   } catch {

@@ -130,6 +130,28 @@ const ITEM_EVIDENCE = {
       { pattern: "assertZc15ChecklistHandoffClarified", scope: "scripts/goal/verify.mjs" },
     ],
   },
+  "GAP-PROV-01": {
+    files: [
+      "runtime/src/llm/providers/bedrock/index.ts",
+      "runtime/src/llm/registry/provider-info.ts",
+      "runtime/src/llm/provider.ts",
+      "runtime/src/llm/discovery/provider-discovery.ts",
+      "runtime/src/bin/startup-selection.ts",
+    ],
+    tests: [
+      "runtime/src/llm/providers/bedrock/provider.test.ts",
+      "runtime/src/llm/registry/provider-info.test.ts",
+      "runtime/src/llm/provider.test.ts",
+      "runtime/src/llm/provider-parity.test.ts",
+      "runtime/src/llm/discovery/provider-discovery.test.ts",
+      "runtime/src/bin/startup-selection.test.ts",
+    ],
+    grepPresent: [
+      { pattern: "AWS4-HMAC-SHA256", scope: "runtime/src/llm/providers/bedrock/index.ts" },
+      { pattern: "amazon\\.nova-pro-v1:0", scope: "runtime/src/llm/registry/provider-info.ts" },
+      { pattern: "case \"amazon-bedrock\"", scope: "runtime/src/llm/provider.ts" },
+    ],
+  },
   "GAP-TUI-03": {
     files: [
       "runtime/src/commands/clear.ts",
@@ -6787,6 +6809,13 @@ async function gapGates(item) {
     return;
   }
   if (
+    id === "GAP-PROV-01" ||
+    item.title.includes("Implement Amazon Bedrock adapter")
+  ) {
+    assertGapProvAmazonBedrockAdapter();
+    return;
+  }
+  if (
     id === "GAP-DMN-05" ||
     item.title.includes("Add `agenc-runtime reload` subcommand")
   ) {
@@ -7119,6 +7148,143 @@ function assertGapProvUnsupportedProvidersResolved() {
   }
 
   pass("GAP-PROV-02: unsupported provider enum entries removed and concrete provider adapters verified");
+}
+
+function assertGapProvAmazonBedrockAdapter() {
+  const providerRel = "runtime/src/llm/providers/bedrock/index.ts";
+  const providerTestRel = "runtime/src/llm/providers/bedrock/provider.test.ts";
+  const registryRel = "runtime/src/llm/registry/provider-info.ts";
+  const registryTestRel = "runtime/src/llm/registry/provider-info.test.ts";
+  const factoryRel = "runtime/src/llm/provider.ts";
+  const factoryTestRel = "runtime/src/llm/provider.test.ts";
+  const parityTestRel = "runtime/src/llm/provider-parity.test.ts";
+  const modelRegistryTestRel = "runtime/src/llm/model-registry.test.ts";
+  const discoveryTestRel = "runtime/src/llm/discovery/provider-discovery.test.ts";
+  const startupSelectionRel = "runtime/src/bin/startup-selection.ts";
+  const startupSelectionTestRel = "runtime/src/bin/startup-selection.test.ts";
+  const capabilitiesRel = "runtime/src/llm/capabilities.ts";
+
+  for (const rel of [
+    providerRel,
+    providerTestRel,
+    registryRel,
+    registryTestRel,
+    factoryRel,
+    factoryTestRel,
+    parityTestRel,
+    modelRegistryTestRel,
+    discoveryTestRel,
+    startupSelectionRel,
+    startupSelectionTestRel,
+    capabilitiesRel,
+  ]) {
+    if (!existsSync(path.join(root, rel))) {
+      failGate(`GAP-PROV-01: missing ${rel}`);
+    }
+  }
+
+  const providerSource = readFileSync(path.join(root, providerRel), "utf8");
+  for (const needle of [
+    "export class BedrockProvider",
+    "AWS4-HMAC-SHA256",
+    "function signRequest",
+    "`/model/${encodeURIComponent(params.model)}/converse`",
+    "toolUse",
+    "toolResult",
+    "bedrockBaseURLForRegion",
+    "chatStream(",
+  ]) {
+    if (!providerSource.includes(needle)) {
+      failGate(`GAP-PROV-01: ${providerRel} missing Bedrock provider evidence: ${needle}`);
+    }
+  }
+
+  const registrySource = readFileSync(path.join(root, registryRel), "utf8");
+  for (const needle of [
+    '"amazon-bedrock": "amazon.nova-pro-v1:0"',
+    '"amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com"',
+    '"amazon-bedrock": "AWS_ACCESS_KEY_ID"',
+    '"amazon-bedrock": "Amazon Bedrock"',
+  ]) {
+    if (!registrySource.includes(needle)) {
+      failGate(`GAP-PROV-01: ${registryRel} missing registry evidence: ${needle}`);
+    }
+  }
+  const omissionsStart = registrySource.indexOf(
+    "export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS",
+  );
+  const omissionsEnd = registrySource.indexOf(
+    "export const BUILT_IN_PROVIDER_API_KEY_ENVS",
+    omissionsStart,
+  );
+  const omissionsBlock = omissionsStart >= 0 && omissionsEnd > omissionsStart
+    ? registrySource.slice(omissionsStart, omissionsEnd)
+    : "";
+  if (omissionsBlock.includes("amazon-bedrock")) {
+    failGate("GAP-PROV-01: amazon-bedrock must not remain in BUILT_IN_PROVIDER_SCOPE_OMISSIONS");
+  }
+
+  const factorySource = readFileSync(path.join(root, factoryRel), "utf8");
+  for (const needle of [
+    "BedrockProvider",
+    'case "amazon-bedrock"',
+    "AWS_BEDROCK_REGION",
+    "AWS_SECRET_ACCESS_KEY",
+    "bedrockBaseURLForRegion(region)",
+  ]) {
+    if (!factorySource.includes(needle)) {
+      failGate(`GAP-PROV-01: ${factoryRel} missing factory evidence: ${needle}`);
+    }
+  }
+
+  const testExpectations = [
+    [providerTestRel, "serializes Converse requests and signs them with AWS SigV4"],
+    [providerTestRel, "Signature=fce0b51b3833e2186a19397da2d5eb962c1dc56afed0a03ca0373fee8efdb852"],
+    [providerTestRel, "encodes reserved characters in model identifiers before signing"],
+    [providerTestRel, "uses request-scoped model overrides for URL signing"],
+    [providerTestRel, "serializes empty text messages without blank content blocks"],
+    [providerTestRel, "rejects unsupported non-tool message content"],
+    [providerTestRel, "serializes empty tool results without blank text blocks"],
+    [providerTestRel, "serializes tool-call-only assistant turns without placeholder text"],
+    [providerTestRel, "rejects a filtered-out specific tool choice before sending"],
+    [providerTestRel, "fails closed on malformed replayed tool call arguments"],
+    [providerTestRel, "parses toolUse responses and exposes chatStream"],
+    [providerTestRel, "emits only the done chunk for tool-call-only stream responses"],
+    [factoryTestRel, "routes generic apiKey to Bedrock accessKeyId"],
+    [factoryTestRel, "recreates Bedrock provider from factory options with explicit credentials"],
+    [factoryTestRel, "secretAccessKey"],
+    [factoryTestRel, "routes 'amazon-bedrock' to BedrockProvider"],
+    [registryTestRel, "Amazon Bedrock"],
+    [modelRegistryTestRel, "keeps provider-owned model IDs with colons intact"],
+    [discoveryTestRel, "requires both Bedrock access and secret credentials"],
+    [startupSelectionTestRel, "uses Bedrock model env when selected by provider"],
+    [parityTestRel, 'provider: "amazon-bedrock"'],
+  ];
+  for (const [rel, needle] of testExpectations) {
+    const source = readFileSync(path.join(root, rel), "utf8");
+    if (!source.includes(needle)) {
+      failGate(`GAP-PROV-01: ${rel} missing regression evidence: ${needle}`);
+    }
+  }
+
+  const vitest = run("npm", [
+    "exec",
+    "--workspace=@tetsuo-ai/runtime",
+    "vitest",
+    "run",
+    "src/llm/providers/bedrock/provider.test.ts",
+    "src/llm/provider.test.ts",
+    "src/llm/registry/provider-info.test.ts",
+    "src/llm/model-registry.test.ts",
+    "src/llm/discovery/provider-discovery.test.ts",
+    "src/llm/provider-parity.test.ts",
+    "src/config/config.test.ts",
+    "src/bin/startup-selection.test.ts",
+  ]);
+  if (vitest.status !== 0) {
+    failGate("GAP-PROV-01 targeted Amazon Bedrock provider tests failed");
+  }
+  pass("GAP-PROV-01 Amazon Bedrock provider is registered, signed, and tested");
 }
 
 function assertGapDmnDaemonReloadSubcommand() {

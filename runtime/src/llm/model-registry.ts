@@ -198,10 +198,13 @@ export class ModelRegistry {
 
     const explicitSeparator = trimmed.indexOf(":");
     if (explicitSeparator > 0) {
-      return normalizeRegistrySelection({
-        provider: trimmed.slice(0, explicitSeparator),
-        model: trimmed.slice(explicitSeparator + 1),
-      });
+      const explicitProvider = trimmed.slice(0, explicitSeparator);
+      if (normalizeProviderSlug(explicitProvider) !== undefined) {
+        return normalizeRegistrySelection({
+          provider: explicitProvider,
+          model: trimmed.slice(explicitSeparator + 1),
+        });
+      }
     }
 
     try {

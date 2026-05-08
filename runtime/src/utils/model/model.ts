@@ -216,9 +216,8 @@ export function getDefaultOpusModel(): ModelName {
   if (getAPIProvider() === 'xai') {
     return process.env.OPENAI_MODEL || 'grok-4'
   }
-  // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
-  // since 3P availability lags firstParty and these will diverge again at
-  // the next model launch. Keep 3P on Opus 4.6 until they roll out 4.7.
+  // Other third-party provider API modes may lag firstParty model launches, so
+  // keep their generic fallback on Opus 4.6 until they roll out 4.7.
   if (getAPIProvider() !== 'firstParty') {
     return getModelStrings().opus46
   }

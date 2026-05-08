@@ -129,16 +129,20 @@ describe("LLM registry", () => {
     expect(resolveBuiltInProviderInfo("anthropic")).toMatchObject({
       baseURL: "https://api.anthropic.com/v1",
     });
+    expect(resolveBuiltInProviderInfo("amazon-bedrock")).toMatchObject({
+      id: "amazon-bedrock",
+      name: "Amazon Bedrock",
+      defaultModel: "amazon.nova-pro-v1:0",
+      baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+      apiKeyEnvVar: "AWS_ACCESS_KEY_ID",
+    });
     expect(listBuiltInProviderInfo().map((entry) => entry.id)).toContain(
       "openai-compatible",
     );
   });
 
-  it("documents provider-info source rows outside AgenC runtime scope", () => {
-    expect(resolveBuiltInProviderInfo("amazon-bedrock")).toBeUndefined();
-    expect(BUILT_IN_PROVIDER_SCOPE_OMISSIONS).toMatchObject({
-      "amazon-bedrock": expect.stringContaining("AWS SigV4"),
-    });
+  it("does not carry unresolved built-in provider scope omissions", () => {
+    expect(BUILT_IN_PROVIDER_SCOPE_OMISSIONS).toEqual({});
   });
 
   it("resolves donor model catalog metadata by exact, prefix, and namespace", () => {

@@ -26,6 +26,7 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   "nvidia-nim": "nvidia/llama-3.1-nemotron-70b-instruct",
   minimax: "MiniMax-M2.5",
   github: "gpt-4o",
+  "amazon-bedrock": "amazon.nova-pro-v1:0",
   agenc: "agenc",
 } as const);
 
@@ -46,13 +47,11 @@ export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   "nvidia-nim": "https://integrate.api.nvidia.com/v1",
   minimax: "https://api.minimax.io/v1",
   github: "https://api.githubcopilot.com",
+  "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
   agenc: "https://api.agenc.tech/v1",
 } as const satisfies Readonly<Record<BuiltInProviderSlug, string>>);
 
-export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({
-  "amazon-bedrock":
-    "AgenC does not expose an AWS SigV4 Amazon Bedrock runtime provider yet.",
-} as const);
+export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({} as const);
 
 export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   Partial<Record<BuiltInProviderSlug, string>>
@@ -70,6 +69,7 @@ export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   "nvidia-nim": "NVIDIA_API_KEY",
   minimax: "MINIMAX_API_KEY",
   github: "GITHUB_TOKEN",
+  "amazon-bedrock": "AWS_ACCESS_KEY_ID",
 });
 
 export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
@@ -117,6 +117,11 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ]),
   minimax: Object.freeze(["MiniMax-M2.5", "MiniMax-M2.7"]),
   github: Object.freeze(["gpt-4o", "gpt-5.4", "github:copilot"]),
+  "amazon-bedrock": Object.freeze([
+    "amazon.nova-pro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "amazon.nova-micro-v1:0",
+  ]),
   agenc: Object.freeze(["agenc"]),
 });
 
@@ -150,6 +155,7 @@ const PROVIDER_DISPLAY_NAMES: Readonly<Record<BuiltInProviderSlug, string>> =
     "nvidia-nim": "NVIDIA NIM",
     minimax: "MiniMax",
     github: "GitHub Copilot",
+    "amazon-bedrock": "Amazon Bedrock",
     agenc: "AgenC",
   });
 

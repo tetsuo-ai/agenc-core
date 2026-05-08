@@ -437,6 +437,22 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
   "nvidia-nim": HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
   minimax: HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
   github: HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
+  "amazon-bedrock": {
+    supportsToolUse: true,
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
+    supportsProviderNativeWebSearch: false,
+    supportsExtendedThinking: false,
+    acceptsImageHistory: false,
+    acceptsAudioHistory: false,
+    acceptsThinkingHistory: false,
+    acceptsReasoningEffort: false,
+  },
   lmstudio: {
     // LM Studio is model-dependent, so use the same local-model heuristic as
     // Ollama instead of claiming universal multimodal support.
