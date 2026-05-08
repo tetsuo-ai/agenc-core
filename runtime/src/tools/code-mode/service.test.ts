@@ -47,9 +47,10 @@ describe("QuickJsCodeModeService", () => {
     expect(response.contentItems).toEqual([
       { type: "input_text", text: "hello from code mode" },
     ]);
-    expect(codeModeRuntimeResponseToToolResult(response).content).toContain(
-      "Script completed",
-    );
+    const content = codeModeRuntimeResponseToToolResult(response).content;
+    // Output-first contract: stdout body leads, [code_mode ...] footer trails.
+    expect(content.startsWith("hello from code mode")).toBe(true);
+    expect(content).toMatch(/\[code_mode status=completed [^\]]+\]$/);
   });
 
   test("stores serializable values across exec cells", async () => {

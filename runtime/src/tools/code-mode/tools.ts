@@ -53,41 +53,67 @@ export function codeModeRuntimeResponseToToolResult(
       ? options.maxOutputTokens
       : DEFAULT_MAX_OUTPUT_TOKENS;
   const output = renderContentItems(response.contentItems);
-  const lines: string[] = [];
 
+  // Output-first format. The previous order put "Script completed /
+  // Wall time N seconds / Output:" BEFORE the actual stdout, which
+  // matched the leading-metadata pattern that triggered Grok's
+  // exec_command 3x retry. See runtime/src/tools/system/exec-result-format.ts
+  // and runtime/src/tools/context.ts:execResponseText for the matching
+  // sibling formatters.
+  let status: "completed" | "failed" | "terminated" | "yielded";
   switch (response.type) {
     case "yielded":
-      lines.push(`Script running with cell ID ${response.cellId}`);
+      status = "yielded";
       break;
     case "terminated":
-      lines.push("Script terminated");
+      status = "terminated";
       break;
     case "result":
-      lines.push(response.errorText ? "Script failed" : "Script completed");
+      status = response.errorText ? "failed" : "completed";
       break;
   }
 
-  lines.push(`Wall time ${seconds(response.durationMs)} seconds`);
+  const sections: string[] = [];
   if (output.length > 0) {
-    lines.push("Output:");
-    lines.push(output);
+    sections.push(output);
+  } else if (response.type === "yielded") {
+    // No stdout has arrived yet — the "running cell" announcement IS
+    // the user-visible message, so it leads as body. The same cell_id
+    // is also in the trailing footer for consistency.
+    sections.push(`Script running with cell ID ${response.cellId}`);
   }
   if (response.type === "result" && response.errorText) {
-    lines.push("Script error:");
-    lines.push(response.errorText);
+    if (sections.length > 0) sections.push("");
+    sections.push(`Script error: ${response.errorText}`);
   }
-
-  const content = truncateApproxTokens(lines.join("\n"), maxOutputTokens);
-  const richItems: FunctionCallOutputContentItem[] = [
-    { type: "input_text", text: lines.slice(0, 2).join("\n") },
+  const footerLines = [
+    `status=${status}`,
+    `wall_time=${seconds(response.durationMs)}s`,
+    `cell_id=${response.cellId}`,
   ];
-  if (response.contentItems.length > 0) richItems.push(...response.contentItems);
+  if (sections.length > 0) sections.push("");
+  sections.push(`[code_mode ${footerLines.join(" ")}]`);
+
+  const content = truncateApproxTokens(sections.join("\n"), maxOutputTokens);
+  const richItems: FunctionCallOutputContentItem[] = [];
+  if (response.contentItems.length > 0) {
+    richItems.push(...response.contentItems);
+  } else if (response.type === "yielded") {
+    richItems.push({
+      type: "input_text",
+      text: `Script running with cell ID ${response.cellId}`,
+    });
+  }
   if (response.type === "result" && response.errorText) {
     richItems.push({
       type: "input_text",
-      text: `Script error:\n${response.errorText}`,
+      text: `Script error: ${response.errorText}`,
     });
   }
+  richItems.push({
+    type: "input_text",
+    text: `[code_mode ${footerLines.join(" ")}]`,
+  });
 
   return {
     content,

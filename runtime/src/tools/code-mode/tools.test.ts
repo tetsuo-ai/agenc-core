@@ -20,7 +20,10 @@ describe("code-mode tools", () => {
       code: '// @exec: {"yield_time_ms": 1}\nawait new Promise((resolve) => setTimeout(resolve, 25)); text("done")',
       __callId: "exec-1",
     });
-    expect(first?.content).toContain("Script running with cell ID");
+    // Yielded responses lead with the running-cell announcement (no
+    // user-visible output yet, so the announcement IS the body).
+    expect(first?.content.startsWith("Script running with cell ID")).toBe(true);
+    expect(first?.content).toMatch(/\[code_mode status=yielded /);
     const match = first?.content.match(/cell ID (\d+)/);
     expect(match?.[1]).toBeDefined();
 
@@ -28,8 +31,12 @@ describe("code-mode tools", () => {
       cell_id: match?.[1],
       yield_time_ms: 500,
     });
-    expect(second?.content).toContain("Script completed");
-    expect(second?.content).toContain("done");
+    // Output must lead, the [code_mode ...] footer must trail. The
+    // previous order put a "Script completed / Wall time / Output:"
+    // header BEFORE stdout — same anti-pattern that triggered Grok's
+    // exec_command 3x retry.
+    expect(second?.content.startsWith("done")).toBe(true);
+    expect(second?.content).toMatch(/\[code_mode status=completed [^\]]+\]$/);
   });
 
   test("exec exposes nested registry tools through enabled tool metadata", async () => {
@@ -55,8 +62,8 @@ describe("code-mode tools", () => {
     });
     worker.dispose();
 
-    expect(result.content).toContain("Script completed");
-    expect(result.content).toContain("hello");
+    expect(result.content.startsWith("hello")).toBe(true);
+    expect(result.content).toMatch(/\[code_mode status=completed [^\]]+\]$/);
     expect(exec.description).toContain("system_echo");
   });
 });
