@@ -56,19 +56,32 @@ function isDefaultDaemonAlive() {
 
 function ensureDefaultDaemon() {
   if (isDefaultDaemonAlive()) return true;
-  // Auto-respawn the default daemon — `daemon start` is idempotent if a
-  // healthy daemon is already running. Wait briefly for the socket to
-  // bind so the next scenario doesn't race the spawn.
+  // Auto-respawn the default daemon. First attempt: plain `daemon start`.
+  // If that doesn't come up within 15s, stop any zombie state and retry —
+  // a stale pid file or wedged socket can otherwise keep the next
+  // attempt from binding cleanly.
+  const tryStart = () => {
+    spawnSync(
+      process.execPath,
+      [BIN_AGENC, "daemon", "start"],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+    for (let i = 0; i < 60; i += 1) {
+      if (isDefaultDaemonAlive()) return true;
+      spawnSync("sleep", ["0.25"]);
+    }
+    return false;
+  };
+  if (tryStart()) return true;
+  // Hard reset: stop any half-up daemon, clear sentinel files, then start
+  // fresh. This handles the case where an earlier scenario left the
+  // daemon in a transitional state that `daemon start` can't recover from.
   spawnSync(
     process.execPath,
-    [BIN_AGENC, "daemon", "start"],
-    { encoding: "utf8", timeout: 15_000 },
+    [BIN_AGENC, "daemon", "stop"],
+    { encoding: "utf8", timeout: 10_000 },
   );
-  for (let i = 0; i < 20; i += 1) {
-    if (isDefaultDaemonAlive()) return true;
-    spawnSync("sleep", ["0.25"]);
-  }
-  return false;
+  return tryStart();
 }
 
 const COLORS = {

@@ -34,8 +34,10 @@
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
     "check:tui-e2e": "node scripts/check-tui-e2e/runner.mjs",
     "check:llm-pipeline": "node scripts/check-llm-pipeline/runner.mjs",
+    "check:daemon-errors": "node scripts/check-daemon-errors/runner.mjs",
+    "check:e2e-all": "npm run check:daemon-errors && npm run check:llm-pipeline && npm run check:tui-e2e",
     "test": "vitest run",
-    "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup && npm run check:tui-e2e",
+    "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup && npm run check:e2e-all",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
