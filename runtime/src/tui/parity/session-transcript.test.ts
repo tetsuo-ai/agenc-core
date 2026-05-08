@@ -822,6 +822,54 @@ describe("AgenC TUI session transcript", () => {
     expect(blocks[0]?.text).toContain("baz");
   });
 
+  describe("slash-command echo (Task F event-shape contract)", () => {
+    test("renders the slash-command echo emitted by the App.tsx interceptor as a user message", () => {
+      // The App.tsx slash interceptor emits this exact event shape
+      // before dispatching. The transcript hook must turn it into a
+      // user-row visible to the operator. Pin the shape so a future
+      // refactor of the emit cannot silently break the audit trail.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "slash-echo-12345",
+          msg: {
+            type: "user_message",
+            payload: {
+              displayText: "/agents",
+              message: "/agents",
+            },
+          },
+        },
+      ]);
+      expect(transcript.messages).toHaveLength(1);
+      expect(transcript.messages[0]).toMatchObject({
+        type: "user",
+        message: { content: "/agents" },
+      });
+    });
+
+    test("preserves the raw user input verbatim — aliases display as typed, not canonicalized", () => {
+      // The interceptor passes the raw `text` (not parsed.name) so the
+      // transcript shows what the user actually typed. /bashes (alias
+      // for /tasks) must echo as /bashes.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "slash-echo-alias",
+          msg: {
+            type: "user_message",
+            payload: {
+              displayText: "/bashes",
+              message: "/bashes",
+            },
+          },
+        },
+      ]);
+      expect(transcript.messages[0]).toMatchObject({
+        type: "user",
+        message: { content: "/bashes" },
+      });
+    });
+  });
+
   describe("background-agent transcript leak filters", () => {
     test("suppresses warning events whose cause is background_agent_status", () => {
       const transcript = adaptTranscriptEvents([

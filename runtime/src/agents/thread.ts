@@ -182,6 +182,16 @@ export class AgentThread {
     };
   }
 
+  /**
+   * Record a progress event into this thread's agent-summary
+   * transcript. Initial-replay messages (kind="message" with
+   * isInitialReplay=true) ARE intentionally captured here — the
+   * summary needs the full fork-context history for downstream
+   * consumers to reconstruct what the agent saw at start. Do NOT add
+   * an isInitialReplay filter here; that filter belongs in the
+   * parent-TUI transport (background-agent-runner.ts), not the
+   * summary recorder.
+   */
   recordSummaryProgressEvent(event: RunAgentProgressEvent): void {
     const message = runAgentProgressEventToAgentSummaryMessage(
       event,
