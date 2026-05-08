@@ -631,6 +631,20 @@ function buildSuggestions(
 export function checkToolPathPermission(
   opts: ToolPathPermissionOptions,
 ): PermissionResult {
+  // Mirror the bash short-circuit at permissions/bash.ts: in --yolo /
+  // bypassPermissions mode the user has explicitly opted out of approval
+  // gating, so filesystem-touching tools (Read, Glob, FileRead, ...) must
+  // not surface the working-dir prompt. Without this, `agenc --yolo` was
+  // half-bypassing — Bash and Grep auto-approved while Read/Glob still
+  // prompted, breaking GAP-TEST-* scenarios 11/13/35 and the user's
+  // muscle-memory expectation that --yolo means yolo for everything.
+  if (opts.context.mode === "bypassPermissions") {
+    return {
+      behavior: "allow",
+      updatedInput: opts.input,
+      decisionReason: { type: "mode", mode: "bypassPermissions" },
+    };
+  }
   const result = validatePath(
     opts.path,
     opts.cwd,

@@ -1054,6 +1054,17 @@ export function checkReadPermissionForTool(
       message: `AgenC requested permissions to use ${tool.name}, but you haven't granted it yet.`,
     }
   }
+  // --yolo / bypassPermissions short-circuit. Same rationale as
+  // checkToolPathPermission and permissions/bash.ts: the user opted out
+  // of all approval gating; filesystem reads must not surface the
+  // working-dir prompt. See GAP-PE-YOLO-LEAK.
+  if (toolPermissionContext.mode === 'bypassPermissions') {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: { type: 'mode', mode: 'bypassPermissions' },
+    }
+  }
   const path = tool.getPath(input)
 
   // Get paths to check (includes both original and resolved symlinks).

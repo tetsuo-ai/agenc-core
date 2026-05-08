@@ -57,6 +57,7 @@ const WORKFLOW_TOOL_NAME = feature('WORKFLOW_SCRIPTS')
 const SAFE_YOLO_ALLOWLISTED_TOOLS = new Set([
   // Read-only file operations
   FILE_READ_TOOL_NAME,
+  'Read', // alias of FileRead per permissions/rules.ts:153
   // Search / read-only
   GREP_TOOL_NAME,
   GLOB_TOOL_NAME,

@@ -63,6 +63,7 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
   new Set<string>([
     // Read-only file operations
     "FileRead",
+    "Read", // alias of FileRead per permissions/rules.ts:153
     // Search / read-only
     "Grep",
     "Glob",
