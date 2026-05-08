@@ -543,13 +543,7 @@ function mergeAuthVendedProviderExtra(
   const nonCredentialExtra = extra
     ? Object.fromEntries(
       Object.entries(extra)
-        .filter(
-          ([key]) =>
-            key !== "accessKeyId" &&
-            key !== "secretAccessKey" &&
-            key !== "sessionToken" &&
-            key !== "region",
-        )
+        .filter(([key]) => key !== "accessKeyId")
         .map(([key, value]) => [key, cloneExtraValue(value)]),
     )
     : {};

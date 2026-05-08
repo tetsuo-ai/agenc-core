@@ -364,6 +364,63 @@ describe("createProvider", () => {
     );
   });
 
+  test("uses AuthBackend-vended Bedrock access key with explicit non-access credentials", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          output: {
+            message: {
+              role: "assistant",
+              content: [{ text: "bedrock real contract" }],
+            },
+          },
+          stopReason: "end_turn",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
+      provider,
+      sessionId,
+      apiKey: "vended-aws-access",
+    }));
+    const vendingAuthBackend: AuthBackend = {
+      ...authBackend,
+      vendKey,
+    };
+    const provider = createProvider("amazon-bedrock", {
+      model: "amazon.nova-pro-v1:0",
+      extra: {
+        authBackend: vendingAuthBackend,
+        sessionId: "session-bedrock-real-contract",
+        secretAccessKey: "explicit-aws-secret",
+        sessionToken: "explicit-aws-session",
+        region: "us-west-2",
+        fetchImpl,
+      },
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.content).toBe("bedrock real contract");
+    expect(vendKey).toHaveBeenCalledWith(
+      "amazon-bedrock",
+      "session-bedrock-real-contract",
+    );
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse",
+    );
+    const headers = new Headers(init?.headers as HeadersInit);
+    expect(headers.get("x-amz-security-token")).toBe("explicit-aws-session");
+    expect(headers.get("authorization")).toContain(
+      "Credential=vended-aws-access/",
+    );
+  });
+
   test("rejects empty AuthBackend-vended provider keys", async () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
@@ -950,7 +1007,7 @@ describe("createProvider", () => {
       env: {
         OLLAMA_BASE_URL: undefined,
         OLLAMA_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -963,7 +1020,7 @@ describe("createProvider", () => {
         LMSTUDIO_BASE_URL: undefined,
         LMSTUDIO_MODEL: "qwen2.5-coder:7b",
         OPENAI_API_KEY: "wrong-openai-token",
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -977,7 +1034,7 @@ describe("createProvider", () => {
     {
       name: "lmstudio",
       env: {
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_API_KEY: "wrong-openai-token",
       },
       apiKey: "local-token",
@@ -1030,7 +1087,7 @@ describe("createProvider", () => {
         OPENROUTER_API_KEY: undefined,
         OPENROUTER_BASE_URL: undefined,
         OPENROUTER_MODEL: "openai/gpt-5",
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "or-test",
@@ -1061,7 +1118,7 @@ describe("createProvider", () => {
         GROQ_API_KEY: undefined,
         GROQ_BASE_URL: undefined,
         GROQ_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "groq-test",
@@ -1092,7 +1149,7 @@ describe("createProvider", () => {
         DEEPSEEK_API_KEY: undefined,
         DEEPSEEK_BASE_URL: undefined,
         DEEPSEEK_MODEL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
         OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "deepseek-test",
@@ -1368,7 +1425,7 @@ describe("createProvider", () => {
     const provider = withEnv(
       {
         LMSTUDIO_BASE_URL: undefined,
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
       },
       () =>
         createProvider("lmstudio", {
