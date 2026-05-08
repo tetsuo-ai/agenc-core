@@ -1384,15 +1384,32 @@ export class AgenCDaemonAgentManager {
   }
 
   async #refreshAgentFromRunner(
-    state: AgentLifecycleState,
+    _state: AgentLifecycleState,
     agent: MutableAgent,
   ): Promise<void> {
     if (!isActiveAgent(agent)) return;
     const snapshot = await this.#runner?.getAgentSnapshot?.(agent.agentId);
     if (snapshot === undefined) return;
     if (snapshot === null) {
+      // The runner returned null — agent isn't in its #active map. This
+      // SHOULD only happen after an explicit stop or daemon-shutdown
+      // cleanup, not on a transient race after a turn completes. The
+      // earlier eviction here was the second symptom of the
+      // GAP-DMN-AGENT-NOT-FOUND class: the runner's getAgentSnapshot
+      // would briefly return null for completed-status agents (now
+      // fixed in background-agent-runner), and the lifecycle would
+      // evict before the snapshot stabilized, dooming the next user
+      // turn's message.stream. Defense in depth: only delete if the
+      // runner has explicitly removed the agent from its registry AND
+      // we have an authoritative terminal-state signal (via
+      // recordAgentStatusSnapshots / stopAgent). Without that signal,
+      // a null snapshot is a no-op refresh — leave state.agents alone.
       if (agent.recovered === true) return;
-      state.agents.delete(agent.agentId);
+      // Mark the runner as unavailable but keep the agent record so
+      // the next message.stream finds it. The next refresh that
+      // returns a real snapshot (or an explicit stop event) will
+      // reconcile.
+      agent.runtimeAvailable = false;
       return;
     }
     const previousStatus = agent.status;
