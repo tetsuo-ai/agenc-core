@@ -1527,6 +1527,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         <PermissionOverlay
           request={permissionRequests[0]}
           tools={availableTools as any}
+          mcpClients={mcpClients as any}
         />
       ) : null}
       {!onboarding.active ? (

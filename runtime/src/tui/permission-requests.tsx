@@ -219,23 +219,47 @@ export function usePermissionRequests(
 export function AgenCPermissionOverlay({
   request,
   tools,
+  mcpClients = [],
+  isNonInteractiveSession = false,
+  debug = false,
 }: {
   readonly request: PendingRequest | undefined;
   readonly tools: readonly any[];
+  readonly mcpClients?: readonly unknown[];
+  readonly isNonInteractiveSession?: boolean;
+  readonly debug?: boolean;
 }) {
   return useMemo(() => {
     if (!request) return null;
     const toolUseConfirm = buildToolUseConfirm(request, tools);
     if (toolUseConfirm === null) return null;
+    // The legacy stub `toolUseContext={{} as any}` crashed every
+    // PermissionRequest component that read `toolUseContext.options.*`
+    // — most visibly FilePermissionDialog/useDiffInIDE on
+    // `options.mcpClients`. Populate the minimum shape consumers
+    // expect; the App.tsx render path doesn't run a real model loop
+    // here, so empty `tools`/`mcpClients` and quiet `debug` are
+    // semantically correct (the overlay just renders + sends
+    // approve/deny back to the daemon). See GAP-TUI-WRITE-MCP-CLIENTS-CRASH.
+    const toolUseContext = {
+      options: {
+        tools,
+        mcpClients,
+        isNonInteractiveSession,
+        debug,
+        commands: [],
+        verbose: true,
+      },
+    };
     return (
       <PermissionRequest
         toolUseConfirm={toolUseConfirm as never}
-        toolUseContext={{} as any}
+        toolUseContext={toolUseContext as any}
         onDone={() => {}}
         onReject={() => {}}
         verbose={true}
         workerBadge={undefined}
       />
     );
-  }, [request, tools]);
+  }, [request, tools, mcpClients, isNonInteractiveSession, debug]);
 }
