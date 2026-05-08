@@ -129,7 +129,19 @@ export type ChildToolPolicy = (
 
 export type RunAgentProgressEvent =
   | { readonly kind: "status"; readonly text: string }
-  | { readonly kind: "message"; readonly message: LLMMessage }
+  | {
+      readonly kind: "message";
+      readonly message: LLMMessage;
+      /**
+       * Marks the message as a replay of the agent's initial fork
+       * context (initialMessages from RunAgentParams), not a fresh
+       * turn message. Daemon observability recorders consume these
+       * for replay parity, but TUI transcripts MUST suppress them or
+       * the parent's chat shows the subagent's prompt as if the user
+       * had typed it.
+       */
+      readonly isInitialReplay?: boolean;
+    }
   | {
       readonly kind: "tool_call";
       readonly callId: string;
@@ -1646,13 +1658,17 @@ export async function* runAgent(
 
     // Stream the fork-context messages as progress events so callers
     // observing the generator can record the child's initial history.
+    // The `isInitialReplay` flag lets downstream consumers distinguish
+    // these replays from genuine new-turn messages — TUI clients must
+    // suppress replays or the parent transcript shows the subagent's
+    // initial prompt as if the user had typed it.
     if (live.messages.length === 0) {
       live.messages.push(
         ...params.initialMessages.map((message) => ({ ...message })),
       );
     }
     for (const message of params.initialMessages) {
-      yield { kind: "message", message };
+      yield { kind: "message", message, isInitialReplay: true };
     }
 
     // Resolve the parent provider (subagents share model access).

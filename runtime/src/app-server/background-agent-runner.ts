@@ -1269,6 +1269,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     progress: RunAgentProgressEvent,
   ): BackgroundAgentDaemonEvent | null {
     if (progress.kind === "message" && progress.message.role === "assistant") {
+      // Initial-replay assistant messages must not surface as deltas
+      // either — replaying a prior fork's assistant turn into the
+      // parent transcript would leak content the user never asked
+      // for. See run-agent.ts:isInitialReplay.
+      if (progress.isInitialReplay === true) return null;
       const text = messageText(progress.message.content);
       const previous = this.#assistantTextByAgent.get(agentId) ?? "";
       const delta = text.startsWith(previous)
@@ -2489,6 +2494,12 @@ function eventFromProgress(
         },
       };
     case "message": {
+      // Suppress initial-replay messages. run-agent yields the
+      // agent's initialMessages at start so observability recorders
+      // can capture replay state — but the parent TUI's transcript
+      // must NOT render those as user_message rows or the subagent's
+      // initial prompt appears as if the user typed it.
+      if (progress.isInitialReplay === true) return null;
       const text = messageText(progress.message.content);
       if (progress.message.role === "user") {
         return {

@@ -821,4 +821,62 @@ describe("AgenC TUI session transcript", () => {
     expect(blocks[0]?.text).toContain("foo");
     expect(blocks[0]?.text).toContain("baz");
   });
+
+  describe("background-agent transcript leak filters", () => {
+    test("suppresses warning events whose cause is background_agent_status", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "user",
+          msg: { type: "user_message", payload: { message: "hi" } },
+        },
+        {
+          id: "bg-status",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "background_agent_status",
+              message: "Subagent is still working...",
+            },
+          },
+        },
+      ]);
+      // The user message must remain, but the daemon's background-agent
+      // progress tick must NOT show up as a yellow system warning.
+      expect(transcript.messages).toHaveLength(1);
+      expect(transcript.messages[0]).toMatchObject({ type: "user" });
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).not.toContain("Subagent is still working");
+    });
+
+    test("renders normal warnings (no background_agent_status cause) as system messages", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "warn",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "user_prompt_submit_hook_threw",
+              message: "Hook threw an error",
+            },
+          },
+        },
+      ]);
+      expect(transcript.messages).toHaveLength(1);
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("Hook threw an error");
+    });
+
+    test("renders warnings with no cause field at all", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "warn",
+          msg: {
+            type: "warning",
+            payload: { message: "Plain warning" },
+          },
+        },
+      ]);
+      expect(transcript.messages).toHaveLength(1);
+    });
+  });
 });

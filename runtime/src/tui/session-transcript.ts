@@ -1001,9 +1001,21 @@ export function adaptTranscriptEvents(
       case "context_compacted":
         out.push(makeSystemMessage("Context compacted", "info"));
         break;
-      case "warning":
+      case "warning": {
+        // Background-agent progress ticks emit warnings with
+        // cause="background_agent_status" so daemon observability
+        // recorders can show liveness — but they must not surface to
+        // the user's chat transcript. Filter them here so the parent
+        // session sees a clean stream while the daemon log keeps full
+        // detail.
+        const cause =
+          typeof (payload as { cause?: unknown }).cause === "string"
+            ? ((payload as { cause: string }).cause)
+            : undefined;
+        if (cause === "background_agent_status") break;
         out.push(makeSystemMessage(stringResult(payload.message), "warning"));
         break;
+      }
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error"));

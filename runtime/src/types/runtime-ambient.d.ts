@@ -8,6 +8,16 @@ declare module "@opentelemetry/sdk-metrics" {
   export type MeterProvider = unknown;
 }
 
+// Optional runtime dep — only needed when the user provisions Bedrock
+// for token-counting via tokenEstimation.ts. The literal-import gives
+// tsup a chance to bundle it, but the package is not in our
+// dependencies list, so a real declaration would force every consumer
+// to install AWS SDK packages they don't need.
+declare module "@aws-sdk/client-bedrock-runtime" {
+  const mod: Record<string, unknown>;
+  export = mod;
+}
+
 declare module "@opentelemetry/sdk-trace-base" {
   export type BasicTracerProvider = unknown;
 }
