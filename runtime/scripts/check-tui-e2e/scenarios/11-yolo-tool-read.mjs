@@ -10,13 +10,13 @@ export const meta = {
   description: "--yolo: model uses Read on /etc/hostname, content renders.",
   args: ["--yolo"],
   timeoutMs: 90_000,
-  // Permission overlay fires under --yolo for Read on paths outside cwd
-  // (e.g. /etc/hostname). The TUI shows "untrusted policy: approve every
-  // call" with a 1/2/3 prompt and blocks waiting for a key — but --yolo
-  // is documented to bypass approvals. Bash and Grep on the same paths
-  // do NOT prompt under --yolo, suggesting tool-specific policy drift.
-  // Filed as GAP-PE-YOLO-LEAK.
-  skip: "blocked on --yolo permission-overlay leak for Read; see GAP-PE-YOLO-LEAK",
+  // Mode-side fix (filesystem helpers bypass on `bypassPermissions`)
+  // landed but the guardian arbiter's `approvalPolicy === "untrusted"`
+  // path still surfaces an overlay that the harness doesn't auto-accept.
+  // The "approve every call" message comes from
+  // permissions/guardian/arbiter.ts:180 — separate layer from the
+  // mode bypass. Filed as GAP-PE-GUARDIAN-YOLO-LEAK.
+  skip: "guardian arbiter approvalPolicy='untrusted' still prompts; see GAP-PE-GUARDIAN-YOLO-LEAK",
 };
 
 export default async function (session) {

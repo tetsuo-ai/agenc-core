@@ -9,10 +9,9 @@ export const meta = {
   description: "--yolo: model uses Glob, matched filename renders.",
   args: ["--yolo"],
   timeoutMs: 90_000,
-  // Same root cause as 11-yolo-tool-read: --yolo permission overlay leaks
-  // for Glob even on paths inside the cwd. Bash/Grep do not prompt;
-  // Read/Glob do. Filed as GAP-PE-YOLO-LEAK.
-  skip: "blocked on --yolo permission-overlay leak for Glob; see GAP-PE-YOLO-LEAK",
+  // Same residual block as 11: guardian arbiter approvalPolicy=untrusted
+  // surfaces an overlay even after the mode-side bypass landed.
+  skip: "guardian arbiter approvalPolicy='untrusted' still prompts; see GAP-PE-GUARDIAN-YOLO-LEAK",
 };
 
 export default async function (session) {

@@ -8,12 +8,14 @@
 export const meta = {
   description: "--yolo: two messages in one session, both reach idle.",
   args: ["--yolo"],
-  timeoutMs: 120_000,
-  // Same 'agent not found' crash as 07 fires in --yolo on the second
-  // submit. The previous run's PASS was flake — daemon-side state from
-  // earlier scenarios momentarily masked the race. Filed alongside 07
-  // as GAP-DMN-AGENT-NOT-FOUND.
-  skip: "blocked on multi-turn 'agent not found' crash (--yolo too); see GAP-DMN-AGENT-NOT-FOUND",
+  timeoutMs: 180_000,
+  // BackgroundAgentRunner.getAgentSnapshot fix (which removed the
+  // early-null branch that caused AgentLifecycle to evict completed
+  // agents) covers the common race. Default-mode 07 reliably passes.
+  // --yolo 08 still flakes — there's a second eviction path through
+  // a different daemon-side handler that the snapshot fix didn't
+  // reach. Filed alongside 45 as GAP-DMN-AGENT-LIFECYCLE-EVICT.
+  skip: "secondary eviction path under --yolo; see GAP-DMN-AGENT-LIFECYCLE-EVICT",
 };
 
 export default async function (session) {
