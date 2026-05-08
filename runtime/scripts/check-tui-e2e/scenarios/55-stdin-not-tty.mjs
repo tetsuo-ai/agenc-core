@@ -4,6 +4,15 @@
  * `echo "<prompt>" | agenc` should route through the daemon-backed
  * one-shot path (route.ts: branch 4). Verifies stdin-piped input
  * doesn't crash and produces output.
+ *
+ * The actual routing (non-TTY → oneShotCLI) is fast and deterministic.
+ * The slow part is the model — qwen3.6 + LMStudio takes anywhere from
+ * <1s on a warm cache to 200s+ on cold prefix-cache invalidation. The
+ * timeout below has to swallow the worst-case model latency, otherwise
+ * the gate flakes when the daemon's KV cache evicts between scenarios.
+ * The route's correctness is also covered by check-llm-pipeline scenario
+ * 03 (which inspects the rollout for the routing decision regardless of
+ * how slow the model responds).
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -13,9 +22,11 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 
+const TIMEOUT_MS = 240_000;
+
 export const meta = {
   description: "Piped stdin (no TTY) routes through one-shot CLI path.",
-  timeoutMs: 120_000,
+  timeoutMs: TIMEOUT_MS + 30_000,
 };
 
 export default async function () {
@@ -35,7 +46,7 @@ export default async function () {
     setTimeout(() => {
       child.kill("SIGTERM");
       reject(new Error("piped stdin exceeded timeout"));
-    }, 110_000).unref();
+    }, TIMEOUT_MS).unref();
   });
   if (result.code !== 0) {
     throw new Error(
