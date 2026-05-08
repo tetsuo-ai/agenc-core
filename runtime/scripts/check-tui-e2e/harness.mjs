@@ -293,6 +293,52 @@ export class TuiSession {
   }
 
   /**
+   * Wait for the permission overlay to appear in the captured output. The
+   * overlay shows when the model invokes a side-effecting tool in default
+   * mode and the policy requires user approval. The signature is the
+   * "Do you want to proceed?" line, but the TUI renders it with per-word
+   * cursor-position codes (`[1C` to advance one column) that stripAnsi
+   * strips, leaving "Doyouwanttoproceed?" with no spaces. The matcher
+   * accepts either form.
+   */
+  async waitForPermissionOverlay({ timeout = 60_000 } = {}) {
+    return this.waitFor(/Do\s*you\s*want\s*to\s*proceed\?/, {
+      timeout,
+      label: "permission overlay",
+    });
+  }
+
+  /**
+   * Accept the permission overlay (Yes). Sends "1" then Enter, the
+   * documented one-shot accept path.
+   */
+  async acceptPermissionOverlay() {
+    this.term.write("1");
+    await sleep(80);
+    this.term.write("\r");
+  }
+
+  /**
+   * Reject the permission overlay (No). Sends "3" then Enter, the
+   * documented one-shot reject path.
+   */
+  async denyPermissionOverlay() {
+    this.term.write("3");
+    await sleep(80);
+    this.term.write("\r");
+  }
+
+  /**
+   * "Always allow" — accept and stop prompting for this tool/path. Sends
+   * "2" then Enter.
+   */
+  async alwaysAllowPermissionOverlay() {
+    this.term.write("2");
+    await sleep(80);
+    this.term.write("\r");
+  }
+
+  /**
    * Send the Escape key. Use this to dismiss the slash-command typeahead
    * picker before pressing Enter — otherwise Enter accepts the highlighted
    * suggestion (e.g. typing "/exit" opens the picker with "/exit-worktree"
