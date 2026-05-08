@@ -5,17 +5,12 @@
  * resource leaks (file descriptors, daemon memory, transcript bloat
  * over time, conversation-context-window misaccounting). Distinct from
  * 08 multi-turn (which is 2 turns) — this exercises the longer arc.
- *
- * Skipped today because GAP-DMN-AGENT-NOT-FOUND blocks even 2-turn
- * --yolo. Unskip when GAP-DMN-AGENT-NOT-FOUND lands.
  */
 export const meta = {
   description: "--yolo: 4 turns survive the agent-not-found race.",
   args: ["--yolo"],
   timeoutMs: 600_000,
   slimCwd: true,
-  // Same root as 07/08 — runner one-shot lifecycle.
-  skip: "blocked on runner one-shot lifecycle; see GAP-DMN-MULTITURN-RUNNER-DESIGN",
 };
 
 export default async function (session) {

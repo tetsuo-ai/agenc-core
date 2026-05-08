@@ -5,15 +5,10 @@
  * verify the previous input is recalled. Catches: history-buffer
  * regressions, history-index off-by-one, daemon vs TUI history-source
  * drift.
- *
- * Skipped today because GAP-DMN-AGENT-NOT-FOUND would crash the second
- * submit before history recall could be tested. Unskip when that lands.
  */
 export const meta = {
   description: "Up arrow recalls previous input from history.",
   timeoutMs: 90_000,
-  // Submits two messages back-to-back; same runner one-shot lifecycle.
-  skip: "blocked on runner one-shot lifecycle (multi-turn); see GAP-DMN-MULTITURN-RUNNER-DESIGN",
 };
 
 export default async function (session) {

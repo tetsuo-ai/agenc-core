@@ -13,13 +13,6 @@ export const meta = {
   description: "Two messages in one session, both reach idle, no crash.",
   timeoutMs: 360_000,
   slimCwd: true,
-  // Architectural: BackgroundAgentRunner.#cleanupWhenComplete deletes
-  // agents from #active when their thread.join() resolves (after every
-  // turn). Multi-turn requires either keeping agents alive across joins
-  // or restarting the thread per message. Filed as
-  // GAP-DMN-MULTITURN-RUNNER-DESIGN. The agent-lifecycle and protocol
-  // layers ARE correct; the runner's one-shot lifecycle is the gap.
-  skip: "blocked on runner one-shot lifecycle; see GAP-DMN-MULTITURN-RUNNER-DESIGN",
 };
 
 export default async function (session) {

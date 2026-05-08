@@ -456,6 +456,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(taskContent !== undefined ? { taskContent } : {}),
         runInBackground: true,
         isolation: "cwd",
+        // Keep the daemon's TUI agent alive between turns. Without this
+        // the agent loop exits after the first task completes and a
+        // stale-mailbox second turn (the user's next message) lands on
+        // a dead thread, surfacing AGENT_NOT_FOUND in the TUI client.
+        keepAlive: true,
         ...(params.model !== undefined ? { model: params.model } : {}),
         onProgress: (event, thread) =>
           this.#recordProgressEvent(thread.threadId, event),
@@ -2562,6 +2567,17 @@ function eventFromProgress(
           runStatus: "completed",
           ...(progress.finalMessage !== undefined
             ? { message: progress.finalMessage }
+            : {}),
+        },
+      };
+    case "turn_complete":
+      return {
+        id: `turn-complete-${agentId}-${progress.turnId}`,
+        type: "turn_complete",
+        payload: {
+          turnId: progress.turnId,
+          ...(progress.finalMessage !== undefined
+            ? { lastAgentMessage: progress.finalMessage }
             : {}),
         },
       };

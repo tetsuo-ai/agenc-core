@@ -73,6 +73,12 @@ export interface DelegateOpts {
   readonly externalSignal?: AbortSignal;
   readonly silent?: boolean;
   readonly resumeManager?: ResumeManager;
+  /**
+   * Keep the agent's downInbox loop alive between turns instead of
+   * exiting after the first task completes. Used by the daemon for TUI
+   * agents so multiple message.stream calls land on the same live thread.
+   */
+  readonly keepAlive?: boolean;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
     thread: AgentThread,
@@ -221,6 +227,7 @@ export async function delegate(
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
+      ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
       ...(opts.onProgress !== undefined
         ? { onProgress: opts.onProgress }
         : {}),
@@ -301,6 +308,7 @@ async function runDelegateAgentLoop(opts: {
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly resumeManager?: ResumeManager;
+  readonly keepAlive?: boolean;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
     thread: AgentThread,
@@ -330,6 +338,7 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
           : {}),
+        ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
         onCacheSafeParams: (params) => {
           opts.thread.setSummaryCacheSafeParams(params);
         },

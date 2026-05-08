@@ -100,6 +100,15 @@ export interface RunAgentParams {
   readonly silent?: boolean;
   /** Captured once the child turn has the exact cache-safe request state. */
   readonly onCacheSafeParams?: (params: CacheSafeParams) => void;
+  /**
+   * Keep the agent loop alive between turns. When the model has finished
+   * a turn and the mailbox is empty, the loop normally breaks and the
+   * thread exits. With `keepAlive: true`, the loop waits on the next
+   * mailbox event (or close / abort) before resuming. Used for the
+   * daemon's TUI agent so subsequent message.stream calls land on the
+   * same live agent instead of getting AGENT_NOT_FOUND.
+   */
+  readonly keepAlive?: boolean;
 }
 
 export type ChildToolPolicyDecision =
@@ -143,6 +152,19 @@ export type RunAgentProgressEvent =
       readonly totalTokens: number;
     }
   | { readonly kind: "run_complete"; readonly finalMessage?: string; readonly toolCallCount: number }
+  | {
+      /**
+       * Emitted between turns in a keepAlive run, before the agent loop
+       * waits on its mailbox for the next user message. Equivalent to
+       * `run_complete` for the just-finished turn but does NOT terminate
+       * the run. The runner translates this to a daemon `turn_complete`
+       * event so the TUI's transcript reducer can flip isStreaming and
+       * stop the busy-spinner between turns.
+       */
+      readonly kind: "turn_complete";
+      readonly finalMessage?: string;
+      readonly turnId: string;
+    }
   | { readonly kind: "run_error"; readonly error: string }
   | { readonly kind: "run_interrupted"; readonly reason: string };
 
@@ -853,6 +875,52 @@ function parentAgentPathFor(agentPath: string): string {
   const index = agentPath.lastIndexOf("/");
   if (index <= 0) return "/root";
   return agentPath.slice(0, index) || "/root";
+}
+
+/**
+ * Park the agent loop until the mailbox has new content or the agent is
+ * cancelled. Returns true if a new message arrived (caller should drain
+ * + continue), false if the mailbox closed or the abort signal tripped
+ * (caller should exit).
+ *
+ * Uses Mailbox.seqWatch (a BehaviorSubject<number>) which advances every
+ * time send() commits a message. We capture the current sequence at
+ * entry so we resolve only on advances past that point. The abort signal
+ * is wired through addEventListener so an explicit stopAgent (which
+ * aborts both live.abortController and the merged signal) breaks the
+ * wait promptly.
+ */
+function waitForNextMailboxMessage(
+  inbox: import("./mailbox.js").Mailbox,
+  signal: AbortSignal,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(false);
+      return;
+    }
+    const startingSeq = inbox.seqWatch.value;
+    let unsubscribe: (() => void) | null = null;
+    const cleanup = () => {
+      try {
+        unsubscribe?.();
+      } catch {
+        // ignore
+      }
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      resolve(false);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    unsubscribe = inbox.seqWatch.subscribe((seq) => {
+      if (seq > startingSeq) {
+        cleanup();
+        resolve(true);
+      }
+    });
+  });
 }
 
 function drainChildMailbox(live: LiveAgent): {
@@ -1872,7 +1940,27 @@ export async function* runAgent(
         });
         continue;
       }
-      break;
+      // Mailbox is empty. One-shot agents exit here. Persistent agents
+      // (the daemon's TUI agent, marked `keepAlive: true`) wait for new
+      // input before exiting. The wait resolves when the mailbox advances
+      // (new message arrived) OR closes (explicit shutdown) OR the
+      // external/abort signal trips. Each iteration of the outer loop
+      // re-checks the mailbox via drainChildMailbox.
+      if (!params.keepAlive) break;
+      // Emit a per-turn complete signal so the TUI flips isStreaming
+      // and the busy-spinner stops between turns. The agent itself
+      // stays in `running` from the FSM's perspective (we don't fire
+      // markCompleted, which would be a final state).
+      yield {
+        kind: "turn_complete",
+        turnId,
+        ...(assistantText ? { finalMessage: assistantText } : {}),
+      };
+      const advanced = await waitForNextMailboxMessage(
+        live.downInbox,
+        merged.signal,
+      );
+      if (!advanced) break;
     }
 
     // If the caller aborted during the provider call, surface that
