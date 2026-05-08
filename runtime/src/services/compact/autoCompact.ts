@@ -12,6 +12,7 @@ import { trySessionMemoryCompaction } from "./sessionMemoryCompact.js";
 import {
   estimateMessagesTokens,
   isTruthyEnv,
+  lookupContextWindowForModel,
   positiveInteger,
   positiveNumber,
 } from "./_deps/runtime.js";
@@ -28,6 +29,15 @@ export const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000;
 export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000;
 export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000;
 
+/**
+ * Last-resort context window when neither the live config window
+ * (CompactContext.options.contextWindowTokens) nor the
+ * AGENC_AUTO_COMPACT_WINDOW env override is available, AND the model
+ * id matches no entry in the openai-compatible table or any family
+ * literal. Kept for backward-compat as a named export, but the actual
+ * default is now sourced from {@link lookupContextWindowForModel} so
+ * qwen/llama/gemma/mistral/etc. don't silently collapse to 32k.
+ */
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_000;
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3;
 
@@ -157,13 +167,17 @@ function autoCompactThreshold(context: CompactContext): number {
   return getAutoCompactThreshold(context);
 }
 
+/**
+ * Resolve the context window for a model id when no live config window
+ * is available. Delegates to {@link lookupContextWindowForModel} which
+ * combines family-literal shortcuts (haiku/sonnet/opus → 200k), the
+ * shared openai-compatible table (qwen/llama/gemma/mistral/deepseek/
+ * gpt/gemini/glm/kimi/...), and a 128k last-resort default for truly
+ * unknown models. Previously this returned a hard-coded 32k for
+ * everything outside the three family-string matches, which caused
+ * every other provider to silently fall back to a stale haiku-era
+ * window.
+ */
 function contextWindowForModel(model: string | undefined): number {
-  if (model === undefined || model.trim().length === 0) {
-    return DEFAULT_CONTEXT_WINDOW_TOKENS;
-  }
-  const normalized = model.toLowerCase();
-  if (normalized.includes("haiku")) return 200_000;
-  if (normalized.includes("sonnet")) return 200_000;
-  if (normalized.includes("opus")) return 200_000;
-  return DEFAULT_CONTEXT_WINDOW_TOKENS;
+  return lookupContextWindowForModel(model);
 }
