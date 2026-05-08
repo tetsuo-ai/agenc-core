@@ -128,10 +128,22 @@ async function createTempHome() {
   // Pre-start the daemon and wait for the Unix socket to bind. Without
   // this, the spawned agenc CLI tries to connect before the daemon has
   // finished binding (~5s in a fresh HOME) and dies with ENOENT.
+  //
+  // The daemon also binds a WebSocket on AGENC_DAEMON_WEBSOCKET_PORT
+  // (default 7766) for portal/IDE clients. The user's main daemon is
+  // already on 7766, so each temp HOME daemon must use a different
+  // port. Random in 17766–27765 to avoid collisions with each other
+  // and with anything else on the dev box.
+  const wsPort = 17_766 + Math.floor(Math.random() * 10_000);
+  const daemonEnv = {
+    ...process.env,
+    HOME: home,
+    AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
+  };
   spawnSync(
     process.execPath,
     [BIN_AGENC, "daemon", "start"],
-    { encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 30_000 },
+    { encoding: "utf8", env: daemonEnv, timeout: 30_000 },
   );
   const socketPath = path.join(agencDir, "daemon.sock");
   const deadline = Date.now() + 20_000;
@@ -139,7 +151,7 @@ async function createTempHome() {
     if (existsSync(socketPath)) break;
     await new Promise((r) => setTimeout(r, 200));
   }
-  return home;
+  return { home, wsPort };
 }
 
 /**
@@ -246,11 +258,16 @@ export class TuiSession {
     }
     let env = { ...process.env, ...this.envOverrides };
     if (this.useTempHome) {
-      this.tempHome = await createTempHome();
-      env = { ...env, HOME: this.tempHome };
+      const { home, wsPort } = await createTempHome();
+      this.tempHome = home;
+      env = {
+        ...env,
+        HOME: home,
+        AGENC_DAEMON_WEBSOCKET_PORT: String(wsPort),
+      };
       // Trust file lives under HOME — recompute under the temp HOME so
       // the trust dialog doesn't fire.
-      const tempTrust = path.join(this.tempHome, ".agenc", "trusted-projects.json");
+      const tempTrust = path.join(home, ".agenc", "trusted-projects.json");
       await writeFile(
         tempTrust,
         JSON.stringify({
