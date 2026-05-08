@@ -82,9 +82,19 @@ export function applyUnattendedPermissionPolicyToContext(
     readonly denylist?: readonly string[];
   } = {},
 ): ToolPermissionContext {
+  // Preserve bypassPermissions mode. The user explicitly opted out of
+  // approval gating with --yolo; the background-agent-runner's default
+  // unattended-policy install MUST NOT override that. Without this guard,
+  // every agent.create with --yolo set the mode to "unattended" and the
+  // evaluator's unattended branch surfaced "Permission required" overlays
+  // because tools weren't on the unattended allowlist. The unattended
+  // policy itself (allowlist/denylist) is still recorded for any subset
+  // logic that wants to consult it, but the mode stays at the user's
+  // explicit choice. See GAP-PE-PREHOOK-BYPASS-LEAK.
+  const preserveMode = context.mode === "bypassPermissions";
   return {
     ...context,
-    mode: "unattended",
+    mode: preserveMode ? context.mode : "unattended",
     unattendedPolicy: createUnattendedPermissionPolicy(opts),
   };
 }

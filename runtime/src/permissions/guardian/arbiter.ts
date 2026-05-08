@@ -651,6 +651,30 @@ export async function arbitratePermissionMode(
     };
   }
   if (decision.behavior === "ask") {
+    // bypassPermissions mode override: --yolo opts the user out of approval
+    // gating. The evaluator's per-tool checkPermissions may return "ask"
+    // for non-rule, non-safetyCheck reasons (e.g. working-dir prompts that
+    // didn't reach the mode bypass at evaluator.ts:389 because of the
+    // single-source-of-truth re-invoke at evaluator.ts:479). Honor the
+    // session mode here: if the user explicitly opted into bypass and the
+    // ask isn't a content-specific rule or safetyCheck, convert to allow
+    // with the original updatedInput.
+    const reasonType = decision.decisionReason?.type;
+    const isBypassImmune =
+      (reasonType === "rule" &&
+        (decision.decisionReason as { rule?: { ruleBehavior?: string } } | undefined)
+          ?.rule?.ruleBehavior === "ask") ||
+      reasonType === "safetyCheck";
+    const sessionMode = readGuardianToolPermissionContext(permissionContext)?.mode;
+    if (sessionMode === "bypassPermissions" && !isBypassImmune) {
+      return {
+        kind: "allow",
+        args: decision.updatedInput ?? opts.args,
+        source: "permission-evaluator",
+        reasonCode: "mode_bypass",
+        decisionReason: { type: "mode", mode: "bypassPermissions" },
+      };
+    }
     return {
       kind: "ask",
       args: decision.updatedInput ?? opts.args,
