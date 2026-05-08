@@ -172,6 +172,15 @@ export class AgenCUnixSocketServer {
     let accepted = this.#options.acceptAuthenticator === undefined;
     let closingUnauthenticated = false;
     let authenticationTimeout: NodeJS.Timeout | undefined;
+    // The transport fires onMessage for each parsed line WITHOUT awaiting
+    // the previous handler. When two requests arrive back-to-back (a
+    // batched initialize + first real method, common from real clients),
+    // both handlers race against `accepted`. Without serialization, the
+    // second handler runs auth-check on a non-initialize method and gets
+    // rejected with -32000 even though the connection's first message
+    // legitimately authenticated. Gate everything on a single promise so
+    // every subsequent message waits for the in-flight auth resolution.
+    let authResolution: Promise<void> = Promise.resolve();
     const clearAuthenticationTimeout = (): void => {
       if (authenticationTimeout !== undefined) {
         clearTimeout(authenticationTimeout);
@@ -192,8 +201,20 @@ export class AgenCUnixSocketServer {
       input: socket,
       output: socket,
       onMessage: async (message) => {
+        // Wait for any in-flight auth resolution before deciding the
+        // current message's path. If the previous message's auth check
+        // already accepted the connection, this message goes straight to
+        // the dispatcher; if it rejected, this message is short-circuited
+        // by closingUnauthenticated.
+        await authResolution;
         if (!accepted) {
           if (closingUnauthenticated) return;
+          // Claim the auth slot so any siblings queued behind us see the
+          // outcome of THIS message rather than starting their own check.
+          let resolveAuth!: () => void;
+          authResolution = new Promise((r) => {
+            resolveAuth = r;
+          });
           let authenticated = false;
           try {
             authenticated =
@@ -203,6 +224,7 @@ export class AgenCUnixSocketServer {
             clearAuthenticationTimeout();
             this.#options.onError?.(asNodeError(error), connectionId);
             socket.destroy();
+            resolveAuth();
             return;
           }
           if (!authenticated) {
@@ -212,11 +234,13 @@ export class AgenCUnixSocketServer {
               await this.#options.onAuthenticationFailed?.(message, context);
             } finally {
               socket.end();
+              resolveAuth();
             }
             return;
           }
           accepted = true;
           clearAuthenticationTimeout();
+          resolveAuth();
         }
         await this.#options.onMessage(message, context);
       },
