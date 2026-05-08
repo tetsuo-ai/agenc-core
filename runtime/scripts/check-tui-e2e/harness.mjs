@@ -125,6 +125,20 @@ async function createTempHome() {
       await copyFile(source, path.join(agencDir, name));
     }
   }
+  // Pre-start the daemon and wait for the Unix socket to bind. Without
+  // this, the spawned agenc CLI tries to connect before the daemon has
+  // finished binding (~5s in a fresh HOME) and dies with ENOENT.
+  spawnSync(
+    process.execPath,
+    [BIN_AGENC, "daemon", "start"],
+    { encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 30_000 },
+  );
+  const socketPath = path.join(agencDir, "daemon.sock");
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (existsSync(socketPath)) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
   return home;
 }
 
