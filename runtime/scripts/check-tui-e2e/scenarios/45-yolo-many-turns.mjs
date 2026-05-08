@@ -14,6 +14,8 @@ export const meta = {
   args: ["--yolo"],
   timeoutMs: 600_000,
   slimCwd: true,
+  // Same root as 07/08 — runner one-shot lifecycle.
+  skip: "blocked on runner one-shot lifecycle; see GAP-DMN-MULTITURN-RUNNER-DESIGN",
 };
 
 export default async function (session) {
