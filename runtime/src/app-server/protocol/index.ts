@@ -583,6 +583,20 @@ export interface AgentCreateParams extends JsonObject {
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   readonly metadata?: JsonObject;
+  /**
+   * Session-wide permission mode override for the spawned agent. When
+   * set, the daemon-side bootstrap honors this in place of the project-
+   * trust default. Used by `agenc --yolo`, which sends
+   * `permissionMode: "bypassPermissions"` so the spawned agent's session
+   * approvalPolicy resolves to `"never"` regardless of project trust.
+   * Without this, --yolo only affected the local CLI bootstrap and was
+   * dropped on the wire to the daemon.
+   */
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
 }
 
 export interface DaemonProtocolInfo extends JsonObject {

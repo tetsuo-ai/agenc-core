@@ -43,6 +43,12 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly cwd?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly metadata?: JsonObject;
+  /** See `AgentCreateParams.permissionMode`. Forwarded verbatim. */
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
 }
 
 export interface StopAgenCDaemonPromptAgentOptions {
@@ -67,6 +73,9 @@ export async function startAgenCDaemonPromptAgent(
     cwd: options.cwd ?? processCwd(),
     ...(options.initialContent !== undefined
       ? { initialContent: options.initialContent }
+      : {}),
+    ...(options.permissionMode !== undefined
+      ? { permissionMode: options.permissionMode }
       : {}),
     metadata: {
       source: "agenc.prompt",

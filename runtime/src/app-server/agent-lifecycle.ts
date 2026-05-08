@@ -322,6 +322,9 @@ export class AgenCDaemonAgentManager {
         metadata,
         unattendedAllow,
         unattendedDeny,
+        ...(params.permissionMode !== undefined
+          ? { permissionMode: params.permissionMode }
+          : {}),
       });
 
       if (this.#shuttingDown) {

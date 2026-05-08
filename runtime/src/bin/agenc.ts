@@ -1628,6 +1628,11 @@ async function runDaemonOneShotPrompt(params: {
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
 }): Promise<number> {
   await params.deps.ensureDaemonReady(params.env)();
   const daemonClient = await params.deps.createConnectedTuiClient({
@@ -1647,6 +1652,9 @@ async function runDaemonOneShotPrompt(params: {
       cwd: params.cwd,
       ...(params.initialContent !== undefined
         ? { initialContent: params.initialContent }
+        : {}),
+      ...(params.permissionMode !== undefined
+        ? { permissionMode: params.permissionMode }
         : {}),
       metadata: {
         source: "agenc.prompt",
@@ -1830,12 +1838,23 @@ export async function oneShotCLI(
         : initialContent !== undefined
           ? "Multimodal AgenC startup"
           : preparedUserMessage;
+    // Forward --yolo / dangerously-skip flags to the daemon so the
+    // print-mode oneShot agent runs under bypassPermissions, matching
+    // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
+    const oneShotArgv = process.argv.slice(2);
+    const isYoloOneShot =
+      oneShotArgv.includes("--yolo") ||
+      oneShotArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
+      oneShotArgv.includes("--allow-dangerously-skip-permissions");
     return await runDaemonOneShotPrompt({
       deps: daemonCliDeps(),
       prompt: daemonPrompt,
       env: process.env,
       cwd: daemonCwd,
       ...(initialContent !== undefined ? { initialContent } : {}),
+      ...(isYoloOneShot
+        ? { permissionMode: "bypassPermissions" as const }
+        : {}),
     });
   } catch (error) {
     if (error instanceof InitAbortedError) {
@@ -2263,6 +2282,14 @@ async function createDeferredDaemonPromptTuiSession(params: {
           ? preparedFirstMessage
           : "Multimodal AgenC startup";
       let startedAgentId: string | null = null;
+      // Propagate --yolo from the user's argv into the daemon-spawned
+      // agent's session config so the deferred TUI mirrors the bootTUI
+      // path. See GAP-PE-GUARDIAN-YOLO-LEAK.
+      const deferredArgvForYolo = process.argv.slice(2);
+      const isYoloDeferred =
+        deferredArgvForYolo.includes("--yolo") ||
+        deferredArgvForYolo.includes("--dangerously-bypass-approvals-and-sandbox") ||
+        deferredArgvForYolo.includes("--allow-dangerously-skip-permissions");
       try {
         const started = await params.deps.startPromptAgent({
           prompt,
@@ -2272,6 +2299,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
             content.length === 1 && content[0]?.type === "text"
               ? content[0].text
               : content,
+          ...(isYoloDeferred
+            ? { permissionMode: "bypassPermissions" as const }
+            : {}),
           metadata: { mode: "tui" },
         });
         startedAgentId = started.agentId;
@@ -2627,11 +2657,24 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       process.env.HOME,
     );
     const deps = daemonCliDeps();
+    // Propagate --yolo (and the deprecated aliases) to the daemon so the
+    // spawned agent's session resolves approvalPolicy correctly. Without
+    // this, --yolo only affected the local CLI bootstrap and dropped on
+    // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
+    // forwarding in background-agent-runner.buildBootstrapArgv.
+    const cliArgvForYolo = process.argv.slice(2);
+    const isYoloFromCli =
+      cliArgvForYolo.includes("--yolo") ||
+      cliArgvForYolo.includes("--dangerously-bypass-approvals-and-sandbox") ||
+      cliArgvForYolo.includes("--allow-dangerously-skip-permissions");
     const started = await deps.startPromptAgent({
       prompt: preparedObjective,
       env: process.env,
       cwd: daemonCwd,
       ...(initialContent !== undefined ? { initialContent } : {}),
+      ...(isYoloFromCli
+        ? { permissionMode: "bypassPermissions" as const }
+        : {}),
       metadata: { mode: "tui" },
     });
     try {

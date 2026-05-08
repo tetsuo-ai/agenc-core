@@ -106,6 +106,11 @@ export interface AgenCBackgroundAgentStartParams {
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
 }
 
 export interface AgenCBackgroundAgentStartResult {
@@ -2692,6 +2697,11 @@ function buildBootstrapArgv(
     readonly provider?: string;
     readonly model?: string;
     readonly profile?: string;
+    readonly permissionMode?:
+      | "default"
+      | "plan"
+      | "acceptEdits"
+      | "bypassPermissions";
   },
   baseArgv: readonly string[] | undefined,
 ): readonly string[] {
@@ -2699,6 +2709,30 @@ function buildBootstrapArgv(
   appendFlag(argv, "--provider", params.provider);
   appendFlag(argv, "--model", params.model);
   appendFlag(argv, "--profile", params.profile);
+  // Forward `--yolo` when the caller asked for bypassPermissions mode.
+  // bin/bootstrap.ts:1146 keys off cli.allowDangerouslySkipPermissions
+  // (which startup-selection.ts sets when --yolo is in argv), so adding
+  // the flag here makes the daemon-spawned bootstrap honor the override
+  // exactly like the CLI bootstrap does. Avoid duplicate flags if argv
+  // already carries one.
+  if (
+    params.permissionMode === "bypassPermissions" &&
+    !argv.includes("--yolo") &&
+    !argv.includes("--dangerously-bypass-approvals-and-sandbox") &&
+    !argv.includes("--allow-dangerously-skip-permissions")
+  ) {
+    argv.push("--yolo");
+  }
+  // Mirror non-bypass modes via `--permission-mode <value>` so plan and
+  // acceptEdits also propagate. startup-selection.ts already parses
+  // this flag.
+  if (
+    params.permissionMode !== undefined &&
+    params.permissionMode !== "bypassPermissions" &&
+    !argv.includes("--permission-mode")
+  ) {
+    argv.push("--permission-mode", params.permissionMode);
+  }
   if (!argv.includes("--autonomous") && !argv.includes("--proactive")) {
     argv.push("--autonomous");
   }
