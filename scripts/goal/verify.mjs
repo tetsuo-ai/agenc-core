@@ -6957,6 +6957,7 @@ function assertGapProvUnsupportedProvidersResolved() {
     "apiProvider !== 'firstParty'",
     "createOpenAiShimClient",
     "selectedProvider: resolveShimSelectedProvider(apiProvider)",
+    "process.env.GITHUB_BASE_URL?.replace",
     "stripForwardedAuthHeaders(defaultHeaders)",
   ]) {
     if (!clientSource.includes(needle)) {
@@ -7097,7 +7098,7 @@ function assertGapProvUnsupportedProvidersResolved() {
     [legacyProviderTestRel, legacyProviderTestSource, ["AGENC_USE_MISTRAL", "NVIDIA_NIM", "MINIMAX_API_KEY", "takes precedence over ambient MiniMax credentials", "explicit openai flag takes precedence over stale NVIDIA_NIM", "bare provider-native model"]],
     [agentTestRel, agentTestSource, ["haiku alias inherits parent model for Mistral provider", "haiku alias inherits parent model for NVIDIA NIM provider", "haiku alias inherits parent model for MiniMax provider"]],
     [providerFlagTestRel, providerFlagTestSource, ["removed legacy providers", "foundry", "clears stale NVIDIA_NIM when switching providers", "ambient MiniMax credentials", "sets provider-specific NVIDIA defaults", "sets provider-specific MiniMax defaults", "GITHUB_MODEL", "MISTRAL_MODEL"]],
-    [clientTestRel, clientTestSource, ["routes env-only $name requests through the provider-compatible shim", "does not leak stale shared env into selected $name shim requests", "explicit $name selection takes precedence over ambient MiniMax credentials at request routing", "fails before fetch when selected $name shim credentials are missing", "strips first-party auth headers before hosted provider shim requests", "stale-openai-key", "stale-openai-model", "MISTRAL_API_KEY", "NVIDIA_NIM", "MINIMAX_API_KEY", "GITHUB_TOKEN", "https://api.mistral.ai/v1/chat/completions", "http://127.0.0.1:19081/v1/chat/completions", "http://127.0.0.1:19082/v1/chat/completions", "https://models.github.ai/inference/chat/completions"]],
+    [clientTestRel, clientTestSource, ["routes env-only $name requests through the provider-compatible shim", "does not leak stale shared env into selected $name shim requests", "explicit $name selection takes precedence over ambient MiniMax credentials at request routing", "GitHub native provider mode uses provider-specific base URL", "fails before fetch when selected $name shim credentials are missing", "strips first-party auth headers before hosted provider shim requests", "stale-openai-key", "stale-openai-model", "MISTRAL_API_KEY", "NVIDIA_NIM", "MINIMAX_API_KEY", "GITHUB_TOKEN", "https://api.mistral.ai/v1/chat/completions", "http://127.0.0.1:19081/v1/chat/completions", "http://127.0.0.1:19082/v1/chat/completions", "https://models.github.ai/inference/chat/completions"]],
     [modelShimProviderTestRel, modelShimProviderTestSource, ["--provider $provider --model feeds model helper paths", "GITHUB_MODEL", "NVIDIA_MODEL", "MINIMAX_MODEL", "MISTRAL_MODEL", "wrong-openai-model"]],
   ]) {
     for (const needle of needles) {

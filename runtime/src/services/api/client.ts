@@ -169,10 +169,11 @@ export async function getproviderClient({
   }
   // GitHub provider in native provider API mode: send requests in provider
   // format so cache_control blocks are honoured and prompt caching works.
-  // Requires the GitHub endpoint (OPENAI_BASE_URL) to support provider's
+  // Requires the GitHub endpoint (GITHUB_BASE_URL) to support provider's
   // messages API — set AGENC_GITHUB_ANTHROPIC_API=1 to opt in.
   if (isGithubNativeproviderMode(model)) {
     const githubBaseUrl =
+      process.env.GITHUB_BASE_URL?.replace(/\/$/, '') ??
       process.env.OPENAI_BASE_URL?.replace(/\/$/, '') ??
       'https://api.githubcopilot.com'
     const githubToken =
@@ -184,7 +185,7 @@ export async function getproviderClient({
       // No apiKey — we authenticate via Bearer token (authToken)
       apiKey: null,
     }
-    return new provider(nativeArgs)
+    return new ProviderSdk(nativeArgs)
   }
   const apiProvider = getAPIProvider()
   if (
@@ -221,7 +222,7 @@ export async function getproviderClient({
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
 
-  return new provider(clientConfig)
+  return new ProviderSdk(clientConfig)
 }
 
 async function configureApiKeyHeaders(

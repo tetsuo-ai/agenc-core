@@ -412,6 +412,79 @@ test.each([
   },
 )
 
+test('GitHub native provider mode uses provider-specific base URL', async () => {
+  let capturedUrl: string | undefined
+  let capturedHeaders: Headers | undefined
+  let capturedBody: Record<string, unknown> | undefined
+
+  delete process.env.AGENC_USE_GEMINI
+  process.env.AGENC_USE_GITHUB = '1'
+  process.env.GITHUB_TOKEN = 'github-native-token'
+  process.env.GITHUB_BASE_URL = 'http://127.0.0.1:19086'
+  process.env.GITHUB_MODEL = 'claude-sonnet-4-5'
+  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:19087/v1'
+
+  const fetchOverride: FetchType = (async (input, init) => {
+    capturedUrl =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+    capturedHeaders = new Headers(init?.headers)
+    capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+
+    return new Response(
+      JSON.stringify({
+        id: 'msg_github_native',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-sonnet-4-5',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: {
+          input_tokens: 8,
+          output_tokens: 3,
+        },
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'request-id': 'req_github_native',
+        },
+      },
+    )
+  }) as FetchType
+
+  const client = (await getproviderClient({
+    maxRetries: 0,
+    model: 'claude-sonnet-4-5',
+    fetchOverride,
+  })) as unknown as ShimClient
+
+  const response = await client.beta.messages.create({
+    model: 'claude-sonnet-4-5',
+    system: 'test system',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(capturedUrl?.startsWith('http://127.0.0.1:19086/v1/messages')).toBe(
+    true,
+  )
+  expect(capturedUrl).not.toContain('19087')
+  expect(capturedHeaders?.get('authorization')).toBe(
+    'Bearer github-native-token',
+  )
+  expect(capturedBody?.model).toBe('claude-sonnet-4-5')
+  expect(response).toMatchObject({
+    role: 'assistant',
+    model: 'claude-sonnet-4-5',
+  })
+})
+
 test.each([
   {
     name: 'Mistral',
