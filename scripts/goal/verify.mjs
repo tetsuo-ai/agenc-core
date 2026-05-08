@@ -3556,6 +3556,21 @@ function inlineTuiValidate() {
   const startupRes = run("npm", ["run", "check:tui-runtime-startup"], { cwd: path.join(root, "runtime") });
   if (startupRes.status !== 0) failGate("TUI runtime startup failed");
   pass("TUI runtime startup passed");
+  // Gate 5b: TUI E2E gate. Drives the built CLI under PTY through 50+
+  // user-level scenarios (input, submit, slash commands, tool round-trip,
+  // permission overlays, modes). Catches functional regressions that the
+  // structural verify gates miss.
+  if (process.env.AGENC_GOAL_SKIP_TUI_E2E === "1") {
+    process.stdout.write(
+      `${YELLOW}!${RESET} TUI E2E gate skipped via AGENC_GOAL_SKIP_TUI_E2E=1\n`,
+    );
+    return;
+  }
+  const e2eRes = run("npm", ["run", "check:tui-e2e"], {
+    cwd: path.join(root, "runtime"),
+  });
+  if (e2eRes.status !== 0) failGate("TUI E2E gate failed");
+  pass("TUI E2E gate passed");
 }
 
 // ---- gate registry -----------------------------------------------------
