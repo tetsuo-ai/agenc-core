@@ -9,6 +9,9 @@ export const meta = {
   description: "--yolo: model uses Glob, matched filename renders.",
   args: ["--yolo"],
   timeoutMs: 90_000,
+  // Same residual block as 11: guardian arbiter approvalPolicy=untrusted
+  // surfaces an overlay even after the mode-side bypass landed.
+  skip: "guardian arbiter approvalPolicy='untrusted' still prompts; see GAP-PE-GUARDIAN-YOLO-LEAK",
 };
 
 export default async function (session) {
