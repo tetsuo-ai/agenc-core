@@ -111,15 +111,19 @@ async function createTempHome() {
   const home = await mkdtemp(path.join(tmpdir(), "agenc-tui-e2e-home-"));
   const agencDir = path.join(home, ".agenc");
   await mkdir(agencDir, { recursive: true });
-  const sourceConfig = path.join(homedir(), ".agenc", "config.toml");
-  const targetConfig = path.join(agencDir, "config.toml");
-  if (existsSync(sourceConfig)) {
-    await copyFile(sourceConfig, targetConfig);
-  }
-  const sourceAuth = path.join(homedir(), ".agenc", "auth.json");
-  const targetAuth = path.join(agencDir, "auth.json");
-  if (existsSync(sourceAuth)) {
-    await copyFile(sourceAuth, targetAuth);
+  // Files to clone from the user's real ~/.agenc so the spawned agenc
+  // doesn't fire onboarding, ask for an API key, or stall on trust.
+  const cloneFiles = [
+    "config.toml",
+    "auth.json",
+    "onboarding.json",
+    "settings.json",
+  ];
+  for (const name of cloneFiles) {
+    const source = path.join(homedir(), ".agenc", name);
+    if (existsSync(source)) {
+      await copyFile(source, path.join(agencDir, name));
+    }
   }
   return home;
 }
