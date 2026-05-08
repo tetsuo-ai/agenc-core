@@ -15,18 +15,24 @@
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const meta = {
-  description: "Ctrl+D triggers clean shutdown of the TUI.",
+  description: "Ctrl+D twice triggers clean shutdown of the TUI.",
   timeoutMs: 30_000,
 };
 
 export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
-  session.send("\x04"); // Ctrl+D
+  // First Ctrl+D arms the exit confirmation ("Press Ctrl-D again to exit").
+  // The second Ctrl+D actually shuts down. The two-press requirement is a
+  // safety guard: a single accidental Ctrl+D mid-conversation should not
+  // throw away the session.
+  session.send("\x04");
+  await sleep(400);
+  session.send("\x04");
   const start = Date.now();
   while (Date.now() - start < 8_000) {
     if (session.exited) return;
     await sleep(100);
   }
-  throw new Error("Ctrl+D did not cause the TUI to terminate within 8s");
+  throw new Error("Ctrl+D x2 did not cause the TUI to terminate within 8s");
 }
