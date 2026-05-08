@@ -13,12 +13,18 @@
  */
 export const meta = {
   description: "Permission overlay (default mode): always-allow runs the tool.",
-  timeoutMs: 90_000,
-  // Writes a permanent "always allow Bash in <cwd>" entry to the daemon
-  // sqlite policy store, polluting state for subsequent scenarios. Needs
-  // per-scenario HOME isolation (GAP-TEST-08) to be re-runnable. Until
-  // then this scenario stays skipped.
-  skip: "writes persistent policy entry; needs GAP-TEST-08 temp HOME",
+  timeoutMs: 120_000,
+  useTempHome: true,
+  // 31 and 32 pass with temp HOME isolation. 33 hits a context-overflow
+  // crash in the daemon: after always-allow, the model's post-tool turn
+  // includes the entire agenc-core project context (auto-loaded at
+  // session start because cwd is the runtime dir). Token total reaches
+  // 237k vs the configured 236k compact threshold; mid_turn_compact
+  // is skipped, the model can't respond, and the spinner runs forever.
+  // Fix needs either a slimmer cwd for this scenario or a smaller
+  // context window in the cloned temp config. Filed as
+  // GAP-TEST-CONTEXT-BLOAT.
+  skip: "blocked on temp HOME context bloat from auto-loaded project; see GAP-TEST-CONTEXT-BLOAT",
 };
 
 export default async function (session) {
@@ -30,9 +36,9 @@ export default async function (session) {
   await session.submit();
   await session.waitForPermissionOverlay({ timeout: 60_000 });
   await session.alwaysAllowPermissionOverlay();
-  // Verifying that the tool actually re-ran would require disambiguating
-  // the marker-echoed-in-prompt from the marker-emitted-by-bash, same
-  // problem 32-permission-deny hit. We just verify the overlay closed and
-  // the TUI returned to idle.
-  await session.waitForIdle({ timeout: 60_000 });
+  // After always-allow, the TUI keeps repainting the busy title-bar OSC
+  // sequence while the model finishes its post-tool turn, which keeps the
+  // idle window from closing on a 1.2s default. Bump the window to 4s so
+  // the spinner-paint cadence registers as idle.
+  await session.waitForIdle({ idleWindow: 4_000, timeout: 90_000 });
 }

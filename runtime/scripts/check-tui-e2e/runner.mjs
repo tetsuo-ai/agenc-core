@@ -72,7 +72,10 @@ async function loadScenario(name) {
 
 async function runScenario(scenario) {
   const startedAt = Date.now();
-  const session = new TuiSession({ args: scenario.meta.args ?? [] });
+  const session = new TuiSession({
+    args: scenario.meta.args ?? [],
+    useTempHome: scenario.meta.useTempHome === true,
+  });
   const debug = process.env.TUI_E2E_DEBUG === "1";
   const timeoutMs = scenario.meta.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let timer;
@@ -106,6 +109,11 @@ async function runScenario(scenario) {
       await session.exitGracefully({ timeout: 2_000 });
     } catch {
       session.kill();
+    }
+    try {
+      await session.cleanup();
+    } catch {
+      // best-effort
     }
   }
 }
