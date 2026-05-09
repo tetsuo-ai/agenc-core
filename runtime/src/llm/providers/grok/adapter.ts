@@ -1102,6 +1102,9 @@ export class GrokProvider implements LLMProvider {
     let providerEvidence: LLMResponse["providerEvidence"];
     let encryptedReasoning: LLMResponse["encryptedReasoning"];
     const toolCallAccum = new Map<string, LLMToolCall>();
+    // Per-summary-index buffers for streamed reasoning summaries. xAI may
+    // emit multiple summary blocks in one turn; each lands at its own index.
+    const reasoningSummaryBuffers = new Map<number, string>();
     let streamIterator: AsyncIterator<any> | null = null;
     let responseTracePayload: Record<string, unknown> | undefined;
     let streamResponseMeta: ProviderResponseTraceMeta | undefined;
@@ -1270,6 +1273,28 @@ export class GrokProvider implements LLMProvider {
           continue;
         }
 
+        if (event.type === "response.reasoning_summary_text.delta") {
+          // grok-4.3 reasoning summary chunks. xAI emits these alongside
+          // `response.output_text.delta`; both can interleave during a turn.
+          // Forward as a `reasoningSummaryDelta` so stream-model translates
+          // into the same `assistant_thinking_*` session-event family the
+          // messages-API thinking blocks ride. The summary index lets us
+          // distinguish multiple summary blocks per response.
+          const delta = String(event.delta ?? "");
+          const summaryIndex =
+            typeof event.summary_index === "number" ? event.summary_index : 0;
+          if (delta.length > 0) {
+            const previous = reasoningSummaryBuffers.get(summaryIndex) ?? "";
+            reasoningSummaryBuffers.set(summaryIndex, previous + delta);
+            onChunk({
+              content: "",
+              done: false,
+              reasoningSummaryDelta: { delta, summaryIndex },
+            });
+          }
+          continue;
+        }
+
         if (event.type === "response.output_item.done") {
           const { toolCall, issue } = this.toToolCall(event.item);
           if (toolCall) {
@@ -1395,6 +1420,18 @@ export class GrokProvider implements LLMProvider {
 
       onChunk({ content: "", done: true, toolCalls });
 
+      // Materialise the streamed reasoning summaries into the LLMResponse
+      // shape so stream-model emits a final `agent_thinking` per block,
+      // which the TUI reducer dedupes and persists as a transcript row.
+      const thinking = Array.from(reasoningSummaryBuffers.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([, text]) => ({
+          text,
+          redacted: false,
+          kind: "reasoning_summary" as const,
+        }))
+        .filter((block) => block.text.length > 0);
+
       const parsed: LLMResponse = {
         content,
         toolCalls,
@@ -1415,6 +1452,7 @@ export class GrokProvider implements LLMProvider {
             ),
         encryptedReasoning,
         finishReason,
+        ...(thinking.length > 0 ? { thinking } : {}),
         ...(responseError ? { error: responseError } : {}),
       };
       emitProviderTraceEvent(options, {
