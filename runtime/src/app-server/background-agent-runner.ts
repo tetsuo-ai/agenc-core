@@ -496,7 +496,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#trackAgentStatus(active);
       this.#active.set(managedThread.threadId, active);
       active.unsubscribeElicitationEvents =
-        this.#installDaemonElicitationEventBridge(active);
+        this.#installSessionEventLogBridge(active);
       // Pump runTurn PhaseEvents (assistant_text, tool_call, tool_result,
       // turn_complete) into the daemon's session binding. Without this,
       // the directive is gone but the TUI sees no streaming output.
@@ -693,7 +693,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#trackAgentStatus(active);
       this.#active.set(params.agentId, active);
       active.unsubscribeElicitationEvents =
-        this.#installDaemonElicitationEventBridge(active);
+        this.#installSessionEventLogBridge(active);
       active.unsubscribePhaseEvents = bootstrap.session.subscribeToEvents(
         (phase) => {
           const progress = phaseEventToProgressEvent(phase);
@@ -1009,7 +1009,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
-  #installDaemonElicitationEventBridge(
+  #installSessionEventLogBridge(
     active: ActiveBackgroundAgent,
   ): () => void {
     const eventLog = (
@@ -1029,7 +1029,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     ).eventLog;
     if (typeof eventLog?.subscribe !== "function") return () => {};
     return eventLog.subscribe((event) => {
-      const daemonEvent = daemonEventFromSessionElicitationEvent(event);
+      const daemonEvent = daemonEventFromUnboundSessionEvent(event);
       if (daemonEvent === null) return;
       active.lastActiveAt = this.#now();
       void this.#emitOrBufferEvent(active, daemonEvent);
@@ -2323,7 +2323,22 @@ function toolRequestInputFromPayload(
   }
 }
 
-function daemonEventFromSessionElicitationEvent(event: {
+/**
+ * Translate session-level events that the PhaseEvent → RunAgentProgressEvent
+ * pipeline does not cover into BackgroundAgentDaemonEvents the daemon's
+ * notification fan-out can deliver. Currently:
+ *
+ *   - elicitation/user-input requests (`request_user_input`,
+ *     `mcp_elicitation_request`, `mcp_elicitation_complete`)
+ *   - extended-thinking + reasoning-summary streaming events
+ *     (`assistant_thinking_block_start`/`delta`/`block_stop`,
+ *     `agent_thinking`)
+ *
+ * The bridge subscribes to `session.eventLog` (live; writes to the rollout
+ * are a separate downstream consumer) and forwards a translated event into
+ * the same `#emitOrBufferEvent` pipeline that PhaseEvents use.
+ */
+function daemonEventFromUnboundSessionEvent(event: {
   readonly id?: unknown;
   readonly msg?: {
     readonly type?: unknown;
@@ -2391,6 +2406,72 @@ function daemonEventFromSessionElicitationEvent(event: {
       payload: {
         serverName: payload.serverName,
         elicitationId: payload.elicitationId,
+      },
+    };
+  }
+  // Extended-thinking + reasoning-summary events. These are emitted via
+  // `session.emit` from `phases/stream-model.ts` and persisted to the
+  // rollout, but the live notification path needs an explicit bridge:
+  // the PhaseEvent → RunAgentProgressEvent → BackgroundAgentDaemonEvent
+  // pipeline at `phaseEventToProgressEvent` does not carry them, so the
+  // TUI's `event.session_event` catch-all never sees them without this.
+  if (
+    type === "assistant_thinking_block_start" &&
+    isJsonObject(payload) &&
+    typeof payload.index === "number"
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        index: payload.index,
+        redacted: payload.redacted === true,
+        ...(typeof payload.kind === "string" ? { kind: payload.kind } : {}),
+      },
+    };
+  }
+  if (
+    type === "assistant_thinking_delta" &&
+    isJsonObject(payload) &&
+    typeof payload.delta === "string" &&
+    typeof payload.index === "number"
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        delta: payload.delta,
+        index: payload.index,
+        ...(typeof payload.kind === "string" ? { kind: payload.kind } : {}),
+      },
+    };
+  }
+  if (
+    type === "assistant_thinking_block_stop" &&
+    isJsonObject(payload) &&
+    typeof payload.index === "number"
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        index: payload.index,
+        ...(typeof payload.kind === "string" ? { kind: payload.kind } : {}),
+      },
+    };
+  }
+  if (
+    type === "agent_thinking" &&
+    isJsonObject(payload) &&
+    typeof payload.text === "string"
+  ) {
+    return {
+      id,
+      type,
+      payload: {
+        text: payload.text,
+        ...(payload.redacted === true ? { redacted: true } : {}),
+        ...(typeof payload.kind === "string" ? { kind: payload.kind } : {}),
       },
     };
   }
