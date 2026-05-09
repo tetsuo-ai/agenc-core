@@ -1430,7 +1430,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                   setToolJSX(null);
                 },
                 submitPromptToModel: async (content: string) => {
-                  await props.session.submit?.(content);
+                  try {
+                    await props.session.submit?.(content);
+                  } catch (err) {
+                    // The daemon can return JSON-RPC error responses for
+                    // every request (agent evicted, session closed, turn
+                    // already in flight, etc.). The promise rejection
+                    // would otherwise propagate up to the React onSubmit
+                    // handler and become an unhandledRejection — which
+                    // crashes the Node 25 process under
+                    // --unhandled-rejections=throw. Surface as a UI-level
+                    // notice instead so the operator sees what failed and
+                    // the TUI keeps running.
+                    const message =
+                      err instanceof Error ? err.message : String(err);
+                    showTransientResult(message, { display: "error" });
+                  }
                 },
                 notifyResult: (resultText: string, resultOpts?: { display?: string }) => {
                   showTransientResult(resultText, resultOpts);
@@ -1473,7 +1488,19 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           // doesn't lose their input.
         }
       }
-      await props.session.submit?.(value);
+      try {
+        await props.session.submit?.(value);
+      } catch (err) {
+        // Same defense as submitPromptToModel above: a daemon JSON-RPC
+        // error response (e.g. "AgenC daemon agent not running:
+        // <agentId>") rejects the pending request, which turns into an
+        // unhandledRejection at the React onSubmit boundary if we don't
+        // catch here. Surface in the UI so the operator can see what
+        // happened — most commonly the agent was evicted after a
+        // mid-turn compact failure or daemon restart.
+        const message = err instanceof Error ? err.message : String(err);
+        showTransientResult(message, { display: "error" });
+      }
     },
     [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult],
   );
