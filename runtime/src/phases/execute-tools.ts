@@ -207,6 +207,38 @@ function emitMalformedToolCallFailures(
   }
 }
 
+/**
+ * Last-resort recovery for the `toolBlocksById.get(call.id)` miss path
+ * inside `executeTools`. Returns a freshly-synthesized `ToolUseBlock`
+ * built from the call's own id/name/arguments so the dispatch can
+ * proceed with the existing pre/post-hook machinery, the
+ * unknown-tool short-circuit in `StreamingToolExecutor.addTool`, and
+ * the result-emission contract that pairs every `tool_call_started`
+ * with a `tool_call_completed`.
+ *
+ * Returns `null` only when the call itself is unrecognizable (no id),
+ * which the caller must treat the same as the prior silent-drop
+ * (there's no `tool_call_started` to pair anyway).
+ */
+function parseToolUseBlocksForSyntheticRecovery(
+  call: LLMToolCall,
+): ToolUseBlock | null {
+  const id = call.id?.trim();
+  if (!id) return null;
+  let input: unknown;
+  try {
+    input = call.arguments ? JSON.parse(call.arguments) : undefined;
+  } catch {
+    input = call.arguments;
+  }
+  return {
+    type: "tool_use" as const,
+    id,
+    name: call.name,
+    input,
+  };
+}
+
 export function validateToolCallsForDispatch(
   raw: ReadonlyArray<unknown>,
   session: Session,
@@ -526,8 +558,25 @@ export async function executeTools(
   );
 
   for (const call of normalizedToolCalls) {
-    const block = toolBlocksById.get(call.id);
-    if (!block) continue;
+    let block = toolBlocksById.get(call.id);
+    if (!block) {
+      // Recover by synthesizing the missing block from the call itself.
+      // This is the documented bug from the pwd-storm investigation:
+      // when `state.toolUseBlocks` and `assistant.toolCalls` drift
+      // (different ID sets after validation, or empty toolUseBlocks
+      // for openai-compat providers that don't emit chunk.toolCalls
+      // mid-stream), the prior `if (!block) continue` silently dropped
+      // the dispatch. The tool_call event already fired upstream in
+      // run-turn.ts so the TUI showed the call line; missing the
+      // queue here meant no tool_result event ever followed, the
+      // model saw silence on the next iteration, and re-emitted the
+      // same call until it gave up. The synthetic block keeps the
+      // dispatch path index-aligned so every tool_call_started event
+      // pairs with a tool_call_completed event.
+      const synthetic = parseToolUseBlocksForSyntheticRecovery(call);
+      if (synthetic === null) continue;
+      block = synthetic;
+    }
 
     queueStreamingToolCall(executor, block, call, session);
     // Kick off any newly-queued workers so they can run in parallel

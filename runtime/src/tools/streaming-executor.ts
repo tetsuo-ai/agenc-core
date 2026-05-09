@@ -288,7 +288,45 @@ export class StreamingToolExecutor {
    * the model from seeing orphaned tool calls on the next turn.
    */
   addTool(block: ToolUseBlock, toolCall: LLMToolCall): void {
-    if (this.closed || this.isAborting) return;
+    if (this.closed || this.isAborting) {
+      // Defensive: a `tool_call_started` event has already been emitted
+      // by `queueStreamingToolCall` upstream by the time we reach
+      // `addTool`. Returning silently here orphans that event — the
+      // TUI shows a tool_call line, no tool_result line ever follows,
+      // the model on the next iteration sees no result for the call,
+      // and re-emits it. That was the pwd-storm bug. Push a synthetic
+      // `completed` tracked entry so the upstream result-emission
+      // contract holds: every tool_call_started gets a paired
+      // tool_call_completed, even if the executor is closed.
+      const reason = this.isAborting ? "aborting" : "closed";
+      const syntheticResult: ToolDispatchResult = {
+        content: JSON.stringify({
+          tool_use_id: toolCall.id,
+          is_error: true,
+          content: `<tool_use_error>Internal error: tool dispatch attempted on a ${reason} executor for ${toolCall.name}. The runtime did not run the tool. This is a runtime bug; please report it.</tool_use_error>`,
+        }),
+        isError: true,
+      };
+      const classifiable = this.resolveClassifiable(toolCall);
+      const tracked: TrackedTool = {
+        id: toolCall.id,
+        block,
+        toolCall,
+        classifiable,
+        classification: classify(classifiable, {}),
+        status: "completed",
+        isConcurrencySafe: true,
+        hasDispatched: false,
+        result: syntheticResult,
+        error: new Error(
+          `addTool called on ${reason} executor for ${toolCall.name}`,
+        ),
+        pendingProgress: [],
+      };
+      this.tools.push(tracked);
+      this.signalProgress();
+      return;
+    }
 
     // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
     const isKnown = this.isKnownToolCall(toolCall);

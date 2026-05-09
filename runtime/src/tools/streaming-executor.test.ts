@@ -311,6 +311,40 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     expect(results[0]!.content).toContain("No such tool available: no.such.tool");
   });
 
+  test("addTool on a closed executor still emits a synthetic completion (regression: pwd-storm silent drop)", async () => {
+    // The pwd-storm bug: when the executor was already closed/aborting
+    // by the time `addTool` was called, the prior `if (this.closed ||
+    // this.isAborting) return;` silently dropped the call. Upstream
+    // (queueStreamingToolCall) had already emitted the
+    // `tool_call_started` event, so the TUI showed the call line but
+    // no `tool_call_completed` ever followed, no `tool_result` got
+    // pushed to state.messages, the model on the next turn iteration
+    // saw silence for its tool call, and re-emitted the same call
+    // until it gave up. This pins the synthetic-completion fix.
+    const exec = new StreamingToolExecutor({
+      ...mockGuardedDispatch(async () => ({ content: "should not dispatch" })),
+    });
+    exec.close();
+    // After close, addTool must still produce a tracked entry with a
+    // synthetic error result so getRemainingResults yields the
+    // pairing tool_call_completed.
+    exec.addTool(makeBlock("c1", "FileRead"), makeCall("c1", "FileRead"));
+
+    const results: Array<{ id: string; content: string; isError: boolean }> = [];
+    for await (const r of exec.getRemainingResults()) {
+      results.push({
+        id: r.toolCall.id,
+        content: String(r.result.content),
+        isError: r.result.isError === true,
+      });
+    }
+    expect(results).toHaveLength(1);
+    expect(results[0]!.id).toBe("c1");
+    expect(results[0]!.isError).toBe(true);
+    expect(results[0]!.content).toContain("closed executor");
+    expect(results[0]!.content).toContain("FileRead");
+  });
+
   test("head-of-line break: executing non-safe tool blocks downstream yields", async () => {
     // AgenC :436-438 — while a non-concurrency-safe tool is
     // still executing, downstream completed/pending results must not
