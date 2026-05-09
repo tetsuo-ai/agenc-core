@@ -574,6 +574,53 @@ export interface AssembledSystemPrompt {
   readonly sections: string[];
 }
 
+/**
+ * Required inputs for assembling the per-turn system prompt. This is a
+ * stricter sibling of {@link AssembleSystemPromptOpts} — every field is
+ * required, so a caller cannot silently miss `mcpServers`,
+ * `autonomousMode`, `provider`, etc. Both `runSingleTurn` (the production
+ * turn driver) and `runContextUsage` (the /context display) must build a
+ * value of this exact shape, then run it through
+ * {@link buildAssembleSystemPromptOpts}, so the per-turn token count
+ * shown in /context matches what the model actually receives.
+ */
+export interface AssembleSystemPromptInputs {
+  readonly session: Session;
+  readonly ctx: TurnContext;
+  readonly projectInstructions: string;
+  readonly memoryPrompt: string;
+  readonly mcpServers: readonly McpServerInstructionsInput[];
+  readonly enabledToolNames: ReadonlySet<string>;
+  readonly provider: string;
+  readonly permissionContext: ToolPermissionContext | null;
+  readonly autonomousMode: boolean;
+}
+
+/**
+ * Convert a complete {@link AssembleSystemPromptInputs} into the wider
+ * {@link AssembleSystemPromptOpts} shape `assembleSystemPrompt` consumes.
+ * Centralizing the call shape keeps `runSingleTurn` and `runContextUsage`
+ * from drifting: any new required input added here forces every caller
+ * to update at compile time, instead of silently leaving a section
+ * (MCP catalog, autonomous-work prose, provider env-info, ...) out of
+ * the displayed /context count.
+ */
+export function buildAssembleSystemPromptOpts(
+  inputs: AssembleSystemPromptInputs,
+): AssembleSystemPromptOpts {
+  return {
+    session: inputs.session,
+    ctx: inputs.ctx,
+    projectInstructions: inputs.projectInstructions,
+    memoryPrompt: inputs.memoryPrompt,
+    mcpServers: [...inputs.mcpServers],
+    enabledToolNames: inputs.enabledToolNames,
+    provider: inputs.provider,
+    permissionContext: inputs.permissionContext,
+    autonomousMode: inputs.autonomousMode,
+  };
+}
+
 export type SystemPrompt = readonly string[] & {
   readonly __brand: "SystemPrompt";
 };

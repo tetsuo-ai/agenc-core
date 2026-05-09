@@ -29,7 +29,12 @@ import {
   isAutoCompactEnabled,
 } from "../services/compact/autoCompact.js";
 import { roughTokenCountEstimationForMessages } from "../llm/token-estimation.js";
-import { assembleSystemPrompt } from "../prompts/system-prompt.js";
+import {
+  assembleSystemPrompt,
+  buildAssembleSystemPromptOpts,
+  type McpServerInstructionsInput,
+} from "../prompts/system-prompt.js";
+import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import {
   assembleTieredInstructions,
   loadTieredInstructions,
@@ -512,18 +517,26 @@ async function runContextUsage(params: {
     // run-turn.ts strips it before the snapshot is recorded. So to
     // count what the model actually receives on the next turn we
     // have to RECONSTRUCT the per-turn system prompt and prepend it
-    // ourselves. Reuses the same assembleSystemPrompt + tiered
-    // loader (mtime-cached after Phase 3 sg-4) that runSingleTurn
-    // calls — no parallel assembly path.
+    // ourselves. Reuses the same buildAssembleSystemPromptOpts +
+    // assembleSystemPrompt + tiered loader (mtime-cached after Phase
+    // 3 sg-4) that runSingleTurn calls — no parallel assembly path.
+    //
+    // Every field below mirrors what `runSingleTurn` resolves at
+    // agenc.ts:760-770 so the displayed token count reflects the
+    // actual wire payload (including the # MCP Server Instructions
+    // block and the # Autonomous work section, which the previous
+    // version of this code silently dropped).
     const tools = params.session.services.registry.toLLMTools();
     const enabledToolNames = new Set(tools.map((tool) => tool.function.name));
     const projectInstructions = await loadProjectInstructionsForContext(
       params.ctx.cwd,
     );
+    const mcpServers = await loadMcpServerInstructionsForContext(params.session);
     const systemMessage = await buildSyntheticSystemMessage({
       session: params.session,
       ctx: params.ctx,
       projectInstructions,
+      mcpServers,
       enabledToolNames,
     });
     const sourceMessages = params.session.snapshotHistoryMessages();
@@ -549,7 +562,13 @@ async function runContextUsage(params: {
     const result = await withCompactContextGuards(async () => {
       return contextUsageCall(params.args ?? "", commandContext as never);
     }, envForToolUseContext(toolUseContext));
-    finishTelemetry("reported");
+    // Surface a tag when the synthetic system message was lost so a
+    // regression in the assembler shows up in telemetry instead of as
+    // a silent under-count in /context. The status itself stays
+    // "reported" because /context still produced a usable answer.
+    finishTelemetry("reported", {
+      ...(systemMessage === null ? { systemAssemblyFailed: true } : {}),
+    });
     return { text: result.value };
   } catch (error) {
     finishTelemetry("error");
@@ -563,7 +582,11 @@ async function runContextUsage(params: {
  * assembleSystemPrompt. Goes through the mtime-cached
  * loadTieredInstructions, so on a warm cache this is a few stat()
  * syscalls. Failures are best-effort: /context must never throw on
- * a missing/malformed AGENC.md.
+ * a missing/malformed AGENC.md. The production assembler at
+ * `prepareTurnRuntimeInputs` surfaces these as user-visible warnings
+ * via `formatTieredInstructionWarnings`; /context intentionally
+ * skips that sink so the status display stays a read-only operation
+ * — the warnings will still appear at the next real turn boundary.
  */
 async function loadProjectInstructionsForContext(
   cwd: string | undefined,
@@ -578,18 +601,49 @@ async function loadProjectInstructionsForContext(
 }
 
 /**
+ * Resolve connected-MCP-server `instructions` blocks for /context.
+ * Mirrors `prepareTurnRuntimeInputs` at agenc.ts so the displayed
+ * token count includes the `# MCP Server Instructions` section. Failure
+ * to reach the MCP manager (no config store, transient disconnection)
+ * collapses to the empty list — /context still produces a usable count
+ * for the conversation + tool catalog + remainder of the system prompt.
+ */
+async function loadMcpServerInstructionsForContext(
+  session: Session,
+): Promise<readonly McpServerInstructionsInput[]> {
+  try {
+    const config = session.services.configStore?.current();
+    if (config === undefined) return [];
+    return await loadSessionMcpServerInstructions(session, config);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build a synthetic role:"system" RuntimeMessage that mirrors the
  * system prompt the next turn would carry. Used by /context so the
  * displayed token count includes AGENC.md + the assembler's static
- * head + dynamic sections (permissions, env-info, etc.). Returns
- * null if assembly fails — /context falls back to counting only
- * conversation + tools, which is still an improvement over the old
- * chars/4 heuristic.
+ * head + dynamic sections (permissions, env-info, MCP server
+ * instructions, autonomous-work prose, etc.).
+ *
+ * Routes through {@link buildAssembleSystemPromptOpts} so the input
+ * shape stays in lock-step with `runSingleTurn`'s call at
+ * agenc.ts:760-770. If a new field is added there, this site fails
+ * to compile, preventing the silent under-count regression that the
+ * Phase 3 reviewer flagged on commit 4ba0b3d4.
+ *
+ * Returns null if assembly fails — /context falls back to counting
+ * only conversation + tools, which is still an improvement over the
+ * pre-Phase-3 chars/4 heuristic. The caller surfaces a telemetry
+ * tag (`systemAssemblyFailed`) so silent regressions become visible
+ * to the operator.
  */
 async function buildSyntheticSystemMessage(opts: {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly projectInstructions: string;
+  readonly mcpServers: readonly McpServerInstructionsInput[];
   readonly enabledToolNames: ReadonlySet<string>;
 }): Promise<RuntimeMessage | null> {
   try {
@@ -599,13 +653,27 @@ async function buildSyntheticSystemMessage(opts: {
     } catch {
       permissionContext = null;
     }
-    const assembled = await assembleSystemPrompt({
-      session: opts.session,
-      ctx: opts.ctx,
-      projectInstructions: opts.projectInstructions,
-      enabledToolNames: opts.enabledToolNames,
-      ...(permissionContext !== null ? { permissionContext } : {}),
-    });
+    const autonomousMode =
+      (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
+        ?.autonomousMode === true;
+    const provider = opts.ctx.modelProviderId;
+    const assembled = await assembleSystemPrompt(
+      buildAssembleSystemPromptOpts({
+        session: opts.session,
+        ctx: opts.ctx,
+        projectInstructions: opts.projectInstructions,
+        // /context isn't a real turn boundary, so it has no `memdir`
+        // tail to surface. Production passes
+        // `turnInputs.memoryPromptText`, which is currently always ""
+        // out of `prepareTurnRuntimeInputs`. Match that explicitly.
+        memoryPrompt: "",
+        mcpServers: opts.mcpServers,
+        enabledToolNames: opts.enabledToolNames,
+        provider,
+        permissionContext,
+        autonomousMode,
+      }),
+    );
     return {
       role: "system",
       type: "system",

@@ -17,6 +17,22 @@ function userMessage(content: string): RuntimeMessage {
   return { type: "user", message } as unknown as RuntimeMessage;
 }
 
+/**
+ * Build a synthetic system RuntimeMessage matching the exact shape
+ * `buildSyntheticSystemMessage` (in session-compact.ts) emits — role +
+ * type + content + nested message object. The token estimator at
+ * `roughTokenCountEstimationForMessage` walks both `content` and
+ * `message.content`, so the redundant nested copy is intentional.
+ */
+function syntheticSystemMessage(text: string): RuntimeMessage {
+  return {
+    role: "system",
+    type: "system",
+    content: text,
+    message: { role: "system", content: text },
+  } as unknown as RuntimeMessage;
+}
+
 function tool(name: string, description: string): LLMTool {
   return {
     type: "function",
@@ -130,6 +146,60 @@ describe("/context display: computeContextUsageBreakdown", () => {
     expect(breakdown.totalUsed).toBeGreaterThan(breakdown.hardLimit);
     expect(breakdown.freeUntilCompact).toBe(0);
     expect(breakdown.freeUntilHardLimit).toBe(0);
+  });
+
+  test("synthetic system message produces a non-zero token delta vs conversation-only", () => {
+    // Phase 3 reviewer (commit 4ba0b3d4) returned NEEDS_REVISION because
+    // BLOCKER #33 was only partially closed — the commit message claimed
+    // the system message was counted but `Session.snapshotHistoryMessages`
+    // strips it. The follow-up commit reconstructs the per-turn system
+    // prompt and prepends it as a synthetic role:"system" RuntimeMessage.
+    //
+    // This test pins that fix in place. If a future refactor stops
+    // prepending the synthetic message (or breaks the field shape that
+    // `roughTokenCountEstimationForMessage` walks), the delta drops to
+    // zero and this test fails — making the regression observable
+    // before it ships, which is what was missing from the prior commits.
+    const conversation = [userMessage("hi")];
+
+    // Plausible system-prompt blob: AGENC.md + assembler static head +
+    // dynamic sections + MCP catalog + autonomous-work prose. The exact
+    // content doesn't matter — what matters is that a non-trivial
+    // system prompt produces a non-trivial delta in the displayed
+    // count. Production prompts run 5k-50k tokens.
+    const systemText = [
+      "# AGENC.md project instructions",
+      "x".repeat(8_000),
+      "# Using your tools",
+      "y".repeat(4_000),
+      "# Permissions",
+      "z".repeat(2_000),
+      "# MCP Server Instructions",
+      "m".repeat(6_000),
+      "# Autonomous work",
+      "a".repeat(3_000),
+    ].join("\n");
+
+    const withoutSystem = computeContextUsageBreakdown({
+      messages: conversation,
+      tools: [],
+      contextWindowTokens: 200_000,
+      model: "qwen3:8b",
+    });
+    const withSystem = computeContextUsageBreakdown({
+      messages: [syntheticSystemMessage(systemText), ...conversation],
+      tools: [],
+      contextWindowTokens: 200_000,
+      model: "qwen3:8b",
+    });
+
+    expect(withSystem.totalUsed).toBeGreaterThan(withoutSystem.totalUsed);
+    // The delta must reflect the system text size meaningfully — the
+    // estimator returns a few thousand tokens for a ~23kB system blob.
+    // 1_000 is a conservative floor; the actual delta is much larger.
+    expect(withSystem.totalUsed - withoutSystem.totalUsed).toBeGreaterThan(
+      1_000,
+    );
   });
 
   test("auto-compact disabled flag flips compactionThreshold to the hard limit", () => {

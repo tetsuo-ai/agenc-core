@@ -76,8 +76,10 @@ import {
 } from "../prompts/file-mentions.js";
 import {
   assembleSystemPrompt,
+  buildAssembleSystemPromptOpts,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
+import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import { enableConfigs } from "../config/init.js";
 import {
@@ -755,19 +757,27 @@ export async function* runSingleTurn(
     permissionContext = null;
   }
 
-  const assembled = await assemble({
-    session: opts.session,
-    ctx: opts.ctx,
-    projectInstructions: turnInputs.projectInstructions,
-    memoryPrompt: turnInputs.memoryPromptText,
-    mcpServers: [...turnInputs.mcpServers],
-    enabledToolNames: turnInputs.enabledToolNames,
-    provider: opts.provider,
-    permissionContext,
-    autonomousMode:
-      (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
-        ?.autonomousMode === true,
-  });
+  // Route through the shared {@link buildAssembleSystemPromptOpts} helper
+  // so the /context display (`runContextUsage`) and this production turn
+  // driver always pass the same input shape to `assembleSystemPrompt`.
+  // Adding a new required field here forces both sites to update at
+  // compile time, preventing silent under-counts in the displayed
+  // context size.
+  const assembled = await assemble(
+    buildAssembleSystemPromptOpts({
+      session: opts.session,
+      ctx: opts.ctx,
+      projectInstructions: turnInputs.projectInstructions,
+      memoryPrompt: turnInputs.memoryPromptText,
+      mcpServers: turnInputs.mcpServers,
+      enabledToolNames: turnInputs.enabledToolNames,
+      provider: opts.provider,
+      permissionContext,
+      autonomousMode:
+        (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
+          ?.autonomousMode === true,
+    }),
+  );
 
   const iter = drive(opts.session, opts.ctx, opts.input, {
     systemPrompt: assembled.text,
@@ -788,28 +798,6 @@ export interface PreparedTurnRuntimeInputs {
   readonly mcpServers: readonly McpServerInstructionsInput[];
 }
 
-async function loadSessionMcpServerInstructions(
-  session: Session,
-  config: AgenCConfig,
-): Promise<readonly McpServerInstructionsInput[]> {
-  const servers = await session.services.mcpManager.effectiveServers(
-    config,
-    null,
-  );
-  return Array.from(servers.entries())
-    .flatMap(([name, info]) => {
-      const instructions = (info as { readonly instructions?: unknown })
-        .instructions;
-      if (
-        typeof instructions !== "string" ||
-        instructions.trim().length === 0
-      ) {
-        return [];
-      }
-      return [{ name, instructions: instructions.trim() }];
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
 
 export async function prepareTurnRuntimeInputs(params: {
   readonly session: Session;
