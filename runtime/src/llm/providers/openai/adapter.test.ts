@@ -1033,6 +1033,50 @@ describe("OpenAIProvider", () => {
     expect(headers.get("accept")).toBe("text/event-stream");
   });
 
+  test("decodes MCP tool names on the responses-api streaming path so the dispatcher sees the dotted internal form", async () => {
+    // Phase 4 #42 reviewer follow-up: the wire-format tests verified
+    // encode-on-send + decode-on-receive for non-streaming responses,
+    // but the streaming `response.output_item.done` handler at
+    // adapter.ts was constructing the toolCall with the raw wire-form
+    // name. The mid-stream `onChunk(toolCalls)` then dispatched the
+    // wire-form into the executor and the registry (keyed on the
+    // dotted internal form) reported a silent miss. This test pins
+    // the streaming-path decode in place so a future refactor can't
+    // re-introduce the gap.
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_mcp","call_id":"call_mcp","name":"mcp__memory__search_nodes","arguments":"{\\"q\\":\\"hi\\"}"}}\n\n',
+        'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_mcp","status":"completed","model":"gpt-5","output":[{"type":"function_call","id":"fc_mcp","call_id":"call_mcp","name":"mcp__memory__search_nodes","arguments":"{\\"q\\":\\"hi\\"}"}]}}\n\n',
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      // branding-scan: allow real model identifier in test fixture
+      model: "gpt-5",
+      fetchImpl,
+    });
+    const chunks: Array<{
+      content: string;
+      done: boolean;
+      toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+    }> = [];
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      (chunk) => chunks.push(chunk),
+    );
+
+    // Mid-stream emit must carry the dotted form so the dispatcher
+    // can resolve it against the registry.
+    const midStream = chunks.find(
+      (c) => c.done === false && c.toolCalls !== undefined,
+    );
+    expect(midStream?.toolCalls?.[0]?.name).toBe("mcp.memory.search_nodes");
+    // Final aggregated response also dotted (covered by
+    // parseOpenAIResponsesResponse decode in the wire layer).
+    expect(response.toolCalls[0]?.name).toBe("mcp.memory.search_nodes");
+  });
+
   test("rejects responses-api stream tool calls with invalid completed JSON", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
