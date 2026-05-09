@@ -45,6 +45,7 @@ import {
   type ChatCompletionsMaxTokenField,
   type ChatCompletionsRequestMetadata,
 } from "../../wire/chat-completions.js";
+import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
@@ -769,6 +770,16 @@ export class OpenAIProvider implements LLMProvider {
     readonly tools: readonly LLMTool[];
     readonly options?: LLMChatOptions;
   }): Record<string, unknown> {
+    // Resolve per-provider capability hints from `this.name` (the
+    // provider slug each subclass passes via `config.providerName`).
+    // Subclasses (lmstudio, ollama, openrouter, deepseek, …) inherit
+    // the gating automatically: the hint matrix lives in one place
+    // and keys on the slug, so adding a new openai-compat provider
+    // doesn't require new override boilerplate.
+    const providerCapabilityHints = chatCompletionsCapabilityHintsForProvider(
+      this.name,
+      args.model,
+    );
     const request = buildChatCompletionsRequest({
       model: args.model,
       messages: args.messages,
@@ -776,6 +787,7 @@ export class OpenAIProvider implements LLMProvider {
       options: args.options,
       maxTokens: this.resolveRequestMaxTokens(args.options),
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      providerCapabilityHints,
     });
     const metadata = collectChatCompletionsRequestMetadata(request);
     this.emitRequestMetadata("chat_completions", metadata);
@@ -1002,10 +1014,21 @@ export class OpenAIProvider implements LLMProvider {
       toolsRequested: requestOptions.tools.length > 0,
       api: "chat_completions",
     });
+    // Gate `stream_options.include_usage` on the same per-provider
+    // capability matrix that buildChatCompletionsRequest consults.
+    // Some local openai-compat servers (older Ollama versions, custom
+    // proxies) reject unknown `stream_options` keys and tear down the
+    // SSE stream — strip the field for those providers up-front.
+    const streamCapabilityHints = chatCompletionsCapabilityHintsForProvider(
+      this.name,
+      requestModel,
+    );
     const request = {
       ...this.prepareChatCompletionsRequest(requestOptions),
       stream: true,
-      stream_options: { include_usage: true },
+      ...(streamCapabilityHints.acceptsStreamUsage !== false
+        ? { stream_options: { include_usage: true } }
+        : {}),
     };
     let consecutiveFallbackFailures = 0;
     chatStreamAttempts: while (true) {

@@ -35,6 +35,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
+import type { ChatCompletionsCapabilityHints } from "./capability-gating.js";
 
 export interface ChatCompletionsRequestOptions {
   readonly model: string;
@@ -43,6 +44,16 @@ export interface ChatCompletionsRequestOptions {
   readonly options?: LLMChatOptions;
   readonly maxTokens?: number;
   readonly maxTokenField?: ChatCompletionsMaxTokenField;
+  /**
+   * Per-provider capability hints. Adapters populate this so the
+   * wire builder can strip fields the destination provider rejects.
+   * For example `service_tier` is recognized only by a single
+   * upstream provider, and `reasoning_effort` only applies to a
+   * handful of model families. Backward-compatible: when undefined,
+   * current behavior is preserved (all caller-supplied fields are
+   * sent).
+   */
+  readonly providerCapabilityHints?: ChatCompletionsCapabilityHints;
 }
 
 export type ChatCompletionsMaxTokenField =
@@ -153,10 +164,20 @@ export function buildChatCompletionsRequest(
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
-  if (input.options?.reasoningEffort !== undefined) {
+  // Strip fields the destination provider rejects. Hints are
+  // adapter-populated; an undefined `acceptsX` flag preserves the
+  // pre-hint behavior of "include if caller supplied a value", so
+  // unmigrated callers don't regress.
+  if (
+    input.options?.reasoningEffort !== undefined &&
+    input.providerCapabilityHints?.acceptsReasoningEffort !== false
+  ) {
     body.reasoning_effort = input.options.reasoningEffort;
   }
-  if (input.options?.serviceTier !== undefined) {
+  if (
+    input.options?.serviceTier !== undefined &&
+    input.providerCapabilityHints?.acceptsServiceTier !== false
+  ) {
     body.service_tier = input.options.serviceTier;
   }
   const structuredFormat = buildStructuredOutputTextFormat(
