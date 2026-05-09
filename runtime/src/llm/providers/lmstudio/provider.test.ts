@@ -194,7 +194,11 @@ describe("LMStudioProvider", () => {
     expect(requestBody.stream_options).toEqual({ include_usage: true });
   });
 
-  test("health sidecar aborts long streams when LM Studio goes down", async () => {
+  test("health sidecar aborts long streams when LM Studio goes down (after 2 consecutive failures)", async () => {
+    // Phase 4 #45 changed the default consecutive-failure threshold
+    // from 1 to 2 so a single transient probe blip can't kill an
+    // in-flight stream. Two consecutive `healthy === false` probes
+    // are required to trip the abort.
     vi.useFakeTimers();
     const healthCheck = vi.fn().mockResolvedValue(false);
 
@@ -210,16 +214,18 @@ describe("LMStudioProvider", () => {
     });
     const observed = pending.catch((error: unknown) => error);
 
-    await vi.advanceTimersByTimeAsync(5);
+    // First probe at t=5ms: counter=1 < threshold=2, no abort.
+    // Second probe at t=10ms: counter=2 >= threshold=2, abort fires.
+    await vi.advanceTimersByTimeAsync(15);
 
     await expect(observed).resolves.toMatchObject({
       name: "LLMProviderError",
       providerName: "lmstudio",
     });
-    expect(healthCheck).toHaveBeenCalledTimes(1);
+    expect(healthCheck).toHaveBeenCalledTimes(2);
   });
 
-  test("health sidecar treats refused local connections as provider loss", async () => {
+  test("health sidecar treats refused local connections as provider loss (after 2 consecutive ECONNREFUSED probes)", async () => {
     vi.useFakeTimers();
     const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1"), {
       code: "ECONNREFUSED",
@@ -238,12 +244,12 @@ describe("LMStudioProvider", () => {
     });
     const observed = pending.catch((error: unknown) => error);
 
-    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(15);
 
     await expect(observed).resolves.toMatchObject({
       name: "LLMProviderError",
       providerName: "lmstudio",
     });
-    expect(healthCheck).toHaveBeenCalledTimes(1);
+    expect(healthCheck).toHaveBeenCalledTimes(2);
   });
 });

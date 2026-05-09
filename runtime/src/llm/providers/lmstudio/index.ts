@@ -47,4 +47,26 @@ export class LMStudioProvider extends OpenAIProvider {
         }),
     });
   }
+
+  async chat(
+    messages: LLMMessage[],
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse> {
+    // The non-streaming `chat()` path is what `--print` mode and the
+    // synchronous `oneShotCLI` path use. Without the health sidecar
+    // here, a closed local lmstudio port hangs the request until the
+    // configured timeoutMs (default minutes) — the user sees no
+    // output and no error. The sidecar's interval probe surfaces the
+    // unreachable server within ~10s with a clear "restart lmstudio
+    // and retry" message instead.
+    return await withLmstudioHealthSidecar({
+      signal: options?.signal,
+      healthCheck: async () => await super.healthCheck(),
+      operation: async (signal) =>
+        await super.chat(messages, {
+          ...(options ?? {}),
+          signal,
+        }),
+    });
+  }
 }
