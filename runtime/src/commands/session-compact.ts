@@ -527,8 +527,23 @@ async function runContextUsage(params: {
     // block and the # Autonomous work section, which the previous
     // version of this code silently dropped).
     const tools = params.session.services.registry.toLLMTools();
-    const enabledToolNames = new Set(tools.map((tool) => tool.function.name));
+    // Carry-forward #64: production resolves enabledToolNames from
+    // `registry.allSpecs()` (via `prepareTurnRuntimeInputs.params.registry.tools`
+    // at agenc.ts:852); /context here used `toLLMTools()` which only
+    // returns visibleSpecs. The two diverge on deferred MCP tools that
+    // are registered but not yet listed. Match production by walking
+    // allSpecs when the registry exposes them; fall back to the visible
+    // set when allSpecs isn't available (test fixtures).
+    const allSpecsFn = (params.session.services.registry as unknown as {
+      readonly allSpecs?: () => readonly { readonly name: string }[];
+    }).allSpecs;
+    const enabledToolNames = new Set(
+      typeof allSpecsFn === "function"
+        ? allSpecsFn.call(params.session.services.registry).map((spec) => spec.name)
+        : tools.map((tool) => tool.function.name),
+    );
     const projectInstructions = await loadProjectInstructionsForContext(
+      params.session,
       params.ctx.cwd,
     );
     const mcpServers = await loadMcpServerInstructionsForContext(params.session);
@@ -589,11 +604,27 @@ async function runContextUsage(params: {
  * — the warnings will still appear at the next real turn boundary.
  */
 async function loadProjectInstructionsForContext(
+  session: Session,
   cwd: string | undefined,
 ): Promise<string> {
   if (cwd === undefined) return "";
   try {
-    const tiered = await loadTieredInstructions({ cwd });
+    // Carry-forward #63: pass projectRootMarkers and projectDocMaxBytes
+    // from the active config the same way `prepareTurnRuntimeInputs`
+    // does at agenc.ts:823-831. Without these, /context loads the
+    // tier chain with default markers/limits and produces a count
+    // that diverges from the real turn payload whenever the user
+    // has either field set in their config.
+    const currentConfig = session.services.configStore?.current();
+    const tiered = await loadTieredInstructions({
+      cwd,
+      ...(currentConfig?.project_root_markers !== undefined
+        ? { projectRootMarkers: currentConfig.project_root_markers }
+        : {}),
+      ...(currentConfig?.project_doc_max_bytes !== undefined
+        ? { projectDocMaxBytes: currentConfig.project_doc_max_bytes }
+        : {}),
+    });
     return assembleTieredInstructions(tiered);
   } catch {
     return "";
