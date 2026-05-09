@@ -202,6 +202,80 @@ describe("/context display: computeContextUsageBreakdown", () => {
     );
   });
 
+  describe("cache-hit ratio surfacing", () => {
+    test("populates cacheHitRatio when sessionTokenUsage carries cachedInputTokens", () => {
+      const breakdown = computeContextUsageBreakdown({
+        messages: [],
+        tools: [],
+        contextWindowTokens: 200_000,
+        model: "claude-opus-4-7",
+        sessionTokenUsage: {
+          promptTokens: 10_000,
+          cachedInputTokens: 7_500,
+          cacheCreationInputTokens: 1_200,
+        },
+      });
+      expect(breakdown.cacheHitRatio).toBeCloseTo(0.75, 2);
+      expect(breakdown.sessionPromptTokens).toBe(10_000);
+      expect(breakdown.sessionCachedInputTokens).toBe(7_500);
+      expect(breakdown.sessionCacheCreationTokens).toBe(1_200);
+    });
+
+    test("omits cacheHitRatio when promptTokens is 0", () => {
+      const breakdown = computeContextUsageBreakdown({
+        messages: [],
+        tools: [],
+        contextWindowTokens: 200_000,
+        model: "claude-opus-4-7",
+        sessionTokenUsage: {
+          promptTokens: 0,
+          cachedInputTokens: 0,
+        },
+      });
+      expect(breakdown.cacheHitRatio).toBeUndefined();
+      expect(breakdown.sessionPromptTokens).toBeUndefined();
+    });
+
+    test("omits cacheHitRatio when sessionTokenUsage is missing entirely (no usage data yet)", () => {
+      const breakdown = computeContextUsageBreakdown({
+        messages: [],
+        tools: [],
+        contextWindowTokens: 200_000,
+        model: "claude-opus-4-7",
+      });
+      expect(breakdown.cacheHitRatio).toBeUndefined();
+    });
+
+    test("omits cacheHitRatio when cachedInputTokens is undefined (provider doesn't report cache split)", () => {
+      const breakdown = computeContextUsageBreakdown({
+        messages: [],
+        tools: [],
+        contextWindowTokens: 200_000,
+        model: "grok-4.3",
+        sessionTokenUsage: {
+          promptTokens: 5_000,
+        },
+      });
+      expect(breakdown.cacheHitRatio).toBeUndefined();
+    });
+
+    test("clamps the ratio between 0 and 1 if a provider reports cached > prompt", () => {
+      // Defensive: if a provider's accounting drifts, don't render
+      // 150% hit which would confuse the user.
+      const breakdown = computeContextUsageBreakdown({
+        messages: [],
+        tools: [],
+        contextWindowTokens: 200_000,
+        model: "claude-opus-4-7",
+        sessionTokenUsage: {
+          promptTokens: 1000,
+          cachedInputTokens: 1500,
+        },
+      });
+      expect(breakdown.cacheHitRatio).toBe(1);
+    });
+  });
+
   test("auto-compact disabled flag flips compactionThreshold to the hard limit", () => {
     // When DISABLE_COMPACT or AGENC_DISABLE_COMPACT is set, the
     // compaction threshold should equal the hard limit (no

@@ -564,6 +564,18 @@ async function runContextUsage(params: {
       params.ctx,
       { querySource: "context" },
     );
+    const sessionState = params.session.state.unsafePeek() as
+      | { readonly totalTokenUsage?: {
+          readonly promptTokens: number;
+          readonly cachedInputTokens: number;
+        } }
+      | null;
+    const sessionTokenUsage = sessionState?.totalTokenUsage !== undefined
+      ? {
+          promptTokens: sessionState.totalTokenUsage.promptTokens,
+          cachedInputTokens: sessionState.totalTokenUsage.cachedInputTokens,
+        }
+      : undefined;
     const commandContext = {
       ...toolUseContext,
       messages,
@@ -573,6 +585,7 @@ async function runContextUsage(params: {
         customSystemPrompt: undefined,
         appendSystemPrompt: undefined,
       },
+      ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
     };
     const result = await withCompactContextGuards(async () => {
       return contextUsageCall(params.args ?? "", commandContext as never);
@@ -808,6 +821,18 @@ interface ContextUsageInputs {
    * value flowing through CompactContext.options.contextWindowTokens.
    */
   readonly contextWindowTokens?: number;
+  /**
+   * Session-wide cumulative token usage from `session.state.totalTokenUsage`.
+   * Optional: when missing the cache-hit summary is omitted from the
+   * formatted report. The messages-API providers surface `cachedInputTokens`
+   * and `cacheCreationInputTokens` separately; the Responses-API path
+   * caches under the hood but does not break the count out by hit/miss.
+   */
+  readonly sessionTokenUsage?: {
+    readonly promptTokens: number;
+    readonly cachedInputTokens?: number;
+    readonly cacheCreationInputTokens?: number;
+  };
 }
 
 interface ContextUsageBreakdown {
@@ -819,6 +844,16 @@ interface ContextUsageBreakdown {
   readonly totalUsed: number;
   readonly freeUntilCompact: number;
   readonly freeUntilHardLimit: number;
+  /**
+   * Cumulative cache-hit ratio for this session, expressed as
+   * cachedInputTokens / promptTokens (0..1). Undefined when no usage
+   * data has landed yet (turn 0) or the provider doesn't report
+   * cached-input breakdowns.
+   */
+  readonly cacheHitRatio?: number;
+  readonly sessionPromptTokens?: number;
+  readonly sessionCachedInputTokens?: number;
+  readonly sessionCacheCreationTokens?: number;
 }
 
 /**
@@ -858,6 +893,26 @@ export function computeContextUsageBreakdown(
   );
   const toolsTokens = estimateToolCatalogTokens(inputs.tools);
   const totalUsed = messagesTokens + toolsTokens;
+  // Cache-hit ratio is cumulative session-wide. Messages-API providers
+  // surface `cachedInputTokens` and `cacheCreationInputTokens` separately
+  // from the prompt total; Responses-API providers cache under the hood
+  // without exposing the split (so we omit the line for them).
+  let cacheHitRatio: number | undefined;
+  let sessionPromptTokens: number | undefined;
+  let sessionCachedInputTokens: number | undefined;
+  let sessionCacheCreationTokens: number | undefined;
+  if (inputs.sessionTokenUsage) {
+    const usage = inputs.sessionTokenUsage;
+    if (usage.cachedInputTokens !== undefined && usage.promptTokens > 0) {
+      cacheHitRatio = Math.max(
+        0,
+        Math.min(1, usage.cachedInputTokens / usage.promptTokens),
+      );
+      sessionPromptTokens = usage.promptTokens;
+      sessionCachedInputTokens = usage.cachedInputTokens;
+      sessionCacheCreationTokens = usage.cacheCreationInputTokens;
+    }
+  }
   return {
     hardLimit,
     compactionThreshold,
@@ -867,6 +922,14 @@ export function computeContextUsageBreakdown(
     totalUsed,
     freeUntilCompact: Math.max(0, compactionThreshold - totalUsed),
     freeUntilHardLimit: Math.max(0, hardLimit - totalUsed),
+    ...(cacheHitRatio !== undefined ? { cacheHitRatio } : {}),
+    ...(sessionPromptTokens !== undefined ? { sessionPromptTokens } : {}),
+    ...(sessionCachedInputTokens !== undefined
+      ? { sessionCachedInputTokens }
+      : {}),
+    ...(sessionCacheCreationTokens !== undefined
+      ? { sessionCacheCreationTokens }
+      : {}),
   };
 }
 
@@ -917,6 +980,22 @@ function formatContextUsageReport(breakdown: ContextUsageBreakdown): string {
       `  • auto-compact: disabled (hard limit applies; ${breakdown.freeUntilHardLimit.toLocaleString()} tokens free)`,
     );
   }
+  if (
+    breakdown.cacheHitRatio !== undefined &&
+    breakdown.sessionPromptTokens !== undefined &&
+    breakdown.sessionCachedInputTokens !== undefined
+  ) {
+    const pct = Math.round(breakdown.cacheHitRatio * 100);
+    const cached = breakdown.sessionCachedInputTokens.toLocaleString();
+    const prompt = breakdown.sessionPromptTokens.toLocaleString();
+    const creation =
+      breakdown.sessionCacheCreationTokens !== undefined
+        ? `, ${breakdown.sessionCacheCreationTokens.toLocaleString()} written to cache`
+        : "";
+    lines.push(
+      `  • prompt cache: ${pct}% hit (${cached} / ${prompt} prompt tokens served from cache${creation})`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -931,6 +1010,11 @@ async function contextUsageCall(
     };
     readonly provider?: { readonly name?: string };
     readonly tools?: readonly LLMTool[];
+    readonly sessionTokenUsage?: {
+      readonly promptTokens: number;
+      readonly cachedInputTokens?: number;
+      readonly cacheCreationInputTokens?: number;
+    };
   }
 ): Promise<{ readonly value: string }> {
   const breakdown = computeContextUsageBreakdown({
@@ -950,6 +1034,9 @@ async function contextUsageCall(
         ? { model: context.options.mainLoopModel }
         : {}),
     },
+    ...(context.sessionTokenUsage !== undefined
+      ? { sessionTokenUsage: context.sessionTokenUsage }
+      : {}),
   });
   return { value: formatContextUsageReport(breakdown) };
 }
