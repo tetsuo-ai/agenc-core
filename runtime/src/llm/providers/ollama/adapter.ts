@@ -347,6 +347,35 @@ export class OllamaProvider implements LLMProvider {
       options?.timeoutMs,
     );
 
+    // Wrap the non-streaming chat path with the health sidecar. The
+    // streaming path already does this; without it here the
+    // `--print` and `oneShotCLI` flows hang on a closed local ollama
+    // port until `requestTimeoutMs` expires (minutes by default).
+    return await withOllamaHealthSidecar({
+      signal: options?.signal,
+      healthCheck: async () => await this.healthCheck(),
+      operation: async (signal) => await this.runChatWithSignal({
+        client,
+        params,
+        options,
+        toolSelection,
+        requestTimeoutMs,
+        requestMetrics,
+        signal,
+      }),
+    });
+  }
+
+  private async runChatWithSignal(args: {
+    readonly client: unknown;
+    readonly params: Record<string, unknown>;
+    readonly options: LLMChatOptions | undefined;
+    readonly toolSelection: ReturnType<OllamaProvider["selectTools"]>;
+    readonly requestTimeoutMs: number | undefined;
+    readonly requestMetrics: ReturnType<typeof collectParamDiagnostics>;
+    readonly signal: AbortSignal;
+  }): Promise<LLMResponse> {
+    const { client, params, options, toolSelection, requestTimeoutMs, requestMetrics, signal } = args;
     try {
       emitProviderTraceEvent(options, {
         kind: "request",
@@ -362,7 +391,7 @@ export class OllamaProvider implements LLMProvider {
         async () => (client as any).chat(params),
         requestTimeoutMs,
         this.name,
-        options?.signal,
+        signal,
       );
       emitProviderTraceEvent(options, {
         kind: "response",
