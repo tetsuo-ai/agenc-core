@@ -198,9 +198,13 @@ export function SystemTextMessage(t0) {
     return t6;
   }
   const isStopHookSummary = message.subtype === "stop_hook_summary";
-  if (!isStopHookSummary && !verbose && message.level === "info") {
-    return null;
-  }
+  // Phase 5 #54: previously, every info-level system message was
+  // hidden in non-verbose mode (`return null`). That made the
+  // transcript silent for "Context compacted", "Plan started",
+  // "Realtime voice started", and the post-#50 allow-list output.
+  // The policy was inverted — non-verbose mode just dims info; the
+  // user can still see what happened. `--verbose` keeps the more
+  // detailed rendering it had before.
   if (message.subtype === "api_error") {
     let t1;
     if ($[37] !== message || $[38] !== verbose) {
@@ -232,7 +236,16 @@ export function SystemTextMessage(t0) {
     return null;
   }
   const t1 = message.level !== "info";
-  const t2 = message.level === "warning" ? "warning" : undefined;
+  // Phase 5 #55: previously only `warning` got a color — error-level
+  // messages rendered in default text. The user couldn't distinguish
+  // an error from a benign log line. Map `error` → `error` (red in
+  // the design system) so red dots / red text actually surface.
+  const t2 =
+    message.level === "error"
+      ? "error"
+      : message.level === "warning"
+        ? "warning"
+        : undefined;
   const t3 = message.level === "info";
   let t4;
   if ($[45] !== addMargin || $[46] !== content || $[47] !== t1 || $[48] !== t2 || $[49] !== t3) {

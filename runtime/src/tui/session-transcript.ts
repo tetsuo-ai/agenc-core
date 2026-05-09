@@ -809,6 +809,17 @@ export function adaptTranscriptEvents(
         break;
       }
       case "turn_aborted":
+        // Phase 5 #56: previously this case cleared `streamingText`
+        // unconditionally, so any text the model had already
+        // produced before the user pressed ESC was silently dropped
+        // from the transcript. Preserve the partial text as an
+        // assistant message so the user retains the context they
+        // were watching get generated. Skip when nothing is buffered
+        // to avoid emitting empty assistant rows.
+        if (streamingText.trim().length > 0 && streamingText !== lastAssistantText) {
+          out.push(makeAssistantTextMessage(streamingText));
+          lastAssistantText = streamingText;
+        }
         streamingText = "";
         isStreaming = false;
         // Mirrors upstream REPL.tsx:1609 setStreamingToolUses([]) on

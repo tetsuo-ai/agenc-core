@@ -986,6 +986,63 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).not.toContain("snapshot");
     });
 
+    test("turn_aborted preserves partially-streamed assistant text (#56)", () => {
+      // Phase 5 #56: previously the turn_aborted handler cleared
+      // streamingText immediately, so when the user pressed ESC
+      // mid-stream, the model's already-produced text was silently
+      // dropped from the transcript. The user lost the context they
+      // were watching get generated. This pins the new "preserve
+      // partial text as an assistant message before clearing" path.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "user",
+          msg: { type: "user_message", payload: { message: "hi" } },
+        },
+        {
+          id: "delta-1",
+          msg: { type: "assistant_text", payload: { content: "Reading the file. " } },
+        },
+        {
+          id: "delta-2",
+          msg: { type: "assistant_text", payload: { content: "It contains..." } },
+        },
+        {
+          id: "abort",
+          msg: { type: "turn_aborted", payload: { reason: "user_cancel" } },
+        },
+      ]);
+      // Expect: user msg + preserved partial assistant msg + warning
+      // about the abort (in that order).
+      expect(transcript.messages).toHaveLength(3);
+      expect(transcript.messages[0]).toMatchObject({ type: "user" });
+      expect(transcript.messages[1]).toMatchObject({ type: "assistant" });
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("Reading the file");
+      expect(allText).toContain("It contains");
+      expect(allText).toContain("Turn aborted");
+      // streamingText must be cleared after the preservation push.
+      expect(transcript.streamingText).toBeNull();
+    });
+
+    test("turn_aborted with no buffered text emits only the warning (no empty assistant row)", () => {
+      // Edge case: ESC pressed before any model token streamed. The
+      // preservation logic must skip the empty-string push so the
+      // transcript doesn't get an empty assistant row.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "user",
+          msg: { type: "user_message", payload: { message: "hi" } },
+        },
+        {
+          id: "abort",
+          msg: { type: "turn_aborted", payload: { reason: "user_cancel" } },
+        },
+      ]);
+      expect(transcript.messages).toHaveLength(2);
+      expect(transcript.messages[0]).toMatchObject({ type: "user" });
+      expect(transcript.messages[1]).toMatchObject({ type: "system" });
+    });
+
     test("user-actionable causes still surface to the transcript", () => {
       // Pins the user-visible side of the policy: a sample of causes
       // the user can act on or that explain a turn-level outcome MUST
