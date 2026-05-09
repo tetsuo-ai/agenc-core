@@ -46,6 +46,7 @@ import {
   type ChatCompletionsRequestMetadata,
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
+import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
   buildOpenAIResponsesRequest,
   parseOpenAIResponsesResponse,
@@ -887,7 +888,15 @@ export class OpenAIProvider implements LLMProvider {
               this.name,
               {
                 id: String(item.call_id ?? item.id ?? "").trim(),
-                name: String(item.name ?? "").trim(),
+                // Streaming-path decode (mirrors the non-streaming
+                // path in `parseOpenAIResponsesResponse`). Without
+                // this, mid-stream `onChunk(toolCalls)` carries the
+                // wire-form `mcp__server__tool` straight into the
+                // dispatcher, which keys on the dotted internal form
+                // and reports a silent dispatch miss.
+                name: decodeMcpToolNameFromWire(
+                  String(item.name ?? "").trim(),
+                ),
                 arguments: String(item.arguments ?? "{}"),
               },
               OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,

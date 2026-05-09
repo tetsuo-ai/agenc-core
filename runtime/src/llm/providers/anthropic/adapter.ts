@@ -30,6 +30,7 @@ import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
 } from "../../wire/messages-anthropic.js";
+import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
@@ -400,7 +401,14 @@ export class AnthropicProvider implements LLMProvider {
               : {};
           if (block.type === "tool_use" && index >= 0) {
             const id = String(block.id ?? "");
-            const name = String(block.name ?? "");
+            // Streaming-path decode (mirrors `parseAnthropicMessagesResponse`).
+            // Without this, every downstream emit carries the wire-form
+            // `mcp__server__tool` and the dispatcher misses (registry
+            // keys on the dotted internal form). Decoding once at the
+            // accumulator boundary covers both `toolInputBlockStart`
+            // mid-stream emit and the `completedToolCall` emit at
+            // content_block_stop.
+            const name = decodeMcpToolNameFromWire(String(block.name ?? ""));
             toolBlocks.set(index, {
               id,
               name,

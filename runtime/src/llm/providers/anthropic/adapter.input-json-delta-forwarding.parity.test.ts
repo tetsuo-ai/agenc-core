@@ -184,4 +184,34 @@ describe("R6 messages adapter forwards input_json_delta as toolInputBlockStart +
     // The text chunks must NOT carry the new streaming-tool-use fields.
     expect(textChunks.every((c) => !c.toolInputBlockStart && !c.toolInputDelta)).toBe(true);
   });
+
+  test("MCP-prefixed tool names decode on the streaming path so the dispatcher sees the dotted internal form", async () => {
+    // Phase 4 #42 reviewer follow-up: the wire-format tests verified
+    // encode-on-send + decode-on-receive for non-streaming responses,
+    // but the streaming `content_block_start` handler stored
+    // `block.name` raw, so every downstream emit
+    // (`toolInputBlockStart`, `completedToolCall`) carried the
+    // wire-form `mcp__server__tool` into the dispatcher and missed
+    // (registry keys on the dotted internal form). Decoding once at
+    // the accumulator boundary covers both emit sites.
+    const chunks = await runStream([
+      messageStart,
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_mcp","name":"mcp__memory__search_nodes","input":{}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"q\\":\\"hi\\"}"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      messageDeltaToolUse,
+      messageStop,
+    ]);
+
+    const startEmit = chunks.find((c) => c.toolInputBlockStart !== undefined);
+    expect(startEmit?.toolInputBlockStart?.contentBlock?.name).toBe(
+      "mcp.memory.search_nodes",
+    );
+    const completedEmit = chunks.find(
+      (c) => c.toolCalls !== undefined && c.toolCalls.length > 0,
+    );
+    expect(completedEmit?.toolCalls?.[0]?.name).toBe(
+      "mcp.memory.search_nodes",
+    );
+  });
 });
