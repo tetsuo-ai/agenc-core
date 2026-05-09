@@ -28,6 +28,10 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toAnthropicTools } from "./tools.js";
+import {
+  decodeMcpToolNameFromWire,
+  encodeMcpToolNameForWire,
+} from "./mcp-tool-naming.js";
 
 export interface AnthropicMessagesRequestOptions {
   readonly model: string;
@@ -171,7 +175,11 @@ export function buildAnthropicMessagesRequest(
           const toolUseBlocks = message.toolCalls.map((toolCall) => ({
             type: "tool_use",
             id: toolCall.id,
-            name: toolCall.name,
+            // The messages API enforces the strict
+            // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
+            // dotted MCP form before sending. The response parser
+            // decodes back to the internal-registry form.
+            name: encodeMcpToolNameForWire(toolCall.name),
             input: JSON.parse(toolCall.arguments || "{}"),
           }));
           const content =
@@ -290,7 +298,10 @@ export function parseAnthropicMessagesResponse(
       .map(
         (block): LLMToolCall => ({
           id: String(block.id ?? ""),
-          name: String(block.name ?? ""),
+          // Decode the encoded `mcp__server__tool` form back to the
+          // internal-registry `mcp.server.tool` form before dispatch.
+          // Non-MCP names (e.g. `FileEdit`) pass through unchanged.
+          name: decodeMcpToolNameFromWire(String(block.name ?? "")),
           arguments: JSON.stringify(block.input ?? {}),
         }),
       ),

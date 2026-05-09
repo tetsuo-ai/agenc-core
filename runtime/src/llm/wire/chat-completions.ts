@@ -31,6 +31,10 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toChatCompletionsTools } from "./tools.js";
+import {
+  decodeMcpToolNameFromWire,
+  encodeMcpToolNameForWire,
+} from "./mcp-tool-naming.js";
 
 export interface ChatCompletionsRequestOptions {
   readonly model: string;
@@ -107,7 +111,11 @@ function toChatCompletionsMessages(
           id: toolCall.id,
           type: "function",
           function: {
-            name: toolCall.name,
+            // The internal registry uses `mcp.<server>.<tool>`; the
+            // wire format requires a strict-regex-safe name. Encode
+            // here so the model sees a name it can echo back without
+            // hitting the provider's name-validator.
+            name: encodeMcpToolNameForWire(toolCall.name),
             arguments: toolCall.arguments,
           },
         })),
@@ -219,10 +227,16 @@ export function parseChatCompletionsResponse(
       (message.tool_calls as Array<Record<string, unknown>>).map(
         (toolCall): LLMToolCall => ({
           id: String(toolCall.id ?? ""),
-          name: String(
-            (
-              (toolCall.function as Record<string, unknown> | undefined) ?? {}
-            ).name ?? "",
+          // Decode the strict-regex wire name back to the
+          // internal-registry form (`mcp.<server>.<tool>`) before
+          // the dispatcher tries to look up the tool. Non-MCP names
+          // pass through unchanged.
+          name: decodeMcpToolNameFromWire(
+            String(
+              (
+                (toolCall.function as Record<string, unknown> | undefined) ?? {}
+              ).name ?? "",
+            ),
           ),
           arguments: String(
             (

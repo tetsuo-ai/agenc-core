@@ -29,6 +29,7 @@ import type {
   ToolCallValidationFailure,
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
+import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
@@ -2383,7 +2384,10 @@ export class GrokProvider implements LLMProvider {
     if (candidate.type !== "function_call") return { toolCall: null };
     const validation = validateToolCallDetailed({
       id: String(candidate.call_id ?? candidate.id ?? ""),
-      name: String(candidate.name ?? ""),
+      // Decode the strict-regex wire name back to the internal
+      // `mcp.<server>.<tool>` form before dispatch. Non-MCP names
+      // pass through unchanged.
+      name: decodeMcpToolNameFromWire(String(candidate.name ?? "")),
       arguments: String(candidate.arguments ?? ""),
     });
     if (validation.toolCall) {

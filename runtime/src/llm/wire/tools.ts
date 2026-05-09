@@ -12,6 +12,7 @@
  */
 
 import type { LLMTool } from "../types.js";
+import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 
 type FunctionTool = {
   readonly type: "function";
@@ -35,8 +36,14 @@ type AnthropicTool = {
   readonly input_schema: Record<string, unknown>;
 };
 
+/**
+ * Wire-safe tool name. The internal registry namespaces MCP tools as
+ * `mcp.<server>.<tool>` (dots) but every major provider's strict
+ * regex (`^[a-zA-Z0-9_-]{1,64}$`) rejects dots in the function name.
+ * Encode at the wire boundary; the response parser decodes back.
+ */
 function toolName(tool: LLMTool): string {
-  return tool.function.name;
+  return encodeMcpToolNameForWire(tool.function.name);
 }
 
 function toolDescription(tool: LLMTool): string {

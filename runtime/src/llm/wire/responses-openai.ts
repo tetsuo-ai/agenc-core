@@ -32,6 +32,10 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toOpenAIResponsesTools } from "./tools.js";
+import {
+  decodeMcpToolNameFromWire,
+  encodeMcpToolNameForWire,
+} from "./mcp-tool-naming.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -228,7 +232,10 @@ export function buildOpenAIResponsesRequest(
           type: "function_call",
           id: normalizedId.id,
           call_id: normalizedId.callId,
-          name: toolCall.name,
+          // Internal `mcp.<server>.<tool>` form has dots; the
+          // strict-regex `function_call.name` rejects them. Encode at
+          // the wire boundary; the response parser decodes back.
+          name: encodeMcpToolNameForWire(toolCall.name),
           arguments: toolCall.arguments,
         });
       }
@@ -347,7 +354,9 @@ export function parseOpenAIResponsesResponse(
       .map(
         (item): LLMToolCall => ({
           id: String(item.call_id ?? item.id ?? ""),
-          name: String(item.name ?? ""),
+          // Decode the strict-regex wire name back to the
+          // internal-registry form before dispatch.
+          name: decodeMcpToolNameFromWire(String(item.name ?? "")),
           arguments: String(item.arguments ?? "{}"),
         }),
       ),

@@ -16,6 +16,7 @@ import type {
 } from "../types.js";
 import { buildStructuredOutputTextFormat } from "../structured-output.js";
 import { documentFallbackText, readDocumentPayload } from "./shared.js";
+import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 export { toXaiResponsesTools } from "./tools.js";
 
 export const XAI_ENCRYPTED_REASONING_INCLUDE =
@@ -203,7 +204,11 @@ function toXaiOpenAIMessage(message: LLMMessage): Record<string, unknown> {
         id: toolCall.id,
         type: "function",
         function: {
-          name: toolCall.name,
+          // The xAI responses API enforces the same strict
+          // `^[a-zA-Z0-9_-]{1,64}$` function-name regex as the other
+          // commercial providers. Encode dotted MCP names so the
+          // model can echo them back through the strict validator.
+          name: encodeMcpToolNameForWire(toolCall.name),
           arguments: toolCall.arguments,
         },
       })),
