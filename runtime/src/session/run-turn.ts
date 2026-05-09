@@ -919,6 +919,29 @@ function fromAgenCRuntimeMessage(
       content: fromRuntimeMessageContent(message.content),
       ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
       ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+      // pwd-storm root cause: previously this round-trip dropped the
+      // assistant's `toolCalls` array. `toAgenCRuntimeMessages` writes
+      // it (run-turn.ts:884-892) but the inverse never read it back.
+      // Every iteration of the turn loop calls
+      // `prepareAgenCTurnContext` → `prepareAgenCQueryMessages` →
+      // this projection. The strip cascaded: the assistant arrived at
+      // the wire layer with no tool_calls, so `normalizeMessagesForAPI`
+      // (`runtime/src/llm/messages.ts:113-136`) treated every following
+      // `role:"tool"` message as orphan and dropped it. The model on
+      // the next iteration saw the prior turn as an empty assistant
+      // reply and re-emitted the same tool call, ad nauseam. The
+      // executor + state.messages writes were always correct; this
+      // single missing field broke the entire tool-result threading
+      // contract for daemon-mode + openai-compat providers.
+      ...(message.toolCalls !== undefined
+        ? {
+            toolCalls: message.toolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+              arguments: call.arguments ?? "",
+            })),
+          }
+        : {}),
       ...(message.phase === "commentary" || message.phase === "final_answer"
         ? { phase: message.phase }
         : {}),
@@ -929,6 +952,15 @@ function fromAgenCRuntimeMessage(
   return {
     role,
     content: fromRuntimeMessageContent(readContent(message)),
+    ...(message.toolCalls !== undefined
+      ? {
+          toolCalls: message.toolCalls.map((call) => ({
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments ?? "",
+          })),
+        }
+      : {}),
   };
 }
 
