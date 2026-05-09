@@ -14,11 +14,6 @@ import {
 } from "../bin/bootstrap.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
-import {
-  delegate,
-  type DelegateOpts,
-  type DelegateOutcome,
-} from "../agents/delegate.js";
 import type { AgentControl } from "../agents/control.js";
 import { MailboxClosedError } from "../agents/mailbox.js";
 import {
@@ -28,10 +23,9 @@ import {
   type AgentMetadata,
   type AgentPath,
 } from "../agents/registry.js";
-import {
-  AgentThread as AgenCAgentThread,
-  type AgentThread,
-} from "../agents/thread.js";
+import type { AgentThread } from "../agents/thread.js";
+import type { ManagedThread } from "../agents/thread-manager.js";
+import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import {
   runAgent,
   type RunAgentProgressEvent,
@@ -265,9 +259,6 @@ export interface AgenCBackgroundAgentRunner {
     | Promise<AgenCRealtimeThreadBinding | null>;
 }
 
-export type AgenCDelegateFunction = (
-  opts: DelegateOpts,
-) => Promise<DelegateOutcome>;
 export type AgenCRunAgentFunction = typeof runAgent;
 export type AgenCBootstrapFunction = (
   options: BootstrapLocalRuntimeSessionOptions,
@@ -280,7 +271,7 @@ export type AgenCBackgroundRealtimeTransportConnector = (
 interface ActiveBackgroundAgent {
   readonly bootstrap: LocalRuntimeBootstrap;
   readonly control: AgentControl;
-  readonly thread: AgentThread;
+  readonly thread: ManagedThread;
   status: DaemonAgentStatus;
   lastActiveAt: string;
   budget?: ActiveAgentBudget;
@@ -290,6 +281,7 @@ interface ActiveBackgroundAgent {
   unsubscribeStatus?: () => void;
   uninstallApprovalBridge?: () => void;
   unsubscribeElicitationEvents?: () => void;
+  unsubscribePhaseEvents?: () => void;
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
   activeToolCallIds: Set<string>;
@@ -336,8 +328,6 @@ export interface AgenCAgentBudgetTimer {
 
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
   readonly bootstrap?: AgenCBootstrapFunction;
-  readonly delegateFn?: AgenCDelegateFunction;
-  readonly runAgentFn?: AgenCRunAgentFunction;
   readonly ensureAgentControl?: AgenCEnsureAgentControlFunction;
   readonly authBackend?: AuthBackend;
   readonly agentBudget?: AgentBudgetConfig;
@@ -363,8 +353,6 @@ export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
 
 export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentRunner {
   readonly #bootstrap: AgenCBootstrapFunction;
-  readonly #delegate: AgenCDelegateFunction;
-  readonly #runAgent: AgenCRunAgentFunction;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
   #agentBudget: AgentBudgetConfig | undefined;
@@ -390,8 +378,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   constructor(options: AgenCDelegateBackgroundAgentRunnerOptions = {}) {
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
-    this.#delegate = options.delegateFn ?? delegate;
-    this.#runAgent = options.runAgentFn ?? runAgent;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
     this.#agentBudget = options.agentBudget;
@@ -448,37 +434,39 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     );
 
     try {
-      const { control, registry } = this.#ensureAgentControl(bootstrap.session);
+      const { control } = this.#ensureAgentControl(bootstrap.session);
       await installUnattendedPermissionPolicy(
         bootstrap.session.permissionModeRegistry,
         params.unattendedAllow,
         params.unattendedDeny,
       );
-      const taskContent = messageContentToLlmParts(params.initialContent);
-      const outcome = await this.#delegate({
-        parent: bootstrap.session,
-        parentPath: "/root" as AgentPath,
-        control,
-        registry,
-        taskPrompt: params.objective,
-        ...(taskContent !== undefined ? { taskContent } : {}),
-        runInBackground: true,
-        isolation: "cwd",
-        // Keep the daemon's TUI agent alive between turns. Without this
-        // the agent loop exits after the first task completes and a
-        // stale-mailbox second turn (the user's next message) lands on
-        // a dead thread, surfacing AGENT_NOT_FOUND in the TUI client.
-        keepAlive: true,
-        ...(params.model !== undefined ? { model: params.model } : {}),
-        onProgress: (event, thread) =>
-          this.#recordProgressEvent(thread.threadId, event),
-      });
 
-      if (outcome.kind !== "async_launched") {
+      // Upstream-parity top-level executor: bootstrap already registered
+      // the root session as a ManagedThread via
+      // ConversationThreadManager.registerConversationRootSession
+      // (bin/bootstrap.ts:1303). The first user message arrives via
+      // message.stream — the session is idle at startAgent time. No
+      // forkSubagent, no buildDirective, no AgentTool dispatcher.
+      const conversationThreadManager =
+        (bootstrap.session.services as {
+          conversationThreadManager?: ConversationThreadManager;
+        }).conversationThreadManager;
+      if (conversationThreadManager === undefined) {
         throw new Error(
-          outcome.kind === "rejected"
-            ? outcome.reason
-            : "background delegate returned synchronously",
+          "bootstrap.session is missing conversationThreadManager",
+        );
+      }
+      if (!conversationThreadManager.hasThread(bootstrap.session.conversationId)) {
+        throw new Error(
+          `expected root managed thread for ${bootstrap.session.conversationId}`,
+        );
+      }
+      const managedThread = conversationThreadManager.getThread(
+        bootstrap.session.conversationId,
+      );
+      if (managedThread.kind !== "root") {
+        throw new Error(
+          `expected root managed thread, got kind=${managedThread.kind}`,
         );
       }
 
@@ -486,13 +474,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const active: ActiveBackgroundAgent = {
         bootstrap,
         control,
-        thread: outcome.thread,
+        thread: managedThread,
         status: "running",
         lastActiveAt: startedAt,
         uninstallApprovalBridge,
-        bufferedEvents: this.#pendingEvents.get(outcome.thread.threadId) ?? [],
+        bufferedEvents: this.#pendingEvents.get(managedThread.threadId) ?? [],
         activeToolCallIds:
-          this.#pendingActiveToolCallIds.get(outcome.thread.threadId) ??
+          this.#pendingActiveToolCallIds.get(managedThread.threadId) ??
           new Set(),
       };
       this.#installAgentBudget(active, {
@@ -501,18 +489,49 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(params.provider !== undefined ? { provider: params.provider } : {}),
         ...(params.metadata !== undefined ? { metadata: params.metadata } : {}),
       });
-      this.#pendingEvents.delete(outcome.thread.threadId);
-      this.#pendingActiveToolCallIds.delete(outcome.thread.threadId);
+      this.#pendingEvents.delete(managedThread.threadId);
+      this.#pendingActiveToolCallIds.delete(managedThread.threadId);
       this.#trackAgentStatus(active);
-      this.#active.set(outcome.thread.threadId, active);
+      this.#active.set(managedThread.threadId, active);
       active.unsubscribeElicitationEvents =
         this.#installDaemonElicitationEventBridge(active);
+      // Pump runTurn PhaseEvents (assistant_text, tool_call, tool_result,
+      // turn_complete) into the daemon's session binding. Without this,
+      // the directive is gone but the TUI sees no streaming output.
+      active.unsubscribePhaseEvents = bootstrap.session.subscribeToEvents(
+        (phase) => {
+          const progress = phaseEventToProgressEvent(phase);
+          if (progress === null) return;
+          void this.#recordProgressEvent(managedThread.threadId, progress);
+        },
+      );
       this.#scheduleAgentBudgetTimer(active);
       void this.#enforceAgentBudget(active);
-      this.#cleanupWhenComplete(outcome.thread.threadId, outcome.thread);
+      this.#cleanupWhenComplete(managedThread.threadId, managedThread);
+
+      // Deliver the first user input through the same path turn N uses:
+      // ManagedThread.submit({type: "user_input"}) → submitToSession →
+      // session.submit(input) → runTurn. No directive, no fork, no
+      // AgentTool dispatcher. This mirrors the upstream `turn_start`
+      // shape for the first message.
+      const taskContent = messageContentToLlmParts(params.initialContent);
+      const firstInput: string | readonly LLMContentPart[] =
+        taskContent ?? params.objective;
+      const hasFirstInput =
+        typeof firstInput === "string"
+          ? firstInput.trim().length > 0
+          : firstInput.length > 0;
+      if (hasFirstInput) {
+        void managedThread
+          .submit({ type: "user_input", input: firstInput })
+          .catch(() => {
+            /* first-turn submission errors surface via session events */
+          });
+      }
+
       return {
-        agentId: outcome.thread.threadId,
-        agentPath: outcome.thread.agentPath,
+        agentId: managedThread.threadId,
+        agentPath: managedThread.agentPath ?? ("/root" as AgentPath),
         startedAt,
         status: "running",
       };
@@ -592,68 +611,67 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       uninstallApprovalBridge = this.#installDaemonApprovalBridge(
         bootstrap.session,
       );
-      const { control, registry } = this.#ensureAgentControl(bootstrap.session);
+      const { control } = this.#ensureAgentControl(bootstrap.session);
       await installUnattendedPermissionPolicy(
         bootstrap.session.permissionModeRegistry,
         metadataStringList(params.metadata, "unattendedAllow"),
         metadataStringList(params.metadata, "unattendedDeny"),
       );
-      const metadata = restoredAgentMetadata(params);
-      const resumed = await control.resumeAgentFromRollout({
-        rootThreadId: params.agentId,
-        parentPath: ROOT_AGENT_PATH,
-        metadata,
-      });
-      const live = resumed.rootLive;
-      if (live === null) {
+
+      // Upstream-parity restore: the bootstrap session is already
+      // hydrated from its rollout file (bootstrapLocalRuntimeSession
+      // reads existingItems and replays them via
+      // ConversationThreadManager.replayRolloutIntoSession in
+      // bin/bootstrap.ts). The root ManagedThread is already registered
+      // by registerConversationRootSession.
+      const conversationThreadManager =
+        (bootstrap.session.services as {
+          conversationThreadManager?: ConversationThreadManager;
+        }).conversationThreadManager;
+      if (conversationThreadManager === undefined) {
+        throw new Error(
+          "bootstrap.session is missing conversationThreadManager",
+        );
+      }
+      if (
+        !conversationThreadManager.hasThread(bootstrap.session.conversationId)
+      ) {
         throw new Error(
           `AgenC daemon agent cannot be restored: ${params.agentId}`,
         );
       }
-      let thread!: AgentThread;
-      const initialMessages = params.initialMessages ?? [];
-      const joinPromise = Promise.resolve().then(async () =>
-        runRestoredAgentToCompletion(this.#runAgent, {
-          thread,
-          parent: bootstrap!.session,
-          registry: bootstrap!.registry,
-          taskPrompt: params.objective,
-          initialMessages,
-          replayToolCalls: params.replayToolCalls ?? [],
-          ...(params.currentSessionId !== undefined
-            ? { currentSessionId: params.currentSessionId }
-            : {}),
-          ...(params.onReplayToolResult !== undefined
-            ? { onReplayToolResult: params.onReplayToolResult }
-            : {}),
-          ...(params.model !== undefined ? { model: params.model } : {}),
-          onProgress: (event, nextThread) =>
-            this.#recordProgressEvent(nextThread.threadId, event),
-        }),
+      const managedThread = conversationThreadManager.getThread(
+        bootstrap.session.conversationId,
       );
-      thread = new AgenCAgentThread(
-        {
-          live,
-          initialMessages,
-          ...(params.currentSessionId !== undefined
-            ? { parentSessionId: params.currentSessionId }
-            : {}),
-          taskPrompt: params.objective,
-        },
-        {
-          parent: bootstrap.session,
-          control,
-          registry,
-          parentPath: live.agentPath as AgentPath,
-          joinPromise,
-        },
-      );
+      if (managedThread.kind !== "root") {
+        throw new Error(
+          `expected root managed thread on restore, got kind=${managedThread.kind}`,
+        );
+      }
+      // Identity gate (acceptance gate 13): the resumed thread must
+      // adopt the persisted conversationId so callers using the
+      // pre-restart agentId find the live thread on the post-restart
+      // map. Bootstrap is responsible for resolving its conversationId
+      // from the persisted rollout for this cwd; if it differs, the
+      // active map's `params.agentId` key would diverge from
+      // `managedThread.threadId`, breaking interrupt/cancel/clear
+      // routing for top-level sessions. Throw with a precise message
+      // so the bootstrap argv-builder can be fixed at the right layer
+      // rather than silently routing requests to a dead handle.
+      if (managedThread.threadId !== params.agentId) {
+        throw new Error(
+          `restoreAgent identity mismatch: persisted agentId=${params.agentId} ` +
+            `but bootstrap session conversationId=${managedThread.threadId}. ` +
+            `bootstrap argv must resume the persisted conversation.`,
+        );
+      }
+
       const restoredAt = this.#now();
       const startedAt = params.startedAt ?? restoredAt;
       const active: ActiveBackgroundAgent = {
         bootstrap,
         control,
-        thread,
+        thread: managedThread,
         status: "running",
         lastActiveAt: restoredAt,
         uninstallApprovalBridge,
@@ -673,9 +691,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#active.set(params.agentId, active);
       active.unsubscribeElicitationEvents =
         this.#installDaemonElicitationEventBridge(active);
+      active.unsubscribePhaseEvents = bootstrap.session.subscribeToEvents(
+        (phase) => {
+          const progress = phaseEventToProgressEvent(phase);
+          if (progress === null) return;
+          void this.#recordProgressEvent(params.agentId, progress);
+        },
+      );
       this.#scheduleAgentBudgetTimer(active);
       void this.#enforceAgentBudget(active);
-      this.#cleanupWhenComplete(params.agentId, thread);
+      this.#cleanupWhenComplete(params.agentId, managedThread);
       return true;
     } catch {
       uninstallApprovalBridge?.();
@@ -695,7 +720,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#clearAgentBudgetTimer(active);
     let stopError: unknown;
     try {
-      await active.control.shutdown(agentId, reason);
+      // ManagedThread.shutdown for a root session calls
+      // session.shutdown() via submitToSession; AgentControl.shutdown
+      // would no-op for root threads (live.get returns undefined).
+      await active.thread.shutdown(reason);
     } catch (error) {
       stopError = error;
     }
@@ -753,7 +781,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (typeof input === "string") {
       await active.control.sendInput(agentId, input);
     } else {
-      submitStructuredAgentInput(
+      await submitStructuredAgentInput(
         active,
         input,
         messageContentDisplayText(params.content),
@@ -905,10 +933,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (active === undefined) return pendingResolved;
     const activeToolMatched = active.activeToolCallIds.has(params.requestId);
     if (!pendingResolved && !activeToolMatched) return false;
-    active.control.interrupt(
-      agentId,
-      params.reason ?? `tool.cancel:${params.requestId}`,
-    );
+    void active.thread
+      .submit({
+        type: "interrupt",
+        reason: params.reason ?? `tool.cancel:${params.requestId}`,
+      })
+      .catch(() => {
+        /* interrupt delivery surfaces via session events */
+      });
     active.lastActiveAt = this.#now();
     return true;
   }
@@ -924,7 +956,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async interruptAgentTurn(agentId: string, reason: string): Promise<boolean> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) return false;
-    active.control.interrupt(agentId, reason);
+    void active.thread.submit({ type: "interrupt", reason }).catch(() => {
+      /* interrupt delivery surfaces via session events */
+    });
     active.lastActiveAt = this.#now();
     return true;
   }
@@ -1035,9 +1069,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   }
 
   #trackAgentStatus(active: ActiveBackgroundAgent): void {
-    if (!hasStatusSubscription(active.thread)) return;
     let sawInitialStatus = false;
-    active.unsubscribeStatus = active.thread.onStatusChange((status) => {
+    active.unsubscribeStatus = active.thread.subscribeStatus((status) => {
       if (active.budgetHalt !== undefined) return;
       active.status = mapThreadStatus(status);
       if (status.status === "running") {
@@ -1075,9 +1108,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     });
   }
 
-  #cleanupWhenComplete(agentId: string, thread: AgentThread): void {
-    void thread
-      .join()
+  #cleanupWhenComplete(agentId: string, thread: ManagedThread): void {
+    void awaitTerminalStatus(thread)
       .catch(() => {})
       .finally(async () => {
         const active = this.#active.get(agentId);
@@ -1096,6 +1128,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.unsubscribeStatus?.();
         active.uninstallApprovalBridge?.();
         active.unsubscribeElicitationEvents?.();
+        active.unsubscribePhaseEvents?.();
         this.#clearAgentBudgetTimer(active);
         await active.bootstrap.shutdown().catch(() => {});
       });
@@ -1237,7 +1270,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       emitError = error;
     }
     try {
-      await active.control.shutdown(agentId, halt.reason);
+      await active.thread.shutdown(halt.reason);
       await active.bootstrap.shutdown();
     } catch (error) {
       active.status = "error";
@@ -1483,7 +1516,7 @@ function budgetUsageForActiveAgent(
     totalTokens: 0,
     costUsd: 0,
   };
-  const live = active.thread.live.tokenUsage;
+  const live = managedTokenUsage(active.thread);
   return {
     inputTokens: prior.inputTokens + finiteNumber(live.inputTokens),
     outputTokens: prior.outputTokens + finiteNumber(live.outputTokens),
@@ -1493,7 +1526,7 @@ function budgetUsageForActiveAgent(
 }
 
 function agentCostUsd(active: ActiveBackgroundAgent): number {
-  const tokenUsage = active.thread.live.tokenUsage;
+  const tokenUsage = managedTokenUsage(active.thread);
   const model = budgetModel(active);
   const provider = budgetProvider(active);
   // LiveAgent currently exposes aggregate input/output token counters.
@@ -1517,7 +1550,7 @@ function agentCostUsd(active: ActiveBackgroundAgent): number {
 function budgetModel(active: ActiveBackgroundAgent): string {
   return (
     active.budget?.model ??
-    stringRecordField(active.thread.live.configSnapshot, "model") ??
+    stringRecordField(active.thread.configSnapshot?.(), "model") ??
     "agenc"
   );
 }
@@ -1525,8 +1558,8 @@ function budgetModel(active: ActiveBackgroundAgent): string {
 function budgetProvider(active: ActiveBackgroundAgent): string | undefined {
   return (
     active.budget?.provider ??
-    stringRecordField(active.thread.live.configSnapshot, "provider") ??
-    stringRecordField(active.thread.live.configSnapshot, "model_provider")
+    stringRecordField(active.thread.configSnapshot?.(), "provider") ??
+    stringRecordField(active.thread.configSnapshot?.(), "model_provider")
   );
 }
 
@@ -1650,9 +1683,8 @@ function hasRuntimeActiveTurn(
 function isClearInFlight(active: ActiveBackgroundAgent): boolean {
   if (hasRuntimeActiveTurn(active.bootstrap.session)) return true;
   if (active.activeToolCallIds.size > 0) return true;
-  if (!hasCurrentStatus(active.thread)) return false;
-  return active.thread.currentStatus.status === "running" ||
-    active.thread.currentStatus.status === "pending_init";
+  const status = active.thread.status();
+  return status.status === "running" || status.status === "pending_init";
 }
 
 async function unavailableRealtimeTransport(): Promise<RealtimeTransportConnection> {
@@ -2403,16 +2435,100 @@ function isToolRecoveryCategory(
   );
 }
 
-function hasCurrentStatus(
-  thread: AgentThread,
-): thread is AgentThread & { readonly currentStatus: ThreadAgentStatus } {
-  return "currentStatus" in thread;
+interface ManagedTokenUsageShape {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
 }
 
-function hasStatusSubscription(thread: AgentThread): thread is AgentThread & {
-  onStatusChange(listener: (status: ThreadAgentStatus) => void): () => void;
-} {
-  return typeof thread.onStatusChange === "function";
+function managedTokenUsage(thread: ManagedThread): ManagedTokenUsageShape {
+  const usage = thread.totalTokenUsage?.();
+  if (typeof usage !== "object" || usage === null) {
+    return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  }
+  const u = usage as Record<string, unknown>;
+  return {
+    inputTokens: typeof u.inputTokens === "number" ? u.inputTokens : 0,
+    outputTokens: typeof u.outputTokens === "number" ? u.outputTokens : 0,
+    totalTokens: typeof u.totalTokens === "number" ? u.totalTokens : 0,
+  };
+}
+
+// Translate session-level PhaseEvents into RunAgentProgressEvents so the
+// existing #recordProgressEvent / #eventFromProgress / #emitOrBufferEvent
+// pipeline (and the agent_message_delta cache) can deliver streaming
+// output to the daemon's session binding. The OLD delegate path got these
+// via runAgent's onProgress callback. The NEW ManagedThread path drives
+// runTurn through Session.submit, which emits PhaseEvents — we subscribe
+// in startAgent/restoreAgent and pump them through the same pipeline.
+function phaseEventToProgressEvent(
+  event: import("../phases/events.js").PhaseEvent,
+): RunAgentProgressEvent | null {
+  switch (event.type) {
+    case "turn_start":
+      return null;
+    case "history_cleared":
+      return null;
+    case "assistant_text":
+      return {
+        kind: "message",
+        message: { role: "assistant", content: event.content },
+      };
+    case "tool_call":
+      return {
+        kind: "tool_call",
+        callId: event.toolCall.id,
+        toolName: event.toolCall.name,
+        arguments: event.toolCall.arguments,
+      };
+    case "tool_result":
+      return {
+        kind: "tool_result",
+        callId: event.toolCall.id,
+        toolName: event.toolCall.name,
+        result: event.result.content,
+        isError: event.result.isError === true,
+      };
+    case "turn_complete": {
+      const turnId = `turn-${event.stopReason}-${event.content.length}-${
+        event.usage?.totalTokens ?? 0
+      }`;
+      if (event.stopReason === "cancelled") {
+        return { kind: "run_interrupted", reason: "cancelled" };
+      }
+      if (event.stopReason === "error") {
+        return {
+          kind: "run_error",
+          error: event.error?.message ?? "turn errored",
+        };
+      }
+      // "completed" | "max_turns" | "empty_response" — a per-turn
+      // completion. Emit turn_complete (NOT run_complete — the session
+      // continues across turns; run_complete would trigger cleanup).
+      return {
+        kind: "turn_complete",
+        turnId,
+        ...(event.content.length > 0 ? { finalMessage: event.content } : {}),
+      };
+    }
+  }
+}
+
+function awaitTerminalStatus(thread: ManagedThread): Promise<void> {
+  return new Promise((resolve) => {
+    const unsub = thread.subscribeStatus((status) => {
+      if (
+        status.status === "completed" ||
+        status.status === "errored" ||
+        status.status === "interrupted" ||
+        status.status === "shutdown" ||
+        status.status === "not_found"
+      ) {
+        unsub();
+        resolve();
+      }
+    });
+  });
 }
 
 function mapThreadStatus(status: ThreadAgentStatus): DaemonAgentStatus {
@@ -2647,21 +2763,13 @@ function messageContentToAgentInput(
   });
 }
 
-function submitStructuredAgentInput(
+async function submitStructuredAgentInput(
   active: ActiveBackgroundAgent,
   input: readonly LLMContentPart[],
-  displayText: string,
-): void {
-  const live = active.thread.live;
+  _displayText: string,
+): Promise<void> {
   try {
-    live.downInbox.send({
-      author: live.agentPath,
-      recipient: live.agentPath,
-      content: displayText,
-      triggerTurn: true,
-      direction: "down",
-      metadata: { kind: "user_input", inputContent: input },
-    });
+    await active.thread.submit({ type: "user_input", input });
   } catch (error) {
     if (error instanceof MailboxClosedError) {
       throw new Error(
@@ -2811,3 +2919,11 @@ async function installUnattendedPermissionPolicy(
   });
   await registry.update(next);
 }
+
+// runRestoredAgentToCompletion / restoredAgentMetadata previously fed the
+// runAgent fork-loop on daemon restart for in-flight tool replay. The
+// new ManagedThread-based restoreAgent path resumes via rollout reload
+// and does not yet apply replayToolCalls; keeping these helpers
+// referenced so the recovery synthesis is reachable when the replay
+// path is ported onto the session surface.
+void [runRestoredAgentToCompletion, restoredAgentMetadata];

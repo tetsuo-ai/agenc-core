@@ -29,6 +29,72 @@ import { prepareMessagesForWire } from "../llm/wire/shared.js";
 import { RealtimeConversationManager } from "../conversation/realtime/conversation.js";
 import { AgenCRealtimeCallClient } from "./realtime-transport.js";
 
+function makeStubConversationThreadManager(opts: {
+  readonly threadId: string;
+  readonly agentPath?: string;
+  readonly submit?: ReturnType<typeof vi.fn>;
+  readonly shutdown?: ReturnType<typeof vi.fn>;
+  readonly initialStatus?: AgentStatus;
+}): unknown {
+  let listeners: ((status: AgentStatus) => void)[] = [];
+  let currentStatus: AgentStatus =
+    opts.initialStatus ??
+    ({
+      status: "running",
+      turnId: "turn-stub",
+      startedAtMs: 0,
+    } as AgentStatus);
+  let tokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  };
+  const submit = opts.submit ?? vi.fn(async () => opts.threadId);
+  const shutdown = opts.shutdown ?? vi.fn(async () => {});
+  const managedThread = {
+    threadId: opts.threadId,
+    agentPath: opts.agentPath ?? "/root",
+    kind: "root" as const,
+    status: () => currentStatus,
+    subscribeStatus: (cb: (status: AgentStatus) => void) => {
+      cb(currentStatus);
+      listeners.push(cb);
+      return () => {
+        listeners = listeners.filter((l) => l !== cb);
+      };
+    },
+    submit,
+    appendMessage: vi.fn(async () => opts.threadId),
+    shutdown,
+    totalTokenUsage: () => tokenUsage,
+    configSnapshot: () => ({}) as Record<string, unknown>,
+  };
+  // pushStatus / setTokenUsage are test-only handles that let suites
+  // drive the stub through transitions awaitTerminalStatus needs.
+  return {
+    hasThread: (id: string) => id === opts.threadId,
+    getThread: (id: string) => {
+      if (id !== opts.threadId) {
+        throw new Error(`stub conversationThreadManager has no thread ${id}`);
+      }
+      return managedThread;
+    },
+    removeThread: vi.fn(() => managedThread),
+    __pushStatus(next: AgentStatus) {
+      currentStatus = next;
+      for (const cb of [...listeners]) cb(next);
+    },
+    __setTokenUsage(usage: {
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    }) {
+      tokenUsage = { ...usage };
+    },
+    __thread: managedThread,
+  };
+}
+
 function restoredLiveAgent(
   agentId: string,
   agentPath = `/root/${agentId}`,
@@ -69,7 +135,15 @@ function makeRestorePermissionRunner(
   const session = {
     conversationId: "session-restore-policy",
     permissionModeRegistry,
-    services: {},
+    subscribeToEvents: () => () => {},
+    emitPhaseEvent: () => {},
+    services: {
+
+      conversationThreadManager:
+
+        makeStubConversationThreadManager({ threadId: "session-restore-policy" }),
+
+    },
   };
   const control = {
     resumeAgentFromRollout: vi.fn(
@@ -115,6 +189,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const registry = {};
@@ -201,6 +285,15 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
+
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const registry = {};
@@ -260,6 +353,15 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
+
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const delegateFn = vi.fn(async () => ({
       kind: "async_launched",
@@ -306,7 +408,15 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "session-restart",
       permissionModeRegistry,
-      services: {},
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
     };
     const live = restoredLiveAgent("run-restart", "/root/restart");
     const resumeAgentFromRollout = vi.fn(async () => ({
@@ -563,7 +673,15 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "session-replay-approval-required",
       permissionModeRegistry,
-      services: {},
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-replay-approval-required" }),
+
+      },
       eventLog: {
         emit: vi.fn((event) => event),
       },
@@ -695,7 +813,15 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "session-registry-mismatch",
       permissionModeRegistry,
-      services: {},
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-registry-mismatch" }),
+
+      },
     };
     const live = restoredLiveAgent("run-registry-mismatch", "/root/mismatch");
     const resumeAgentFromRollout = vi.fn(async () => ({
@@ -777,7 +903,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-token" }),
+
+      },
     };
     const live = restoredLiveAgent("run-budget-token", "/root/budget-token");
     const control = {
@@ -914,7 +1046,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-dollar" }),
+
+      },
     };
     const live = restoredLiveAgent("run-budget-dollar", "/root/budget-dollar");
     const control = {
@@ -1007,7 +1145,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-prior" }),
+
+      },
     };
     const live = restoredLiveAgent("run-budget-prior", "/root/budget-prior");
     const control = {
@@ -1103,7 +1247,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-emit-fail" }),
+
+      },
     };
     const live = restoredLiveAgent(
       "run-budget-emit-fail",
@@ -1195,7 +1345,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-boundary" }),
+
+      },
     };
     const live = restoredLiveAgent(
       "run-budget-boundary",
@@ -1284,7 +1440,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-wall" }),
+
+      },
     };
     const live = restoredLiveAgent("run-budget-wall", "/root/budget-wall");
     const control = {
@@ -1377,7 +1539,13 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "session-budget-wall-long" }),
+
+      },
     };
     const live = restoredLiveAgent(
       "run-budget-wall-long",
@@ -1451,6 +1619,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const live = restoredLiveAgent("agent-budget-start", "/root/budget-start");
     const control = { shutdown: vi.fn(async () => {}) };
@@ -1533,6 +1711,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
@@ -1603,6 +1791,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const makeAuthBackend = (
@@ -1728,6 +1926,16 @@ describe("AgenC delegate background-agent runner", () => {
       conversationId: "parent-session",
       conversation: new RealtimeConversationManager(),
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { sendInput: vi.fn(async () => {}) };
     const thread = {
@@ -1799,6 +2007,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = {
       shutdown: vi.fn(async () => {
@@ -1854,6 +2072,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = {
       shutdown: vi.fn(async () => {}),
@@ -2052,6 +2280,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
@@ -2123,6 +2361,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
@@ -2195,6 +2443,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
@@ -2274,6 +2532,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     const thread = {
@@ -2376,7 +2644,15 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
-      services: {},
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
       eventLog: {
         subscribe: vi.fn((listener) => {
           sessionEventListener = listener;
@@ -2511,10 +2787,19 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const services: { approvalResolver?: ApprovalResolver } = {};
+    const services: {
+      approvalResolver?: ApprovalResolver;
+      conversationThreadManager?: unknown;
+    } = {
+      conversationThreadManager: makeStubConversationThreadManager({
+        threadId: "parent-session",
+      }),
+    };
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
       services,
     };
     const control = { shutdown: vi.fn(async () => {}) };
@@ -2601,10 +2886,19 @@ describe("AgenC delegate background-agent runner", () => {
       current: () => createEmptyToolPermissionContext(),
       update: vi.fn(async () => {}),
     };
-    const services: { approvalResolver?: ApprovalResolver } = {};
+    const services: {
+      approvalResolver?: ApprovalResolver;
+      conversationThreadManager?: unknown;
+    } = {
+      conversationThreadManager: makeStubConversationThreadManager({
+        threadId: "parent-session",
+      }),
+    };
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
       services,
     };
     const control = {
@@ -2674,6 +2968,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = {
       interrupt: vi.fn(),
@@ -2741,6 +3045,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = {
       shutdown: vi.fn(async () => {}),
@@ -2838,12 +3152,20 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
       state: {
         with: vi.fn(async (fn: (state: { history: unknown[] }) => void) =>
           fn({ history: parentHistory }),
         ),
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
       clearProviderResponseId,
     };
     const clearConversationHistory = vi.fn(async () => {});
@@ -2929,13 +3251,21 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
       activeTurn: {
         unsafePeek: () => ({ turnId: "turn_1" }),
       },
       state: {
         with: stateWith,
       },
-      services: {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
       clearProviderResponseId,
     };
     const clearConversationHistory = vi.fn(async () => {});
@@ -3001,6 +3331,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     let currentStatus: AgentStatus = {
@@ -3078,6 +3418,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     let currentStatus: AgentStatus = {
@@ -3190,6 +3540,16 @@ describe("AgenC delegate background-agent runner", () => {
     const session = {
       conversationId: "parent-session",
       permissionModeRegistry,
+      subscribeToEvents: () => () => {},
+      emitPhaseEvent: () => {},
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "parent-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     let currentStatus: AgentStatus = {
@@ -3298,6 +3658,15 @@ describe("AgenC delegate background-agent runner", () => {
         current: () => createEmptyToolPermissionContext(),
         update: vi.fn(async () => {}),
       },
+
+      services: {
+
+        conversationThreadManager:
+
+          makeStubConversationThreadManager({ threadId: "stub-session" }),
+
+      },
+
     };
     const control = { shutdown: vi.fn(async () => {}) };
     let finishThread!: () => void;
