@@ -1895,7 +1895,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {!onboarding.active && selectorNotice !== null ? (
         <Text color="warning" wrap="truncate">{selectorNotice}</Text>
       ) : null}
-      {onboarding.active || !isMessageSelectorVisible ? (
+      {/*
+        Phase 5 #53: hide PromptInput while a permission overlay or
+        elicitation prompt is active. Prior to this, both components
+        rendered simultaneously and BOTH consumed keyboard input —
+        pressing Enter on the permission overlay also fired
+        PromptInput's onSubmit, queuing a model message while the
+        approve/deny dialog was still up. The overlay was effectively
+        non-modal. With PromptInput unmounted, the overlay's input
+        handlers are the only consumer and Enter cleanly approves /
+        denies. Onboarding still always shows PromptInput because the
+        onboarding flow drives the input itself.
+      */}
+      {onboarding.active ||
+      (!isMessageSelectorVisible &&
+        permissionRequests.length === 0 &&
+        elicitation.prompt === null) ? (
         <PromptInput
           debug={false}
           ideSelection={undefined}

@@ -377,6 +377,26 @@ function pushToolResult(
   result: unknown,
   isError = false,
 ): void {
+  // Phase 5 #58 + #59: previously this function always pushed a
+  // tool_result row, regardless of whether `callId` was actually
+  // open in the tool-tracking set. Two real failures fell out:
+  //
+  //   #58 — collab_agent_spawn_end and collab_agent_interaction_end
+  //   (and the close/resume/waiting variants) all called pushToolResult
+  //   with the same callId. A normal subagent lifecycle produced two
+  //   or three duplicate tool_result rows in the transcript.
+  //
+  //   #59 — when tool_call_completed arrived without a preceding
+  //   tool_call_started (out-of-order events from a flaky daemon
+  //   stream, or a duplicate completion event), pushToolResult still
+  //   emitted a tool_result row with no matching tool_use. The model
+  //   on the next iteration saw an orphan tool message and could
+  //   fail wire-format validation downstream.
+  //
+  // Guard: only emit when the callId is currently open. The
+  // `openTools.delete` on first call closes the slot; subsequent
+  // calls for the same callId become no-ops.
+  if (!openTools.has(callId)) return;
   openTools.delete(callId);
   out.push(makeToolResultMessage(callId, result, isError));
 }

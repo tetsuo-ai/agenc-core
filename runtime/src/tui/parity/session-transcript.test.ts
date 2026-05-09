@@ -1043,6 +1043,104 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.messages[1]).toMatchObject({ type: "system" });
     });
 
+    test("collab_agent lifecycle emits a single tool_result, not one per *_end event (#58)", () => {
+      // Phase 5 #58: a normal subagent lifecycle goes spawn_begin →
+      // spawn_end → interaction_end → close_end. The prior code
+      // called pushToolResult for each *_end variant, producing 2-3
+      // duplicate tool_result rows in the transcript for a single
+      // call. The fix guards on `openTools.has(callId)` so only the
+      // first *_end emits a row; subsequent ones become no-ops.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "spawn",
+          msg: {
+            type: "collab_agent_spawn_begin",
+            payload: {
+              callId: "agent-1",
+              newAgentNickname: "researcher",
+              agentRole: "researcher",
+              prompt: "find X",
+              model: "qwen3:8b",
+            },
+          },
+        },
+        {
+          id: "spawn-end",
+          msg: {
+            type: "collab_agent_spawn_end",
+            payload: {
+              callId: "agent-1",
+              status: { status: "completed" },
+            },
+          },
+        },
+        {
+          id: "interaction-end",
+          msg: {
+            type: "collab_agent_interaction_end",
+            payload: {
+              callId: "agent-1",
+              status: { status: "completed" },
+            },
+          },
+        },
+        {
+          id: "close-end",
+          msg: {
+            type: "collab_close_end",
+            payload: {
+              callId: "agent-1",
+              status: { status: "completed" },
+            },
+          },
+        },
+      ]);
+      // Expect: 1 tool_use (spawn) + 1 tool_result (first *_end).
+      // Without the guard, three tool_result rows would appear.
+      const toolResults = (transcript.messages as Array<Record<string, unknown>>)
+        .filter((m) => (m as { type?: string }).type === "user");
+      // tool_result messages are emitted as `user` role with toolUseResult content.
+      const resultsForAgent1 = toolResults.filter((m) => {
+        const text = JSON.stringify(m);
+        return text.includes("agent-1");
+      });
+      expect(resultsForAgent1).toHaveLength(1);
+    });
+
+    test("orphan tool_call_completed (no matching start) is dropped (#59)", () => {
+      // Phase 5 #59: previously, a tool_call_completed event with no
+      // matching tool_call_started or tool_use opener still emitted
+      // a tool_result row in the transcript and a tool message in
+      // the wire payload. Wire-format validators downstream (the
+      // openai chat-completions normalizeMessagesForAPI orphan
+      // filter) would then drop the message, but the user transcript
+      // still showed a phantom result. The guard now drops the
+      // orphan at the transcript layer — `openTools.has` returns
+      // false for an unknown callId, so pushToolResult no-ops.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "user",
+          msg: { type: "user_message", payload: { message: "hi" } },
+        },
+        {
+          id: "orphan",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "phantom-call-1",
+              result: "phantom result",
+              isError: false,
+            },
+          },
+        },
+      ]);
+      // Expect: just the user message. No phantom tool_result row.
+      expect(transcript.messages).toHaveLength(1);
+      expect(transcript.messages[0]).toMatchObject({ type: "user" });
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).not.toContain("phantom result");
+    });
+
     test("user-actionable causes still surface to the transcript", () => {
       // Pins the user-visible side of the policy: a sample of causes
       // the user can act on or that explain a turn-level outcome MUST
