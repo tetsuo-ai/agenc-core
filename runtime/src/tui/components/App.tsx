@@ -1074,6 +1074,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const [mode, setMode] = useState<any>("prompt");
   const [stashedPrompt, setStashedPrompt] = useState<any>(undefined);
   const [submitCount, setSubmitCount] = useState(0);
+  // Phase 5 #51: bridge the gap between user-pressed-Enter and
+  // daemon-emitted turn_started. `transcript.isStreaming` only flips
+  // true when the daemon sends `turn_started`, which can take
+  // hundreds of ms (network ack, daemon mailbox enqueue, agent
+  // wake-up). Without a local "I just submitted" signal, the user
+  // stares at a static UI with no spinner and no confirmation that
+  // anything is happening. This local state goes true at the start
+  // of `submit()` and clears on the next isStreaming=true tick (real
+  // turn started) or on submit error (catch wrapper for #61).
+  const [pendingSubmission, setPendingSubmission] = useState(false);
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
   const [vimMode, setVimMode] = useState<VimMode>("INSERT");
   const [showBashesDialog, setShowBashesDialog] = useState<string | boolean>(false);
@@ -1300,6 +1310,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       const hasAttachments = Object.keys(pastedContents).length > 0;
       if (text.length === 0 && !hasAttachments) return;
       setSubmitCount((count) => count + 1);
+      setPendingSubmission(true);
       setInput("");
       if (hasAttachments) {
         const attachmentsMessage = pastedContentsToLLMMessage(pastedContents);
@@ -1500,10 +1511,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         // mid-turn compact failure or daemon restart.
         const message = err instanceof Error ? err.message : String(err);
         showTransientResult(message, { display: "error" });
+        // Submit threw before turn_started arrived — clear the
+        // pending-submission spinner so the UI doesn't lie about
+        // waiting for a turn that will never start.
+        setPendingSubmission(false);
       }
     },
     [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult],
   );
+  // When the daemon's turn_started arrives, drop the optimistic
+  // pending-submission flag — `transcript.isStreaming` now drives
+  // the spinner with real authority.
+  useEffect(() => {
+    if (transcript.isStreaming) {
+      setPendingSubmission(false);
+    }
+  }, [transcript.isStreaming]);
   useInitialSubmit(
     props.session,
     submit,
@@ -1822,7 +1845,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           screen={screen as any}
           streamingToolUses={transcript.streamingToolUses}
           showAllInTranscript={showAllInTranscript}
-          isLoading={transcript.isStreaming}
+          isLoading={transcript.isStreaming || pendingSubmission}
           streamingText={transcript.streamingText}
           hidePastThinking={screen === "transcript"}
         />
@@ -1881,7 +1904,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           apiKeyStatus={"valid" as any}
           commands={commands as unknown as Command[]}
           agents={agents as unknown as AgentDefinition[]}
-          isLoading={!onboarding.active && transcript.isStreaming}
+          isLoading={!onboarding.active && (transcript.isStreaming || pendingSubmission)}
           verbose={false}
           messages={transcript.messages as any[]}
           onAutoUpdaterResult={() => {}}

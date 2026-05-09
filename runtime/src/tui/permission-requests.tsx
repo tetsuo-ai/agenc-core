@@ -94,9 +94,29 @@ export function buildToolUseConfirm(
   request: PendingRequest,
   tools: readonly { readonly name: string }[],
 ): unknown | null {
-  const tool =
-    tools.find((candidate) => candidate.name === request.ctx.toolName) ?? tools[0];
-  if (!tool) return null;
+  // Phase 5 #52 (security): the prior code was
+  //   tools.find(c => c.name === toolName) ?? tools[0]
+  // The fallback meant that if the registry didn't expose the
+  // requested tool by name (registry race, MCP discovery delay,
+  // misconfigured visibility), the overlay rendered the FIRST tool
+  // in the list as if it were the requested one — and the user's
+  // approve/deny click resolved with that wrong tool's identity.
+  // The user could think they were approving `Read` and actually
+  // be approving `exec_command`. Fail closed: when the registry
+  // can't resolve the tool, auto-deny via DENIED + log the
+  // mismatch on the daemon side, then return null so no overlay
+  // ever renders.
+  const tool = tools.find((candidate) => candidate.name === request.ctx.toolName);
+  if (!tool) {
+    // Surface the auto-deny via the existing resolve path so the
+    // request flows back through the same channel as a manual deny.
+    // Daemon logs / observability sinks see the explicit deny with
+    // the requested tool name; the user's transcript stays clean
+    // (a denied permission isn't usually surfaced unless the user
+    // chose it).
+    request.resolve(DENIED);
+    return null;
+  }
   const assistantMessage = makeToolUseMessage(
     request.ctx.callId,
     request.ctx.toolName,
