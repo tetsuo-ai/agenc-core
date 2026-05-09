@@ -32,7 +32,16 @@ const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
   "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
 
 function buildSpawnAgentDescription(session: Session | null): string {
-  const base = `Spawns an agent to work on the specified task. If your current task is \`/root/task1\` and you spawn_agent with task_name "task_3" the agent will have canonical task name \`/root/task1/task_3\`.
+  const base = `Spawns an agent to work on the specified task.
+
+NOTE ON AGENT-PATH NAMES: \`/root\`-prefixed names below refer to the
+internal AGENT-TREE NAMESPACE, NOT to the filesystem. They are agent
+identifiers (the root agent is named "/root", its children are
+"/root/<task_name>", and so on). The filesystem working directory comes
+from the Environment section of this prompt — never assume "/root" or
+"/root/<x>" is a real directory.
+
+If your current task is \`/root/task1\` and you spawn_agent with task_name "task_3" the agent will have canonical task name \`/root/task1/task_3\`.
 You are then able to refer to this agent as \`task_3\` or \`/root/task1/task_3\` interchangeably. However an agent \`/root/task2/task_3\` would only be able to communicate with this agent via its canonical name \`/root/task1/task_3\`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
