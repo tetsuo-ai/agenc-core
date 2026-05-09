@@ -82,6 +82,16 @@ interface AssistantDisplayState {
   warnedMatches: Set<string>;
 }
 
+interface ThinkingDisplayState {
+  raw: string;
+  emittedSanitized: string;
+  redacted: boolean;
+  kind: "thinking" | "reasoning_summary";
+  index: number;
+  warnedMatches: Set<string>;
+  closed: boolean;
+}
+
 class AssistantVisibleTextStreamParser {
   private readonly citations = new CitationStreamParser();
   private readonly plan?: ProposedPlanStreamParser;
@@ -183,6 +193,59 @@ function emitSpoofWarnings(
         cause: "model_ui_spoof_pattern",
         message: `model output matched spoof pattern(s): ${unseen.join(", ")}`,
       },
+    },
+  });
+}
+
+function emitThinkingSpoofWarnings(
+  state: ThinkingDisplayState,
+  matches: ReadonlyArray<string>,
+  session: Session,
+): void {
+  const unseen = matches.filter((label) => !state.warnedMatches.has(label));
+  if (unseen.length === 0) return;
+  for (const label of unseen) state.warnedMatches.add(label);
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "model_ui_spoof_pattern",
+        message:
+          `model thinking output matched spoof pattern(s): ${unseen.join(", ")}`,
+      },
+    },
+  });
+}
+
+function emitSanitizedThinkingDelta(
+  state: ThinkingDisplayState,
+  index: number,
+  session: Session,
+): void {
+  // redacted_thinking carries no displayable text; deltas should never reach
+  // this path. Guard so a misbehaving provider can't accidentally surface
+  // encrypted content as plaintext.
+  if (state.redacted) return;
+  const sanitized = sanitizeModelOutput(state.raw, { strict: true });
+  if (sanitized.matches.length > 0) {
+    emitThinkingSpoofWarnings(state, sanitized.matches, session);
+  }
+  if (!sanitized.text.startsWith(state.emittedSanitized)) {
+    // Sanitization rewrote a previously-emitted prefix (rare — happens when
+    // the spoof matcher swallows tokens that span chunk boundaries). Reset
+    // the marker so the diff below recomputes from scratch.
+    state.emittedSanitized = sanitized.text;
+    return;
+  }
+  const delta = sanitized.text.slice(state.emittedSanitized.length);
+  state.emittedSanitized = sanitized.text;
+  if (delta.length === 0) return;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "assistant_thinking_delta",
+      payload: { delta, index, kind: state.kind },
     },
   });
 }
@@ -306,6 +369,124 @@ export function emitToolInputChunkEvents(
 }
 
 /**
+ * Translate the optional thinking / reasoning_summary fields on an
+ * {@link LLMStreamChunk} into AgenC `assistant_thinking_*` session events
+ * that feed the TUI bridge accumulator. Mirrors the parallel
+ * `emitToolInputChunkEvents` helper so the inline `onChunk` body in
+ * {@link streamModel} stays focused on transport concerns. The
+ * `displays` Map is mutable per-turn state shared across chunks — the
+ * caller (streamModel) creates it once per stream and disposes it at
+ * end-of-stream after flushing any unclosed blocks. Exported so the
+ * thinking parity tests can drive it directly without booting a full
+ * stream.
+ */
+export function emitThinkingChunkEvents(
+  chunk: LLMStreamChunk,
+  session: Session,
+  displays: Map<string, ThinkingDisplayState>,
+): void {
+  if (chunk.thinkingBlockStart) {
+    const { index, redacted } = chunk.thinkingBlockStart;
+    const key = `thinking:${index}`;
+    if (!displays.has(key)) {
+      displays.set(key, {
+        raw: "",
+        emittedSanitized: "",
+        redacted,
+        kind: "thinking",
+        index,
+        warnedMatches: new Set<string>(),
+        closed: false,
+      });
+    }
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "assistant_thinking_block_start",
+        payload: { index, redacted, kind: "thinking" },
+      },
+    });
+  }
+  if (chunk.thinkingDelta) {
+    const { delta, index } = chunk.thinkingDelta;
+    const key = `thinking:${index}`;
+    let state = displays.get(key);
+    if (!state) {
+      state = {
+        raw: "",
+        emittedSanitized: "",
+        redacted: false,
+        kind: "thinking",
+        index,
+        warnedMatches: new Set<string>(),
+        closed: false,
+      };
+      displays.set(key, state);
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "assistant_thinking_block_start",
+          payload: { index, redacted: false, kind: "thinking" },
+        },
+      });
+    }
+    if (delta.length > 0 && !state.redacted) {
+      state.raw += delta;
+      emitSanitizedThinkingDelta(state, index, session);
+    }
+  }
+  if (chunk.thinkingBlockStop) {
+    const { index } = chunk.thinkingBlockStop;
+    const key = `thinking:${index}`;
+    const state = displays.get(key);
+    if (state && !state.closed) {
+      state.closed = true;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "assistant_thinking_block_stop",
+          payload: { index, kind: "thinking" },
+        },
+      });
+    }
+  }
+  if (chunk.reasoningSummaryDelta) {
+    const { delta, summaryIndex } = chunk.reasoningSummaryDelta;
+    const key = `reasoning_summary:${summaryIndex}`;
+    let state = displays.get(key);
+    if (!state) {
+      state = {
+        raw: "",
+        emittedSanitized: "",
+        redacted: false,
+        kind: "reasoning_summary",
+        index: summaryIndex,
+        warnedMatches: new Set<string>(),
+        closed: false,
+      };
+      displays.set(key, state);
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "assistant_thinking_block_start",
+          payload: {
+            index: summaryIndex,
+            redacted: false,
+            kind: "reasoning_summary",
+          },
+        },
+      });
+    }
+    if (delta.length > 0) {
+      state.raw += delta;
+      emitSanitizedThinkingDelta(state, summaryIndex, session);
+    }
+  }
+}
+
+export type { ThinkingDisplayState };
+
+/**
  * Rough tokens-per-chunk estimator. Providers don't report per-chunk
  * token counts; we approximate with char-length / 4 (GPT's typical
  * English chars-per-token ratio). Good enough for I-22's sampling
@@ -415,6 +596,7 @@ export async function streamModel(
     emittedVisibleText: "",
     warnedMatches: new Set<string>(),
   };
+  const thinkingDisplays = new Map<string, ThinkingDisplayState>();
   const providerName = session.services.provider.name;
   const streamedToolCalls = new Map<string, LLMToolCall>();
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
@@ -448,6 +630,13 @@ export async function streamModel(
       }
       emitSanitizedAssistantDelta(display, session);
     }
+
+    // Incremental thinking emission. Messages-API providers emit
+    // thinkingBlockStart / thinkingDelta / thinkingBlockStop for
+    // extended-thinking content; Responses-API providers (xAI Grok
+    // reasoning models, etc.) arrive as reasoningSummaryDelta. The helper
+    // synthesises start/stop for the latter on first/last sight per index.
+    emitThinkingChunkEvents(chunk, session, thinkingDisplays);
 
     emitToolInputChunkEvents(chunk, session);
 
@@ -602,6 +791,23 @@ export async function streamModel(
     state.needsFollowUp = state.toolUseBlocks.length > 0;
   }
 
+  // Close any thinking displays the provider opened but never explicitly
+  // closed (Responses-API reasoning_summary streams emit deltas without an
+  // explicit block_stop event). Messages-API providers emit
+  // content_block_stop so their blocks are already marked `closed: true`
+  // by the chunk handler.
+  for (const state of thinkingDisplays.values()) {
+    if (state.closed) continue;
+    state.closed = true;
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "assistant_thinking_block_stop",
+        payload: { index: state.index, kind: state.kind },
+      },
+    });
+  }
+
   // Full final assistant_message event for renderers that batch on
   // completion rather than consuming per-chunk deltas.
   if (!maxOutputTruncated && assistant.text && assistant.text.length > 0) {
@@ -612,6 +818,30 @@ export async function streamModel(
         payload: { message: assistant.text },
       },
     });
+  }
+
+  // Final thinking persistence — emit one `agent_thinking` event per thinking
+  // block on the response. The TUI bridge dedupes against `lastThinkingText`
+  // so a streamed-then-flushed turn does not double-render. Skip on
+  // truncated responses to match the existing `agent_message` guard.
+  if (!maxOutputTruncated && response.thinking && response.thinking.length > 0) {
+    for (const block of response.thinking) {
+      if (block.text.length === 0 && !block.redacted) continue;
+      const sanitized = block.redacted
+        ? { text: block.text, matches: [] as string[] }
+        : sanitizeModelOutput(block.text, { strict: true });
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "agent_thinking",
+          payload: {
+            text: sanitized.text,
+            ...(block.redacted ? { redacted: true } : {}),
+            ...(block.kind !== undefined ? { kind: block.kind } : {}),
+          },
+        },
+      });
+    }
   }
 
   // D1 fix: stash the provider-reported usage on TurnState so

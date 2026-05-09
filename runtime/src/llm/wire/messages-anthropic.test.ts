@@ -677,4 +677,85 @@ describe("buildAnthropicMessagesRequest", () => {
       parsed: { answer: "ok" },
     });
   });
+
+  test("preserves extended-thinking blocks on the LLMResponse separate from content", () => {
+    const response = parseAnthropicMessagesResponse(
+      "claude-opus-4-7",
+      {
+        id: "msg_thinking",
+        model: "claude-opus-4-7",
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "thinking",
+            thinking: "Let me reason about this.",
+            signature: "SIG==",
+          },
+          { type: "text", text: "Final answer." },
+        ],
+      },
+      {
+        model: "claude-opus-4-7",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      },
+    );
+
+    expect(response.content).toBe("Final answer.");
+    expect(response.thinking).toBeDefined();
+    expect(response.thinking).toHaveLength(1);
+    expect(response.thinking?.[0]).toMatchObject({
+      text: "Let me reason about this.",
+      redacted: false,
+      signature: "SIG==",
+      kind: "thinking",
+    });
+  });
+
+  test("preserves redacted_thinking blocks with redacted=true and the opaque data string", () => {
+    const response = parseAnthropicMessagesResponse(
+      "claude-opus-4-7",
+      {
+        id: "msg_redacted",
+        model: "claude-opus-4-7",
+        stop_reason: "end_turn",
+        content: [
+          { type: "redacted_thinking", data: "ENCRYPTEDOPAQUE" },
+          { type: "text", text: "ok" },
+        ],
+      },
+      {
+        model: "claude-opus-4-7",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      },
+    );
+
+    expect(response.thinking).toHaveLength(1);
+    expect(response.thinking?.[0]).toMatchObject({
+      text: "ENCRYPTEDOPAQUE",
+      redacted: true,
+      kind: "thinking",
+    });
+    expect(response.content).toBe("ok");
+  });
+
+  test("response with no thinking blocks omits the thinking field entirely", () => {
+    const response = parseAnthropicMessagesResponse(
+      "claude-opus-4-7",
+      {
+        id: "msg_plain",
+        model: "claude-opus-4-7",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "hi" }],
+      },
+      {
+        model: "claude-opus-4-7",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      },
+    );
+
+    expect(response.thinking).toBeUndefined();
+  });
 });

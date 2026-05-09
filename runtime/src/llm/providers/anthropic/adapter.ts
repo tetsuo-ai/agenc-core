@@ -375,6 +375,15 @@ export class AnthropicProvider implements LLMProvider {
         name: string;
         arguments: string;
       }> = [];
+      const thinkingBlocks = new Map<
+        number,
+        { text: string; signature: string; redacted: boolean }
+      >();
+      const completedThinkingBlocks: Array<{
+        text: string;
+        signature?: string;
+        redacted: boolean;
+      }> = [];
 
       for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
@@ -437,6 +446,28 @@ export class AnthropicProvider implements LLMProvider {
                 },
               },
             });
+          } else if (
+            (block.type === "thinking" || block.type === "redacted_thinking") &&
+            index >= 0
+          ) {
+            // Extended-thinking block opening. The block's content arrives
+            // via `content_block_delta` with delta.type === 'thinking_delta'
+            // (or no deltas at all for redacted_thinking blocks). Initialise
+            // the accumulator and forward a start signal so the TUI bridge
+            // can mount its streamingThinking row before the first delta.
+            const redacted = block.type === "redacted_thinking";
+            const initialText =
+              redacted && typeof block.data === "string" ? block.data : "";
+            thinkingBlocks.set(index, {
+              text: initialText,
+              signature: "",
+              redacted,
+            });
+            onChunk({
+              content: "",
+              done: false,
+              thinkingBlockStart: { index, redacted },
+            });
           }
           continue;
         }
@@ -478,6 +509,35 @@ export class AnthropicProvider implements LLMProvider {
                 },
               });
             }
+            continue;
+          }
+          if (delta.type === "thinking_delta" && index >= 0) {
+            const block = thinkingBlocks.get(index);
+            const text = typeof delta.thinking === "string" ? delta.thinking : "";
+            if (block && text.length > 0 && !block.redacted) {
+              block.text += text;
+              onChunk({
+                content: "",
+                done: false,
+                thinkingDelta: { delta: text, index },
+              });
+            }
+            continue;
+          }
+          if (delta.type === "signature_delta" && index >= 0) {
+            // Cryptographic signature for the thinking block — required for
+            // round-tripping the block back to the provider on the next
+            // request, but not assistant content. Capture on the block; do
+            // NOT forward through onChunk (the TUI must not display it, and
+            // it must not inflate the streaming token counter — donor
+            // parity: runtime/src/utils/messages.ts:3080-3084 explicitly
+            // excludes signatures from onUpdateLength).
+            const block = thinkingBlocks.get(index);
+            const sig = typeof delta.signature === "string" ? delta.signature : "";
+            if (block && sig.length > 0) {
+              block.signature += sig;
+            }
+            continue;
           }
           continue;
         }
@@ -511,6 +571,23 @@ export class AnthropicProvider implements LLMProvider {
               });
             }
             toolBlocks.delete(index);
+            continue;
+          }
+          const thinkingBlock = thinkingBlocks.get(index);
+          if (thinkingBlock) {
+            completedThinkingBlocks.push({
+              text: thinkingBlock.text,
+              ...(thinkingBlock.signature.length > 0
+                ? { signature: thinkingBlock.signature }
+                : {}),
+              redacted: thinkingBlock.redacted,
+            });
+            onChunk({
+              content: "",
+              done: false,
+              thinkingBlockStop: { index },
+            });
+            thinkingBlocks.delete(index);
           }
           continue;
         }
@@ -595,6 +672,23 @@ export class AnthropicProvider implements LLMProvider {
           {
             model,
             content: [
+              ...completedThinkingBlocks.flatMap(
+                (block): Array<Record<string, unknown>> => {
+                  if (block.redacted) {
+                    return [{
+                      type: "redacted_thinking",
+                      data: block.text,
+                    }];
+                  }
+                  return [{
+                    type: "thinking",
+                    thinking: block.text,
+                    ...(block.signature !== undefined
+                      ? { signature: block.signature }
+                      : {}),
+                  }];
+                },
+              ),
               ...(content.length > 0 ? [{ type: "text", text: content }] : []),
               ...completedToolCalls.flatMap((toolCall) => {
                 const input = parseToolInputObject(toolCall.arguments);

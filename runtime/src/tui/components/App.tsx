@@ -1847,6 +1847,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           showAllInTranscript={showAllInTranscript}
           isLoading={transcript.isStreaming || pendingSubmission}
           streamingText={transcript.streamingText}
+          streamingThinking={transcript.streamingThinking as never}
           hidePastThinking={screen === "transcript"}
         />
       )}

@@ -464,6 +464,37 @@ export type EventMsg =
       readonly type: "agent_message_delta";
       readonly payload: { readonly delta: string };
     }
+  | {
+      readonly type: "agent_thinking";
+      readonly payload: {
+        readonly text: string;
+        readonly redacted?: boolean;
+        readonly kind?: "thinking" | "reasoning_summary";
+      };
+    }
+  | {
+      readonly type: "assistant_thinking_block_start";
+      readonly payload: {
+        readonly index: number;
+        readonly redacted: boolean;
+        readonly kind?: "thinking" | "reasoning_summary";
+      };
+    }
+  | {
+      readonly type: "assistant_thinking_delta";
+      readonly payload: {
+        readonly delta: string;
+        readonly index: number;
+        readonly kind?: "thinking" | "reasoning_summary";
+      };
+    }
+  | {
+      readonly type: "assistant_thinking_block_stop";
+      readonly payload: {
+        readonly index: number;
+        readonly kind?: "thinking" | "reasoning_summary";
+      };
+    }
   | { readonly type: "user_message"; readonly payload: UserMessageEvent }
   | { readonly type: "token_count"; readonly payload: TokenCountEvent }
   | {
@@ -723,6 +754,10 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "turn_context",
     "agent_message",
     "agent_message_delta",
+    "agent_thinking",
+    "assistant_thinking_block_start",
+    "assistant_thinking_delta",
+    "assistant_thinking_block_stop",
     "user_message",
     "token_count",
     "mcp_tool_call_begin",

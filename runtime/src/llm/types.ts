@@ -668,6 +668,20 @@ export interface LLMResponse {
   structuredOutput?: LLMStructuredOutputResult;
   /** Encrypted reasoning availability for this provider response. */
   encryptedReasoning?: LLMEncryptedReasoningDiagnostics;
+  /**
+   * Extended-thinking blocks captured from the final response (messages-API
+   * thinking / redacted_thinking content blocks, or Responses-API reasoning
+   * summaries normalised into the same shape). Distinct from `content` —
+   * `content` is visible assistant text only, `thinking` is the model's
+   * reasoning channel. Used by the runtime to emit `agent_thinking` for
+   * transcript persistence after the streaming pass completes.
+   */
+  thinking?: ReadonlyArray<{
+    readonly text: string;
+    readonly signature?: string;
+    readonly redacted: boolean;
+    readonly kind?: "thinking" | "reasoning_summary";
+  }>;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter" | "error";
   /** Underlying error when finishReason is "error". */
   error?: Error;
@@ -725,6 +739,52 @@ export interface LLMStreamChunk {
     callId: string;
     index: number;
     partialJson: string;
+  };
+  /**
+   * Provider-emitted signal that an extended-thinking (or redacted-thinking)
+   * content block has begun streaming. Mirrors provider content_block_start
+   * with content_block.type === 'thinking' | 'redacted_thinking'. Translated
+   * downstream into an `assistant_thinking_block_start` session event so the
+   * TUI bridge seeds an entry in transcript.streamingThinking. Providers that
+   * do not surface extended thinking leave this undefined.
+   */
+  thinkingBlockStart?: {
+    index: number;
+    redacted: boolean;
+  };
+  /**
+   * Provider-emitted incremental delta for an open thinking block. Mirrors
+   * provider content_block_delta with delta.type === 'thinking_delta'. The
+   * delta payload is plain assistant chain-of-thought text (sanitised
+   * downstream the same way visible text is). The runtime translates this
+   * into an `assistant_thinking_delta` session event; the TUI bridge appends
+   * to the matching streamingThinking accumulator.
+   */
+  thinkingDelta?: {
+    delta: string;
+    index: number;
+  };
+  /**
+   * Provider-emitted close for a thinking block. Translated into an
+   * `assistant_thinking_block_stop` session event so the TUI flips the
+   * accumulator to `isStreaming: false` (preserving the post-stream
+   * visibility window) and marks the block ready for transcript persistence.
+   */
+  thinkingBlockStop?: {
+    index: number;
+  };
+  /**
+   * Provider-emitted reasoning-summary delta for Responses-API style
+   * providers (xAI Grok reasoning models, GPT-style reasoning models) that
+   * surface a human-readable summary of the model's reasoning channel
+   * separate from the visible response. Forwarded downstream through the
+   * same `assistant_thinking_*` events as messages-API thinking blocks but
+   * tagged with `kind: "reasoning_summary"` so the TUI can label it
+   * accordingly.
+   */
+  reasoningSummaryDelta?: {
+    delta: string;
+    summaryIndex: number;
   };
 }
 
