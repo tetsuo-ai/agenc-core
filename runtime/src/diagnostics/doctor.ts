@@ -37,7 +37,8 @@ export type DoctorCategory =
   | "daemon"
   | "provider"
   | "sandbox"
-  | "mcp";
+  | "mcp"
+  | "keybindings";
 
 export interface DoctorFinding {
   readonly category: DoctorCategory;
@@ -131,6 +132,7 @@ const CATEGORY_ORDER: readonly DoctorCategory[] = [
   "provider",
   "sandbox",
   "mcp",
+  "keybindings",
 ];
 
 const CATEGORY_LABELS: Readonly<Record<DoctorCategory, string>> = {
@@ -139,6 +141,7 @@ const CATEGORY_LABELS: Readonly<Record<DoctorCategory, string>> = {
   provider: "Provider",
   sandbox: "Sandbox",
   mcp: "MCP",
+  keybindings: "Keybindings",
 };
 
 export async function collectDoctorReport(
@@ -151,6 +154,7 @@ export async function collectDoctorReport(
     ...(await collectProviderFindings(ctx, options)),
     ...collectSandboxFindings(ctx, options),
     ...(await collectMcpFindings(ctx)),
+    ...(await collectKeybindingFindings(options)),
   ];
   return {
     generatedAt: (options.now ?? (() => new Date()))().toISOString(),
@@ -1107,4 +1111,63 @@ function stringValue(value: unknown): string | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function collectKeybindingFindings(
+  options: DoctorOptions,
+): Promise<DoctorFinding[]> {
+  // Late require to avoid pulling the keybinding loader (which transitively
+  // imports React/Ink helpers) into doctor's evaluation paths that don't
+  // need it. The loader is async and reads the user's keybindings.json on
+  // every call — fine for a diagnostic command.
+  const env = options.env ?? process.env;
+  if (env.AGENC_SKIP_KEYBINDING_DIAGNOSTICS === "1") return [];
+
+  let result: { warnings: ReadonlyArray<{
+    readonly type: string;
+    readonly severity: "error" | "warning" | "info";
+    readonly message: string;
+    readonly suggestion?: string;
+    readonly action?: string;
+  }> };
+  try {
+    const mod = await import("../tui/keybindings/loadUserBindings.js");
+    result = await mod.loadKeybindings();
+  } catch (error) {
+    return [
+      {
+        category: "keybindings",
+        code: "load-failed",
+        severity: "warn",
+        title: "keybindings loader",
+        detail: `failed to load: ${errorMessage(error)}`,
+      },
+    ];
+  }
+
+  if (result.warnings.length === 0) {
+    return [
+      {
+        category: "keybindings",
+        code: "keybindings-clean",
+        severity: "ok",
+        title: "user keybindings",
+        detail: "no errors or warnings reported by the validator",
+      },
+    ];
+  }
+
+  return result.warnings.map((warn, index): DoctorFinding => ({
+    category: "keybindings",
+    code: `${warn.type}-${index}`,
+    severity:
+      warn.severity === "error"
+        ? "error"
+        : warn.severity === "warning"
+          ? "warn"
+          : "info",
+    title: warn.type.replace(/_/g, " "),
+    detail: warn.message,
+    ...(warn.suggestion !== undefined ? { remediation: warn.suggestion } : {}),
+  }));
 }
