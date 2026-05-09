@@ -80,8 +80,6 @@
     "src/commands/color/index.ts",
     "src/commands/commit-push-pr.ts",
     "src/commands/commit.ts",
-    "src/commands/compact/compact.ts",
-    "src/commands/compact/index.ts",
     "src/commands/config/config.tsx",
     "src/commands/config/index.ts",
     "src/commands/context/context-noninteractive.ts",
