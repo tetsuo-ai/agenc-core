@@ -914,7 +914,11 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).toContain("Hook threw an error");
     });
 
-    test("renders warnings with no cause field at all", () => {
+    test("suppresses warnings with no cause field (post-#50 allow-list policy)", () => {
+      // Post-BLOCKER-#50: the warning surface is allow-list driven.
+      // A warning with no `cause` field cannot be matched against the
+      // allow-list and is treated as observability-only. The daemon
+      // log still records it; the user's chat surface stays clean.
       const transcript = adaptTranscriptEvents([
         {
           id: "warn",
@@ -924,7 +928,105 @@ describe("AgenC TUI session transcript", () => {
           },
         },
       ]);
-      expect(transcript.messages).toHaveLength(1);
+      expect(transcript.messages).toHaveLength(0);
+    });
+
+    test("suppresses internal-only causes that were previously leaking (BLOCKER #50)", () => {
+      // The audit found 88 of 89 warning causes were leaking to the
+      // user transcript. This pins the new allow-list policy: a
+      // sample of internal causes that have no business in the user
+      // chat surface stay invisible.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "warn-1",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "cost_load_failed",
+              message: "internal cost cache reload failed",
+            },
+          },
+        },
+        {
+          id: "warn-2",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "retry_after_ambiguous",
+              message: "provider sent ambiguous retry-after header",
+            },
+          },
+        },
+        {
+          id: "warn-3",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "llm_request_metadata",
+              message: "telemetry payload",
+            },
+          },
+        },
+        {
+          id: "warn-4",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "snapshot_write_failed",
+              message: "snapshot write failed",
+            },
+          },
+        },
+      ]);
+      expect(transcript.messages).toHaveLength(0);
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).not.toContain("cost cache");
+      expect(allText).not.toContain("retry-after");
+      expect(allText).not.toContain("telemetry");
+      expect(allText).not.toContain("snapshot");
+    });
+
+    test("user-actionable causes still surface to the transcript", () => {
+      // Pins the user-visible side of the policy: a sample of causes
+      // the user can act on or that explain a turn-level outcome MUST
+      // still render so the user understands what they're seeing.
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "warn-1",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "mcp_auth_required",
+              message: "MCP server X requires auth",
+            },
+          },
+        },
+        {
+          id: "warn-2",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "mid_turn_compact_failed",
+              message: "mid_turn_compact_skipped: tokens=200000 limit=180000",
+            },
+          },
+        },
+        {
+          id: "warn-3",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "file_mention_attachment_dropped",
+              message: "Dropped @file/path because it doesn't exist",
+            },
+          },
+        },
+      ]);
+      expect(transcript.messages).toHaveLength(3);
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("MCP server X requires auth");
+      expect(allText).toContain("mid_turn_compact_skipped");
+      expect(allText).toContain("Dropped @file/path");
     });
   });
 });
