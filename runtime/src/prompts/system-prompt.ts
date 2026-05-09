@@ -379,7 +379,14 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   const branch = readGitBranch(cwd);
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
+  // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
+  // disambiguation note. Tool descriptions elsewhere mention agent-namespace
+  // pseudo-paths like `/root/task1`; without this anchor, smaller / local
+  // models confuse the agent-tree pseudo-path with a filesystem path and
+  // try to read `/root/<file>` instead of resolving against the actual cwd.
   const items: string[] = [
+    `Filesystem working directory: <cwd>${cwd}</cwd>`,
+    `All relative file paths in tool calls resolve against <cwd>. Do NOT use \`/root\` as a filesystem path — it is the agent-tree namespace prefix and is unrelated to the filesystem.`,
     `Primary working directory: ${cwd}`,
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
