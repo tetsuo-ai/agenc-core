@@ -334,6 +334,25 @@ function buildBashProgressForwarder(
 }
 
 function createCanonicalTool(options: CanonicalToolOptions): Tool {
+  // Phase 6 #41: every method below previously called
+  // `options.createRuntimeTool(root)` on each invocation. For
+  // hot-path methods (`prompt`, `isConcurrencySafe`, `isReadOnly`,
+  // `checkPermissions`, `call`), each call rebuilt the underlying
+  // runtime tool — re-allocating its closures, schema bindings, and
+  // any per-tool memoized state. The runtime tool only depends on
+  // `workspaceRoot()`, so memoize per-root. The cache size stays
+  // bounded by the small number of workspace roots a session uses
+  // (almost always 1). Keyed lookup keeps the right tool when the
+  // session genuinely switches roots.
+  const runtimeToolByRoot = new Map<string, ReturnType<typeof options.createRuntimeTool>>();
+  function getRuntimeTool(root: string): ReturnType<typeof options.createRuntimeTool> {
+    let tool = runtimeToolByRoot.get(root);
+    if (tool === undefined) {
+      tool = options.createRuntimeTool(root);
+      runtimeToolByRoot.set(root, tool);
+    }
+    return tool;
+  }
   return buildTool({
     name: options.name,
     ...(options.aliases !== undefined ? { aliases: [...options.aliases] } : {}),
@@ -347,11 +366,11 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
       return options.summary?.(input) ?? options.userFacingName?.(input) ?? options.name;
     },
     async prompt() {
-      return options.createRuntimeTool(workspaceRoot()).description;
+      return getRuntimeTool(workspaceRoot()).description;
     },
     isConcurrencySafe(input) {
       const root = workspaceRoot();
-      const runtimeTool = options.createRuntimeTool(root);
+      const runtimeTool = getRuntimeTool(root);
       return (
         runtimeTool.isConcurrencySafe?.(mapCanonicalInput(options, input, root)) ??
         runtimeTool.isReadOnly === true
@@ -359,7 +378,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     },
     isReadOnly(input) {
       const root = workspaceRoot();
-      const runtimeTool = options.createRuntimeTool(root);
+      const runtimeTool = getRuntimeTool(root);
       return (
         runtimeTool.isReadOnly === true ||
         runtimeTool.isConcurrencySafe?.(mapCanonicalInput(options, input, root)) === true
@@ -367,7 +386,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     },
     async checkPermissions(input, context) {
       const root = workspaceRoot();
-      const runtimeTool = options.createRuntimeTool(root);
+      const runtimeTool = getRuntimeTool(root);
       if (!runtimeTool.checkPermissions) {
         return { behavior: "allow", updatedInput: input };
       }
@@ -400,7 +419,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
     },
     async call(input, context, _canUseTool, _parentMessage, onProgress) {
       const root = workspaceRoot();
-      const runtimeTool = options.createRuntimeTool(root);
+      const runtimeTool = getRuntimeTool(root);
       const runtimeInput = mapCanonicalInput(options, input, root);
       const progressForwarder =
         options.name === "system.bash"
