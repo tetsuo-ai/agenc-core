@@ -45,6 +45,25 @@ export interface AdaptedTranscript {
    * contract. Empty until R5 lands.
    */
   readonly streamingToolUses: readonly StreamingToolUse[];
+  /**
+   * Mid-stream extended-thinking accumulator. Mirrors `StreamingThinking`
+   * from `runtime/src/utils/messages.ts:2923`. Populated by the
+   * `assistant_thinking_*` event family emitted by `phases/stream-model.ts`.
+   * Consumed by `<Messages>` (`components/Messages.tsx:122`) which renders
+   * `<AssistantThinkingMessage>` while `isStreaming` or up to 30 s after
+   * `streamingEndedAt` per the donor visibility rule. `null` when no
+   * thinking block is open and no recent block is within the visibility
+   * window.
+   */
+  readonly streamingThinking:
+    | {
+        readonly thinking: string;
+        readonly isStreaming: boolean;
+        readonly streamingEndedAt?: number;
+        readonly redacted: boolean;
+        readonly kind: "thinking" | "reasoning_summary";
+      }
+    | null;
 }
 
 const SYNTHETIC_MODEL = "agenc";
@@ -234,6 +253,37 @@ export function makeAssistantTextMessage(content: string): any {
         cache_read_input_tokens: 0,
       },
       content: [{ type: "text", text: content.length > 0 ? content : "(no content)" }],
+      context_management: null,
+    },
+    requestId: undefined,
+  };
+}
+
+export function makeAssistantThinkingMessage(
+  thinking: string,
+  redacted: boolean = false,
+): any {
+  return {
+    type: "assistant",
+    uuid: randomUUID(),
+    timestamp: timestamp(),
+    message: {
+      id: randomUUID(),
+      container: null,
+      model: SYNTHETIC_MODEL,
+      role: "assistant",
+      stop_reason: "stop_sequence",
+      stop_sequence: "",
+      type: "message",
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      content: redacted
+        ? [{ type: "redacted_thinking", data: thinking }]
+        : [{ type: "thinking", thinking }],
       context_management: null,
     },
     requestId: undefined,
@@ -757,6 +807,16 @@ export function adaptTranscriptEvents(
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
   let realtimeStreamingText = "";
+  let streamingThinking:
+    | {
+        thinking: string;
+        isStreaming: boolean;
+        streamingEndedAt?: number;
+        redacted: boolean;
+        kind: "thinking" | "reasoning_summary";
+      }
+    | null = null;
+  let lastThinkingText = "";
   let currentTurnId: string | null = null;
   let lastAssistantText = "";
   let isStreaming = false;
@@ -778,6 +838,8 @@ export function adaptTranscriptEvents(
         streamingToolUses.length = 0;
         streamingText = "";
         realtimeStreamingText = "";
+        streamingThinking = null;
+        lastThinkingText = "";
         currentTurnId = null;
         lastAssistantText = "";
         isStreaming = false;
@@ -792,6 +854,8 @@ export function adaptTranscriptEvents(
         streamingToolUses.length = 0;
         streamingText = "";
         realtimeStreamingText = "";
+        streamingThinking = null;
+        lastThinkingText = "";
         currentTurnId = null;
         lastAssistantText = "";
         isStreaming = false;
@@ -812,6 +876,11 @@ export function adaptTranscriptEvents(
         // previous turn are abandoned because they will never receive a
         // matching completion event in this turn.
         streamingToolUses.length = 0;
+        // Drop any thinking accumulator from a previous turn so the live
+        // visibility window resets cleanly. Persisted `agent_thinking`
+        // rows from the prior turn are already in `out`.
+        streamingThinking = null;
+        lastThinkingText = "";
         break;
       case "turn_complete": {
         const content =
@@ -840,7 +909,22 @@ export function adaptTranscriptEvents(
           out.push(makeAssistantTextMessage(streamingText));
           lastAssistantText = streamingText;
         }
+        // Same preservation rule for partially-streamed thinking text.
+        // Without this, an Esc during the thinking phase silently dropped
+        // the visible chain-of-thought the user was reading.
+        if (
+          streamingThinking !== null &&
+          !streamingThinking.redacted &&
+          streamingThinking.thinking.trim().length > 0 &&
+          streamingThinking.thinking !== lastThinkingText
+        ) {
+          out.push(
+            makeAssistantThinkingMessage(streamingThinking.thinking, false),
+          );
+          lastThinkingText = streamingThinking.thinking;
+        }
         streamingText = "";
+        streamingThinking = null;
         isStreaming = false;
         // Mirrors upstream REPL.tsx:1609 setStreamingToolUses([]) on
         // stream cancellation — any partially-streamed tool inputs are
@@ -866,6 +950,65 @@ export function adaptTranscriptEvents(
           streamingText += payload.delta;
         }
         break;
+      case "assistant_thinking_block_start": {
+        const redacted = payload.redacted === true;
+        const kind: "thinking" | "reasoning_summary" =
+          payload.kind === "reasoning_summary" ? "reasoning_summary" : "thinking";
+        // The provider may emit multiple thinking blocks per turn
+        // (interleaved with tool_use). Each block_start resets the live
+        // accumulator — the previous block's text is already persisted via
+        // `agent_thinking` (or, for an in-flight block, dropped because
+        // the model decided to open a new one).
+        streamingThinking = {
+          thinking: "",
+          isStreaming: true,
+          redacted,
+          kind,
+        };
+        break;
+      }
+      case "assistant_thinking_delta": {
+        const delta =
+          typeof payload.delta === "string" ? payload.delta : "";
+        if (delta.length === 0) break;
+        const kind: "thinking" | "reasoning_summary" =
+          payload.kind === "reasoning_summary" ? "reasoning_summary" : "thinking";
+        if (streamingThinking === null) {
+          // Provider sent a delta without a preceding block_start. Synthesise
+          // the shell so the renderer has somewhere to append.
+          streamingThinking = {
+            thinking: delta,
+            isStreaming: true,
+            redacted: false,
+            kind,
+          };
+        } else if (!streamingThinking.redacted) {
+          streamingThinking = {
+            ...streamingThinking,
+            thinking: streamingThinking.thinking + delta,
+            isStreaming: true,
+          };
+        }
+        break;
+      }
+      case "assistant_thinking_block_stop":
+        if (streamingThinking !== null) {
+          streamingThinking = {
+            ...streamingThinking,
+            isStreaming: false,
+            streamingEndedAt: Date.now(),
+          };
+        }
+        break;
+      case "agent_thinking": {
+        const text = typeof payload.text === "string" ? payload.text : "";
+        const redacted = payload.redacted === true;
+        if (text.length === 0 && !redacted) break;
+        if (text === lastThinkingText) break;
+        out.push(makeAssistantThinkingMessage(text, redacted));
+        lastThinkingText = text;
+        break;
+      }
       case "realtime_started":
         out.push(makeSystemMessage("Realtime voice started", "info"));
         break;
@@ -1163,6 +1306,7 @@ export function adaptTranscriptEvents(
     isStreaming,
     currentTurnId,
     streamingToolUses,
+    streamingThinking,
   };
 }
 

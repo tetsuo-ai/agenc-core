@@ -310,6 +310,26 @@ export function parseAnthropicMessagesResponse(
     .filter((block) => block.type === "text" && typeof block.text === "string")
     .map((block) => String(block.text))
     .join("");
+  const thinking = contentBlocks.flatMap((block) => {
+    if (block.type === "thinking" && typeof block.thinking === "string") {
+      return [{
+        text: String(block.thinking),
+        ...(typeof block.signature === "string"
+          ? { signature: String(block.signature) }
+          : {}),
+        redacted: false,
+        kind: "thinking" as const,
+      }];
+    }
+    if (block.type === "redacted_thinking") {
+      return [{
+        text: typeof block.data === "string" ? String(block.data) : "",
+        redacted: true,
+        kind: "thinking" as const,
+      }];
+    }
+    return [];
+  });
   const usageRecord =
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
@@ -349,5 +369,6 @@ export function parseAnthropicMessagesResponse(
         : normalizeFinishReason(response.stop_reason),
     requestMetrics: withEndpointMarkers(requestMetrics, "/messages", response),
     ...(structuredOutput ? { structuredOutput } : {}),
+    ...(thinking.length > 0 ? { thinking } : {}),
   };
 }
