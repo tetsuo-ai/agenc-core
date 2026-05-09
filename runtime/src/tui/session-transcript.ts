@@ -51,6 +51,53 @@ const SYNTHETIC_MODEL = "agenc";
 const GLOB_NO_FILES_TEXT = "No files found";
 const GLOB_TRUNCATION_PREFIX = "(Results are truncated.";
 
+/**
+ * Allow-list of `warning` event causes that are surfaced to the
+ * user's chat transcript. Every other cause stays in the daemon log
+ * and observability sinks only.
+ *
+ * Adding a new entry here must clear the bar: the user can act on
+ * the warning OR it materially explains a turn-level outcome the
+ * user just observed. Internal recovery (`recovery_loop`,
+ * `retry_after_ambiguous`, ...), telemetry (`llm_request_metadata`,
+ * `capability_drift_detected`, ...), and background liveness ticks
+ * (`background_agent_status`) belong in the daemon log only.
+ *
+ * Categories:
+ *   - User action required: auth / hook decisions the user can fix.
+ *   - Turn-outcome explanation: surfaces WHY a turn ended early so
+ *     the user understands what they're seeing in the transcript.
+ *   - Input mutation notice: informs the user that something they
+ *     submitted was modified or dropped before being sent.
+ */
+const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
+  // User action / configuration
+  "mcp_auth_required",
+  "model_token_limit_config",
+  "user_prompt_submit_hook_blocked",
+  "user_prompt_submit_hook_stopped",
+  "user_prompt_submit_hook_threw",
+  "pre_hook_denied",
+  // Turn-outcome explanation
+  "mid_turn_compact_failed",
+  "pre_sampling_compact_failed",
+  "auto_compact_failed",
+  "max_output_tokens_exhausted",
+  "prompt_too_long_exhausted",
+  "stop_hook_loop",
+  // Provider / mode change the user just observed
+  "provider_switched",
+  "provider_switch_rejected",
+  "mode_changed",
+  "resumed_with_different_model",
+  // Input mutation
+  "file_mention_attachment_dropped",
+  "image_error",
+  "invalid_args",
+  "schema_validation_failed",
+  "malformed_tool_call",
+]);
+
 function timestamp(): string {
   return new Date().toISOString();
 }
@@ -1002,17 +1049,24 @@ export function adaptTranscriptEvents(
         out.push(makeSystemMessage("Context compacted", "info"));
         break;
       case "warning": {
-        // Background-agent progress ticks emit warnings with
-        // cause="background_agent_status" so daemon observability
-        // recorders can show liveness — but they must not surface to
-        // the user's chat transcript. Filter them here so the parent
-        // session sees a clean stream while the daemon log keeps full
-        // detail.
+        // Allow-list of warning causes that surface to the user's
+        // transcript. Every other cause stays in the daemon log and
+        // observability sinks only — most of the 89 causes the
+        // runtime emits are internal recovery, telemetry, or
+        // background liveness events that the user cannot act on
+        // and that would only clutter the chat surface.
+        //
+        // Audit-driven invariant: BLOCKER #50 was "88 of 89 warning
+        // causes still leak to transcript" because the prior filter
+        // suppressed only `background_agent_status`. Adding a new
+        // user-actionable cause requires adding it explicitly here;
+        // the allow-list approach also makes the visibility policy
+        // grep-able from one source of truth.
         const cause =
           typeof (payload as { cause?: unknown }).cause === "string"
             ? ((payload as { cause: string }).cause)
             : undefined;
-        if (cause === "background_agent_status") break;
+        if (!cause || !USER_VISIBLE_WARNING_CAUSES.has(cause)) break;
         out.push(makeSystemMessage(stringResult(payload.message), "warning"));
         break;
       }
