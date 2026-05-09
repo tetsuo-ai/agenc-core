@@ -267,8 +267,6 @@ export function formatCliHelpText(): string {
     "  --no-tui                                 Force one-shot CLI mode",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
-    "  --provider <name>                        Override the startup model provider",
-    "  --model <name>                           Override the startup model",
     "  --profile <name>                         Use a named config profile",
     "  --permission-mode <mode>                 Override the startup permission mode",
     "  --autonomous                            Enable autonomous tick mode",
@@ -2925,6 +2923,25 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
 export async function main(): Promise<number> {
   initializeCliRuntime();
   const argv = process.argv.slice(2);
+  // The --provider / --model flags appear in help text and in the
+  // STARTUP_VALUE_FLAGS strip-list, but no caller consumed them — they
+  // were silently dropped. Until the daemon-bridged session API accepts
+  // per-call model/provider overrides, surface a clear error pointing at
+  // the supported configuration paths instead of silently honouring the
+  // user's main config.toml setting.
+  const unsupportedOverride = argv.find(
+    (a) => a === "--provider" || a === "--model",
+  );
+  if (unsupportedOverride !== undefined) {
+    process.stderr.write(
+      `agenc: ${unsupportedOverride} is not yet supported as a CLI flag.\n` +
+        `Set the model and provider in ~/.agenc/config.toml:\n` +
+        `  model = "<model-id>"\n` +
+        `  model_provider = "<provider-name>"\n` +
+        `Or use \`agenc config set model <id>\` and \`agenc config set model_provider <name>\`.\n`,
+    );
+    return 2;
+  }
   const initCommand = parseAgenCInitCliArgs(argv);
   if (initCommand !== null) {
     return runAgenCInitCli(initCommand);
