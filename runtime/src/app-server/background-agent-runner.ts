@@ -16,6 +16,7 @@ import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
 import type { AgentControl } from "../agents/control.js";
 import { MailboxClosedError } from "../agents/mailbox.js";
+import { runTurn } from "../session/run-turn.js";
 import {
   ROOT_AGENT_PATH,
   joinAgentPath,
@@ -432,6 +433,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
     );
+    installDaemonTurnDriverHooks(bootstrap.session);
 
     try {
       const { control } = this.#ensureAgentControl(bootstrap.session);
@@ -611,6 +613,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       uninstallApprovalBridge = this.#installDaemonApprovalBridge(
         bootstrap.session,
       );
+      installDaemonTurnDriverHooks(bootstrap.session);
       const { control } = this.#ensureAgentControl(bootstrap.session);
       await installUnattendedPermissionPolicy(
         bootstrap.session.permissionModeRegistry,
@@ -2906,6 +2909,51 @@ function appendFlag(
   const trimmed = value?.trim();
   if (trimmed === undefined || trimmed.length === 0) return;
   argv.push(flag, trimmed);
+}
+
+// Install the minimal turnDriverHooks the daemon path needs so
+// session.submit(input) actually drives a turn. The non-daemon TUI
+// path installs a richer hook in bin/agenc.ts:1274 (autonomous keep-
+// alive, slash-command routing, prepared prompt). The daemon doesn't
+// have those concerns — its job is to drive runTurn for each user
+// input and emit phase events. Phase events flow out via
+// session.subscribeToEvents which background-agent-runner already
+// subscribed to in startAgent/restoreAgent.
+function installDaemonTurnDriverHooks(
+  session: LocalRuntimeBootstrap["session"],
+): void {
+  const installer = (
+    session as unknown as {
+      installTurnDriverHooks?: (hooks: {
+        readonly submit: (
+          message: string | readonly LLMContentPart[],
+          opts?: unknown,
+        ) => Promise<void>;
+        readonly flushEventLog?: () => Promise<void> | void;
+      }) => void;
+    }
+  ).installTurnDriverHooks;
+  if (typeof installer !== "function") return;
+  installer.call(session, {
+    submit: async (message) => {
+      const ctx = (
+        session as unknown as { newDefaultTurn: () => unknown }
+      ).newDefaultTurn();
+      for await (const event of runTurn(
+        session as never,
+        ctx as never,
+        message,
+        {},
+      )) {
+        (
+          session as unknown as { emitPhaseEvent: (e: unknown) => void }
+        ).emitPhaseEvent(event);
+      }
+    },
+    flushEventLog: async () => {
+      /* daemon path has no extra event log to flush. */
+    },
+  });
 }
 
 async function installUnattendedPermissionPolicy(
