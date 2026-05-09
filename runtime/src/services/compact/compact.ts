@@ -27,6 +27,22 @@ const SUMMARY_MAX_OUTPUT_TOKENS = 4_000;
 const MAX_SUMMARY_INPUT_CHARS = 48_000;
 const NO_CONTENT_MESSAGE = "(no content)";
 export const ERROR_MESSAGE_USER_ABORT = "User aborted";
+
+/**
+ * Per-context in-flight compaction lock. Keyed weakly on the
+ * CompactContext object so two distinct sessions can compact
+ * concurrently, but two callers (mid-turn `autoCompactIfNeeded` +
+ * a queued `manualCompactCall`, /compact slash + an in-process
+ * swarm runner) sharing the same context serialize.
+ *
+ * Without this, both callers read state.messages, both call
+ * `summarizeMessages` (a multi-second LLM round-trip) in parallel,
+ * and both write the result back to session.history — the second
+ * write clobbers the first with a summary computed against now-
+ * stale input. The user sees a non-deterministic mix of
+ * summarized and unsummarized turns.
+ */
+const inFlightCompactionByContext = new WeakMap<CompactContext, Promise<CompactionResult>>();
 const COMMAND_NAME_TAG = "command-name";
 const COMMAND_MESSAGE_TAG = "command-message";
 const COMMAND_ARGS_TAG = "command-args";
@@ -132,6 +148,33 @@ export function formatCommandInputTags(
 }
 
 export async function compactConversation(
+  messages: readonly RuntimeMessage[],
+  context: CompactContext,
+  customInstructions = "",
+): Promise<CompactionResult> {
+  // Per-context serialization (Phase 6 #36): if another caller is
+  // already compacting against the same context, await its result
+  // and return it instead of starting a parallel compaction. The
+  // caller relies on the returned result to update session.history,
+  // so two parallel compactions produced two competing summaries
+  // and the second write clobbered the first. Sharing the in-flight
+  // promise means both callers observe the SAME compaction outcome.
+  const existing = inFlightCompactionByContext.get(context);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const inFlight = (async () => {
+    try {
+      return await compactConversationImpl(messages, context, customInstructions);
+    } finally {
+      inFlightCompactionByContext.delete(context);
+    }
+  })();
+  inFlightCompactionByContext.set(context, inFlight);
+  return inFlight;
+}
+
+async function compactConversationImpl(
   messages: readonly RuntimeMessage[],
   context: CompactContext,
   customInstructions = "",

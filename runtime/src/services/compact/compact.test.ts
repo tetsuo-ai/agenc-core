@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   buildPostCompactMessages,
+  compactConversation,
   createSyntheticUserCaveatMessage,
   createUserMessage,
   formatCommandInputTags,
@@ -253,6 +254,61 @@ describe("compact service", () => {
       "<local-command-caveat>",
     );
     expect(createUserMessage({ content: "" }).content).toBe("(no content)");
+  });
+});
+
+describe("compactConversation per-context lock (#36)", () => {
+  test("two concurrent calls against the same context share the in-flight result", async () => {
+    // Phase 6 #36: previously, autoCompactIfNeeded (mid-turn) and
+    // manualCompactCall (/compact) could both hit compactConversation
+    // for the same session in parallel. Both would run summarizeMessages
+    // (multi-second LLM call), both would compute different summaries,
+    // and the second write to session.history would clobber the first.
+    // The user observed a non-deterministic mix of summarized and
+    // unsummarized turns. The lock serializes per-context: two
+    // concurrent calls return the SAME promise so both observers see
+    // the same outcome.
+    const context = {
+      options: { contextWindowTokens: 200, mainLoopModel: "qwen3:8b" },
+    } as const;
+    const messages: RuntimeMessage[] = [
+      createUserMessage({ content: "first" }),
+      message("assistant first", "assistant"),
+      createUserMessage({ content: "second" }),
+    ];
+
+    const callA = compactConversation(messages, context);
+    const callB = compactConversation(messages, context);
+
+    // The resolved CompactionResult instances must be reference-
+    // equal: both callers received the SAME object the single
+    // in-flight compaction produced. If two parallel summarizations
+    // had run, the results would be distinct objects with
+    // potentially different boundaryMarker timestamps. (Outer
+    // promises differ because `async function` wraps the cached
+    // inner promise in a new one — `Object.is(callA, callB)` is
+    // false even though both await the same underlying work.)
+    const [resultA, resultB] = await Promise.all([callA, callB]);
+    expect(resultA).toBe(resultB);
+  });
+
+  test("after a compaction completes, a new call for the same context starts fresh", async () => {
+    // The lock must release on completion so the next compaction
+    // can proceed. Otherwise sessions would compact exactly once
+    // and then jam forever.
+    const context = {
+      options: { contextWindowTokens: 200, mainLoopModel: "qwen3:8b" },
+    } as const;
+    const messages: RuntimeMessage[] = [
+      createUserMessage({ content: "first" }),
+      message("assistant first", "assistant"),
+    ];
+
+    const first = await compactConversation(messages, context);
+    const second = await compactConversation(messages, context);
+    // Distinct CompactionResult instances — the second call did
+    // start fresh (lock was released).
+    expect(first).not.toBe(second);
   });
 });
 
