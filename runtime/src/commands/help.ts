@@ -275,7 +275,14 @@ export const helpCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const reg = getGlobalCommandRegistry();
+      // Prefer the registry the dispatcher passed in. The TUI dispatch
+      // path (App.tsx) builds a fresh registry per-call and does not
+      // call setGlobalCommandRegistry, so falling through to the global
+      // slot returned the "registry pending" placeholder for every
+      // /help invocation. Use ctx.commandRegistry first, fall back to
+      // the global, and only emit the placeholder when neither is
+      // available.
+      const reg = ctx.commandRegistry ?? getGlobalCommandRegistry();
       if (!reg) {
         return { kind: "text", text: "registry pending" };
       }
