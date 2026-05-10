@@ -17,7 +17,11 @@ import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
 import { FullscreenLayout } from "./FullscreenLayout.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
-import { isFullscreenEnvEnabled } from "../../utils/fullscreen.js";
+import { AlternateScreen } from "../ink/components/AlternateScreen.js";
+import {
+  isFullscreenEnvEnabled,
+  isMouseTrackingEnabled,
+} from "../../utils/fullscreen.js";
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
 import type { SpinnerMode } from "./spinner/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
@@ -2044,7 +2048,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     </Box>
   );
 
-  return (
+  // Body wrapped in AlternateScreen when fullscreen mode is active. The
+  // AlternateScreen component (a) emits the DEC 1049 enter-alt-screen
+  // sequence + optional SGR mouse tracking and (b) wraps children in
+  // <Box height={rows}> — that height bound is load-bearing for
+  // FullscreenLayout's flexGrow={1} scroll area + flexShrink={0} bottom
+  // slot to share the viewport. Without it, the bottom slot collapses to
+  // 0 and the composer disappears. Mirrors upstream REPL screen pattern.
+  const body = (
     <Box flexDirection="column" width="100%">
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers
@@ -2101,6 +2112,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       ) : null}
     </Box>
   );
+
+  if (fullscreen) {
+    return (
+      <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
+        {body}
+      </AlternateScreen>
+    );
+  }
+  return body;
 }
 
 export function AgenCTuiApp(
