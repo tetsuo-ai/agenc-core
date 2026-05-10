@@ -1,35 +1,105 @@
-# Persona: Narrow Terminal (80x24)
+# Narrow Terminal — Round 2 (80x24)
 
-## Task
-Drive `/home/tetsuo/.local/bin/agenc --yolo` (agenc 0.2.0) inside `script(1)` with `stty cols 80 rows 24` forced before exec. Open the slash menu, run a representative slash-command set, type a 200-char prompt, submit a multi-line prompt, and inspect footer/help. Compare with `agenc --no-tui` one-shot. Every claim cites the captured screen log at `tests/ux/runs/narrow-terminal-screen.log` (`screen.log`).
+**Binary:** `/home/tetsuo/.local/bin/agenc 0.2.0` (HEAD `4999c596`)
+**Persona:** Narrow Terminal — 80 columns, 24 rows, `agenc --yolo`
+**Geometry verified:** baseline render (`narrow-terminal-screen.log:1-26`)
+shows a 24-row display whose horizontal dividers measure exactly 80
+dashes (`screen.log:21,23`).
 
-## Outcome
-TUI starts cleanly at 80x24 (visible 80-column rule + composer + footer; screen.log L4-7). Three commands return runtime errors, one is registry-pending, one is misrouted, one launches `nano` full-screen. Slash-menu descriptions truncate. A persistent footer warning ("Found 4 keybinding errors · /doctor for details") consumes a top row. No crash; agenc remained interruptible via double Ctrl-C in all 18 runs.
+## Layout breakage / silent truncation / off-screen state
 
-## Friction log
+### B1. Slash-menu descriptions silently truncated (medium)
+Open `/`. Each row is laid out as `name (col 5–25) description (col 27–80)`.
+At 80c the description field is ~51 characters and is hard-truncated with
+`…`, no tooltip, no expansion.
+Evidence: `screen.log:42` (`/branch  Create a branch of the current
+conversation at th…`), `screen.log:44` (`/btw    Ask a quick side question
+without interrupting th…`), `screen.log:537` (`/init    Generate an
+AGENC.md contributor guide in the cur…`). The full description is
+unreachable from the picker — only `/help` shows it.
 
-- **HIGH** / `/help` / Returns a panel containing only `registry pending` (screen.log L13-16). Expected: command list/description. Repro: type `/help` + Enter. Suggested: ensure command-help registry is initialized before TUI command surface accepts input, or fall back to in-process registry.
-- **HIGH** / `/status` / Panel: `Error: Cannot read properties of undefined (reading 'unsafePeek')` (L23-26). Same crash for `/effort` (L97-100) and `/usage` (L122-125). Expected: status/effort/usage values. Repro: invoke any of those three. Suggested: nil-guard the shared `unsafePeek` accessor, or print a friendlier "session metrics not yet available" message.
-- **HIGH** / `/buddy` / Panel: `{"kind":"error","message":"/buddy requires the interactive TUI command surface."}` while we ARE in the interactive TUI (`agenc --yolo`, L66-70). Expected: open buddy UI. Repro: `/buddy`+Enter. Suggested: fix the TUI-detection check used by the buddy command; it is rejecting its own host.
-- **HIGH** / footer / `Found 4 keybinding errors · /doctor for details` is rendered above the top rule on every screen (L4, L13, L23, L33, L66, L76, L97, L107, L122). `/doctor` reveals duplicates: `ctrl+c` and `ctrl+d` listed twice as reserved/hardcoded (L132-141). Expected: no diagnostic noise on a clean install. Suggested: dedupe the reserved-key check, or downgrade `reserved` violations from "error" to "info".
-- **MEDIUM** / slash menu / Description column truncates at ~46 cols with `…`. Examples: "Create a branch of the current conversation at th…", "Ask a quick side question without interrupting th…", "Show uncommitted changes (git diff HEAD + untrack…", "Copy the latest message or transcript text to the…" (L7, L34, L57, L122). Expected: legible help text or a wider descriptor at 80 cols. Suggested: shorten descriptions to ≤45 chars for narrow widths, or wrap into a second line.
-- **MEDIUM** / `/keybindings` / Spawns `nano` over the entire 80x24 viewport, replacing the TUI without warning; on exit, returns to TUI (L77-91). Expected: confirm-prompt or scoped editor pane. Suggested: prompt `Open ~/.agenc/keybindings.json in $EDITOR? [y/N]` or use a built-in form.
-- **MEDIUM** / multi-line response in TUI / 30-second wait on a real prompt produced output that got squeezed into stretched rows with collapsed inter-word spacing visible in the captured stream (L116-121). Hard to confirm whether this is a true layout bug or a `script(1)` artifact at narrow widths; one-shot via `--no-tui` wraps cleanly (L142-156). Suggested: regression-test multi-paragraph rendering against a fixed-size pty and confirm word-spacing preserved.
-- **LOW** / `/diff` / Box content like `(no changes)`, `# untracked files`, file names render fine, but the lead-in spinner overlaps the bottom border before settling (L57-65). Mostly cosmetic.
-- **LOW** / help overlay (`?`) / Multi-column shortcuts crowd at 80 cols; some pairs overlap visually (e.g. `& for backgroundedits`, `meta + p to switch model`, `ctrl + s to stash prompt`) (L160-165). Expected: single-column or scrollable list when COLUMNS<100.
-- **LOW** / 200-char prompt input / Wraps cleanly across composer rows (L106-111). No line-count indicator visible. Suggested: show `(Lc/Tc)` or character count when prompt exceeds one row.
+### B2. Footer hint vanishes the moment you start typing (medium)
+Empty composer shows `  ? for shortcuts` on line 24
+(`screen.log:24`). One keystroke removes it
+(`screen.log:469-494`, typing `h`: line 24 is blank). The hint also
+disappears whenever the slash picker is open (`screen.log:50,572`). At 80c
+this is the only on-screen guidance, so dropping it on first input is the
+worst time to drop it.
 
-## Discoverability score: 2/5
-Slash menu opens reliably and lists most commands, but ~6 of 13 tested commands fail or misbehave. Truncated descriptions and the missing `/help` text make it hard to learn the surface from inside the narrow TUI.
+### B3. `?` shortcuts overlay is misaligned at 80c (medium)
+`screen.log:469-494` (the `?` capture). The overlay packs 4 columns into 7
+rows but visual columns drift:
+- line 17 column 2 reads `double tap esc to clear`, line 18 column 2 reads
+  bare `input` — that orphan `input` is the wrapped tail of
+  `shift + tab to auto-accept edits` that lives on line 17/18 of column 3.
+- line 20 column 3 reads `meta + p to switch model` then line 22 column 3
+  reads `ctrl + x ctrl + e to edit in` — column 3 is wrapping into column
+  4 with no separator.
+- line 22 column 1 (`question`) is the wrapped continuation of
+  `/btw for side question` from line 21 — fine — but it sits next to the
+  orphaned `backslash (\) + return (⏎) for newline` (lines 22-23 column 2),
+  producing a wall of fragmented text that is unreadable without already
+  knowing the intended grouping.
 
-## Latency feel: 3/5
-Slash menu reaction is instant. `/diff`, `/permissions`, `/files` respond in <1s. Prompt streaming begins within ~3s. `/doctor` takes ~4s.
+### B4. `--yolo` mode is invisible in the UI (medium)
+The session was launched with `agenc --yolo` (bypass). Nothing on screen
+reflects this:
+- `/permissions` reports `Mode: default` (`screen.log:133`).
+- `/status` reports `Permission mode : default` (`screen.log:191`).
+- The composer prompt is the same `❯` glyph as non-yolo
+  (`screen.log:22,46,...`).
+- Footer hint is the same `? for shortcuts` (`screen.log:24`).
+A narrow-terminal user has no way to tell if they're in bypass mode.
 
-## Error message quality: 2/5
-`unsafePeek` and `/buddy requires the interactive TUI` leak internal state to the user with no remediation path. `/help` returning `registry pending` is opaque. The doctor output IS clear and actionable — that is the bright spot.
+### B5. `/buddy` rejects itself inside the interactive TUI (medium)
+`screen.log:240-242`: `/buddy` immediately returns a JSON error
+`"/buddy requires the interactive TUI command surface."` even though we
+are clearly in the interactive TUI. The error is also unwrapped JSON
+rather than a formatted message; on a narrower terminal it would also
+break the layout.
 
-## Notable surprises
-- `/help` is broken on a fresh narrow-TUI session.
-- `/buddy` thinks it isn't running in a TUI even though it is.
-- The keybinding-error footer is permanent on every screen due to a stale duplicate check that should never fire.
-- One-shot (`--no-tui`) wrapping is markedly cleaner than the TUI's, suggesting the layout engine, not the terminal, is the bottleneck at 80 cols.
+### B6. `/branch` silently no-ops (low)
+`screen.log:495-520`: typed `/branch` + Enter, no overlay, no error, no
+status message. The composer just clears. At 80c there is no contextual
+hint that arguments are required (and even at 120c, the slash menu's
+description is itself truncated — see B1).
+
+### B7. `/btw` silently no-ops on bare submit (low)
+`screen.log:157-182`: bare `/btw` + Enter clears the composer and emits
+no feedback. Compounds with B1 — at 80c the menu hint is truncated
+at `Ask a quick side question without interrupting th…`, so the user has
+no way to discover the required argument from inside the TUI.
+
+## What works correctly at 80x24
+
+- Boxed-overlay commands (`/help`, `/status`, `/files`, `/effort`,
+  `/cache-stats`, `/usage`, `/diff`, `/permissions`) draw a 78-inner-col
+  box that wraps prose cleanly. Example: `/help` page
+  (`screen.log:79-104`, `screen.log:53-78`) reflows full paragraphs
+  inside the box, no off-right truncation.
+- `/agents` empty state is well-laid-out within 80c
+  (`screen.log:105-130`).
+- `/keybindings` shells out to `nano` which adapts to 80x24 natively
+  (`screen.log:287-312`).
+- 200-character composer input wraps cleanly across three composer rows
+  with the `❯` margin preserved on row 1 and two-space indent on
+  continuations (`screen.log:391-416`, lines 20-22).
+- Submitted prompt + model response with manual wrapping fits and wraps
+  inside transcript without overflow (`screen.log:417-442`, lines 11-16
+  show the cat-facts list wrapping at col 78).
+
+## Model behavior, not UI
+
+"Echo a 1500 character line" caused the model to run `python3 -c
+"print('A' * 1500)"` but its assistant text only said "Here's your
+1500-character line" without printing it (`screen.log:573-598`). The
+tool-card preview truncation with `...)` (`screen.log:577`) is the
+standard ledger preview, not a width regression.
+
+## Summary
+
+Seven issues at 80x24. Highest-impact fixes: slash-menu description
+truncation (B1), footer-hint loss on first keystroke (B2), `?` overlay
+column packing (B3), and missing `--yolo` indicator (B4). `/buddy`,
+`/branch`, `/btw` all fail silently or with malformed errors and should
+render a boxed message at 80c.

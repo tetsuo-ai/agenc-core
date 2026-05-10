@@ -1,94 +1,98 @@
-# Persona: Tab Completer
+# UX Report — Tab Completer persona (agenc 0.2.0 / HEAD 4999c596)
 
-## Task
-Stress-test path completion in `agenc --yolo` against a fixture tree at
-`tests/ux/_uxfix/` containing deep paths (`a/b/c/d/e/f/g/file.txt`), spaces
-(`with spaces/inside name.txt`), unicode (`日本語/ファイル.txt`,
-`émoji/🚀.txt`), hidden files (`.hidden/.alsohidden`), a broken symlink
-(`broken -> /nonexistent`), and a 200-file `bigdir/`. Probed `@` picker,
-literal Tab, mid-cursor Tab, arrow+Enter selection.
+Date: 2026-05-10. Driver: `script` (util-linux 2.39.3) under `agenc --yolo`.
+Evidence: `tab-completer-screen.log` (84 lines, 12 scenarios) and
+`tab-completer-keys.log`. Fixture rooted at `/tmp/agenc-completion-test/`.
 
-## Outcome
-The `@`-mention picker is the working completer. It handles unicode, spaces,
-hidden, deep paths, and broken symlinks when the user types the
-disambiguating prefix. Bare `Tab` outside the picker does nothing. Mid-cursor
-Tab is broken. Listings are fast even on 200-file dirs.
+## Summary verdict
 
-## Friction log
+Path completion exists only via the `@` file-picker. ASCII fuzzy match works,
+but five behaviors damage trust: (1) typing a space silently drops the path;
+(2) only five results render regardless of viewport width, so 200-entry
+directories look identical to 5-entry ones; (3) Tab descends but never cycles;
+(4) hidden-file visibility is inconsistent (auto-listed at workspace root,
+empty for explicit `.hi` prefix); (5) cursor position is ignored.
 
-- **HIGH / `tab-completer-screen.log:73` / Bare Tab is a no-op.** Typed
-  `runtime/sr` then `\t`; input stayed `runtime/sr`, no picker opened. Help
-  at `:8` shows `@ for file paths` and `shift + tab to auto-accept`,
-  implying Tab is bound. Users from any shell/IDE press Tab first.
-  Expected: open the picker on Tab when the cursor is on a path-shaped
-  token. Fix: bind Tab outside the picker to promote the current word to
-  an @-mention if it looks like a path.
+There is no Tab completion in the plain composer; `\t` outside the picker is
+a silent no-op (`11-bare-tab.log`, screen.log line 73).
 
-- **HIGH / `tab-completer-screen.log:78` / Mid-cursor Tab is broken.**
-  Typed `@runtime/srhelp/types.ts`, moved cursor 12 left with `\x1b[D`,
-  pressed Tab. Input became `@runtime/srhelp/types.ts e`: the picker had
-  closed (no literal match), and Tab inserted text or focus moved (stray
-  `e` two cells right of the prompt). Expected: completion against the
-  fragment under the cursor. Fix: if cursor sits inside an `@`-prefixed
-  token, reopen the picker scoped to substring-before-cursor.
+## Findings
 
-- **MEDIUM / `tab-completer-screen.log:18` / Picker is fuzzy, not
-  prefix-first.** Typed `@runtime/sr`; suggestions were `runtime/src/`
-  (good) then `runtime/src/memory/`, `runtime/src/memdir/`,
-  `runtime/src/mcp/`, `runtime/src/llm/` — none start with `sr` after
-  `runtime/`. A `git` user expects `sr<Tab>` to disambiguate to `src/`
-  alone. Fix: rank strict-prefix matches above subsequence matches.
+### F1 — Spaces in paths break completion entirely (HIGH)
 
-- **MEDIUM / `tab-completer-screen.log:33` / Default browse hides spaces,
-  hidden, broken symlinks.** `@tests/ux/_uxfix/` shows `a/`, `bigdir/`,
-  `日本語/`, `émoji/`, but NOT `with spaces/`, `.hidden/`, or `broken`.
-  They DO surface when typed (`:38`, `:43`, `:48`). Hiding dotfiles is
-  defensible; silently dropping a spaced name and a broken symlink is
-  not. Fix: include spaced names in unfiltered top-N.
+Typing `@/tmp/agenc-completion-test/with spaces/` swallows the space: query
+echoes as `/tmp/agenc-completion-test/withspaces/` (line 31) and results
+switch to unrelated cwd matches (`runtime/src/prompts/attachments/*`). No
+escape, no quoting hint, no visual cue. A user with one `my docs/` folder
+cannot reach it via `@`.
 
-- **LOW / `tab-completer-screen.log:58` / Big-dir listing skips file001.**
-  `bigdir/` (files 001-200) shows `bigdir/`, then `file002.txt`,
-  `file003.txt`, `file004.txt`, `file005.txt`. `file001.txt` never shows.
-  Looks like an off-by-one in the ranker that hides the highlighted entry
-  from the visible list. Repro: `@tests/ux/_uxfix/bigdir/`.
+### F2 — Result list capped at 5, no overflow signal (MEDIUM)
 
-- **LOW / `tab-completer-screen.log:28` / Symlink outside cwd silently
-  falls through.** Created `_uxfix -> /tmp/agenc-completion-test` at the
-  project root. `@_uxfix/` returned suggestions from
-  `runtime/src/tools/apply-patch/__fixtures__/` instead of anything under
-  `_uxfix/`. Symlink was not followed and the picker fuzzy-matched the
-  substring `uxfix` against the whole repo with no UI signal. Fix:
-  explicit "no matches under <symlink>" state.
+`bigdir/` (200 files) renders the same row count as a 5-entry directory
+(line 67). Five identical truncated entries `/tmp/agenc-completion-test/bi…`
+with no `+195 more`, scrollbar, or keyboard hint. Users can't tell whether
+the picker is broken, slow, or hiding results.
 
-- **LOW / `tab-completer-screen.log:8`,`:93` / Help omits Tab-in-picker.**
-  Shortcut help mentions `shift + tab` and `@` but not Tab inside the
-  picker, which DOES accept the highlighted entry (`:93`: Tab against
-  `@tests/ux/_uxfix/a/b` produced `a/b/c/d/e/f/g//`). The trailing `//`
-  is a minor glitch.
+### F3 — Mid-cursor Tab unsupported, emits stray glyph (MEDIUM)
 
-- **LOW / `tab-completer-screen.log:88` / 4 startup keybinding errors are
-  noise.** `/doctor` shows `error reserved: "ctrl+c"` and `"ctrl+d"` each
-  appearing twice — duplicate registrations. Footer warning
-  `Found 4 keybinding errors` flashes on every screen (`:33, :38, :43,
-  :48`). Fix: dedupe registrations; demote to `/doctor`.
+Scenario 10: buffer `runtime/srhelp/types.ts` with cursor between `sr` and
+`help`, then `\t`. No completions; instead a stray `l` is rendered in the
+result row area (line 79). Arrow-key escape `\x1b[D` is consumed correctly
+for cursor movement, but Tab appears to emit a character into the result
+area instead of acting on the prefix to the cursor. Missing feature plus
+rendering bug.
 
-## Discoverability score
-2/5 — `?` help mentions `@ for file paths` but no inline hint. Tab does
-nothing useful.
+### F4 — Hidden-file visibility inconsistent (MEDIUM)
 
-## Latency feel
-4/5 — `@bigdir/` (200 files) and the 7-level-deep path return instantly.
-Repo-wide fuzzy fallback also returned within the sleep budget.
+Empty query auto-lists `.agenc/`, `.git/`, `.githooks/`,
+`.github/`, and other-tool dotted dirs (line 5). Explicit dotted prefix
+`/tmp/agenc-completion-test/.hi` returns empty (line 61). Either both
+or neither is defensible — the mismatch is the problem.
 
-## Error message quality
-1/5 — Symlink-outside-cwd, no-match, and broken-symlink cases all silently
-fall through. The persistent "Found 4 keybinding errors" footer is
-unrelated to completion.
+### F5 — Broken symlink listed without health hint (LOW)
 
-## Notable surprises
-1. `@_uxfix/` becomes a fuzzy substring search across the entire repo when
-   the literal path has zero matches — no signal that the literal failed.
-2. Tab in the picker confirms the suggestion AND immediately reopens a new
-   round, producing trailing `//` (`:93`).
-3. Arrow-down + Enter correctly inserts the selected path (`:83`) — so
-   keyboard selection works, just not via Tab.
+`…/bro` returns `/tmp/agenc-completion-test/br…` (line 73). The
+broken-symlink target (`/nonexistent`) isn't surfaced. Accepting would
+hand the model an unresolvable path. A muted "(broken)" badge would help.
+
+### F6 — Tab descends rather than cycles (LOW)
+
+Scenario 12 (`@/tmp/agenc-completion-test/` + 3 Tabs): each Tab accepts the
+top match and steps in (`a/` → `b/` → `c/` chips, line 84). No way to pick
+the second result via Tab. Users from readline/fzf expect Tab-to-cycle.
+Either keep Tab-as-descend with explicit Down/Up cues, or add Shift-Tab
+cycle.
+
+### F7 — Deep path collapses to one truncated row (LOW)
+
+`@/tmp/agenc-completion-test/a/b/c/d/e/f/` returns only
+`/tmp/agenc-completion-test/a/…` (line 24), losing every disambiguating
+segment. Always-show-final-segment-after-ellipsis would help.
+
+### F8 — Unicode renders and accepts (POSITIVE)
+
+`日本語/` and `émoji/` surface correctly in row chips (lines 38, 47) and
+input buffer. No mojibake across CJK or combining accents. Wide-char width
+math is correct (no column-shift artifacts).
+
+### F9 — No Tab completion in plain composer (LOW)
+
+Outside `@`, `\t` is a no-op — no popup, no character insertion (line 73,
+buffer `runtime/sr` unchanged). If Tab is picker-only, the help overlay
+should say so.
+
+## Latency / accuracy notes
+
+Picker render after `@` was sub-second in every scenario under a 14s timeout.
+ASCII fuzzy match was accurate (`runtime/sr` → `runtime/src/...`, line 13).
+No hangs, crashes, or terminal corruption beyond the F3 stray glyph.
+
+## Recommended fixes (priority order)
+
+1. Accept spaces inside `@` queries (treat buffer as one path); add an
+   escape syntax if disambiguation is needed.
+2. Show overflow count and scroll affordance when results exceed the cap.
+3. Implement cursor-aware Tab or document Tab-acts-on-full-query; remove
+   the stray glyph emitted in scenario 10.
+4. Reconcile hidden-file visibility — pick one rule and apply uniformly.
+5. Mark broken symlinks visibly in the result row.

@@ -1,49 +1,102 @@
-# Persona: Returning User
+# Returning-User UX Report — agenc 0.2.0 @ 4999c596
 
-## Task
-Come back after a week. Find a previous session, reuse a recent prompt from history, detect what changed since last use. Probes: `/resume`, `/sessions`, `/history`, `/rewind`, `/status`, `/release-notes`, `/version`, `agenc -c`, `agenc --resume <id>`, Up-arrow recall, `agenc agent list`, on-disk session storage.
+Persona: returning user, week away, wants the last session, a recalled
+prompt, and what changed. Lab: `--yolo` driven via `script` + xterm key
+codes. One-shot seed (`--no-tui "echo task one"`) hung past 90s under
+parallel daemon thrash and was killed. The pre-existing
+`~/.agenc/history.jsonl` (916 lines) and ~80 sessions provided baseline
+state. Citations are line numbers in `returning-user-screen.log`.
 
-## Outcome
-Mixed-to-broken. Past work is discoverable through the `/resume` picker and `agenc agent list`, but every actual continuation path is dead. **`agenc -c` and `agenc --resume <id>` both fail with `session not found`** for ids the picker just listed. **Prompt-history recall via Up-arrow does not exist.** **`/status` and `/version` crash** every time. The "what changed" surface (`/release-notes`) is the single bright spot.
+## What works
 
-## Friction log
+- **`/resume` lists sessions.** A modal overlay renders timestamp, session
+  ID, preview snippet, and rollout filename for the latest 8 conversations,
+  ending with the footer `Resume with: agenc --resume <sessionId>`
+  (line 3). Sorted newest-first. Most rows show `(no preview)`.
+- **`/rewind` is a real command.** Suggestion line "Restore the code and/or
+  conversation to a previous…" shown when typed (line 18). Did not exercise
+  the inner UI in this run.
+- **`/status`** renders a real panel (line 23): `SessionID:
+  agenc-tui-idle-256582`, `CWD: /home/tetsuo/git/AgenC/agenc-core`, `Model:
+  unknown`, `Provider: lmstudio`, `Turn count: 0`, `Tokens emitted: n/a
+  (budget disabled)`, `Permission mode: default`.
+- **`/release-notes`** opens the `CHANGELOG.md` viewer in a dialog
+  (line 28). Content is real but stale (`[Unreleased]`, `[0.1.0]
+  2026-02-14`).
+- **Up arrow recalls prompt history across sessions.** Three sequential
+  Up presses surfaced `/release-notes`, `statu`, `rewind` (line 45) — none
+  of which were entered in the current session. A hint
+  `ctrl+r to search history` is printed inline on the composer
+  (line 45).
+- **Ctrl+R opens a "Search prompts" overlay** with a filter box, a list of
+  recent prompts annotated with relative timestamps (`3m ago /resume`,
+  `2m ago /knowledge`, etc.), and live filtering — typing `show` narrowed
+  the list to a 10-minute-old "write a long essay…" entry (line 50). Cross-
+  session, works.
+- **`agenc agent list`** (CLI subcommand) prints a TSV of conv IDs and
+  their seed objective text, including phantom rows that still say
+  `status: running` even though the daemon does not have those sessions in
+  memory.
 
-- **CRITICAL / `agenc --resume <id>`** / `agenc: session not found: <id>` for every id the picker advertises (screen.log L20, L26, L32; tested 4 ids). Rollout file exists at `~/.agenc/projects/home-...-f932f164/sessions/<id>/` (L114-115). / **Expected**: opens the prior session. **Repro**: `script -q -c 'agenc --resume conv-mp02d6ni' /tmp/x.log`. **Fix**: resume lookup reads the legacy `~/.agenc/projects/-home-...` slug; sessions are written to the hashed `home-...-f932f164/sessions/` slug. Unify the two project-key schemes.
+## Critical findings (returning-user blockers)
 
-- **CRITICAL / `agenc -c` (continue latest)** / Errors `agenc: session not found: conv-mp02dd6u` (L8, L14). Latest-session pointer is stuck on a stale id. / **Expected**: opens most recent session. **Fix**: when the recorded "latest" id is missing, fall back to the next valid rollout; same slug mismatch as above.
+1. **`agenc -c` (continue latest) is broken.** Exits immediately with
+   `agenc: session not found: conv-mp0778p7` (line 33). It picks the most
+   recent ID from history but cannot locate the session record. The `-c`
+   flag is the documented one-keystroke return-to-work path; today it is
+   100% failure for this project.
+2. **`agenc --resume <id>` is broken with the same error path.** Tested
+   against `conv-moz9tn9u`, which has a real rollout file on disk
+   (`~/.agenc/projects/tmp-agenc-spin-gate-…/sessions/conv-moz9tn9u/rollout-…
+   .jsonl`). Result: `agenc: session not found: conv-moz9tn9u` (line 39).
+3. **`/resume` and `--resume` are split-brained.** The `/resume` modal
+   reads from one location (it lists rollouts and shows them as resumable);
+   the `--resume` CLI dispatcher reads from another (rejects the same
+   IDs). Net effect for a returning user: the picker hands you an ID,
+   tells you to run `agenc --resume <id>`, and the command then refuses
+   that ID. Critical — this is the primary returning-user contract.
+4. **`/sessions` and `/history` do not exist as commands.** Typing them
+   triggers the fuzzy-match fallback. `/sessions` matches `resume /
+   permissions / status / color / cache-stats` (line 8); `/history`
+   matches only `/clear` ("Clear session history and caches", line 13).
+   Both names are extremely natural guesses for this persona; both lead
+   to dead ends.
+5. **Project sessions do not persist rollouts.**
+   `~/.agenc/projects/-home-tetsuo-git-AgenC-agenc-core/` has only
+   `conv-mp02dbpp/session-memory/summary.md` and
+   `conv-mp029yr6/session-memory/summary.md` — no `rollout-*.jsonl`.
+   Rollout files only exist under `tmp-agenc-*` ephemeral project paths.
+   So even if `--resume` were fixed, there is nothing for it to load
+   from this real project anyway.
 
-- **CRITICAL / `/resume` picker docstring lies** / Picker ends with `Resume with: agenc --resume <sessionId>` (L3) but that command does not work for any listed id. Picker lists ids, exits, dumps user back to shell with no working resume path. / **Fix**: make the picker launch the chosen session on Enter (it is a list, not a picker today), and fix the `--resume` lookup.
+## High-priority issues
 
-- **HIGH / `/history` resolves to `/clear`** / Prints `Session cleared.` (L43). A returning user typing `/history` to recall prior prompts silently destroys the active session. / **Fix**: register `/history` as a real history viewer or a no-op; never prefix-match the destructive `/clear`.
+- **`/status` shows `Model: unknown`** despite `agenc config get model`
+  returning `qwen3.6-35b-a3b-fp8` and the daemon being healthy. Returning
+  user cannot confirm what model is selected (line 23).
+- **`/status` reports the synthetic `agenc-tui-idle-256582` Session ID
+  instead of a real conv ID** at idle (line 23). Returning user has no
+  way to learn the current session's resume key without sending a
+  message first.
+- **Session list rows show mostly `(no preview)`** (line 3) — eight
+  rows, only one ("hi") has any preview text. Hard to identify "the
+  thing I was doing."
+- **`agent list` reports stale `status: running` for clearly dead
+  sessions** spanning 18:58–20:01 — the harness rolls forward without a
+  daemon-side reaper. Looks deceptive to a returning user.
 
-- **HIGH / `/status` crash** / `Error: Cannot read properties of undefined (reading 'unsafePeek')` (L53). The most natural command for a returning user is broken. / **Fix**: null-guard the peek call.
+## What's-new surface
 
-- **HIGH / `/version` crash** / Resolves to `/status` via prefix-match and inherits the `unsafePeek` crash (L63). / **Fix**: register `/version` as a real command.
+`/release-notes` is the only what's-new affordance. Its content advertises
+this build as `[Unreleased]` and last shipped `[0.1.0] 2026-02-14`, while
+`agenc --version` says `0.2.0` (line 28 vs. CLI). Mismatch. There is no
+`/changelog`, no first-run "what changed since you were here" toast, and
+no `--version --verbose` output. The release notes still mention Solana-
+era `acceptedMints` / `rewardMint` deprecations (line 28), which is also
+stale messaging for a returning user trying to gauge product direction.
 
-- **HIGH / No prompt history recall** / Up-arrow on empty composer does nothing (L64); after typing and backspacing, still nothing (L69). Composer has no history navigation, in-session or cross-session. / **Expected**: bash/readline norm — Up cycles previous prompts. **Fix**: wire composer Up/Down to per-project rollout-derived prompt history.
+## Notes
 
-- **MEDIUM / `agent list` always says `running`** / Every row shows `running` regardless of state (L77-90). / **Fix**: persist terminal status when a session ends.
-
-- **MEDIUM / Two project-key schemes on disk** / `~/.agenc/projects/-home-tetsuo-git-AgenC-agenc-core/` (sparse, `session-memory` only) AND `~/.agenc/projects/home-tetsuo-git-AgenC-agenc-core-f932f164/sessions/` (real rollouts) coexist. Picker uses the new one; resume uses the old. (L94-115). / **Fix**: migrate to one hashed-slug scheme.
-
-- **LOW / `Found 4 keybinding errors · /doctor for details`** / Shown on every TUI launch (L3+). / **Fix**: scope or auto-prune.
-
-- **LOW / `/resume` picker shows `(no preview)` for most rows** / 6 of 8 listed sessions are unidentifiable (L3). / **Fix**: persist first-prompt at session creation.
-
-## Discoverability score: 2/5
-`/resume`, `agenc agent list`, `/release-notes` exist and reach. But `/history` is destructive, `/status` and `/version` crash, no Up-arrow recall.
-
-## Latency feel: 3/5
-TUI startup ~2-3s. `/resume` picker is fast. `/release-notes` shows a "Geolocating..." spinner before changelog (L54 — odd label for a local file). `agenc -c` exits in <1s with the bogus error.
-
-## Error message quality: 2/5
-- `session not found: <id>` is misleading — the rollout exists, the resolver can't find it.
-- `Cannot read properties of undefined (reading 'unsafePeek')` is a raw JS stacktrace leaking to the user.
-- No error suggests `/release-notes` or `agenc agent list` as fallbacks.
-
-## Notable surprises
-- Picker docstring "Resume with: agenc --resume <sessionId>" is documentation that **lies**: the cited CLI command never succeeds. Worse than no docs.
-- `/history` deleting your session is a footgun a returning user hits in 30 seconds.
-- `/release-notes` works and shows real changelog (Unreleased + 0.1.0), but is undiscoverable — not surfaced from /help-equivalent or `--version`.
-- `agenc agent list` is the only working "find my prior work" surface; it belongs in the slash menu (it isn't).
-- Environmental note: `~/.agenc/config.toml` was reported TOML-invalid by parallel one-shots even though the file inspected clean — likely concurrent rewrites by other testers. Daemon-shared-state concern, not this persona's bug.
+- One-shot seeding hung at 90s under parallel daemon restart; existing
+  history sufficed for persona coverage.
+- Did not enter the `/rewind` inner flow.

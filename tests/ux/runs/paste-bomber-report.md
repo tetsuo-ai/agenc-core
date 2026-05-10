@@ -1,34 +1,36 @@
-# Persona: Paste Bomber
+# UX Round 2 — Paste Bomber
+
+**Target:** `/home/tetsuo/.local/bin/agenc --yolo` (agenc 0.2.0, HEAD `4999c596`)
+**Date:** 2026-05-10
+**Persona:** Paste Bomber — shove a 500-line adversarial markdown blob at the TUI.
 
 ## Task
-Paste a 500-line, 122KB markdown payload (mixed code fences with bash/TS/Python/SQL/JSON, a tilde-wrapped nested fence, an unclosed Ruby fence, a 4-vs-3 backtick mismatched fence, inline-backtick walls, CJK + Arabic + Hebrew + Cyrillic + Greek mixed scripts, ZWJ emoji sequences with skin tones, three URLs >200 chars) into `agenc --yolo` under `script(1)`. Probe paste rendering, scroll/freeze, dropped input, malformed-fence resilience. Comparison: 50-line variant. Six runs: smoke; big-no-submit; big+Enter; small+Enter; markers-bracketing-paste; explicit-BPM markers.
+
+Generated `/tmp/big-paste.md`: 500 lines, ~29.6 KB. Contents: five well-formed fenced code blocks (JS, Python, Rust, nested-fence-via-4-backtick, bash with >300-char lines), four malformed fences (unclosed, mismatched indent, tilde↔backtick crossover, re-opening triple), CJK + Arabic RTL + Hebrew + Cyrillic + Greek + math + ZWJ-sequence emoji + zalgo + fullwidth/halfwidth + box-drawing, a markdown table with mixed-width cells, two URLs >200 chars, an HTML/XSS-shaped block, heading depths 1–7, deeply nested lists. Built `/tmp/small-paste.md` (50 lines) as baseline. Drove `agenc --yolo` under `script(1)` with bracketed-paste markers (`\x1b[200~ … \x1b[201~`), submitted Enter, exited with double Ctrl-C.
 
 ## Outcome
-The TUI handled the 500-line paste gracefully. The composer collapsed the 122KB blob into a single inline placeholder `[Pasted text #1 +498 lines]` instead of dumping raw content. Submit worked; the model received intact content (verified via the small-paste round trip where the model wrote the payload back to disk and diff matched: every emoji ZWJ sequence, every RTL Arabic glyph, every 200-char URL preserved exactly). No freeze >2s, no scroll lock, no crash on any of the four malformed fences. `BEFORE_MARKER` and `AFTER_MARKER` typed before/after the paste both survived in the composer, ruling out dropped input. Paste-write to the pty took ~2ms; placeholder rendered within one redraw cycle.
+
+TUI did not crash, did not freeze, did not drop input, did not mojibake. Composer collapsed the entire 29.6 KB blob into a single placeholder chip `[Pasted text #1 +499 lines]` (`paste-bomber-screen.log` line 2). The placeholder rendered identically for the 50-line baseline (`[Pasted text #1 +49 lines]`) — chip scales linearly. Enter submitted cleanly; agent responded with a normal "I see this is a large test document…" reply (`screen.log` line 2, after `Exfiltrating…` spinner). Bracketed-paste write completed in **1 ms** (run-timing markers `1778443037.343703` → `…344823`). No detectable freeze. No scrollback corruption. Double Ctrl-C exited with `COMMAND_EXIT_CODE=0`.
 
 ## Friction log
 
-- **LOW** / `paste-bomber-screen-big-submit.log` lines 1-3 / Placeholder counts newlines rather than lines: a 499-line paste reports `+498 lines`; a 50-line paste reports `+49 lines`. Off-by-one from a user's mental model. / Expected: `+499` / `+50`. / Repro: paste any N-line content; placeholder shows `+(N-1)`. / Fix: count via `splitlines().length`, or `+1` when content does not end with `\n`.
+- **F1 (Minor, cosmetic):** First-paint toast collision visible in raw `paste-bomber-keys.log`: `Pasting text…  [Pastedtext#1+499lines]` with spaces collapsed in the toast strip (`screen.log` line 2 near "Pasting text…"). Steady-state chip below renders with proper spacing. In-flight layout race only; not user-blocking. Toast also lists line count only, no byte or char hint.
+- **F2 (HIGH RISK):** First attempt (no bracketed-paste markers, payload sent as ordinary stdin, see discarded `/tmp/paste-big.log`) caused the TUI to receive bytes as typed input and immediately fire side-effects: `Write({"file_path":"/workspace/past_bomber.md", …})`, `exec_command({"cmd":"pwd"})`, `exec_command({"cmd":"ls /home/tetsuo/git/AgenC/agenc-core/"})`, `TodoWrite(...)` — all in YOLO mode, all before any Enter was sent. Once markers were added it disappeared. **Risk surface:** terminal multiplexers that strip `\x1b[200~`/`\x1b[201~` (older tmux, some SSH chains, some pty wrappers) cause large pastes in `--yolo` to be interpreted as typed input + auto-submit, triggering uncontrolled tool execution. YOLO has no confirmation gate.
+- **F3 (Cosmetic):** Spinner labels randomized for personality (`Multiplexing…`, `Injecting…`, `Transcoding…`, `Exfiltrating…` across four runs). `Exfiltrating…` next to a fresh paste of user content is an unfortunate accidental signal.
+- **F4 (Cosmetic):** Exit footer prints `PressCtrl-C again to exit` then `PressCtrl-D again to exit` — the next-key hint changes mid-quit. Slight inconsistency.
+- **F5 (Not a bug, capture artifact):** ANSI-stripped screen.log shows words running together (`Howwouldyoulikemetohandlethis`). TUI uses `\r`-overwrite diff rendering, inserting spaces via cursor positioning rather than literal space bytes; naive `sed` ANSI strip drops them. Confirmed via `od -c` on raw keys log — no user-visible character loss.
 
-- **MED** / `paste-bomber-screen-small.log` lines 1-3, search `Write({"file_path":...)` / Streaming tool-call previews get visibly mangled when long JSON args stream in. The same Write call rendered four times in succession with progressively-different filenames (`smal_paste_s.md`, `smal_pase_test.md`, `small_paste_test.md`, truncated variant), each redraw overwriting the prior at column boundaries without clearing the line. Visible state-leak between updates. / Expected: stable in-flight tool-call rendering, ideally one growing line. / Repro: any model-Write call with >100 chars of JSON content. / Fix: throttle/debounce streaming arg previews, or full-line clear between updates.
+## What I did NOT observe (positive findings)
 
-- **LOW** / `paste-bomber-screen-bpm.log` lines 1-3 / Explicit `\x1b[200~ ... \x1b[201~` markers around the payload produced **identical** behavior to no markers. Cannot distinguish heuristic-fold vs BPM-driven fold from outside. / Expected: same UX (which it is) but logs should distinguish paths. / Fix: log which detection path fired.
+No scroll lock, no input dropping, no >2s freeze, no malformed-fence crash, no mojibake on CJK/RTL/Cyrillic/ZWJ-emoji/zalgo/fullwidth, no truncation of long URLs from the composer perspective (URLs live inside the opaque chip), no renderer panic on unclosed/mismatched/re-opening fences. 50-line baseline behaved identically structurally; no scaling cliff between 50 and 500 lines.
 
-- **LOW** / `paste-bomber-screen.log` lines 4, 9, 21, 28 / Startup banner shows `Found 4 keybinding errors · /doctor for details` on every yolo launch. Recurring, not actionable for end users. / Fix: investigate via `/doctor`; fix or downgrade the warning when the user has not customized.
+## Scores
 
-- **LOW** / `paste-bomber-screen-small.log` (post-test cwd inspection) / Model wrote `small_paste_test.md` into the agenc-core repo cwd in response to the paste. Not a paste-handling bug — the model interpreted a document-shaped paste ending in `# END OF ...` as a save request. / Out of scope; flag for prompt-engineering review.
-
-## Discoverability score (4/5)
-The collapsed `[Pasted text #N +M lines]` placeholder is exactly the right affordance — large pastes do not blow up the composer, the user sees a tidy summary, typed text wraps around it. Lost a point for the off-by-one line count.
-
-## Latency feel (5/5)
-Zero perceptible lag. 122KB write took 2ms; placeholder rendered within one redraw cycle. Model first-token-out at ~8s (provider latency, not TUI). No freeze, no scroll lock at any size.
-
-## Error message quality (n/a)
-No error messages during paste handling. Malformed fences (unclosed Ruby, mismatched-length Go fence, backtick walls) silently became part of the pasted blob, which is correct — a paste is opaque content, not parsed.
+- **Renderer robustness:** 8/10 — no crash, no glitch on the 500-line payload, chip collapse is the right design. -2 for the layout-race that lets `Pasting text…` collide with the chip on first paint.
+- **Composer ergonomics:** 7/10 — chip is great; byte/char count omission hurts; F2 stdin-as-typed behavior outside bracketed-paste hurts more.
+- **YOLO safety on paste:** 4/10 — when bracketed-paste is missing, large stdin payloads execute as typed input with no confirmation. F2 is the highest-risk finding in this run.
 
 ## Notable surprises
-1. **Paste survives intact through the round trip** — verified by having the model write a 50-line paste back to disk and comparing: byte-identical for Unicode, ZWJ emoji, long URLs. The TUI is not corrupting payloads.
-2. **BPM markers vs no markers produce identical results** under `script(1)` — the runtime appears to fold rapid multi-line input bursts heuristically regardless of explicit markers.
-3. **Streaming tool-call argument previews are the only real renderer issue found** (MED entry above). Triggered consistently by the small-paste run when the model made a Write call. Big paste did not trigger any tool calls so the issue did not surface there.
-4. **No malformed-fence crashes**. The renderer treats the collapsed paste as opaque, sidestepping parser fragility on the four malformed-fence variants — likely intentional and correct.
+
+- The TUI never tried to actually *render* the 29.6 KB markdown. The chip is opaque — no renderer was exercised on the malformed fences from the composer side at all. To genuinely stress the renderer the *agent* must echo the content back in an assistant message; that path was not exercised. Follow-up: feed malformed fences as agent output via a fixture, not as user paste.
+- `Exfiltrating…` as a spinner verb directly after a user paste is a tone hazard worth flagging.
