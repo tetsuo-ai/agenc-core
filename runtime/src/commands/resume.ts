@@ -157,13 +157,20 @@ export function listResumableSessions(
           includeArchived: false,
           includeHistory: true,
         });
+        const firstUserPreview =
+          previewFromHistory(read.history?.items ?? []) ||
+          readFirstUserPreview(thread.rolloutPath);
+        // Skip rollouts that never recorded a user message — those
+        // sessions were opened and closed before the user typed
+        // anything. They're not useful to resume to (there's no
+        // content), and listing them as "(no preview)" entries makes
+        // the picker noisier without adding signal.
+        if (firstUserPreview === "") continue;
         entries.push({
           filePath: thread.rolloutPath,
           sessionId: thread.threadId,
           mtimeMs,
-          firstUserPreview:
-            previewFromHistory(read.history?.items ?? []) ||
-            readFirstUserPreview(thread.rolloutPath),
+          firstUserPreview,
         });
       }
       if (page.nextCursor === undefined) break;

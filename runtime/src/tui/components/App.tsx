@@ -1336,8 +1336,25 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     session: props.session,
     tools: availableTools,
     setToolJSX,
-    mcpClients
-  }) as any, [appStateStore, commands, availableTools, mcpClients, props.session, refreshAvailableTools, toolPermissionContext, setToolJSX]);
+    mcpClients,
+    // local-jsx commands like /buddy, /color, /rename mutate React-side
+    // app state via these hooks. Without them, those commands throw a
+    // TypeError on first access ("context.setAppState is not a
+    // function"), the slash dispatcher's outer try/catch swallows the
+    // exception, falls back to `props.session.submit(value)` which sends
+    // the raw `/buddy` text to the bridge wrapper — that wrapper's
+    // dispatch path runs without tuiHandlers and returns
+    // `{kind: "error", message: "/buddy requires the interactive TUI
+    // command surface."}` which the session-transcript reducer then
+    // JSON.stringifies into the visible transcript. The proper fix is
+    // to provide the state hooks the local-jsx surface contract
+    // promises.
+    setAppState,
+    // The daemon-backed TUI does not own a local message array (the
+    // daemon does), so legacy local-jsx setMessages calls are a no-op
+    // here. Provided so callers don't TypeError on the field access.
+    setMessages: () => {},
+  }) as any, [appStateStore, commands, availableTools, mcpClients, props.session, refreshAvailableTools, toolPermissionContext, setToolJSX, setAppState]);
 
   // Transient-message helper. local-jsx commands (e.g. /color, /rename)
   // pass a status string to onDone — without this, that string was
@@ -1466,12 +1483,26 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           } | {
             kind: "prompt";
             content: string;
+          } | {
+            kind: "exit";
+            code?: number;
           }): {
             forwardedToModel: boolean;
           } => {
             if (result.kind === "skip") return {
               forwardedToModel: false
             };
+            if (result.kind === "exit") {
+              // /exit (and its `/quit` alias) returns kind:"exit" after
+              // calling session.shutdown(). The TUI needs to unmount
+              // the Ink app and let the parent process exit cleanly.
+              // Without this branch, /exit was silently swallowed and
+              // the user had to Ctrl-C twice to escape. `exit` here is
+              // destructured from `useApp()` at the AgenCTuiShell top
+              // level.
+              exit();
+              return { forwardedToModel: false };
+            }
             if (result.kind === "prompt") {
               // Slash command produced a follow-up prompt for the model
               // (e.g. `/plan <description>`). Forward it through the

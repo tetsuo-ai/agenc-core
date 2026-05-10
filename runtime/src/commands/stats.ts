@@ -7,16 +7,39 @@ import {
 } from "./types.js";
 
 export function formatRuntimeStats(session: Session, cwd: string): string {
-  const state = session.state.unsafePeek() as { history?: unknown[] };
-  const toolCount = session.services.registry.tools.length;
-  const connectedServers = session.services.mcpManager.getConnectedServers?.() ?? [];
+  // Bridge sessions (TUI client → daemon) don't expose `state`,
+  // `services.registry`, or `services.mcpManager` directly — those
+  // live on the daemon-side in-process Session. Guard the accesses
+  // so `/stats` degrades to "n/a" lines instead of crashing with a
+  // raw `Cannot read properties of undefined (reading 'unsafePeek')`.
+  const peekState = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const state =
+    typeof peekState === "function"
+      ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+          history?: unknown[];
+        })
+      : null;
+  const services = (session as unknown as {
+    services?: {
+      registry?: { tools?: ReadonlyArray<unknown> };
+      mcpManager?: { getConnectedServers?: () => ReadonlyArray<unknown> };
+    };
+  }).services;
+  const toolCount = services?.registry?.tools?.length ?? null;
+  const connectedServers = services?.mcpManager?.getConnectedServers?.() ?? null;
   return [
     "AgenC stats",
     `  session: ${session.conversationId}`,
     `  cwd: ${cwd}`,
-    `  transcript items: ${state.history?.length ?? 0}`,
-    `  registered tools: ${toolCount}`,
-    `  connected MCP servers: ${connectedServers.length}`,
+    `  transcript items: ${
+      state?.history?.length ?? "n/a (daemon-owned)"
+    }`,
+    `  registered tools: ${toolCount ?? "n/a (daemon-owned)"}`,
+    `  connected MCP servers: ${
+      connectedServers === null ? "n/a (daemon-owned)" : connectedServers.length
+    }`,
   ].join("\n");
 }
 
