@@ -1836,32 +1836,29 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
 
   // Spinner gating + mode derivation.
   //
-  // Show the spinner only when there's actual work happening:
-  //   (a) user just submitted (pendingSubmission bridges the gap to turn_started)
-  //   (b) a tool is in flight (inProgressToolCount > 0)
-  //   (c) thinking content is being streamed
+  // Show the spinner whenever the daemon turn is active or the user just
+  // submitted (pendingSubmission bridges the gap to turn_started). The
+  // earlier "ghost spinner stays after AI is done" bug was caused by
+  // pendingSubmission staying stuck true when the daemon skipped
+  // turn_started — that's now fixed by the broader pendingSubmission
+  // clearing logic above (which also clears on assistant-message-count
+  // growth and streamingText flow).
   //
-  // We deliberately DO NOT use bare `transcript.isStreaming` here. The daemon
-  // can leave isStreaming stuck true between turn_started and turn_complete
-  // (e.g. if turn_complete is delayed by post-turn cleanup, never fires for a
-  // particular path, or if an internal compaction turn fires turn_started
-  // without a paired turn_complete). When that happens with no other activity
-  // signal, the old gate kept the spinner on indefinitely with no AI work
-  // actually in progress — exactly the ghost-spinner bug users see.
+  // We deliberately key on transcript.isStreaming (not just visible
+  // activity), because between tool calls / before the first token the
+  // model is still working — the user wants feedback during those
+  // gaps, not a blank screen.
   //
-  // Streaming text is its own feedback: while text is flowing the user sees
-  // the response itself, so the spinner is suppressed (matches upstream).
+  // Streaming text is its own feedback: while text is flowing the user
+  // sees the response itself, so the spinner is suppressed.
   const inProgressToolCount = transcript.inProgressToolUseIDs.length ?? 0;
-  const hasVisibleActivity =
-    inProgressToolCount > 0 ||
-    transcript.streamingThinking?.isStreaming === true;
   const isLoading = transcript.isStreaming || pendingSubmission;
   const showSpinner =
+    isLoading &&
     permissionRequests.length === 0 &&
     elicitation.prompt === null &&
     !isMessageSelectorVisible &&
-    !transcript.streamingText &&
-    (pendingSubmission || hasVisibleActivity);
+    !transcript.streamingText;
   if (isLoading && !wasStreamingRef.current) {
     loadingStartTimeRef.current = Date.now();
     totalPausedMsRef.current = 0;
