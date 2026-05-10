@@ -1,8 +1,9 @@
 /**
  * Terminal preference capture for deep link handling.
  *
- * Kept separate from terminalLauncher.ts so consumers that only need
- * preference state can avoid pulling the full launcher module.
+ * Separate from terminalLauncher.ts so interactiveHelpers.tsx can import
+ * this without pulling the full launcher module into the startup path
+ * (which would defeat LODESTONE tree-shaking).
  */
 
 import { getGlobalConfig, saveGlobalConfig } from '../config.js'

@@ -73,10 +73,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'meta+o': 'chat:fastMode',
       'meta+t': 'chat:thinkingToggle',
       enter: 'chat:submit',
-      // up/down: not bound to keybinding actions. PromptInput's TextInput
-      // routes them via onHistoryUp/onHistoryDown so cursor-in-buffer
-      // movement falls through to history only when the cursor can't
-      // move further. See PromptInput.tsx:1962-1966 for the rationale.
+      up: 'history:previous',
+      down: 'history:next',
       // Editing shortcuts (defined here, migration in progress)
       // Undo has two bindings to support different terminal behaviors:
       // - ctrl+_ for compatibility terminals (send \x1f control char)
@@ -283,10 +281,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
             'shift+down': 'messageActions:nextUser' as const,
             escape: 'messageActions:escape' as const,
             'ctrl+c': 'messageActions:ctrlc' as const,
-            // enter / c / p: declared here as MessageActions context keys but
-            // no useKeybinding handler consumes them. Removed; if a future
-            // command needs them, register both the binding and a handler
-            // in the same change.
+            // Mirror MESSAGE_ACTIONS. Not imported — would pull React/ink into this config module.
+            enter: 'messageActions:enter' as const,
+            c: 'messageActions:c' as const,
+            p: 'messageActions:p' as const,
           },
         },
       ]
