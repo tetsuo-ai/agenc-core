@@ -34,11 +34,15 @@ export const DEFAULT_KEYBINDINGS = {
   $schema: "urn:agenc:schema:keybindings",
   $docs: "urn:agenc:docs:keybindings",
   bindings: [
+    // ctrl+c, ctrl+d, ctrl+m are intentionally omitted from the
+    // scaffolded user config — they are NON_REBINDABLE
+    // (reservedShortcuts.ts) and writing them here just triggers
+    // "reserved" warnings on every startup. The runtime defaults in
+    // tui/keybindings/defaultBindings.ts handle ctrl+c → app:interrupt
+    // and ctrl+d → app:exit unconditionally.
     {
       context: "Global",
       bindings: {
-        "ctrl+c": "app:interrupt",
-        "ctrl+d": "app:exit",
         "ctrl+l": "app:redraw",
         "ctrl+o": "app:toggleTranscript",
         "ctrl+r": "history:search",
@@ -78,10 +82,11 @@ export const DEFAULT_KEYBINDINGS = {
       },
     },
     {
+      // ctrl+c is omitted — runtime default handles it as transcript:exit.
+      // ctrl+d is omitted — NON_REBINDABLE (always exits the app).
       context: "Transcript",
       bindings: {
         "ctrl+e": "transcript:toggleShowAll",
-        "ctrl+c": "transcript:exit",
         escape: "transcript:exit",
         q: "transcript:exit",
         up: "scroll:lineUp",
@@ -93,7 +98,6 @@ export const DEFAULT_KEYBINDINGS = {
         pageup: "scroll:pageUp",
         pagedown: "scroll:pageDown",
         "ctrl+u": "scroll:halfPageUp",
-        "ctrl+d": "scroll:halfPageDown",
         "ctrl+b": "scroll:fullPageUp",
         "ctrl+f": "scroll:fullPageDown",
         b: "scroll:fullPageUp",

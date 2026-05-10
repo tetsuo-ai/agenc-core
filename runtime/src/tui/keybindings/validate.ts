@@ -1,3 +1,4 @@
+import { DEFAULT_BINDINGS } from './defaultBindings.js'
 import { chordToString, parseKeystroke } from './parser.js'
 import {
   getReservedShortcuts,
@@ -9,6 +10,30 @@ import type {
   ParsedBinding,
 } from './types.js'
 import { KEYBINDING_CONTEXT_NAMES } from './types.js'
+
+/**
+ * Build a `${context}::${normalizedKey}` → action lookup for the runtime
+ * default bindings. Used by validateBindings to suppress reserved-shortcut
+ * warnings when the user's binding is a verbatim echo of the system
+ * default — in which case the user isn't actually attempting to rebind.
+ *
+ * The shipped scaffold (commands/keybindings.ts:DEFAULT_KEYBINDINGS)
+ * historically wrote `ctrl+c` and `ctrl+d` mappings into
+ * ~/.agenc/keybindings.json that exactly match these runtime defaults;
+ * the validator then flagged 4 "reserved" errors on a stock install.
+ * Treating echoes-of-default as a no-op clears that banner without
+ * weakening protection against real rebind attempts.
+ */
+function buildDefaultActionMap(): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const block of DEFAULT_BINDINGS) {
+    for (const [key, action] of Object.entries(block.bindings)) {
+      if (typeof action !== 'string') continue
+      map.set(`${block.context}::${normalizeKeyForComparison(key)}`, action)
+    }
+  }
+  return map
+}
 
 function plural(count: number, singular: string): string {
   return count === 1 ? singular : `${singular}s`
@@ -398,8 +423,20 @@ export function validateBindings(
   if (isKeybindingBlockArray(userBlocks)) {
     warnings.push(...checkDuplicates(userBlocks))
 
-    // Check for reserved/conflicting shortcuts - only check USER bindings
-    const userBindings = getUserBindingsForValidation(userBlocks)
+    // Check for reserved/conflicting shortcuts - only check USER bindings.
+    // Filter out echoes-of-default first: when the user's action for a
+    // (context, key) is identical to the runtime default, no rebind is
+    // happening even if the user's keybindings.json names a NON_REBINDABLE
+    // key. This is the common case for the shipped scaffold.
+    const defaultActionByContextKey = buildDefaultActionMap()
+    const userBindings = getUserBindingsForValidation(userBlocks).filter(
+      binding => {
+        const keyDisplay = chordToString(binding.chord)
+        const lookup = `${binding.context}::${normalizeKeyForComparison(keyDisplay)}`
+        const defaultAction = defaultActionByContextKey.get(lookup)
+        return defaultAction === undefined || binding.action !== defaultAction
+      },
+    )
     warnings.push(...checkReservedShortcuts(userBindings))
   }
 

@@ -40,6 +40,43 @@ import {
   loadTieredInstructions,
 } from "../prompts/agenc-md.js";
 
+/**
+ * Both /compact and /context allocate a fresh TurnContext via the
+ * in-process Session API. The TUI dispatches against an
+ * AgenCBridgeSession (daemon client; tui/session-types.ts:36) that
+ * does NOT expose `newDefaultTurnWithSubId` or `nextInternalSubId`,
+ * so calling them unguarded raises `is not a function` and surfaces
+ * as a raw JS exception in a red user-facing box. Treat the missing
+ * methods as "this command needs the in-process runtime" and return
+ * a friendly explanation instead of crashing.
+ */
+function tryAllocateTurnContext(ctx: SlashCommandContext): {
+  readonly ok: true;
+  readonly turnContext: TurnContext;
+} | { readonly ok: false; readonly message: string } {
+  const session = ctx.session as unknown as {
+    newDefaultTurnWithSubId?: (subId: string) => TurnContext | null | undefined;
+    nextInternalSubId?: () => string;
+  };
+  if (
+    typeof session.newDefaultTurnWithSubId !== "function" ||
+    typeof session.nextInternalSubId !== "function"
+  ) {
+    return {
+      ok: false,
+      message:
+        "This command requires the in-process runtime and is not yet supported when the TUI is running against the daemon.",
+    };
+  }
+  const turnContext = session.newDefaultTurnWithSubId(
+    session.nextInternalSubId(),
+  );
+  if (!turnContext) {
+    return { ok: false, message: "No turn context is available." };
+  }
+  return { ok: true, turnContext };
+}
+
 export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Compact the current conversation",
@@ -48,15 +85,13 @@ export const compactCommand: SlashCommand = {
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       await ensureNoActiveTurn(ctx);
-      const turnContext = ctx.session.newDefaultTurnWithSubId(
-        ctx.session.nextInternalSubId(),
-      );
-      if (!turnContext) {
-        return { kind: "error", message: "No turn context is available." };
+      const allocated = tryAllocateTurnContext(ctx);
+      if (!allocated.ok) {
+        return { kind: "error", message: allocated.message };
       }
       const result = await runManualCompact({
         session: ctx.session,
-        ctx: turnContext,
+        ctx: allocated.turnContext,
         customInstructions: ctx.argsRaw,
       });
       return {
@@ -73,15 +108,13 @@ export const contextCommand: SlashCommand = {
   supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const turnContext = ctx.session.newDefaultTurnWithSubId(
-        ctx.session.nextInternalSubId(),
-      );
-      if (!turnContext) {
-        return { kind: "error", message: "No turn context is available." };
+      const allocated = tryAllocateTurnContext(ctx);
+      if (!allocated.ok) {
+        return { kind: "error", message: allocated.message };
       }
       const result = await runContextUsage({
         session: ctx.session,
-        ctx: turnContext,
+        ctx: allocated.turnContext,
         args: ctx.argsRaw,
       });
       return {

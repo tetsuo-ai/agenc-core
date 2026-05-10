@@ -86,7 +86,7 @@ function getCommandFuse(commands: Command[]): Fuse<CommandSearchItem> {
  * Type guard to check if a suggestion's metadata is a Command.
  * Commands have a name string and a type property.
  */
-function isCommandMetadata(metadata: unknown): metadata is Command {
+export function isCommandMetadata(metadata: unknown): metadata is Command {
   return (
     typeof metadata === 'object' &&
     metadata !== null &&

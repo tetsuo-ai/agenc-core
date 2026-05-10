@@ -23,6 +23,7 @@ import { buildDefaultRegistry, registeredLegacyCommandSurfaceSpecs, executeLegac
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
+import { addToHistory } from "../history/history.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import { type AppState, AppStateProvider, getDefaultAppState, useAppState, useAppStateStore, useSetAppState } from "../state/AppState.js";
 import { Box, Text, useApp, useTerminalFocus, useTerminalTitle } from "../ink.js";
@@ -1377,6 +1378,23 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     setSubmitCount(count => count + 1);
     setPendingSubmission(true);
     setInput("");
+    // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
+    // can find it. The daemon-backed AgenCTuiApp dispatch path used to
+    // skip this, so the picker said "No history yet" right after a
+    // submit and Up-arrow on an empty composer was a no-op (flagged
+    // by the power-chainer + returning-user personas). REPL.tsx
+    // (legacy moved-source) already does this; mirror it here for
+    // the live mount path.
+    if (text_0.length > 0) {
+      try {
+        addToHistory({
+          display: text_0,
+          pastedContents,
+        });
+      } catch {
+        // best-effort: history persistence must not block submit
+      }
+    }
     if (hasAttachments) {
       const attachmentsMessage = pastedContentsToLLMMessage(pastedContents);
       if (attachmentsMessage !== null) {

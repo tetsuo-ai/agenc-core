@@ -24,7 +24,7 @@ import { generateProgressiveArgumentHint, parseArguments } from '../slash/argume
 import { getShellCompletions, type ShellCompletionType } from '../../utils/bash/shellCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { formatLogMetadata } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSessionIdFromLog, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput } from '../../utils/suggestions/commandSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput, isCommandMetadata } from '../../utils/suggestions/commandSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '../../utils/suggestions/directoryCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getShellHistoryCompletion } from '../../utils/suggestions/shellHistoryCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSlackChannelSuggestions, hasSlackMcpServer } from '../../utils/suggestions/slackChannelSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -1141,9 +1141,30 @@ export function useTypeahead({
     const suggestion = suggestions[selectedSuggestion];
     if (suggestionType === 'command' && selectedSuggestion < suggestions.length) {
       if (suggestion) {
-        applyCommandSuggestion(suggestion, true,
-        // execute on return
-        commands, onInputChange, setCursorOffset, onSubmit);
+        // Only auto-execute when the typed slash literal matches the
+        // suggestion's name or an alias. Otherwise the picker has only
+        // a fuzzy match (e.g. typing `/history` while `/clear` is the
+        // top fuzzy hit because its description contains "history") —
+        // accepting that on Enter silently runs a different and
+        // possibly destructive command. With no exact match, we still
+        // apply the suggestion to the composer so the user can confirm
+        // with a second Enter, but skip the auto-run.
+        const typed = input.trim().replace(/^\//, '').toLowerCase();
+        const meta = isCommandMetadata(suggestion.metadata)
+          ? suggestion.metadata
+          : null;
+        const exactMatch =
+          typed.length > 0 &&
+          (meta?.name?.toLowerCase() === typed ||
+            (meta?.aliases ?? []).some(a => a.toLowerCase() === typed));
+        applyCommandSuggestion(
+          suggestion,
+          exactMatch,
+          commands,
+          onInputChange,
+          setCursorOffset,
+          onSubmit,
+        );
         debouncedFetchFileSuggestions.cancel();
         clearSuggestions();
       }
