@@ -654,6 +654,15 @@ const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>>
   "./install.js": () => import("./install.js"),
   "./commit.js": () => import("./commit.js"),
   "./review.js": () => import("./review.js"),
+  "./cache-probe/index.js": () => import("./cache-probe/index.js"),
+  "./install-slack-app/index.js": () => import("./install-slack-app/index.js"),
+  "./onboard-github/index.js": () => import("./onboard-github/index.js"),
+  "./plugin/index.js": () => import("./plugin/index.js"),
+  "./init-verifiers.js": () => import("./init-verifiers.js"),
+  "./commit-push-pr.js": () => import("./commit-push-pr.js"),
+  "./install-github-app/index.js": () => import("./install-github-app/index.js"),
+  "./brief.js": () => import("./brief.js"),
+  "./bridge-kick.js": () => import("./bridge-kick.js"),
 };
 
 async function loadLegacyCommandSurface(
@@ -947,6 +956,32 @@ export const registeredLegacyCommandSurfaceSpecs = [
     progressMessage: "creating commit, pushing, and opening pull request",
     contentLength: 0,
     source: "builtin",
+  },
+  {
+    name: "install-github-app",
+    type: "local-jsx",
+    modulePath: "./install-github-app/index.js",
+    tuiModulePath: "./commands/install-github-app/index.js",
+    description: "Set up AgenC GitHub Actions for a repository",
+    availability: ["agenc-ai", "console"],
+    isEnabled: () => !isEnvTruthy(process.env.DISABLE_INSTALL_GITHUB_APP_COMMAND),
+  },
+  {
+    name: "brief",
+    type: "local-jsx",
+    modulePath: "./brief.js",
+    tuiModulePath: "./commands/brief.js",
+    description: "Toggle brief-only mode",
+    immediate: true,
+  },
+  {
+    name: "bridge-kick",
+    type: "local",
+    modulePath: "./bridge-kick.js",
+    tuiModulePath: "./commands/bridge-kick.js",
+    description: "Inject bridge failure states for manual recovery testing",
+    isEnabled: () => process.env.USER_TYPE === "ant",
+    supportsNonInteractive: false,
   },
 ] as const satisfies readonly LegacyCommandSurfaceSpec[];
 
