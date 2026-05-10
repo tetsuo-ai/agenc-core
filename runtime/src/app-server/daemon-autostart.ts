@@ -6,9 +6,11 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
   createNodeDaemonCliHost,
   readAgenCDaemonPid,
+  removeAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
   runAgenCDaemonCli,
@@ -16,6 +18,13 @@ import {
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
+import {
+  readDaemonRuntimeInfo,
+  readDistVersion,
+  removeDaemonRuntimeInfo,
+  resolveAgenCDaemonRuntimeInfoPath,
+  resolveRuntimePackageRootFromUrl,
+} from "./daemon-runtime-info.js";
 import { loadConfig } from "../config/loader.js";
 import {
   resolveMcpServeDefaults,
@@ -96,8 +105,49 @@ export async function ensureAgenCDaemonAutostart(
   const host = options.host ?? createNodeDaemonCliHost();
   const io = options.io ?? silentIo();
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+  const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
   let status: AgenCDaemonAutostartStatus = "already-running";
   let pid = await readAgenCDaemonPid(pidPath);
+
+  // Detect runtime-build skew: if the running daemon was launched
+  // against an older `dist/VERSION` than the one currently on disk
+  // (typical scenario: `npm run build` while the daemon was alive),
+  // its in-memory bundle still references chunk filenames that
+  // `clean: true` deleted. Any dynamic `import()` in a turn fails
+  // with "Cannot find module" and the spinner hangs forever. Kill
+  // the stale daemon here so the start-fresh branch below replaces
+  // it transparently.
+  if (pid !== null && host.isPidRunning(pid)) {
+    const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
+    const currentVersion =
+      runtimeRoot !== null ? readDistVersion(runtimeRoot) : null;
+    const daemonInfo = readDaemonRuntimeInfo(runtimeInfoPath);
+    if (
+      currentVersion !== null &&
+      daemonInfo !== null &&
+      daemonInfo.buildTime !== currentVersion.buildTime
+    ) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        /* already gone */
+      }
+      const skewDeadline = Date.now() + 5000;
+      while (Date.now() < skewDeadline && host.isPidRunning(pid)) {
+        await host.sleep(50);
+      }
+      if (host.isPidRunning(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* already gone */
+        }
+      }
+      await removeAgenCDaemonPid(pidPath, pid);
+      removeDaemonRuntimeInfo(runtimeInfoPath);
+      pid = null;
+    }
+  }
 
   if (pid === null || !host.isPidRunning(pid)) {
     const startExit = await runAgenCDaemonCli(

@@ -4,11 +4,20 @@ type PathPredicate = (path: string) => boolean
 
 export const PRIMARY_PROJECT_INSTRUCTION_FILE = 'AGENC.md'
 export const AGENTS_PROJECT_INSTRUCTION_FILE = 'AGENTS.md'
+// The donor-product house-instructions filename is retained as an
+// exported constant so the resolver code (which references it for
+// type compatibility and historical lookups) keeps compiling, but it
+// is NOT in `FALLBACK_PROJECT_INSTRUCTION_FILES`. That file is
+// written in second-person roleplay language addressed to the donor
+// product's assistant. Loading it as the system prompt for an
+// unrelated model (e.g. Qwen via lmstudio) makes that model adopt
+// the donor's identity verbatim, because it interprets the file as
+// its own instructions.
+// branding-scan: allow CLAUDE.md is a real upstream filename users have on disk
 export const CLAUDE_PROJECT_INSTRUCTION_FILE = 'CLAUDE.md'
 export const FALLBACK_PROJECT_INSTRUCTION_FILE = AGENTS_PROJECT_INSTRUCTION_FILE
 export const FALLBACK_PROJECT_INSTRUCTION_FILES = [
   AGENTS_PROJECT_INSTRUCTION_FILE,
-  CLAUDE_PROJECT_INSTRUCTION_FILE,
 ] as const
 
 export function getProjectInstructionFileNames(): readonly string[] {
