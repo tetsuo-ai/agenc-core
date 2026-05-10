@@ -3349,11 +3349,22 @@ async function* runTurnKernelInner(
       explicitAutoCompactLimit ??
       getAutoCompactTokenLimit(ctx) ??
       Number.POSITIVE_INFINITY;
-    const totalUsageTokens = Math.max(
-      getTotalTokenUsage(session),
-      usage.totalTokens,
-      state.lastResponseUsage?.totalTokens ?? 0,
-    );
+    // Mirror the donor's `tokenCountWithEstimation` (utils/tokens.ts:418):
+    // anchor on the LAST provider-reported prompt size (single sample, not
+    // cumulative) and treat that as the projected cost of the NEXT API
+    // request. The previous logic took `Math.max(getTotalTokenUsage,
+    // usage.totalTokens, lastResponseUsage.totalTokens)` where the first
+    // two are CUMULATIVE counters that sum every sample's `totalTokens`
+    // additively across the turn (see stream-model.ts:897-903 — these are
+    // donor-parity cost-tracking surfaces from `TokenUsageInfo::
+    // append_last_usage`, not context-window-pressure signals). After 19
+    // samples in a single turn each ~13k, the cumulative total reached
+    // 248k and falsely tripped the 236k threshold even though no single
+    // prompt was anywhere near it. Use the latest sample's
+    // `promptTokens` (input-side, what the model just received as
+    // context); on turn 0 with no prior response, fall back to 0 so the
+    // first sample is always allowed through.
+    const totalUsageTokens = state.lastResponseUsage?.promptTokens ?? 0;
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
     if (tokenLimitReached && needsFollowUpForCompact) {
@@ -3407,36 +3418,9 @@ async function* runTurnKernelInner(
         // loop — that would spin forever with unchanged state. Surface
         // the token-limit condition as a terminal error matching the
         // semantics of agenc runtime's `return None`.
-        //
-        // Diagnostic: when `wasCompacted=false` but the budget IS breached,
-        // the most common cause is that the conversation history is small
-        // (nothing to compact) but the system prompt + tool catalog +
-        // AGENC.md alone exceed the threshold. The original "skipped:
-        // tokens=X limit=Y" message gave the user no actionable signal.
-        // Estimate conversation-only tokens here so we can tell the user
-        // whether the system prompt or the conversation is the dominant
-        // consumer.
         await drainInFlight(state, ctx, session);
-        let conversationTokens = 0;
-        try {
-          const tokenEst = await import("../llm/token-estimation.js");
-          conversationTokens = tokenEst.roughTokenCountEstimationForMessages(
-            state.messages as never,
-            { model: ctx.modelInfo.slug },
-          );
-        } catch {
-          // Best-effort — if estimator is unavailable, we still want the
-          // outer error to fire with the original info.
-          conversationTokens = 0;
-        }
-        const systemAndToolsApprox = Math.max(
-          0,
-          totalUsageTokens - conversationTokens,
-        );
-        const reasonText = conversationTokens > 0 &&
-          systemAndToolsApprox >= autoCompactLimit
-          ? `system prompt + tool catalog + project instructions occupy ~${systemAndToolsApprox.toLocaleString()} tokens, which exceeds the auto-compact threshold of ${autoCompactLimit.toLocaleString()} tokens. Compaction can only shrink conversation history (~${conversationTokens.toLocaleString()} tokens here) — it cannot reduce the system prompt. Trim AGENC.md, reduce the active tool catalog, or use a model with a larger context window. (Total tokens this turn: ${totalUsageTokens.toLocaleString()}.)`
-          : `mid_turn_compact_skipped: tokens=${totalUsageTokens} limit=${autoCompactLimit}`;
+        const reasonText =
+          `mid_turn_compact_skipped: lastSamplePromptTokens=${totalUsageTokens} limit=${autoCompactLimit}`;
         session.emit({
           id: session.nextInternalSubId(),
           msg: {
@@ -3551,12 +3535,12 @@ async function* runTurnKernelInner(
       postToolExplicitAutoCompactLimit ??
       getAutoCompactTokenLimit(ctx) ??
       Number.POSITIVE_INFINITY;
+    // Same correctness fix as the mid-turn check above: anchor on the
+    // last sample's `promptTokens` (per-sample) rather than the cumulative
+    // session counter, so post-tool-loop compaction triggers on the
+    // projected next-sample prompt size, not on summed throughput.
     const postToolTokenLimitReached =
-      Math.max(
-        getTotalTokenUsage(session),
-        usage.totalTokens,
-        state.lastResponseUsage?.totalTokens ?? 0,
-      ) >= postToolAutoCompactLimit;
+      (state.lastResponseUsage?.promptTokens ?? 0) >= postToolAutoCompactLimit;
     if (
       postToolTokenLimitReached &&
       (state.needsFollowUp || state.toolResults.length > 0)
