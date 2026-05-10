@@ -1,50 +1,95 @@
-# Persona: Error Recoverer
+# Error Recoverer UX Report (round 2)
 
-## Task
-Trigger 7 classes of error condition against `agenc` 0.2.0 (CLI + `--yolo` TUI) and grade whether the surface explains what went wrong, suggests recovery, and keeps the user productive without restart. Driven via `script -q` from `/home/tetsuo/git/AgenC/agenc-core`. Verbatim transcripts captured in `error-recoverer-screen.log` (line refs cited below).
+Binary: `agenc 0.2.0` HEAD `4999c596`. Working dir: `/home/tetsuo/git/AgenC/agenc-core`.
+Driver: util-linux `script` with timed keystroke recipes.
 
-## Outcome
-The CLI side handles errors well: precise wording, names the bad input, lists alternatives. The TUI side is a mixed bag — two real defects found (`/model` crashes with `unsafePeek`, `/help <arg>` shows only `registry pending`), and a few cases where the runtime carries on without telling the user it fell back to defaults. The user is never forced to restart; ctrl-c twice always exits cleanly. Daemon recovery is excellent — auto-respawns on next call.
+## 1. Invalid model
 
-## Friction log
+**TUI `/model nonexistent-model-xyz`** (screen.log L1-12, test 1a): bordered error box leaks
+runtime exception verbatim `Error: session.setPendingProviderSwitch is not a function`. No
+suggestion. Prompt usable after. **Bug**: missing method on session shim. Should be
+`Unknown model "X" — see /model for valid IDs`.
 
-- **CRIT / TUI / `/model nonexistent-model-xyz`** (screen.log L8-13). TUI prints `Error: Cannot read properties of undefined (reading 'unsafePeek')`. That's a JS exception message bubbling up — not a "model not found" message. **Expected**: "Unknown model 'nonexistent-model-xyz'. Run `/models` to list available." **Repro**: launch `agenc --yolo`, type `/model bogus`, Enter. **Fix**: guard the model-lookup call before dereferencing whatever stream/peek primitive is failing.
+**One-shot `agenc --no-tui --model nonexistent "hi"`** (L13-18, test 1b): says `--model is not yet
+supported as a CLI flag`, lists the remediation: edit `~/.agenc/config.toml` or run `agenc config
+set model <id>` / `agenc config set model_provider <name>`. Excellent: WHAT + WHERE + COMMAND.
 
-- **HIGH / TUI / `/help nonsense`** (screen.log L44-46). TUI prints just `registry pending` in a panel. No indication that `nonsense` is unrecognized, no fallback to general help. **Expected**: Either ignore the argument and show full help, or "Unknown help topic 'nonsense'. Try `/help` for the index." **Fix**: handle subcommand args in the help slash handler; surface a real "topic not found" path.
+## 2. Network unavailable
 
-- **HIGH / CLI / corrupt `~/.agenc/config.toml`** (screen.log L85-89). The TOML parse error message is good (`expected '=' after key "this"`), but it is **emitted 5 times in a row** (twice per code path, three load passes), then the runtime silently continues with built-in defaults and gives a normal-looking model reply. **Expected**: emit the parse error once, then "Falling back to defaults — fix config.toml or run `agenc config init`." **Fix**: dedupe the warning, and add a single explicit "using defaults" notice so the user knows their config did not load.
+`OPENAI_BASE_URL=http://localhost:1` env override is **silently dropped**: the long-running daemon
+issues the HTTP call and does not inherit per-invocation env from `agenc --no-tui`. Even
+`agenc daemon stop` then a fresh invocation auto-respawns the daemon ignoring the env. After
+forcing the active provider to `openai` to provoke a real call (L20, test 2d): `openai error: The
+model gpt-5 does not exist. [openai_category=model_not_found] Hint: The selected model is not
+installed or not available on this endpoint.` Clear category + hint. No retry guidance, no offer
+to switch provider. **Gap**: no agenc-owned wrapper for `ECONNREFUSED`/`ENOTFOUND` on bad
+configured base URLs — users would just see the upstream error.
 
-- **MED / TUI / @-mention to missing path** (screen.log L34-37). TUI sends `@/does/not/exist.md explain this` to the model verbatim; only the model's own polite reply tells the user the file was missing. **Expected**: a TUI-level pre-send check + inline annotation ("file not found, sending text only") so the behavior doesn't depend on whichever model happens to be loaded. **Fix**: resolve `@`-paths in the composer; flag missing ones before submit.
+## 3. @-mention non-existent file
 
-- **MED / TUI / `/   ` (slash + only whitespace)** (screen.log L48). Auto-completes to `/agents` and submits silently. No "empty command" feedback. **Expected**: trim the input, and either reopen the slash menu or do nothing on whitespace-only. **Fix**: short-circuit submit when the trimmed command is empty.
+`@/does/not/exist.md explain` (L22-31, test 3): TUI sends the literal string verbatim to the
+model; no path resolution, no warning, no preview chip. Model gracefully replies that the file
+doesn't exist. **Gap**: @-mention is not validated client-side. User could waste a turn and tokens
+before realising the file wasn't loaded. Suggest: resolve `@<path>` at composer time, mark
+unresolved paths visually before submit.
 
-- **LOW / TUI startup / persistent banner** every run shows `Found 4 keybinding errors · /doctor for details` (screen.log L46, L52, L57). Not strictly an "error scenario" trigger — it's there on every cold start. **Expected**: keybindings ship clean, or the banner self-clears once acked. **Fix**: fix the four bindings (or surface them via `/doctor` only).
+## 4. Malformed slash
 
-- **LOW / TUI suggestion menu** when `/totally-not-a-command` fails (screen.log L39-41), the response is rendered as a raw JSON blob: `{ "kind": "error", "message": "Unknown command: /totally-not-a-command" }`. Wording is correct, but the JSON envelope leaks where a one-line error pill would do. **Fix**: render the `message` field as plain inline error.
+- `/totally-not-a-command` (L33-43, test 4a): renders raw JSON
+  `{"kind":"error","message":"Unknown command: /totally-not-a-command"}` in transcript. Correct
+  WHAT, no recovery suggestion ("type `/` for command list" would help). Raw JSON is leakage —
+  should be plain prose.
+- `/help nonsense` (L45-65, test 4b): argument silently ignored; full command catalogue rendered.
+  Tolerant behaviour.
+- `/   ` whitespace (L67-78, test 4c): triggers the suggestion popover starting at `/agents`. Acts
+  as autocomplete; no error. Fine.
 
-- **INFO / Network-down test inconclusive**. With `OPENAI_BASE_URL=http://localhost:1` (T2) or LMStudio `base_url` rewritten to a dead port (T2b), `--no-tui` still answers (screen.log L15-32). Either the daemon is short-circuiting common prompts or it cached a worker process holding the prior config. Not a reproducible failure, so not raised as a defect — but it does mean the actual "model unreachable" UX path was not exercisable from this run.
+## 5. Expired / missing credentials
 
-## What worked well
+`XAI_API_KEY= agenc providers` (L80-81, test 5a): table cell reads `no  missing(XAI_API_KEY)
+n/a  free  set XAI_API_KEY`. The `Detail` column explicitly tells the user what env var to
+set. Excellent.
 
-- **`agenc providers`** (screen.log L55-74) is exemplary: every row tells you exactly which env var to set. Best error UX in the surface.
-- **`--profile nonexistent-profile`** (screen.log L82): `Unknown profile "nonexistent-profile". Available: <none>` — names the bad value and the alternatives.
-- **`--model` flag rejection** (screen.log L2-7): explains the flag isn't supported, points at config.toml AND `agenc config set`. Two recovery paths.
-- **`agent attach nonexistent`** (screen.log L80): `daemon agent not found for attach: nonexistent` — clear, names the input.
-- **Daemon resilience**: `agenc daemon stop` then `agenc agent list` — the latter respawned the daemon transparently. No dangling-stale-PID class of bug observed.
-- **Ctrl-C twice exits cleanly** in every TUI failure mode tested. No hang, no terminal corruption.
+Trying to actually invoke grok with an empty `XAI_API_KEY` env: the env was again swallowed by the
+daemon path so the call succeeded with the daemon's cached key. Not reproducible from the user
+shell.
 
-## Discoverability score: 3/5
-CLI errors point at the next action; TUI errors usually do not. `/help <bad-topic>` returning `registry pending` is the worst offender — the user is left with nothing to try.
+## 6. Daemon down
 
-## Latency feel: 4/5
-All errors surface within ~1s of the trigger. Daemon stop/restart is invisible to the user. No spinner-stuck states observed.
+`agenc daemon stop` then `agenc agent list` / `agenc daemon status` (L83-87, test 6 / 6b): daemon
+**silently auto-respawns** for any subcommand. `agent list` returned `No active agents`;
+`daemon status` returned a new pid. No "daemon was down — restarted" notice, no `--no-autospawn`
+flag. UX win: never user-visibly broken. UX gap: no observability of original failure state.
 
-## Error message quality: 3/5
-CLI quality is 4-5/5; TUI quality is 1-2/5. Two bare exceptions (`unsafePeek`, JSON-blob wrapping for unknown slash) and one dead-end (`registry pending`) drag the average down.
+## 7. Invalid config / nonexistent profile
 
-## Notable surprises
-1. The `/model` slash command appears to invoke a code path (`unsafePeek`) that is not defensive — could indicate a missing wiring rather than just bad input handling.
-2. `--no-tui "hi"` returns a canned-feeling reply even with the configured provider URL pointing at port 1. Worth verifying whether that path actually round-trips to the model or gets short-circuited.
-3. Corrupt config emits the same parse error 5x — log volume bug.
-4. Daemon comes back automatically on next CLI command. No user message about the respawn — silent recovery is good, but a one-line "(daemon restarted)" would build trust.
-5. All cleanup verified: daemon running (`pid 66641`), `~/.agenc/config.toml` restored to original LMStudio config.
+`--profile nonexistent` (L89-90, test 7a): one-line, exit-nonzero, explicit:
+`agenc: Unknown profile "nonexistent". Available: <none>`. Lists allowed values. Excellent.
+
+Corrupted `config.toml` (line 12 trailing junk; L92-99, test 7b): a single corruption causes
+**8-10 duplicate log lines** in one invocation:
+```
+[agenc:config] invalid TOML at /home/tetsuo/.agenc/config.toml: TOML parse error at line 12: ...
+[agenc:config-migration] skipped config.toml migration: invalid TOML ...
+```
+Then the command falls through to its happy path (`Hi! How can I help you today?`).
+**Bugs**: (a) the validator is invoked many times during a single run instead of once + cached;
+(b) `agenc config validate` itself emits `cannot edit config.toml after skipped config migration
+(toml:invalid)` but exit 0, so scripts that depend on `validate` will not catch the failure.
+
+## Summary verdict
+
+| # | Scenario | WHAT? | RECOVERY hint? | Returns to prompt? |
+|---|---|---|---|---|
+| 1a | invalid /model (TUI) | leak: `setPendingProviderSwitch is not a function` | none | yes |
+| 1b | invalid --model | clear | yes (3 paths) | n/a (one-shot) |
+| 2 | network bad | upstream verbatim | partial (hint) | n/a |
+| 3 | bad @-mention | not detected | none (model improvises) | yes |
+| 4a | unknown slash | raw JSON | none | yes |
+| 4b | /help garbage | tolerated | n/a | yes |
+| 5a | missing key | clear table | yes (set env) | n/a |
+| 6 | daemon down | silently respawned | n/a | yes |
+| 7a | bad profile | clear | yes (lists allowed) | n/a |
+| 7b | corrupt config | clear text, spammed 10x + bad exit code on validate | partial | yes (degrades) |
+
+Daemon restored to `running (pid 244558)`.

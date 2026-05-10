@@ -1,60 +1,39 @@
 # Persona: Power Chainer
 
 ## Task
-Compose three distinct operations in one `agenc --yolo` session: list top-level files in cwd, read `package.json` and summarize its scripts, propose a conventional-commit one-liner for adding a UX test report. Probe history recall, command piping, saved sequences, and advertised keyboard shortcuts. Exercise five+ slash commands.
+Compose three real ops in one TUI session; probe history recall, piping, saved sequences, shortcut/slash menu. Target: `agenc --yolo` 0.2.0 at HEAD `4999c596`. Three chains: (1) Q&A then `/clear` then memory probe, (2) bash-mode `!` toggle + chat, (3) Q&A then `/context` then `/cost`. Aux: `?` menu, `/keybindings`, Up-arrow recall, `;`. ~8 slash commands invoked: `/help`, `/clear`, `/exit`, `/keybindings`, `/context`, `/cost`, plus `/files` and `/init` (listed in menu).
 
 ## Outcome
-The three-step chain succeeded: `power-chainer-screen-clean.log` shows all three prompts processed, with `exec_command({"cmd":"ls -la"})`, `FileRead({"file_path":"package.json"})`, and a final `feat: add UX test report...` reply. End-to-end multi-turn chaining works. *Power-user* chaining does not: no `;` / `&&` / queue syntax, no recipe/macro persistence, and both history affordances (Up arrow + `Ctrl+R`) come up empty for prompts just submitted. Six slash commands exercised: `/help`, `/cost`, `/permissions`, `/diff`, `/doctor`, `/keybindings` worked; `/context` crashed.
+Discovery surfaces work: `?` shows a shortcut card (screen.log:49) advertising `!`, `@`, `&`, `ctrl+r`, `ctrl+s`, `ctrl+g`, `ctrl+o`, `ctrl+t`, `meta+p`, `shift+tab`, double-esc, `\+⏎` newline, `/keybindings`. Slash menu autocompletes on `/`. Up arrow recalls history (screen.log:168-171 — `world` recalled, `ctrl+r to search history` hinted). `/keybindings` opens nano on `~/.agenc/keybindings.json` (screen.log:250-253) showing Global/Chat/Composer contexts with verbs (`app:redraw`, `history:search`, `scroll:pageUp`). Major regression: `/clear` claims "Session cleared" (screen.log:100) but the model still answers "Your previous question was 'what is 2+2?'" on the next turn (screen.log:117). No native macro/recipe/replay; `;` and `&&` pass through as natural language (screen.log:88 — model said "Hi! / Bye!").
 
 ## Friction log
 
-- **Critical / `/context` / power-chainer-context.log tail**
-  Red error box: `Error: ctx.session.newDefaultTurnWithSubId is not a function`. A first-class slash command is broken.
-  Expected: a usage table like `/cost` and `/permissions` produce.
-  Repro: launch `agenc --yolo`, type `/context` Enter.
-  Suggested fix: bind `newDefaultTurnWithSubId` (or its renamed equivalent) on the slash-command session shim, or fall back to a read-only summary path that doesn't require a new turn.
+- **CRITICAL / `/clear` semantics / screen.log:92-117** — `/clear` UI claims success but model retains prior turn. Expected: actual history wipe (or rename to `/clear-ui`). Repro: ask anything, run `/clear`, ask "what was my previous question?". Suggested fix: either truncate the upstream message list when `/clear` fires, or rename the command and document the divergence in the help string.
 
-- **High / Up-arrow does not recall history / power-chainer-history2.log tail**
-  After submitting a prompt and Esc-ing back to an empty composer, `\x1b[A` is a no-op. No history affordance is advertised in `?` either.
-  Expected: Up loads the previous submitted prompt; repeated Up walks further back.
-  Suggested fix: bind Up (cursor at top line / composer empty) to `history:prev`, Down to `history:next`. Today only `Ctrl+R` searches history, and that's not surfaced in the footer hints.
+- **HIGH / `/context` broken under daemon / screen.log:275-283** — `Error: This command requires the in-process runtime and is not yet supported when the TUI is running against the daemon.` But the daemon path is the default user surface. A power user composing a long session can't see token usage. Suggested fix: implement a daemon RPC for context stats, or at minimum surface the daemon endpoint in `/context` output rather than rejecting the command.
 
-- **High / `Ctrl+R` history search empty / power-chainer-ctrlr.log tail**
-  `Ctrl+R` opens a "Search prompts" picker labelled `Filter history…`, but it shows "No history yet" even after a prompt was just submitted in the same session.
-  Repro: submit `first prompt for history`, Esc, `\x12`.
-  Suggested fix: persist current-session prompts into the same store the picker reads, or fall back to in-memory transcript when the persisted store is empty.
+- **HIGH / `/cost` disabled silently / screen.log:299** — "Cost tracking is not enabled for this session." With no hint about how to enable it (no flag, no env var, no `/config` pointer). Suggested fix: link to the config key or print the exact env/flag needed (`AGENC_TRACK_COST=1`?).
 
-- **High / Self-warning loop on every launch / power-chainer-doctor.log Keybindings section**
-  Every yolo launch banners `Found 4 keybinding errors · /doctor for details`. `/doctor` reveals the four "errors" are the shipped default `keybindings.json` declaring `ctrl+c` and `ctrl+d` (each twice across contexts), then flagged as reserved/hardcoded. Default config triggers its own warning.
-  Suggested fix: drop `ctrl+c` / `ctrl+d` from the shipped default, or downgrade the reserved-rebind check from `error` to `info` when the entry matches the hardcoded action.
+- **HIGH / Bash mode `!` toggle confusing / screen.log:190-225** — Pressing `!` shows the `! !` banner suggesting bash mode is active, but typing `ls package.json` and Enter sent it as a chat prompt with literal `!` appended (model then chose to run `exec_command` itself). Expected: in bash mode, Enter runs the shell command directly without invoking the model. Repro: press `!`, type `ls package.json`, press Enter — observe model turn instead of direct shell output. Suggested fix: bash mode must intercept Enter and bypass model dispatch.
 
-- **Medium / `Ctrl+T` no-op / power-chainer-ctrlt.log**
-  `?` advertises `ctrl + t to toggle tasks`; pressing `\x14` produces no UI change.
-  Suggested fix: wire it to the planner/task surface or remove the line from `?`.
+- **MEDIUM / Spinner verbs are jokes, not status / screen.log:84,112,144,155,193,225,267** — Spinner cycles through `Retracing…`, `Resolving…`, `Cross-compiling…`, `Parsing…`, `Triggering…`, `Verifying…`, `Transcoding…`. Cute but misleading: no actual cross-compilation or transcoding is happening on `count to 3`. A power user reading these can't tell whether the spinner reflects real phase progress. Suggested fix: real phase verbs (`thinking`, `tool-call`, `streaming`) or remove entirely.
 
-- **Medium / `ls -la` rendered as 2-column markdown table / power-chainer-screen-clean.log line ~22**
-  Asked to "list top-level files in cwd", the agent rendered output as a "Path | Description" table with only dotted dirs (`.git/`, `.github/`, etc.) plus `tests/` and `web/`, then editorialized about a symlink. `package.json`, `runtime/`, `scripts/`, `node_modules/` were not surfaced.
-  Suggested fix: when a tool result is a directory listing, render a flat list, not a "Description" table where the assistant invents per-row prose.
+- **MEDIUM / No native chain or macro surface / screen.log:88** — `;` and `&&` are not first-class. Persona-relevant gap: no `/macro`, `/recipe`, `/replay`, `/save`. Suggested fix: add a `/replay <n>` to re-send the Nth prior user message, or `/macro save NAME` from history.
 
-- **Low / `/cost` is a placeholder / power-chainer-cost.log tail**
-  Returns "Cost tracking is not enabled for this session." but the command sits in the slash menu like a first-class feature.
-  Suggested fix: hide `/cost` when not enabled, or auto-enable when an LLM is configured.
+- **LOW / Shortcut card collapses lines / screen.log:49-57** — The `?` card is rendered as one continuous wrapped line: `! for bash modedouble tap esc to clear inputctrl + shift + - to / for commands…`. Hard to scan even before ANSI strip. Suggested fix: render each shortcut on its own line.
 
-- **Low / Spinner verbs uninformative / power-chainer-bash.log, power-chainer-screen-clean.log**
-  Status cycles "Decrypting…", "Heap-walking…", "Spoofing…", "Caching…", "Chaining…". Power users want concrete state ("Routing", "Streaming", "Tool: exec_command").
-  Suggested fix: ship neutral defaults; gate the cute set behind a flag.
+- **LOW / Redundant slash autocomplete entries / screen.log:289-291** — After `/cost` ran, the suggestion popup re-listed `/context` and `/files` for the next keystroke, but they were already shown.
 
-## Discoverability score (0–5): 3
-`?` is well organized; the slash menu pages cleanly through ~40 commands. Lost a point because Up-arrow history recall is undocumented. Lost another because `/context` is listed but broken, `/cost` is listed but disabled, and `Ctrl+T` is listed but inert.
+## Discoverability score (3/5)
+`?` and `/keybindings` are real wins. Lost a point for `/clear` lying, another for `/context`/`/cost` being trapdoors under the default daemon path.
 
-## Latency feel (0–5): 4
-ls-via-`exec_command` came back inside the 30s window for turn 1. FileRead + summary was fast. Commit-message generation came back inside 25s. The startup banner re-renders four times before settling, which feels janky but isn't slow.
+## Latency feel (4/5)
+First-token latency is good. `count to 3` returned in ~3-4 s; longer turns ~6-8 s. The spinner runs continuously so there is no dead air.
 
-## Error message quality (0–5): 2
-`/context` surfaces the raw JS error `ctx.session.newDefaultTurnWithSubId is not a function` in a user-facing red box (power-chainer-context.log). The keybinding warning at startup says "Found 4 keybinding errors" with no inline summary; you have to run `/doctor` to learn it's a self-inflicted default-config issue. `/permissions` empty case is the one bright spot: "Mode: default, (no permission rules configured)".
+## Error message quality (2/5)
+`/context` error names the cause cleanly but offers zero remediation. `/cost` says "not enabled" with no pointer to how to enable. `/clear` doesn't error at all — it succeeds while quietly lying.
 
 ## Notable surprises
-- `!` enters bash mode and the prompt rune flips to `!` — clean, well marked (power-chainer-bash.log).
-- `/keybindings` opens `~/.agenc/keybindings.json` directly in `$EDITOR` — power-user friendly (power-chainer-keybind.log).
-- `/diff` exposes other personas' artifacts under `tests/ux/runs/*-report.md` — file-tree leakage between sibling runs (power-chainer-diff.log).
-- No `;` / `&&` / queue syntax. No `/macro`, `/recipe`, or `/replay`. `/branch` and `/fork` (power-chainer-slashfull.log) are conversation-forking, not command-recipe persistence. The only ways to re-run a prompt are Ctrl+R (broken empty) and retyping.
+- `/keybindings` opening nano on a live JSON file is powerful; the schema URN (`urn:agenc:schema:keybindings`) hints at future editor integration.
+- `ctrl+r` history search hinted (screen.log:171) but no overlay rendered — own test pass.
+- Card mentions `&` background and `ctrl+t` tasks, suggesting a hidden async-job surface worth probing.

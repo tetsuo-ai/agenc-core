@@ -1,91 +1,102 @@
-# Persona: Interrupter
+# Interrupter Persona — Round 2 (agenc 0.2.0 @ 4999c596)
 
-## Task
-Drive `agenc --yolo` via `script` + `timeout` and probe interrupts:
-Ctrl-C mid-stream (single + double), Ctrl-D (empty / non-empty /
-double), Ctrl-Z, Ctrl-L, Ctrl-C during a slow tool, Ctrl-C while
-typing, Esc during streaming, Ctrl-C in the slash menu. Verify prompt
-recovery, partial-state preservation, daemon zombies.
+## Environment
+- Binary: `/home/tetsuo/.local/bin/agenc` (`agenc 0.2.0`)
+- Driver: `script -q -c 'agenc --yolo'` with timed key streams
+- Logs: `tests/ux/runs/interrupter-{keys,screen}.log`
 
-## Outcome
-Most key bindings produce surprising results. The footer hint says
-`esc to interrupt`, but neither Esc nor Ctrl-C interrupts streaming or
-running tools. The "Press Ctrl-C again to exit" affordance fires, but a
-second Ctrl-C does NOT exit during a turn — it just re-arms. Double
-Ctrl-D from an empty composer is the only key combo that cleanly kills
-the TUI. Every aborted run leaves a `running` agent on the daemon.
+## Findings
 
-## Friction log
-- **CRITICAL / streaming + tools / single Ctrl-C does not cancel /
-  Expected: stop streaming or kill tool / Repro: keys.log L5 (essay
-  finishes after Ctrl-C), L26 (`sleep 60` keeps running, model then
-  issues `write_stdin yield_tim_ms 55000`) / Fix: bind Ctrl-C while
-  busy to abort provider stream + SIGTERM the tool child group.
+### 1) Ctrl-C during streaming — partial pass
+Long-essay prompt sent (`/tmp/int1`), Ctrl-C fired 6s into stream. Footer
+showed "esc to interrupt" hint (screen.log:2) and on Ctrl-C the runtime
+rendered "Press Ctrl-C again to exit" (screen.log:2). The render shows the
+streaming spinner cluster `✢*✶✻✽✻✶*✢` re-appeared AFTER the warning,
+suggesting the model output kept flowing into the renderer until the
+script's outer timeout (124). **Single Ctrl-C did NOT cancel streaming** —
+only flipped the footer to the double-tap exit warning. No partial preserved
+in transcript visible after warning.
 
-- **CRITICAL / streaming / double Ctrl-C does NOT exit AND does NOT
-  cancel / Expected: first Ctrl-C cancels turn, second exits / Repro:
-  L8 — both warnings shown, full essay still completes, prompt only
-  returns after the model finishes / Fix: during a busy turn, treat
-  the first Ctrl-C as cancel-turn and reset the exit counter.
+### 2) Double Ctrl-C — works only on empty prompt
+- Empty composer + `\x03\x03` (0.5s apart): exit=0, clean (screen.log:7-9).
+- Mid-stream + `\x03 ... \x03`: the second Ctrl-C did NOT exit; the runtime
+  kept the "Press Ctrl-C again to exit" hint visible and continued
+  re-rendering (screen.log:5; outer timeout=124). The double-tap exit window
+  appears to be cleared by intervening render activity. Bug: second Ctrl-C
+  during active streaming is swallowed.
 
-- **HIGH / running tool / no way to kill a long Bash tool / Expected:
-  Ctrl-C cancels child + finalizes ToolCallRecord as cancelled / Repro:
-  L26 / Fix: wire SIGINT/SIGTERM to the exec process group on Ctrl-C.
+### 3) Ctrl-D — inconsistent
+- Empty composer + single `\x04`: warns "Press Ctrl-D again to exit"
+  (screen.log:11), exit=0 because no follow-up was sent.
+- Empty + double `\x04`: clean exit=0, identical warning rendered.
+- **Composer has text "hello there friend" + `\x04`**: no exit, no visible
+  delete-char feedback, no warning. Outer timeout=124. Ctrl-D with a
+  non-empty composer appears to be a no-op (neither delete-char-forward nor
+  exit). Should at minimum delete one char or render a discoverable hint.
 
-- **HIGH / Esc during work / hint says "esc to interrupt" but Esc has
-  no observable effect / Repro: L35, `Masking…` spinner runs through
-  Esc / Fix: honor Esc as the documented interrupt, or correct the
-  footer hint.
+### 4) Ctrl-Z (suspend) — eaten silently
+Composer "some test text" + `\x1a`: no suspend, no SIGTSTP forwarded, no
+visible feedback, composer retained input (screen.log indicates only the
+composer + no `[bg]` indicator). Outer timeout=124. Status: ignored. This
+matches most agent TUIs (intentional), but there is also no visible
+acknowledgement that the key was eaten.
 
-- **HIGH / daemon zombies / aborted Ctrl-C runs leave `running` agents
-  forever / Repro: `agenc agent list` after run showed my
-  `conv-mp02f93v` (sleep 60) and `conv-mp02ekrl` (find /usr) still
-  running despite TUIs being killed / Fix: TUI sends `cancel` on
-  shutdown, OR daemon reaps conversations on socket disconnect.
+### 5) Ctrl-L (redraw) — works
+Composer "some text to keep" + `\x0c`: produced a redraw (screen.log
+shows the prompt re-rendered with composer text intact, followed by a fresh
+prompt frame). Transcript not lost; exit=0 after double Ctrl-C.
 
-- **MEDIUM / empty composer / Ctrl-D shows warning but the second
-  must come within ~500ms with no countdown / Repro: L11 vs L14
-  (single = stuck, double-fast = exit 0) / Fix: footer countdown like
-  Ctrl-C handling.
+### 6) Ctrl-C during a tool call — does NOT cancel the tool
+- Short tool (`find / -type f | head -10000`, ~6s): completed in full and
+  the agent emitted an 81,656-token summary BEFORE Ctrl-C could be observed
+  to do anything (screen.log:14). The Ctrl-C only landed after the tool
+  returned. No mid-flight cancel.
+- **Long tool (`sleep 60`)**: agent foregrounded as background session,
+  then began `write_stdin` polling (screen.log:17). Triple Ctrl-C did NOT
+  cancel the background session — the "Press Ctrl-C again to exit"
+  warning kept being re-asserted (screen.log:17) but the polling loop
+  continued. Outer timeout=124. This is a real bug: there is no
+  user-accessible way to abort an in-flight tool call from the TUI.
 
-- **MEDIUM / non-empty composer / Ctrl-D is a silent no-op / Repro:
-  L17 / Fix: flash cursor or display hint.
+### 7) Ctrl-C while typing — does not clear composer
+Composer "some unsent text in composer" + `\x03`: produced "Press Ctrl-C
+again to exit" (screen.log:8-style frame in int7) but **did not clear the
+composer text** and did not show a "Press Ctrl-C to clear input" message
+(which is the standard upstream-donor behaviour). Second Ctrl-C cleanly
+exited (exit=0). Bug: first Ctrl-C should clear composer, not jump straight
+to exit-warning.
 
-- **MEDIUM / Ctrl-Z / silently eaten, no suspend, no error / Repro:
-  L20 / Fix: document or implement; eating SIGTSTP silently breaks a
-  long-standing terminal contract.
+### 8) Esc during streaming — the footer hint is a lie
+Footer says "esc to interrupt" (screen.log:2,5,14,17,20). For an in-flight
+500-word essay (`/tmp/int8`), `\x1b` (Esc) at 4s into stream did **nothing**.
+The full essay completed to its concluding paragraph (screen.log:20). Esc
+was silently dropped. This is the worst regression of the run because the
+runtime is actively advertising a key binding that does not work.
 
-- **MEDIUM / Ctrl-C while typing / silently clears composer AND arms
-  exit-warning / Repro: L32 ("half typed message" gone, exit warning
-  shown) / Fix: when composer has text, Ctrl-C clears buffer only;
-  arm exit-warning only on a subsequent empty Ctrl-C.
+## Tool-stop / zombie audit
+- `ps auxww | grep -E "sleep 60|find / -type f"`: no leaked subprocesses.
+- `agenc agent list` post-run: 3 new conv IDs (mp0735b3, mp073ad7, mp073d1i)
+  appearing after 19:57:52 UTC — these match the timestamps of **other**
+  personas spawning concurrently, not the interrupter runs. Pre-existing
+  zombies from round 1 (mp06u7tv, mp06yi7x, mp06yvxw) still listed
+  `running`. My runs did not register agents in the list (likely because
+  `script -q` killed the daemon socket before persistence).
 
-- **MEDIUM / Ctrl-L / redraw works, but stamps "Found 4 keybinding
-  errors · /doctor for details" over the redrawn frame / Repro: L23
-  / Fix: emit the warning only at startup.
+## Severity ranking
+1. **HIGH**: Esc during streaming is advertised but non-functional
+   (scenario 8). User expectation set by footer is violated.
+2. **HIGH**: Ctrl-C cannot cancel an in-flight tool call (scenario 6b).
+   No way for user to recover from a misbehaving long tool.
+3. **MED**: Ctrl-C with non-empty composer skips clear-input step,
+   goes straight to exit warning (scenario 7).
+4. **MED**: Single Ctrl-C does not abort streaming; second Ctrl-C is
+   absorbed by re-renders during streaming (scenarios 1, 2).
+5. **LOW**: Ctrl-D with non-empty composer is a silent no-op
+   (scenario 3c) — should delete-char or warn.
+6. **LOW**: Ctrl-Z silently eaten with no acknowledgement (scenario 4).
 
-- **LOW / startup / "Found 4 keybinding errors · /doctor for details"
-  on every launch / Repro: every scenario / Fix: ship defaults that
-  pass `/doctor`, or surface the four errors inline.
-
-## Discoverability score: 2/5
-Footer says "esc to interrupt" but Esc does nothing and Ctrl-C is the
-actual (broken) interrupt. Slash menu discovery is fine.
-
-## Latency feel: 3/5
-Pre-stream "Throttling / Masking / Tabulating" phase often runs 4-8s
-before any visible token, with only a spinner.
-
-## Error message quality: 2/5
-"Press Ctrl-C again to exit" lies — pressing again does not exit
-during a turn. The keybinding-errors banner shows zero detail.
-
-## Notable surprises
-- Double Ctrl-C does NOT cancel an in-flight turn, contradicting
-  nearly every CLI convention.
-- Ctrl-C inside the slash menu cleanly closes it (this works well).
-- The model is told to wait when the user wants to abort: `write_stdin
-  yield_tim_ms 55000` is issued AFTER both Ctrl-Cs.
-- Daemon cleanup done: `agenc agent stop conv-mp02f93v
-  conv-mp02ekrl` both reported `stopped`. Sibling-persona zombies left
-  in place.
+## Pass list
+- Ctrl-L redraw (scenario 5).
+- Double Ctrl-C from empty prompt (scenario 2b).
+- Ctrl-D double-tap from empty prompt (scenario 3b).
+- No leaked background processes from interrupted tool calls.

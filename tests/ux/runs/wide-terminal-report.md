@@ -1,86 +1,49 @@
-# Persona: Wide Terminal (220x60)
+# Wide Terminal (220x60) — Round 2 Report
 
-## Task
-Drive `agenc --yolo` at 220x60. Open slash menu, run `/help /agents
-/permissions /files /diff /keybindings /usage /cache-stats`, type a
-200-char prompt, submit a single-line response prompt, look for
-width-only features.
+AgenC 0.2.0 / HEAD `4999c596`. Run 2026-05-10. Persona: operator with a 220-col window expecting tooling to actually use the extra width.
 
-## Outcome
-TUI launches at 220x60. Top/bottom dividers draw full width 220 cols
-(screen.log L7, L28), so the renderer detects cols. But every popover
-draws a bordered card stamped to full width with content collapsed in the
-upper-left, leaving 90%+ of the box empty. No side-by-side, no two-column,
-no expanded view appeared at any point. Width is detected, width is not
-used.
+220x60 confirmed: every full-width separator and panel border in `wide-terminal-screen.log` is exactly 220 chars (e.g. S2 lines 3,5; S4 lines 12,15; S6 lines 3,5,68; S8 line 24).
 
-## Friction log
+## Summary verdict
+The TUI **starts at 220 cols and stretches horizontal chrome (rules, panel borders, composer top/bottom rails) to the full width**, but **zero functional surface uses the extra width**. Every popover is a single tall narrow column glued to the left edge with ~190 cols of dead space inside its own 220-col frame. No two-pane diff, no multi-column slash list, no side-by-side help, no inline-table usage view, no wide layout opt-in. The single concrete width benefit is that a 200-char typed prompt fits on one composer line without wrapping (S10 line 7, len=201).
 
-- HIGH / `/help` (L28) / Pops a 220-col card whose entire body is
-  "registry pending" jammed top-left. No actual help text. /
-  Expected: command grid + key hints using 220 cols. /
-  Repro: `/help` Enter. /
-  Fix: real `/help` content; if backend not wired, surface a clear
-  "help registry not implemented" instead of leaking internal state.
+## Findings (severity / scenario / evidence / expected / fix)
 
-- HIGH / `/usage` (L70) / Card body is the raw exception
-  `Error: Cannot read properties of undefined (reading 'unsafePeek')`. /
-  Expected: token meter, per-tool breakdown, budget bar at width. /
-  Repro: `/usage` Enter. /
-  Fix: guard `unsafePeek`; on missing data, render zeros + an empty-state
-  note like `/cache-stats` does (L77).
+### HIGH / Slash menu (S1; descriptions in `wide-help.log` lines 43–66)
+After `/`, commands list one per row. Each row sits in a full-width 220-col panel (S2 lines 12, 67 = `╭─`/`╰─` at len=220) but content is single-column with descriptions wrapping at ~80 cols (S2 lines 43–66 — e.g. `/agenc-umbrella-public-surface` continues onto a second row at len=83). ~140 cols empty per row.
+Expected: multi-column packer above `cols >= 160`; or widen description column to ~`cols-30`.
 
-- HIGH / global header / "Found 4 keybinding errors · /doctor for details"
-  appears on `/usage` and `/cache-stats` (L70, L77) on a fresh launch,
-  stock config, no edits. Not actionable. /
-  Expected: inline names of failing bindings (220 cols has room). /
-  Fix: list the 4 names inline; auto-suppress when ratio is small.
+### HIGH / `/diff` (S6 lines 12–68)
+Single-column unified text inside a 220-col-bordered panel (line 12, 68 len=220). Content rows are short (line 14 len=54, line 55 `│tests/ux/round-1/PHASE0.md│` len=28). ~140 cols inner blank. This is the highest-leverage wide command: side-by-side HEAD vs working-tree should auto-engage.
+Expected: at `cols >= ~160`, two-pane diff viewer; flat unified falls back narrow.
 
-- MED / All popovers (`/help` L28, `/permissions` L42, `/files`, `/diff`,
-  `/cache-stats` L77) / Card frame stretches to 220 cols, content stays
-  in left ~30 cols, right ~190 cols blank. /
-  Expected: cap card at min(120, cols-8) and center, OR put key/value
-  content in two columns. /
-  Fix: width-clamp + center small cards; two-column layout for kv lists.
+### HIGH / `/keybindings` (S7 lines 14–18)
+Spawns `nano` in `$EDITOR` inside the same PTY (line 14 chrome `GNU nano 7.2 …/keybindings.json`, line 15 `^G Help ^O Write Out…`, line 17 dumps one JSON blob at len=1146). No table view, no inspector, no width awareness. Operator drops out of the TUI into a modal editor.
+Expected: native in-TUI inspector at width (context / chord / action columns); `$EDITOR` only for an explicit "Edit raw" action.
 
-- MED / `/diff` (L55) / Diff card single-column, hard-left, right ~85%
-  empty. Wide width is exactly when side-by-side diff helps. /
-  Expected: side-by-side at cols >= ~160. /
-  Fix: auto-engage two-pane diff at width threshold.
+### MED / `/permissions` (S4 lines 12–15)
+220-col border around two lines: `│Mode:default│` (len=14), `│(nopermissionrulesconfigured)│` (len=31). ~190 cols empty inside.
+Expected: at width, render permission-rule table (Tool / Scope / Mode / Source) plus bypass status.
 
-- MED / `/keybindings` (L62) / Spawns nano in $EDITOR inside the same
-  pty; chrome bleeds in (max line 1134 chars across folded frames). /
-  Expected: native in-TUI inspector at width with table view. /
-  Fix: native viewer; $EDITOR only when user picks "Edit".
+### MED / `/usage` (S8 lines 16–24) and `/cache-stats` (S9 lines 12–16)
+220-col borders around 7 short label:value rows (`/usage`, max len=21) or 3 rows (`/cache-stats`, max len=46).
+Expected: inline budget bar / gauge; cached-vs-uncached split panes at width.
 
-- LOW / 200-char typed prompt (L20) / 200 A's fit one composer line
-  cleanly. No wrap. But no ruler / remaining-cols indicator, so users
-  don't know the wrap boundary. /
-  Fix: optional right-edge ruler or remaining counter past ~150 cols.
+### MED / `/files` (S5 lines 18–20) and `/agents` (S3 lines 17–23)
+`/files`: `│Nofilesincontext.│` (len=19) in 220-col panel. `/agents` empty state stops at len=91. Both could pair empty state with inline quick-create panel; populated states should be multi-column tables.
 
-- LOW / Submitted prompt (L83) / Single-line "OK" reply prints inline
-  full-width cleanly. No issue.
+### LOW / Composer wrap (S10 line 7)
+200 A's at len=201 on one composer line; no wrap, no right-edge ruler, no remaining-cols indicator.
+Expected: optional column indicator past ~150 chars.
 
-## Discoverability score: 1/5
-Slash menu shows only ~5 catalog entries with no "more below" hint
-(L13). No mention anywhere of features that only activate at width.
+### LOW / Submitted reply (S11 lines 9–14)
+`❯ …prompt…` at len=220 (line 9). `●OK` reply at len=3 (line 14). No wrap problem and no width gain.
 
-## Latency feel: 3/5
-Prompt round-trip ~6s (L83). Command popovers feel instant.
-
-## Error message quality: 2/5
-`/usage` leaks raw `unsafePeek` exception (L70). The 4-keybinding-errors
-warning is unactionable without `/doctor`. `/help` body is literally
-`registry pending`.
+## Discoverability of width-only features: 0/5
+There is no width-only feature. Every popover and command behaves identically to narrow mode except chrome scales. The TUI advertises no `cols >= N` opt-in, no two-pane mode, no `/wide` toggle.
 
 ## Notable surprises
-- No feature gained anything from 220 cols vs standard 80 cols. The TUI
-  draws wider borders and stops there. No side-by-side, two-column,
-  ruler, margin, or expanded variant of any view exists.
-- `/help` body is literally `registry pending` — wired command pointing
-  at an unimplemented backend.
-- Keybinding error count (4) appears on a fresh stock launch with no
-  edits.
-- `/cache-stats` is the only popover that has a clean empty-state
-  message ("No API requests yet this session"); other commands should
-  follow that template.
+- The `/help` body itself is the *catalog* of slash commands (lines 13–66 of S2), not a help screen — and it wraps long descriptions at ~80 cols even with 220 available.
+- `/diff` and `/keybindings` are the two commands a wide-terminal operator would expect the most leverage from, and they are the two with the *least* width awareness (`/diff` = single-pane unified text; `/keybindings` = literally launches `nano`).
+
+## Word count: 798

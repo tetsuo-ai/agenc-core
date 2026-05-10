@@ -141,6 +141,17 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly conversationId: string;
+  /**
+   * Initial permission mode for the bridge session's PermissionModeRegistry.
+   * Forwarded from the CLI when `--yolo` (or its deprecated aliases) was on
+   * argv so `/permissions`, `/status`, and the footer chip surface the real
+   * runtime authority instead of always claiming `default`.
+   */
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
 }
 
 export interface AgenCDaemonOnlyTuiContext {
@@ -176,10 +187,15 @@ export async function createAgenCDaemonOnlyTuiContext(
     sessionConfiguration: {
       cwd: options.cwd,
       provider: { slug: config.model_provider },
+      collaborationMode: { model: config.model },
     },
     services: {
       permissionModeRegistry: new PermissionModeRegistry(
-        createEmptyToolPermissionContext(),
+        createEmptyToolPermissionContext({
+          mode: options.permissionMode ?? "default",
+          isBypassPermissionsModeAvailable:
+            options.permissionMode === "bypassPermissions",
+        }),
       ),
     },
     abortController,

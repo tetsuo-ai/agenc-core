@@ -1,143 +1,145 @@
-# UX testing findings — deduplicated
+# UX testing findings — round 2 (deduplicated)
 
-10 personas drove `agenc 0.2.0` (HEAD `6ace5164`) under `script(1)` with timed input. Every entry below cites at least one persona transcript under `tests/ux/runs/`. Personas that hit each issue are listed in `[brackets]`. Sorted by severity, then persona count, then earliest position in user journey.
+10 personas drove `agenc 0.2.0` HEAD `4999c596` (post-fixes) under `script(1)`. Every entry below cites a transcript under `tests/ux/runs/`. Personas in `[brackets]`. Sorted by severity, then persona count, then earliest position in journey.
 
-Keys: **FC** first-contact, **PC** power-chainer, **PB** paste-bomber, **NT** narrow-terminal, **WT** wide-terminal, **TC** tab-completer, **ER** error-recoverer, **IR** interrupter, **MI** memory-injection, **RU** returning-user.
+Persona keys: **FC** first-contact, **PC** power-chainer, **PB** paste-bomber, **NT** narrow-terminal, **WT** wide-terminal, **TC** tab-completer, **ER** error-recoverer, **IR** interrupter, **MI** memory-injection, **RU** returning-user.
 
----
-
-## Blockers
-
-### B1. Slash commands crash with raw `unsafePeek` JS exception — `[WT, ER, NT, FC, RU]`
-Five distinct slash commands hit the same root: `/status`, `/usage`, `/effort`, `/model`, `/version`. Each renders `Error: Cannot read properties of undefined (reading 'unsafePeek')` in a red user-facing box. Repro: any of those + Enter. Citations: `wide-terminal-screen.log:70`, `error-recoverer-screen.log:8-13`, `narrow-terminal-screen.log:23,97,122`, `first-contact-screen.log` Run 5, `returning-user-screen.log:53,63`.
-
-The error pattern points to a single shared accessor (`<store>.unsafePeek()`) being invoked when `<store>` is `undefined`. One nil-guard at the shared call site fixes all five commands. Wherever the underlying store/conversation/session-state object is built — likely in the slash-command session shim (the same area touched by B5 below) — adding a defensive existence check converts the crash to an empty-state panel like `/cache-stats` already does.
-
-### B2. `/help` returns the literal string "registry pending" — `[WT, ER, NT, FC]`
-The first command a new user types renders a panel whose entire body is `registry pending`. The picker tooltip on `/` correctly says "Show help and available commands", so the registry exists somewhere — but `/help`'s handler isn't wired to it. `/help <topic>` (e.g. `/help nonsense`) shows the same string with no error or suggestion path.
-
-Fix: wire `/help`'s slash handler to the same registry that powers the `/` picker. Likely lives near `runtime/src/commands/help.ts` or wherever `helpCommand` is registered in `commands/registry.ts`. If the backend really isn't ready, render an empty-state with command list rather than internal state text.
-
-### B3. `agenc --resume <id>` and `agenc -c` fail for every session the picker lists — `[RU]`
-`/resume` opens a picker, advertises `Resume with: agenc --resume <sessionId>` in its body, lists 8 sessions with rollout filenames. Every one of those ids returns `agenc: session not found: <id>` when fed to `--resume`. `agenc -c` (continue latest) is permanently stuck on a stale id and exits 1 every time. Repro: `agenc -c` from any cwd, or `agenc --resume <any-id-from-picker>`. Citations: `returning-user-screen.log:8,14,20,26,32,114-115`.
-
-Root cause is two parallel project-key schemes coexisting under `~/.agenc/projects/`: the legacy unhashed slug `-home-tetsuo-git-AgenC-agenc-core/` and the hashed slug `home-tetsuo-git-AgenC-agenc-core-f932f164/sessions/`. The picker reads the hashed scheme (where rollouts actually land); resume looks up the unhashed scheme. The entire returning-user path is dead until they're unified.
-
-### B4. `/context` crashes with `newDefaultTurnWithSubId is not a function` — `[PC]`
-Distinct from B1's `unsafePeek` family. `/context` invokes `ctx.session.newDefaultTurnWithSubId(...)` where `ctx.session` lacks that method. Likely the same slash-command session shim B1 lives in — but a different missing API. Fix the shim to expose the renamed method, or fall back to a read-only context summary that doesn't require allocating a new turn.
+Round-1 baseline lived in `tests/ux/round-1/` for direct comparison.
 
 ---
 
-## Major
+## Verified fixes from round 1 (none of these reproduced)
 
-### M1. "Found 4 keybinding errors · /doctor for details" banner on every cold launch — `[FC, PC, PB, NT, WT, TC, ER, IR, MI, RU — 10/10]`
-Every persona, every cold start, every screen. `/doctor` reveals the four "errors" are duplicated reservations: `ctrl+c` and `ctrl+d` each declared twice (once per context that uses them) and the validator flags them as reserved/hardcoded. The shipped default `keybindings.json` triggers its own warning. Citations: `narrow-terminal-screen.log:132-141`, `power-chainer-doctor.log` keybindings section, `tab-completer-screen.log:88`.
-
-This is the most-confirmed bug in the entire report and it's also the cheapest fix: dedupe the registrations in `runtime/src/tui/keybindings/defaultBindings.ts`, OR demote the validator from `error` to `info` when the entry matches its own hardcoded action.
-
-### M2. Ctrl-C does not cancel in-flight work + Esc is a lie — `[IR, PC, FC]`
-Footer hint says "esc to interrupt". Esc has no observable effect during streaming or tool calls. Ctrl-C's "Press Ctrl-C again to exit" warning fires, but a second Ctrl-C neither cancels the in-flight turn nor exits — it just re-arms. Multi-paragraph essays stream to completion; `sleep 60` runs to completion; the model is even told `write_stdin yield_tim_ms 55000` AFTER both Ctrl-Cs. Citations: `interrupter-keys.log:5,8,26,35`.
-
-The fix has two halves: (a) honor Esc as documented (or correct the footer); (b) during a busy turn, treat the first Ctrl-C as cancel-turn and reset the exit counter. The cancel must SIGTERM child tool processes — currently long Bash tool calls cannot be killed at all.
-
-### M3. Daemon agents leak: `agent list` always reports `running` — `[IR, RU]`
-Every aborted TUI session leaves a daemon-side conversation in `running` state forever. Returning user observed every row in `agent list` showing `running` regardless of whether the conversation finished or was aborted. Interrupter cleaned up two zombies they created (`conv-mp02f93v`, `conv-mp02ekrl`) but counted 12+ left over from sibling personas. Citations: `interrupter-report.md` finding 5, `returning-user-screen.log:77-90`.
-
-The earlier runner→lifecycle terminal-status hook (commit `7d23df5a`) wired `#cleanupWhenComplete` → `handleRunnerTerminated`, but the live-path observation here suggests it isn't firing on the paths these personas exercised — most likely because the root agent thread never reaches a "completed" status (it's designed to stay alive across user turns) and `awaitTerminalStatus` never resolves. The CLI-disconnect → ephemeral-agent-stop wiring (the deferred follow-up to that commit) is what's actually missing.
-
-### M4. `/history` resolves to `/clear` via prefix-match — silently wipes session — `[RU]`
-A returning user typing `/history` to recall prior prompts gets `Session cleared.` (`returning-user-screen.log:43`). The slash dispatcher prefix-matches on a destructive command. Fix: register `/history` as a real history viewer or as an explicit no-op; in any case, never resolve an unknown command to a destructive one. The same prefix-match logic also resolves `/version` → `/status` (inheriting B1's crash).
-
-### M5. `/buddy` falsely claims "requires the interactive TUI command surface" while in TUI — `[NT]`
-Inside `agenc --yolo` (the interactive TUI), `/buddy` rejects itself with `{"kind":"error","message":"/buddy requires the interactive TUI command surface."}`. The TUI-detection check is misidentifying its own host. Citation: `narrow-terminal-screen.log:66-70`.
-
-### M6. No "what is AgenC?" surface anywhere — `[FC]`
-Cold launch shows composer, prompt rune, `? for shortcuts`. The `?` overlay teaches keystrokes (`! for bash`, `/ for commands`, `@ for files`, `& for background`, `/btw`) but never says what AgenC is. A new user typing `what is this tool?` got an answer about an internal AgenC tool (SendUserMessage), not the product. Fix: a 2-3 line zero-state hint above the composer until the first message is sent, plus a system-prompt anchor for the introduction turn.
-
-### M7. Up-arrow does not recall prior prompts; Ctrl+R "Search prompts" claims "No history yet" — `[PC, RU, FC]`
-Two history affordances both empty. Up arrow on empty composer is a no-op (`returning-user-screen.log:64,69`, `power-chainer-history2.log`). Ctrl+R opens a "Search prompts" picker labelled `Filter history…` that says "No history yet" right after submitting a prompt in the same session (`power-chainer-ctrlr.log`). Power users and returning users both bounce off here. Fix: bind Up to history:prev when composer empty/cursor on top line; persist current-session prompts to the same store the picker reads, with in-memory fallback when the store is empty.
-
-### M8. Auto-memory writeback is broken — agent claims to remember but nothing persists — `[MI]`
-`/memory` shows `Auto-memory: on` (default). User says "Remember: I prefer pnpm over npm." Agent verbally acknowledges: "Got it. I'll keep in mind that you prefer pnpm over npm." But `~/.agenc/memory/entries/` is empty, `~/.agenc/AGENC.md` does not exist, and `memory.db` mtime is from 2026-04-29 — untouched by the test session. The user is told an action happened that didn't. Citation: `memory-injection-report.md` finding 1.
-
-This is a half-built surface, not a missing one — the directory tree, db schema, and toggle UI all exist. The writeback path doesn't fire. Either implement it or change the affirmation to "I'll keep that in mind for this session."
-
-### M9. No injection-detection signal in the TUI — `[MI]`
-Six injection payloads sent (`ignore previous instructions`, `<system>...DAN...</system>`, `[INST]...[/INST]`, base64 `aWdub3JlIGFsbCBwcmlvciBpbnN0cnVjdGlvbnM=`, `rm -rf` in markdown TODO, role-play). All six refused at the model layer. Zero surfaced as injection by the TUI. No banner, no chip, no transcript marker, no "kept N of M tokens" indicator. The base64 payload was decoded and named by the model itself ("it says 'ignore all prior instructions' in base64") but the TUI gives this zero visual emphasis. From a security UX standpoint, "no error" is the bug: the user has no idea whether the runtime stripped, sanitized, or just forwarded the payload. Either surface a scanner result in the message envelope, or document explicitly that there is no scanner.
-
-### M10. Bare Tab is a no-op outside @-picker; mid-cursor Tab is broken — `[TC]`
-`?` help mentions `@ for file paths` and `shift+tab to auto-accept`, implying Tab is bound. Typed `runtime/sr` + `\t` outside the picker: nothing happens. Mid-cursor Tab is worse — `@runtime/srhelp/types.ts` with cursor moved 12 left, then Tab: input becomes `@runtime/srhelp/types.ts e`, picker closed, stray `e` two cells right. Repro: `tab-completer-screen.log:73,78`. Fix: bind Tab to "promote current word to @-mention" outside the picker; reopen the picker scoped to the substring-before-cursor when mid-cursor Tab fires inside an `@`-token.
-
-### M11. `/memory` is a file-editing launcher, not a memory manager — `[MI]`
-Five options (`~/git/AgenC/AGENTS.md`, `Project memory ./AGENTS.md`, `User memory ~/.agenc/AGENC.md`, `Open auto-memory folder`, `Open team memory folder`). Each opens an editor or folder. No in-TUI list of recorded entries, no audit log, no per-entry revoke control. To audit "what does AgenC remember about me", the user has to leave the TUI for the filesystem.
+| ID | Round-1 status | Round-2 status |
+|---|---|---|
+| **M1** "Found 4 keybinding errors" banner on every cold launch | 10/10 personas hit it | 0/10 mention it |
+| **B1** `unsafePeek` crashes on `/status`, `/usage`, `/effort`, `/model` | 5/10, 5 commands | `/status`, `/usage`, `/effort` render proper panels (NT, WT, RU all confirm) |
+| **B2** `/help` returns "registry pending" | 4/10 | renders the real command list (FC, NT, WT, RU confirm) |
+| **B4** `/context` raw `newDefaultTurnWithSubId` JS exception | PC | renders friendly "requires the in-process runtime" message (PC confirms) |
+| **M4** `/history` silently runs `/clear` | RU | typing `/history` falls through to the fuzzy-match menu (RU confirms) |
+| **M7** Up-arrow / Ctrl+R history empty after submit | PC, RU, FC | Up-arrow + Ctrl+R "Search prompts" both populated cross-session (PC, RU confirm) |
 
 ---
 
-## Medium
+## Regression introduced by round-1 work
 
-### MD1. Wide width (220 cols) detected but not used by the layout — `[WT]`
-TUI draws full-width 220-col borders, but every popover (`/help`, `/permissions`, `/files`, `/diff`, `/cache-stats`) renders content collapsed in the upper-left ~30 cols, leaving the right ~190 cols blank. No side-by-side, no two-column kv layout, no expanded view at any width. Particularly painful for `/diff`, where side-by-side is the canonical wide-width win. Fix: cap card width at `min(120, cols-8)` and center for small content; engage two-pane diff when `cols >= 160`.
+### R1. `/model nonexistent` now leaks a *different* raw JS exception — `[ER]`
+The B1 fix guarded `session.state.unsafePeek()` but the next call in `applyModelSwitch` is `session.setPendingProviderSwitch(...)`, which is also missing on the bridge session. Repro: `/model nonexistent-model-xyz` → red panel with `Error: session.setPendingProviderSwitch is not a function` (`error-recoverer-screen.log:1-12`). Same shape as B1, one method deeper. Fix: extend the same defensive-accessor pattern to `setPendingProviderSwitch` and `abortTerminal` in `runtime/src/commands/model.ts`, OR refuse the operation with a clear "model switching from the TUI is not supported when running against the daemon" message.
 
-### MD2. Slash menu descriptions truncate at ~46 cols at narrow widths — `[NT]`
-Examples (all from `narrow-terminal-screen.log:7,34,57,122`): "Create a branch of the current conversation at th…", "Show uncommitted changes (git diff HEAD + untrack…", "Copy the latest message or transcript text to the…". Fix: shorten descriptions to ≤45 chars in their metadata, or wrap into a second line when COLUMNS<100.
+---
 
-### MD3. `/keybindings` shells out to nano full-screen with no warning — `[NT, WT]`
-Spawns `$EDITOR` (defaults to nano) over the entire viewport, replaces the TUI without confirmation, returns on exit. At 80x24 this is jarring; at 220 the editor inherits the wide pty and bleeds chrome (line lengths up to 1134 chars in the captured frame). Fix: prompt `Open ~/.agenc/keybindings.json in $EDITOR? [y/N]` first; offer a native in-TUI viewer at width.
+## Blockers (new in round 2)
 
-### MD4. Streaming tool-call argument previews mangle (overprint without line clear) — `[PB]`
-When the model emits a `Write` tool call whose JSON args stream in over time, the same in-flight call renders four times in succession with progressively-different filenames, each redraw overwriting the prior at column boundaries without a full line clear. State leaks between updates. Citation: `paste-bomber-screen-small.log:1-3`. Fix: throttle/debounce streaming arg previews, or full-line clear between updates.
+### B-NEW1. `/clear` reports success but the model retains prior turn — `[PC]`
+After `/clear` rendered "Session cleared." (`power-chainer-screen.log:100`), the very next user turn got: "Your previous question was 'what is 2+2?'" (line 117). The clear is cosmetic. A returning user could share a session expecting the prior context wiped and leak it. Fix: either truncate the upstream message list when `/clear` fires, or rename to `/clear-ui` and document the divergence. Likely lives in `commands/clear.ts` and the daemon's session-state trim path.
 
-### MD5. Default tab browse hides files-with-spaces, hidden files, broken symlinks — `[TC]`
-`@tests/ux/_uxfix/` shows `a/`, `bigdir/`, `日本語/`, `émoji/` — but NOT `with spaces/`, `.hidden/`, or `broken` symlink. They surface only when typed. Hiding dotfiles is defensible; silently dropping a spaced name is not. Citation: `tab-completer-screen.log:33,38,43,48`.
+### B-NEW2. Paste without bracketed-paste markers triggers YOLO tool execution — `[PB]`
+Paste-bomber's first attempt without `\x1b[200~`/`\x1b[201~` markers caused the TUI to receive bytes as typed input and fire `Write({...})`, `exec_command({"cmd":"pwd"})`, `exec_command({"cmd":"ls"})`, `TodoWrite(...)` — all in YOLO, all before any Enter (paste-bomber report F2). With markers, the chip-collapse path triggers and behavior is correct. Risk surface: terminal multiplexers (older tmux), some SSH chains, some pty wrappers strip BPM markers. In `--yolo`, this means an attacker who can inject into the user's clipboard or controls a pasted document can run arbitrary shell. Fix: detect "pasted-as-typed" by length + speed heuristic in PromptInput and refuse auto-execution above a size/speed threshold, OR require an extra confirmation in `--yolo` for any tool call within N ms of a typed-input burst.
 
-### MD6. Slash-picker is fuzzy, not prefix-first — `[TC, FC]`
-Typing `@runtime/sr` returns `runtime/src/`, `runtime/src/memory/`, `runtime/src/memdir/`, `runtime/src/mcp/`, `runtime/src/llm/` — none start with `sr` after `runtime/`. A git/IDE user expects `sr<Tab>` to disambiguate to `src/` alone. Slash picker has the same shape and no arrow-key navigation. Fix: rank strict-prefix matches above subsequence matches; wire arrow keys for navigation.
+### B-NEW3. `agenc -c` and `agenc --resume <id>` still fail — same root as round-1 B3 — `[RU]`
+Returning-user re-confirmed: `agenc -c` exits with `session not found: <id>` for the most-recent ID; `agenc --resume <conv-id>` fails for picker-listed IDs. The two project-key schemes still coexist (`-home-...` legacy + `home-...-f932f164` hashed). Round 1 deferred this as architectural; the contract stays broken for returning users. Same fix as round 1: unify the project-key schemes and migrate existing rollouts. `~/.agenc/projects/-home-tetsuo-git-AgenC-agenc-core/` has zero rollout files; rollouts only exist under `tmp-agenc-*` ephemeral project paths, so even if the lookup were fixed there's nothing to load.
 
-### MD7. Ctrl-C while typing silently destroys composer draft AND arms exit-warning — `[IR]`
-With composer text typed, Ctrl-C clears it AND fires "Press Ctrl-C again to exit". One more press = unintentional exit + lost work. Fix: when composer has text, Ctrl-C clears buffer only; arm exit-warning only when a subsequent Ctrl-C lands on an empty composer.
+---
 
-### MD8. Ctrl-Z silently eaten — `[IR]`
-No suspend, no error, no documentation. Eating SIGTSTP silently breaks a long-standing terminal contract. Fix: implement suspend, or at minimum surface a "(Ctrl-Z not supported)" hint.
+## Major (new in round 2)
 
-### MD9. Corrupt config emits parse error 5x with no "using defaults" notice — `[ER]`
-TOML parse error message text is good, but it fires from two code paths × three load passes = 5 emissions, then runtime silently continues with built-in defaults. Citation: `error-recoverer-screen.log:85-89`. Fix: dedupe the warning, add an explicit "Falling back to defaults" line.
+### M-NEW1. `--yolo` mode is invisible in the UI — `[NT]`
+Launched `agenc --yolo`. `/permissions` reports `Mode: default` (`narrow-terminal-screen.log:133`). `/status` reports `Permission mode: default` (line 191). The composer prompt glyph is the same `❯`. Footer hint is the same `? for shortcuts`. There is no on-screen indication the user is in bypass mode. A user who launched yolo intentionally has no way to confirm; a user who accidentally inherited a yolo session has no way to notice. Fix: distinct footer chip, distinct prompt glyph, or `Permission mode: bypassPermissions` in `/status`/`/permissions`.
 
-### MD10. `@`-mention to missing path sends verbatim to model — `[ER]`
-TUI sends `@/does/not/exist.md explain this` to the model unchanged; only the model's own polite reply tells the user the file was missing. Fix: resolve `@`-paths in the composer; flag missing ones inline before submit.
+### M-NEW2. `/buddy` rejects itself inside the interactive TUI — `[NT]`
+Re-confirmed from round 1's M5 (which I deferred under "couldn't repro"). `/buddy` + Enter renders the raw JSON `{"kind":"error","message":"/buddy requires the interactive TUI command surface."}` (`narrow-terminal-screen.log:240-242`) — from inside `agenc --yolo`. Real bug, not a phantom. Fix: trace the dispatch path the picker takes when the user types `/buddy` and either fix the TUI-detection check used by buddy's command or make the legacy dispatcher always pass `tuiHandlers` when invoked through the App.tsx slash path.
 
-### MD11. `/   ` (slash + only whitespace) auto-completes to `/agents` and submits silently — `[ER]`
-No "empty command" feedback. Fix: trim composer input; short-circuit submit when trimmed command is empty.
+### M-NEW3. Daemon silently auto-respawns on every subcommand, no observability — `[ER]`
+`agenc daemon stop` followed by `agenc agent list` or `agenc daemon status` transparently respawns the daemon (`error-recoverer-screen.log:83-87`). No "(daemon was down — restarted)" notice, no `--no-autospawn` flag. UX win: never user-visibly broken. UX gap: no observability of the original failure state. Fix: emit a one-line stderr notice when the auto-respawn fires; offer `--no-autospawn` for scripts that need to detect daemon-down explicitly.
 
-### MD12. Ctrl-D contract is undocumented and timing-sensitive — `[IR]`
-The only clean exit path is double-Ctrl-D within ~500ms on an empty composer. Single Ctrl-D shows a warning but no countdown. Non-empty Ctrl-D is a silent no-op. Fix: footer countdown like Ctrl-C handling; visible cursor flash on non-empty Ctrl-D.
+### M-NEW4. `OPENAI_BASE_URL` and similar env overrides silently dropped — `[ER]`
+`OPENAI_BASE_URL=http://localhost:1 agenc --no-tui "hi"` produced normal model replies — the daemon ignores per-invocation env and uses its cached config. Even after `daemon stop`, the auto-respawned daemon reads from prior state. Returning user-relevant: a developer expecting "set env, get specific behavior" gets unintended cached behavior instead. Fix: either propagate per-invocation env to the daemon (re-init provider) or document that env is read at daemon-start only.
 
-### MD13. `Ctrl+T` advertised as "toggle tasks" in `?` overlay but inert — `[PC]`
-Citation: `power-chainer-ctrlt.log`. Fix: wire it, or remove the line from `?`.
+### M-NEW5. `agenc config validate` exits 0 even when the config is broken — `[ER]`
+`agenc config validate` emitted `cannot edit config.toml after skipped config migration (toml:invalid)` AND exited with status 0 (`error-recoverer-screen.log:92-99`). Scripts that depend on `validate` for CI/pre-commit will not catch the failure. The same corrupt config also emits the same parse error **8–10 times** in one invocation (round 1 noted 5; this run is worse). Fix: `validate` must exit non-zero on any reported failure; dedupe parse-error emissions to once per command run.
 
-### MD14. `ls -la` rendered as 2-column markdown table with model-invented per-row prose — `[PC]`
-Asked to list cwd, agent rendered "Path | Description" with editorialized descriptions and dropped real entries (`package.json`, `runtime/`, `scripts/`, `node_modules/`). More a model/system-prompt issue than a TUI bug, but it's the user-visible failure of a basic prompt. Fix: when a tool result is a directory listing, render flat list, not editorialized table.
+### M-NEW6. Footer hint vanishes on first keystroke at 80×24 — `[NT]`
+Empty composer shows `? for shortcuts` on line 24. One keystroke removes it (`narrow-terminal-screen.log:469-494`). The hint also disappears whenever the slash picker is open. At 80c that line is the only on-screen guidance, so dropping it on first input is the worst time to drop it. Fix: keep the hint visible until a slash command is dispatched or the user sends a real prompt, OR replace it with an even shorter live hint when typing.
 
-### MD15. Two project-key schemes coexist under `~/.agenc/projects/` — `[RU]`
-Root cause of B3. Sparse legacy `-home-...` slug + hashed `home-...-f932f164/sessions/` slug. Picker uses the new one; resume uses the old. Migrate to one.
+### M-NEW7. `/branch` and `/btw` silently no-op when invoked without args — `[NT]`
+`/branch` + Enter: composer clears, no overlay, no error, no status (`narrow-terminal-screen.log:495-520`). `/btw` + Enter: identical (`screen.log:157-182`). Both compound with the slash-menu description truncation issue (B-NEW8 below) — at 80c the menu hint is `Ask a quick side question without interrupting th…`, so the user can't even discover from inside the TUI that arguments are required. Fix: render an "argument required" boxed message; widen menu descriptions to wrap or expand on Tab.
 
-### MD16. `/resume` picker is read-only, not selectable — `[RU]`
-Lists sessions; pressing Enter on a row exits the TUI. The picker is a list, not a picker. Fix: make Enter launch the chosen session.
+### M-NEW8. Slash-menu descriptions still truncated at 80×24 — `[NT, WT]`
+Same finding as round-1 MD2: descriptions hard-truncate at ~51 chars with `…`, no expansion. NT and WT both flag this — at 220 cols it's even more painful (the menu uses ~80 chars while ~140 cols sit empty). Fix: widen the description column to `cols-30`, OR show an expanded panel when a row is highlighted.
+
+---
+
+## Major (deferred-as-documented in round 1, still pending)
+
+These were deferred in round 1's `tests/ux/fixes/SUMMARY.md` and remain unchanged in round 2:
+
+### M-DEF1. Ctrl-C never cancels in-flight work; Esc footer hint is a lie — `[IR]`
+Round 2 IR re-confirmed all the round-1 specifics: single Ctrl-C only flips the footer to "Press Ctrl-C again to exit"; second Ctrl-C is absorbed by re-renders during streaming; `sleep 60` runs to completion with triple Ctrl-C ignored; Esc has no observable effect (`interrupter-report.md` scenarios 1, 2, 6, 8). Architectural priority change required.
+
+### M-DEF2. Daemon agent zombies on aborted CLI sessions — `[IR, RU]`
+Round 1's `agenc agent list` zombies are still listed `running` (`returning-user-report.md`: "agent list reports stale status: running for clearly dead sessions"). IR notes pre-existing zombies from round 1 still present; new agents from concurrent personas show same pattern.
+
+### M-DEF3. Auto-memory writeback never fires — `[MI]`
+Re-confirmed: agent says "I'll remember", `~/.agenc/memory/entries/` empty, `~/.agenc/AGENC.md` doesn't exist, `/knowledge` reports `0 goals, 0 milestones, 0 technical facts learned` (`memory-injection-report.md` "Filesystem ground truth"). 
+
+### M-DEF4. No injection-detection signal in TUI — `[MI]`
+6 of 6 injection inputs refused at the model layer. 0 of 6 surfaced any TUI scanner badge or filter notice. Pattern is identical to round 1.
+
+### M-DEF5. `/memory` is a file-editing launcher, not a manager — `[MI]`
+Same surface as round 1 — five edit-folder/edit-file shortcuts, no in-TUI list/audit/revoke.
+
+### M-DEF6. Bare Tab outside `@`-picker is a no-op — `[TC]`
+Same as round-1 M10. Tab is silent in the plain composer (`tab-completer-report.md` F9).
+
+### M-DEF7. No "what is AgenC?" surface on cold launch — `[FC]`
+Same as round-1 M6. Cold launch shows only `❯` + `? for shortcuts` (`first-contact-screen.log:2`). The agent itself doesn't know it's AgenC ("In one sentence, what is this tool?" returned "no specific tool has been identified"; another run hallucinated "FileRead").
+
+---
+
+## Medium (new in round 2)
+
+### MD-NEW1. `?` shortcut overlay is misaligned at 80c — `[FC, NT, PC]`
+Three personas hit this. NT's analysis is the most precise: 4 columns wrap into 7 rows but visual columns drift — "double tap esc to clear / input" fragmenting across rows, "ctrl + x ctrl + e to edit in" wrapping into a neighboring column without a separator (`narrow-terminal-report.md` B3). FC and PC describe the same thing differently. Fix: lay out shortcuts vertically as KEY | DESCRIPTION rows when `cols < 100`.
+
+### MD-NEW2. `/release-notes` content is stale — `[RU]`
+Advertises `[Unreleased]` and `[0.1.0] 2026-02-14` while CLI says `agenc --version` → `0.2.0`. Still references Solana-era `acceptedMints` / `rewardMint` deprecations (`returning-user-report.md` "What's-new surface"). Fix: regenerate or trim CHANGELOG.md to match the actual 0.2.0 ship surface.
+
+### MD-NEW3. `/cost` is a placeholder with no enable hint — `[PC]`
+"Cost tracking is not enabled for this session." with no flag, env var, or `/config` pointer (`power-chainer-screen.log:299`). Fix: print the exact env/flag needed, or hide the command when not enabled.
+
+### MD-NEW4. `!` bash mode banner is a lie — `[PC]`
+Pressing `!` shows the `!` banner suggesting bash mode is active, but typing `ls package.json` and Enter sent it as a chat prompt with literal `!` appended (model then chose to run `exec_command` itself; `power-chainer-screen.log:190-225`). Fix: bash mode must intercept Enter and bypass model dispatch, or remove the mode if the path doesn't actually shortcut.
+
+### MD-NEW5. `/status` reports `Model: unknown` while config has a real model — `[NT, RU]`
+After my B1 fix, `/status` falls back to `unknown` for the model field when the bridge session can't read state directly. RU confirms `agenc config get model` returns `qwen3.6-35b-a3b-fp8` while `/status` shows `Model: unknown`. NT same. The fallback I introduced reads from `session.sessionConfiguration` but provider works there while model doesn't — needs verification of the bridge-session shape. Fix: add `collaborationMode.model` to `tui/session-types.ts` `AgenCBridgeSession.sessionConfiguration` if not already there, or read from the daemon-vended config instead.
+
+### MD-NEW6. `/status` reports synthetic `agenc-tui-idle-XXXXX` SessionID at idle — `[RU]`
+Returning user has no way to learn the current session's resume key without sending a message first. Fix: surface the real conv-id once the daemon assigns it, or hide the field at idle.
+
+### MD-NEW7. Tab-completer: typing space inside `@` path silently strips it — `[TC]`
+`@/tmp/agenc-completion-test/with spaces/` echoes back as `with spaces/` collapsed to `withspaces/` and switches to unrelated cwd matches (`tab-completer-screen.log:31`). A user with one `my docs/` folder cannot reach it via `@`. Fix: accept spaces inside `@` queries; treat the buffer as one path until whitespace+token.
+
+### MD-NEW8. Tab-completer: result list capped at 5 with no overflow indicator — `[TC]`
+200-file `bigdir/` looks identical to a 5-entry directory (`tab-completer-screen.log:67`). Fix: show `+195 more` count or scroll affordance.
+
+### MD-NEW9. Mid-cursor Tab unsupported, emits stray `l` glyph — `[TC]`
+Round 1 also flagged the mid-cursor Tab issue but reported a stray `e`; round 2's stray glyph is `l`. Same root: `\x1b[D` (left arrow) is parsed correctly but Tab in the middle of an `@` token doesn't reopen the picker scoped to substring-before-cursor; instead, a final byte of the escape sequence leaks. Fix: handle Tab inside an `@` token as "reopen picker for the segment under cursor"; suppress the stray glyph emit.
 
 ---
 
 ## Low / nits
 
-- **L1. Paste placeholder counts newlines, not lines — off by one** `[PB]`. 50-line paste shows `+49`. Fix: `splitlines().length` or `+1` when no trailing newline.
-- **L2. Unknown slash command renders raw JSON envelope** `[ER]`: `{"kind":"error","message":"Unknown command: ..."}`. Render `message` field as plain inline error.
-- **L3. `bigdir/` listing skips `file001.txt`** `[TC]`. Off-by-one in visible-N ranker hides the highlighted entry.
-- **L4. Symlink outside cwd silently falls through to repo-wide fuzzy** `[TC]`. No "no matches under <symlink>" state.
-- **L5. Spinner verbs are uninformative (`Decrypting…`, `Heap-walking…`, `Spoofing…`)** `[PC]`. Power users want concrete state.
-- **L6. `/cost` is a placeholder ("Cost tracking not enabled")** sitting in the slash menu like a first-class feature `[PC]`.
-- **L7. `/release-notes` shows "Geolocating…" spinner before changelog** `[RU]`. Wrong label for a local file.
-- **L8. `/resume` picker shows `(no preview)` for most rows** `[RU]`. Persist first-prompt at session creation.
-- **L9. 200-char prompt input has no ruler / char-count indicator at width** `[WT, NT]`.
-- **L10. Help overlay (`?`) packs three columns of shortcuts that visually crowd at 80 cols** `[NT]`.
-- **L11. `/diff` lead-in spinner overlaps the bottom border before settling** `[NT]`.
-- **L12. Tab in @-picker confirms-and-reopens, producing trailing `//`** `[TC]` (`tab-completer-screen.log:93`).
-- **L13. BPM markers vs heuristic-fold path indistinguishable from outside** `[PB]`. Log which path fired.
-- **L14. `/skills` description "Show loaded skills and effective plugin skill roo[t]" is truncated** `[MI]`.
+- **L1. Stray `[>0q` escape bytes leak to screen on cold launch** under `script(1)` `[FC]`. Terminal-mode query echoed before the renderer claims raw mode. Invisible in modern terminals; visible under `script`.
+- **L2. Spinner labels are personality, not status** `[PC, PB]`: `Exfiltrating…`, `Cross-compiling…`, `Transcoding…`, `Multiplexing…`, `Injecting…`. PB notes that "Exfiltrating…" rendered next to a fresh user paste is a tone hazard. Fix: real phase verbs (`thinking`, `tool-call`, `streaming`) or remove.
+- **L3. Slash autocomplete shows first 5 commands with no "more below" hint** `[FC]`. Same as round-1 first-contact; no count badge.
+- **L4. `/help` lists project-installed skills before built-ins** `[FC]`. New users see a foreign skill catalogue. Fix: prepend a fixed orientation block (built-ins first, then project skills).
+- **L5. Two competing footer hints render together** `[FC]`: "? for shortcuts" + "Press Ctrl-C again to exit" instead of one prevailing.
+- **L6. Hidden-file visibility inconsistent in `@`-picker** `[TC]`: empty query auto-lists `.agenc/`/`.git/` etc.; explicit `.hi` prefix returns empty.
+- **L7. Tab in `@`-picker descends into the top match rather than cycling** `[TC]`: readline/fzf users expect Tab-cycle.
+- **L8. Deep paths collapse to one truncated row losing all disambiguating segments** `[TC]`.
+- **L9. Broken symlinks listed without health hint** `[TC]`.
+- **L10. Exit-warning footer changes mid-quit (`Ctrl-C` then `Ctrl-D`)** `[PB]`. Slight inconsistency.
+- **L11. `Pasting text…` toast collides with placeholder chip on first paint** `[PB]`. Layout race; not user-blocking.
+- **L12. `/sessions` and `/history` aren't real commands** `[RU]`. Fall through to fuzzy match. Both names are extremely natural guesses for a returning user.
+- **L13. `agent list` shows stale `running` for clearly-dead sessions** `[IR, RU]`. Same root as M-DEF2.
+- **L14. Single-quote/escape JSON envelope rendered for unknown slash command** `[ER]`. Round-1 finding still present; cosmetic. Should render `message` field as plain inline error.

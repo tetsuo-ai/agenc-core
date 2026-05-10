@@ -3,17 +3,21 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0]
 
 ### Added
-- Added initial changelog + API baseline tooling. (#983)
+- Daemon-backed CLI and Ink TUI (`agenc`, `agenc --yolo`).
+- Slash command surface: `/help`, `/status`, `/permissions`, `/effort`,
+  `/usage`, `/context`, `/diff`, `/files`, `/cache-stats`, `/agents`,
+  `/clear`, `/keybindings`, `/release-notes`, `/resume`, `/rewind`,
+  `/history`, `/cost`, `/model`, `/init`, plus the typeahead picker.
+- Bracketed-paste handling for large pasted payloads with chip-collapse.
+- `@`-mention file picker with Unicode/CJK support.
+- Cross-session prompt history (Up-arrow / Ctrl+R).
+- Provider routing for chat-completions-style endpoints (xAI, lmstudio, etc.).
+- MCP server integration; per-session permission mode registry.
 
-### Deprecated
-- `TaskFilter.acceptedMints` in `runtime/src/autonomous/types.ts` — use `TaskFilter.rewardMint` instead. Removal planned for v0.2.0. (#983)
-
-## [0.1.0] - 2026-02-14
-
-### Added
-- Agent runtime primitives (`AgentRuntime`, `TaskExecutor`, `TaskDiscovery`, `TaskOperations`).
-- Replay comparison + alerting utilities and deterministic CLI workflows.
+### Changed
+- Runtime artifact now ships as `@tetsuo-ai/runtime`; CLI wrapper
+  installs as `@tetsuo-ai/agenc`.
 

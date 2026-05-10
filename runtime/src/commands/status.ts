@@ -33,7 +33,21 @@ export function collectStatus(
   nowMs: number = monotonicMs(),
 ): StatusLine[] {
   const lines: StatusLine[] = [];
-  lines.push({ key: "Session ID", value: session.conversationId });
+  // The deferred TUI flow seeds `conversationId` with a synthetic
+  // `agenc-tui-idle-<pid>` value until the user sends their first message
+  // (then the daemon vends a real `conv-*` id). Don't surface the
+  // synthetic placeholder — a returning user can't use it as a resume
+  // key, and seeing it is more confusing than not seeing the field.
+  // See round-2 finding MD-NEW6.
+  const isSyntheticIdleId = /^agenc-tui-idle-\d+$/.test(session.conversationId);
+  if (!isSyntheticIdleId) {
+    lines.push({ key: "Session ID", value: session.conversationId });
+  } else {
+    lines.push({
+      key: "Session ID",
+      value: "(idle — assigned when you send your first message)",
+    });
+  }
   lines.push({ key: "CWD", value: cwd });
 
   // Read SessionConfiguration via the lock's synchronous peek. This is

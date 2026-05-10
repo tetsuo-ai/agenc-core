@@ -1,72 +1,81 @@
 # Persona: First Contact
 
 ## Task
-Launch `agenc` with zero prior knowledge, find help, run one useful command.
+Launch `agenc` with zero prior knowledge. Figure out what it is from the screen
+alone, find help, run one useful command. No source-code reading, no external
+docs.
 
 ## Outcome
-partial — figured out it's an LLM agent CLI, found two help paths, ran a one-shot prompt successfully. Inside the TUI, the most natural first-user commands (`/help`, `/status`) both errored. Never saw a "what is AgenC?" surface.
+Partial success. After ~4 sessions, I figured out this is an AI agent / coding
+CLI with slash commands and a multi-provider model setup. `/help` and `?`
+exist and work. I successfully ran one useful command (`agenc providers`,
+which produced a clean, informative readout) and one useful prompt
+(`agenc --no-tui "..."`). I never learned **what AgenC is for** from the TUI
+itself; the only thing that explained the product was `agenc --help` from
+outside the TUI (lines 4-21 of agenc --help). The TUI cold-launch screen
+shows only horizontal rules, a `❯` prompt, and `? for shortcuts`. No
+banner, no product name, no one-liner.
 
 ## Friction log
 
-### 1. `/help` returns the literal string "registry pending"
-- Severity: blocker
-- Where: TUI, after typing `/help` + Enter
-- What happened: Bordered box renders body `registry pending` and nothing else (`first-contact-screen.log` Run 4). Picker tooltip on the same line correctly says "Show help and available commands" — handler is a stub.
-- Expected: A list of commands and descriptions, like the picker on `/`.
-- Repro: type `/help`, Enter.
-- Suggested fix: route `/help` to the registry that drives the picker (Run 3 proves it works there). At minimum render a real error instead of the internal state string.
+- **High / cold launch (screen.log L2):** Empty TUI, no banner, no version,
+  no "what is this" — just a prompt and `? for shortcuts`. **Expected:**
+  one-line "AgenC v0.2.0 — local AI coding agent." Branding on a 0.x earns
+  trust. **Repro:** `agenc`. **Fix:** static banner above the rule on cold
+  launch (suppress on `-r`/`-c`).
 
-### 2. `/status` crashes with an internal-looking exception
-- Severity: blocker
-- Where: TUI, after typing `/status` + Enter
-- What happened: Red error box, `Error: Cannot read properties of undefined (reading 'unsafePeek')` (Run 5). Stack-trace-grade message to a new user.
-- Expected: status panel with model, provider, session id, sandbox.
-- Repro: type `/status`, Enter.
-- Suggested fix: guard the call site, and wrap uncaught throws from slash commands in a generic "command failed" message rather than leaking JS property names.
+- **High / `?` overlay (screen.log L5):** Shortcut overlay is a packed grid
+  where labels and key names collide ("`! for bash mode  double tap esc to
+  clear input  ctrl + shift + -  to`"). On 80-col it almost certainly wraps
+  mid-row. **Expected:** two columns KEY | DESC. **Fix:** one shortcut per
+  row, fixed widths.
 
-### 3. Startup banner: "Found 4 keybinding errors" with no actionable cause
-- Severity: major
-- Where: composer footer, every cold launch
-- What happened: New user sees `Found 4 keybinding errors · /doctor for details` before doing anything. `/doctor` shows all 4 are dupes: ctrl+c twice, ctrl+d twice, "cannot be rebound — used for interrupt/exit (hardcoded)" (Run 6).
-- Expected: fresh install should not show keybinding errors. Hardcoded keys are reservations.
-- Repro: any fresh launch.
-- Suggested fix: dedupe and downgrade from `error` to silent-suppress or `info`.
+- **Med / `/help` (screen.log L11):** Shows a long list of project-installed
+  skills (`/release-notes-drafter`, `/remotion-best-practices`,
+  `/skill-creator`, ...) but **no built-in command summary** — no "type a
+  message to chat", no mention of `agenc providers`, `agenc init`,
+  permission modes, models, how to pick one. **Fix:** prepend a fixed
+  orientation block to `/help`, then builtin commands, then user skills.
 
-### 4. No "what is AgenC?" surface on cold launch
-- Severity: major
-- Where: TUI initial frame and `?` overlay
-- What happened: Cold screen shows a bordered composer, `❯`, `? for shortcuts`. `?` lists keystrokes (`! for bash`, `/ for commands`, `@ for files`, `& for bg`, `/btw`) but never says what AgenC is.
-- Expected: one-line tagline or sample prompt above the composer.
-- Repro: any cold launch.
-- Suggested fix: 2–3 line zero-state hint above the composer until the first message is sent.
+- **Med / `/` autocomplete (screen.log L8):** Shows first 5 commands
+  (`/agents`...`/buddy`) but nothing hints there are dozens more. **Fix:**
+  count badge ("5 of 47") or Up/Down indicator.
 
-### 5. Model gives a wrong, internal-flavoured answer to "what is this tool?"
-- Severity: major
-- Where: TUI, after sending the prompt `what is this tool?`
-- What happened: Model (`lmstudio/qwen3.6-35b-a3b-fp8`) described "the SendUserMessage tool", an internal AgenC tool, claiming it is "nearly identical to the Brief tool" (Run 7). First-contact user gets internal jargon instead of a product description.
-- Expected: a short answer about AgenC the product.
-- Repro: type `what is this tool?`, Enter.
-- Suggested fix: system prompt should anchor a "what AgenC is" answer. The default local model also lacks capability for the introduction turn — consider shipping a stronger default.
+- **Med / model self-identification (screen.log L35):** `agenc --no-tui "In
+  one sentence, what is this tool?"` returned "I cannot answer this
+  question because no specific tool has been identified." An earlier run
+  invented "**FileRead**". The agent has no system-prompt awareness that
+  it is AgenC, so it can never answer "what are you" correctly. **Fix:**
+  prepend identity to system prompt.
 
-### 6. Slash-picker arrow-key navigation does nothing
-- Severity: minor
-- Where: TUI `/` picker
-- What happened: After `/`, picker shows first 5 (`/agents`, `/branch`, `/brief`, `/btw`, `/buddy`); Down 30 times does not scroll. Filter-by-typing works.
-- Expected: arrow keys scroll the candidate list.
-- Repro: type `/`, press Down repeatedly.
-- Suggested fix: wire arrow-key handling into the picker, or document filter-by-typing in the `?` overlay.
+- **Low / cold launch (screen.log L2):** Stray escape bytes leak to screen
+  (`[>0q` — terminal-mode query echoed). Invisible in modern terminals,
+  visible under `script`. Suggests raw-mode/first-render ordering bug.
 
-## Discoverability score (0 to 5)
-2 — `?` and `/` are discoverable from the footer; picker tooltips read well. But the two commands a new user reaches for first (`/help`, `/status`) are both broken, the picker has no keyboard nav, and there is no "what is this?" tagline.
+- **Low / shortcut overlay (screen.log L5):** "ctrl + shift + -" truncates
+  ("to" trails off-screen) — grid layout clips labels.
 
-## Latency feel (0 to 5)
-4 — TUI cold start under 1s, one-shot `agenc --no-tui "..."` completed in 0.63s wall, streamed responses appear within 1–2s of pressing Enter.
+- **Low / shortcut overlay (screen.log L5):** Two competing footer hints
+  ("? for shortcuts" and "Press Ctrl-C again to exit") render together
+  instead of one prevailing.
 
-## Error message quality (0 to 5)
-1 — `Cannot read properties of undefined (reading 'unsafePeek')` and `registry pending` both leak internal state. `/doctor` is well-categorised (sandbox / MCP / keybindings) and would score 4 alone.
+## Discoverability score: 3 / 5
+Help is reachable (`?`, `/`, `--help`). But cold launch tells you nothing,
+and `/help` shows project skills before built-ins.
+
+## Latency feel: 4 / 5
+TUI starts under 1s, model response in `--no-tui` returned in ~3s. Smooth.
+
+## Error message quality: 4 / 5
+`agenc providers` is excellent — readable table, clearly states which keys
+are missing and which env var to set. Best surface I saw.
 
 ## Notable surprises
-- Terminal title shows `AgenC lmstudio/qwen3.6-35b-a3b-fp8`.
-- Trust-this-project dialog appeared on first run from `/tmp`; auto-remembers per-path.
-- The `?` overlay teaches `! for bash mode`, `/btw for side question`, `& for background` — unusual primitives worth surfacing more prominently.
-- `/doctor` is the most polished command. Startup banner correctly points at it.
+- No login required by default — "Auth: local; subscription: free" (L14).
+  Pleasant.
+- 16 providers listed including 3 local servers detected up (ollama,
+  lmstudio, openai-compatible). The breadth surprised me.
+- A `/buddy` command ("Hatch, pet, and manage your AgenC companion") sits
+  in the top-5 slash list. Cute but odd as a first impression alongside
+  serious tools.
+- The agent itself doesn't know it's AgenC. That's the sharpest finding.

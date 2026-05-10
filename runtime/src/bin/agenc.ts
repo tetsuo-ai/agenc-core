@@ -2392,6 +2392,19 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
   const session: TuiSessionShape & Record<string, unknown> = {
     ...base,
+    // The Ink TUI's slash dispatcher in `App.tsx` calls `dispatchSlashCommand`
+    // directly against `props.session` (this outer deferred wrapper) instead
+    // of routing through `session.submit`, which means daemon-only methods
+    // like `clearDaemonSession` must be reachable on this object. Without
+    // this forwarder, `/clear` runs the local "Session cleared." render path
+    // but never sends `session.clear` to the daemon — the model on the next
+    // turn still sees the cleared history server-side. See round-2 finding
+    // B-NEW1 (power-chainer-screen.log:117).
+    clearDaemonSession: async () => {
+      if (liveSession !== null) {
+        await (liveSession as TuiSessionShape).clearDaemonSession?.();
+      }
+    },
     submit: async (message, opts) => {
       // Optimistically render the user's prompt in the local transcript.
       // The daemon does not reliably echo user_message events back over
@@ -2617,6 +2630,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       startupImages.length === 0
     ) {
       const deps = daemonCliDeps();
+      const idleArgvForYolo = process.argv.slice(2);
+      const isYoloIdle =
+        idleArgvForYolo.includes("--yolo") ||
+        idleArgvForYolo.includes("--dangerously-bypass-approvals-and-sandbox") ||
+        idleArgvForYolo.includes("--allow-dangerously-skip-permissions");
       const {
         configStore,
         workspaceRoot,
@@ -2626,6 +2644,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         env: process.env,
         cwd: daemonCwd,
         conversationId: `agenc-tui-idle-${process.pid}`,
+        ...(isYoloIdle
+          ? { permissionMode: "bypassPermissions" as const }
+          : {}),
       });
       const deferred = await createDeferredDaemonPromptTuiSession({
         baseSession,
@@ -2800,6 +2821,13 @@ export async function attachAgentTuiEntry(
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
     const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
+    const attachArgvForYolo = process.argv.slice(2);
+    const isYoloAttach =
+      attachArgvForYolo.includes("--yolo") ||
+      attachArgvForYolo.includes(
+        "--dangerously-bypass-approvals-and-sandbox",
+      ) ||
+      attachArgvForYolo.includes("--allow-dangerously-skip-permissions");
     const {
       configStore,
       workspaceRoot,
@@ -2809,6 +2837,9 @@ export async function attachAgentTuiEntry(
       env,
       cwd: bootstrapCwd,
       conversationId: runtimeSessionId,
+      ...(isYoloAttach
+        ? { permissionMode: "bypassPermissions" as const }
+        : {}),
     });
     const createDaemonTuiSession = await loadCreateDaemonTuiSession();
     const daemonSession = await createDaemonTuiSession({
