@@ -28,6 +28,13 @@ import {
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCCommandExecService } from "./command-exec.js";
 import {
+  readDistVersion,
+  removeDaemonRuntimeInfo,
+  resolveAgenCDaemonRuntimeInfoPath,
+  resolveRuntimePackageRootFromUrl,
+  writeDaemonRuntimeInfo,
+} from "./daemon-runtime-info.js";
+import {
   AgenCDaemonJsonRpcDispatcher,
   type AgenCDaemonJsonRpcConnection,
 } from "./daemon-dispatcher.js";
@@ -1130,6 +1137,36 @@ async function runAgenCDaemonForeground(
     await options.beforeDaemonReady?.();
     if (!shuttingDown) {
       await writeAgenCDaemonPid(pidPath, host.pid);
+      // Record the runtime build this daemon was launched against so
+      // the CLI's `ensureDaemonReady` path can detect version skew on
+      // the next invocation and respawn instead of hanging on a
+      // missing-chunk dynamic import.
+      const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
+      const distVersion =
+        runtimeRoot !== null ? readDistVersion(runtimeRoot) : null;
+      if (distVersion !== null) {
+        const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(
+          dirname(pidPath),
+        );
+        try {
+          writeDaemonRuntimeInfo(runtimeInfoPath, {
+            pid: host.pid,
+            runtimeVersion: distVersion.runtimeVersion,
+            commit: distVersion.commit,
+            buildTime: distVersion.buildTime,
+            startedAt: new Date().toISOString(),
+          });
+          cleanup.register("daemon-runtime-info", async () => {
+            removeDaemonRuntimeInfo(runtimeInfoPath);
+          });
+        } catch (error) {
+          io.stderr.write(
+            `agenc: failed to write daemon-runtime.json: ${
+              error instanceof Error ? error.message : String(error)
+            }\n`,
+          );
+        }
+      }
     }
     if (!shuttingDown) {
       io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
