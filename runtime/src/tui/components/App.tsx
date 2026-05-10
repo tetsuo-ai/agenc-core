@@ -1403,7 +1403,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             }
             const registry = buildDefaultRegistry();
             // Build a renderResult helper used by both legacy and
-            // built-in dispatch paths.
+            // built-in dispatch paths. Returns true if the result was a
+            // "prompt" that needs to be forwarded to the model so the
+            // caller can decide whether to keep pendingSubmission set
+            // (forwarding) or clear it (handled-locally).
             const renderResult = (
               result:
                 | { kind: "text"; text: string }
@@ -1411,15 +1414,23 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                 | { kind: "skip" }
                 | { kind: "compact"; text: string }
                 | { kind: "prompt"; content: string },
-            ): void => {
-              if (result.kind === "skip") return;
+            ): { forwardedToModel: boolean } => {
+              if (result.kind === "skip") return { forwardedToModel: false };
+              if (result.kind === "prompt") {
+                // Slash command produced a follow-up prompt for the model
+                // (e.g. `/plan <description>`). Forward it through the
+                // normal submit path so the user prompt gets echoed and
+                // the daemon turn starts.
+                void props.session.submit?.(result.content);
+                return { forwardedToModel: true };
+              }
               const display =
                 result.kind === "text" || result.kind === "compact"
                   ? result.text
                   : result.kind === "error"
                     ? `Error: ${result.message}`
                     : null;
-              if (display === null) return;
+              if (display === null) return { forwardedToModel: false };
               setToolJSX({
                 jsx: (
                   <Box
@@ -1433,6 +1444,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                 ),
                 shouldHidePromptInput: false,
               });
+              return { forwardedToModel: false };
             };
 
             // Check legacy specs first — they cover local-jsx and prompt
@@ -1497,7 +1509,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                 tuiHandlers.toolUseContext,
                 tuiHandlers,
               );
-              renderResult(result as never);
+              const dispatched = renderResult(result as never);
+              // Slash command was handled locally and didn't forward to
+              // the model — clear the optimistic pending-submission flag
+              // so the spinner doesn't stay stuck on "Processing…".
+              if (!dispatched.forwardedToModel) {
+                setPendingSubmission(false);
+              }
               return;
             }
 
@@ -1514,7 +1532,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
                   : {}),
                 commandRegistry: registry,
               }, registry);
-              renderResult(outcome.result as never);
+              const dispatched = renderResult(outcome.result as never);
+              if (!dispatched.forwardedToModel) {
+                setPendingSubmission(false);
+              }
               return;
             }
           }
