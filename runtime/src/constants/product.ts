@@ -68,12 +68,10 @@ export function getRemoteSessionUrl(
   sessionId: string,
   ingressUrl?: string,
 ): string {
-  /* eslint-disable @typescript-eslint/no-require-imports */
-  const { toCompatSessionId } =
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-    require('../bridge/sessionIdCompat.js') as typeof import('../bridge/sessionIdCompat.js')
-  /* eslint-enable @typescript-eslint/no-require-imports */
-  const compatId = toCompatSessionId(sessionId)
+  // Donor sessionIdCompat helper was deleted with the bridge subsystem.
+  // Pass the session id through unchanged until AgenC ships a real
+  // session-id compatibility shim.
+  const compatId = sessionId
   const baseUrl = getAgenCAiBaseUrl(compatId, ingressUrl)
   return `${baseUrl}/code/${compatId}`
 }

@@ -425,10 +425,6 @@ const loadPrivacyLevel = memoizedModule(
 const loadVoiceModeEnabled = memoizedModule(
   () => require("../tui/voice/voiceModeEnabled.js") as typeof import("../tui/voice/voiceModeEnabled.js"),
 );
-const loadUltrareviewEnabled = memoizedModule(
-  () => require("./review/ultrareviewEnabled.js") as typeof import("./review/ultrareviewEnabled.js"),
-);
-
 function getIsNonInteractiveSession(): boolean {
   return readOptional(() => loadBootstrapState().getIsNonInteractiveSession(), false);
 }
@@ -514,10 +510,6 @@ function isVoiceGrowthBookEnabled(): boolean {
 
 function isVoiceModeEnabled(): boolean {
   return readOptional(() => loadVoiceModeEnabled().isVoiceModeEnabled(), false);
-}
-
-function isUltrareviewEnabled(): boolean {
-  return readOptional(() => loadUltrareviewEnabled().isUltrareviewEnabled(), false);
 }
 
 function isDesktopSupportedPlatform(): boolean {

@@ -32,7 +32,6 @@ import {
   getPublicModelDisplayName,
   getPublicModelName,
 } from './model/model.js'
-import { isMemoryFileAccess } from './sessionFileAccessHooks.js'
 import { getTranscriptPath } from './sessionStorage.js'
 import { readTranscriptForLoad } from './sessionStoragePortable.js'
 import { getInitialSettings } from './settings/settings.js'
