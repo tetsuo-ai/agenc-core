@@ -193,17 +193,16 @@ describe("AgenC command surface compatibility", () => {
     const cost = getCommandsSync().find(command => command.name === "cost");
     expect(cost?.type).toBe("local");
     const loaded = await (cost as Extract<Command, { type: "local" }>).load();
-    await expect(
-      loaded.call("", {
-        session,
-        cwd: "/tmp/project",
-        home: "/tmp",
-        agencHome: "/tmp/agenc",
-      }),
-    ).resolves.toEqual({
-      type: "text",
-      value: "Cost tracking is not enabled for this session.",
+    const result = await loaded.call("", {
+      session,
+      cwd: "/tmp/project",
+      home: "/tmp",
+      agencHome: "/tmp/agenc",
     });
+    expect(result.type).toBe("text");
+    expect((result as { value: string }).value).toContain(
+      "Cost tracking is not yet wired",
+    );
   });
 
   it("keeps /files enabled for AgenC users with non-interactive metadata", async () => {
@@ -855,7 +854,7 @@ describe("absorbed T-10 command behavior", () => {
       delete process.env.USER_TYPE;
       const expectations = new Map([
         ["/cache-stats", "Cache stats"],
-        ["/cost", "Cost tracking is not enabled"],
+        ["/cost", "Cost tracking is not yet wired"],
         ["/doctor", "AgenC doctor"],
         ["/effort high", "Reasoning effort set to high"],
         ["/files", "No files in context."],

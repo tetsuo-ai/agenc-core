@@ -11,10 +11,10 @@ function stubSession(opts: { sidecar?: { formatSummary: () => string } }): Sessi
 }
 
 describe("costCommand", () => {
-  it("returns the disabled message when no costSidecar service is bound", () => {
-    expect(formatCostSummary(stubSession({}))).toBe(
-      "Cost tracking is not enabled for this session.",
-    );
+  it("returns the daemon-bridge fallback message when no costSidecar service is bound", () => {
+    const result = formatCostSummary(stubSession({}));
+    expect(result).toContain("Cost tracking is not yet wired");
+    expect(result).toContain("/usage");
   });
 
   it("delegates to costSidecar.formatSummary when bound", () => {
