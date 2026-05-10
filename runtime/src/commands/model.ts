@@ -129,9 +129,29 @@ export async function applyModelSwitch(
   const currentProvider = sc?.provider?.slug ?? "unknown";
   const currentModel = sc?.collaborationMode?.model ?? "unknown";
 
+  // Bridge sessions (TUI client → daemon) declare both
+  // setPendingProviderSwitch and abortTerminal as optional
+  // (tui/session-types.ts:122,138). Guard the calls so /model on a
+  // bridge session fails with a clear message instead of leaking
+  // `Error: session.setPendingProviderSwitch is not a function`
+  // (the round-2 regression).
+  const sessionShim = session as unknown as {
+    setPendingProviderSwitch?: (spec: {
+      provider: string;
+      model: string;
+    }) => void;
+    abortTerminal?: (reason: string) => void;
+  };
+  if (typeof sessionShim.setPendingProviderSwitch !== "function") {
+    return (
+      "Model switching from the TUI is not yet supported when running " +
+      "against the daemon. Set `model` in config.toml or use " +
+      "`agenc config set model <name>`."
+    );
+  }
   // Use the typed mutator so the I-13 + I-57 staging site has a single
   // well-typed entry point.
-  session.setPendingProviderSwitch({
+  sessionShim.setPendingProviderSwitch({
     provider: currentProvider,
     model: targetModel,
   });
@@ -139,12 +159,22 @@ export async function applyModelSwitch(
   // Peek the active-turn lock without taking it — safe for an immediate
   // command because we only branch on "is there a turn" and the session
   // mutex on `activeTurn` serializes actual clearing elsewhere.
-  const activeTurn = session.activeTurn.unsafePeek();
+  const activeTurnPeek = (session as unknown as {
+    activeTurn?: { unsafePeek?: () => unknown };
+  }).activeTurn?.unsafePeek;
+  const activeTurn =
+    typeof activeTurnPeek === "function"
+      ? activeTurnPeek.call(
+          (session as unknown as { activeTurn?: unknown }).activeTurn,
+        )
+      : null;
   if (activeTurn !== null) {
     // I-13: abort the current turn with reason `provider_switched`.
     // The turn loop sees `signal.reason === "provider_switched"` and
     // re-enters with the new model instead of routing to terminal.
-    session.abortTerminal("provider_switched");
+    if (typeof sessionShim.abortTerminal === "function") {
+      sessionShim.abortTerminal("provider_switched");
+    }
     return (
       `Model switch staged: ${currentModel} → ${targetModel}. ` +
       `Current turn aborted; the switch takes effect on the next turn.`
