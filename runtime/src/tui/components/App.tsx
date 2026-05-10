@@ -94,6 +94,7 @@ export type McpUrlPending = {
   readonly resolve: (response: McpElicitationResponse | null) => void;
 };
 export type PendingElicitation = UserPending | McpFormPending | McpUrlPending;
+const EMPTY_INITIAL_USER_MESSAGES: readonly LLMMessage[] = Object.freeze([]);
 export interface ElicitationQueue {
   current(): PendingElicitation | null;
   enqueue(next: PendingElicitation): PendingElicitation;
@@ -1241,7 +1242,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     sandboxMode: config.sandbox_mode ?? config.sandbox?.mode,
     terminalName: process.env.TERM_PROGRAM ?? process.env.TERM
   }), [agencHome, config, props.session.cwd, props.session.sessionConfiguration?.cwd, toolPermissionContext.mode]);
-  const transcript = useSessionTranscript(props.session, props.initialUserMessages ?? []);
+  // Stable reference for the empty fallback. `?? []` would allocate a fresh
+  // array on every render, which invalidates useSessionTranscript's useMemo
+  // dependency and causes `transcript.messages` to be a fresh array on every
+  // keystroke — that fresh identity defeats Messages's React.memo and
+  // re-renders the entire message tree per keystroke.
+  const transcript = useSessionTranscript(
+    props.session,
+    props.initialUserMessages ?? EMPTY_INITIAL_USER_MESSAGES,
+  );
   // Refs for things the slash-command submit handler needs to read live
   // without re-creating its stable useCallback closure on every render.
   // transcriptMessagesRef gives /rename, /export, /copy, /diff, /btw a
