@@ -43,6 +43,14 @@ import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const getReplBridgeHandle = (..._args: unknown[]): null => null;
+// ---- end donor-purge stubs ----
 const StructuredMessage = lazySchema(() =>
   z.discriminatedUnion('type', [
     z.object({

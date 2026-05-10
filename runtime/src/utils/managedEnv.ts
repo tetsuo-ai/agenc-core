@@ -21,6 +21,14 @@ import {
  * env vars that the remote's ~/.agenc settings.env MUST NOT clobber (see
  * isAnthropicAuthEnabled). Strip them from any settings-sourced env object.
  */
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const isRemoteManagedSettingsEligible = (): boolean => false;
+// ---- end donor-purge stubs ----
 function withoutSSHTunnelVars(
   env: Record<string, string> | undefined,
 ): Record<string, string> {

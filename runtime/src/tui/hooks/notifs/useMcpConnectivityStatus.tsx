@@ -8,6 +8,14 @@ import { useNotifications } from '../../context/notifications.js';
 import { getIsRemoteMode } from '../../../bootstrap/state';
 import { Text } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types';
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const hasAgenCAiMcpEverConnected = (): boolean => false;
+// ---- end donor-purge stubs ----
 type Props = {
   mcpClients?: MCPServerConnection[];
 };

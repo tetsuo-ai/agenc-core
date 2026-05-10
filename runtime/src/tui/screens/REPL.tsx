@@ -102,6 +102,16 @@ import { logError } from '../../utils/log.js';
 // Frustration detection is internal-only (dogfooding). Conditional require so external
 // builds eliminate the module entirely (including its two O(n) useMemos that run
 // on every messages change, plus the GrowthBook fetch).
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const launchUltraplan = (..._args: unknown[]): null => null;
+const teleportToRemote = async (..._args: unknown[]): Promise<null> => null;
+const BackgroundTasksDialog = (_props: unknown): null => null;
+// ---- end donor-purge stubs ----
 const useFrustrationDetection: typeof import('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection = "external" === 'ant' ? require('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection : () => ({
   state: 'closed',
   handleTranscriptSelect: () => { }

@@ -16,6 +16,14 @@ import {
 // the bundled __commonJS require chain which deadlocks the process when a
 // proxy is configured (configureGlobalAgents → require_undici).
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const isBridgeEnabled = (): boolean => false;
+// ---- end donor-purge stubs ----
 if (typeof globalThis.File === 'undefined') {
   try {
     // Node 18.13+ exposes File in node:buffer but not as a global.

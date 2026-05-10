@@ -34,6 +34,14 @@ import { stripProtoFields } from './index.js'
 import { type EventMetadata, to1PEventFormat } from './metadata.js'
 
 // Unique ID for this process run - used to isolate failed event files between runs
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const isOAuthTokenExpired = (..._args: unknown[]): boolean => true;
+// ---- end donor-purge stubs ----
 const BATCH_UUID = randomUUID()
 
 // File prefix for failed event storage

@@ -31,6 +31,14 @@ import { getSettingsForSource } from './settings/settings.js'
  * user-controlled files (~/.agenc/settings.json and ~/.agenc.json),
  * not from project-level settings.
  */
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const connectRemoteControl = async (..._args: unknown[]): Promise<null> => null;
+// ---- end donor-purge stubs ----
 export function applyExtraCACertsFromConfig(): void {
   if (process.env.NODE_EXTRA_CA_CERTS) {
     return // Already set in environment, nothing to do

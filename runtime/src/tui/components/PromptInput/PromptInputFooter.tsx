@@ -25,6 +25,15 @@ import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem } from './PromptInputFooterSuggestions.js';
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js';
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const isBridgeEnabled = (): boolean => false;
+const getBridgeStatus = (..._args: unknown[]): null => null;
+// ---- end donor-purge stubs ----
 type Props = {
   apiKeyStatus: VerificationStatus;
   debug: boolean;
