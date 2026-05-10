@@ -18,6 +18,8 @@ import { FullscreenLayout } from "./FullscreenLayout.js";
 import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { isFullscreenEnvEnabled } from "../../utils/fullscreen.js";
+import { SpinnerWithVerb } from "./spinner/Spinner.js";
+import type { SpinnerMode } from "./spinner/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
@@ -1076,6 +1078,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   useCostSummary(useFpsMetrics());
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const fullscreen = isFullscreenEnvEnabled();
+  // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
+  // 50ms animation tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow
+  // owns the per-frame clock and reads these refs directly.
+  const loadingStartTimeRef = useRef<number>(0);
+  const totalPausedMsRef = useRef<number>(0);
+  const pauseStartTimeRef = useRef<number | null>(null);
+  const responseLengthRef = useRef<number>(0);
+  // Reset timing on isStreaming false→true. Tracks previous via a ref so the
+  // reset runs in the same render the spinner first appears (mirrors
+  // REPL.tsx:951-955 — without the inline reset, the first spinner render
+  // sees loadingStartTimeRef=0 and computes a 56-year elapsed time).
+  const wasStreamingRef = useRef<boolean>(false);
   const [input, setInput] = useState(props.initialComposerText ?? "");
   const [mode, setMode] = useState<any>("prompt");
   const [stashedPrompt, setStashedPrompt] = useState<any>(undefined);
@@ -1796,6 +1810,39 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     logEvent("tengu_cost_threshold_acknowledged", {});
   }, []);
 
+  // Spinner gating + mode derivation. Show the spinner whenever the daemon is
+  // working OR the user just submitted (pendingSubmission bridges the gap
+  // until turn_started arrives) AND no permission overlay is up AND no
+  // streaming text is rendering (the text itself is the feedback once it
+  // starts). Mirrors REPL.tsx:1725 showSpinner gate.
+  const isLoading = transcript.isStreaming || pendingSubmission;
+  const showSpinner =
+    isLoading &&
+    permissionRequests.length === 0 &&
+    elicitation.prompt === null &&
+    !isMessageSelectorVisible &&
+    !transcript.streamingText;
+  if (isLoading && !wasStreamingRef.current) {
+    loadingStartTimeRef.current = Date.now();
+    totalPausedMsRef.current = 0;
+    pauseStartTimeRef.current = null;
+    responseLengthRef.current = 0;
+  }
+  wasStreamingRef.current = isLoading;
+  // Keep responseLengthRef in sync with the streaming buffer so the spinner's
+  // token-counter shows current progress.
+  responseLengthRef.current =
+    (transcript.streamingText?.length ?? 0) +
+    (transcript.streamingThinking?.thinking?.length ?? 0);
+  const inProgressToolCount = transcript.inProgressToolUseIDs.length ?? 0;
+  const streamMode: SpinnerMode = transcript.streamingThinking?.isStreaming
+    ? "thinking"
+    : transcript.streamingText
+      ? "responding"
+      : inProgressToolCount > 0
+        ? "tool-use"
+        : "requesting";
+
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
     return (
@@ -1901,6 +1948,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {/* flexGrow spacer pushes streaming content to the top of the scroll
           viewport in fullscreen mode (matches upstream REPL.tsx pattern). */}
       {fullscreen ? <Box flexGrow={1} /> : null}
+      {showSpinner ? (
+        <SpinnerWithVerb
+          mode={streamMode}
+          loadingStartTimeRef={loadingStartTimeRef}
+          totalPausedMsRef={totalPausedMsRef}
+          pauseStartTimeRef={pauseStartTimeRef}
+          responseLengthRef={responseLengthRef}
+          verbose={false}
+          hasActiveTools={inProgressToolCount > 0}
+          leaderIsIdle={!transcript.isStreaming}
+        />
+      ) : null}
     </>
   );
 
