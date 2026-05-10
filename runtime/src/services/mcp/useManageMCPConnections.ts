@@ -68,10 +68,13 @@ import {
   createChannelPermissionCallbacks,
   isChannelPermissionRelayEnabled,
 } from './channelPermissions.js'
-import {
-  clearAgenCAIMcpConfigsCache,
-  fetchAgenCAIMcpConfigsIfEligible,
-} from './agencai.js'
+// Donor remote-MCP discovery removed in the upstream-backend purge.
+// Until AgenC has its own MCP discovery service, treat both as no-ops
+// so the local-only path continues to work.
+const clearAgenCAIMcpConfigsCache = (): void => {}
+const fetchAgenCAIMcpConfigsIfEligible = (): Promise<
+  Record<string, ScopedMcpServerConfig>
+> => Promise.resolve({})
 import { registerElicitationHandler } from './elicitationHandler.js'
 import { getMcpPrefix } from './mcpStringUtils.js'
 import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'

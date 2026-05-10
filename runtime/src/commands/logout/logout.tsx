@@ -4,7 +4,6 @@ import { Text } from '../../tui/ink.js';
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js';
 import { clearPolicyLimitsCache } from '../../services/policyLimits/index.js';
 // flushTelemetry is loaded lazily to avoid pulling in ~1.1MB of OpenTelemetry at startup
-import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSettings/index.js';
 import { getAgenCAIOAuthTokens, removeApiKey } from '../../utils/auth.js';
 import { clearBetasCaches } from '../../utils/betas.js';
 import { saveGlobalConfig } from '../../utils/config.js';
@@ -57,9 +56,6 @@ export async function clearAuthRelatedCaches(): Promise<void> {
   // Clear user data cache BEFORE GrowthBook refresh so it picks up fresh credentials
   resetUserCache();
   refreshGrowthBookAfterAuthChange();
-
-  // Clear remotely managed settings cache
-  await clearRemoteManagedSettingsCache();
 
   // Clear policy limits cache
   await clearPolicyLimitsCache();

@@ -38,7 +38,6 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
-import { fetchAgenCAIMcpConfigsIfEligible } from './agencai.js'
 import { expandEnvVarsInString } from './envExpansion.js'
 import {
   type ConfigScope,
@@ -1223,29 +1222,12 @@ export async function getAllMcpConfigs(): Promise<{
     return getAgenCCodeMcpConfigs()
   }
 
-  // Kick off the agenc.tech fetch before getAgenCCodeMcpConfigs so it overlaps
-  // with loadAllPluginsCacheOnly() inside. Memoized — the awaited call below is a cache hit.
-  const agencaiPromise = fetchAgenCAIMcpConfigsIfEligible()
-  const { servers: agencServers, errors } = await getAgenCCodeMcpConfigs(
-    {},
-    agencaiPromise,
-  )
-  const { allowed: agencaiMcpServers } = filterMcpServersByPolicy(
-    await agencaiPromise,
-  )
-
-  // Suppress agenc.tech connectors that duplicate an enabled manual server.
-  // Keys never collide (`slack` vs `agenc.tech Slack`) so the merge below
-  // won't catch this — need content-based dedup by URL signature.
-  const { servers: dedupedAgenCAi } = dedupAgenCAiMcpServers(
-    agencaiMcpServers,
-    agencServers,
-  )
-
-  // Merge with agenc.tech having lowest precedence
-  const servers = Object.assign({}, dedupedAgenCAi, agencServers)
-
-  return { servers, errors }
+  // Donor remote-MCP fetch was removed in the upstream-backend purge.
+  // Until AgenC ships its own MCP discovery service, fall through to
+  // the local-only MCP config path.
+  const agencaiPromise: Promise<Record<string, ScopedMcpServerConfig>> =
+    Promise.resolve({})
+  return getAgenCCodeMcpConfigs({}, agencaiPromise)
 }
 
 /**
