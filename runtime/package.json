@@ -32,6 +32,7 @@
     "check:runtime-ownership": "node scripts/check-runtime-ownership.mjs",
     "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
+    "compile:react": "node scripts/compile-react.mjs",
     "check:tui-e2e": "node scripts/check-tui-e2e/runner.mjs",
     "check:llm-pipeline": "node scripts/check-llm-pipeline/runner.mjs",
     "check:daemon-errors": "node scripts/check-daemon-errors/runner.mjs",
@@ -120,6 +121,9 @@
     "xss": "1.0.15"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/plugin-syntax-jsx": "^7.28.6",
+    "@babel/plugin-syntax-typescript": "^7.28.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/lodash-es": "^4.17.12",
@@ -128,6 +132,7 @@
     "@types/react": "^19.0.0",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.5.14",
+    "babel-plugin-react-compiler": "^1.0.0",
     "tsup": "^8.5.1",
     "type-fest": "^4.41.0",
     "typescript": "^5.9.3",
