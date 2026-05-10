@@ -1814,18 +1814,34 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     logEvent("tengu_cost_threshold_acknowledged", {});
   }, []);
 
-  // Spinner gating + mode derivation. Show the spinner whenever the daemon is
-  // working OR the user just submitted (pendingSubmission bridges the gap
-  // until turn_started arrives) AND no permission overlay is up AND no
-  // streaming text is rendering (the text itself is the feedback once it
-  // starts). Mirrors REPL.tsx:1725 showSpinner gate.
+  // Spinner gating + mode derivation.
+  //
+  // Show the spinner only when there's actual work happening:
+  //   (a) user just submitted (pendingSubmission bridges the gap to turn_started)
+  //   (b) a tool is in flight (inProgressToolCount > 0)
+  //   (c) thinking content is being streamed
+  //
+  // We deliberately DO NOT use bare `transcript.isStreaming` here. The daemon
+  // can leave isStreaming stuck true between turn_started and turn_complete
+  // (e.g. if turn_complete is delayed by post-turn cleanup, never fires for a
+  // particular path, or if an internal compaction turn fires turn_started
+  // without a paired turn_complete). When that happens with no other activity
+  // signal, the old gate kept the spinner on indefinitely with no AI work
+  // actually in progress — exactly the ghost-spinner bug users see.
+  //
+  // Streaming text is its own feedback: while text is flowing the user sees
+  // the response itself, so the spinner is suppressed (matches upstream).
+  const inProgressToolCount = transcript.inProgressToolUseIDs.length ?? 0;
+  const hasVisibleActivity =
+    inProgressToolCount > 0 ||
+    transcript.streamingThinking?.isStreaming === true;
   const isLoading = transcript.isStreaming || pendingSubmission;
   const showSpinner =
-    isLoading &&
     permissionRequests.length === 0 &&
     elicitation.prompt === null &&
     !isMessageSelectorVisible &&
-    !transcript.streamingText;
+    !transcript.streamingText &&
+    (pendingSubmission || hasVisibleActivity);
   if (isLoading && !wasStreamingRef.current) {
     loadingStartTimeRef.current = Date.now();
     totalPausedMsRef.current = 0;
@@ -1838,7 +1854,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   responseLengthRef.current =
     (transcript.streamingText?.length ?? 0) +
     (transcript.streamingThinking?.thinking?.length ?? 0);
-  const inProgressToolCount = transcript.inProgressToolUseIDs.length ?? 0;
   const streamMode: SpinnerMode = transcript.streamingThinking?.isStreaming
     ? "thinking"
     : transcript.streamingText
