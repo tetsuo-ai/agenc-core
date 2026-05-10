@@ -40,19 +40,40 @@ export function collectStatus(
   // safe for an immediate:true display command — no concurrent writer
   // would race a cheap fields-only read, and using `.with()` would
   // force us into an async code path the dispatcher doesn't need.
-  const rawState = session.state.unsafePeek() as {
-    sessionConfiguration?: {
-      cwd?: string;
-      collaborationMode?: { model?: string };
-      provider?: { slug?: string };
-      approvalPolicy?: { value?: string };
-    };
-    history?: unknown[];
-  };
+  //
+  // The TUI runs slash commands against an AgenCBridgeSession (daemon
+  // client) that does NOT expose `state`. Guard the access so the
+  // command degrades to "unknown" lines instead of crashing with a
+  // raw `Cannot read properties of undefined (reading 'unsafePeek')`.
+  const peekState = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const rawState = (typeof peekState === "function"
+    ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+        sessionConfiguration?: {
+          cwd?: string;
+          collaborationMode?: { model?: string };
+          provider?: { slug?: string };
+          approvalPolicy?: { value?: string };
+        };
+        history?: unknown[];
+      })
+    : null);
   const stateObj = rawState ?? null;
+  // Bridge sessions surface model/provider via sessionConfiguration on
+  // the session itself; fall back to that when state is unavailable.
+  const fallbackConfig = stateObj?.sessionConfiguration
+    ? undefined
+    : (session as unknown as {
+        sessionConfiguration?: {
+          cwd?: string;
+          collaborationMode?: { model?: string };
+          provider?: { slug?: string };
+        };
+      }).sessionConfiguration;
 
-  if (stateObj?.sessionConfiguration) {
-    const sc = stateObj.sessionConfiguration;
+  const sc = stateObj?.sessionConfiguration ?? fallbackConfig;
+  if (sc) {
     const model = sc.collaborationMode?.model ?? "unknown";
     const provider = sc.provider?.slug ?? "unknown";
     lines.push({ key: "Model", value: model });
@@ -66,8 +87,8 @@ export function collectStatus(
   lines.push({ key: "Turn count", value: String(turnCount) });
 
   // Token usage: prefer BudgetTracker.emitted; remaining may be null
-  // (unbounded) or finite.
-  const bt = session.budgetTracker;
+  // (unbounded) or finite. Bridge sessions don't have a budgetTracker.
+  const bt = (session as unknown as { budgetTracker?: typeof session.budgetTracker }).budgetTracker;
   if (bt) {
     const emitted = bt.emitted;
     const remaining = bt.remaining;
@@ -82,8 +103,10 @@ export function collectStatus(
     lines.push({ key: "Tokens emitted", value: "n/a (budget disabled)" });
   }
 
-  const uptime = Math.max(0, nowMs - session.createdAtMs);
-  lines.push({ key: "Uptime (ms)", value: String(uptime) });
+  const createdAtMs = (session as unknown as { createdAtMs?: number }).createdAtMs;
+  if (typeof createdAtMs === "number" && Number.isFinite(createdAtMs)) {
+    lines.push({ key: "Uptime (ms)", value: String(Math.max(0, nowMs - createdAtMs)) });
+  }
 
   // Permission mode — sourced from the T11 `PermissionModeRegistry`
   // (`session.services.permissionModeRegistry`). Fall back to "default"

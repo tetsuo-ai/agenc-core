@@ -27,20 +27,54 @@ export function parseEffort(value: string): ReasoningEffort | null {
 }
 
 export function readReasoningEffort(session: Session): ReasoningEffort | null {
-  const state = session.state.unsafePeek() as {
+  // Bridge sessions (TUI client → daemon) don't expose `state`; fall
+  // back to the sessionConfiguration carried directly on the session.
+  const peekState = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const stateConfig = (typeof peekState === "function"
+    ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+        sessionConfiguration?: {
+          collaborationMode?: { reasoningEffort?: ReasoningEffort };
+        };
+      })
+    : null)?.sessionConfiguration;
+  const directConfig = (session as unknown as {
     sessionConfiguration?: {
       collaborationMode?: { reasoningEffort?: ReasoningEffort };
     };
-  };
-  return state.sessionConfiguration?.collaborationMode?.reasoningEffort ?? null;
+  }).sessionConfiguration;
+  return (
+    stateConfig?.collaborationMode?.reasoningEffort ??
+    directConfig?.collaborationMode?.reasoningEffort ??
+    null
+  );
+}
+
+function getStateLock(session: Session): Session["state"] | null {
+  // Bridge sessions don't expose a state lock; only the in-process
+  // Session can be mutated via /effort apply/clear today.
+  const candidate = (session as unknown as { state?: Session["state"] }).state;
+  if (
+    candidate !== undefined &&
+    candidate !== null &&
+    typeof (candidate as { with?: unknown }).with === "function"
+  ) {
+    return candidate;
+  }
+  return null;
 }
 
 export async function applyReasoningEffort(
   session: Session,
   effort: ReasoningEffort,
 ): Promise<string> {
+  const lock = getStateLock(session);
+  if (lock === null) {
+    return "Reasoning-effort changes from the TUI are not supported when running against the daemon. Set `reasoning_effort` in config.toml or via the model picker.";
+  }
   let previous = "unset";
-  await session.state.with((state) => {
+  await lock.with((state) => {
     const cfg = state.sessionConfiguration as {
       collaborationMode: { model: string; reasoningEffort?: ReasoningEffort };
     };
@@ -54,8 +88,12 @@ export async function applyReasoningEffort(
 }
 
 export async function clearReasoningEffort(session: Session): Promise<string> {
+  const lock = getStateLock(session);
+  if (lock === null) {
+    return "Reasoning-effort changes from the TUI are not supported when running against the daemon. Set `reasoning_effort` in config.toml or via the model picker.";
+  }
   let previous = "unset";
-  await session.state.with((state) => {
+  await lock.with((state) => {
     const cfg = state.sessionConfiguration as {
       collaborationMode: { model: string; reasoningEffort?: ReasoningEffort };
     };

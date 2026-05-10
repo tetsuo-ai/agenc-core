@@ -20,10 +20,19 @@ function numberOrZero(value: unknown): number {
 }
 
 export function readTokenUsageSummary(session: Session): TokenUsageSummary {
-  const state = session.state.unsafePeek() as {
-    totalTokenUsage?: Record<string, unknown>;
-    initialTokenUsage?: Record<string, unknown>;
-  };
+  // Bridge sessions (TUI client → daemon) don't expose `state`; degrade
+  // to zeros instead of crashing with `Cannot read properties of
+  // undefined (reading 'unsafePeek')`. The daemon-side authoritative
+  // counters surface via /cache-stats which uses its own tracker.
+  const peekState = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const state = (typeof peekState === "function"
+    ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+        totalTokenUsage?: Record<string, unknown>;
+        initialTokenUsage?: Record<string, unknown>;
+      })
+    : {}) ?? {};
   const usage = state.totalTokenUsage ?? state.initialTokenUsage ?? {};
   return {
     promptTokens: numberOrZero(usage.promptTokens),

@@ -48,13 +48,26 @@ export function checkModelHistoryCompat(
   targetModel: string,
   targetProvider?: string,
 ): HistoryCompatResult {
-  const snapshot = session.state.unsafePeek() as {
-    history?: unknown[];
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-      collaborationMode?: { reasoningEffort?: string };
-    };
-  };
+  // Bridge sessions (TUI client → daemon) don't expose `state`; degrade
+  // to "history compatible" when no snapshot is reachable so the model
+  // switch path doesn't crash with `Cannot read properties of undefined
+  // (reading 'unsafePeek')`. The daemon-side turn loop performs its own
+  // capability check before consuming the pending switch.
+  const peekState = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const snapshot = (typeof peekState === "function"
+    ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+        history?: unknown[];
+        sessionConfiguration?: {
+          provider?: { slug?: string };
+          collaborationMode?: { reasoningEffort?: string };
+        };
+      })
+    : null);
+  if (snapshot === null) {
+    return { compatible: true };
+  }
   const provider =
     targetProvider ??
     snapshot.sessionConfiguration?.provider?.slug ??
@@ -92,17 +105,29 @@ export async function applyModelSwitch(
 
   // Resolve the currently-active provider slug so we can stage a
   // complete `pendingProviderSwitch` record (the turn loop consumes
-  // both provider + model atomically per I-13).
-  const rawState = session.state.unsafePeek() as {
+  // both provider + model atomically per I-13). Bridge sessions don't
+  // expose `state`; fall back to the sessionConfiguration carried
+  // directly on the session.
+  const peekStateForApply = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const rawState = (typeof peekStateForApply === "function"
+    ? (peekStateForApply.call((session as unknown as { state?: unknown }).state) as {
+        sessionConfiguration?: {
+          provider?: { slug?: string };
+          collaborationMode?: { model?: string };
+        };
+      })
+    : null);
+  const directConfig = (session as unknown as {
     sessionConfiguration?: {
       provider?: { slug?: string };
       collaborationMode?: { model?: string };
     };
-  };
-  const currentProvider =
-    rawState?.sessionConfiguration?.provider?.slug ?? "unknown";
-  const currentModel =
-    rawState?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
+  }).sessionConfiguration;
+  const sc = rawState?.sessionConfiguration ?? directConfig;
+  const currentProvider = sc?.provider?.slug ?? "unknown";
+  const currentModel = sc?.collaborationMode?.model ?? "unknown";
 
   // Use the typed mutator so the I-13 + I-57 staging site has a single
   // well-typed entry point.
