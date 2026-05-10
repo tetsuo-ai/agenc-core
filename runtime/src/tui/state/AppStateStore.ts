@@ -1,6 +1,5 @@
 import type { Notification } from '../context/notifications.js'
 import type { TodoList } from '../../utils/todo/types.js'
-import type { BridgePermissionCallbacks } from '../../bridge/bridgePermissionCallbacks.js'
 import type { Command } from '../../commands.js'
 import type { ChannelPermissionCallbacks } from '../../services/mcp/channelPermissions.js'
 import type { ElicitationRequestEvent } from '../../services/mcp/elicitationHandler.js'
@@ -448,8 +447,6 @@ export type AppState = DeepImmutable<{
   // Remote-harness side: set via set_permission_mode control_request, then
   // pushed to external_metadata.is_ultraplan_mode by onChangeAppState.
   isUltraplanMode?: boolean
-  // Always-on bridge: permission callbacks for bidirectional permission checks
-  replBridgePermissionCallbacks?: BridgePermissionCallbacks
   // Channel permission callbacks — permission prompts over Telegram/iMessage/etc.
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.

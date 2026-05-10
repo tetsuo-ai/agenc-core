@@ -10,7 +10,10 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
-import type { EnvironmentKind } from '../teleport/environments.js'
+// Donor teleport environments module was removed in the upstream-backend
+// purge. Inline the EnvironmentKind union locally so this scanner stays
+// independent of any future remote-environment module.
+type EnvironmentKind = 'byoc' | 'agenc_cloud'
 import type { TurnStartTime } from './types.js'
 
 /** Shared debug logger for file persistence modules */
@@ -24,8 +27,8 @@ export function logDebug(message: string): void {
  */
 export function getEnvironmentKind(): EnvironmentKind | null {
   const kind = process.env.AGENC_ENVIRONMENT_KIND
-  if (kind === 'byoc' || kind === 'anthropic_cloud') {
-    return kind
+  if (kind === 'byoc' || kind === 'agenc_cloud') {
+    return kind as EnvironmentKind
   }
   return null
 }

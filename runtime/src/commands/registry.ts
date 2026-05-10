@@ -398,9 +398,6 @@ function readOptional<T>(read: () => T, fallback: T): T {
 const loadBootstrapState = memoizedModule(
   () => require("../bootstrap/state.js") as typeof import("../bootstrap/state.js"),
 );
-const loadBridgeEnabled = memoizedModule(
-  () => require("../bridge/bridgeEnabled.js") as typeof import("../bridge/bridgeEnabled.js"),
-);
 const loadMemoryPaths = memoizedModule(
   () => require("../memory/paths.js") as typeof import("../memory/paths.js"),
 );
@@ -438,10 +435,6 @@ function getIsNonInteractiveSession(): boolean {
 
 function getIsRemoteMode(): boolean {
   return readOptional(() => loadBootstrapState().getIsRemoteMode(), false);
-}
-
-function isBridgeEnabled(): boolean {
-  return readOptional(() => loadBridgeEnabled().isBridgeEnabled(), false);
 }
 
 function isAutoMemoryEnabled(): boolean {
@@ -532,13 +525,6 @@ function isDesktopSupportedPlatform(): boolean {
     (process.platform === "win32" && process.arch === "x64");
 }
 
-function isBridgeCommandEnabled(): boolean {
-  if (feature("BRIDGE_MODE")) {
-    return isBridgeEnabled();
-  }
-  return false;
-}
-
 function isExtraUsageAllowed(): boolean {
   if (isEnvTruthy(process.env.DISABLE_EXTRA_USAGE_COMMAND)) {
     return false;
@@ -613,7 +599,6 @@ type LegacyCommandModule = {
 const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>> = {
   "./agents/index.js": () => import("./agents/index.js"),
   "./branch/index.js": () => import("./branch/index.js"),
-  "./bridge/index.js": () => import("./bridge/index.js"),
   "./btw/index.js": () => import("./btw/index.js"),
   "./buddy/index.js": () => import("./buddy/index.js"),
   "./color/index.js": () => import("./color/index.js"),
@@ -621,8 +606,6 @@ const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>>
   "./heapdump/index.js": () => import("./heapdump/index.js"),
   "./ide/index.js": () => import("./ide/index.js"),
   "./knowledge/index.js": () => import("./knowledge/index.js"),
-  "./login/index.js": () => import("./login/index.js"),
-  "./logout/index.js": () => import("./logout/index.js"),
   "./memory/index.js": () => import("./memory/index.js"),
   "./pr_comments/index.js": () => import("./pr_comments/index.js"),
   "./rename/index.js": () => import("./rename/index.js"),
@@ -643,7 +626,6 @@ const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>>
   "./commit-push-pr.js": () => import("./commit-push-pr.js"),
   "./install-github-app/index.js": () => import("./install-github-app/index.js"),
   "./brief.js": () => import("./brief.js"),
-  "./bridge-kick.js": () => import("./bridge-kick.js"),
 };
 
 async function loadLegacyCommandSurface(
@@ -847,18 +829,6 @@ export const registeredLegacyCommandSurfaceSpecs = [
     description: "Create a branch of the current conversation at this point",
     argumentHint: "[name]",
   },
-  {
-    name: "remote-control",
-    type: "local-jsx",
-    modulePath: "./bridge/index.js",
-    tuiModulePath: "./commands/bridge/index.js",
-    aliases: ["rc"],
-    description: "Connect this terminal for remote-control sessions",
-    argumentHint: "[name]",
-    isEnabled: isBridgeCommandEnabled,
-    isHidden: () => !isBridgeCommandEnabled(),
-    immediate: true,
-  },
   { name: "btw", type: "local-jsx", modulePath: "./btw/index.js", tuiModulePath: "./commands/btw/index.js", description: "Ask a quick side question without interrupting the main conversation", immediate: true, argumentHint: "<question>" },
   { name: "buddy", type: "local-jsx", modulePath: "./buddy/index.js", tuiModulePath: "./commands/buddy/index.js", description: "Hatch, pet, and manage your AgenC companion", immediate: true, argumentHint: "[status|mute|unmute|help]" },
   { name: "color", type: "local-jsx", modulePath: "./color/index.js", tuiModulePath: "./commands/color/index.js", description: "Set the prompt bar color for this session", immediate: true, argumentHint: "<color|default>" },
@@ -866,8 +836,6 @@ export const registeredLegacyCommandSurfaceSpecs = [
   { name: "heapdump", type: "local", modulePath: "./heapdump/index.js", tuiModulePath: "./commands/heapdump/index.js", description: "Dump the JS heap to ~/Desktop", isHidden: true, supportsNonInteractive: true },
   { name: "ide", type: "local-jsx", modulePath: "./ide/index.js", tuiModulePath: "./commands/ide/index.js", description: "Manage IDE integrations and show status", argumentHint: "[open]" },
   { name: "knowledge", type: "local", modulePath: "./knowledge/index.js", tuiModulePath: "./commands/knowledge/index.js", description: "Manage native Knowledge Graph", supportsNonInteractive: true, argumentHint: "enable <yes|no> | clear | status | list" },
-  { name: "login", type: "local-jsx", modulePath: "./login/index.js", tuiModulePath: "./commands/login/index.js", factory: true, description: () => hasProviderApiKeyAuth() ? "Switch provider accounts" : "Sign in with your provider account", isEnabled: () => !isEnvTruthy(process.env.DISABLE_LOGIN_COMMAND) },
-  { name: "logout", type: "local-jsx", modulePath: "./logout/index.js", tuiModulePath: "./commands/logout/index.js", description: "Sign out from your provider account", isEnabled: () => !isEnvTruthy(process.env.DISABLE_LOGOUT_COMMAND) },
   { name: "memory", type: "local-jsx", modulePath: "./memory/index.js", tuiModulePath: "./commands/memory/index.js", description: "Edit AgenC memory files", register: false },
   { name: "pr-comments", type: "prompt", modulePath: "./pr_comments/index.js", tuiModulePath: "./commands/pr_comments/index.js", description: "Get comments from a GitHub pull request", progressMessage: "fetching PR comments", contentLength: 0, source: "builtin", dispatchPrompt: true },
   { name: "rename", type: "local-jsx", modulePath: "./rename/index.js", tuiModulePath: "./commands/rename/index.js", description: "Rename the current conversation", immediate: true, argumentHint: "[name]" },
@@ -954,15 +922,6 @@ export const registeredLegacyCommandSurfaceSpecs = [
     tuiModulePath: "./commands/brief.js",
     description: "Toggle brief-only mode",
     immediate: true,
-  },
-  {
-    name: "bridge-kick",
-    type: "local",
-    modulePath: "./bridge-kick.js",
-    tuiModulePath: "./commands/bridge-kick.js",
-    description: "Inject bridge failure states for manual recovery testing",
-    isEnabled: () => process.env.USER_TYPE === "ant",
-    supportsNonInteractive: false,
   },
 ] as const satisfies readonly LegacyCommandSurfaceSpec[];
 
