@@ -2048,15 +2048,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     </Box>
   );
 
-  // Body wrapped in AlternateScreen when fullscreen mode is active. The
-  // AlternateScreen component (a) emits the DEC 1049 enter-alt-screen
-  // sequence + optional SGR mouse tracking and (b) wraps children in
-  // <Box height={rows}> — that height bound is load-bearing for
-  // FullscreenLayout's flexGrow={1} scroll area + flexShrink={0} bottom
-  // slot to share the viewport. Without it, the bottom slot collapses to
-  // 0 and the composer disappears. Mirrors upstream REPL screen pattern.
+  // Body MUST be a fragment (not a flex Box) so FullscreenLayout's t14
+  // (flexGrow={1} scroll area) and t17 (flexShrink={0} bottom slot) become
+  // direct children of AlternateScreen's <Box height={rows} flex column>.
+  // Wrapping in another <Box flexDirection="column"> with no height/flexGrow
+  // breaks the flex chain — the inner Box collapses to its intrinsic content
+  // size and the bottom slot has 0 height. Mirrors upstream pattern where
+  // KeybindingSetup is a context provider, not a Box.
   const body = (
-    <Box flexDirection="column" width="100%">
+    <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers
         screen={screen as any}
@@ -2110,7 +2110,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           onClose={handleCloseMessageSelector}
         />
       ) : null}
-    </Box>
+    </>
   );
 
   if (fullscreen) {
@@ -2120,7 +2120,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       </AlternateScreen>
     );
   }
-  return body;
+  // Non-fullscreen: wrap in a flex column so children stack normally.
+  return <Box flexDirection="column" width="100%">{body}</Box>;
 }
 
 export function AgenCTuiApp(
