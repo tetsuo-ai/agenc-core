@@ -710,11 +710,15 @@ export function defaultConfig(): AgenCConfig {
       minColumns: 120,
     }) as TuiLayoutConfig,
     agent: Object.freeze({
-      budget: Object.freeze({
-        token_cap: 2_000_000,
-        dollar_cap: 25,
-        wall_clock_seconds: 259_200,
-      }) as AgentBudgetConfig,
+      // Default budget is intentionally empty: caps are designed for
+      // explicit `agenc agent start` background agents, but the daemon
+      // uses the same budget tracker for foreground TUI sessions. With
+      // a 2,000,000 token_cap default, a single substantial interactive
+      // turn (e.g. building a project skeleton with ~70 sample requests
+      // at ~14k tokens each = ~1M cumulative) tripped the cap and
+      // killed the turn. Users who want a cap can set it explicitly via
+      // config.toml under [agent.budget].
+      budget: Object.freeze({}) as AgentBudgetConfig,
       retention: Object.freeze({
         completed_days: 30,
         failed_days: 90,

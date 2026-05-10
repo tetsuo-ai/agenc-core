@@ -107,11 +107,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.editorMode).toBe("default");
     expect(cfg.tui).toBeUndefined();
     expect(cfg.tuiLayout?.mode).toBe("single");
-    expect(cfg.agent?.budget).toEqual({
-      token_cap: 2_000_000,
-      dollar_cap: 25,
-      wall_clock_seconds: 259_200,
-    });
+    expect(cfg.agent?.budget).toEqual({});
     expect(cfg.agent?.retention).toEqual({
       completed_days: 30,
       failed_days: 90,

@@ -622,6 +622,34 @@ export function getSchemaValidationToolUseResult(
   return `InputValidationError: ${override ?? fallbackMessage ?? ''}`
 }
 
+/**
+ * Internal-context fields that AgenC's ChildToolPolicy / agent run-loop
+ * inject into tool args (`__agencSessionId`, `__agencSessionAllowedRoots`,
+ * etc.). Upstream donors don't carry these. They must be stripped from
+ * the input before public-schema validation (`z.strictObject`) so the
+ * model-facing API stays clean while the tool body still sees them.
+ */
+const AGENC_INTERNAL_ARG_PREFIX = '__agenc'
+
+function stripAgenCInternalArgs(
+  input: { readonly [key: string]: unknown },
+): { readonly [key: string]: unknown } {
+  let needed = false
+  for (const key of Object.keys(input)) {
+    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) {
+      needed = true
+      break
+    }
+  }
+  if (!needed) return input
+  const stripped: { [key: string]: unknown } = {}
+  for (const [key, value] of Object.entries(input)) {
+    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue
+    stripped[key] = value
+  }
+  return stripped
+}
+
 async function checkPermissionsAndCallTool(
   tool: Tool,
   toolUseID: string,
@@ -637,8 +665,19 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
 ): Promise<MessageUpdateLazy[]> {
-  // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  // Validate input types with zod (surprisingly, the model is not great at generating valid input).
+  //
+  // AgenC-only carve-out: internal context fields prefixed with `__agenc`
+  // (e.g. `__agencSessionAllowedRoots`, `__agencSessionId`) ride alongside
+  // the model-facing args when a ChildToolPolicy returns `{ behavior:
+  // "allow", updatedInput }`. They survive the JSON roundtrip in
+  // tools/router.ts:530 and end up enumerable on `input`, then get rejected
+  // by the tool's `z.strictObject({...})` schema as "unrecognized keys".
+  // Upstream donors don't carry these fields at all — this is an
+  // AgenC-internal transport for cwd/session scoping. Strip them from the
+  // validator's view; the tool body still receives them via `input`.
+  const validatorInput = stripAgenCInternalArgs(input)
+  const parsedInput = tool.inputSchema.safeParse(validatorInput)
   if (!parsedInput.success) {
     const fallbackErrorContent = formatZodValidationError(tool.name, parsedInput.error)
     let errorContent =

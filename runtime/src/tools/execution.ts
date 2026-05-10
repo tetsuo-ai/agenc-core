@@ -1036,10 +1036,16 @@ export async function runToolUse(
   }
 
   // Step 2: JSON Schema validation (+ humanized prose override + hint).
+  // Strip AgenC-internal `__agenc*` context fields (e.g.
+  // `__agencSessionId`, `__agencSessionAllowedRoots`) from the validator's
+  // view. They ride alongside model args via the ChildToolPolicy /
+  // agent run-loop transport but are not part of the public schema.
+  // See services/tools/toolExecution.ts for the parallel implementation.
   if (!opts.skipArgValidation) {
+    const validatorArgs = stripAgenCInternalArgsForValidation(parsedArgs);
     const validation = validateToolArgs(
       tool.inputSchema as Record<string, unknown> | undefined,
-      parsedArgs,
+      validatorArgs,
     );
     if (!validation.valid) {
       const override = getSchemaValidationErrorOverride(tool, parsedArgs);
@@ -1874,6 +1880,32 @@ function readAuditSessionId(
       | undefined
   )?.conversationId;
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+const AGENC_INTERNAL_ARG_PREFIX = "__agenc";
+
+/**
+ * Mirror of services/tools/toolExecution.ts's stripAgenCInternalArgs:
+ * strip AgenC-only `__agenc*` context fields before public-schema
+ * validation. Tool body still receives them on the original parsedArgs.
+ */
+function stripAgenCInternalArgsForValidation(
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  let needed = false;
+  for (const key of Object.keys(input)) {
+    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) {
+      needed = true;
+      break;
+    }
+  }
+  if (!needed) return input;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue;
+    out[key] = value;
+  }
+  return out;
 }
 
 export { toolNameDisplay };
