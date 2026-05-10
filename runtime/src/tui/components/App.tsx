@@ -14,6 +14,10 @@ import {
 import { ExitFlow } from "./ExitFlow.js";
 import PromptInput from "./PromptInput/PromptInput.js";
 import { CostThresholdDialog } from "./dialogs/CostThresholdDialog.js";
+import { FullscreenLayout } from "./FullscreenLayout.js";
+import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
+import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
+import { isFullscreenEnvEnabled } from "../../utils/fullscreen.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
@@ -1070,6 +1074,8 @@ function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
 function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const { exit } = useApp();
   useCostSummary(useFpsMetrics());
+  const scrollRef = useRef<ScrollBoxHandle | null>(null);
+  const fullscreen = isFullscreenEnvEnabled();
   const [input, setInput] = useState(props.initialComposerText ?? "");
   const [mode, setMode] = useState<any>("prompt");
   const [stashedPrompt, setStashedPrompt] = useState<any>(undefined);
@@ -1790,128 +1796,17 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     logEvent("tengu_cost_threshold_acknowledged", {});
   }, []);
 
-  return (
-    <Box flexDirection="column" width="100%">
-      <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
-      {!onboarding.active ? (
-        <GlobalKeybindingHandlers
-          screen={screen as any}
-          setScreen={setScreen as any}
-          showAllInTranscript={showAllInTranscript}
-          setShowAllInTranscript={setShowAllInTranscript}
-          messageCount={transcript.messages.length}
-        />
-      ) : null}
-      {!onboarding.active ? (
-        <CancelRequestHandler
-          // The queue setter is a no-op for daemon-mode: permission
-          // requests are owned by the daemon and resolved via the
-          // session.cancelTurn cascade (control.interrupt clears
-          // pendingApprovals server-side). The UI dialog disappears
-          // when the daemon's permission promise settles.
-          setToolUseConfirmQueue={() => {}}
-          onCancel={handleTurnCancel}
-          onAgentsKilled={handleAgentsKilledNoOp}
-          isMessageSelectorVisible={isMessageSelectorVisible}
-          screen={screen as never}
-          {...(turnAbortController !== null
-            ? { abortSignal: turnAbortController.signal }
-            : {})}
-          isSearchingHistory={isSearchingHistory}
-          isHelpOpen={helpOpen}
-          inputMode={mode as never}
-          inputValue={input}
-          streamMode={transcript.isStreaming ? ("requesting" as never) : undefined}
-        />
-      ) : null}
-      {onboarding.active ? (
+  // Onboarding renders standalone — composer-only flow drives its own input.
+  if (onboarding.active) {
+    return (
+      <Box flexDirection="column" width="100%">
+        <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
         <Onboarding
           state={onboarding.state}
           steps={onboarding.steps}
           currentStep={onboarding.currentStep}
           context={onboardingContext}
         />
-      ) : (
-        <Messages
-          messages={transcript.messages as any[]}
-          tools={tools as any}
-          commands={commands as unknown as Command[]}
-          verbose={screen === "transcript"}
-          toolJSX={toolJSX as any}
-          toolUseConfirmQueue={toolUseConfirmQueue as never[]}
-          inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
-          isMessageSelectorVisible={isMessageSelectorVisible}
-          conversationId={props.session.conversationId}
-          screen={screen as any}
-          streamingToolUses={transcript.streamingToolUses}
-          showAllInTranscript={showAllInTranscript}
-          isLoading={transcript.isStreaming || pendingSubmission}
-          streamingText={transcript.streamingText}
-          streamingThinking={transcript.streamingThinking as never}
-          hidePastThinking={screen === "transcript"}
-        />
-      )}
-      {!onboarding.active ? (
-        <RealtimePanel state={realtimeState} />
-      ) : null}
-      {!onboarding.active && compactProgress.status !== "idle" ? (
-        <Box flexDirection="row" width="100%">
-          <Text dimColor>
-            {compactProgress.label ?? "Compacting conversation"}
-          </Text>
-          {compactProgress.responseLength > 0 ? (
-            <Text dimColor>{` · ${compactProgress.responseLength} chars`}</Text>
-          ) : null}
-        </Box>
-      ) : null}
-      {!onboarding.active && toolJSX !== null ? (
-        <Box flexDirection="column" width="100%">
-          {toolJSX.jsx}
-        </Box>
-      ) : null}
-      {!onboarding.active ? (
-        <PermissionOverlay
-          request={permissionRequests[0]}
-          tools={availableTools as any}
-          mcpClients={mcpClients as any}
-        />
-      ) : null}
-      {!onboarding.active ? (
-        <ElicitationOverlay prompt={elicitation.prompt} />
-      ) : null}
-      {!onboarding.active && showCostDialog ? (
-        <CostThresholdDialog onDone={handleCostThresholdDone} />
-      ) : null}
-      {!onboarding.active ? exitFlow : null}
-      {!onboarding.active && isMessageSelectorVisible ? (
-        <MessageSelector
-          messages={transcript.messages as any[]}
-          onPreRestore={() => {}}
-          onRestoreMessage={handleRestoreMessage}
-          onRestoreCode={handleRestoreCode}
-          onSummarize={handleSummarize}
-          onClose={handleCloseMessageSelector}
-        />
-      ) : null}
-      {!onboarding.active && selectorNotice !== null ? (
-        <Text color="warning" wrap="truncate">{selectorNotice}</Text>
-      ) : null}
-      {/*
-        Phase 5 #53: hide PromptInput while a permission overlay or
-        elicitation prompt is active. Prior to this, both components
-        rendered simultaneously and BOTH consumed keyboard input —
-        pressing Enter on the permission overlay also fired
-        PromptInput's onSubmit, queuing a model message while the
-        approve/deny dialog was still up. The overlay was effectively
-        non-modal. With PromptInput unmounted, the overlay's input
-        handlers are the only consumer and Enter cleanly approves /
-        denies. Onboarding still always shows PromptInput because the
-        onboarding flow drives the input itself.
-      */}
-      {onboarding.active ||
-      (!isMessageSelectorVisible &&
-        permissionRequests.length === 0 &&
-        elicitation.prompt === null) ? (
         <PromptInput
           debug={false}
           ideSelection={undefined}
@@ -1920,7 +1815,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           apiKeyStatus={"valid" as any}
           commands={commands as unknown as Command[]}
           agents={agents as unknown as AgentDefinition[]}
-          isLoading={!onboarding.active && (transcript.isStreaming || pendingSubmission)}
+          isLoading={false}
           verbose={false}
           messages={transcript.messages as any[]}
           onAutoUpdaterResult={() => {}}
@@ -1950,20 +1845,199 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
               helpers.setCursorOffset(0);
               return;
             }
-            if (
-              await executeRealtimeComposerCommand(props.session.realtime, value)
-            ) {
-              helpers.clearBuffer();
-              helpers.resetHistory();
-              helpers.setCursorOffset(0);
-              return;
-            }
             await submitViaElicitationPrompt(elicitation, submit, value, helpers);
           }}
           isSearchingHistory={isSearchingHistory}
           setIsSearchingHistory={setIsSearchingHistory}
           helpOpen={helpOpen}
           setHelpOpen={setHelpOpen}
+        />
+      </Box>
+    );
+  }
+
+  const messagesElement = (
+    <Messages
+      messages={transcript.messages as any[]}
+      tools={tools as any}
+      commands={commands as unknown as Command[]}
+      verbose={screen === "transcript"}
+      toolJSX={toolJSX as any}
+      toolUseConfirmQueue={toolUseConfirmQueue as never[]}
+      inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
+      isMessageSelectorVisible={isMessageSelectorVisible}
+      conversationId={props.session.conversationId}
+      screen={screen as any}
+      streamingToolUses={transcript.streamingToolUses}
+      showAllInTranscript={showAllInTranscript}
+      isLoading={transcript.isStreaming || pendingSubmission}
+      streamingText={transcript.streamingText}
+      streamingThinking={transcript.streamingThinking as never}
+      hidePastThinking={screen === "transcript"}
+      scrollRef={fullscreen ? scrollRef : undefined}
+      trackStickyPrompt={fullscreen ? true : undefined}
+    />
+  );
+
+  const scrollableContent = (
+    <>
+      {messagesElement}
+      <RealtimePanel state={realtimeState} />
+      {compactProgress.status !== "idle" ? (
+        <Box flexDirection="row" width="100%">
+          <Text dimColor>
+            {compactProgress.label ?? "Compacting conversation"}
+          </Text>
+          {compactProgress.responseLength > 0 ? (
+            <Text dimColor>{` · ${compactProgress.responseLength} chars`}</Text>
+          ) : null}
+        </Box>
+      ) : null}
+      {toolJSX !== null ? (
+        <Box flexDirection="column" width="100%">
+          {toolJSX.jsx}
+        </Box>
+      ) : null}
+      {/* flexGrow spacer pushes streaming content to the top of the scroll
+          viewport in fullscreen mode (matches upstream REPL.tsx pattern). */}
+      {fullscreen ? <Box flexGrow={1} /> : null}
+    </>
+  );
+
+  // PermissionOverlay + ElicitationOverlay live in `overlay` slot — rendered
+  // inside ScrollBox after messages so users can scroll up to see context
+  // while approving/answering. Matches upstream REPL.tsx FullscreenLayout
+  // overlay={toolPermissionOverlay} pattern.
+  const overlayContent = (
+    <>
+      <PermissionOverlay
+        request={permissionRequests[0]}
+        tools={availableTools as any}
+        mcpClients={mcpClients as any}
+      />
+      <ElicitationOverlay prompt={elicitation.prompt} />
+    </>
+  );
+
+  // Phase 5 #53: hide PromptInput while a permission overlay or
+  // elicitation prompt is active so a single Enter doesn't fire both.
+  const showPromptInput =
+    !isMessageSelectorVisible &&
+    permissionRequests.length === 0 &&
+    elicitation.prompt === null;
+
+  const promptInputElement = showPromptInput ? (
+    <PromptInput
+      debug={false}
+      ideSelection={undefined}
+      toolPermissionContext={toolPermissionContext as any}
+      setToolPermissionContext={setToolPermissionContext as any}
+      apiKeyStatus={"valid" as any}
+      commands={commands as unknown as Command[]}
+      agents={agents as unknown as AgentDefinition[]}
+      isLoading={transcript.isStreaming || pendingSubmission}
+      verbose={false}
+      messages={transcript.messages as any[]}
+      onAutoUpdaterResult={() => {}}
+      autoUpdaterResult={null}
+      input={input}
+      onInputChange={setInput}
+      mode={mode}
+      onModeChange={setMode}
+      stashedPrompt={stashedPrompt}
+      setStashedPrompt={setStashedPrompt}
+      submitCount={submitCount}
+      onShowMessageSelector={handleShowMessageSelector}
+      onMessageActionsEnter={handleShowMessageSelector}
+      mcpClients={mcpClients as never}
+      pastedContents={pastedContents}
+      setPastedContents={setPastedContents}
+      vimMode={vimMode}
+      setVimMode={setVimMode}
+      showBashesDialog={showBashesDialog}
+      setShowBashesDialog={setShowBashesDialog}
+      onExit={handleExit}
+      getToolUseContext={getToolUseContext}
+      onSubmit={async (value, helpers) => {
+        if (
+          await executeRealtimeComposerCommand(props.session.realtime, value)
+        ) {
+          helpers.clearBuffer();
+          helpers.resetHistory();
+          helpers.setCursorOffset(0);
+          return;
+        }
+        await submitViaElicitationPrompt(elicitation, submit, value, helpers);
+      }}
+      isSearchingHistory={isSearchingHistory}
+      setIsSearchingHistory={setIsSearchingHistory}
+      helpOpen={helpOpen}
+      setHelpOpen={setHelpOpen}
+    />
+  ) : null;
+
+  const bottomContent = (
+    <Box flexDirection="column" flexGrow={1}>
+      {selectorNotice !== null ? (
+        <Text color="warning" wrap="truncate">{selectorNotice}</Text>
+      ) : null}
+      {promptInputElement}
+    </Box>
+  );
+
+  return (
+    <Box flexDirection="column" width="100%">
+      <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
+      <GlobalKeybindingHandlers
+        screen={screen as any}
+        setScreen={setScreen as any}
+        showAllInTranscript={showAllInTranscript}
+        setShowAllInTranscript={setShowAllInTranscript}
+        messageCount={transcript.messages.length}
+      />
+      <ScrollKeybindingHandler
+        scrollRef={scrollRef}
+        isActive={fullscreen && permissionRequests.length === 0}
+      />
+      <CancelRequestHandler
+        // Daemon-mode no-op: permission requests are owned by the daemon
+        // and resolved via session.cancelTurn cascade.
+        setToolUseConfirmQueue={() => {}}
+        onCancel={handleTurnCancel}
+        onAgentsKilled={handleAgentsKilledNoOp}
+        isMessageSelectorVisible={isMessageSelectorVisible}
+        screen={screen as never}
+        {...(turnAbortController !== null
+          ? { abortSignal: turnAbortController.signal }
+          : {})}
+        isSearchingHistory={isSearchingHistory}
+        isHelpOpen={helpOpen}
+        inputMode={mode as never}
+        inputValue={input}
+        streamMode={transcript.isStreaming ? ("requesting" as never) : undefined}
+      />
+      <FullscreenLayout
+        scrollRef={scrollRef}
+        scrollable={scrollableContent}
+        bottom={bottomContent}
+        overlay={
+          permissionRequests.length > 0 || elicitation.prompt !== null
+            ? overlayContent
+            : undefined
+        }
+      />
+      {showCostDialog ? (
+        <CostThresholdDialog onDone={handleCostThresholdDone} />
+      ) : null}
+      {exitFlow}
+      {isMessageSelectorVisible ? (
+        <MessageSelector
+          messages={transcript.messages as any[]}
+          onPreRestore={() => {}}
+          onRestoreMessage={handleRestoreMessage}
+          onRestoreCode={handleRestoreCode}
+          onSummarize={handleSummarize}
+          onClose={handleCloseMessageSelector}
         />
       ) : null}
     </Box>

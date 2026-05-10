@@ -678,6 +678,12 @@ function createDefaultGlobalConfig(): GlobalConfig {
     cachedGrowthBookFeatures: {},
     respectGitignore: true,
     copyFullResponse: false,
+    // Fullscreen flicker-free mode default-on: AgenC TUI mounts FullscreenLayout
+    // + ScrollBox + VirtualMessageList only when this flag is true. Without it,
+    // every state delta re-renders the full message list inline and causes
+    // visible flashing during streaming. AGENC_NO_FLICKER=0 still overrides
+    // to opt out.
+    flickerFreeMode: true,
     providerProfiles: [],
     openaiAdditionalModelOptionsCacheByProfile: {},
     knowledgeGraphEnabled: true,
