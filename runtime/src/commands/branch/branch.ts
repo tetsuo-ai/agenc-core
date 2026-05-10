@@ -81,11 +81,15 @@ async function createFork(customTitle?: string): Promise<{
   try {
     transcriptContent = await readFile(currentTranscriptPath)
   } catch {
-    throw new Error('No conversation to branch')
+    throw new Error(
+      'No conversation to branch yet — send a message first, then run /branch.',
+    )
   }
 
   if (transcriptContent.length === 0) {
-    throw new Error('No conversation to branch')
+    throw new Error(
+      'No conversation to branch yet — send a message first, then run /branch.',
+    )
   }
 
   // Parse all transcript entries (messages + metadata entries like content-replacement)
@@ -290,9 +294,16 @@ export async function call(
 
     return null
   } catch (error) {
+    // The "no conversation to branch yet" message is already a
+    // user-facing sentence — don't double-prefix it with "Failed to
+    // branch conversation:". Other errors keep the prefix so the
+    // origin is clear.
     const message =
       error instanceof Error ? error.message : 'Unknown error occurred'
-    onDone(`Failed to branch conversation: ${message}`)
+    const display = message.startsWith('No conversation to branch')
+      ? message
+      : `Failed to branch conversation: ${message}`
+    onDone(display)
     return null
   }
 }

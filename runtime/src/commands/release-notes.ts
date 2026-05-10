@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { resolveRuntimePackageRootFromUrl } from "../app-server/daemon-runtime-info.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -24,6 +25,15 @@ function candidateChangelogs(cwd: string): string[] {
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
+  }
+  // Bundled fallback: the runtime package ships its own CHANGELOG.md
+  // describing the release the user is actually running. The cwd-walk
+  // only finds it when the user is inside an AgenC checkout — for any
+  // other cwd, fall back to the bundled file so /release-notes
+  // surfaces something useful instead of "no local release notes".
+  const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
+  if (runtimeRoot !== null) {
+    paths.push(join(runtimeRoot, "CHANGELOG.md"));
   }
   return paths;
 }

@@ -1248,14 +1248,45 @@ export function adaptTranscriptEvents(
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error"));
         break;
-      case "slash_result":
-        out.push(
-          makeSystemMessage(
-            "result" in raw ? stringResult(raw.result) : stringResult(payload),
-            "info",
-          ),
-        );
+      case "slash_result": {
+        // Format SlashCommandResult based on its kind instead of
+        // JSON.stringifying the raw object — otherwise the user sees
+        // `{ "kind": "error", "message": "..." }` in the transcript
+        // (the literal stringified shape) rather than a clean error
+        // message. Mirrors the formatter in `App.tsx` `renderResult`.
+        const candidate =
+          "result" in raw && raw.result !== null && typeof raw.result === "object"
+            ? (raw.result as Record<string, unknown>)
+            : payload;
+        const kind = candidate.kind;
+        if (kind === "text" || kind === "compact") {
+          const text = candidate.text;
+          if (typeof text === "string") {
+            out.push(makeSystemMessage(text, "info"));
+          }
+          break;
+        }
+        if (kind === "error") {
+          const msg = candidate.message;
+          out.push(
+            makeSystemMessage(
+              `Error: ${typeof msg === "string" ? msg : stringResult(msg)}`,
+              "error",
+            ),
+          );
+          break;
+        }
+        if (kind === "skip" || kind === "exit" || kind === "prompt") {
+          // skip = handled silently; exit = app teardown elsewhere;
+          // prompt = forwarded to the model via session.submit. None
+          // need a transcript row.
+          break;
+        }
+        // Unknown kind — fall back to the original behaviour so we
+        // still surface SOMETHING rather than swallowing it silently.
+        out.push(makeSystemMessage(stringResult(candidate), "info"));
         break;
+      }
       case "collab_agent_spawn_begin": {
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
