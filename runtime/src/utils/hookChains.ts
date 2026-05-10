@@ -1038,9 +1038,6 @@ export async function executeWarmRemoteCapacityAction(args: {
   try {
     const [{ checkBackgroundRemoteSessionEligibility }, { getEnvironmentSelectionInfo }, envApi] =
       await Promise.all([
-        import('./background/remote/remoteSession.js'),
-        import('./teleport/environmentSelection.js'),
-        import('./teleport/environments.js'),
       ])
 
     const preconditions = await checkBackgroundRemoteSessionEligibility({

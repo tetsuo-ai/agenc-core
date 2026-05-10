@@ -398,17 +398,11 @@ function readOptional<T>(read: () => T, fallback: T): T {
 const loadBootstrapState = memoizedModule(
   () => require("../bootstrap/state.js") as typeof import("../bootstrap/state.js"),
 );
-const loadBridgeEnabled = memoizedModule(
-  () => require("../bridge/bridgeEnabled.js") as typeof import("../bridge/bridgeEnabled.js"),
-);
 const loadMemoryPaths = memoizedModule(
   () => require("../memory/paths.js") as typeof import("../memory/paths.js"),
 );
 const loadGrowthbook = memoizedModule(
   () => require("../services/analytics/growthbook.js") as typeof import("../services/analytics/growthbook.js"),
-);
-const loadReferral = memoizedModule(
-  () => require("../services/api/referral.js") as typeof import("../services/api/referral.js"),
 );
 const loadPolicyLimits = memoizedModule(
   () => require("../services/policyLimits/index.js") as typeof import("../services/policyLimits/index.js"),
@@ -431,20 +425,12 @@ const loadPrivacyLevel = memoizedModule(
 const loadVoiceModeEnabled = memoizedModule(
   () => require("../tui/voice/voiceModeEnabled.js") as typeof import("../tui/voice/voiceModeEnabled.js"),
 );
-const loadUltrareviewEnabled = memoizedModule(
-  () => require("./review/ultrareviewEnabled.js") as typeof import("./review/ultrareviewEnabled.js"),
-);
-
 function getIsNonInteractiveSession(): boolean {
   return readOptional(() => loadBootstrapState().getIsNonInteractiveSession(), false);
 }
 
 function getIsRemoteMode(): boolean {
   return readOptional(() => loadBootstrapState().getIsRemoteMode(), false);
-}
-
-function isBridgeEnabled(): boolean {
-  return readOptional(() => loadBridgeEnabled().isBridgeEnabled(), false);
 }
 
 function isAutoMemoryEnabled(): boolean {
@@ -463,21 +449,6 @@ function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name: string): boolean {
     () => loadGrowthbook().checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name),
     false,
   );
-}
-
-function checkCachedPassesEligibility(): ReturnType<
-  typeof import("../services/api/referral.js").checkCachedPassesEligibility
-> {
-  return readOptional(
-    () => loadReferral().checkCachedPassesEligibility(),
-    { eligible: false, needsRefresh: false, hasCache: false },
-  );
-}
-
-function getCachedReferrerReward(): ReturnType<
-  typeof import("../services/api/referral.js").getCachedReferrerReward
-> {
-  return readOptional(() => loadReferral().getCachedReferrerReward(), null);
 }
 
 function isPolicyAllowed(policy: Parameters<
@@ -541,20 +512,9 @@ function isVoiceModeEnabled(): boolean {
   return readOptional(() => loadVoiceModeEnabled().isVoiceModeEnabled(), false);
 }
 
-function isUltrareviewEnabled(): boolean {
-  return readOptional(() => loadUltrareviewEnabled().isUltrareviewEnabled(), false);
-}
-
 function isDesktopSupportedPlatform(): boolean {
   return process.platform === "darwin" ||
     (process.platform === "win32" && process.arch === "x64");
-}
-
-function isBridgeCommandEnabled(): boolean {
-  if (feature("BRIDGE_MODE")) {
-    return isBridgeEnabled();
-  }
-  return false;
 }
 
 function isExtraUsageAllowed(): boolean {
@@ -631,17 +591,13 @@ type LegacyCommandModule = {
 const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>> = {
   "./agents/index.js": () => import("./agents/index.js"),
   "./branch/index.js": () => import("./branch/index.js"),
-  "./bridge/index.js": () => import("./bridge/index.js"),
   "./btw/index.js": () => import("./btw/index.js"),
   "./buddy/index.js": () => import("./buddy/index.js"),
   "./color/index.js": () => import("./color/index.js"),
   "./export/index.js": () => import("./export/index.js"),
-  "./extra-usage/index.js": () => import("./extra-usage/index.js"),
   "./heapdump/index.js": () => import("./heapdump/index.js"),
   "./ide/index.js": () => import("./ide/index.js"),
   "./knowledge/index.js": () => import("./knowledge/index.js"),
-  "./login/index.js": () => import("./login/index.js"),
-  "./logout/index.js": () => import("./logout/index.js"),
   "./memory/index.js": () => import("./memory/index.js"),
   "./pr_comments/index.js": () => import("./pr_comments/index.js"),
   "./rename/index.js": () => import("./rename/index.js"),
@@ -654,6 +610,14 @@ const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>>
   "./install.js": () => import("./install.js"),
   "./commit.js": () => import("./commit.js"),
   "./review.js": () => import("./review.js"),
+  "./cache-probe/index.js": () => import("./cache-probe/index.js"),
+  "./install-slack-app/index.js": () => import("./install-slack-app/index.js"),
+  "./onboard-github/index.js": () => import("./onboard-github/index.js"),
+  "./plugin/index.js": () => import("./plugin/index.js"),
+  "./init-verifiers.js": () => import("./init-verifiers.js"),
+  "./commit-push-pr.js": () => import("./commit-push-pr.js"),
+  "./install-github-app/index.js": () => import("./install-github-app/index.js"),
+  "./brief.js": () => import("./brief.js"),
 };
 
 async function loadLegacyCommandSurface(
@@ -857,18 +821,6 @@ export const registeredLegacyCommandSurfaceSpecs = [
     description: "Create a branch of the current conversation at this point",
     argumentHint: "[name]",
   },
-  {
-    name: "remote-control",
-    type: "local-jsx",
-    modulePath: "./bridge/index.js",
-    tuiModulePath: "./commands/bridge/index.js",
-    aliases: ["rc"],
-    description: "Connect this terminal for remote-control sessions",
-    argumentHint: "[name]",
-    isEnabled: isBridgeCommandEnabled,
-    isHidden: () => !isBridgeCommandEnabled(),
-    immediate: true,
-  },
   { name: "btw", type: "local-jsx", modulePath: "./btw/index.js", tuiModulePath: "./commands/btw/index.js", description: "Ask a quick side question without interrupting the main conversation", immediate: true, argumentHint: "<question>" },
   { name: "buddy", type: "local-jsx", modulePath: "./buddy/index.js", tuiModulePath: "./commands/buddy/index.js", description: "Hatch, pet, and manage your AgenC companion", immediate: true, argumentHint: "[status|mute|unmute|help]" },
   { name: "color", type: "local-jsx", modulePath: "./color/index.js", tuiModulePath: "./commands/color/index.js", description: "Set the prompt bar color for this session", immediate: true, argumentHint: "<color|default>" },
@@ -876,8 +828,6 @@ export const registeredLegacyCommandSurfaceSpecs = [
   { name: "heapdump", type: "local", modulePath: "./heapdump/index.js", tuiModulePath: "./commands/heapdump/index.js", description: "Dump the JS heap to ~/Desktop", isHidden: true, supportsNonInteractive: true },
   { name: "ide", type: "local-jsx", modulePath: "./ide/index.js", tuiModulePath: "./commands/ide/index.js", description: "Manage IDE integrations and show status", argumentHint: "[open]" },
   { name: "knowledge", type: "local", modulePath: "./knowledge/index.js", tuiModulePath: "./commands/knowledge/index.js", description: "Manage native Knowledge Graph", supportsNonInteractive: true, argumentHint: "enable <yes|no> | clear | status | list" },
-  { name: "login", type: "local-jsx", modulePath: "./login/index.js", tuiModulePath: "./commands/login/index.js", factory: true, description: () => hasProviderApiKeyAuth() ? "Switch provider accounts" : "Sign in with your provider account", isEnabled: () => !isEnvTruthy(process.env.DISABLE_LOGIN_COMMAND) },
-  { name: "logout", type: "local-jsx", modulePath: "./logout/index.js", tuiModulePath: "./commands/logout/index.js", description: "Sign out from your provider account", isEnabled: () => !isEnvTruthy(process.env.DISABLE_LOGOUT_COMMAND) },
   { name: "memory", type: "local-jsx", modulePath: "./memory/index.js", tuiModulePath: "./commands/memory/index.js", description: "Edit AgenC memory files", register: false },
   { name: "pr-comments", type: "prompt", modulePath: "./pr_comments/index.js", tuiModulePath: "./commands/pr_comments/index.js", description: "Get comments from a GitHub pull request", progressMessage: "fetching PR comments", contentLength: 0, source: "builtin", dispatchPrompt: true },
   { name: "rename", type: "local-jsx", modulePath: "./rename/index.js", tuiModulePath: "./commands/rename/index.js", description: "Rename the current conversation", immediate: true, argumentHint: "[name]" },
@@ -890,6 +840,81 @@ export const registeredLegacyCommandSurfaceSpecs = [
   { name: "install", type: "local-jsx", modulePath: "./install.js", tuiModulePath: "./commands/install.js", exportName: "install", description: "Install AgenC native build", argumentHint: "[options]" },
   { name: "commit", type: "prompt", modulePath: "./commit.js", tuiModulePath: "./commands/commit.js", description: "Create a git commit", progressMessage: "creating commit", allowedTools: ["Bash(git add:*)", "Bash(git status:*)", "Bash(git commit:*)"], contentLength: 0, source: "builtin" },
   { name: "review", type: "prompt", modulePath: "./review.js", tuiModulePath: "./commands/review.js", description: "Review a pull request", progressMessage: "reviewing pull request", contentLength: 0, source: "builtin" },
+  {
+    name: "cache-probe",
+    type: "local",
+    modulePath: "./cache-probe/index.js",
+    tuiModulePath: "./commands/cache-probe/index.js",
+    description: "Send identical requests to test prompt caching (results in debug log)",
+    argumentHint: "[model] [--no-key]",
+    isEnabled: () =>
+      isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
+      isEnvTruthy(process.env.AGENC_USE_GITHUB),
+    supportsNonInteractive: false,
+  },
+  {
+    name: "install-slack-app",
+    type: "local",
+    modulePath: "./install-slack-app/index.js",
+    tuiModulePath: "./commands/install-slack-app/index.js",
+    description: "Install the AgenC Slack app",
+    availability: ["agenc-ai"],
+    supportsNonInteractive: false,
+  },
+  {
+    name: "onboard-github",
+    type: "local-jsx",
+    modulePath: "./onboard-github/index.js",
+    tuiModulePath: "./commands/onboard-github/index.js",
+    description: "Interactive setup for GitHub Copilot: OAuth device login stored in secure storage",
+    aliases: ["onboarding-github", "onboardgithub", "onboardinggithub"],
+  },
+  {
+    name: "plugin",
+    type: "local-jsx",
+    modulePath: "./plugin/index.js",
+    tuiModulePath: "./commands/plugin/index.js",
+    description: "Manage AgenC plugins",
+    aliases: ["plugins", "marketplace"],
+    immediate: true,
+  },
+  {
+    name: "init-verifiers",
+    type: "prompt",
+    modulePath: "./init-verifiers.js",
+    tuiModulePath: "./commands/init-verifiers.js",
+    description: "Create verifier skill(s) for automated verification of code changes",
+    progressMessage: "analyzing your project and creating verifier skills",
+    contentLength: 0,
+    source: "builtin",
+  },
+  {
+    name: "commit-push-pr",
+    type: "prompt",
+    modulePath: "./commit-push-pr.js",
+    tuiModulePath: "./commands/commit-push-pr.js",
+    description: "Create a git commit, push to remote, and open a pull request",
+    progressMessage: "creating commit, pushing, and opening pull request",
+    contentLength: 0,
+    source: "builtin",
+  },
+  {
+    name: "install-github-app",
+    type: "local-jsx",
+    modulePath: "./install-github-app/index.js",
+    tuiModulePath: "./commands/install-github-app/index.js",
+    description: "Set up AgenC GitHub Actions for a repository",
+    availability: ["agenc-ai", "console"],
+    isEnabled: () => !isEnvTruthy(process.env.DISABLE_INSTALL_GITHUB_APP_COMMAND),
+  },
+  {
+    name: "brief",
+    type: "local-jsx",
+    modulePath: "./brief.js",
+    tuiModulePath: "./commands/brief.js",
+    description: "Toggle brief-only mode",
+    immediate: true,
+  },
 ] as const satisfies readonly LegacyCommandSurfaceSpec[];
 
 const legacyCommandSurfaces = (registeredLegacyCommandSurfaceSpecs as readonly LegacyCommandSurfaceSpec[]).map(

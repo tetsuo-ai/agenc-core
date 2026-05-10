@@ -12,7 +12,7 @@ import {
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../bootstrap/state.js'
 // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-import { getRemoteManagedSettingsSyncFromCache } from '../../services/remoteManagedSettings/syncCacheState.js'
+
 import { uniq } from '../array.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'

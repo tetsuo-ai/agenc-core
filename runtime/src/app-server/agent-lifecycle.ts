@@ -790,6 +790,56 @@ export class AgenCDaemonAgentManager {
     return { agentId, stopped: true };
   }
 
+  /**
+   * Apply a runner-initiated terminal snapshot to a tracked agent.
+   *
+   * Invoked by the background runner immediately before it removes an
+   * agent from `#active` (turn ended, errored, shutdown). Without this
+   * hook the lifecycle's poll-based `getAgentSnapshot` lookup hits null
+   * after cleanup and `agent.status` stays at the initial `running`
+   * value, leaving stale rows in `agent.list` for every completed
+   * agent. The snapshot's `status` is already mapped to the daemon
+   * vocabulary by `mapThreadStatus` in the runner — typically
+   * `"stopped"` for a completed/shutdown thread or `"error"` for an
+   * errored one.
+   */
+  async handleRunnerTerminated(
+    agentId: string,
+    snapshot: AgenCBackgroundAgentSnapshot,
+  ): Promise<void> {
+    const transitionAt = this.#now();
+    const target = await this.#state.with(async (state) => {
+      const agent = state.agents.get(agentId);
+      if (agent === undefined) return null;
+      if (!isActiveAgent(agent)) return null;
+      const sessionIds = [...agent.sessionIds];
+      const route = snapshotRouteForAgent(agent);
+      applyAgentSnapshot(agent, snapshot);
+      agent.runtimeAvailable = false;
+      // Mirror stopAgent end-state: move active sessionIds into
+      // logSessionIds so subsequent log reads still address the
+      // archived sessions, and clear sessionIds so the agent is no
+      // longer treated as live.
+      agent.logSessionIds = uniqueNonEmptyStrings([
+        ...agent.logSessionIds,
+        ...agent.sessionIds,
+      ]);
+      agent.sessionIds = [];
+      return { sessionIds, route };
+    });
+    if (target === null) return;
+    await this.#recordAgentStatusSnapshots(
+      target.sessionIds,
+      agentId,
+      snapshot.status,
+      transitionAt,
+      "runner_terminated",
+      target.route,
+      snapshot.metadata,
+    );
+    await this.#terminateAgentSessions(target.sessionIds, "runner_terminated");
+  }
+
   async stopAll(reason = "daemon_shutdown"): Promise<number> {
     this.#shuttingDown = true;
     await this.#waitForActiveCreates();

@@ -70,28 +70,10 @@ function isEnvTruthy(value: string | undefined): boolean {
 
 async function loadRemoteSettingsSync(): Promise<RemoteSettingsSync | null> {
   if (remoteSettingsSyncForTesting) return remoteSettingsSyncForTesting;
-  try {
-    // Literal specifiers so tsup discovers and bundles these modules.
-    // Variable-specifier dynamic imports are skipped by the bundler.
-    const [settingsSync, changeDetector] = await Promise.all([
-      import("../services/settingsSync/index.js") as Promise<{
-        redownloadUserSettings?: () => Promise<boolean>;
-      }>,
-      import("../utils/settings/changeDetector.js") as Promise<{
-        settingsChangeDetector?: {
-          notifyChange?: (source: "userSettings") => void;
-        };
-      }>,
-    ]);
-    if (typeof settingsSync.redownloadUserSettings !== "function") return null;
-    return {
-      redownloadUserSettings: settingsSync.redownloadUserSettings,
-      notifySettingsChange: source =>
-        changeDetector.settingsChangeDetector?.notifyChange?.(source),
-    };
-  } catch {
-    return null;
-  }
+  // Donor remote settings sync was removed in the upstream-backend purge.
+  // Until AgenC ships its own settings-sync service, surface "no sync"
+  // so reload-plugins can still drive the local plugin reload path.
+  return null;
 }
 
 async function refreshRemoteUserSettingsIfNeeded(): Promise<boolean> {

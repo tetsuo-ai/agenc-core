@@ -7,7 +7,6 @@ import { useEffect } from 'react';
 import { useNotifications } from '../../context/notifications.js';
 import { getIsRemoteMode } from '../../../bootstrap/state';
 import { Text } from '../../ink.js';
-import { hasAgenCAiMcpEverConnected } from '../../../services/mcp/agencai'; // branding-scan: allow upstream mirror import path pending purge
 import type { MCPServerConnection } from '../../../services/mcp/types';
 type Props = {
   mcpClients?: MCPServerConnection[];

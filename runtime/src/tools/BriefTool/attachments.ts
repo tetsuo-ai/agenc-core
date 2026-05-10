@@ -85,26 +85,8 @@ export async function resolveAttachments(
   // builds. A static import would force module-scope evaluation regardless
   // of the guard inside uploadBriefAttachment — AGENC.md: "helpers defined
   // outside remain in the build even if never called".
-  if (feature('BRIDGE_MODE')) {
-    // Headless/SDK callers never set appState.replBridgeEnabled (only the TTY
-    // REPL does, at main.tsx init). AGENC_BRIEF_UPLOAD lets a host that
-    // runs the CLI as a subprocess opt in — e.g. the cowork desktop bridge,
-    // which already passes AGENC_OAUTH_TOKEN for auth.
-    const shouldUpload =
-      uploadCtx.replBridgeEnabled ||
-      isEnvTruthy(process.env.AGENC_BRIEF_UPLOAD)
-    const { uploadBriefAttachment } = await import('./upload.js')
-    const uuids = await Promise.all(
-      stated.map(a =>
-        uploadBriefAttachment(a.path, a.size, {
-          replBridgeEnabled: shouldUpload,
-          signal: uploadCtx.signal,
-        }),
-      ),
-    )
-    return stated.map((a, i) =>
-      uuids[i] === undefined ? a : { ...a, file_uuid: uuids[i] },
-    )
-  }
+  // Donor file_upload to the upstream backend was removed; nothing to
+  // upload locally. Return the stat'd attachments unchanged so callers
+  // still get accurate path/size metadata.
   return stated
 }

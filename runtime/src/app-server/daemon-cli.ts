@@ -834,6 +834,16 @@ async function runAgenCDaemonForeground(
         `agenc: permission audit log failed: ${formatCleanupError(error)}\n`,
       ),
   });
+  // Wire the runner's terminal-status hook into the lifecycle so a
+  // completed/errored agent's status transitions out of `running` in
+  // `agent.list` immediately, instead of being lost in the race
+  // between the runner's `#cleanupWhenComplete` deletion and the
+  // lifecycle's lazy snapshot poll. The setter is optional on the
+  // interface so injected runners (tests, alt implementations) can
+  // skip it without binding to the concrete delegate runner.
+  runner.setOnActiveAgentTerminated?.((agentId, snapshot) =>
+    agentManager.handleRunnerTerminated(agentId, snapshot),
+  );
   try {
     snapshotPolicies.hydrateStartupRecovery(startupRecovery);
     snapshotPolicies.startPeriodic();
