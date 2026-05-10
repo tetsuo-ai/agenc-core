@@ -247,6 +247,22 @@ export interface AgenCBackgroundAgentRunner {
    * also stopped — see {@link AgentControl.interrupt}.
    */
   interruptAgentTurn?(agentId: string, reason: string): Promise<boolean>;
+  /**
+   * Register a callback invoked once per agent immediately before the
+   * runner removes that agent from its `#active` registry on terminal
+   * status. The callback receives the final per-agent snapshot so the
+   * lifecycle layer can record the terminal-state transition before the
+   * underlying snapshot becomes unobservable. Without this hook,
+   * `getAgentSnapshot` returns null after cleanup and the lifecycle's
+   * lazy poll never observes the transition — leaving stale `running`
+   * entries in `agent.list`.
+   */
+  setOnActiveAgentTerminated?(
+    callback: (
+      agentId: string,
+      snapshot: AgenCBackgroundAgentSnapshot,
+    ) => void | Promise<void>,
+  ): void;
   respondToElicitation?(
     agentId: string,
     params: AgenCBackgroundAgentElicitationResponseParams,
@@ -343,6 +359,10 @@ export interface AgenCDelegateBackgroundAgentRunnerOptions {
     delayMs: number,
   ) => AgenCAgentBudgetTimer;
   readonly clearBudgetTimer?: (timer: AgenCAgentBudgetTimer) => void;
+  readonly onActiveAgentTerminated?: (
+    agentId: string,
+    snapshot: AgenCBackgroundAgentSnapshot,
+  ) => void | Promise<void>;
 }
 
 export type AgenCDelegateBackgroundAgentRunnerRuntimeConfig = Pick<
@@ -376,6 +396,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     string,
     Map<string, (decision: ReviewDecision) => void>
   >();
+  #onActiveAgentTerminated:
+    | ((
+        agentId: string,
+        snapshot: AgenCBackgroundAgentSnapshot,
+      ) => void | Promise<void>)
+    | undefined;
 
   constructor(options: AgenCDelegateBackgroundAgentRunnerOptions = {}) {
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
@@ -395,6 +421,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     this.#clearBudgetTimer =
       options.clearBudgetTimer ??
       ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
+    this.#onActiveAgentTerminated = options.onActiveAgentTerminated;
+  }
+
+  setOnActiveAgentTerminated(
+    callback: (
+      agentId: string,
+      snapshot: AgenCBackgroundAgentSnapshot,
+    ) => void | Promise<void>,
+  ): void {
+    this.#onActiveAgentTerminated = callback;
   }
 
   updateRuntimeConfig(
@@ -1117,6 +1153,29 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       .finally(async () => {
         const active = this.#active.get(agentId);
         if (active === undefined || active.thread !== thread) return;
+        // Notify the lifecycle of terminal status BEFORE deleting from
+        // `#active`. After deletion, `getAgentSnapshot` returns null
+        // and the lifecycle's poll-based refresh has no way to observe
+        // the transition, so it leaves `agent.status` at the initial
+        // `running` value. The callback runs synchronously (awaited)
+        // so the lifecycle's record is updated before any subsequent
+        // `agent.list` resolves.
+        if (this.#onActiveAgentTerminated !== undefined) {
+          const terminalSnapshot: AgenCBackgroundAgentSnapshot = {
+            status: active.status,
+            lastActiveAt: active.lastActiveAt,
+            ...(active.budgetHalt !== undefined
+              ? { metadata: { budgetHalt: active.budgetHalt } }
+              : {}),
+          };
+          try {
+            await this.#onActiveAgentTerminated(agentId, terminalSnapshot);
+          } catch {
+            // Swallow callback errors so cleanup never leaks. The
+            // lifecycle layer is responsible for its own error
+            // surfacing via onSnapshotError.
+          }
+        }
         const bufferedEvents = active.bufferedEvents.splice(0);
         this.#active.delete(agentId);
         if (bufferedEvents.length > 0) {
