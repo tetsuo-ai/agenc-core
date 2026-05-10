@@ -76,6 +76,17 @@ import { jsonParse } from './slowOperations.js'
 import { clearToolSchemaCache } from './toolSchemaCache.js'
 
 /** Default TTL for API key helper cache in milliseconds (5 minutes) */
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const getOauthProfileFromOauthToken = async (..._args: unknown[]): Promise<null> => null;
+const isOAuthTokenExpired = (..._args: unknown[]): boolean => true;
+const refreshOAuthToken = async (..._args: unknown[]): Promise<null> => null;
+const shouldUseAgenCAIAuth = (): boolean => false;
+// ---- end donor-purge stubs ----
 const DEFAULT_API_KEY_HELPER_TTL = 5 * 60 * 1000
 
 /**

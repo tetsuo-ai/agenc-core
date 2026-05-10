@@ -16,6 +16,14 @@ import { getErrnoCode } from '../../utils/errors.js'
 import { IMAGE_EXTENSION_REGEX } from '../../utils/imagePaste.js'
 import { expandPath } from '../../utils/path.js'
 
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const uploadBriefAttachment = async (..._args: unknown[]): Promise<undefined> => undefined;
+// ---- end donor-purge stubs ----
 export type ResolvedAttachment = {
   path: string
   size: number

@@ -357,6 +357,15 @@ import { isExtractModeActive } from '../memory/index.js'
 
 // Dead code elimination: conditional imports
 /* eslint-disable @typescript-eslint/no-require-imports */
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const isBridgeEnabled = (): boolean => false;
+const teleportResumeCodeSession = async (..._args: unknown[]): Promise<null> => null;
+// ---- end donor-purge stubs ----
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js'))
   : null

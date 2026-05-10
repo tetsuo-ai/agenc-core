@@ -11,6 +11,14 @@ import { setClipboard } from '../../tui/ink/termio/osc.js';
 import { Box, Link, Text } from '../../tui/ink.js';
 import { saveOAuthTokensIfNeeded } from '../../utils/auth.js';
 import { logError } from '../../utils/log.js';
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const OAuthService = class { async start(): Promise<null> { return null; } };
+// ---- end donor-purge stubs ----
 interface OAuthFlowStepProps {
   onSuccess: (token: string) => void;
   onCancel: () => void;

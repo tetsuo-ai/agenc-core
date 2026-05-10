@@ -56,6 +56,18 @@ import { getPrompt } from 'src/tools/AgentTool/prompt.js';
 import { runAgent } from './runAgent.js';
 import { renderGroupedAgentToolUse, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseRejectedMessage, renderToolUseTag, userFacingName, userFacingNameBackgroundColor } from './UI.js';
 /* eslint-disable @typescript-eslint/no-require-imports */
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const checkRemoteAgentEligibility = async (..._args: unknown[]): Promise<{ eligible: false }> => ({ eligible: false });
+const formatPreconditionError = (..._args: unknown[]): string => 'Remote agents are not available in this build.';
+const getRemoteTaskSessionUrl = (..._args: unknown[]): null => null;
+const registerRemoteAgentTask = (..._args: unknown[]): { agentTaskId: string; sessionUrl: null } => ({ agentTaskId: '', sessionUrl: null });
+const teleportToRemote = async (..._args: unknown[]): Promise<null> => null;
+// ---- end donor-purge stubs ----
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../../proactive/index.js') as typeof import('../../proactive/index.js') : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 

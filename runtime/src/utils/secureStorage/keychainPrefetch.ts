@@ -30,6 +30,14 @@ import {
   primeKeychainCacheFromPrefetch,
 } from './macOsKeychainHelpers.js'
 
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const isRemoteManagedSettingsEligible = (): boolean => false;
+// ---- end donor-purge stubs ----
 const KEYCHAIN_PREFETCH_TIMEOUT_MS = 10_000
 
 // Shared with auth.ts getApiKeyFromConfigOrMacOSKeychain() so it can skip its

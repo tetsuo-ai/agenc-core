@@ -125,6 +125,15 @@ import { useShowFastIconHint } from './useShowFastIconHint.js';
 import { useSwarmBanner } from './useSwarmBanner.js';
 import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
 
+
+// ---- donor-purge stubs ----
+// These symbols used to come from modules deleted in the api.anthropic.com
+// purge. They are stubbed here as no-ops so the surrounding moved-source
+// code paths degrade silently. Real implementations land when AgenC ships
+// the equivalent backend.
+const BackgroundTasksDialog = (_props: unknown): null => null;
+const BridgeDialog = (_props: unknown): null => null;
+// ---- end donor-purge stubs ----
 type PromptSuggestionHookProps = {
   inputValue: string;
   isAssistantResponding: boolean;
