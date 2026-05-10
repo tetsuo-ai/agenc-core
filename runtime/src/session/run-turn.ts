@@ -3407,8 +3407,36 @@ async function* runTurnKernelInner(
         // loop — that would spin forever with unchanged state. Surface
         // the token-limit condition as a terminal error matching the
         // semantics of agenc runtime's `return None`.
+        //
+        // Diagnostic: when `wasCompacted=false` but the budget IS breached,
+        // the most common cause is that the conversation history is small
+        // (nothing to compact) but the system prompt + tool catalog +
+        // AGENC.md alone exceed the threshold. The original "skipped:
+        // tokens=X limit=Y" message gave the user no actionable signal.
+        // Estimate conversation-only tokens here so we can tell the user
+        // whether the system prompt or the conversation is the dominant
+        // consumer.
         await drainInFlight(state, ctx, session);
-        const reasonText = `mid_turn_compact_skipped: tokens=${totalUsageTokens} limit=${autoCompactLimit}`;
+        let conversationTokens = 0;
+        try {
+          const tokenEst = await import("../llm/token-estimation.js");
+          conversationTokens = tokenEst.roughTokenCountEstimationForMessages(
+            state.messages as never,
+            { model: ctx.modelInfo.slug },
+          );
+        } catch {
+          // Best-effort — if estimator is unavailable, we still want the
+          // outer error to fire with the original info.
+          conversationTokens = 0;
+        }
+        const systemAndToolsApprox = Math.max(
+          0,
+          totalUsageTokens - conversationTokens,
+        );
+        const reasonText = conversationTokens > 0 &&
+          systemAndToolsApprox >= autoCompactLimit
+          ? `system prompt + tool catalog + project instructions occupy ~${systemAndToolsApprox.toLocaleString()} tokens, which exceeds the auto-compact threshold of ${autoCompactLimit.toLocaleString()} tokens. Compaction can only shrink conversation history (~${conversationTokens.toLocaleString()} tokens here) — it cannot reduce the system prompt. Trim AGENC.md, reduce the active tool catalog, or use a model with a larger context window. (Total tokens this turn: ${totalUsageTokens.toLocaleString()}.)`
+          : `mid_turn_compact_skipped: tokens=${totalUsageTokens} limit=${autoCompactLimit}`;
         session.emit({
           id: session.nextInternalSubId(),
           msg: {
