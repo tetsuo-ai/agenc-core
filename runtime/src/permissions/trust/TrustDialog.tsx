@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from "react";
+import useInput from "../../tui/ink/hooks/use-input.js";
 
 export interface TrustDialogProps {
   readonly workspaceRoot: string;
@@ -9,22 +10,18 @@ export interface TrustDialogProps {
 
 type TrustChoice = "trust" | "exit";
 
-function eventName(event: unknown): string {
-  if (typeof event !== "object" || event === null) return "";
-  const raw =
-    "name" in event
-      ? (event as { readonly name?: unknown }).name
-      : (event as { readonly key?: unknown }).key;
-  return typeof raw === "string" ? raw : "";
-}
-
 export function TrustDialog(props: TrustDialogProps): React.ReactElement {
-  const [choice, setChoice] = useState<TrustChoice>("exit");
+  // No pre-selected option. The user must explicitly pick one with
+  // arrow / tab / explicit y / n before Enter is meaningful. Pressing
+  // Enter on launch (the most common reflex) should not commit a
+  // destructive action; it just sits waiting for an actual choice.
+  const [choice, setChoice] = useState<TrustChoice | null>(null);
   const [pending, setPending] = useState(false);
 
   const submit = useCallback(
-    async (next: TrustChoice = choice) => {
+    async (next: TrustChoice | null = choice) => {
       if (pending) return;
+      if (next === null) return;
       setPending(true);
       try {
         if (next === "trust") {
@@ -39,23 +36,38 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     [choice, pending, props],
   );
 
-  const onKeyDown = useCallback(
-    (event: unknown) => {
-      const name = eventName(event);
-      if (name === "up" || name === "down" || name === "tab") {
-        setChoice((current) => (current === "trust" ? "exit" : "trust"));
-        return;
-      }
-      if (name === "return" || name === "enter") {
-        void submit();
-        return;
-      }
-      if (name === "escape") {
-        void submit("exit");
-      }
-    },
-    [submit],
-  );
+  useInput((input, key) => {
+    if (pending) return;
+    if (key.upArrow || key.downArrow || key.tab) {
+      setChoice((current) => {
+        if (current === null) return "trust";
+        return current === "trust" ? "exit" : "trust";
+      });
+      return;
+    }
+    // Single-letter shortcuts so the user can pick directly without
+    // first navigating: `y` selects trust, `n` selects exit. The
+    // user still has to press Enter afterwards to commit.
+    if (input === "y" || input === "Y") {
+      setChoice("trust");
+      return;
+    }
+    if (input === "n" || input === "N") {
+      setChoice("exit");
+      return;
+    }
+    if (key.return) {
+      // Enter is a no-op until the user has made a choice. Without
+      // this guard, a stray Enter from the launching shell or any
+      // reflexive keystroke would commit "exit" and bounce the
+      // user out of the tool they just launched.
+      void submit();
+      return;
+    }
+    if (key.escape) {
+      void submit("exit");
+    }
+  });
 
   const h = React.createElement;
   const option = (id: TrustChoice, label: string) =>
@@ -71,9 +83,6 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
   return h(
     "ink-box",
     {
-      autoFocus: true,
-      tabIndex: 0,
-      onKeyDown,
       style: {
         flexDirection: "column",
         paddingX: 1,
@@ -103,6 +112,13 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
       { style: { flexDirection: "column" } },
       option("trust", pending ? "Accepting..." : "Yes, I trust this project"),
       option("exit", "No, exit"),
+    ),
+    h(
+      "ink-text",
+      { textStyles: { dimColor: true } },
+      choice === null
+        ? "Use ↑ ↓ or y / n to choose, then Enter to confirm."
+        : "Press Enter to confirm, or ↑ ↓ to switch.",
     ),
   );
 }
