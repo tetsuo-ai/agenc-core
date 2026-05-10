@@ -1543,14 +1543,34 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     },
     [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult],
   );
-  // When the daemon's turn_started arrives, drop the optimistic
-  // pending-submission flag — `transcript.isStreaming` now drives
-  // the spinner with real authority.
+  // When the daemon shows any sign of activity, drop the optimistic
+  // pending-submission flag. We don't gate this only on isStreaming
+  // (turn_started) because the daemon sometimes skips that event and
+  // goes straight to turn_complete with the message — leaving
+  // pendingSubmission stuck true forever and the spinner running long
+  // after the response landed. Any of these signals means the daemon
+  // saw the submission:
+  //   - isStreaming flipped true (turn_started arrived)
+  //   - streamingText is flowing
+  //   - the assistant message count grew (turn_complete pushed a row)
+  const lastAssistantMessageCountRef = useRef(0);
+  const assistantMessageCount = useMemo(() => {
+    let count = 0;
+    for (const m of transcript.messages as readonly { type?: string }[]) {
+      if (m.type === "assistant") count++;
+    }
+    return count;
+  }, [transcript.messages]);
   useEffect(() => {
-    if (transcript.isStreaming) {
+    if (
+      transcript.isStreaming ||
+      transcript.streamingText !== null ||
+      assistantMessageCount > lastAssistantMessageCountRef.current
+    ) {
+      lastAssistantMessageCountRef.current = assistantMessageCount;
       setPendingSubmission(false);
     }
-  }, [transcript.isStreaming]);
+  }, [transcript.isStreaming, transcript.streamingText, assistantMessageCount]);
   useInitialSubmit(
     props.session,
     submit,
