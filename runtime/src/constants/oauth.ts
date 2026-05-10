@@ -81,25 +81,30 @@ type OauthConfig = {
 }
 
 // Production OAuth configuration - Used in normal operation
+//
+// IMPORTANT: BASE_API_URL is intentionally an empty string. The donor source
+// these moved-source files came from pointed `BASE_API_URL` at
+// `https://api.anthropic.com`. AgenC does NOT own that domain, and any
+// surviving caller that builds `${BASE_API_URL}/...` while AgenC has no
+// hosted backend would silently leak user data to a third party. Empty
+// string causes axios/fetch to fail-fast on a malformed URL, so the
+// remaining donor callers degrade safely until the deletion sweep finishes
+// or AgenC stands up its own backend.
 const PROD_OAUTH_CONFIG = {
-  BASE_API_URL: 'https://api.anthropic.com',
-  CONSOLE_AUTHORIZE_URL: 'https://agenc.tech/oauth/authorize',
-  // Bounces through the AgenC-owned attribution route before OAuth authorize.
-  AGENC_AI_AUTHORIZE_URL: 'https://agenc.tech/cai/oauth/authorize',
-  AGENC_AI_ORIGIN: 'https://agenc.tech',
-  TOKEN_URL: 'https://agenc.tech/v1/oauth/token',
-  API_KEY_URL: 'https://api.anthropic.com/api/oauth/agenc_cli/create_api_key',
-  ROLES_URL: 'https://api.anthropic.com/api/oauth/agenc_cli/roles',
-  CONSOLE_SUCCESS_URL:
-    'https://agenc.tech/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dagenc-code',
-  AGENCAI_SUCCESS_URL:
-    'https://agenc.tech/oauth/code/success?app=agenc-code',
-  MANUAL_REDIRECT_URL: 'https://agenc.tech/oauth/code/callback',
-  CLIENT_ID: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
-  // No suffix for production config
+  BASE_API_URL: '',
+  CONSOLE_AUTHORIZE_URL: '',
+  AGENC_AI_AUTHORIZE_URL: '',
+  AGENC_AI_ORIGIN: '',
+  TOKEN_URL: '',
+  API_KEY_URL: '',
+  ROLES_URL: '',
+  CONSOLE_SUCCESS_URL: '',
+  AGENCAI_SUCCESS_URL: '',
+  MANUAL_REDIRECT_URL: '',
+  CLIENT_ID: '',
   OAUTH_FILE_SUFFIX: '',
-  MCP_PROXY_URL: 'https://mcp-proxy.anthropic.com',
-  MCP_PROXY_PATH: '/v1/mcp/{server_id}',
+  MCP_PROXY_URL: '',
+  MCP_PROXY_PATH: '',
 } as const
 
 /**
@@ -112,34 +117,10 @@ const PROD_OAUTH_CONFIG = {
 export const MCP_CLIENT_METADATA_URL =
   'https://agenc.tech/oauth/agenc-code-client-metadata'
 
-// Staging OAuth configuration - only included in internal builds with staging flag
-// Uses literal check for dead code elimination
-const STAGING_OAUTH_CONFIG =
-  process.env.USER_TYPE === 'ant'
-    ? ({
-        BASE_API_URL: 'https://agenc.tech',
-        CONSOLE_AUTHORIZE_URL:
-          'https://agenc.tech/oauth/authorize',
-        AGENC_AI_AUTHORIZE_URL:
-          'https://agenc.tech/oauth/authorize',
-        AGENC_AI_ORIGIN: 'https://agenc.tech',
-        TOKEN_URL: 'https://agenc.tech/v1/oauth/token',
-        API_KEY_URL:
-          'https://agenc.tech/api/oauth/agenc_cli/create_api_key',
-        ROLES_URL:
-          'https://agenc.tech/api/oauth/agenc_cli/roles',
-        CONSOLE_SUCCESS_URL:
-          'https://agenc.tech/buy_credits?returnUrl=/oauth/code/success%3Fapp%3Dagenc-code',
-        AGENCAI_SUCCESS_URL:
-          'https://agenc.tech/oauth/code/success?app=agenc-code',
-        MANUAL_REDIRECT_URL:
-          'https://agenc.tech/oauth/code/callback',
-        CLIENT_ID: '22422756-60c9-4084-8eb7-27705fd5cf9a',
-        OAUTH_FILE_SUFFIX: '-staging-oauth',
-        MCP_PROXY_URL: 'https://agenc.tech',
-        MCP_PROXY_PATH: '/v1/mcp/{server_id}',
-      } as const)
-    : undefined
+// Staging OAuth configuration retained as a placeholder shape only. The
+// donor URLs were removed alongside the prod config so this never connects
+// to an external host while AgenC's hosted backend is unbuilt.
+const STAGING_OAUTH_CONFIG = undefined as undefined
 
 // Three local dev servers: :8000 api-proxy (`api dev start -g ccr`),
 // :4000 AgenC frontend, :3000 Console frontend. Env vars let
