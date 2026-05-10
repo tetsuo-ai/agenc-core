@@ -3,7 +3,9 @@ import type { Task, TaskType } from './tasks/Task.js'
 import { DreamTask } from './tasks/DreamTask/DreamTask.js'
 import { LocalAgentTask } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalShellTask } from './tasks/LocalShellTask/LocalShellTask.js'
-import { RemoteAgentTask } from './tasks/RemoteAgentTask/RemoteAgentTask.js'
+// RemoteAgentTask was removed in the donor-backend purge (it depended
+// on api.anthropic.com session-ingress endpoints that AgenC does not
+// own). The local task list survives without it.
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const LocalWorkflowTask: Task | null = feature('WORKFLOW_SCRIPTS')
@@ -23,7 +25,6 @@ export function getAllTasks(): Task[] {
   const tasks: Task[] = [
     LocalShellTask,
     LocalAgentTask,
-    RemoteAgentTask,
     DreamTask,
   ]
   if (LocalWorkflowTask) tasks.push(LocalWorkflowTask)
