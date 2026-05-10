@@ -407,9 +407,6 @@ const loadMemoryPaths = memoizedModule(
 const loadGrowthbook = memoizedModule(
   () => require("../services/analytics/growthbook.js") as typeof import("../services/analytics/growthbook.js"),
 );
-const loadReferral = memoizedModule(
-  () => require("../services/api/referral.js") as typeof import("../services/api/referral.js"),
-);
 const loadPolicyLimits = memoizedModule(
   () => require("../services/policyLimits/index.js") as typeof import("../services/policyLimits/index.js"),
 );
@@ -463,21 +460,6 @@ function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name: string): boolean {
     () => loadGrowthbook().checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name),
     false,
   );
-}
-
-function checkCachedPassesEligibility(): ReturnType<
-  typeof import("../services/api/referral.js").checkCachedPassesEligibility
-> {
-  return readOptional(
-    () => loadReferral().checkCachedPassesEligibility(),
-    { eligible: false, needsRefresh: false, hasCache: false },
-  );
-}
-
-function getCachedReferrerReward(): ReturnType<
-  typeof import("../services/api/referral.js").getCachedReferrerReward
-> {
-  return readOptional(() => loadReferral().getCachedReferrerReward(), null);
 }
 
 function isPolicyAllowed(policy: Parameters<
@@ -636,7 +618,6 @@ const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>>
   "./buddy/index.js": () => import("./buddy/index.js"),
   "./color/index.js": () => import("./color/index.js"),
   "./export/index.js": () => import("./export/index.js"),
-  "./extra-usage/index.js": () => import("./extra-usage/index.js"),
   "./heapdump/index.js": () => import("./heapdump/index.js"),
   "./ide/index.js": () => import("./ide/index.js"),
   "./knowledge/index.js": () => import("./knowledge/index.js"),
