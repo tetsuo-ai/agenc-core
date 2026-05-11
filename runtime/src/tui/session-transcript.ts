@@ -1268,9 +1268,14 @@ export function adaptTranscriptEvents(
         }
         if (kind === "error") {
           const msg = candidate.message;
+          const text = typeof msg === "string" ? msg : stringResult(msg);
+          // Never render a bare "Error: " row. The dispatcher and
+          // processSlashCommand paths both populate `message` (e.g.
+          // "Unknown command: /foo"); fall back to a generic label
+          // only if something upstream drops it.
           out.push(
             makeSystemMessage(
-              `Error: ${typeof msg === "string" ? msg : stringResult(msg)}`,
+              `Error: ${text.length > 0 ? text : "slash command failed"}`,
               "error",
             ),
           );
