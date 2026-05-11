@@ -104,6 +104,7 @@
     "bn.js": "^5.2.3",
     "express-rate-limit": "^8.3.1",
     "matrix-js-sdk": "^41.1.0-rc.0",
+    "rpc-websockets": "9.2.0",
     "rollup": "^4.59.0",
     "undici": "^7.22.0"
   },
@@ -121,8 +122,10 @@
     "@tetsuo-ai/plugin-kit": "0.2.0",
     "@tetsuo-ai/protocol": "0.2.0",
     "@tetsuo-ai/sdk": "1.4.0",
+    "@solana/web3.js": "^1.98.4",
     "bn.js": "^5.2.3",
     "jimp": "^1.6.1",
+    "rpc-websockets": "9.2.0",
     "undici": "^7.22.0"
   },
   "devDependencies": {

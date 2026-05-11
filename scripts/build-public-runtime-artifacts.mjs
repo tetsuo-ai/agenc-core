@@ -407,6 +407,23 @@ async function main() {
     const installRoot = path.join(tempRoot, "install-root");
     await mkdir(installRoot, { recursive: true });
     run("npm", ["init", "-y"], installRoot);
+    if (
+      runtimePackage.overrides &&
+      typeof runtimePackage.overrides === "object" &&
+      !Array.isArray(runtimePackage.overrides)
+    ) {
+      const installRootPackagePath = path.join(installRoot, "package.json");
+      const installRootPackage = await readJson(installRootPackagePath);
+      installRootPackage.overrides = {
+        ...(installRootPackage.overrides ?? {}),
+        ...runtimePackage.overrides,
+      };
+      await writeFile(
+        installRootPackagePath,
+        `${JSON.stringify(installRootPackage, null, 2)}\n`,
+        "utf8",
+      );
+    }
     // --install-links forces npm to materialize copies for any local file: or
     // directory installs (the bundled external plugin sibling repos) instead
     // of writing symlinks back to the source tree. Symlinks are unsafe here:
