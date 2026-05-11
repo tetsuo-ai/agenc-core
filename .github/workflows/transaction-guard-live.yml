@@ -54,11 +54,11 @@ jobs:
 
   live-ollama:
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.transaction_guard == 'true'
+    if: github.event_name == 'workflow_dispatch' || (needs.changes.outputs.transaction_guard == 'true' && vars.AGENC_TRANSACTION_GUARD_CI_LIVE == '1')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      AGENC_TRANSACTION_GUARD_MODEL: ${{ vars.AGENC_TRANSACTION_GUARD_MODEL || 'gemma3:1b' }}
+      AGENC_TRANSACTION_GUARD_MODEL: ${{ vars.AGENC_TRANSACTION_GUARD_MODEL || 'gemma4:e2b' }}
       AGENC_TRANSACTION_GUARD_TIMEOUT_MS: "180000"
       AGENC_TRANSACTION_GUARD_LIVE_CASE_LIMIT: "2"
       OLLAMA_NUM_PARALLEL: "1"
@@ -120,11 +120,11 @@ jobs:
       - name: Summarize transaction guard live check
         env:
           LIVE_RESULT: ${{ needs.live-ollama.result }}
-          SHOULD_RUN: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.transaction_guard == 'true' }}
+          SHOULD_RUN: ${{ github.event_name == 'workflow_dispatch' || (needs.changes.outputs.transaction_guard == 'true' && vars.AGENC_TRANSACTION_GUARD_CI_LIVE == '1') }}
         run: |
           set -euo pipefail
           if [ "${SHOULD_RUN}" != "true" ]; then
-            echo "Live Ollama guard tests skipped: no transaction-guard-relevant paths changed."
+            echo "Live Ollama guard tests skipped: no transaction-guard-relevant paths changed or AGENC_TRANSACTION_GUARD_CI_LIVE is not enabled."
             exit 0
           fi
           if [ "${LIVE_RESULT}" = "success" ]; then

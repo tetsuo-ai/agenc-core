@@ -198,7 +198,8 @@ Duration    371.00s
 GitHub Actions live smoke:
 
 - The runtime/local default remains `gemma4:e2b`.
-- The PR workflow defaults to `gemma3:1b` unless the repository variable `AGENC_TRANSACTION_GUARD_MODEL` is set. The smallest Gemma 4 tag available here is too slow for a blocking free-runner PR check with the full CourtGuard defense/prosecution/judge orchestration.
+- Live Ollama CI is opt-in on pull requests: it runs only when transaction-guard paths changed and the repository variable `AGENC_TRANSACTION_GUARD_CI_LIVE=1` is set. It also runs from `workflow_dispatch`.
+- The workflow defaults to `gemma4:e2b`, matching the runtime/local default. Smaller free-runner-friendly models such as `gemma3:1b` are fast enough to execute but were not reliable enough to serve as a meaningful security gate.
 - The CI job caps live adversarial cases with `AGENC_TRANSACTION_GUARD_LIVE_CASE_LIMIT=2`; leaving that unset runs the full live matrix locally or from a manual workflow override.
 
 Typecheck:
