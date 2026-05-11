@@ -38,6 +38,7 @@ export type SystemScheduledTaskFireMessage = any;
 export type SystemStopHookSummaryMessage = any;
 export type SystemTurnDurationMessage = any;
 export type SystemAgentsKilledMessage = any;
+export type SystemFileSnapshotMessage = any;
 export type NormalizedMessage = any;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export type NormalizedAssistantMessage<_T = unknown> = any;

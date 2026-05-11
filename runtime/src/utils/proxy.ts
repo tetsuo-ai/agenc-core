@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // @aws-sdk/credential-provider-node and @smithy/node-http-handler are imported
 // dynamically in getAWSClientProxyConfig() to defer ~929KB of AWS SDK.
 // undici is lazy-required inside getProxyAgent/configureGlobalAgents to defer
@@ -403,9 +401,9 @@ export async function getAWSClientProxyConfig(): Promise<object> {
   }
 
   const [{ NodeHttpHandler }, { defaultProvider }] = await Promise.all([
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- optional AWS SDK dep imported lazily; declaration not installed.
     import('@smithy/node-http-handler'),
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+    // @ts-expect-error -- optional AWS SDK dep imported lazily; declaration not installed.
     import('@aws-sdk/credential-provider-node'),
   ])
 

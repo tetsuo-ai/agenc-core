@@ -1,10 +1,7 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomBytes } from 'crypto'
 import {
   isCodexBaseUrl,
   parseOpenAICompatibleApiFormat,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/api/providerConfig.js'
 import {
   getGlobalConfig,
@@ -1059,13 +1056,8 @@ export function setActiveProviderProfile(
   applyProviderProfileToProcessEnv(activeProfile)
 
   // Keep startup persisted provider profile in sync so initial startup
-  // uses the selected provider/model.
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-  const persistedProfile = (() => {
-    if (activeProfile.provider === 'anthropic') return 'openai' as const
-    return activeProfile.provider
-  })()
-
+  // uses the selected provider/model. The startup profile name is derived
+  // inline below when building the persisted profile file payload.
   const profileEnv = (() => {
     switch (activeProfile.provider) {
       case 'gemini':

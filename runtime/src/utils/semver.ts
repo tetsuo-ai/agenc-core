@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Semver comparison utilities that use Bun.semver when available
  * and fall back to the npm `semver` package in Node.js environments.

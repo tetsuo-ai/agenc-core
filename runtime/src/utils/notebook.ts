@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import type {
   ImageBlockParam,
   TextBlockParam,
@@ -7,17 +5,75 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { formatOutput } from '../tools/BashTool/utils.js'
-import type {
-  NotebookCell,
-  NotebookCellOutput,
-  NotebookCellSource,
-  NotebookCellSourceOutput,
-  NotebookContent,
-  NotebookOutputImage,
-} from '../types/notebook.js'
 import { getFsImplementation } from './fsOperations.js'
 import { expandPath } from './path.js'
 import { jsonParse } from './slowOperations.js'
+
+// Jupyter notebook (.ipynb) structural types — derived from the official
+// nbformat v4 schema (https://nbformat.readthedocs.io/en/latest/format_description.html).
+// Kept inline because notebook.ts is the only AgenC consumer; the tools that
+// import from this module (FileReadTool, NotebookEditTool) work entirely with
+// the processed NotebookCellSource view defined below.
+
+export type NotebookCellType = 'code' | 'markdown' | 'raw'
+
+export type NotebookOutputImage = {
+  image_data: string
+  media_type: 'image/png' | 'image/jpeg'
+}
+
+export type NotebookCellOutput =
+  | {
+      output_type: 'stream'
+      name?: 'stdout' | 'stderr'
+      text?: string | string[]
+    }
+  | {
+      output_type: 'execute_result' | 'display_data'
+      data?: Record<string, unknown>
+      execution_count?: number | null
+      metadata?: Record<string, unknown>
+    }
+  | {
+      output_type: 'error'
+      ename: string
+      evalue: string
+      traceback: string[]
+    }
+
+export type NotebookCell = {
+  id?: string
+  cell_type: NotebookCellType
+  source: string | string[]
+  execution_count?: number | null
+  outputs?: NotebookCellOutput[]
+  metadata?: Record<string, unknown>
+}
+
+export type NotebookCellSourceOutput = {
+  output_type: NotebookCellOutput['output_type']
+  text?: string
+  image?: NotebookOutputImage
+}
+
+export type NotebookCellSource = {
+  cellType: NotebookCellType
+  source: string
+  execution_count?: number
+  cell_id: string
+  language?: string
+  outputs?: NotebookCellSourceOutput[]
+}
+
+export type NotebookContent = {
+  cells: NotebookCell[]
+  metadata: {
+    language_info?: { name?: string }
+    [k: string]: unknown
+  }
+  nbformat?: number
+  nbformat_minor?: number
+}
 
 const LARGE_OUTPUT_THRESHOLD = 10000
 
@@ -66,12 +122,18 @@ function processOutput(output: NotebookCellOutput) {
         text: processOutputText(output.text),
       }
     case 'execute_result':
-    case 'display_data':
+    case 'display_data': {
+      const textValue = output.data?.['text/plain']
+      const textInput =
+        typeof textValue === 'string' || Array.isArray(textValue)
+          ? (textValue as string | string[])
+          : undefined
       return {
         output_type: output.output_type,
-        text: processOutputText(output.data?.['text/plain']),
+        text: processOutputText(textInput),
         image: output.data && extractImage(output.data),
       }
+    }
     case 'error':
       return {
         output_type: output.output_type,

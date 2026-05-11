@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ToolUseBlock } from '@anthropic-ai/sdk/resources/index.mjs'
 import last from 'lodash-es/last.js'
 import {
@@ -62,7 +60,9 @@ export function isResultSuccessful(
   if (!message) return false
 
   if (message.type === 'assistant') {
-    const lastContent = last(message.message.content)
+    const lastContent = last(message.message.content) as
+      | { type?: string }
+      | undefined
     return (
       lastContent?.type === 'text' ||
       lastContent?.type === 'thinking' ||
@@ -303,7 +303,8 @@ export async function* handleOrphanedPermission(
       m.type === 'assistant' &&
       Array.isArray(m.message.content) &&
       m.message.content.some(
-        b => b.type === 'tool_use' && 'id' in b && b.id === toolUseID,
+        (b: { type?: string; id?: string }) =>
+          b.type === 'tool_use' && 'id' in b && b.id === toolUseID,
       ),
   )
   if (!alreadyPresent) {

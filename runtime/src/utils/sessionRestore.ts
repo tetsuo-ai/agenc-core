@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { dirname } from 'path'
@@ -81,7 +79,8 @@ function extractTodosFromTranscript(messages: Message[]): TodoList {
     const msg = messages[i]
     if (msg?.type !== 'assistant') continue
     const toolUse = msg.message.content.find(
-      block => block.type === 'tool_use' && block.name === TODO_WRITE_TOOL_NAME,
+      (block: { type?: string; name?: string }) =>
+        block.type === 'tool_use' && block.name === TODO_WRITE_TOOL_NAME,
     )
     if (!toolUse || toolUse.type !== 'tool_use') continue
     const input = toolUse.input
