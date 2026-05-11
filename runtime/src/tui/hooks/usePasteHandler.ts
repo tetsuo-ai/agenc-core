@@ -4,6 +4,10 @@ import { logError } from '../../utils/log.js' // upstream-import: keep target is
 import { useDebounceCallback } from 'usehooks-ts'
 import type { InputEvent, Key } from '../ink.js'
 import {
+  consumeSuspectedPaste,
+  isSuspectedPaste,
+} from '../input/burst-detector.js'
+import {
   getImageFromClipboard,
   isImageFilePath,
   PASTE_THRESHOLD,
@@ -64,6 +68,15 @@ export function usePasteHandler({
     timeoutId: ReturnType<typeof setTimeout> | null
   }
   isPasting: boolean
+  /**
+   * One-shot read of the unbracketed burst-paste flag (see
+   * burst-detector.ts). Always clears the flag after reading. Consumed by
+   * the bash submit path to gate `dangerouslyDisableSandbox` execution
+   * behind a confirmation dialog when raw stdin looked like a paste.
+   */
+  consumeSuspectedPaste: () => boolean
+  /** Non-consuming peek for UI hints. */
+  isSuspectedPaste: () => boolean
 } {
   const [pasteState, setPasteState] = React.useState<{
     chunks: string[]
@@ -323,5 +336,7 @@ export function usePasteHandler({
     wrappedOnInput,
     pasteState,
     isPasting,
+    consumeSuspectedPaste,
+    isSuspectedPaste,
   }
 }
