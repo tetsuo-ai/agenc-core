@@ -191,12 +191,24 @@ export function PromptInputFooterSuggestions({
   )
   const endIndex = Math.min(startIndex + maxVisibleItems, suggestions.length)
   const visibleItems = suggestions.slice(startIndex, endIndex)
+  // Round-2 MD-NEW8: when the suggestion list is longer than the
+  // visible window (e.g. tab-completing inside a directory with 200
+  // entries), show the count of items hidden below the fold so the
+  // user knows there's more to scroll through. Without this the 5
+  // visible rows look identical to a 5-entry directory.
+  const hiddenAfter = suggestions.length - endIndex
+  const hiddenBefore = startIndex
 
   return (
     <Box
       flexDirection="column"
       justifyContent={overlay ? undefined : 'flex-end'}
     >
+      {hiddenBefore > 0 ? (
+        <Box>
+          <Text dimColor>↑ {hiddenBefore} more above</Text>
+        </Box>
+      ) : null}
       {visibleItems.map(item => (
         <SuggestionItemRow
           key={`${item.id}:${item.id === suggestions[selectedSuggestion]?.id ? 'selected' : 'idle'}`}
@@ -205,6 +217,11 @@ export function PromptInputFooterSuggestions({
           isSelected={item.id === suggestions[selectedSuggestion]?.id}
         />
       ))}
+      {hiddenAfter > 0 ? (
+        <Box>
+          <Text dimColor>↓ {hiddenAfter} more below</Text>
+        </Box>
+      ) : null}
     </Box>
   )
 }
