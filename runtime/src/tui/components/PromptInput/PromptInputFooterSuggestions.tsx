@@ -46,6 +46,36 @@ function isUnifiedSuggestion(itemId: string): boolean {
   )
 }
 
+// Round-2 M-NEW8: the selected row renders the full description on an
+// indented second line so users can read commands whose description
+// exceeds the inline column budget without opening /help. Non-selected
+// rows keep the single-line truncated layout to avoid layout shift.
+const EXPANDED_DESCRIPTION_INDENT = PREFIX_WIDTH + 2
+
+function getExpandedDescription(
+  description: string | undefined,
+  columns: number,
+  isSelected: boolean,
+): string | null {
+  if (!isSelected || !description) return null
+  const collapsed = description.replace(/\s+/g, ' ').trim()
+  if (collapsed.length === 0) return null
+  const available = columns - EXPANDED_DESCRIPTION_INDENT
+  if (available <= 0) return null
+  return truncateToWidth(collapsed, available)
+}
+
+function ExpandedDescription({ text }: { text: string | null }): ReactNode {
+  if (text === null) return null
+  return (
+    <Box width="100%">
+      <Text dimColor wrap="truncate">
+        {' '.repeat(EXPANDED_DESCRIPTION_INDENT) + text}
+      </Text>
+    </Box>
+  )
+}
+
 const SuggestionItemRow = memo(function SuggestionItemRow({
   item,
   maxColumnWidth,
@@ -61,10 +91,15 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     ? 'suggestion'
     : undefined
   const textColor: keyof Theme | undefined = isSelected ? 'inverseText' : undefined
+  const expandedDescription = getExpandedDescription(
+    item.description,
+    columns,
+    isSelected,
+  )
 
+  let lineContent: string
   if (isUnifiedSuggestion(item.id)) {
     const icon = getIcon(item.id)
-    const dimColor = !isSelected
     const isFile = item.id.startsWith('file-')
     const isMcpResource = item.id.startsWith('mcp-resource-')
     const iconWidth = 2
@@ -98,7 +133,6 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       separatorWidth -
       paddingWidth
 
-    let lineContent: string
     if (item.description) {
       const truncatedDesc = truncateToWidth(
         item.description.replace(/\s+/g, ' '),
@@ -108,52 +142,47 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     } else {
       lineContent = `${selectionPrefix}${icon} ${displayText}`
     }
+  } else {
+    const maxNameWidth = Math.floor(columns * 0.4)
+    const displayTextWidth = Math.min(
+      maxColumnWidth ?? stringWidth(item.displayText) + 5,
+      maxNameWidth,
+    )
 
-    return (
+    let displayText = item.displayText
+    if (stringWidth(displayText) > displayTextWidth - 2) {
+      displayText = truncateToWidth(displayText, displayTextWidth - 2)
+    }
+
+    const paddedDisplayText =
+      selectionPrefix +
+      displayText +
+      ' '.repeat(Math.max(0, displayTextWidth - stringWidth(displayText)))
+    const tagText = item.tag ? `[${item.tag}] ` : ''
+    const tagWidth = stringWidth(tagText)
+    const descriptionWidth = Math.max(
+      0,
+      columns - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
+    )
+    const truncatedDescription = item.description
+      ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
+      : ''
+    lineContent = `${paddedDisplayText}${tagText}${truncatedDescription}`
+  }
+
+  return (
+    <Box flexDirection="column" width="100%">
       <Box width="100%" opaque={true} backgroundColor={rowBackgroundColor}>
-        <Text color={textColor} dimColor={dimColor} bold={isSelected} wrap="truncate">
+        <Text
+          color={textColor}
+          dimColor={!isSelected}
+          bold={isSelected}
+          wrap="truncate"
+        >
           {lineContent}
         </Text>
       </Box>
-    )
-  }
-
-  const maxNameWidth = Math.floor(columns * 0.4)
-  const displayTextWidth = Math.min(
-    maxColumnWidth ?? stringWidth(item.displayText) + 5,
-    maxNameWidth,
-  )
-
-  let displayText = item.displayText
-  if (stringWidth(displayText) > displayTextWidth - 2) {
-    displayText = truncateToWidth(displayText, displayTextWidth - 2)
-  }
-
-  const paddedDisplayText =
-    selectionPrefix +
-    displayText +
-    ' '.repeat(Math.max(0, displayTextWidth - stringWidth(displayText)))
-  const tagText = item.tag ? `[${item.tag}] ` : ''
-  const tagWidth = stringWidth(tagText)
-  const descriptionWidth = Math.max(
-    0,
-    columns - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
-  )
-  const truncatedDescription = item.description
-    ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
-    : ''
-  const lineContent = `${paddedDisplayText}${tagText}${truncatedDescription}`
-
-  return (
-    <Box width="100%" opaque={true} backgroundColor={rowBackgroundColor}>
-      <Text
-        color={textColor}
-        dimColor={!isSelected}
-        bold={isSelected}
-        wrap="truncate"
-      >
-        {lineContent}
-      </Text>
+      <ExpandedDescription text={expandedDescription} />
     </Box>
   )
 })
