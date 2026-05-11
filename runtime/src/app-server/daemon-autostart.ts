@@ -117,6 +117,7 @@ export async function ensureAgenCDaemonAutostart(
   // with "Cannot find module" and the spinner hangs forever. Kill
   // the stale daemon here so the start-fresh branch below replaces
   // it transparently.
+  let respawnReason: string | null = null;
   if (pid !== null && host.isPidRunning(pid)) {
     const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
     const currentVersion =
@@ -127,6 +128,7 @@ export async function ensureAgenCDaemonAutostart(
       daemonInfo !== null &&
       daemonInfo.buildTime !== currentVersion.buildTime
     ) {
+      respawnReason = `daemon build skew (running buildTime ${daemonInfo.buildTime} != on-disk ${currentVersion.buildTime})`;
       try {
         process.kill(pid, "SIGTERM");
       } catch {
@@ -147,9 +149,24 @@ export async function ensureAgenCDaemonAutostart(
       removeDaemonRuntimeInfo(runtimeInfoPath);
       pid = null;
     }
+  } else if (pid !== null && !host.isPidRunning(pid)) {
+    respawnReason = `daemon pid ${pid} not running — stale pid file`;
+  } else if (pid === null) {
+    respawnReason = "no daemon pid recorded";
   }
 
   if (pid === null || !host.isPidRunning(pid)) {
+    // Round-2 M-NEW3: previously the autostart respawned silently
+    // because `io` defaulted to `silentIo`. Surface the start event
+    // on stderr so the user sees that a daemon respawn happened
+    // (without bypassing the silent default for tests that pass
+    // their own io). Reason is set above based on which branch
+    // triggered the respawn.
+    if (respawnReason !== null) {
+      io.stderr.write(
+        `agenc: starting daemon (${respawnReason})\n`,
+      );
+    }
     const startExit = await runAgenCDaemonCli(
       { kind: "command", action: "start" },
       { host, io },
