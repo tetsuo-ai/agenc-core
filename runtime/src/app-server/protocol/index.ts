@@ -48,6 +48,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.snapshot",
   "session.cancelTurn",
   "message.send",
   "message.stream",
@@ -255,6 +256,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Clear a daemon-owned session's conversation history.",
+  },
+  "session.snapshot": {
+    method: "session.snapshot",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Read live counters (turn count, token usage, cache stats) for a daemon-owned session so the TUI's /status, /usage, /cache-stats can surface real numbers.",
   },
   "session.cancelTurn": {
     method: "session.cancelTurn",
@@ -681,6 +690,10 @@ export interface SessionTerminateParams extends JsonObject {
 }
 
 export interface SessionClearParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+export interface SessionSnapshotParams extends JsonObject {
   readonly sessionId: string;
 }
 
@@ -1144,6 +1157,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
   | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
+  | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
@@ -1328,6 +1342,33 @@ export interface SessionClearResult extends JsonObject {
   readonly clearedAt: string;
 }
 
+/**
+ * Counters from the daemon-owned in-process session. The TUI bridge
+ * cannot read these directly because it only holds a thin client-side
+ * `AgenCBridgeSession`; the daemon ships the values over the wire
+ * via `session.snapshot` so commands like `/status`, `/usage`, and
+ * `/cache-stats` can surface meaningful numbers instead of zeros.
+ */
+export interface SessionSnapshotResult extends JsonObject {
+  readonly sessionId: string;
+  /** Number of completed turns recorded in the session's history. */
+  readonly turnCount: number;
+  readonly tokenUsage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly costUsd: number;
+  };
+  /** Cumulative cache metrics across API calls this session. */
+  readonly cacheStats: {
+    readonly requestCount: number;
+    readonly cacheReadInputTokens: number;
+    readonly cacheCreationInputTokens: number;
+    readonly cacheTotalInputTokens: number;
+    readonly hitRate: number | null;
+  };
+}
+
 export interface SessionCancelTurnResult extends JsonObject {
   readonly sessionId: string;
   /**
@@ -1502,6 +1543,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.detach": SessionDetachResult;
   readonly "session.terminate": SessionTerminateResult;
   readonly "session.clear": SessionClearResult;
+  readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;

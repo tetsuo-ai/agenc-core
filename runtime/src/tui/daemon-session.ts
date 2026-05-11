@@ -20,6 +20,7 @@ import type {
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
   SessionRewindConversationToMessageResult,
+  SessionSnapshotResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
@@ -81,6 +82,7 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
+  getDaemonSessionSnapshot?(): Promise<SessionSnapshotResult>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;
     readonly direction: "from" | "up_to";
@@ -320,6 +322,8 @@ export function createDaemonTuiSession<
     clearDaemonSession: async () => {
       await client.request("session.clear", { sessionId });
     },
+    getDaemonSessionSnapshot: async () =>
+      client.request("session.snapshot", { sessionId }),
     cancelActiveTurn: async (reason?: string) => {
       // Best-effort: a closed/disconnected daemon socket throws. The
       // user pressed ESC — they want the turn to stop, but a thrown

@@ -2175,6 +2175,7 @@ type TuiSessionShape = {
   subscribeToEvents?: (cb: (event: unknown) => void) => () => void;
   emitPhaseEvent?: (event: PhaseEvent) => void;
   clearDaemonSession?: () => Promise<void>;
+  getDaemonSessionSnapshot?: () => Promise<unknown>;
   getInitialTranscriptEvents?: () => readonly unknown[];
 };
 
@@ -2404,6 +2405,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
       if (liveSession !== null) {
         await (liveSession as TuiSessionShape).clearDaemonSession?.();
       }
+    },
+    // Same forwarder pattern as clearDaemonSession: /status, /usage,
+    // and /cache-stats all call `session.getDaemonSessionSnapshot()`
+    // via App.tsx's slash dispatcher, which routes through this
+    // outer deferred wrapper. Without forwarding to liveSession, the
+    // snapshot is undefined and bridge-session counters stay at zero
+    // even after real turns complete.
+    getDaemonSessionSnapshot: async () => {
+      if (liveSession === null) return undefined;
+      const live = liveSession as TuiSessionShape & {
+        getDaemonSessionSnapshot?: () => Promise<unknown>;
+      };
+      if (typeof live.getDaemonSessionSnapshot !== "function") {
+        return undefined;
+      }
+      return live.getDaemonSessionSnapshot();
     },
     submit: async (message, opts) => {
       // Optimistically render the user's prompt in the local transcript.

@@ -38,6 +38,8 @@ import type {
   SessionCancelTurnResult,
   SessionClearParams,
   SessionClearResult,
+  SessionSnapshotParams,
+  SessionSnapshotResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
@@ -1102,6 +1104,29 @@ export class AgenCDaemonAgentManager {
       cleared: true,
       clearedAt,
     };
+  }
+
+  async snapshotSession(
+    params: SessionSnapshotParams,
+  ): Promise<SessionSnapshotResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.snapshot requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.snapshotAgentSession === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.snapshot requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+    );
+    return this.#runner.snapshotAgentSession(agentId, {
+      sessionId: params.sessionId,
+    });
   }
 
   async partialCompactFromMessage(

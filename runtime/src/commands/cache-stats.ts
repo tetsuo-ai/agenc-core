@@ -111,11 +111,54 @@ function summarizeCacheMetrics(label: string, metrics: CacheMetrics): string {
   return `${label.padEnd(18)}${formatCacheMetricsFull(metrics)}`;
 }
 
-export async function formatCacheStats(): Promise<string> {
+interface DaemonCacheSnapshot {
+  readonly cacheStats?: {
+    readonly requestCount?: number;
+    readonly cacheReadInputTokens?: number;
+    readonly cacheCreationInputTokens?: number;
+    readonly cacheTotalInputTokens?: number;
+    readonly hitRate?: number | null;
+  };
+}
+
+function formatDaemonCacheStats(snap: DaemonCacheSnapshot): string {
+  const s = snap.cacheStats;
+  if (!s || (s.requestCount ?? 0) === 0) {
+    return [
+      "Cache stats",
+      "  No API requests yet this session.",
+      "  (The current provider may not expose cache metrics — many",
+      "  chat-completions endpoints don't.)",
+    ].join("\n");
+  }
+  const hit = s.hitRate;
+  const hitPct =
+    hit === null || hit === undefined ? "n/a" : `${(hit * 100).toFixed(1)}%`;
+  return [
+    "Cache stats (daemon-owned session)",
+    `  requests:          ${s.requestCount ?? 0}`,
+    `  cache hits:        ${s.cacheReadInputTokens ?? 0} input tokens`,
+    `  cache creates:     ${s.cacheCreationInputTokens ?? 0} input tokens`,
+    `  cache total:       ${s.cacheTotalInputTokens ?? 0} input tokens`,
+    `  hit rate:          ${hitPct}`,
+  ].join("\n");
+}
+
+export async function formatCacheStats(
+  session?: { readonly getDaemonSessionSnapshot?: () => Promise<DaemonCacheSnapshot> },
+): Promise<string> {
   let tracker: CacheStatsTracker;
   try {
     tracker = await loadCacheStatsTracker();
   } catch {
+    // No local tracker — try the daemon snapshot.
+    if (session?.getDaemonSessionSnapshot) {
+      try {
+        return formatDaemonCacheStats(await session.getDaemonSessionSnapshot());
+      } catch {
+        /* fall through to placeholder */
+      }
+    }
     return [
       "Cache stats",
       "  No API requests yet this session.",
@@ -124,6 +167,15 @@ export async function formatCacheStats(): Promise<string> {
   }
   const history = tracker.getCacheStatsHistory();
   if (history.length === 0) {
+    // No CLI-side history — bridge sessions never accrue this
+    // tracker. Try the daemon's snapshot before declaring empty.
+    if (session?.getDaemonSessionSnapshot) {
+      try {
+        return formatDaemonCacheStats(await session.getDaemonSessionSnapshot());
+      } catch {
+        /* fall through */
+      }
+    }
     return [
       "Cache stats",
       "  No API requests yet this session.",
@@ -160,10 +212,14 @@ export const cacheStatsCommand: SlashCommand = {
   immediate: true,
   supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => {
-      void ctx;
-      return { kind: "text", text: await formatCacheStats() };
-    }),
+    safeExecute(async () => ({
+      kind: "text",
+      text: await formatCacheStats(
+        ctx.session as unknown as {
+          readonly getDaemonSessionSnapshot?: () => Promise<DaemonCacheSnapshot>;
+        },
+      ),
+    })),
 };
 
 export default cacheStatsCommand;

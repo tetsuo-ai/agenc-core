@@ -70,6 +70,7 @@ import {
   type SessionAttachResult,
   type SessionCancelTurnParams,
   type SessionClearParams,
+  type SessionSnapshotParams,
   type SessionCreateParams,
   type SessionDetachParams,
   type SessionListParams,
@@ -133,6 +134,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "createAgent"
     | "denyTool"
     | "clearSessionHistory"
+    | "snapshotSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
     | "respondToElicitation"
@@ -194,6 +196,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "createAgent"
     | "denyTool"
     | "clearSessionHistory"
+    | "snapshotSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
     | "respondToElicitation"
@@ -453,6 +456,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.clearSessionHistory(
             validateSessionClearParams(params),
+          ),
+        );
+      case "session.snapshot":
+        return successResponse(
+          id,
+          await this.#agentManager.snapshotSession(
+            validateSessionSnapshotParams(params),
           ),
         );
       case "session.cancelTurn":
@@ -1321,6 +1331,17 @@ function validateSessionClearParams(params: JsonObject): SessionClearParams {
   });
   validateRequiredString(validated, "session.clear", "sessionId");
   return validated as SessionClearParams;
+}
+
+function validateSessionSnapshotParams(
+  params: JsonObject,
+): SessionSnapshotParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.snapshot",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.snapshot", "sessionId");
+  return validated as SessionSnapshotParams;
 }
 
 function validateSessionCancelTurnParams(
