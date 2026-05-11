@@ -170,7 +170,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     type: "object",
     properties: {
       message: { type: "string" },
-      task_name: { type: "string" },
+      task_name: {
+        type: "string",
+        description:
+          "Task name for the new agent. Use lowercase letters, digits, and underscores.",
+      },
       agent_type: {
         type: "string",
         description:
@@ -256,40 +260,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         true,
       );
     }
-    try {
-      if (role !== undefined) requireAgentRole(role);
-    } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
-      );
-    }
-    const overrideError = await validateSpawnModelOverrides({
-      session,
-      ...(model !== undefined ? { model } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-    });
-    if (overrideError) return overrideError;
-    const taskName = stringValue(args.task_name);
-    if (!taskName) {
-      return json({ error: "task_name is required" }, true);
-    }
-    try {
-      assertValidAgentName(taskName);
-    } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
-      );
-    }
-    const childDepth = currentAgentDepth(session, current, opts) + 1;
-    const maxDepth = resolveSessionMaxAgentDepth(session);
-    if (childDepth > maxDepth) {
-      return json(
-        { error: "Agent depth limit reached. Solve the task yourself." },
-        true,
-      );
-    }
     const callId = callIdFromArgs(args, "agent");
 
     emit(session, {
@@ -304,6 +274,75 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           session.sessionConfiguration.collaborationMode.reasoningEffort,
       },
     });
+
+    const emitSpawnFailureEnd = (reason: string): void => {
+      emit(session, {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId,
+          senderThreadId: current.threadId,
+          prompt,
+          model: model ?? session.sessionConfiguration.collaborationMode.model,
+          reasoningEffort:
+            reasoningEffort ??
+            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          status: {
+            status: "errored",
+            turnId: callId,
+            endedAtMs: Date.now(),
+            error: reason,
+          },
+        },
+      });
+    };
+    const failSpawn = (reason: string): ToolResult => {
+      emitSpawnFailureEnd(reason);
+      return json({ error: reason }, true);
+    };
+
+    try {
+      if (role !== undefined) requireAgentRole(role);
+    } catch (error) {
+      return failSpawn(error instanceof Error ? error.message : String(error));
+    }
+    const overrideError = await validateSpawnModelOverrides({
+      session,
+      ...(model !== undefined ? { model } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    });
+    if (overrideError) {
+      const overrideReason =
+        typeof overrideError.content === "string"
+          ? (() => {
+              try {
+                const parsed = JSON.parse(overrideError.content) as {
+                  error?: unknown;
+                };
+                return typeof parsed.error === "string"
+                  ? parsed.error
+                  : overrideError.content;
+              } catch {
+                return overrideError.content;
+              }
+            })()
+          : "spawn_agent override validation failed";
+      emitSpawnFailureEnd(overrideReason);
+      return overrideError;
+    }
+    const taskName = stringValue(args.task_name);
+    if (!taskName) {
+      return failSpawn("task_name is required");
+    }
+    try {
+      assertValidAgentName(taskName);
+    } catch (error) {
+      return failSpawn(error instanceof Error ? error.message : String(error));
+    }
+    const childDepth = currentAgentDepth(session, current, opts) + 1;
+    const maxDepth = resolveSessionMaxAgentDepth(session);
+    if (childDepth > maxDepth) {
+      return failSpawn("Agent depth limit reached. Solve the task yourself.");
+    }
 
     let thread: AgentThread | undefined;
     try {
