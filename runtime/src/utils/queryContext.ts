@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared helpers for building the API cache-key prefix (systemPrompt,
  * userContext, systemContext) for query() calls.

@@ -1,9 +1,5 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID } from 'crypto'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { Tool, ToolUseContext } from '../tools/Tool.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { CanonicalBashTool } from '../tools/canonicalToolSurface.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage, MalformedCommandError, ShellError } from './errors.js'
@@ -45,7 +41,6 @@ const getPowerShellTool = (() => {
   return (): PromptShellTool => {
     if (!cached) {
       cached = (
-        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         require('../tools/PowerShellTool/PowerShellTool.js') as typeof import('../tools/PowerShellTool/PowerShellTool.js')
       ).PowerShellTool
     }

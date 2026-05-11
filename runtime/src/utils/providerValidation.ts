@@ -1,12 +1,9 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { resolve } from 'node:path'
 import {
   getGithubEndpointType,
   isLocalProviderUrl,
   resolveCodexApiCredentials,
   resolveProviderRequest,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/api/providerConfig.js'
 import { getGlobalAgenCFile } from './env.js'
 import { isBareMode } from './envUtils.js'
@@ -134,7 +131,7 @@ export async function getProviderValidationError(
     return 'Invalid OPENAI_API_KEY: placeholder value SUA_CHAVE detected. Set a real key or unset for local providers.'
   }
 
-  if (request.transport === 'agenc_responses') {
+  if (request.transport === 'providerCode_responses') {
     const credentials = resolveCodexApiCredentials(env)
     if (!credentials.apiKey) {
       const oauthHint = isBareMode() ? '' : ', choose Agenc OAuth in /provider'

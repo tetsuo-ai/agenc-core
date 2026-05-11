@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
@@ -20,8 +18,6 @@ import { getOllamaChatBaseUrl } from './providerDiscovery.js'
 import { getPrimaryModel } from './providerModels.js'
 import { getProviderValidationError } from './providerValidation.js'
 import {
-  maskSecretForDisplay,
-  redactSecretValueForDisplay,
   sanitizeApiKey,
   sanitizeProviderConfigValue,
 } from './providerSecrets.js'
@@ -32,7 +28,7 @@ export {
   sanitizeApiKey,
   sanitizeProviderConfigValue,
 } from './providerSecrets.js'
-import { isEnvTruthy } from './envUtils.ts'
+import { isEnvTruthy } from './envUtils.js'
 
 import { PROVIDERS } from './configConstants.js'
 
@@ -80,19 +76,6 @@ const PROFILE_ENV_KEYS = [
   'BANKR_BASE_URL',
   'BNKR_API_KEY',
   'BANKR_MODEL',
-  'XAI_API_KEY',
-] as const
-
-const SECRET_ENV_KEYS = [
-  'OPENAI_API_KEY',
-  'OPENAI_AUTH_HEADER_VALUE',
-  'AGENC_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  'NVIDIA_API_KEY',
-  'MINIMAX_API_KEY',
-  'MISTRAL_API_KEY',
-  'BNKR_API_KEY',
   'XAI_API_KEY',
 ] as const
 
@@ -371,7 +354,7 @@ export function buildOpenAIProfileEnv(options: {
     fallbackModel: defaultModel,
     apiFormat: processEnv.OPENAI_API_FORMAT,
   })
-  const useShellOpenAIConfig = shellOpenAIRequest.transport !== 'agenc_responses'
+  const useShellOpenAIConfig = shellOpenAIRequest.transport !== 'providerCode_responses'
 
   return {
     OPENAI_BASE_URL:
@@ -959,10 +942,10 @@ export async function buildLaunchEnv(options: {
     fallbackModel: defaultOpenAIModel,
     apiFormat: persistedOpenAIApiFormat,
   })
-  const useShellOpenAIConfig = shellOpenAIRequest.transport !== 'agenc_responses'
+  const useShellOpenAIConfig = shellOpenAIRequest.transport !== 'providerCode_responses'
   const usePersistedOpenAIConfig =
     (!persistedOpenAIModel && !persistedOpenAIBaseUrl) ||
-    persistedOpenAIRequest.transport !== 'agenc_responses'
+    persistedOpenAIRequest.transport !== 'providerCode_responses'
 
   env.OPENAI_BASE_URL =
     (useShellOpenAIConfig ? shellOpenAIBaseUrl : undefined) ||

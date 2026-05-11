@@ -1,4 +1,3 @@
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { SdkWorkflowProgress } from '../../types/tools.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
 

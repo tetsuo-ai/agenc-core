@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   expandPastedTextRefs,
   formatPastedTextRef,
@@ -108,7 +106,7 @@ export function editFileInEditor(filePath: string): EditorResult {
  */
 function recollapsePastedContent(
   editedPrompt: string,
-  originalPrompt: string,
+  _originalPrompt: string,
   pastedContents: Record<number, PastedContent>,
 ): string {
   let collapsed = editedPrompt
