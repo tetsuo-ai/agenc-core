@@ -308,6 +308,22 @@ export function looksLikeCommand(commandName: string): boolean {
   // If it contains other characters, it's probably a file path or other input
   return !/[^a-zA-Z0-9:\-_]/.test(commandName);
 }
+
+/**
+ * Strip control characters and quote/backslash bytes from a value
+ * before splicing it into the plain-text "Unknown command: <name>"
+ * row. The transcript reducer's slash_result `kind: "error"` path
+ * (see runtime/src/tui/session-transcript.ts) renders this inline,
+ * so leaving raw escape sequences in would produce a JSON-envelope
+ * look instead of a clean error.
+ *
+ * Visible ASCII and Unicode letters pass through unchanged so
+ * legitimate names like `my:command` or `do_thing` render as-is.
+ */
+export function sanitizeForInlineDisplay(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\x00-\x1f\x7f]/g, '').replace(/[\\"']/g, '');
+}
 export async function processSlashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], imageContentBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn, uuid?: string, isAlreadyProcessing?: boolean, canUseTool?: CanUseToolFn): Promise<ProcessUserInputBaseResult> {
   const parsed = parseSlashCommand(inputString);
   if (!parsed) {
@@ -346,7 +362,14 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
       logEvent('agenc_input_slash_invalid', {
         input: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
-      const unknownMessage = `Unknown skill: ${commandName}`;
+      // Mirror the canonical dispatcher's "Unknown command: ..." shape
+      // (runtime/src/commands/dispatcher.ts) so the slash_result reducer
+      // path in session-transcript.ts renders a plain inline error
+      // instead of a JSON envelope. Sanitize the name + args to prevent
+      // raw quote/backslash leakage into the rendered row.
+      const safeName = sanitizeForInlineDisplay(commandName);
+      const safeArgs = parsedArgs ? sanitizeForInlineDisplay(parsedArgs) : '';
+      const unknownMessage = `Unknown command: ${safeName}`;
       return {
         messages: [createSyntheticUserCaveatMessage(), ...attachmentMessages, createUserMessage({
           content: prepareUserContent({
@@ -356,7 +379,7 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
         }),
         // gh-32591: preserve args so the user can copy/resubmit without
         // retyping. System warning is UI-only (filtered before API).
-        ...(parsedArgs ? [createSystemMessage(`Args from unknown skill: ${parsedArgs}`, 'warning')] : [])],
+        ...(safeArgs ? [createSystemMessage(`Args from unknown command: ${safeArgs}`, 'warning')] : [])],
         shouldQuery: false,
         resultText: unknownMessage
       };
