@@ -1392,6 +1392,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     const text_0 = value.trim();
     const hasAttachments = Object.keys(pastedContents).length > 0;
     if (text_0.length === 0 && !hasAttachments) return;
+    // Clear any pending transient status overlay (e.g. a slash-command
+    // usage error) so the prior status doesn't bleed into the new turn.
+    // The 3s auto-clear timer is a safety net; this is the immediate
+    // user-input clear path.
+    if (transientResultTimerRef.current !== null) {
+      clearTimeout(transientResultTimerRef.current);
+      transientResultTimerRef.current = null;
+      setToolJSX(null);
+    }
     setSubmitCount(count => count + 1);
     setPendingSubmission(true);
     setInput("");
@@ -1517,11 +1526,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             if (display === null) return {
               forwardedToModel: false
             };
-            setToolJSX({
-              jsx: <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={result.kind === "error" ? "red" : "gray"}>
-                    <Text>{display}</Text>
-                  </Box>,
-              shouldHidePromptInput: false
+            // Route through showTransientResult so the overlay auto-clears
+            // after ~3s and on the next user input. Prior code called
+            // setToolJSX directly without a clear path, so an error like
+            // `Usage: /model <model-name>` would persist across every
+            // subsequent prompt until another setToolJSX fired.
+            showTransientResult(display, {
+              display: result.kind === "error" ? "error" : undefined
             });
             return {
               forwardedToModel: false
