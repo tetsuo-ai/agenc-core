@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getProjectDir } from "../session/session-store.js";
+import { sanitizePath } from "../utils/sessionStoragePortable.js";
 import {
   resolveLatestSessionId,
   resolveResumeSessionId,
@@ -20,20 +21,62 @@ afterEach(() => {
   delete process.env.AGENC_HOME;
 });
 
+/**
+ * Write the JSONL header that `listResumableSessions` requires to surface
+ * a rollout from disk: a session_meta line plus at least one user
+ * message (the picker filters out rollouts that never recorded one).
+ */
+function rolloutContent(sessionId: string): string {
+  return (
+    `${JSON.stringify({ type: "session_meta", sessionId })}\n` +
+    `${JSON.stringify({ role: "user", content: `seed for ${sessionId}` })}\n`
+  );
+}
+
+function writeRolloutAtSlug(
+  slug: string,
+  sessionId: string,
+  iso: string,
+  mtimeSec: number,
+): void {
+  const sessionDir = join(
+    process.env.AGENC_HOME!,
+    "projects",
+    slug,
+    "sessions",
+    sessionId,
+  );
+  mkdirSync(sessionDir, { recursive: true });
+  const file = join(sessionDir, `rollout-${iso}-${sessionId}.jsonl`);
+  writeFileSync(file, rolloutContent(sessionId));
+  utimesSync(file, mtimeSec, mtimeSec);
+}
+
+/** Write under the canonical (hashed) project slug. */
 function writeRollout(
   cwd: string,
   sessionId: string,
   iso: string,
   mtimeSec: number,
 ): void {
-  const sessionDir = join(getProjectDir(cwd), "sessions", sessionId);
-  mkdirSync(sessionDir, { recursive: true });
-  const file = join(sessionDir, `rollout-${iso}-${sessionId}.jsonl`);
-  writeFileSync(
-    file,
-    `${JSON.stringify({ type: "session_meta", sessionId })}\n`,
-  );
-  utimesSync(file, mtimeSec, mtimeSec);
+  const projectDir = getProjectDir(cwd);
+  const slug = projectDir.split("/").pop()!;
+  writeRolloutAtSlug(slug, sessionId, iso, mtimeSec);
+}
+
+/**
+ * Write under the LEGACY project-slug layout
+ * (`~/.agenc/projects/<sanitizePath(cwd)>/sessions/<id>/rollout-*.jsonl`).
+ * Bypasses `getProjectDir` to emulate older directories written by tools
+ * that use `sanitizePath` rather than `slugifyCwd`.
+ */
+function writeLegacyRollout(
+  cwd: string,
+  sessionId: string,
+  iso: string,
+  mtimeSec: number,
+): void {
+  writeRolloutAtSlug(sanitizePath(cwd), sessionId, iso, mtimeSec);
 }
 
 describe("resume-session CLI lookup", () => {
@@ -64,14 +107,66 @@ describe("resume-session CLI lookup", () => {
     writeRollout(workHome, "conv-abc111", "2026-01-01T10-00-00-000Z", 1);
     writeRollout(workHome, "conv-abc222", "2026-01-02T10-00-00-000Z", 2);
 
-    expect(resolveResumeSessionId(workHome, "conv-abc")).toEqual({
-      kind: "ambiguous",
-      input: "conv-abc",
-      matches: ["conv-abc222", "conv-abc111"],
-    });
+    const result = resolveResumeSessionId(workHome, "conv-abc");
+    expect(result.kind).toBe("ambiguous");
+    if (result.kind === "ambiguous") {
+      expect(result.input).toBe("conv-abc");
+      expect([...result.matches].sort()).toEqual([
+        "conv-abc111",
+        "conv-abc222",
+      ]);
+    }
   });
 
   it("returns none when the project has no sessions", () => {
     expect(resolveLatestSessionId(workHome)).toEqual({ kind: "none" });
+  });
+
+  it("walks the legacy project-slug layout when the hashed slug has no match", () => {
+    writeLegacyRollout(workHome, "conv-legacy01", "2026-01-01T10-00-00-000Z", 1);
+
+    expect(resolveResumeSessionId(workHome, "conv-legacy01")).toEqual({
+      kind: "ok",
+      sessionId: "conv-legacy01",
+    });
+  });
+
+  it("dedups when the same conv-id exists in both slug layouts", () => {
+    // Same conv-id written under both the canonical (hashed) and legacy
+    // (sanitized) project slugs. The resolver should accept it from
+    // either path without reporting ambiguity.
+    writeRollout(workHome, "conv-shared01", "2026-01-02T10-00-00-000Z", 2);
+    writeLegacyRollout(workHome, "conv-shared01", "2026-01-01T10-00-00-000Z", 1);
+
+    expect(resolveResumeSessionId(workHome, "conv-shared01")).toEqual({
+      kind: "ok",
+      sessionId: "conv-shared01",
+    });
+  });
+
+  it("finds a conv-id globally when neither local layout matches", () => {
+    // Write a rollout under an unrelated project slug - neither the
+    // canonical nor legacy slug for `workHome` will contain it.
+    const foreignProject = join(workHome, "..", "some-other-checkout");
+    writeRolloutAtSlug(
+      sanitizePath(foreignProject),
+      "conv-foreign01",
+      "2026-01-01T10-00-00-000Z",
+      1,
+    );
+
+    expect(resolveResumeSessionId(workHome, "conv-foreign01")).toEqual({
+      kind: "ok",
+      sessionId: "conv-foreign01",
+    });
+  });
+
+  it("returns not_found when neither layout nor global walk finds the id", () => {
+    writeRollout(workHome, "conv-existing", "2026-01-01T10-00-00-000Z", 1);
+
+    expect(resolveResumeSessionId(workHome, "conv-missing01")).toEqual({
+      kind: "not_found",
+      input: "conv-missing01",
+    });
   });
 });
