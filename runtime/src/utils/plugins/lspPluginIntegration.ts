@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { readFile } from 'fs/promises'
 import { join, relative, resolve } from 'path'
 import { z } from 'zod/v4'
@@ -87,11 +85,6 @@ export async function loadPluginLspServers(
   } catch (error) {
     // .lsp.json is optional, ignore if it doesn't exist
     if (!isENOENT(error)) {
-      const _errorMsg =
-        error instanceof Error
-          ? `Failed to read/parse .lsp.json in plugin ${plugin.name}: ${error.message}`
-          : `Failed to read/parse .lsp.json file in plugin ${plugin.name}`
-
       logError(toError(error))
 
       errors.push({
@@ -181,11 +174,6 @@ async function loadLspServersFromManifest(
           })
         }
       } catch (error) {
-        const _errorMsg =
-          error instanceof Error
-            ? `Failed to read/parse LSP config from ${decl} in plugin ${pluginName}: ${error.message}`
-            : `Failed to read/parse LSP config file ${decl} in plugin ${pluginName}`
-
         logError(toError(error))
 
         errors.push({
@@ -309,6 +297,9 @@ export function addPluginScopeToLspServers(
     scopedServers[scopedName] = {
       ...config,
       scope: 'dynamic', // Use dynamic scope for plugin servers
+      // `source` is preserved on the runtime object for downstream provenance
+      // even though ScopedLspServerConfig does not yet declare it.
+      // @ts-expect-error -- TODO(lsp-types): add optional `source?: string` to ScopedLspServerConfig
       source: pluginName,
     }
   }

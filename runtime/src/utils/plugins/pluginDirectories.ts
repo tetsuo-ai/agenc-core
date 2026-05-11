@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Centralized plugin directory configuration.
  *
@@ -14,7 +12,6 @@
 import { mkdirSync } from 'fs'
 import { readdir, rm, stat } from 'fs/promises'
 import { delimiter, join } from 'path'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getUseCoworkPlugins } from '../../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from '../envUtils.js'
