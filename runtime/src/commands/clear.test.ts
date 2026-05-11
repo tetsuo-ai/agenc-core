@@ -52,8 +52,10 @@ function mkctx(session: Session): SlashCommandContext {
 }
 
 describe("clearCommand", () => {
-  it("exposes /reset and /new aliases and is immediate", () => {
-    expect(clearCommand.aliases).toEqual(expect.arrayContaining(["reset", "new"]));
+  it("exposes /reset, /new, and /history aliases and is immediate", () => {
+    expect(clearCommand.aliases).toEqual(
+      expect.arrayContaining(["reset", "new", "history"]),
+    );
     expect(clearCommand.immediate).toBe(true);
   });
 

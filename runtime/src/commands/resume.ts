@@ -257,6 +257,7 @@ export async function runResume(
 
 export const resumeCommand: SlashCommand = {
   name: "resume",
+  aliases: ["sessions"],
   description: "List resumable sessions for this project",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runResume(ctx.cwd, ctx.argsRaw)),

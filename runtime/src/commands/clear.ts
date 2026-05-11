@@ -10,7 +10,7 @@
  * history is still being appended during streaming, and clearing it
  * mid-turn would corrupt the next request.
  *
- * Aliases: `/reset`, `/new`.
+ * Aliases: `/reset`, `/new`, `/history`.
  *
  * @module
  */
@@ -159,7 +159,7 @@ function emitHistoryCleared(session: Session): void {
 
 export const clearCommand: SlashCommand = {
   name: "clear",
-  aliases: ["reset", "new"],
+  aliases: ["reset", "new", "history"],
   description: "Clear session history and caches",
   immediate: true,
   supportsNonInteractive: false,
