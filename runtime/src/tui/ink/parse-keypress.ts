@@ -5,6 +5,7 @@
  * then interprets sequences as keypresses.
  */
 import { Buffer } from 'buffer'
+import { recordInputBurst } from '../input/burst-detector.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 import { createTokenizer, type Tokenizer } from './termio/tokenize.js'
 
@@ -219,6 +220,16 @@ export function parseMultipleKeypresses(
 
   // Get or create tokenizer
   const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true })
+
+  // Feed the burst detector (B-NEW2). BPM-wrapped pastes are identifiable
+  // by literal PASTE_START/PASTE_END escape sequences in the raw input.
+  // Anything else of meaningful size is unmarked stdin — the path we need
+  // to gate before bash submission.
+  if (!isFlush && inputString.length > 0) {
+    const hasBpmMarker =
+      inputString.includes(PASTE_START) || inputString.includes(PASTE_END)
+    recordInputBurst(inputString.length, hasBpmMarker)
+  }
 
   // Tokenize the input
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)

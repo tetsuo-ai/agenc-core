@@ -4,6 +4,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import * as React from 'react';
 import { BashModeProgress } from '../components/BashModeProgress.js';
+import { PasteConfirmDialog } from '../components/PasteConfirmDialog.js';
 import type { SetToolJSXFn } from '../../tools/Tool.js';
 import { CanonicalBashTool } from '../../tools/canonicalToolSurface.js';
 import { PowerShellTool } from '../../tools/PowerShellTool/PowerShellTool.js';
@@ -16,6 +17,7 @@ import { resolveDefaultShell } from '../../utils/shell/resolveDefaultShell.js';
 import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js';
 import { processToolResultBlock } from '../../utils/toolResultStorage.js';
 import { escapeXml } from '../../utils/xml.js';
+import { consumeSuspectedPaste } from './burst-detector.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
 
 function canonicalShellOut(data: unknown): {
@@ -42,6 +44,25 @@ function canonicalShellOut(data: unknown): {
   };
 }
 
+function awaitPasteConfirmation(command: string, setToolJSX: SetToolJSXFn): Promise<boolean> {
+  // Render the paste-confirm dialog through setToolJSX (same channel as
+  // BashModeProgress) and resolve when the user picks y or n/Esc.
+  // shouldHidePromptInput keeps composer keystrokes out of the picture so
+  // y/n is not echoed into the next command.
+  return new Promise<boolean>(resolve => {
+    let resolved = false;
+    const decide = (allow: boolean) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(allow);
+    };
+    setToolJSX({
+      jsx: <PasteConfirmDialog command={command} onDecide={decide} />,
+      shouldHidePromptInput: true
+    });
+  });
+}
+
 export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
@@ -61,6 +82,27 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       precedingInputBlocks
     })
   });
+
+  // B-NEW2 paste-burst security gate. The burst detector flagged this
+  // submission as suspectedPaste — unbracketed stdin arriving in a tight
+  // window. Bash mode runs with dangerouslyDisableSandbox: true, so we
+  // refuse to execute until the user confirms via the dialog. The flag is
+  // consumed (one-shot) so the next legitimate submission is not gated.
+  if (consumeSuspectedPaste()) {
+    logEvent('agenc_input_bash_paste_gate', {
+      powershell: usePowerShell
+    });
+    const allowed = await awaitPasteConfirmation(inputString, setToolJSX);
+    if (!allowed) {
+      setToolJSX(null);
+      return {
+        messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
+          content: `<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>`
+        })],
+        shouldQuery: false
+      };
+    }
+  }
 
   // ctrl+b to background indicator
   let jsx: React.ReactNode;
