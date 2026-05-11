@@ -128,7 +128,7 @@ export default class App extends PureComponent<Props, State> {
 
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
   // out by parse-keypress) and are routed to pending promise resolvers.
-  querier = new TerminalQuerier(this.props.stdout);
+  querier = new TerminalQuerier(this.props.stdout, this.props.stdin);
 
   // Multi-click tracking for double/triple-click text selection. A click
   // within MULTI_CLICK_TIMEOUT_MS and MULTI_CLICK_DISTANCE of the previous
