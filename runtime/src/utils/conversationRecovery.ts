@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { relative } from 'path'
@@ -68,10 +66,12 @@ const LEGACY_BRIEF_TOOL_NAME: string | null =
         require('src/tools/BriefTool/prompt.js') as typeof import('src/tools/BriefTool/prompt.js')
       ).LEGACY_BRIEF_TOOL_NAME
     : null
+// SendUserFileTool is not currently shipped; resolve dynamically when the
+// feature flag is active so missing builds don't break baseline typecheck.
 const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS')
-  ? (
-      require('../tools/SendUserFileTool/prompt.js') as typeof import('../tools/SendUserFileTool/prompt.js')
-    ).SEND_USER_FILE_TOOL_NAME
+  ? ((require('../tools/SendUserFileTool/prompt.js' as string)) as {
+      SEND_USER_FILE_TOOL_NAME?: string
+    }).SEND_USER_FILE_TOOL_NAME ?? null
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -252,8 +252,12 @@ export function deserializeMessagesWithInterruptDetection(
     // Strip thinking/redacted_thinking content blocks from assistant messages
     // when resuming against a 3P provider. These provider-specific blocks cause
     // 400 errors or context corruption on openai-compatible providers (issue #248 finding 5).
-    const provider = getAPIProvider()
-    const isThirdPartyProvider = provider !== 'firstParty' && provider !== 'bedrock' && provider !== 'vertex' && provider !== 'foundry'
+    const provider: string = getAPIProvider()
+    const isThirdPartyProvider =
+      provider !== 'firstParty' &&
+      provider !== 'bedrock' &&
+      provider !== 'vertex' &&
+      provider !== 'foundry'
     const thinkingStripped = isThirdPartyProvider
       ? stripThinkingBlocks(filteredThinking)
       : filteredThinking
@@ -554,7 +558,14 @@ export async function loadConversationForResume(
       let skip = new Set<string>()
       if (feature('BG_SESSIONS')) {
         try {
-          const { listAllLiveSessions } = await import('./udsClient.js')
+          // udsClient is feature-gated and not always shipped; resolve dynamically.
+          const { listAllLiveSessions } = (await import(
+            './udsClient.js' as string
+          )) as {
+            listAllLiveSessions: () => Promise<
+              Array<{ kind?: string; sessionId?: string }>
+            >
+          }
           const live = await listAllLiveSessions()
           skip = new Set(
             live.flatMap(s =>
@@ -638,7 +649,9 @@ export async function loadConversationForResume(
     return {
       messages,
       turnInterruptionState: deserialized.turnInterruptionState,
-      fileHistorySnapshots: log?.fileHistorySnapshots,
+      fileHistorySnapshots: log?.fileHistorySnapshots as
+        | FileHistorySnapshot[]
+        | undefined,
       attributionSnapshots: log?.attributionSnapshots,
       contentReplacements: log?.contentReplacements,
       contextCollapseCommits: log?.contextCollapseCommits,

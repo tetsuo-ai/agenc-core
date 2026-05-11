@@ -1,12 +1,7 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { type StructuredPatchHunk, structuredPatch } from 'diff'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from 'src/services/analytics/index.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getLocCounter } from '../bootstrap/state.js'
 import { addToTotalLinesChanged } from '../cost/tracker.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { FileEdit } from '../tools/FileEditTool/types.js'
 import { count } from './array.js'
 import { convertLeadingTabsToSpaces } from './file.js'

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { homedir } from 'os'
@@ -13,7 +11,7 @@ import {
   type InstallMethod,
 } from './config.js'
 import { getCwd } from './cwd.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import {

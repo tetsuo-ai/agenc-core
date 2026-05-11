@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash, type UUID } from 'crypto'
 import { diffLines } from 'diff'
 import type { Stats } from 'fs'
@@ -17,11 +15,8 @@ import {
   getIsNonInteractiveSession,
   getOriginalCwd,
   getSessionId,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from 'src/bootstrap/state.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from 'src/services/analytics/index.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { notifyVscodeFileUpdated } from 'src/services/mcp/vscodeSdkMcp.js'
 import type { LogOption } from 'src/types/logs.js'
 import { inspect } from 'util'
@@ -1025,9 +1020,8 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
         // Record the snapshot only if we have successfully migrated the backup files
         if (!copyFailed) {
           void recordFileHistorySnapshot(
-            // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-            snapshot.messageId,
-            snapshot,
+            snapshot.messageId as UUID,
+            snapshot as unknown as FileHistorySnapshot,
             false, // isSnapshotUpdate
           ).catch(_ => {
             logError(

@@ -39,8 +39,11 @@ export type SystemStopHookSummaryMessage = any;
 export type SystemTurnDurationMessage = any;
 export type SystemAgentsKilledMessage = any;
 export type NormalizedMessage = any;
-export type NormalizedAssistantMessage = any;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export type NormalizedAssistantMessage<_T = unknown> = any;
 export type NormalizedUserMessage = any;
+export type GroupedToolUseMessage = any;
+export type RenderableMessage = any;
 export type TombstoneMessage = any;
 export type ToolUseSummaryMessage = any;
 export type ProgressMessage = any;

@@ -1,7 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { AsyncLocalStorage } from 'async_hooks'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getCwdState, getOriginalCwd } from '../bootstrap/state.js'
 
 const cwdOverrideStorage = new AsyncLocalStorage<string>()
