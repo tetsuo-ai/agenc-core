@@ -46,36 +46,6 @@ function isUnifiedSuggestion(itemId: string): boolean {
   )
 }
 
-// Round-2 M-NEW8: the selected row renders the full description on an
-// indented second line so users can read commands whose description
-// exceeds the inline column budget without opening /help. Non-selected
-// rows keep the single-line truncated layout to avoid layout shift.
-const EXPANDED_DESCRIPTION_INDENT = PREFIX_WIDTH + 2
-
-function getExpandedDescription(
-  description: string | undefined,
-  columns: number,
-  isSelected: boolean,
-): string | null {
-  if (!isSelected || !description) return null
-  const collapsed = description.replace(/\s+/g, ' ').trim()
-  if (collapsed.length === 0) return null
-  const available = columns - EXPANDED_DESCRIPTION_INDENT
-  if (available <= 0) return null
-  return truncateToWidth(collapsed, available)
-}
-
-function ExpandedDescription({ text }: { text: string | null }): ReactNode {
-  if (text === null) return null
-  return (
-    <Box width="100%">
-      <Text dimColor wrap="truncate">
-        {' '.repeat(EXPANDED_DESCRIPTION_INDENT) + text}
-      </Text>
-    </Box>
-  )
-}
-
 const SuggestionItemRow = memo(function SuggestionItemRow({
   item,
   maxColumnWidth,
@@ -91,11 +61,9 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     ? 'suggestion'
     : undefined
   const textColor: keyof Theme | undefined = isSelected ? 'inverseText' : undefined
-  const expandedDescription = getExpandedDescription(
-    item.description,
-    columns,
-    isSelected,
-  )
+  // Every row is one line. The expanded second-line description was
+  // dropped after it kept reading as a duplicate of the inline
+  // description and made the selected row taller than its neighbours.
 
   let lineContent: string
   if (isUnifiedSuggestion(item.id)) {
@@ -133,7 +101,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       separatorWidth -
       paddingWidth
 
-    if (item.description && !isSelected) {
+    if (item.description) {
       const truncatedDesc = truncateToWidth(
         item.description.replace(/\s+/g, ' '),
         Math.max(0, availableWidth),
@@ -164,25 +132,22 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       0,
       columns - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
     )
-    const truncatedDescription = item.description && !isSelected
+    const truncatedDescription = item.description
       ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
       : ''
     lineContent = `${paddedDisplayText}${tagText}${truncatedDescription}`
   }
 
   return (
-    <Box flexDirection="column" width="100%">
-      <Box width="100%" opaque={true} backgroundColor={rowBackgroundColor}>
-        <Text
-          color={textColor}
-          dimColor={!isSelected}
-          bold={isSelected}
-          wrap="truncate"
-        >
-          {lineContent}
-        </Text>
-      </Box>
-      <ExpandedDescription text={expandedDescription} />
+    <Box width="100%" opaque={true} backgroundColor={rowBackgroundColor}>
+      <Text
+        color={textColor}
+        dimColor={!isSelected}
+        bold={isSelected}
+        wrap="truncate"
+      >
+        {lineContent}
+      </Text>
     </Box>
   )
 })
