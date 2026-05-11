@@ -194,7 +194,7 @@ export function PromptInputFooterLeftSide(t0) {
   const t4 = !suppressHint && !showVim;
   let t5;
   if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== tmuxSelected || $[21] !== toolPermissionContext) {
-    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} tmuxSelected={tmuxSelected} exitPending={exitMessage.show} onOpenTasksDialog={onOpenTasksDialog} />;
+    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} tmuxSelected={tmuxSelected} onOpenTasksDialog={onOpenTasksDialog} />;
     $[13] = isLoading;
     $[14] = mode;
     $[15] = onOpenTasksDialog;
@@ -229,7 +229,6 @@ type ModeIndicatorProps = {
   teamsSelected: boolean;
   tmuxSelected: boolean;
   teammateFooterIndex?: number;
-  exitPending?: boolean;
   onOpenTasksDialog?: (taskId?: string) => void;
 };
 function ModeIndicator({
@@ -241,7 +240,6 @@ function ModeIndicator({
   teamsSelected,
   tmuxSelected,
   teammateFooterIndex,
-  exitPending,
   onOpenTasksDialog
 }: ModeIndicatorProps): React.ReactNode {
   const {
@@ -369,10 +367,7 @@ function ModeIndicator({
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
   // below still treat "pill present" as non-empty.
   const tasksPart = hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
-  // Suppress the cold-idle "? for shortcuts" hint while the exit warning is
-  // active — the active "Press X again to exit" text takes precedence and
-  // these two single-line hints must not stack.
-  if (parts.length === 0 && !tasksPart && !modePart && showHint && !exitPending) {
+  if (parts.length === 0 && !tasksPart && !modePart && showHint) {
     parts.push(<Text dimColor key="shortcuts-hint">
         ? for shortcuts
       </Text>);
