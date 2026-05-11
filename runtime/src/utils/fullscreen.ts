@@ -1,7 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { spawnSync } from 'child_process'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsInteractive } from '../bootstrap/state.js'
 import { getGlobalConfig } from './config.js'
 import { logForDebugging } from 'src/utils/debug.js'

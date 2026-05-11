@@ -1,18 +1,17 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs'
 import type { Tools } from '../tools/Tool.js'
 import type {
   GroupedToolUseMessage,
   NormalizedAssistantMessage,
-  NormalizedMessage,
   NormalizedUserMessage,
-  ProgressMessage,
   RenderableMessage,
 } from '../types/message.js'
 
-export type MessageWithoutProgress = Exclude<NormalizedMessage, ProgressMessage>
+// NormalizedMessage and ProgressMessage are stubbed as `any` until the message
+// taxonomy is restored. `Exclude<any, any>` would produce `never`, so the alias
+// falls back to `any` directly.
+export type MessageWithoutProgress = any
 
 export type GroupingResult = {
   messages: RenderableMessage[]
@@ -164,11 +163,12 @@ export function applyGrouping(
 
     // Skip user messages whose tool_results are all grouped
     if (msg.type === 'user') {
-      const toolResults = msg.message.content.filter(
-        (c): c is ToolResultBlockParam => c.type === 'tool_result',
+      const toolResults: ToolResultBlockParam[] = msg.message.content.filter(
+        (c: { type: string }): c is ToolResultBlockParam =>
+          c.type === 'tool_result',
       )
       if (toolResults.length > 0) {
-        const allGrouped = toolResults.every(tr =>
+        const allGrouped = toolResults.every((tr: ToolResultBlockParam) =>
           groupedToolUseIds.has(tr.tool_use_id),
         )
         if (allGrouped) {

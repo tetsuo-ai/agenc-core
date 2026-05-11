@@ -1,11 +1,9 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // This file represents useful wrappers over node:child_process
 // These wrappers ease error handling and cross-platform compatibility.
 // By using cross-spawn, Windows gets .cmd/.bat compatibility without falling
 // back to a generic shell command string.
 
-import { spawn } from 'cross-spawn'
+import spawn from 'cross-spawn'
 import path from 'node:path'
 import { getCwd } from './cwd.js'
 import { logError } from './log.js'
@@ -266,8 +264,8 @@ export function execFileNoThrowWithCwd(
       }
     }
 
-    child.stdout?.on('data', chunk => appendOutput(chunk, 'stdout'))
-    child.stderr?.on('data', chunk => appendOutput(chunk, 'stderr'))
+    child.stdout?.on('data', (chunk: Buffer | string) => appendOutput(chunk, 'stdout'))
+    child.stderr?.on('data', (chunk: Buffer | string) => appendOutput(chunk, 'stderr'))
 
     child.once('spawn', () => {
       if (stdinMode === 'pipe' && child.stdin) {
@@ -279,7 +277,7 @@ export function execFileNoThrowWithCwd(
       }
     })
 
-    child.once('error', error => {
+    child.once('error', (error: Error) => {
       logError(error)
       finish({ stdout: '', stderr: '', code: 1, error: error.message })
     })
@@ -292,7 +290,7 @@ export function execFileNoThrowWithCwd(
           }, finalTimeout)
         : undefined
 
-    child.once('close', (code, closeSignal) => {
+    child.once('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
       if (timeoutId) {
         clearTimeout(timeoutId)
       }

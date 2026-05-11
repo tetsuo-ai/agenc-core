@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Helper for running forked agent query loops with usage tracking.
  *
@@ -196,13 +194,21 @@ export async function prepareForkedCommandContext(
   context: ToolUseContext,
 ): Promise<PreparedForkedContext> {
   // Get skill content with $ARGUMENTS replaced
-  const skillPrompt = await command.getPromptForCommand(args, context)
+  if (!command.getPromptForCommand) {
+    throw new Error('Forked command is missing getPromptForCommand')
+  }
+  const skillPrompt = (await command.getPromptForCommand(args, context)) as Array<{
+    type: string
+    text?: string
+  }>
   const skillContent = skillPrompt
-    .map(block => (block.type === 'text' ? block.text : ''))
+    .map(block => (block.type === 'text' ? block.text ?? '' : ''))
     .join('\n')
 
   // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
+  const allowedTools = parseToolListFromCLI([
+    ...(command.allowedTools ?? []),
+  ])
 
   // Create modified context with allowed tools
   const modifiedGetAppState = createGetAppStateWithAllowedTools(

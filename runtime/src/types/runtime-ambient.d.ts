@@ -94,4 +94,6 @@ declare const Bun: {
   embeddedFiles?: readonly unknown[];
   file(path: string): unknown;
   which(command: string): string | null;
+  hash(input: string | ArrayBufferView | ArrayBuffer, seed?: number | bigint): bigint;
+  gc(synchronous?: boolean): number;
 };

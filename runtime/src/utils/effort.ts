@@ -1,10 +1,7 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { isUltrathinkEnabled } from './thinking.js'
 import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider } from './model/providers.js'
 import {
@@ -12,10 +9,8 @@ import {
   resolveAntModel,
 } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { supportsCodexReasoningEffort } from '../services/api/providerConfig.js'
 import { isEnvTruthy } from './envUtils.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
 export type { EffortLevel }
@@ -93,8 +88,7 @@ export function isOpenAIEffortLevel(value: string): value is OpenAIEffortLevel {
   return (OPENAI_EFFORT_LEVELS as readonly string[]).includes(value)
 }
 
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-export function modelUsesOpenAIEffort(model: string): boolean {
+export function modelUsesOpenAIEffort(_model: string): boolean {
   const provider = getAPIProvider()
   return provider === 'openai' || provider === 'agenc'
 }
@@ -286,7 +280,6 @@ export function convertEffortValueToLevel(value: EffortValue): EffortLevel {
  * @param level The effort level to describe
  * @returns Human-readable description
  */
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 export function getEffortLevelDescription(level: EffortLevel | OpenAIEffortLevel): string {
   switch (level) {
     case 'low':
