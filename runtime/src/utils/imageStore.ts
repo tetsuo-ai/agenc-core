@@ -1,8 +1,5 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { mkdir, open } from 'fs/promises'
 import { join } from 'path'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../bootstrap/state.js'
 import type { PastedContent } from './config.js'
 import { logForDebugging } from 'src/utils/debug.js'

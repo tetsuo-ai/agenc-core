@@ -1,7 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { API_IMAGE_MAX_BASE64_SIZE } from '../constants/apiLimits.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../services/analytics/index.js'
 import { formatFileSize } from './format.js'
 

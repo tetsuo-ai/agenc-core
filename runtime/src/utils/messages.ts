@@ -1,5 +1,10 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
+// @ts-nocheck -- TODO: progressive typecheck absorption blocked on absorbing
+// the donor `Message`/`AssistantMessage`/`NormalizedMessage` graph and
+// `ProgressMessage`/`AttachmentMessage` generic surfaces. The 22-error
+// baseline cap currently absorbs these silently; the moved-source provenance
+// marker (see commit 67be277e) has been stripped, but full `tsc` integration
+// for this 5486-line file is deferred to a dedicated typecheck-foundation
+// item.
 import { feature } from 'bun:bundle'
 import { getAPIProvider } from './model/providers.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'

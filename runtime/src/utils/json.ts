@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { open, readFile, stat } from 'fs/promises'
 import {
   applyEdits,
