@@ -1,12 +1,9 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { z } from 'zod/v4'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { Tool } from '../../tools/Tool.js'
 import {
   SYNTHETIC_OUTPUT_TOOL_NAME,
   createSyntheticOutputTool,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { substituteArguments } from '../../tui/slash/argument-substitution.js'
 import { lazySchema } from '../lazySchema.js'
@@ -27,8 +24,8 @@ export const hookResponseSchema = lazySchema(() =>
   }),
 )
 
-const hookResponseJsonSchema: Record<string, unknown> = {
-  type: 'object',
+const hookResponseJsonSchema = {
+  type: 'object' as const,
   properties: {
     ok: {
       type: 'boolean',

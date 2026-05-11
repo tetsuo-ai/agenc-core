@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { randomUUID } from 'crypto'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'

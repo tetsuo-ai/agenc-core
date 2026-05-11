@@ -1,7 +1,5 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { QuerySource } from '../../constants/querySource.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolUseContext } from '../../tools/Tool.js'
 import type { Message } from '../../types/message.js'
 import { toError } from '../errors.js'
