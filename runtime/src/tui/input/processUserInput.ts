@@ -557,12 +557,7 @@ async function processUserInputBase(
     : []
   queryCheckpoint('query_attachment_loading_end')
 
-  // Bash commands. The composer ships `mode: 'bash'` whenever the user
-  // pressed `!` to enter bash mode. PromptInput today calls
-  // processBashCommand directly (round-2 MD-NEW4), so in practice this
-  // branch fires only from the legacy handlePromptSubmit /
-  // queue-processor path. The check is kept so any caller that reaches
-  // this function with bash mode still gets correct routing.
+  // Bash commands
   if (inputString !== null && mode === 'bash') {
     const { processBashCommand } = await import('./processBashCommand.js')
     return addImageMetadataMessage(

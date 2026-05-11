@@ -475,11 +475,6 @@ type Props = {
   }, options?: {
     fromKeybinding?: boolean;
     vimRoutingState?: VimRoutingState;
-    // round-2 MD-NEW4: composer input mode (prompt / bash). Bash is
-    // intercepted inside PromptInput before this fires; the field is
-    // still threaded through for future modes (e.g. memory) that
-    // downstream callers may need to branch on.
-    mode?: PromptInputMode;
   }) => Promise<void>;
   onAgentSubmit?: (input: string, task: InProcessTeammateTaskState | LocalAgentTaskState, helpers: PromptInputHelpers) => Promise<void>;
   isSearchingHistory: boolean;
@@ -1381,88 +1376,19 @@ function PromptInput({
       return;
     }
 
-    // Bash mode (round-2 MD-NEW4): without this branch the `!` composer
-    // banner was a lie — the input was forwarded to the model as plain
-    // text. Run the shell command locally via processBashCommand and
-    // surface stdout/stderr in the transcript via user_message events.
-    // Bash output is synthetic local data; we never call onSubmitProp,
-    // and processUserInput is bypassed because its prompt-side imports
-    // drag in subsystems we don't need here.
-    if (mode === 'bash') {
-      const trimmedBash = inputParam.trim();
-      if (trimmedBash === '') {
-        return;
-      }
-      const ctx = getToolUseContext(messages, [], new AbortController(), mainLoopModel) as ProcessUserInputContext & {
-        session?: { emit?: (event: unknown) => void; nextInternalSubId?: () => string };
-        setToolJSX?: (jsx: unknown) => void;
-      };
-      const session = ctx.session;
-      const emit = typeof session?.emit === 'function' ? session.emit.bind(session) : undefined;
-      const nextId = typeof session?.nextInternalSubId === 'function'
-        ? session.nextInternalSubId.bind(session)
-        : (() => `bash-${Date.now()}`);
-      const emitTranscriptText = (text: string) => {
-        emit?.({
-          id: nextId(),
-          msg: {
-            type: 'user_message',
-            payload: { displayText: text, message: text }
-          }
-        });
-      };
-      // UserBashInputMessage extracts <bash-input>...</bash-input>;
-      // UserBashOutputMessage extracts <bash-stdout>/<bash-stderr>.
-      emitTranscriptText(`<bash-input>${trimmedBash}</bash-input>`);
-      try {
-        // Call processBashCommand directly. processUserInput would also
-        // route mode:'bash' here but its static imports (ultraplan,
-        // hooks, etc.) drag in unused subsystems that fail to resolve
-        // when the composer is the sole live importer.
-        const { processBashCommand } = await import('../../input/processBashCommand.js');
-        const result = await processBashCommand(
-          trimmedBash,
-          [],
-          [],
-          ctx,
-          ctx.setToolJSX ?? (() => {}),
-        );
-        for (const m of result.messages) {
-          if (m?.type !== 'user') continue;
-          const text = extractUserMessageText(m);
-          if (text === null) continue;
-          if (!text.startsWith('<bash-stdout') && !text.startsWith('<bash-stderr')) continue;
-          emitTranscriptText(text);
-        }
-      } catch (err) {
-        const errText = err instanceof Error ? err.message : String(err);
-        emitTranscriptText(`<bash-stderr>${errText}</bash-stderr>`);
-      }
-      trackAndSetInput('');
-      setCursorOffset(0);
-      clearBuffer();
-      resetHistory();
-      onModeChange('prompt');
-      return;
-    }
-
-    // Normal leader submission. Pass mode through the 4th options arg so
-    // downstream consumers can branch on composer state (e.g. future
-    // routing of memory mode without round-tripping through input
-    // prefix). Bash mode is intercepted above and never reaches here.
+    // Normal leader submission
     await onSubmitProp(inputParam, {
       setCursorOffset,
       clearBuffer,
       resetHistory
     }, undefined, {
-      mode,
       vimRoutingState: {
         enabled: isVimModeEnabled(),
         mode: vimMode,
         keys: []
       }
     });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode]);
   const {
     suggestions,
     selectedSuggestion,
@@ -2723,16 +2649,6 @@ function getInitialPasteId(messages: Message[]): number {
     }
   }
   return maxId + 1;
-}
-function extractUserMessageText(m: unknown): string | null {
-  const content = (m as { message?: { content?: unknown }; content?: unknown }).message?.content
-    ?? (m as { content?: unknown }).content;
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return null;
-  for (const block of content) {
-    if (block?.type === 'text' && typeof block.text === 'string') return block.text;
-  }
-  return null;
 }
 function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastModeCooldown: boolean): BorderTextOptions | undefined {
   if (!showFastIcon) return undefined;
