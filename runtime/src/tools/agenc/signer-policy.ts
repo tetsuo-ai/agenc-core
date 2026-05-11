@@ -1,10 +1,4 @@
 import type { PublicKey } from "@solana/web3.js";
-import {
-  evaluateMarketplaceSignerPolicyForIntent as evaluateAgentKitMarketplaceSignerPolicyForIntent,
-  toolNameForIntent as agentKitToolNameForIntent,
-  type MarketplaceSignerPolicy as AgentKitMarketplaceSignerPolicy,
-  type MarketplaceTransactionIntent as AgentKitMarketplaceTransactionIntent,
-} from "@tetsuo-ai/marketplace-policy";
 
 import type { MarketplaceTransactionIntent } from "../../task/transaction-intent.js";
 import type { Tool, ToolResult } from "../types.js";
@@ -49,8 +43,7 @@ export interface MarketplaceSignerPolicy {
   }[];
   /**
    * When expectedAccountMetas is supplied, require the final intent account-meta
-   * name set to match exactly. Delegated to @tetsuo-ai/marketplace-policy
-   * and defaults to true there.
+   * name set to match exactly. Defaults to true.
    */
   readonly strictAccountMetas?: boolean;
   /** Restrict task creation/completion to canary-safe task types, e.g. Exclusive. */
@@ -125,6 +118,42 @@ function parseLimit(value: string | undefined, field: string): bigint | null {
     throw new Error(`${field} must be a non-negative integer string`);
   }
   return BigInt(trimmed);
+}
+
+function deny(
+  code: string,
+  reason: string,
+  metadata?: Record<string, unknown>,
+): MarketplaceSignerPolicyEvaluation {
+  return { allowed: false, code, reason, ...(metadata ? { metadata } : {}) };
+}
+
+function fieldAllowed(
+  allowedValues: readonly string[] | undefined,
+  actual: string | null | undefined,
+): boolean {
+  const allowed = normalizeList(allowedValues);
+  return allowed.size === 0 || (actual !== undefined && actual !== null && allowed.has(actual));
+}
+
+function optionalFieldAllowed(
+  allowedValues: readonly string[] | undefined,
+  actual: string | null | undefined,
+): boolean {
+  const allowed = normalizeList(allowedValues);
+  return allowed.size === 0 || actual === undefined || actual === null || allowed.has(actual);
+}
+
+function duplicateNames(values: readonly { readonly name: string }[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value.name)) {
+      duplicates.add(value.name);
+    }
+    seen.add(value.name);
+  }
+  return [...duplicates];
 }
 
 function evaluateMarketplaceSignerPolicy(params: {
@@ -305,57 +334,209 @@ function toolNameForIntent(kind: MarketplaceTransactionIntent["kind"]): string {
   }
 }
 
-function toAgentKitMarketplaceIntent(
-  intent: MarketplaceTransactionIntent,
-): AgentKitMarketplaceTransactionIntent {
-  const kind = intent.kind as AgentKitMarketplaceTransactionIntent["kind"];
-  return {
-    kind,
-    toolName: agentKitToolNameForIntent(kind),
-    programId: intent.programId,
-    signer: intent.signer,
-    ...(intent.taskPda ? { taskPda: intent.taskPda } : {}),
-    ...(intent.taskId ? { taskId: intent.taskId } : {}),
-    ...(intent.claimPda ? { claimPda: intent.claimPda } : {}),
-    ...(intent.submissionPda ? { submissionPda: intent.submissionPda } : {}),
-    ...(intent.workerPda ? { workerPda: intent.workerPda } : {}),
-    ...(intent.disputePda ? { disputePda: intent.disputePda } : {}),
-    ...(intent.disputeId ? { disputeId: intent.disputeId } : {}),
-    ...(intent.jobSpecHash !== undefined ? { jobSpecHash: intent.jobSpecHash } : {}),
-    ...(intent.rewardLamports ? { rewardLamports: intent.rewardLamports } : {}),
-    rewardMint: intent.rewardMint ?? "SOL",
-    ...(intent.taskType !== undefined ? { taskType: intent.taskType } : {}),
-    ...(intent.validationMode !== undefined ? { validationMode: intent.validationMode } : {}),
-    ...(intent.artifactSha256 !== undefined ? { artifactSha256: intent.artifactSha256 } : {}),
-    ...(intent.constraintHash !== undefined ? { constraintHash: intent.constraintHash } : {}),
-    ...(intent.requiresCreatorReview !== undefined
-      ? { requiresCreatorReview: intent.requiresCreatorReview }
-      : {}),
-    ...(intent.jobSpecVerified !== undefined
-      ? { jobSpecVerified: intent.jobSpecVerified }
-      : {}),
-    ...(intent.hasArtifactDelivery !== undefined
-      ? { hasArtifactDelivery: intent.hasArtifactDelivery }
-      : {}),
-    accountMetas: intent.accountMetas,
-  };
-}
-
-function toAgentKitMarketplaceSignerPolicy(
+function evaluateMarketplaceIntentPolicy(
   policy: MarketplaceSignerPolicy,
   intent: MarketplaceTransactionIntent,
-): AgentKitMarketplaceSignerPolicy {
-  const legacyToolName = toolNameForIntent(intent.kind);
-  const agentKitToolName = agentKitToolNameForIntent(
-    intent.kind as AgentKitMarketplaceTransactionIntent["kind"],
-  );
-  const allowedTools = new Set(policy.allowedTools ?? []);
-  if (allowedTools.has(legacyToolName)) {
-    allowedTools.add(agentKitToolName);
+): MarketplaceSignerPolicyEvaluation {
+  const allowedTaskPdas = normalizeList(policy.allowedTaskPdas);
+  if (
+    allowedTaskPdas.size > 0 &&
+    (intent.taskPda === undefined || intent.taskPda === null || !allowedTaskPdas.has(intent.taskPda))
+  ) {
+    return deny("TASK_NOT_ALLOWED", `Task ${intent.taskPda ?? "<missing>"} is not allowed`, {
+      taskPda: intent.taskPda ?? null,
+    });
   }
+
+  if (!fieldAllowed(policy.allowedDisputePdas, intent.disputePda)) {
+    return deny(
+      "DISPUTE_NOT_ALLOWED",
+      `Dispute ${intent.disputePda ?? "<missing>"} is not allowed`,
+      { disputePda: intent.disputePda ?? null },
+    );
+  }
+
+  if (!optionalFieldAllowed(policy.allowedJobSpecHashes, intent.jobSpecHash)) {
+    return deny(
+      "JOB_SPEC_HASH_NOT_ALLOWED",
+      `Job spec hash ${intent.jobSpecHash ?? "<missing>"} is not allowed`,
+      { jobSpecHash: intent.jobSpecHash ?? null },
+    );
+  }
+
+  if (!optionalFieldAllowed(policy.allowedConstraintHashes, intent.constraintHash)) {
+    return deny(
+      "CONSTRAINT_HASH_NOT_ALLOWED",
+      `Constraint hash ${intent.constraintHash ?? "<missing>"} is not allowed`,
+      { constraintHash: intent.constraintHash ?? null },
+    );
+  }
+
+  const maxReward = parseLimit(policy.maxRewardLamports, "maxRewardLamports");
+  if (intent.kind === "create_task" && intent.rewardLamports !== undefined && maxReward === null) {
+    return deny(
+      "REWARD_LIMIT_REQUIRED",
+      "Task creation policy must set maxRewardLamports before approving reward escrow",
+    );
+  }
+  if (intent.rewardLamports !== undefined && maxReward !== null) {
+    const reward = BigInt(intent.rewardLamports);
+    if (reward > maxReward) {
+      return deny("REWARD_LIMIT_EXCEEDED", "Reward exceeds signer policy maximum", {
+        rewardLamports: reward.toString(),
+        maxRewardLamports: maxReward.toString(),
+      });
+    }
+  }
+
+  const rewardMint = intent.rewardMint ?? "SOL";
+  if (!fieldAllowed(policy.allowedRewardMints, rewardMint)) {
+    return deny("REWARD_MINT_NOT_ALLOWED", `Reward mint ${rewardMint} is not allowed`, {
+      rewardMint,
+    });
+  }
+
+  if (policy.denyTokenRewards && rewardMint !== "SOL") {
+    return deny("TOKEN_REWARD_DENIED", "Token rewards are denied by policy", { rewardMint });
+  }
+
+  if (!optionalFieldAllowed(policy.allowedTaskTypes, intent.taskType)) {
+    return deny("TASK_TYPE_NOT_ALLOWED", `Task type ${intent.taskType ?? "<missing>"} is not allowed`, {
+      taskType: intent.taskType ?? null,
+    });
+  }
+
+  if (
+    intent.validationMode !== undefined &&
+    intent.validationMode !== null &&
+    !fieldAllowed(policy.allowedValidationModes, intent.validationMode)
+  ) {
+    return deny(
+      "VALIDATION_MODE_NOT_ALLOWED",
+      `Validation mode ${intent.validationMode} is not allowed`,
+      { validationMode: intent.validationMode },
+    );
+  }
+
+  if (policy.denyPrivateZk && intent.kind === "complete_task_private") {
+    return deny("PRIVATE_ZK_DENIED", "Private ZK completion is out of scope");
+  }
+
+  if (
+    policy.requireCreatorReviewForArtifacts &&
+    intent.hasArtifactDelivery &&
+    !intent.requiresCreatorReview
+  ) {
+    return deny(
+      "CREATOR_REVIEW_REQUIRED_FOR_ARTIFACT",
+      "Artifact delivery requires CreatorReview/manual validation",
+    );
+  }
+
+  if (
+    policy.denyPublicAutoSettleArtifacts &&
+    intent.hasArtifactDelivery &&
+    intent.kind === "complete_task"
+  ) {
+    return deny(
+      "PUBLIC_AUTO_SETTLE_ARTIFACT_DENIED",
+      "Public auto-settle artifact completion is denied",
+    );
+  }
+
+  if (
+    policy.requireJobSpecVerification &&
+    (intent.kind === "claim_task" || intent.kind === "claim_task_with_job_spec") &&
+    intent.jobSpecVerified !== true
+  ) {
+    return deny(
+      "JOB_SPEC_VERIFICATION_REQUIRED",
+      "Claim requires verified job-spec metadata",
+    );
+  }
+
+  const expectedAccountMetas = policy.expectedAccountMetas ?? [];
+  const strictAccountMetas =
+    expectedAccountMetas.length > 0 && policy.strictAccountMetas !== false;
+
+  if (expectedAccountMetas.length > 0) {
+    const duplicateExpected = duplicateNames(expectedAccountMetas);
+    if (duplicateExpected.length > 0) {
+      return deny(
+        "ACCOUNT_META_DUPLICATE_EXPECTED",
+        "Signer policy contains duplicate expected account meta names",
+        { accountNames: duplicateExpected },
+      );
+    }
+
+    const duplicateActual = duplicateNames(intent.accountMetas);
+    if (duplicateActual.length > 0) {
+      return deny("ACCOUNT_META_DUPLICATE", "Transaction intent contains duplicate account metas", {
+        accountNames: duplicateActual,
+      });
+    }
+  }
+
+  if (strictAccountMetas) {
+    const expectedNames = new Set(expectedAccountMetas.map((account) => account.name));
+    const unexpectedAccounts = intent.accountMetas.filter((account) => !expectedNames.has(account.name));
+    if (unexpectedAccounts.length > 0) {
+      return deny(
+        "ACCOUNT_META_UNEXPECTED",
+        "Transaction intent includes account metas outside the signer policy",
+        {
+          accounts: unexpectedAccounts.map((account) => ({
+            name: account.name,
+            pubkey: account.pubkey,
+            isSigner: account.isSigner,
+            isWritable: account.isWritable,
+          })),
+        },
+      );
+    }
+  }
+
+  for (const expected of expectedAccountMetas) {
+    const actual = intent.accountMetas.find((account) => account.name === expected.name);
+    if (!actual) {
+      return deny("ACCOUNT_META_MISSING", `Required account meta ${expected.name} is missing`, {
+        accountName: expected.name,
+      });
+    }
+    if (expected.pubkey && actual.pubkey !== expected.pubkey) {
+      return deny(
+        "ACCOUNT_META_PUBKEY_MISMATCH",
+        `Account meta ${expected.name} pubkey does not match`,
+        { accountName: expected.name, expectedPubkey: expected.pubkey, actualPubkey: actual.pubkey },
+      );
+    }
+    const expectedIsSigner = expected.isSigner ?? false;
+    if (actual.isSigner !== expectedIsSigner) {
+      return deny(
+        "ACCOUNT_META_SIGNER_MISMATCH",
+        `Account meta ${expected.name} signer flag does not match`,
+        { accountName: expected.name },
+      );
+    }
+    const expectedIsWritable = expected.isWritable ?? false;
+    if (actual.isWritable !== expectedIsWritable) {
+      return deny(
+        "ACCOUNT_META_WRITABLE_MISMATCH",
+        `Account meta ${expected.name} writable flag does not match`,
+        { accountName: expected.name },
+      );
+    }
+  }
+
   return {
-    ...(policy as AgentKitMarketplaceSignerPolicy),
-    allowedTools: [...allowedTools],
+    allowed: true,
+    code: "ALLOWED",
+    reason: "Transaction intent satisfies marketplace signer policy",
+    metadata: {
+      toolName: toolNameForIntent(intent.kind),
+      programId: intent.programId,
+      signer: intent.signer,
+    },
   };
 }
 
@@ -385,15 +566,7 @@ export function evaluateMarketplaceSignerPolicyForIntent(
     return baseDecision;
   }
 
-  const agentKitDecision = evaluateAgentKitMarketplaceSignerPolicyForIntent(
-    toAgentKitMarketplaceSignerPolicy(policy, intent),
-    toAgentKitMarketplaceIntent(intent),
-  );
-  if (!agentKitDecision.allowed) {
-    return agentKitDecision;
-  }
-
-  return baseDecision;
+  return evaluateMarketplaceIntentPolicy(policy, intent);
 }
 
 export function wrapMarketplaceSignerPolicy(

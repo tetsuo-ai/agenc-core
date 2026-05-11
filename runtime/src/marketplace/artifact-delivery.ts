@@ -1,11 +1,6 @@
-import {
-  decodeMarketplaceArtifactSha256FromResultData as decodeArtifactSha256FromResultData,
-  encodeMarketplaceArtifactResultData as encodeArtifactResultData,
-  hasMarketplaceArtifactDeliveryInput as hasArtifactDeliveryInput,
-  prepareMarketplaceArtifactDelivery as prepareArtifactDelivery,
-  readMarketplaceArtifactReference as readArtifactReference,
-  resolveMarketplaceArtifactReferenceFromResultData as resolveArtifactReferenceFromResultData,
-} from "@tetsuo-ai/marketplace-artifacts";
+import { createHash } from "node:crypto";
+import { copyFile, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 export const MARKETPLACE_ARTIFACT_REFERENCE_KIND = "agenc.marketplace.artifactReference";
 export const MARKETPLACE_ARTIFACT_REFERENCE_SCHEMA_VERSION = 1;
@@ -36,6 +31,7 @@ export interface PrepareMarketplaceArtifactDeliveryInput {
   readonly artifactSha256?: string;
   readonly artifactMediaType?: string;
   readonly artifactStoreDir?: string;
+  readonly artifactWorkspaceDir?: string;
   readonly artifactMaxBytes?: number;
   readonly now?: Date;
 }
@@ -44,45 +40,308 @@ export interface PreparedMarketplaceArtifactDelivery {
   readonly reference: MarketplaceArtifactReference;
   readonly proofHash: Uint8Array;
   readonly resultData: Uint8Array;
+  readonly bytes?: Uint8Array;
 }
 
 export interface ResolveMarketplaceArtifactReferenceOptions {
   readonly artifactStoreDir?: string;
 }
 
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+const SAFE_FILE_NAME_PATTERN = /[^a-zA-Z0-9._-]/g;
+const SUPPORTED_ARTIFACT_URI_PROTOCOLS = new Set([
+  "ipfs:",
+  "ar:",
+  "arweave:",
+  "https:",
+]);
+
+function normalizeSha256Hex(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!SHA256_HEX_PATTERN.test(normalized)) {
+    throw new Error("artifactSha256 must be a 32-byte lowercase hex SHA-256 digest");
+  }
+  if (/^0{64}$/.test(normalized)) {
+    throw new Error("artifactSha256 cannot be all zeros");
+  }
+  return normalized;
+}
+
+function sha256HexToBytes(sha256: string): Uint8Array {
+  return Uint8Array.from(Buffer.from(normalizeSha256Hex(sha256), "hex"));
+}
+
+function sha256BytesToHex(bytes: Uint8Array): string {
+  if (bytes.length !== 32) {
+    throw new Error("SHA-256 digest must be 32 bytes");
+  }
+  return normalizeSha256Hex(Buffer.from(bytes).toString("hex"));
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+
+function base64UrlDecode(value: string): Buffer {
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.length !== 32) {
+    throw new Error("Invalid artifact resultData SHA-256 encoding");
+  }
+  return decoded;
+}
+
+function inferMediaType(filePath: string): string | undefined {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".md":
+    case ".markdown":
+      return "text/markdown; charset=utf-8";
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    case ".json":
+      return "application/json";
+    case ".pdf":
+      return "application/pdf";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    default:
+      return undefined;
+  }
+}
+
+function safeFileName(filePath: string): string {
+  const raw = path.basename(filePath).replace(SAFE_FILE_NAME_PATTERN, "-");
+  return raw.length > 0 ? raw : "artifact";
+}
+
+async function resolveSafeArtifactFilePath(
+  source: string,
+  workspaceDir?: string,
+): Promise<string> {
+  const sourcePath = path.resolve(source);
+  const linkStats = await lstat(sourcePath);
+  if (linkStats.isSymbolicLink()) {
+    throw new Error("artifactFile must not be a symlink");
+  }
+  if (workspaceDir?.trim()) {
+    const workspaceRoot = await realpath(path.resolve(workspaceDir));
+    const realSource = await realpath(sourcePath);
+    const relative = path.relative(workspaceRoot, realSource);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      return realSource;
+    }
+    throw new Error("artifactFile must stay inside the configured artifact workspace");
+  }
+  return sourcePath;
+}
+
+function artifactStoreDir(input?: string): string {
+  return (
+    input?.trim() ||
+    process.env.AGENC_MARKETPLACE_ARTIFACT_STORE_DIR ||
+    DEFAULT_MARKETPLACE_ARTIFACT_STORE_DIR
+  );
+}
+
+function artifactReferencePath(rootDir: string, sha256: string): string {
+  return path.join(rootDir, "references", "sha256", `${sha256}.json`);
+}
+
+function artifactBlobPath(rootDir: string, sha256: string, fileName: string): string {
+  return path.join(rootDir, "blobs", "sha256", sha256, fileName);
+}
+
+function validateArtifactUri(uri: string): string {
+  const trimmed = uri.trim();
+  if (trimmed.length === 0) {
+    throw new Error("artifactUri cannot be empty");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("artifactUri must be an absolute URI");
+  }
+  if (!SUPPORTED_ARTIFACT_URI_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error("artifactUri must use ipfs://, ar://, arweave://, or https://");
+  }
+  return trimmed;
+}
+
+async function persistArtifactReference(
+  reference: MarketplaceArtifactReference,
+  rootDir: string,
+): Promise<void> {
+  const referencePath = artifactReferencePath(rootDir, reference.sha256);
+  await mkdir(path.dirname(referencePath), { recursive: true, mode: 0o700 });
+  const tempPath = `${referencePath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(reference, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
+  await rename(tempPath, referencePath);
+}
+
 export function encodeMarketplaceArtifactResultData(sha256: string): Uint8Array {
-  return encodeArtifactResultData(sha256);
+  const digest = sha256HexToBytes(sha256);
+  const encoded = `${MARKETPLACE_ARTIFACT_RESULT_PREFIX}${base64UrlEncode(digest)}`;
+  const bytes = new TextEncoder().encode(encoded);
+  if (bytes.length > MARKETPLACE_ARTIFACT_RESULT_BYTES) {
+    throw new Error("Encoded artifact resultData exceeds 64 bytes");
+  }
+  const output = new Uint8Array(MARKETPLACE_ARTIFACT_RESULT_BYTES);
+  output.set(bytes);
+  return output;
 }
 
 export function decodeMarketplaceArtifactSha256FromResultData(
   resultData: Uint8Array,
 ): string | null {
-  return decodeArtifactSha256FromResultData(resultData);
+  if (resultData.length !== MARKETPLACE_ARTIFACT_RESULT_BYTES) {
+    return null;
+  }
+  const zeroIndex = resultData.indexOf(0);
+  const textBytes = zeroIndex === -1 ? resultData : resultData.subarray(0, zeroIndex);
+  const text = new TextDecoder().decode(textBytes);
+  if (!text.startsWith(MARKETPLACE_ARTIFACT_RESULT_PREFIX)) {
+    return null;
+  }
+  const encodedDigest = text.slice(MARKETPLACE_ARTIFACT_RESULT_PREFIX.length);
+  if (encodedDigest.length === 0) {
+    return null;
+  }
+  try {
+    return sha256BytesToHex(base64UrlDecode(encodedDigest));
+  } catch {
+    return null;
+  }
 }
 
 export function hasMarketplaceArtifactDeliveryInput(input: {
   readonly artifactFile?: unknown;
   readonly artifactUri?: unknown;
 }): boolean {
-  return hasArtifactDeliveryInput(input);
+  return Boolean(
+    (typeof input.artifactFile === "string" && input.artifactFile.trim()) ||
+      (typeof input.artifactUri === "string" && input.artifactUri.trim()),
+  );
 }
 
 export async function prepareMarketplaceArtifactDelivery(
   input: PrepareMarketplaceArtifactDeliveryInput,
 ): Promise<PreparedMarketplaceArtifactDelivery> {
-  return prepareArtifactDelivery(input);
+  const hasFile = Boolean(input.artifactFile?.trim());
+  const hasUri = Boolean(input.artifactUri?.trim());
+  if (hasFile === hasUri) {
+    throw new Error("Provide exactly one of artifactFile or artifactUri");
+  }
+
+  const rootDir = artifactStoreDir(input.artifactStoreDir);
+  const createdAt = (input.now ?? new Date()).toISOString();
+
+  if (hasFile) {
+    const sourcePath = await resolveSafeArtifactFilePath(
+      input.artifactFile as string,
+      input.artifactWorkspaceDir,
+    );
+    const fileStats = await stat(sourcePath);
+    if (!fileStats.isFile()) {
+      throw new Error("artifactFile must point to a regular file");
+    }
+    const maxBytes = input.artifactMaxBytes ?? DEFAULT_MARKETPLACE_ARTIFACT_MAX_BYTES;
+    if (fileStats.size > maxBytes) {
+      throw new Error(`artifactFile exceeds ${maxBytes} bytes`);
+    }
+
+    const content = await readFile(sourcePath);
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    const fileName = safeFileName(sourcePath);
+    const localPath = artifactBlobPath(rootDir, sha256, fileName);
+    await mkdir(path.dirname(localPath), { recursive: true, mode: 0o700 });
+    await copyFile(sourcePath, localPath);
+
+    const reference: MarketplaceArtifactReference = {
+      kind: MARKETPLACE_ARTIFACT_REFERENCE_KIND,
+      schemaVersion: MARKETPLACE_ARTIFACT_REFERENCE_SCHEMA_VERSION,
+      uri: `agenc://artifact/sha256/${sha256}/${encodeURIComponent(fileName)}`,
+      sha256,
+      source: "file",
+      createdAt,
+      sizeBytes: fileStats.size,
+      mediaType: input.artifactMediaType?.trim() || inferMediaType(sourcePath),
+      fileName,
+      localPath,
+      durableStorageGuaranteed: false,
+    };
+    await persistArtifactReference(reference, rootDir);
+    return {
+      reference,
+      proofHash: sha256HexToBytes(sha256),
+      resultData: encodeMarketplaceArtifactResultData(sha256),
+      bytes: content,
+    };
+  }
+
+  const sha256 = normalizeSha256Hex(input.artifactSha256 ?? "");
+  const reference: MarketplaceArtifactReference = {
+    kind: MARKETPLACE_ARTIFACT_REFERENCE_KIND,
+    schemaVersion: MARKETPLACE_ARTIFACT_REFERENCE_SCHEMA_VERSION,
+    uri: validateArtifactUri(input.artifactUri as string),
+    sha256,
+    source: "uri",
+    createdAt,
+    mediaType: input.artifactMediaType?.trim() || undefined,
+    durableStorageGuaranteed: false,
+  };
+  await persistArtifactReference(reference, rootDir);
+  return {
+    reference,
+    proofHash: sha256HexToBytes(sha256),
+    resultData: encodeMarketplaceArtifactResultData(sha256),
+  };
 }
 
 export async function readMarketplaceArtifactReference(
   sha256: string,
   options: ResolveMarketplaceArtifactReferenceOptions = {},
 ): Promise<MarketplaceArtifactReference | null> {
-  return readArtifactReference(sha256, options);
+  const normalized = normalizeSha256Hex(sha256);
+  const referencePath = artifactReferencePath(
+    artifactStoreDir(options.artifactStoreDir),
+    normalized,
+  );
+  try {
+    const raw = await readFile(referencePath, "utf8");
+    const parsed = JSON.parse(raw) as MarketplaceArtifactReference;
+    if (
+      parsed.kind !== MARKETPLACE_ARTIFACT_REFERENCE_KIND ||
+      parsed.schemaVersion !== MARKETPLACE_ARTIFACT_REFERENCE_SCHEMA_VERSION ||
+      parsed.sha256 !== normalized ||
+      typeof parsed.uri !== "string"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function resolveMarketplaceArtifactReferenceFromResultData(
   resultData: Uint8Array,
   options: ResolveMarketplaceArtifactReferenceOptions = {},
 ): Promise<MarketplaceArtifactReference | null> {
-  return resolveArtifactReferenceFromResultData(resultData, options);
+  const sha256 = decodeMarketplaceArtifactSha256FromResultData(resultData);
+  if (!sha256) {
+    return null;
+  }
+  return readMarketplaceArtifactReference(sha256, options);
 }

@@ -88,8 +88,6 @@
   "devDependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.98.4",
-    "@tetsuo-ai/marketplace-artifacts": "file:../../agenc-marketplace-agent-kit/packages/artifacts",
-    "@tetsuo-ai/marketplace-policy": "file:../../agenc-marketplace-agent-kit/packages/policy",
     "bn.js": "^5.2.3",
     "typescript": "^5.0.0",
     "vitest": "^1.0.0"
