@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Plugin option storage and substitution.
  *
@@ -15,7 +13,6 @@
  */
 
 import memoize from 'lodash-es/memoize.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'

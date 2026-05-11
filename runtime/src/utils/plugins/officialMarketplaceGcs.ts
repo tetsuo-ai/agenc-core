@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * inc-5046: fetch the official marketplace from a GCS mirror instead of
  * git-cloning GitHub on every startup.
@@ -13,11 +11,8 @@
 import axios from 'axios'
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'fs/promises'
 import { dirname, join, resolve, sep } from 'path'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { waitForScrollIdle } from '../../bootstrap/state.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { logEvent } from '../../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseZipModes, unzipFile } from '../dxt/zip.js'

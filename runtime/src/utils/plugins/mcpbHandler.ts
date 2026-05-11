@@ -1,15 +1,12 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
   McpbManifest,
   McpbUserConfigurationOption,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- optional peer module not present in this workspace; types are erased at runtime
 } from '@anthropic-ai/mcpb'
 import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'

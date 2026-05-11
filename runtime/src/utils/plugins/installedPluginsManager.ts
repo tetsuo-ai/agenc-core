@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Manages plugin installation metadata stored in installed_plugins.json
  *
@@ -42,7 +40,6 @@ type InstalledPluginsMapV2 = Record<string, PluginInstallationEntry[]>
 // Type for persistable scopes (excludes 'flag' which is session-only)
 export type PersistableScope = Exclude<PluginScope, never> // All scopes are persistable in the schema
 
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getOriginalCwd } from '../../bootstrap/state.js'
 import { getCwd } from '../cwd.js'
 import { getHeadForDir } from '../git/gitFilesystem.js'

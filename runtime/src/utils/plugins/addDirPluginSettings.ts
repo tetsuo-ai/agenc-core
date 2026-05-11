@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Reads plugin-related settings (enabledPlugins, extraKnownMarketplaces)
  * from --add-dir directories.
@@ -10,7 +8,6 @@
 
 import { join } from 'path'
 import type { z } from 'zod/v4'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getAdditionalDirectoriesForAgenCMd } from '../../bootstrap/state.js'
 import { parseSettingsFile } from '../settings/settings.js'
 import type {

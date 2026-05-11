@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import memoize from 'lodash-es/memoize.js'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 import {
@@ -197,10 +195,10 @@ export async function pruneRemovedPluginHooks(): Promise<void> {
   // clearRegisteredPluginHooks; we only need to re-register survivors.
   const survivors: Partial<Record<HookEvent, PluginHookMatcher[]>> = {}
   for (const [event, matchers] of Object.entries(current)) {
-    const kept = matchers.filter(
-      (m): m is PluginHookMatcher =>
-        'pluginRoot' in m && enabledRoots.has(m.pluginRoot),
-    )
+    const kept = matchers.filter((m): m is PluginHookMatcher => {
+      const root = (m as { pluginRoot?: unknown }).pluginRoot
+      return typeof root === 'string' && enabledRoots.has(root)
+    })
     if (kept.length > 0) survivors[event as HookEvent] = kept
   }
 

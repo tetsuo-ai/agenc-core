@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Layer-3 refresh primitive: swap active plugin components in the running session.
  *
@@ -20,6 +18,10 @@
  */
 
 import { getOriginalCwd } from '../../bootstrap/state.js'
+// `getPluginCommands` returns Command from `types/command.js`, which is the
+// stricter sibling of `commands.Command`. The two share the same runtime
+// shape but TypeScript treats them as nominally distinct, so we cast at the
+// boundaries instead of widening the public RefreshActivePluginsResult type.
 import type { Command } from '../../commands.js'
 import { reinitializeLspServerManager } from '../../services/lsp/manager.js'
 import type { AppState } from '../../tui/state/AppState.js'
@@ -95,7 +97,9 @@ export async function refreshActivePlugins(
   ])
 
   const { enabled, disabled, errors } = pluginResult
-  setPluginCommandsState(pluginCommands)
+  // Cast: `pluginCommands` is `TypesCommand[]` but `setPluginCommandsState`
+  // accepts the structurally compatible `Command[]` from `../../commands.js`.
+  setPluginCommandsState(pluginCommands as unknown as Command[])
 
   // Populate mcpServers/lspServers on each enabled plugin. These are lazy
   // cache slots NOT filled by loadAllPlugins() — they're written later by
@@ -190,7 +194,9 @@ export async function refreshActivePlugins(
     lsp_count,
     error_count: errors.length + (hook_load_failed ? 1 : 0),
     agentDefinitions,
-    pluginCommands,
+    // See note on the cast above — `TypesCommand[]` is runtime-compatible
+    // with the `Command[]` declared on RefreshActivePluginsResult.
+    pluginCommands: pluginCommands as unknown as Command[],
   }
 }
 
