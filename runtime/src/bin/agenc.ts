@@ -2966,9 +2966,7 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
       return 1;
     case "none":
     case "not_found":
-      process.stderr.write(
-        `agenc: session not found in either legacy or hashed project layout: ${args.resumeId}\n`,
-      );
+      process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
       return 1;
   }
 }
