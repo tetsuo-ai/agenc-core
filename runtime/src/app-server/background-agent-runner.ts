@@ -586,6 +586,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ? firstInput.trim().length > 0
           : firstInput.length > 0;
       if (hasFirstInput) {
+        // Emit the user_message daemon event for the initial content so
+        // the TUI transcript can render it. Turn 2+ goes through
+        // `submitAgentMessage` (message.stream RPC) which emits its own
+        // user_message event directly. Turn 1 reaches the session via
+        // `managedThread.submit({type: "user_input"})` → runTurn, but
+        // the daemon turn-driver hooks force `displayUserMessage: null`
+        // on runTurn to prevent dedup-incompatible duplicate emits, and
+        // the eventLog bridge (`daemonEventFromUnboundSessionEvent`)
+        // does not handle `user_message`. Without this explicit emit the
+        // first user prompt is invisible in the transcript.
+        //
+        // The event is buffered when `sessionBinding === undefined`
+        // (the TUI's `agent.attach` has not yet completed) and replayed
+        // when the binding attaches, so it always reaches the
+        // subscriber.
+        if (params.initialContent !== undefined) {
+          const displayText = messageContentDisplayText(params.initialContent);
+          if (displayText.length > 0) {
+            await this.#emitOrBufferEvent(active, {
+              id: `user-initial-${managedThread.threadId}`,
+              type: "user_message",
+              payload: {
+                message: params.initialContent,
+                displayText,
+              },
+            });
+          }
+        }
         void managedThread
           .submit({ type: "user_input", input: firstInput })
           .catch(() => {

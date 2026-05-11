@@ -2117,20 +2117,6 @@ async function startTuiEarlyInputCapture(): Promise<() => string> {
   }
 }
 
-function extractTuiUserPromptText(message: unknown): string {
-  if (typeof message === "string") return message;
-  if (!Array.isArray(message)) return "";
-  const parts: string[] = [];
-  for (const block of message) {
-    if (typeof block !== "object" || block === null) continue;
-    const record = block as { readonly type?: unknown; readonly text?: unknown };
-    if (record.type === "text" && typeof record.text === "string") {
-      parts.push(record.text);
-    }
-  }
-  return parts.join("");
-}
-
 function messageContentBlocksFromUnknown(input: unknown): MessageContentBlock[] {
   if (typeof input === "string") return [{ type: "text", text: input }];
   if (typeof input !== "object" || input === null) return [];
@@ -2368,29 +2354,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
 
   const base = params.baseSession as Record<string, unknown>;
-  const broadcastUserPrompt = (
-    rawMessage: unknown,
-    displayOverride: string | null | undefined,
-  ): void => {
-    if (displayOverride === null) return;
-    const text =
-      typeof displayOverride === "string" && displayOverride.length > 0
-        ? displayOverride
-        : extractTuiUserPromptText(rawMessage);
-    if (text.length === 0) return;
-    const ev = {
-      id: `local:user:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      type: "user_message",
-      payload: { displayText: text, message: rawMessage },
-    };
-    for (const sub of [...subscribers]) {
-      try {
-        sub(ev);
-      } catch {
-        // ignore subscriber errors
-      }
-    }
-  };
   const session: TuiSessionShape & Record<string, unknown> = {
     ...base,
     // The Ink TUI's slash dispatcher in `App.tsx` calls `dispatchSlashCommand`
@@ -2423,19 +2386,17 @@ async function createDeferredDaemonPromptTuiSession(params: {
       return live.getDaemonSessionSnapshot();
     },
     submit: async (message, opts) => {
-      // Optimistically render the user's prompt in the local
-      // transcript. The daemon does not reliably echo user_message
-      // events back over event.session_event for normal text
-      // submits, so without this the transcript shows assistant
-      // tool calls / responses with no visible user input above
-      // them — the conversation looks like the model started
-      // talking on its own. (Restored after a failed removal: the
-      // duplicate the user saw was real, but removing this echo
-      // dropped user messages entirely. Dedup is a separate fix.)
-      broadcastUserPrompt(
-        message,
-        opts?.displayUserMessage as string | null | undefined,
-      );
+      // User-message rendering is driven entirely by daemon events:
+      //   - Turn 1 (initialContent via `startPromptAgent`) is emitted
+      //     from `BackgroundAgentRunner.startAgent` after the active
+      //     agent and event-log bridge are installed; the event is
+      //     buffered when `sessionBinding === undefined` and replayed
+      //     when the TUI's `agent.attach` completes.
+      //   - Turn 2+ (message.stream) is emitted by
+      //     `BackgroundAgentRunner.submitAgentMessage`.
+      // The previous local optimistic broadcast caused a duplicate
+      // user-message row whenever both emits fired with different ids,
+      // because the transcript reducer's dedup keys on `event.id`.
       if (liveSession !== null) {
         await liveSession.submit?.(message, opts);
         return;
