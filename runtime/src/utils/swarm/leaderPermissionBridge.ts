@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Leader Permission Bridge
  *
@@ -13,7 +11,6 @@
  */
 
 import type { ToolUseConfirm } from '../../tui/components/permissions/PermissionRequest.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolPermissionContext } from '../../tools/Tool.js'
 
 export type SetToolUseConfirmQueueFn = (
