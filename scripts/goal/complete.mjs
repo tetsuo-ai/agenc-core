@@ -432,22 +432,24 @@ const dir = markerDir();
 if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 acquireMergeLock();
 failIfInFlightJournalsFound();
-const mainStatusRes = spawnSync("git", ["-C", mainRoot, "status", "--porcelain"], {
-  encoding: "utf8",
-  stdio: ["ignore", "pipe", "pipe"],
-});
-if (mainStatusRes.status !== 0) {
-  abort("git status failed in main checkout");
-}
-if (mainStatusRes.stdout.trim()) {
-  abort(
-    `main checkout is dirty:\n${mainStatusRes.stdout}\nCommit or discard main checkout changes before completing.`,
-  );
-}
+// Note: we no longer require the main checkout's working tree to be
+// clean. The previous mechanic (`git checkout main && git merge`)
+// would clobber uncommitted work in mainRoot's working tree whenever a
+// parallel session (claude, editor, another goal worker) happened to
+// be editing there. The new mechanic (merge-tree + commit-tree +
+// update-ref) computes the merge purely against the object database
+// and advances refs/heads/main without ever touching a working tree.
+// Sessions with main checked out will see "behind by N commits" in
+// their next `git status` — their on-disk edits are intact, they just
+// need to `git pull --rebase` or `git reset --hard main` after stashing
+// to catch up to the integrated tree. See "Worktree Stomping" gotcha
+// in CLAUDE.md for the failure mode this fix retires.
 const journalPath = path.join(dir, `IN-FLIGHT-${id}.json`);
-const preMergeHead = spawnSync("git", ["-C", mainRoot, "rev-parse", "HEAD"], {
-  encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-}).stdout.trim();
+const preMergeHead = gitInMain("rev-parse", "refs/heads/main").stdout.trim();
+const portHead = gitInMain("rev-parse", `refs/heads/${expected}`).stdout.trim();
+if (!/^[0-9a-f]{40}$/.test(preMergeHead) || !/^[0-9a-f]{40}$/.test(portHead)) {
+  abort(`could not resolve main (${preMergeHead}) or ${expected} (${portHead}) to a sha`);
+}
 writeFileSync(journalPath, JSON.stringify({
   itemId: id,
   title: item.title,
@@ -457,29 +459,76 @@ writeFileSync(journalPath, JSON.stringify({
   mainCheckout: mainRoot,
   startedAt: new Date().toISOString(),
   preMergeHead,
+  portHead,
   expectedEndState: id === "Z-FINAL"
     ? "checklist=[x] + branch deleted + worktree removed + marker directory removed"
     : "checklist=[x] + branch deleted + worktree removed + marker written",
   recovery: "If this file exists at next complete.mjs invocation, the previous run was killed mid-flight. Re-run complete.mjs for this same item to finish marker/checklist/branch cleanup if the merge happened. If the merge did not happen, roll back to preMergeHead and delete this file.",
 }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
 
-// Checkout main + merge — ALWAYS performed in the main checkout via `git -C`,
-// regardless of whether complete.mjs was launched from the main checkout or
-// from a per-item worktree. This keeps the merge target consistent across
-// parallel sessions.
-const checkoutMain = runInMainCheckout("git", ["-C", mainRoot, "checkout", "main"]);
-if (checkoutMain.status !== 0) {
+// Working-tree-free merge: merge-tree → commit-tree → update-ref.
+//
+// Step 5a: compute the merged tree object. `merge-tree --write-tree`
+// runs the 3-way merge purely on objects and writes the resulting tree
+// to the object DB. Exits 0 with the tree sha on stdout when clean;
+// exits non-zero on conflicts or invalid input.
+const mergeTreeRes = gitInMain(
+  "merge-tree", "--write-tree", "--no-messages",
+  preMergeHead, portHead,
+);
+if (mergeTreeRes.status !== 0) {
   try { unlinkSync(journalPath); } catch {}
-  abort("git checkout main failed (in main checkout)");
+  abort(
+    `git merge-tree main ${expected} reported conflicts or failed ` +
+    `(status ${mergeTreeRes.status}):\n` +
+    `stdout:\n${mergeTreeRes.stdout}\n` +
+    `stderr:\n${mergeTreeRes.stderr}\n\n` +
+    `Resolve the merge in your per-item worktree (run \`git merge main\` ` +
+    `there, commit the resolution), then re-run complete.mjs.`,
+  );
+}
+const mergedTree = mergeTreeRes.stdout.trim();
+if (!/^[0-9a-f]{40}$/.test(mergedTree)) {
+  try { unlinkSync(journalPath); } catch {}
+  abort(`git merge-tree did not return a valid tree id:\n${mergeTreeRes.stdout}`);
 }
 
+// Step 5b: build the merge commit pointing at the merged tree.
 const mergeMsg = `Merge branch '${expected}'`;
-const mergeRes = runInMainCheckout("git", ["-C", mainRoot, "merge", "--no-ff", expected, "-m", mergeMsg]);
-if (mergeRes.status !== 0) {
+const commitTreeRes = gitInMain(
+  "commit-tree", mergedTree,
+  "-p", preMergeHead, "-p", portHead,
+  "-m", mergeMsg,
+);
+if (commitTreeRes.status !== 0) {
   try { unlinkSync(journalPath); } catch {}
-  abort(`git merge --no-ff ${expected} failed (in main checkout)`);
+  abort(`git commit-tree failed:\n${commitTreeRes.stderr}`);
 }
-ok("merged into main");
+const newMainSha = commitTreeRes.stdout.trim();
+if (!/^[0-9a-f]{40}$/.test(newMainSha)) {
+  try { unlinkSync(journalPath); } catch {}
+  abort(`git commit-tree did not return a valid commit sha:\n${commitTreeRes.stdout}`);
+}
+
+// Step 5c: advance refs/heads/main atomically. The CAS form
+// (`update-ref <ref> <new> <old>`) refuses to advance main if another
+// complete.mjs raced us between merge-tree and update-ref. The
+// COMPLETE-MERGE.lock should prevent that already, but the CAS is the
+// authoritative serialization point — if it fails, main moved under us
+// and we surface the conflict instead of silently overwriting.
+const updateRefRes = gitInMain(
+  "update-ref", "refs/heads/main", newMainSha, preMergeHead,
+);
+if (updateRefRes.status !== 0) {
+  try { unlinkSync(journalPath); } catch {}
+  abort(
+    `git update-ref refs/heads/main ${newMainSha} ${preMergeHead} failed ` +
+    `(status ${updateRefRes.status}):\n${updateRefRes.stderr}\n\n` +
+    `Another complete.mjs may have advanced main between our merge-tree ` +
+    `and update-ref. Re-run complete.mjs to retry with a fresh merge base.`,
+  );
+}
+ok(`merged into main: ${newMainSha.slice(0, 12)} (working trees untouched)`);
 
 // ---- step 5b: remove worktree (if any) ---------------------------------
 //
