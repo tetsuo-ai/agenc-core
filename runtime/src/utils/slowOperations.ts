@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import type { WriteFileOptions } from 'fs'
 import {
@@ -10,7 +8,6 @@ import {
 } from 'fs'
 // biome-ignore lint: This file IS the cloneDeep wrapper - it must import the original
 import lodashCloneDeep from 'lodash-es/cloneDeep.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { addSlowOperation } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 

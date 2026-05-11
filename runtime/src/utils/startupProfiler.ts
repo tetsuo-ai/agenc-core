@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Startup profiling utility for measuring and reporting time spent in various
  * initialization phases.
@@ -12,12 +10,10 @@
  */
 
 import { dirname, join } from 'path'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from 'src/bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/analytics/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'

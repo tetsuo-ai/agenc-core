@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import partition from 'lodash-es/partition.js'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -57,7 +55,7 @@ export function applyCoordinatorToolFilter(tools: Tools): Tools {
 export function mergeAndFilterTools(
   initialTools: Tools,
   assembled: Tools,
-  mode: ToolPermissionContext['mode'],
+  _mode: ToolPermissionContext['mode'],
 ): Tools {
   // Merge initialTools on top - they take precedence in deduplication.
   // initialTools may include built-in tools (from getTools() in REPL.tsx) which

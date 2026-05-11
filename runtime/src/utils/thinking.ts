@@ -1,9 +1,6 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import type { Theme } from './theme.js'
 import { feature } from 'bun:bundle'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
@@ -107,7 +104,7 @@ export function modelSupportsThinking(model: string): boolean {
   const canonical = getCanonicalName(model)
   const provider = getAPIProvider()
   // 1P and Foundry: all AgenC 4+ models (including Haiku 4.5)
-  if (provider === 'foundry' || provider === 'firstParty') {
+  if ((provider as string) === 'foundry' || provider === 'firstParty') {
     return !canonical.includes('claude-3-')
   }
   if (
@@ -158,7 +155,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   // is a proxy). Do not default to true for other 3P as they have different formats
   // for their model strings.
   const provider = getAPIProvider()
-  return provider === 'firstParty' || provider === 'foundry'
+  return provider === 'firstParty' || (provider as string) === 'foundry'
 }
 
 export function shouldEnableThinkingByDefault(): boolean {
