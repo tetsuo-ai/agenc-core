@@ -1,8 +1,5 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { SandboxSettingsSchema } from '../../entrypoints/sandboxTypes.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { lazySchema } from '../lazySchema.js'
@@ -26,11 +23,9 @@ export {
   type HooksSettings,
   type HttpHook,
   type PromptHook,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../schemas/hooks.js'
 
 // Also import for use within this file
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { type HookCommand, HooksSchema } from '../../schemas/hooks.js'
 // upstream-import: keep service schema target is owned by a later purge item
 import { AutoFixConfigSchema } from '../../services/autoFix/autoFixConfig.js'

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { BROWSER_TOOLS } from '@ant/agenc-for-chrome-mcp'
 import { chmod, mkdir, readFile, writeFile } from 'fs/promises'
 import { homedir } from 'os'
@@ -97,7 +95,7 @@ export function setupAgenCInChrome(): {
 } {
   const isNativeBuild = isInBundledMode()
   const allowedTools = BROWSER_TOOLS.map(
-    tool => `mcp__agenc-in-chrome__${tool.name}`,
+    (tool: any) => `mcp__agenc-in-chrome__${tool.name}`,
   )
 
   const env: Record<string, string> = {}

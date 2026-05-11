@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import {
   type AgenCForChromeContext,
   createAgenCForChromeMcpServer,
@@ -214,7 +212,7 @@ export function createChromeContext(
         }
       },
     }),
-    trackEvent: (eventName, metadata) => {
+    trackEvent: (eventName: any, metadata: any) => {
       const safeMetadata: {
         [key: string]:
           | boolean

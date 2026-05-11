@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Adapter layer that wraps @anthropic-ai/sandbox-runtime with AgenC CLI-specific integrations.
  * This file provides the bridge between the external sandbox-runtime package and AgenC CLI's
