@@ -117,6 +117,24 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "malformed_tool_call",
 ]);
 
+/**
+ * Collab v2 agent tools that produce their own structured transcript
+ * rows via `collab_agent_spawn_*`, `collab_agent_interaction_*`,
+ * `collab_waiting_*`, and `collab_close_*` events. The raw
+ * `tool_call_started`/`tool_call_completed` rows for these names are
+ * suppressed so the transcript shows a single structured "Task" row
+ * per call (matching upstream's `CollabAgentToolCall` ThreadItem
+ * routing, where the generic function-call ThreadItem variant is
+ * never produced for these tools).
+ */
+const COLLAB_V2_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "spawn_agent",
+  "wait_agent",
+  "close_agent",
+  "send_message",
+  "followup_task",
+]);
+
 function timestamp(): string {
   return new Date().toISOString();
 }
@@ -1110,6 +1128,19 @@ export function adaptTranscriptEvents(
             : event.type === "exec_command_begin"
               ? "Bash"
               : "MCP";
+        // Collab v2 agent tools emit their own
+        // `collab_agent_spawn_*`, `collab_agent_interaction_*`,
+        // `collab_waiting_*`, and `collab_close_*` events that the
+        // transcript renders as structured "Task" rows. Skipping the
+        // raw `tool_call_started`/`tool_call_completed` row here keeps
+        // a single row per spawn/wait/close/send-input call instead of
+        // duplicating the structured row with a generic
+        // `spawn_agent({...})` row that drowns the task_name in JSON.
+        // `pushToolResult` already no-ops when the callId is not open,
+        // so the matching `tool_call_completed` row drops naturally.
+        if (COLLAB_V2_TOOL_NAMES.has(toolName)) {
+          break;
+        }
         pushToolUse(out, openTools, toolNames, callId, toolName, toolInput(payload));
         runningToolNames.set(callId, toolName);
         break;

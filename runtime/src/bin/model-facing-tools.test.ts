@@ -1807,7 +1807,7 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("rejects over-depth spawn_agent before emitting lifecycle events", async () => {
+  it("rejects over-depth spawn_agent and emits a begin/end-errored lifecycle pair", async () => {
     const session = fakeSession();
     (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
     const emit = vi.fn();
@@ -1848,7 +1848,32 @@ describe("model-facing tools", () => {
         "Agent depth limit reached. Solve the task yourself.",
       );
       expect(delegateMock).not.toHaveBeenCalled();
-      expect(emit).not.toHaveBeenCalled();
+      // Upstream parity: every spawn attempt that passes basic argument
+      // parsing emits a `collab_agent_spawn_begin` followed by a
+      // `collab_agent_spawn_end` with errored status, so the TUI can
+      // render a single structured "Task" row instead of falling back
+      // to the generic `spawn_agent({...})` row on validation failures.
+      // `session.emit` receives `{ id, msg }` envelopes; the event
+      // shape lives on `msg`.
+      const eventTypes = emit.mock.calls.map((call: readonly unknown[]) => {
+        const envelope = call[0] as { msg?: { type?: string } } | undefined;
+        return envelope?.msg?.type;
+      });
+      expect(eventTypes).toEqual([
+        "collab_agent_spawn_begin",
+        "collab_agent_spawn_end",
+      ]);
+      const endEnvelope = emit.mock.calls[1]?.[0] as
+        | {
+            msg?: {
+              payload?: { status?: { status?: string; error?: string } };
+            };
+          }
+        | undefined;
+      expect(endEnvelope?.msg?.payload?.status?.status).toBe("errored");
+      expect(endEnvelope?.msg?.payload?.status?.error).toBe(
+        "Agent depth limit reached. Solve the task yourself.",
+      );
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
