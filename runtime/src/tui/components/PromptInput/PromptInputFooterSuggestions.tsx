@@ -133,7 +133,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       separatorWidth -
       paddingWidth
 
-    if (item.description) {
+    if (item.description && !isSelected) {
       const truncatedDesc = truncateToWidth(
         item.description.replace(/\s+/g, ' '),
         Math.max(0, availableWidth),
@@ -164,7 +164,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       0,
       columns - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
     )
-    const truncatedDescription = item.description
+    const truncatedDescription = item.description && !isSelected
       ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
       : ''
     lineContent = `${paddedDisplayText}${tagText}${truncatedDescription}`
