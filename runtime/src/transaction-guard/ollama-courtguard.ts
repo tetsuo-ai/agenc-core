@@ -112,7 +112,7 @@ export class OllamaCourtGuard implements TransactionGuard {
           model: this.policy.model,
           prompt,
           stream: false,
-          options: { temperature: 0 },
+          options: { temperature: 0, num_predict: 128 },
         }),
         signal: controller.signal,
       });

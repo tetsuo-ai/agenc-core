@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      AGENC_TRANSACTION_GUARD_MODEL: ${{ vars.AGENC_TRANSACTION_GUARD_MODEL || 'gemma4:e2b' }}
+      AGENC_TRANSACTION_GUARD_MODEL: ${{ vars.AGENC_TRANSACTION_GUARD_MODEL || 'gemma3:1b' }}
       AGENC_TRANSACTION_GUARD_TIMEOUT_MS: "180000"
       AGENC_TRANSACTION_GUARD_LIVE_CASE_LIMIT: "2"
       OLLAMA_NUM_PARALLEL: "1"
