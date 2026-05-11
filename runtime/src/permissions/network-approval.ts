@@ -1,5 +1,15 @@
 /**
+ * Network-approval DECISION layer.
+ *
  * T11 Wave 1 Agent D — network approval decision layer.
+ *
+ * Caches approvals, dedups concurrent requests, and invokes the
+ * approval resolver. The ENFORCEMENT counterpart lives at
+ * `sandbox/escalation/network-approval.ts` — it converts approval
+ * verdicts into sandbox-mode bits at child-process spawn.
+ *
+ * Both sides derive from codex `core/src/network_policy_decision.rs`; // branding-scan: allow upstream source citation
+ * the split mirrors codex's policy/enforcement separation. // branding-scan: allow upstream source citation
  *
  * Port of reference runtime `tools::network_approval::NetworkApprovalService`
  * (reference runtime source, 688 LOC). This module
