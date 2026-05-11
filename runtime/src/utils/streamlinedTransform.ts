@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Transforms SDK messages for streamlined output mode.
  *

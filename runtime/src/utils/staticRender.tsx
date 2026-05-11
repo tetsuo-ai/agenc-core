@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useLayoutEffect } from 'react';
@@ -17,7 +15,7 @@ import { render, useApp } from '../tui/ink.js';
  * before exiting. This is more robust than process.nextTick() for React 19's
  * async render cycle.
  */
-function RenderOnceAndExit(t0) {
+function RenderOnceAndExit(t0: { children: React.ReactNode }) {
   const $ = _c(5);
   const {
     children

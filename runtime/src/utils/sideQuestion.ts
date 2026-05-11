@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Side Question ("/btw") feature - allows asking quick questions without
  * interrupting the main agent context.
@@ -150,7 +148,7 @@ function extractSideQuestionResponse(messages: Message[]): string | null {
       m.type === 'system' && 'subtype' in m && m.subtype === 'api_error',
   )
   if (apiErr) {
-    return `(API error: ${formatAPIError(apiErr.error)})`
+    return `(API error: ${formatAPIError(apiErr.error as Parameters<typeof formatAPIError>[0])})`
   }
 
   return null

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 /**
  * Utility for persisting large tool results to disk instead of truncating them.
  */
@@ -560,7 +558,7 @@ function collectCandidatesFromMessage(message: Message): ToolResultCandidate[] {
   if (message.type !== 'user' || !Array.isArray(message.message.content)) {
     return []
   }
-  return message.message.content.flatMap(block => {
+  return message.message.content.flatMap((block: any) => {
     if (block.type !== 'tool_result' || !block.content) return []
     if (isContentAlreadyCompacted(block.content)) return []
     if (hasImageBlock(block.content)) return []
@@ -709,7 +707,7 @@ function replaceToolResultContents(
     }
     const content = message.message.content
     const needsReplace = content.some(
-      b =>
+      (b: any) =>
         b.type === 'tool_result' &&
         replacementMap.has(b.tool_use_id) &&
         b.content !== replacementMap.get(b.tool_use_id),
@@ -720,7 +718,7 @@ function replaceToolResultContents(
       ...message,
       message: {
         ...message.message,
-        content: content.map(block => {
+        content: content.map((block: any) => {
           if (block.type !== 'tool_result') return block
           const replacement = replacementMap.get(block.tool_use_id)
           return replacement === undefined || block.content === replacement

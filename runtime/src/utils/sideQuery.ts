@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import type provider from '@anthropic-ai/sdk'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages.js'
 import {

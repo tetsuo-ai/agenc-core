@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import chalk from 'chalk';
 import figures from 'figures';
 import * as React from 'react';
@@ -30,7 +28,7 @@ export type Property = {
 };
 export type Diagnostic = React.ReactNode;
 export function buildSandboxProperties(): Property[] {
-  if ("external" !== 'ant') {
+  if (("external" as string) !== 'ant') {
     return [];
   }
   const isSandboxed = SandboxManager.isSandboxingEnabled();
@@ -242,10 +240,10 @@ export function buildAccountProperties(): Property[] {
   return properties;
 }
 export function buildAPIProviderProperties(): Property[] {
-  const apiProvider = getAPIProvider();
+  const apiProvider = getAPIProvider() as string;
   const properties: Property[] = [];
   if (apiProvider !== 'firstParty') {
-    const providerLabel = {
+    const providerLabel = ({
       bedrock: 'AWS Bedrock',
       vertex: 'Google Vertex AI',
       foundry: 'Microsoft Foundry',
@@ -255,7 +253,7 @@ export function buildAPIProviderProperties(): Property[] {
       github: 'GitHub Models',
       mistral: 'Mistral',
       xai: 'xAI',
-    }[apiProvider];
+    } as Record<string, string>)[apiProvider];
     properties.push({
       label: 'API provider',
       value: providerLabel

@@ -1,9 +1,6 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { z } from 'zod/v4'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession, getSessionId } from '../bootstrap/state.js'
 import { uniq } from './array.js'
 import { logForDebugging } from 'src/utils/debug.js'
