@@ -10,14 +10,6 @@ import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook.js';
 import { isFastModeAvailable, isFastModeEnabled } from '../../../utils/fastMode.js';
 import { getNewlineInstructions } from './utils.js';
-import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-
-/**
- * Below this terminal width the 3-column grid (col widths 24 + 35 + auto)
- * cannot fit. The rightmost column gets squeezed and its rows wrap into the
- * middle column. Switch to a single stacked layout instead.
- */
-const NARROW_LAYOUT_BREAKPOINT = 100;
 
 /** Format a shortcut for display in the help menu (e.g., "ctrl+o" → "ctrl + o") */
 function formatShortcut(shortcut: string): string {
@@ -37,10 +29,6 @@ export function PromptInputHelpMenu(props) {
     gap,
     paddingX
   } = props;
-  const {
-    columns: terminalColumns
-  } = useTerminalSize();
-  const isNarrowLayout = terminalColumns < NARROW_LAYOUT_BREAKPOINT;
   const t0 = useShortcutDisplay("app:toggleTranscript", "Global", "ctrl+o");
   let t1;
   if ($[0] !== t0) {
@@ -151,7 +139,7 @@ export function PromptInputHelpMenu(props) {
     t20 = $[22];
   }
   const terminalShortcutElement = t20;
-  const t21 = isNarrowLayout ? undefined : fixedWidth ? 24 : undefined;
+  const t21 = fixedWidth ? 24 : undefined;
   let t22;
   if ($[23] !== dimColor) {
     t22 = <Box><Text dimColor={dimColor}>! for bash mode</Text></Box>;
@@ -205,7 +193,7 @@ export function PromptInputHelpMenu(props) {
   } else {
     t27 = $[39];
   }
-  const t28 = isNarrowLayout ? undefined : fixedWidth ? 35 : undefined;
+  const t28 = fixedWidth ? 35 : undefined;
   let t29;
   if ($[40] !== dimColor) {
     t29 = <Box><Text dimColor={dimColor}>double tap esc to clear input</Text></Box>;
@@ -366,12 +354,6 @@ export function PromptInputHelpMenu(props) {
     $[98] = t45;
   } else {
     t45 = $[98];
-  }
-  if (isNarrowLayout) {
-    // Stack all three column groups vertically when the terminal is too
-    // narrow for the 24 + 35 + auto column grid. Each inner Box already has
-    // flexDirection="column", so this yields a single-column list.
-    return <Box paddingX={paddingX} flexDirection="column">{t27}{t35}{t44}</Box>;
   }
   return t45;
 }
