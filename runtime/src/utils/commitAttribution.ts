@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { createHash, randomUUID, type UUID } from 'crypto'
 import { stat } from 'fs/promises'
 import { isAbsolute, join, relative, sep } from 'path'
@@ -285,11 +283,11 @@ function computeFileModificationState(
 
   try {
     // Calculate AgenC's character contribution
-    let agencContribution: number
+    let agentContribution: number
 
     if (oldContent === '' || newContent === '') {
       // New file or full deletion - contribution is the content length
-      agencContribution =
+      agentContribution =
         oldContent === '' ? newContent.length : oldContent.length
     } else {
       // Find actual changed region via common prefix/suffix matching.
@@ -313,16 +311,16 @@ function computeFileModificationState(
       }
       const oldChangedLen = oldContent.length - prefixEnd - suffixLen
       const newChangedLen = newContent.length - prefixEnd - suffixLen
-      agencContribution = Math.max(oldChangedLen, newChangedLen)
+      agentContribution = Math.max(oldChangedLen, newChangedLen)
     }
 
     // Get current file state if it exists
     const existingState = existingFileStates.get(normalizedPath)
-    const existingContribution = existingState?.agencContribution ?? 0
+    const existingContribution = existingState?.agentContribution ?? 0
 
     return {
       contentHash: computeContentHash(newContent),
-      agencContribution: existingContribution + agencContribution,
+      agentContribution: existingContribution + agentContribution,
       mtime,
     }
   } catch (error) {
@@ -375,7 +373,7 @@ export function trackFileModification(
   newFileStates.set(normalizedPath, newFileState)
 
   logForDebugging(
-    `Attribution: Tracked ${newFileState.agencContribution} chars for ${normalizedPath}`,
+    `Attribution: Tracked ${newFileState.agentContribution} chars for ${normalizedPath}`,
   )
 
   return {
@@ -409,12 +407,12 @@ export function trackFileDeletion(
 ): AttributionState {
   const normalizedPath = normalizeFilePath(filePath)
   const existingState = state.fileStates.get(normalizedPath)
-  const existingContribution = existingState?.agencContribution ?? 0
+  const existingContribution = existingState?.agentContribution ?? 0
   const deletedChars = oldContent.length
 
   const newFileState: FileAttributionState = {
     contentHash: '', // Empty hash for deleted files
-    agencContribution: existingContribution + deletedChars,
+    agentContribution: existingContribution + deletedChars,
     mtime: Date.now(),
   }
 
@@ -422,7 +420,7 @@ export function trackFileDeletion(
   newFileStates.set(normalizedPath, newFileState)
 
   logForDebugging(
-    `Attribution: Tracked deletion of ${normalizedPath} (${deletedChars} chars removed, total contribution: ${newFileState.agencContribution})`,
+    `Attribution: Tracked deletion of ${normalizedPath} (${deletedChars} chars removed, total contribution: ${newFileState.agentContribution})`,
   )
 
   return {
@@ -456,12 +454,12 @@ export function trackBulkFileChanges(
     if (change.type === 'deleted') {
       const normalizedPath = normalizeFilePath(change.path)
       const existingState = newFileStates.get(normalizedPath)
-      const existingContribution = existingState?.agencContribution ?? 0
+      const existingContribution = existingState?.agentContribution ?? 0
       const deletedChars = change.oldContent.length
 
       newFileStates.set(normalizedPath, {
         contentHash: '',
-        agencContribution: existingContribution + deletedChars,
+        agentContribution: existingContribution + deletedChars,
         mtime,
       })
 
@@ -481,7 +479,7 @@ export function trackBulkFileChanges(
         newFileStates.set(normalizedPath, newFileState)
 
         logForDebugging(
-          `Attribution: Tracked ${newFileState.agencContribution} chars for ${normalizedPath}`,
+          `Attribution: Tracked ${newFileState.agentContribution} chars for ${normalizedPath}`,
         )
       }
     }
@@ -556,8 +554,8 @@ export async function calculateCommitAttribution(
       if (existing) {
         mergedFileStates.set(path, {
           ...fileState,
-          agencContribution:
-            existing.agencContribution + fileState.agencContribution,
+          agentContribution:
+            existing.agentContribution + fileState.agentContribution,
         })
       } else {
         mergedFileStates.set(path, fileState)
@@ -590,7 +588,7 @@ export async function calculateCommitAttribution(
         // File was deleted
         if (fileState) {
           // AgenC deleted this file (tracked deletion)
-          agencChars = fileState.agencContribution
+          agencChars = fileState.agentContribution
           humanChars = 0
         } else {
           // Human deleted this file (untracked deletion)
@@ -607,7 +605,7 @@ export async function calculateCommitAttribution(
 
           if (fileState) {
             // We have tracked modifications for this file
-            agencChars = fileState.agencContribution
+            agencChars = fileState.agentContribution
             humanChars = 0
           } else if (baseline) {
             // File was modified but not tracked - human modification

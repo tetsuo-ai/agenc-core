@@ -15,6 +15,15 @@ export interface SecureStorageData {
     lastRefreshAt?: number
     lastRefreshFailureAt?: number
   }
+  /** AgenC AI subscription OAuth tokens (separate surface from the base API key blob). */
+  agencAiOauth?: {
+    accessToken: string
+    refreshToken?: string
+    expiresAt?: number
+    scopes?: string[]
+    subscriptionType?: string | null
+    rateLimitTier?: string | null
+  }
   mcpOAuth?: Record<
     string,
     {

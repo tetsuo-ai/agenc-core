@@ -1,7 +1,5 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
-import type { provider } from '@anthropic-ai/sdk'
+import type provider from '@anthropic-ai/sdk'
 import {
   getSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -593,7 +591,7 @@ async function countSkillTokens(
       source: (skill.type === 'prompt' ? skill.source : 'plugin') as
         | SettingSource
         | 'plugin',
-      tokens: estimateSkillFrontmatterTokens(skill),
+      tokens: estimateSkillFrontmatterTokens(skill as Parameters<typeof estimateSkillFrontmatterTokens>[0]),
     }))
 
     return {
@@ -874,7 +872,9 @@ async function approximateMessageTokens(
   const toolUseIdToName = new Map<string, string>()
   for (const msg of microcompactResult.messages) {
     if (msg.type === 'assistant') {
-      for (const block of msg.message.content) {
+      const content = (msg.message as any)?.content as any[] | undefined
+      if (!content) continue
+      for (const block of content) {
         if ('type' in block && block.type === 'tool_use') {
           const toolUseId = 'id' in block ? block.id : undefined
           const toolName =

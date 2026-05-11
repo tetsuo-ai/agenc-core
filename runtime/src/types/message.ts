@@ -43,6 +43,8 @@ export type NormalizedMessage = any;
 export type NormalizedAssistantMessage<_T = unknown> = any;
 export type NormalizedUserMessage = any;
 export type GroupedToolUseMessage = any;
+export type CollapsedReadSearchGroup = any;
+export type CollapsibleMessage = any;
 export type RenderableMessage = any;
 export type TombstoneMessage = any;
 export type ToolUseSummaryMessage = any;

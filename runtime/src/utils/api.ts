@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import type provider from '@anthropic-ai/sdk'
 import type {
   BetaTool,
@@ -18,7 +16,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { prefetchAllMcpResources } from 'src/services/mcp/client.js'
-import type { ScopedMcpServerConfig } from 'src/services/mcp/types.js'
+import type { ScopedMcpServerConfig } from '../services/mcp/types.js'
 import {
   CanonicalBashTool as BashTool,
   CanonicalFileEditTool as FileEditTool,
@@ -633,7 +631,7 @@ export function normalizeToolInput<T extends Tool>(
     }
     case BashTool.name: {
       // Validated upstream, won't throw
-      const parsed = BashTool.inputSchema.parse(input)
+      const parsed = BashTool.inputSchema.parse(input) as any
       const { command, timeout, description } = parsed
       const cwd = getCwd()
       let normalizedCommand = command.replace(`cd ${cwd} && `, '')
@@ -670,7 +668,7 @@ export function normalizeToolInput<T extends Tool>(
     }
     case FileEditTool.name: {
       // Validated upstream, won't throw
-      const parsedInput = FileEditTool.inputSchema.parse(input)
+      const parsedInput = FileEditTool.inputSchema.parse(input) as any
 
       // This is a workaround for tokens agenc can't see
       const { file_path, edits } = normalizeFileEditInput({
@@ -694,7 +692,7 @@ export function normalizeToolInput<T extends Tool>(
     }
     case FileWriteTool.name: {
       // Validated upstream, won't throw
-      const parsedInput = FileWriteTool.inputSchema.parse(input)
+      const parsedInput = FileWriteTool.inputSchema.parse(input) as any
 
       // Markdown uses two trailing spaces as a hard line break — don't strip.
       const isMarkdown = /\.(md|mdx)$/i.test(parsedInput.file_path)

@@ -1,22 +1,14 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
 import { useEffect, useRef } from 'react';
 import { KeyboardShortcutHint } from '../tui/components/design-system/KeyboardShortcutHint.js';
 import { Box, Text } from '../tui/ink.js';
 import { useKeybinding } from '../tui/keybindings/useKeybinding.js';
-type Props = {
-  onRun: () => void;
-  onCancel: () => void;
-  reason: string;
-};
 
 /**
  * Component that shows a notification about running /issue command
  * with the ability to cancel via ESC key
  */
-export function AutoRunIssueNotification(t0) {
+export function AutoRunIssueNotification(t0: { onRun: () => void; onCancel: () => void; reason: string }) {
   const $ = _c(8);
   const {
     onRun,
@@ -83,7 +75,7 @@ export type AutoRunIssueReason = 'feedback_survey_bad' | 'feedback_survey_good';
  */
 export function shouldAutoRunIssue(reason: AutoRunIssueReason): boolean {
   // Only for Ant users
-  if ("external" !== 'ant') {
+  if (("external" as string) !== 'ant') {
     return false;
   }
   switch (reason) {
@@ -102,7 +94,7 @@ export function shouldAutoRunIssue(reason: AutoRunIssueReason): boolean {
  */
 export function getAutoRunCommand(reason: AutoRunIssueReason): string {
   // Only ant builds have the /good-agenc command
-  if ("external" === 'ant' && reason === 'feedback_survey_good') {
+  if (("external" as string) === 'ant' && reason === 'feedback_survey_good') {
     return '/good-agenc';
   }
   return '/issue';

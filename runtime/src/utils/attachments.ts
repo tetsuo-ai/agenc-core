@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import {
   logEvent,
@@ -16,7 +14,7 @@ import { SESSION_ALLOWED_ROOTS_ARG } from '../tools/system/filesystem.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
-import { count, uniq } from './array.js'
+import { uniq } from './array.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../tui/hooks/useIdeSelection.js'
@@ -62,12 +60,6 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { maybeResizeAndDownsampleImageBlock } from './imageResizer.js'
 import type { PastedContent } from './config.js'
-import { getGlobalConfig } from './config.js'
-import {
-  getDefaultSonnetModel,
-  getDefaultHaikuModel,
-  getDefaultOpusModel,
-} from './model/model.js'
 import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
@@ -75,19 +67,18 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
-import type { DiscoverySignal } from '../services/skillSearch/signals.js'
+// Donor-purge: ../services/skillSearch/* was deleted; type aliased as opaque.
+type DiscoverySignal = any
 // Conditional require for DCE. All skill-search string literals that would
 // otherwise leak into external builds live inside these modules. The only
 // surfaces in THIS file are: the maybe() call (gated via spread below) and
 // the skill_listing suppression check (uses the same skillSearchModules null
-// check). The type-only DiscoverySignal import above is erased at compile time.
+// check).
 /* eslint-disable @typescript-eslint/no-require-imports */
-const skillSearchModules = feature('EXPERIMENTAL_SKILL_SEARCH')
+const skillSearchModules: any = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? {
-      featureCheck:
-        require('../services/skillSearch/featureCheck.js') as typeof import('../services/skillSearch/featureCheck.js'),
-      prefetch:
-        require('../services/skillSearch/prefetch.js') as typeof import('../services/skillSearch/prefetch.js'),
+      featureCheck: require('../services/skillSearch/featureCheck.js' as string),
+      prefetch: require('../services/skillSearch/prefetch.js' as string),
     }
   : null
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -168,7 +159,7 @@ import type { MCPServerConnection } from '../services/mcp/types.js'
 import type {
   HookEvent,
   SyncHookJSONOutput,
-} from 'src/entrypoints/agentSdkTypes.js'
+} from '../entrypoints/agentSdkTypes.js'
 import {
   checkForAsyncHookResponses,
   removeDeliveredAsyncHooks,
@@ -193,8 +184,8 @@ const BRIEF_TOOL_NAME: string | null =
         require('src/tools/BriefTool/prompt.js') as typeof import('src/tools/BriefTool/prompt.js')
       ).BRIEF_TOOL_NAME
     : null
-const sessionTranscriptModule = feature('KAIROS')
-  ? (require('../services/sessionTranscript/sessionTranscript.js') as typeof import('../services/sessionTranscript/sessionTranscript.js'))
+const sessionTranscriptModule: any = feature('KAIROS')
+  ? require('../services/sessionTranscript/sessionTranscript.js' as string)
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { hasUltrathinkKeyword, isUltrathinkEnabled } from './thinking.js'
@@ -249,7 +240,7 @@ import { isInProcessTeammate } from './teammateContext.js'
 import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
 import { unassignTeammateTasks } from './tasks.js'
 // Buddy feature removed — stubs return safe "no companion" values.
-const getCompanionIntroAttachment = (): null => null
+const getCompanionIntroAttachment = (..._args: unknown[]): unknown[] => []
 const isBuddyEnabled = (): boolean => false
 
 export const TODO_REMINDER_CONFIG = {
@@ -1000,7 +991,7 @@ export async function getAttachments(
     ...userAttachmentResults.flat(),
     ...threadAttachmentResults.flat(),
     ...mainThreadAttachmentResults.flat(),
-  ].filter(a => a !== undefined && a !== null)
+  ].filter(a => a !== undefined && a !== null) as Attachment[]
 }
 
 async function maybe<A>(label: string, f: () => Promise<A[]>): Promise<A[]> {
@@ -1958,6 +1949,7 @@ async function processAtMentionedFiles(
         )
       } catch {
         logEvent('tengu_at_mention_extracting_filename_error', {})
+        return null
       }
     }),
   )
@@ -2076,7 +2068,7 @@ async function callCanonicalFileReadTool(
         ],
       }
     : input
-  const result = await CanonicalFileReadTool.call(
+  const result = await (CanonicalFileReadTool.call as any)(
     callInput,
     toolUseContext,
     undefined,
@@ -2760,7 +2752,7 @@ async function getSkillListingAttachments(
     feature('EXPERIMENTAL_SKILL_SEARCH') &&
     skillSearchModules?.featureCheck.isSkillSearchEnabled()
   ) {
-    allCommands = filterToBundledAndMcp(allCommands)
+    allCommands = filterToBundledAndMcp(allCommands as any) as any
   }
 
   const agentKey = toolUseContext.agentId ?? ''
@@ -2995,11 +2987,11 @@ async function getLSPDiagnosticAttachments(
     )
 
     // Convert each diagnostic set to an attachment
-    const attachments: Attachment[] = diagnosticSets.map(({ files }) => ({
+    const attachments = diagnosticSets.map(({ files }) => ({
       type: 'diagnostics' as const,
       files,
       isNew: true,
-    }))
+    })) as Attachment[]
 
     // Clear delivered diagnostics from registry to prevent memory leak
     // Follows same pattern as removeDeliveredAsyncHooks
@@ -3320,7 +3312,7 @@ function getTodoReminderTurnCounts(messages: Message[]): {
         'message' in message &&
         Array.isArray(message.message?.content) &&
         message.message.content.some(
-          block => block.type === 'tool_use' && block.name === 'TodoWrite',
+          (block: any) => block.type === 'tool_use' && block.name === 'TodoWrite',
         )
       ) {
         lastTodoWriteIndex = i
@@ -3426,7 +3418,7 @@ function getTaskReminderTurnCounts(messages: Message[]): {
         'message' in message &&
         Array.isArray(message.message?.content) &&
         message.message.content.some(
-          block =>
+          (block: any) =>
             block.type === 'tool_use' &&
             (block.name === TASK_CREATE_TOOL_NAME ||
               block.name === TASK_UPDATE_TOOL_NAME),
@@ -3564,7 +3556,6 @@ async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {
       hookName,
       hookEvent,
       toolName,
-      pluginId,
       stdout,
       stderr,
       exitCode,
@@ -4053,9 +4044,9 @@ export function getContextEfficiencyAttachment(
   }
   // Gate must match SnipTool.isEnabled() — don't nudge toward a tool that
   // isn't in the tool list. Lazy require keeps this file snip-string-free.
-  const { isSnipRuntimeEnabled, shouldNudgeForSnips } =
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const snipMod: any = require('../services/compact/snipCompact.js')
+  const { isSnipRuntimeEnabled, shouldNudgeForSnips } = snipMod
   if (!isSnipRuntimeEnabled()) {
     return []
   }

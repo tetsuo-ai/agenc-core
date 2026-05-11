@@ -1,13 +1,9 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import memoize from 'lodash-es/memoize.js'
 import {
   checkStatsigFeatureGate_CACHED_MAY_BE_STALE,
   getFeatureValue_CACHED_MAY_BE_STALE,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from 'src/services/analytics/growthbook.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getIsNonInteractiveSession, getSdkBetas } from '../bootstrap/state.js'
 import {
   BEDROCK_EXTRA_PARAMS_HEADERS,
@@ -102,7 +98,7 @@ export function modelSupportsISP(model: string): boolean {
     return supported3P
   }
   const canonical = getCanonicalName(model)
-  const provider = getAPIProvider()
+  const provider = getAPIProvider() as string
   // Foundry supports interleaved thinking for all models
   if (provider === 'foundry') {
     return true
@@ -128,7 +124,7 @@ function vertexModelSupportsWebSearch(model: string): boolean {
 // Context management is supported on AgenC 4+ models
 export function modelSupportsContextManagement(model: string): boolean {
   const canonical = getCanonicalName(model)
-  const provider = getAPIProvider()
+  const provider = getAPIProvider() as string
   if (provider === 'foundry') {
     return true
   }
@@ -145,7 +141,7 @@ export function modelSupportsContextManagement(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model ID to this list if it supports structured outputs.
 export function modelSupportsStructuredOutputs(model: string): boolean {
   const canonical = getCanonicalName(model)
-  const provider = getAPIProvider()
+  const provider = getAPIProvider() as string
   // Structured outputs only supported on firstParty and Foundry (not Bedrock/Vertex yet)
   if (provider !== 'firstParty' && provider !== 'foundry') {
     return false
@@ -180,7 +176,6 @@ export function modelSupportsAutoMode(model: string): boolean {
     const rawLower = model.toLowerCase()
     if (
       config?.allowModels?.some(
-        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         am => am.toLowerCase() === rawLower || am.toLowerCase() === m,
       )
     ) {
@@ -205,7 +200,7 @@ export function modelSupportsAutoMode(model: string): boolean {
  * - Vertex AI / Bedrock: tool-search-tool-2025-10-19
  */
 export function getToolSearchBetaHeader(): string {
-  const provider = getAPIProvider()
+  const provider = getAPIProvider() as string
   if (provider === 'vertex' || provider === 'bedrock') {
     return TOOL_SEARCH_BETA_HEADER_3P
   }
@@ -219,7 +214,7 @@ export function getToolSearchBetaHeader(): string {
  */
 export function shouldIncludeFirstPartyOnlyBetas(): boolean {
   return (
-    (getAPIProvider() === 'firstParty' || getAPIProvider() === 'foundry') &&
+    ((getAPIProvider() as string) === 'firstParty' || (getAPIProvider() as string) === 'foundry') &&
     !isEnvTruthy(process.env.AGENC_DISABLE_EXPERIMENTAL_BETAS)
   )
 }
@@ -239,7 +234,7 @@ export function shouldUseGlobalCacheScope(): boolean {
 export const getAllModelBetas = memoize((model: string): string[] => {
   const betaHeaders = []
   const isHaiku = getCanonicalName(model).includes('haiku')
-  const provider = getAPIProvider()
+  const provider = getAPIProvider() as string
   const includeFirstPartyOnlyBetas = shouldIncludeFirstPartyOnlyBetas()
 
   if (!isHaiku) {
@@ -375,7 +370,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
 
 export const getModelBetas = memoize((model: string): string[] => {
   const modelBetas = getAllModelBetas(model)
-  if (getAPIProvider() === 'bedrock') {
+  if ((getAPIProvider() as string) === 'bedrock') {
     return modelBetas.filter(b => !BEDROCK_EXTRA_PARAMS_HEADERS.has(b))
   }
   return modelBetas
@@ -429,7 +424,6 @@ export function getMergedBetas(
   }
 
   // Merge SDK betas without duplicates (already filtered by filterAllowedSdkBetas)
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
   return [...baseBetas, ...sdkBetas.filter(b => !baseBetas.includes(b))]
 }
 

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import { unwatchFile, watchFile } from 'fs'
@@ -15,10 +13,11 @@ import {
   enableConfigs as enableConfigReads,
 } from '../config/init.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
-import type {
-  BillingType,
-  ReferralEligibilityResponse,
-} from '../services/oauth/types.js'
+// Donor-purge stub: ../services/oauth/types.js was deleted along with the
+// upstream oauth service. The dependent fields are still referenced by other
+// runtime paths through this surface, so keep the shapes as opaque aliases.
+type BillingType = unknown
+type ReferralEligibilityResponse = Record<string, unknown>
 import { getCwd } from './cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -41,8 +40,8 @@ import { PRIMARY_PROJECT_INSTRUCTION_FILE } from './projectInstructions.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM') ? teamMemPathsModule : null
-const ccrAutoConnect = feature('CCR_AUTO_CONNECT')
-  ? (require('../bridge/bridgeEnabled.js') as typeof import('../bridge/bridgeEnabled.js'))
+const ccrAutoConnect: any = feature('CCR_AUTO_CONNECT')
+  ? (require('../bridge/bridgeEnabled.js' as string))
   : null
 
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -302,7 +301,8 @@ export type GlobalConfig = {
   }
 
   // /buddy companion soul — bones regenerated from userId on read. See src/buddy/.
-  companion?: import('../tui/buddy/types.js').StoredCompanion
+  // Donor-purge stub: ../tui/buddy/types.js was deleted; keep as opaque shape.
+  companion?: unknown
   companionMuted?: boolean
 
   // Feedback survey tracking
@@ -550,11 +550,6 @@ export type GlobalConfig = {
   lspRecommendationIgnoredCount?: number // Track ignored recommendations (stops after 5)
 
   // AgenC hint protocol state (<agenc-code-hint /> tags).
-  agencCodeHints?: {
-    plugin?: string[]
-    disabled?: boolean
-  }
-  // branding-scan: allow persisted compatibility config key
   agencCodeHints?: {
     plugin?: string[]
     disabled?: boolean

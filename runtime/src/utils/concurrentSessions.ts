@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { chmod, mkdir, readdir, readFile, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
@@ -7,7 +5,6 @@ import {
   getOriginalCwd,
   getSessionId,
   onSessionSwitch,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -101,7 +98,6 @@ export async function registerSession(): Promise<boolean> {
     // --resume / /resume mutates getSessionId() via switchSession. Without
     // this, the PID file's sessionId goes stale and `agenc ps` sparkline
     // reads the wrong transcript.
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     onSessionSwitch(id => {
       void updatePidFile({ sessionId: id })
     })
