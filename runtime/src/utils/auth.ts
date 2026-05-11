@@ -1,7 +1,8 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import chalk from 'chalk'
 import { exec } from 'child_process'
+// @ts-expect-error -- execa is referenced by absorbed shell-helper paths; the module
+// is missing from node_modules during the donor-purge phase. Other utils files
+// (authPortable, doctorDiagnostic, etc.) still carry the same baseline error.
 import { execa } from 'execa'
 import { mkdir, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
@@ -11,7 +12,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
-import { getModelStrings } from 'src/utils/model/modelStrings.js'
+import { getModelStrings } from './model/modelStrings.js'
 import { getAPIProvider } from 'src/utils/model/providers.js'
 import {
   getIsNonInteractiveSession,
@@ -23,7 +24,10 @@ import {
 } from '../services/mockRateLimits.js'
 
 
-import type { OAuthTokens, SubscriptionType } from '../services/oauth/types.js'
+// Donor-purge stub: ../services/oauth/types.js was deleted along with the
+// upstream oauth service. Keep the consumed shapes as opaque aliases.
+type OAuthTokens = any
+type SubscriptionType = any
 import {
   getApiKeyFromFileDescriptor,
   getOAuthTokenFromFileDescriptor,
@@ -82,10 +86,12 @@ import { clearToolSchemaCache } from './toolSchemaCache.js'
 // purge. They are stubbed here as no-ops so the surrounding moved-source
 // code paths degrade silently. Real implementations land when AgenC ships
 // the equivalent backend.
-const getOauthProfileFromOauthToken = async (..._args: unknown[]): Promise<null> => null;
+const getOauthProfileFromOauthToken = async (
+  ..._args: unknown[]
+): Promise<any> => null;
 const isOAuthTokenExpired = (..._args: unknown[]): boolean => true;
 const refreshOAuthToken = async (..._args: unknown[]): Promise<null> => null;
-const shouldUseAgenCAIAuth = (): boolean => false;
+const shouldUseAgenCAIAuth = (..._args: unknown[]): boolean => false;
 // ---- end donor-purge stubs ----
 const DEFAULT_API_KEY_HELPER_TTL = 5 * 60 * 1000
 
@@ -877,7 +883,7 @@ const GCP_CREDENTIALS_CHECK_TIMEOUT_MS = 5_000
 export async function checkGcpCredentialsValid(): Promise<boolean> {
   try {
     // Dynamically import to avoid loading google-auth-library unnecessarily
-    const { GoogleAuth } = await import('google-auth-library')
+    const { GoogleAuth } = (await import('google-auth-library' as string)) as any
     const auth = new GoogleAuth({
       scopes: ['https://www.googleapis.com/auth/cloud-platform'],
     })

@@ -1,12 +1,9 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { mkdirSync, writeFileSync } from 'fs'
 import {
   getApiKeyFromFd,
   getOauthTokenFromFd,
   setApiKeyFromFd,
   setOauthTokenFromFd,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from './envUtils.js'

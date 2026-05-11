@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as fs from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -465,7 +463,7 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
 
   const startTime = Date.now()
   try {
-    const cacache = await import('cacache')
+    const cacache: any = await import('cacache' as string)
     const cutoff = startTime - ONE_DAY_MS
 
     // Stream index entries and collect all compatibility package entries.

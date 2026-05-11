@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { findToolByName, type Tools } from '../tools/Tool.js'
@@ -36,10 +34,8 @@ import {
 const teamMemOps = feature('TEAMMEM')
   ? (require('./teamMemoryOps.js') as typeof import('./teamMemoryOps.js'))
   : null
-const SNIP_TOOL_NAME = feature('HISTORY_SNIP')
-  ? (
-      require('../tools/SnipTool/prompt.js') as typeof import('../tools/SnipTool/prompt.js')
-    ).SNIP_TOOL_NAME
+const SNIP_TOOL_NAME: string | null = feature('HISTORY_SNIP')
+  ? (require('../tools/SnipTool/prompt.js' as string) as any).SNIP_TOOL_NAME
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -436,13 +432,13 @@ function isCollapsibleToolResult(
 ): msg is CollapsibleMessage {
   if (msg.type === 'user') {
     const toolResults = msg.message.content.filter(
-      (c): c is { type: 'tool_result'; tool_use_id: string } =>
+      (c: any): c is { type: 'tool_result'; tool_use_id: string } =>
         c.type === 'tool_result',
     )
     // Only return true if there are tool results AND all of them are for collapsible tools
     return (
       toolResults.length > 0 &&
-      toolResults.every(r => collapsibleToolUseIds.has(r.tool_use_id))
+      toolResults.every((r: any) => collapsibleToolUseIds.has(r.tool_use_id))
     )
   }
   return false
@@ -460,7 +456,7 @@ function getToolUseIdsFromMessage(msg: RenderableMessage): string[] {
   }
   if (msg.type === 'grouped_tool_use') {
     return msg.messages
-      .map(m => {
+      .map((m: any) => {
         const content = m.message.content[0]
         return content.type === 'tool_use' ? content.id : ''
       })
@@ -898,15 +894,19 @@ export function collapseReadSearchGroups(
       }
     } else if (currentGroup.messages.length > 0 && isPreToolHookSummary(msg)) {
       // Absorb PreToolUse hook summaries into the group instead of deferring
-      currentGroup.hookCount += msg.hookCount
+      const hookMsg: any = msg
+      currentGroup.hookCount += hookMsg.hookCount
       currentGroup.hookTotalMs +=
-        msg.totalDurationMs ??
-        msg.hookInfos.reduce((sum, h) => sum + (h.durationMs ?? 0), 0)
-      currentGroup.hookInfos.push(...msg.hookInfos)
+        hookMsg.totalDurationMs ??
+        hookMsg.hookInfos.reduce(
+          (sum: number, h: any) => sum + (h.durationMs ?? 0),
+          0,
+        )
+      currentGroup.hookInfos.push(...hookMsg.hookInfos)
     } else if (
       currentGroup.messages.length > 0 &&
-      msg.type === 'attachment' &&
-      msg.attachment.type === 'relevant_memories'
+      (msg as any).type === 'attachment' &&
+      (msg as any).attachment.type === 'relevant_memories'
     ) {
       // Absorb auto-injected memory attachments so "recalled N memories"
       // renders inline with "ran N bash commands" instead of as a separate
@@ -916,7 +916,7 @@ export function collapseReadSearchGroups(
       // suppresses the fallback). createCollapsedGroup adds .length to
       // memoryReadCount after the readCount subtraction instead.
       currentGroup.relevantMemories ??= []
-      currentGroup.relevantMemories.push(...msg.attachment.memories)
+      currentGroup.relevantMemories.push(...(msg as any).attachment.memories)
     } else if (shouldSkipMessage(msg)) {
       // Don't flush the group for skippable messages (thinking, attachments, system)
       // If a group is in progress, defer these messages to output after the collapsed group
@@ -924,9 +924,10 @@ export function collapseReadSearchGroups(
       // of the first tool use, not displaced by intervening skippable messages.
       // Exception: nested_memory attachments are pushed through even during a group so
       // ⎿ Loaded lines cluster tightly instead of being split by the badge's marginTop.
+      const msgAny: any = msg
       if (
         currentGroup.messages.length > 0 &&
-        !(msg.type === 'attachment' && msg.attachment.type === 'nested_memory')
+        !(msgAny.type === 'attachment' && msgAny.attachment.type === 'nested_memory')
       ) {
         deferredSkippable.push(msg)
       } else {
