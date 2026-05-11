@@ -148,16 +148,13 @@ export function PromptInputFooterLeftSide(t0) {
     onOpenTasksDialog
   } = t0;
   if (exitMessage.show) {
-    // Key-agnostic message: keeps the footer text stable when the pending
-    // exit key changes mid-sequence (e.g. Ctrl-C followed by Ctrl-D). Each
-    // handler is independently pending for its own key, but the visible
-    // text should not appear to "jump" between keys during the abort window.
     let t1;
-    if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-      t1 = <Text dimColor={true} key="exit-message">Press the same key again to exit</Text>;
-      $[0] = t1;
+    if ($[0] !== exitMessage.key) {
+      t1 = <Text dimColor={true} key="exit-message">Press {exitMessage.key} again to exit</Text>;
+      $[0] = exitMessage.key;
+      $[1] = t1;
     } else {
-      t1 = $[0];
+      t1 = $[1];
     }
     return t1;
   }
