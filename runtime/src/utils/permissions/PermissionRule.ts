@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import z from 'zod/v4'
 // Types extracted to src/types/permissions.ts to break import cycles
@@ -7,7 +6,6 @@ import type {
   PermissionRule,
   PermissionRuleSource,
   PermissionRuleValue,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
 

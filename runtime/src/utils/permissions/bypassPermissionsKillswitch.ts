@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { useEffect, useRef } from 'react'
@@ -57,7 +56,9 @@ export function resetBypassPermissionsCheck(): void {
 }
 
 export function useKickOffCheckAndDisableBypassPermissionsIfNeeded(): void {
-  const toolPermissionContext = useAppState(s => s.toolPermissionContext)
+  const toolPermissionContext = useAppState(
+    (s: AppState) => s.toolPermissionContext,
+  )
   const setAppState = useSetAppState()
 
   // Run once, when the component mounts
@@ -127,9 +128,11 @@ export function resetAutoModeGateCheck(): void {
 }
 
 export function useKickOffCheckAndDisableAutoModeIfNeeded(): void {
-  const mainLoopModel = useAppState(s => s.mainLoopModel)
-  const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
-  const fastMode = useAppState(s => s.fastMode)
+  const mainLoopModel = useAppState((s: AppState) => s.mainLoopModel)
+  const mainLoopModelForSession = useAppState(
+    (s: AppState) => s.mainLoopModelForSession,
+  )
+  const fastMode = useAppState((s: AppState) => s.fastMode)
   const setAppState = useSetAppState()
   const store = useAppStateStore()
   const isFirstRunRef = useRef(true)
