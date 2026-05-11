@@ -107,6 +107,13 @@ export interface AgenCBackgroundAgentStartParams {
     | "plan"
     | "acceptEdits"
     | "bypassPermissions";
+  /**
+   * Per-invocation env overrides forwarded from the CLI. Merged on
+   * top of `this.#env` so the user's latest `OPENAI_BASE_URL` /
+   * proxy / API key for THIS agent invocation wins over the frozen
+   * env snapshot captured when the daemon was launched.
+   */
+  readonly envOverrides?: { readonly [key: string]: string };
 }
 
 export interface AgenCBackgroundAgentStartResult {
@@ -467,8 +474,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async startAgent(
     params: AgenCBackgroundAgentStartParams,
   ): Promise<AgenCBackgroundAgentStartResult> {
+    // Merge per-invocation envOverrides on top of the runner's
+    // captured env snapshot. Without this, the daemon's first-launch
+    // env wins for every subsequent agent — so the user's latest
+    // OPENAI_BASE_URL / proxy / API key gets silently ignored.
+    const mergedEnv =
+      params.envOverrides !== undefined && this.#env !== undefined
+        ? { ...this.#env, ...params.envOverrides }
+        : params.envOverrides !== undefined
+          ? (params.envOverrides as NodeJS.ProcessEnv)
+          : this.#env;
     const bootstrap = await this.#bootstrap({
-      ...(this.#env !== undefined ? { env: this.#env } : {}),
+      ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
         ? { authBackend: this.#authBackend }
         : {}),

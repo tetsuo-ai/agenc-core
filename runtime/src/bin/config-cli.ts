@@ -300,15 +300,38 @@ async function runConfigValidate(
   io: AgenCConfigCliIo,
 ): Promise<number> {
   await runConfigMigrationForRead(agencHome, io);
-  const loaded = await loadEffectiveConfigForCli(agencHome, env, io);
+  // Round-2 M-NEW5: previously `runConfigValidate` only returned
+  // non-zero on parse failures, ignoring warnings emitted during
+  // schema validation. A config with unknown keys, deprecated fields,
+  // or invalid value coercions would print warnings to stderr but
+  // still exit 0 — making `agenc config validate` lie about validity.
+  // Capture warnings via the onWarn channel and fail the command if
+  // any fired.
+  const warnings: string[] = [];
+  const captureWarn = (message: string): void => {
+    warnings.push(message);
+    io.stderr.write(`${message}\n`);
+  };
+  const loaded = await loadConfig({ home: agencHome, onWarn: captureWarn });
+  const config = applyEnvOverrides(loaded.config, env, captureWarn);
   if (loaded.parseError !== undefined) {
-    io.stderr.write(`agenc: config validation failed: ${loaded.parseError}\n`);
+    io.stderr.write(
+      `agenc: config validation failed: ${loaded.parseError}\n`,
+    );
     return 1;
   }
   try {
-    validateLoadedConfigForCli(loaded.config);
+    validateLoadedConfigForCli(config);
   } catch (error) {
-    io.stderr.write(`agenc: config validation failed: ${errorMessage(error)}\n`);
+    io.stderr.write(
+      `agenc: config validation failed: ${errorMessage(error)}\n`,
+    );
+    return 1;
+  }
+  if (warnings.length > 0) {
+    io.stderr.write(
+      `agenc: config validation produced ${warnings.length} warning(s) — see above. Treating as failure.\n`,
+    );
     return 1;
   }
   io.stdout.write(`Config valid: ${loaded.path}\n`);
