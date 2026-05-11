@@ -2404,7 +2404,15 @@ function PromptInput({
     setCursorOffset(offset);
   }, [input, textInputColumns, isSearchingHistory, cursorOffset, maxVisibleLines]);
   const handleOpenTasksDialog = useCallback((taskId?: string) => setShowBashesDialog(taskId ?? true), [setShowBashesDialog]);
-  const placeholder = showPromptSuggestion && promptSuggestion ? promptSuggestion : defaultPlaceholder;
+  // Suppress the placeholder while pasting so the input row stays empty
+  // while the footer shows "Pasting text…". Otherwise both dim hints
+  // (the input placeholder + the paste toast) paint together for one
+  // frame and compete for attention.
+  const placeholder = isPasting
+    ? undefined
+    : showPromptSuggestion && promptSuggestion
+      ? promptSuggestion
+      : defaultPlaceholder;
 
   // Calculate if input has multiple lines
   const isInputWrapped = useMemo(() => input.includes('\n'), [input]);
