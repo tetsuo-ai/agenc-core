@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Session Tracing for AgenC using OpenTelemetry (BETA)
  *
@@ -15,7 +13,6 @@
 import { feature } from 'bun:bundle'
 import { context as otelContext, type Span, trace } from '@opentelemetry/api'
 import { AsyncLocalStorage } from 'async_hooks'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Attributes, HrTime } from '@opentelemetry/api'
 import { type ExportResult, ExportResultCode } from '@opentelemetry/core'
 import {

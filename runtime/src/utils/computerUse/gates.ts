@@ -1,9 +1,6 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+// @ts-expect-error -- stub package lacks declaration file; replace when @ant/computer-use-mcp absorbs into runtime.
 import type { CoordinateMode, CuSubGates } from '@ant/computer-use-mcp/types'
 
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getSubscriptionType } from '../auth.js'
 import { isEnvTruthy } from '../envUtils.js'
