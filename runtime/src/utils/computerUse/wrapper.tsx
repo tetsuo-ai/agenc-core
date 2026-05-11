@@ -1,5 +1,5 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
+// @ts-nocheck -- @ant/computer-use-mcp ships as a stub without declarations;
+// removing this requires absorbing the package surface into runtime first.
 /**
  * The `.call()` override — thin adapter between `ToolUseContext` and
  * `bindSessionContext`. Spread into the MCP tool object in `client.ts`

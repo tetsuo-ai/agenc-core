@@ -1,6 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolUseContext } from '../../tools/Tool.js'
 
 import { logForDebugging } from 'src/utils/debug.js'
@@ -51,7 +48,6 @@ export async function cleanupComputerUseAfterTurn(
     await Promise.race([unhide, timeout.promise]).finally(() =>
       clearTimeout(timer),
     )
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
     ctx.setAppState(prev =>
       prev.computerUseMcpState?.hiddenDuringTurn === undefined
         ? prev
