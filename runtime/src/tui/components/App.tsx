@@ -1633,7 +1633,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
     }
     try {
-      await props.session.submit?.(value);
+      // Pass `value` as displayUserMessage so the daemon emits the
+      // user-message transcript event with the user's raw typed text,
+      // not the model-facing expanded payload. Without this the
+      // transcript can show the post-expansion envelope instead of
+      // the original input. Pairs with the daemon-hook change in
+      // background-agent-runner.installDaemonTurnDriverHooks that
+      // suppresses the run-turn duplicate emit.
+      await props.session.submit?.(value, { displayUserMessage: value });
     } catch (err_1) {
       // Same defense as submitPromptToModel above: a daemon JSON-RPC
       // error response (e.g. "AgenC daemon agent not running:

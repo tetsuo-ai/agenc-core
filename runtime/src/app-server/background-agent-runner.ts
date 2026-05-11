@@ -3184,11 +3184,17 @@ function installDaemonTurnDriverHooks(
       const ctx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
+      // displayUserMessage: null suppresses the run-turn user_message
+      // emit. On the daemon path, submitAgentMessage above already
+      // emits the user_message event (with the displayUserMessage
+      // metadata threaded through from the TUI). Without this guard
+      // both emits fire with different ids, so the transcript-reducer
+      // (which dedups by id) renders the user message twice.
       for await (const event of runTurn(
         session as never,
         ctx as never,
         message,
-        {},
+        { displayUserMessage: null },
       )) {
         (
           session as unknown as { emitPhaseEvent: (e: unknown) => void }
