@@ -4159,4 +4159,116 @@ describe("AgenC background agent lifecycle", () => {
       clientMultiplexer.attachedClientIds("session_old"),
     ).resolves.toEqual([]);
   });
+
+  it("transitions terminal-status agents out of the active list via the runner-terminated hook", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_reaper_start"]),
+      now: () => "2026-05-01T12:00:01.000Z",
+    });
+    let terminatedCallback:
+      | ((
+          agentId: string,
+          snapshot: AgenCBackgroundAgentSnapshot,
+        ) => void | Promise<void>)
+      | undefined;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_reaped",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent: async () => {},
+      setOnActiveAgentTerminated(callback) {
+        terminatedCallback = callback;
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/tmp/agenc-reaper",
+      now: () => "2026-05-01T12:00:02.500Z",
+      sessionManager: sessions,
+      runner,
+    });
+    runner.setOnActiveAgentTerminated?.((id, snapshot) =>
+      agents.handleRunnerTerminated(id, snapshot),
+    );
+
+    await agents.createAgent({ objective: "do work then end" });
+    await expect(agents.listAgents()).resolves.toMatchObject({
+      agents: [{ agentId: "agent_reaped", status: "running" }],
+    });
+
+    expect(terminatedCallback).toBeDefined();
+    await terminatedCallback!("agent_reaped", {
+      status: "stopped",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    });
+
+    const listed = await agents.listAgents();
+    expect(
+      listed.agents.find((agent) => agent.agentId === "agent_reaped"),
+    ).toBeUndefined();
+  });
+
+  it("reaps recovered agents whose runtime never came back", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      now: () => "2026-05-01T12:00:00.000Z",
+    });
+    await sessions.restoreSession({
+      sessionId: "session_lost_runtime",
+      agentId: "agent_lost_runtime",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "stranded",
+    });
+    const transitions: Array<{ status: string; reason?: string }> = [];
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      now: () => "2026-05-01T12:00:05.000Z",
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+      },
+      recordAgentStatusTransition: (transition) => {
+        transitions.push({
+          status: transition.status,
+          ...(transition.reason !== undefined
+            ? { reason: transition.reason }
+            : {}),
+        });
+      },
+    });
+
+    await agents.restoreAgent({
+      agentId: "agent_lost_runtime",
+      objective: "stranded by daemon restart",
+      status: "idle",
+      sessionIds: ["session_lost_runtime"],
+      runtimeAvailable: false,
+    });
+    await expect(agents.listAgents()).resolves.toMatchObject({
+      agents: [
+        {
+          agentId: "agent_lost_runtime",
+          status: "idle",
+        },
+      ],
+    });
+
+    const reaped = await agents.reapStaleAgents();
+    expect(reaped).toEqual(["agent_lost_runtime"]);
+    expect(transitions.at(-1)).toEqual({
+      status: "error",
+      reason: "stale_runner",
+    });
+
+    const listed = await agents.listAgents();
+    expect(
+      listed.agents.find((agent) => agent.agentId === "agent_lost_runtime"),
+    ).toBeUndefined();
+
+    await expect(agents.reapStaleAgents()).resolves.toEqual([]);
+  });
 });
