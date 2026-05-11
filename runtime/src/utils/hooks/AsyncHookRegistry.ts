@@ -1,10 +1,9 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type {
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- agentSdkTypes still relies on @ts-nocheck, so this re-export is not visible through the type system.
   AsyncHookJSONOutput,
   HookEvent,
-  // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
+  // @ts-expect-error -- agentSdkTypes still relies on @ts-nocheck, so this re-export is not visible through the type system.
   SyncHookJSONOutput,
 } from 'src/entrypoints/agentSdkTypes.js'
 import { logForDebugging } from 'src/utils/debug.js'

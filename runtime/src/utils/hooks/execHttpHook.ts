@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import axios from 'axios'
 import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
@@ -165,12 +164,10 @@ export async function execHttpHook(
       const hookVars = hook.allowedEnvVars ?? []
       const effectiveVars =
         policy.allowedEnvVars !== undefined
-          // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
           ? hookVars.filter(v => policy.allowedEnvVars!.includes(v))
           : hookVars
       const allowedEnvVars = new Set(effectiveVars)
       for (const [name, value] of Object.entries(hook.headers)) {
-        // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
         headers[name] = interpolateEnvVars(value, allowedEnvVars)
       }
     }

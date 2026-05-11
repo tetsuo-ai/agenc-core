@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
@@ -44,14 +43,8 @@ function formatRecentMessages(messages: Message[]): string {
     .map(m => {
       const role = m.type === 'user' ? 'User' : 'Assistant'
       const content = m.message.content
-      if (typeof content === 'string')
-        return `${role}: ${content.slice(0, 500)}`
-      const text = content
-        .filter(
-          (b): b is Extract<typeof b, { type: 'text' }> => b.type === 'text',
-        )
-        .map(b => b.text)
-        .join('\n')
+      const text =
+        typeof content === 'string' ? content : extractTextContent(content, '\n')
       return `${role}: ${text.slice(0, 500)}`
     })
     .join('\n\n')
