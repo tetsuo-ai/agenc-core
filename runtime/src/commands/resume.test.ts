@@ -8,6 +8,7 @@ import {
   readFirstUserPreview,
   sessionIdFromFilename,
   runResume,
+  resumeCommand,
 } from "./resume.js";
 import { getProjectDir } from "../session/session-store.js";
 
@@ -40,6 +41,12 @@ function writeRollout(
 }
 
 describe("resumeCommand helpers", () => {
+  it("exposes /sessions alias", () => {
+    expect(resumeCommand.aliases).toEqual(
+      expect.arrayContaining(["sessions"]),
+    );
+  });
+
   it("sessionIdFromFilename extracts an id from a AgenC-style filename", () => {
     const id = sessionIdFromFilename(
       "rollout-2026-04-20T10-00-00-000Z-abc123def.jsonl",
