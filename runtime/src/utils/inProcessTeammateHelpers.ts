@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * In-Process Teammate Helpers
  *
@@ -15,7 +13,6 @@ import type { AppState } from '../tui/state/AppState.js'
 import {
   type InProcessTeammateTaskState,
   isInProcessTeammateTask,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../tasks/InProcessTeammateTask/types.js'
 import { updateTaskState } from './task/framework.js'
 import {
@@ -40,7 +37,6 @@ export function findInProcessTeammateTaskId(
   for (const task of Object.values(appState.tasks)) {
     if (
       isInProcessTeammateTask(task) &&
-      // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
       task.identity.agentName === agentName
     ) {
       return task.id

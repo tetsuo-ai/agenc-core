@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 /**
  * Hooks are user-defined shell commands that can be executed at various points
@@ -76,6 +74,11 @@ import {
   isSyncHookJSONOutput,
   type PermissionRequestResult,
 } from '../types/hooks.js'
+// The donor `agentSdkTypes.ts` carries `@ts-nocheck` and re-exports overlap
+// with its inline `= any` aliases; TypeScript's export resolver drops the
+// duplicate names from the emitted type table. Resolve type-only imports via
+// the local-aliases helper module which gives us back stable references that
+// hold `any` semantics in the rest of this file.
 import type {
   HookEvent,
   HookInput,
@@ -109,10 +112,14 @@ import type {
   ExitReason,
   SyncHookJSONOutput,
   AsyncHookJSONOutput,
-} from 'src/entrypoints/agentSdkTypes.js'
-import type { StatusLineCommandInput } from '../types/statusLine.js'
+} from './hooks/agentSdkHookTypes.js'
+// Local aliases for donor-unowned command-input shapes; replace with real
+// types once their definition surfaces lands in AgenC-owned types.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type StatusLineCommandInput = any
 import type { ElicitResult } from '@modelcontextprotocol/sdk/types.js'
-import type { FileSuggestionCommandInput } from '../types/fileSuggestion.js'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FileSuggestionCommandInput = any
 import type { HookResultMessage } from 'src/types/message.js'
 import chalk from 'chalk'
 import type {
@@ -1667,7 +1674,10 @@ function getHooksConfig(
       if (managedOnly && 'pluginRoot' in matcher) {
         continue
       }
-      hooks.push(matcher)
+      // `RegisteredHookMatcher` from bootstrap/state is the union of callback
+      // and plugin matcher shapes accepted here; the array's published union
+      // is a superset, so push through the wider type.
+      hooks.push(matcher as HookCallbackMatcher | PluginHookMatcher)
     }
   }
 
@@ -4603,12 +4613,24 @@ function parseElicitationHookOutput(
   }
 
   try {
-    const parsed = hookJSONOutputSchema().parse(JSON.parse(trimmed))
-    if (isAsyncHookJSONOutput(parsed)) {
+    const parsedRaw = hookJSONOutputSchema().parse(JSON.parse(trimmed))
+    if (isAsyncHookJSONOutput(parsedRaw)) {
       return {}
     }
-    if (!isSyncHookJSONOutput(parsed)) {
+    if (!isSyncHookJSONOutput(parsedRaw)) {
       return {}
+    }
+    // After the predicate guards above, the inferred narrowed type collapses
+    // because the donor `HookJSONOutput` alias is permissive (`any`). Re-widen
+    // through a local alias so the structural lookups below typecheck.
+    const parsed = parsedRaw as {
+      decision?: string
+      reason?: string
+      hookSpecificOutput?: {
+        hookEventName?: string
+        action?: string
+        content?: unknown
+      }
     }
 
     // Check for top-level decision: 'block' (exit code 0 + JSON block)
@@ -4631,7 +4653,7 @@ function parseElicitationHookOutput(
     }
 
     const response: ElicitationResponse = {
-      action: specific.action,
+      action: specific.action as ElicitationResponse['action'],
       content: specific.content as ElicitationResponse['content'] | undefined,
     }
 

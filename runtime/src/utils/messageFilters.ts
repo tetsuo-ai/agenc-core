@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Message, UserMessage } from '../types/message.js'
 import {
@@ -51,12 +49,16 @@ export function selectableUserMessagesFilter(message: Message): message is UserM
  */
 export function messagesAfterAreOnlySynthetic(messages: Message[], fromIndex: number): boolean {
   for (let i = fromIndex + 1; i < messages.length; i++) {
-    const msg = messages[i]
-    if (!msg) continue
+    const rawMsg = messages[i]
+    if (!rawMsg) continue
 
     // Skip known non-meaningful message types
-    if (isSyntheticMessage(msg)) continue
-    if (isToolUseResultMessage(msg)) continue
+    if (isSyntheticMessage(rawMsg)) continue
+    if (isToolUseResultMessage(rawMsg)) continue
+    // After the predicate guards above, the inferred narrowed type collapses
+    // because the donor `Message` alias is permissive (`any`). Re-widen via a
+    // local alias so the structural lookups below typecheck.
+    const msg = rawMsg as { type: string; isMeta?: boolean; message?: { content?: unknown } }
     if (msg.type === 'progress') continue
     if (msg.type === 'system') continue
     if (msg.type === 'attachment') continue
@@ -64,9 +66,9 @@ export function messagesAfterAreOnlySynthetic(messages: Message[], fromIndex: nu
 
     // Assistant with actual content = meaningful
     if (msg.type === 'assistant') {
-      const content = msg.message.content
+      const content = msg.message?.content
       if (Array.isArray(content)) {
-        const hasMeaningfulContent = content.some(block => block.type === 'text' && block.text.trim() || block.type === 'tool_use')
+        const hasMeaningfulContent = content.some((block: { type?: string; text?: string }) => block.type === 'text' && block.text?.trim() || block.type === 'tool_use')
         if (hasMeaningfulContent) return false
       }
       continue

@@ -1,14 +1,11 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { Permutations } from 'src/types/utils.js'
 import { getSessionId } from '../bootstrap/state.js'
 import type { AppState } from '../tui/state/AppState.js'
-import type {
-  QueueOperation,
-  QueueOperationMessage,
-} from '../types/messageQueueTypes.js'
+import type { QueueOperationMessage } from '../types/logs.js'
+// QueueOperation is just the operation string carried by QueueOperationMessage.
+type QueueOperation = QueueOperationMessage['operation']
 import type {
   EditablePromptInputMode,
   PromptInputMode,
@@ -28,7 +25,7 @@ export type SetAppState = (f: (prev: AppState) => AppState) => void
 // ============================================================================
 
 function logOperation(operation: QueueOperation, content?: string): void {
-  const sessionId = getSessionId()
+  const sessionId = getSessionId() as QueueOperationMessage['sessionId']
   const queueOp: QueueOperationMessage = {
     type: 'queue-operation',
     operation,
@@ -344,7 +341,7 @@ export function resetCommandQueue(): void {
 
 const NON_EDITABLE_MODES = new Set<PromptInputMode>([
   'task-notification',
-] satisfies Permutations<Exclude<PromptInputMode, EditablePromptInputMode>>)
+] as const satisfies readonly Permutations<Exclude<PromptInputMode, EditablePromptInputMode>>[])
 
 export function isPromptInputModeEditable(
   mode: PromptInputMode,

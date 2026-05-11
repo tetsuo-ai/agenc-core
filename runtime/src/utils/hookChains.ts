@@ -1,15 +1,11 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createHash } from 'crypto'
 import { statSync } from 'fs'
 import { join, resolve } from 'path'
 import { HOOK_EVENTS } from 'src/entrypoints/agentSdkTypes.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getOriginalCwd } from '../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../services/analytics/index.js'
 import { isPolicyAllowed } from '../services/policyLimits/index.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -25,13 +21,6 @@ import { logOTelEvent } from './telemetry/events.js'
 import { z } from 'zod/v4'
 
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const getReplBridgeHandle = (..._args: unknown[]): null => null;
-// ---- end donor-purge stubs ----
 type HookEvent = (typeof HOOK_EVENTS)[number]
 
 const HOOK_CHAINS_CONFIG_ENV_PATH = 'AGENC_HOOK_CHAINS_CONFIG_PATH'
@@ -268,22 +257,6 @@ let configCache: ConfigCacheState | null = null
 const ruleCooldownUntil = new Map<string, number>()
 const dedupKeyUntil = new Map<string, number>()
 
-function getHookChainScopeKey(
-  runtime?: { dedupScope?: string | null } | null,
-  event?: { payload?: { session_id?: string | null } | null } | null,
-): string {
-  const scope = runtime?.dedupScope ?? event?.payload?.session_id
-  return scope && scope.length > 0 ? scope : '__global__'
-}
-
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-function getRuleCooldownKey(
-  ruleId: string,
-  runtime?: { dedupScope?: string | null } | null,
-  event?: { payload?: { session_id?: string | null } | null } | null,
-): string {
-  return `${getHookChainScopeKey(runtime, event)}:${ruleId}`
-}
 function asAnalyticsString(
   value: string,
 ): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
@@ -1020,81 +993,16 @@ export async function executeWarmRemoteCapacityAction(args: {
     }
   }
 
-  // MVP safety guard: if the REPL bridge is not active, skip warm-up instead
-  // of touching remote APIs. This keeps the action side-effect free when the
-  // session is local-only.
-  try {
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-    const { getReplBridgeHandle } = await import('../bridge/replBridgeHandle.js')
-    if (!getReplBridgeHandle()) {
-      return {
-        status: 'skipped',
-        reason: 'Bridge is not active; warm_remote_capacity is a safe no-op',
-      }
-    }
-  } catch {
-    return {
-      status: 'skipped',
-      reason: 'Bridge status unavailable; warm_remote_capacity skipped',
-    }
-  }
-
-  // We keep warm_remote_capacity conservative in MVP:
-  // 1) verify remote prerequisites,
-  // 2) fetch selected environment metadata,
-  // 3) issue a lightweight environments list call as a controlled pre-warm path.
-  try {
-    const [{ checkBackgroundRemoteSessionEligibility }, { getEnvironmentSelectionInfo }, envApi] =
-      await Promise.all([
-      ])
-
-    const preconditions = await checkBackgroundRemoteSessionEligibility({
-      skipBundle: true,
-    })
-
-    if (preconditions.length > 0) {
-      return {
-        status: 'skipped',
-        reason: `Remote warm-up preconditions failed: ${preconditions
-          .map(item => item.type)
-          .join(', ')}`,
-      }
-    }
-
-    let selection = await getEnvironmentSelectionInfo()
-
-    if (
-      !selection.selectedEnvironment &&
-      action.createDefaultEnvironmentIfMissing === true
-    ) {
-      const created = await envApi.createDefaultCloudEnvironment(
-        'AgenC Self-Healing Warmup',
-      )
-      selection = {
-        availableEnvironments: [created],
-        selectedEnvironment: created,
-        selectedEnvironmentSource: null,
-      }
-    }
-
-    if (!selection.selectedEnvironment) {
-      return {
-        status: 'skipped',
-        reason: 'No eligible remote environment available for warm-up',
-      }
-    }
-
-    await envApi.fetchEnvironments()
-
-    return {
-      status: 'executed',
-      detail: `Remote warm-up checked environment ${selection.selectedEnvironment.environment_id}`,
-    }
-  } catch (error) {
-    return {
-      status: 'failed',
-      reason: `Remote warm-up failed: ${String(error)}`,
-    }
+  // Donor-purged fallback path. The legacy implementation reached into
+  // `../bridge/replBridgeHandle.js` and into remote-session/environment APIs
+  // that were removed during the api.anthropic.com donor purge. Without those
+  // modules the in-process warm-up has no transport to call, so we skip with
+  // an explicit reason. Real warm-up lands when AgenC ships the equivalent
+  // remote-session backend (consumers should provide `onWarmRemoteCapacity`).
+  void action
+  return {
+    status: 'skipped',
+    reason: 'Remote warm-up requires an onWarmRemoteCapacity runtime callback',
   }
 }
 
