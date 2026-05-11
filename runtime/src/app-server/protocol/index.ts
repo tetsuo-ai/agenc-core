@@ -615,6 +615,19 @@ export interface AgentCreateParams extends JsonObject {
     | "plan"
     | "acceptEdits"
     | "bypassPermissions";
+  /**
+   * Per-invocation environment overrides for the spawned agent. Used by
+   * the TUI to propagate `OPENAI_BASE_URL` (and similar provider-config
+   * env vars) from the CLI's process env into the daemon-owned agent —
+   * without this, the daemon's runner uses the frozen env snapshot
+   * captured at daemon-start time, so subsequent CLI invocations with
+   * different env vars silently use the original values.
+   *
+   * Only string values are forwarded. Keys collected from a curated
+   * allow-list (provider URLs, API keys, proxy settings) to avoid
+   * leaking unrelated env into agent processes.
+   */
+  readonly envOverrides?: { readonly [key: string]: string };
 }
 
 export interface DaemonProtocolInfo extends JsonObject {

@@ -51,6 +51,49 @@ export interface AgenCDaemonPromptAgentOptions {
     | "bypassPermissions";
 }
 
+/**
+ * Allow-list of env vars the TUI forwards to the daemon-spawned agent
+ * on each invocation. Keeping this curated avoids leaking unrelated
+ * shell env into agent subprocesses.
+ *
+ * Round-2 M-NEW4: previously the daemon's runner used a single env
+ * snapshot captured at first launch, so subsequent CLI invocations
+ * (different `OPENAI_BASE_URL`, different proxy settings, etc.)
+ * silently used the original values.
+ */
+const ENV_OVERRIDE_KEYS = new Set<string>([
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_ORG_ID",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "XAI_API_KEY",
+  "XAI_BASE_URL",
+  "GROK_API_KEY",
+  "LMSTUDIO_BASE_URL",
+  "OLLAMA_HOST",
+  "VERTEX_AI_PROJECT",
+  "VERTEX_AI_LOCATION",
+  "AWS_BEDROCK_REGION",
+  "AWS_BEDROCK_PROFILE",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+]);
+
+function collectEnvOverrides(
+  env: NodeJS.ProcessEnv,
+): Record<string, string> | undefined {
+  const overrides: Record<string, string> = {};
+  for (const key of ENV_OVERRIDE_KEYS) {
+    const value = env[key];
+    if (typeof value === "string" && value.length > 0) {
+      overrides[key] = value;
+    }
+  }
+  return Object.keys(overrides).length === 0 ? undefined : overrides;
+}
+
 export interface StopAgenCDaemonPromptAgentOptions {
   readonly agentId: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -67,6 +110,7 @@ export async function startAgenCDaemonPromptAgent(
   const env = options.env ?? process.env;
   await defaultEnsureDaemonReady(env)();
   const client = createAgenCJsonLineDaemonClient({ env });
+  const envOverrides = collectEnvOverrides(env);
   return client.createAgent({
     objective: prompt,
     instructions: prompt,
@@ -77,6 +121,7 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }
       : {}),
+    ...(envOverrides !== undefined ? { envOverrides } : {}),
     metadata: {
       source: "agenc.prompt",
       ...(options.metadata ?? {}),

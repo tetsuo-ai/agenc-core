@@ -361,8 +361,6 @@ function withLazyDynamicMetadata<T extends CommandBase>(
 const LEGACY_TUI_COMMAND_LOADERS: Record<string, () => Promise<LazyCommandModule>> = {
   "./commands/agents/index.js": () => import("./commands/agents/index.js") as unknown as Promise<LazyCommandModule>,
   "./commands/branch/index.js": () => import("./commands/branch/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/btw/index.js": () => import("./commands/btw/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/buddy/index.js": () => import("./commands/buddy/index.js") as unknown as Promise<LazyCommandModule>,
   "./commands/color/index.js": () => import("./commands/color/index.js") as unknown as Promise<LazyCommandModule>,
   "./commands/commit.js": () => import("./commands/commit.js") as unknown as Promise<LazyCommandModule>,
   "./commands/export/index.js": () => import("./commands/export/index.js") as unknown as Promise<LazyCommandModule>,

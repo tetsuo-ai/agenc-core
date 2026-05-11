@@ -591,8 +591,6 @@ type LegacyCommandModule = {
 const LEGACY_COMMAND_LOADERS: Record<string, () => Promise<LegacyCommandModule>> = {
   "./agents/index.js": () => import("./agents/index.js"),
   "./branch/index.js": () => import("./branch/index.js"),
-  "./btw/index.js": () => import("./btw/index.js"),
-  "./buddy/index.js": () => import("./buddy/index.js"),
   "./color/index.js": () => import("./color/index.js"),
   "./export/index.js": () => import("./export/index.js"),
   "./heapdump/index.js": () => import("./heapdump/index.js"),
@@ -821,8 +819,6 @@ export const registeredLegacyCommandSurfaceSpecs = [
     description: "Create a branch of the current conversation at this point",
     argumentHint: "[name]",
   },
-  { name: "btw", type: "local-jsx", modulePath: "./btw/index.js", tuiModulePath: "./commands/btw/index.js", description: "Ask a quick side question without interrupting the main conversation", immediate: true, argumentHint: "<question>" },
-  { name: "buddy", type: "local-jsx", modulePath: "./buddy/index.js", tuiModulePath: "./commands/buddy/index.js", description: "Hatch, pet, and manage your AgenC companion", immediate: true, argumentHint: "[status|mute|unmute|help]" },
   { name: "color", type: "local-jsx", modulePath: "./color/index.js", tuiModulePath: "./commands/color/index.js", description: "Set the prompt bar color for this session", immediate: true, argumentHint: "<color|default>" },
   { name: "export", type: "local-jsx", modulePath: "./export/index.js", tuiModulePath: "./commands/export/index.js", description: "Export the current conversation to a file or clipboard", argumentHint: "[filename]" },
   { name: "heapdump", type: "local", modulePath: "./heapdump/index.js", tuiModulePath: "./commands/heapdump/index.js", description: "Dump the JS heap to ~/Desktop", isHidden: true, supportsNonInteractive: true },

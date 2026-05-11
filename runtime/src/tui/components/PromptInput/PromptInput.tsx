@@ -14,9 +14,13 @@ import type { FooterItem } from '../../state/AppStateStore.js';
 import { getCwd } from '../../../utils/cwd.js';
 import { isQueuedCommandEditable, popAllEditable } from '../../../utils/messageQueueManager.js';
 import stripAnsi from 'strip-ansi';
-import { companionReservedColumns } from '../../buddy/CompanionSprite.js';
-import { isBuddyEnabled } from '../../buddy/feature.js';
-import { findBuddyTriggerPositions, useBuddyNotification } from '../../buddy/useBuddyNotification.js';
+// Buddy/companion feature removed. Stubs kept inline so the remaining
+// call sites compile without conditional guards — every accessor
+// returns a safe "buddy disabled" default.
+const companionReservedColumns = (_columns: number, _speaking: boolean) => 0;
+const isBuddyEnabled = () => false;
+const findBuddyTriggerPositions = (_text: string): number[] => [];
+const useBuddyNotification = (..._args: unknown[]): void => {};
 import { type Command, hasCommand } from '../../../commands.js';
 import { useIsModalOverlayActive } from '../../context/overlayContext.js';
 import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';

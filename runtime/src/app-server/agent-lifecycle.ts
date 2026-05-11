@@ -329,6 +329,9 @@ export class AgenCDaemonAgentManager {
         ...(params.permissionMode !== undefined
           ? { permissionMode: params.permissionMode }
           : {}),
+        ...(params.envOverrides !== undefined
+          ? { envOverrides: params.envOverrides }
+          : {}),
       });
 
       if (this.#shuttingDown) {
