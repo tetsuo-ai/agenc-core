@@ -5,7 +5,6 @@ import { generateFileSuggestions } from './fileSuggestions.js'
 import type { ServerResource } from '../../services/mcp/types.js'
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { truncateToWidth } from '../../utils/format.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../utils/log.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { Theme } from '../../utils/theme.js' // upstream-import: keep target is owned by another Z-PURGE item
 
@@ -68,10 +67,13 @@ function createSuggestionFromSource(source: SuggestionSource): SuggestionItem {
 }
 
 const MAX_UNIFIED_SUGGESTIONS = 15
-const DESCRIPTION_MAX_LENGTH = 60
 
-function truncateDescription(description: string): string {
-  return truncateToWidth(description, DESCRIPTION_MAX_LENGTH)
+// Round-2 M-NEW8: pass the full description through. The footer renderer
+// truncates inline for non-selected rows and expands the full text on a
+// second line for the selected row, so trimming here would hide the rest
+// of an agent's whenToUse / MCP-resource description behind /help.
+function normalizeDescription(description: string): string {
+  return description.replace(/\s+/g, ' ').trim()
 }
 
 function generateAgentSuggestions(
@@ -87,7 +89,7 @@ function generateAgentSuggestions(
     const agentSources: AgentSuggestionSource[] = agents.map(agent => ({
       type: 'agent' as const,
       displayText: `${agent.agentType} (agent)`,
-      description: truncateDescription(agent.whenToUse),
+      description: normalizeDescription(agent.whenToUse),
       agentType: agent.agentType,
       color: getAgentColor(agent.agentType),
     }))
@@ -139,7 +141,7 @@ export async function generateUnifiedSuggestions(
     .map(resource => ({
       type: 'mcp_resource' as const,
       displayText: `${resource.server}:${resource.uri}`,
-      description: truncateDescription(
+      description: normalizeDescription(
         resource.description || resource.name || resource.uri,
       ),
       server: resource.server,
