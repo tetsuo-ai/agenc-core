@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { posix } from 'path'
 import type { ToolPermissionContext } from '../../tools/Tool.js'
@@ -125,7 +124,12 @@ export function applyPermissionUpdate(
       logForDebugging(
         `Applying permission update: Adding ${update.directories.length} director${update.directories.length === 1 ? 'y' : 'ies'} with destination '${update.destination}': ${jsonStringify(update.directories)}`,
       )
-      const newAdditionalDirs = new Map(context.additionalWorkingDirectories)
+      const newAdditionalDirs = new Map(
+        context.additionalWorkingDirectories as unknown as ReadonlyMap<
+          string,
+          AdditionalWorkingDirectory
+        >,
+      )
       for (const directory of update.directories) {
         newAdditionalDirs.set(directory, {
           path: directory,
@@ -174,7 +178,12 @@ export function applyPermissionUpdate(
       logForDebugging(
         `Applying permission update: Removing ${update.directories.length} director${update.directories.length === 1 ? 'y' : 'ies'}: ${jsonStringify(update.directories)}`,
       )
-      const newAdditionalDirs = new Map(context.additionalWorkingDirectories)
+      const newAdditionalDirs = new Map(
+        context.additionalWorkingDirectories as unknown as ReadonlyMap<
+          string,
+          AdditionalWorkingDirectory
+        >,
+      )
       for (const directory of update.directories) {
         newAdditionalDirs.delete(directory)
       }

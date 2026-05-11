@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Zod schemas for permission updates.
@@ -12,7 +11,6 @@ import z from 'zod/v4'
 import type {
   PermissionUpdate,
   PermissionUpdateDestination,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
 import { externalPermissionModeSchema } from './PermissionMode.js'

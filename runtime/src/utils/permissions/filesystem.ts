@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
@@ -683,10 +682,9 @@ export function checkPathSafetyForAutoEdit(
 export function allWorkingDirectories(
   context: ToolPermissionContext,
 ): Set<string> {
-  return new Set([
-    getOriginalCwd(),
-    ...context.additionalWorkingDirectories.keys(),
-  ])
+  const additionalDirs =
+    context.additionalWorkingDirectories as unknown as ReadonlyMap<string, unknown>
+  return new Set([getOriginalCwd(), ...additionalDirs.keys()])
 }
 
 // Working directories are session-stable; memoize their resolved forms to

@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Tool, ToolUseContext } from 'src/tools/Tool.js'
 import z from 'zod/v4'

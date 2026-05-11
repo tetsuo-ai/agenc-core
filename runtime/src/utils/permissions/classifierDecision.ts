@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { feature } from 'bun:bundle'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
@@ -27,14 +26,21 @@ import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifier.js'
 // Ant-only tool names: conditional require so Bun can DCE these in external builds.
 // Gates mirror tools.ts. Keeps the tool name strings out of cli.js.
 /* eslint-disable @typescript-eslint/no-require-imports */
+// Internal-only tool modules: present in ant builds, absent here. Gated by
+// feature flags so the require() calls never execute in this build. The
+// literal-type assertions avoid `typeof import(...)` on missing modules.
 const TERMINAL_CAPTURE_TOOL_NAME = feature('TERMINAL_PANEL')
   ? (
-      require('../../tools/TerminalCaptureTool/prompt.js') as typeof import('../../tools/TerminalCaptureTool/prompt.js')
+      require('../../tools/TerminalCaptureTool/prompt.js') as {
+        TERMINAL_CAPTURE_TOOL_NAME: string
+      }
     ).TERMINAL_CAPTURE_TOOL_NAME
   : null
 const OVERFLOW_TEST_TOOL_NAME = feature('OVERFLOW_TEST_TOOL')
   ? (
-      require('../../tools/OverflowTestTool/OverflowTestTool.js') as typeof import('../../tools/OverflowTestTool/OverflowTestTool.js')
+      require('../../tools/OverflowTestTool/OverflowTestTool.js') as {
+        OVERFLOW_TEST_TOOL_NAME: string
+      }
     ).OVERFLOW_TEST_TOOL_NAME
   : null
 const VERIFY_PLAN_EXECUTION_TOOL_NAME =

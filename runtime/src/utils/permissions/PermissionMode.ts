@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import z from 'zod/v4'
@@ -9,7 +8,6 @@ import {
   type ExternalPermissionMode,
   PERMISSION_MODES,
   type PermissionMode,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
 
