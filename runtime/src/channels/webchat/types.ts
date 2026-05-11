@@ -186,6 +186,8 @@ export interface WebChatDeps {
   skillToggle?: (name: string, enabled: boolean) => void;
   /** Optional Solana connection for on-chain task operations. */
   connection?: import("@solana/web3.js").Connection;
+  /** Optional fail-closed SLM guard for signer-backed Solana writes. */
+  transactionGuard?: import("../../transaction-guard/types.js").TransactionGuardContext | null;
   /** Optional callback to broadcast events to all subscribed WS clients. */
   broadcastEvent?: (eventType: string, data: Record<string, unknown>) => void;
   /** Optional callback to resolve the latest usage snapshot for one session. */

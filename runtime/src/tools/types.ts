@@ -14,6 +14,7 @@ import type { Wallet } from "../types/wallet.js";
 import type { Logger } from "../utils/logger.js";
 import type { PolicyEngine } from "../policy/engine.js";
 import type { MarketplaceSignerPolicy } from "./agenc/signer-policy.js";
+import type { TransactionGuardContext } from "../transaction-guard/types.js";
 
 /**
  * JSON Schema type alias.
@@ -116,6 +117,8 @@ export interface ToolContext {
   readonly logger: Logger;
   /** Optional local signer policy for signer-backed AgenC marketplace tools. */
   readonly marketplaceSignerPolicy?: MarketplaceSignerPolicy;
+  /** Optional SLM transaction guard used before signer-backed Solana writes. */
+  readonly transactionGuard?: TransactionGuardContext | null;
 }
 
 /**

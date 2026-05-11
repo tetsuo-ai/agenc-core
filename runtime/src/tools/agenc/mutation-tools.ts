@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { BN, type Program } from '@coral-xyz/anchor';
+import type { Program } from '@coral-xyz/anchor';
+import BN from 'bn.js';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import {
   getAssociatedTokenAddressSync,
@@ -37,6 +38,7 @@ import {
   type MarketplaceArtifactReference,
 } from '../../marketplace/artifact-delivery.js';
 import type { Logger } from '../../utils/logger.js';
+import type { TransactionGuardContext } from '../../transaction-guard/index.js';
 import { bytesToHex, generateAgentId, hexToBytes } from '../../utils/encoding.js';
 import type { Tool, ToolResult } from '../types.js';
 import { safeStringify } from '../types.js';
@@ -600,6 +602,7 @@ export function createClaimTaskTool(
     jobSpecStoreDir?: string;
     allowRemoteJobSpecResolution?: boolean;
     claimJobSpecVerification?: "when-present" | "required" | "disabled";
+    transactionGuard?: TransactionGuardContext | null;
   } = {},
 ): Tool {
   return {
@@ -644,6 +647,7 @@ export function createClaimTaskTool(
           ...(options.claimJobSpecVerification
             ? { claimJobSpecVerification: options.claimJobSpecVerification }
             : {}),
+          transactionGuard: options.transactionGuard,
         });
         const task = await ops.fetchTask(taskPda);
         if (!task) return errorResult(`Task not found: ${taskPda.toBase58()}`);
@@ -671,6 +675,7 @@ export function createClaimTaskTool(
 export function createCompleteTaskTool(
   program: Program<AgencCoordination>,
   logger: Logger,
+  options: { transactionGuard?: TransactionGuardContext | null } = {},
 ): Tool {
   return {
     name: 'agenc.completeTask',
@@ -740,6 +745,7 @@ export function createCompleteTaskTool(
           program,
           agentId: signerAgent.agentId,
           logger,
+          transactionGuard: options.transactionGuard,
         });
         const task = await ops.fetchTask(taskPda);
         if (!task) return errorResult(`Task not found: ${taskPda.toBase58()}`);
@@ -1315,6 +1321,7 @@ export function createVoteProposalTool(
 export function createInitiateDisputeTool(
   program: Program<AgencCoordination>,
   logger: Logger,
+  options: { transactionGuard?: TransactionGuardContext | null } = {},
 ): Tool {
   return {
     name: 'agenc.initiateDispute',
@@ -1415,6 +1422,7 @@ export function createInitiateDisputeTool(
           program,
           agentId: signerAgent.agentId,
           logger,
+          transactionGuard: options.transactionGuard,
         });
         const task = await taskOps.fetchTask(taskPda);
         if (!task) return errorResult(`Task not found: ${taskPda.toBase58()}`);
@@ -1442,6 +1450,7 @@ export function createInitiateDisputeTool(
           program,
           agentId: signerAgent.agentId,
           logger,
+          transactionGuard: options.transactionGuard,
         });
         const result = await ops.initiateDispute({
           disputeId,
@@ -1479,6 +1488,7 @@ export function createInitiateDisputeTool(
 export function createResolveDisputeTool(
   program: Program<AgencCoordination>,
   logger: Logger,
+  options: { transactionGuard?: TransactionGuardContext | null } = {},
 ): Tool {
   return {
     name: 'agenc.resolveDispute',
@@ -1536,6 +1546,7 @@ export function createResolveDisputeTool(
           program,
           agentId: ZERO_AGENT_ID,
           logger,
+          transactionGuard: options.transactionGuard,
         });
         const dispute = await ops.fetchDispute(disputePda);
         if (!dispute) return errorResult(`Dispute not found: ${disputePda.toBase58()}`);
@@ -1544,6 +1555,7 @@ export function createResolveDisputeTool(
           program,
           agentId: ZERO_AGENT_ID,
           logger,
+          transactionGuard: options.transactionGuard,
         });
         const task = await taskOps.fetchTask(dispute.task);
         if (!task) return errorResult(`Task not found: ${dispute.task.toBase58()}`);

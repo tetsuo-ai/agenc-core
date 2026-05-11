@@ -5,7 +5,7 @@ import {
   prepareMarketplaceArtifactDelivery as prepareArtifactDelivery,
   readMarketplaceArtifactReference as readArtifactReference,
   resolveMarketplaceArtifactReferenceFromResultData as resolveArtifactReferenceFromResultData,
-} from "agenc-marketplace-agent-kit/artifacts";
+} from "@tetsuo-ai/marketplace-artifacts";
 
 export const MARKETPLACE_ARTIFACT_REFERENCE_KIND = "agenc.marketplace.artifactReference";
 export const MARKETPLACE_ARTIFACT_REFERENCE_SCHEMA_VERSION = 1;

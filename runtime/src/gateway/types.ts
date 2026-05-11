@@ -679,6 +679,14 @@ export interface GatewayAutonomyConfig {
   readonly canary?: GatewayAutonomyCanaryConfig;
 }
 
+export interface GatewayTransactionGuardConfig {
+  readonly enabled?: boolean;
+  readonly provider?: "ollama";
+  readonly model?: string;
+  readonly timeoutMs?: number;
+  readonly failClosed?: true;
+}
+
 export interface GatewayConfig {
   gateway: GatewayBindConfig;
   agent: GatewayAgentConfig;
@@ -707,6 +715,8 @@ export interface GatewayConfig {
   social?: GatewaySocialConfig;
   /** Runtime autonomy controls, notifications, and rollout policy. */
   autonomy?: GatewayAutonomyConfig;
+  /** Fail-closed SLM guard for signer-backed Solana transaction submissions. */
+  transactionGuard?: GatewayTransactionGuardConfig;
 }
 
 // ============================================================================

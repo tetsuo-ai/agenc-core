@@ -12,6 +12,7 @@ import type { PublicKey } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
+import type { TransactionGuardContext } from "../transaction-guard/types.js";
 
 // ============================================================================
 // On-Chain Dependency Type
@@ -225,4 +226,6 @@ export interface DAGOrchestratorConfig {
   maxRetries?: number;
   /** Delay between retries in ms (default: 1000) */
   retryDelayMs?: number;
+  /** Optional fail-closed SLM guard for workflow task submission writes. */
+  transactionGuard?: TransactionGuardContext | null;
 }

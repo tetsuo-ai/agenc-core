@@ -1,0 +1,135 @@
+name: Transaction Guard Live
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transaction-guard-live-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      transaction_guard: ${{ steps.filter.outputs.transaction_guard }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect transaction guard changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            transaction_guard:
+              - '.github/workflows/transaction-guard-live.yml'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'runtime/package.json'
+              - 'runtime/src/transaction-guard/**'
+              - 'runtime/tests/transaction-guard-*.test.ts'
+              - 'runtime/tests/transaction-guard-*.e2e.test.ts'
+              - 'runtime/scripts/slm-transaction-guard-devnet-smoke.ts'
+              - 'runtime/src/connection/**'
+              - 'runtime/src/task/operations.ts'
+              - 'runtime/src/task/transaction-intent.ts'
+              - 'runtime/src/workflow/submitter.ts'
+              - 'runtime/src/workflow/orchestrator.ts'
+              - 'runtime/src/skills/jupiter/**'
+              - 'runtime/src/tools/agenc/**'
+              - 'runtime/src/dispute/**'
+              - 'runtime/src/channels/webchat/**'
+              - 'runtime/src/cli/marketplace-cli.ts'
+              - 'runtime/src/gateway/**'
+              - 'docs/security/slm-transaction-guard-implementation-report.md'
+
+  live-ollama:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.transaction_guard == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      AGENC_TRANSACTION_GUARD_MODEL: ${{ vars.AGENC_TRANSACTION_GUARD_MODEL || 'gemma4:e2b' }}
+      AGENC_TRANSACTION_GUARD_TIMEOUT_MS: "180000"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "5m"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm install --no-fund
+
+      - name: Cache Ollama models
+        uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ runner.os }}-${{ env.AGENC_TRANSACTION_GUARD_MODEL }}
+          restore-keys: |
+            ollama-${{ runner.os }}-
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama
+        run: |
+          set -euo pipefail
+          ollama serve > "${RUNNER_TEMP}/ollama.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Ollama did not become ready"
+          cat "${RUNNER_TEMP}/ollama.log" || true
+          exit 1
+
+      - name: Pull guard model
+        run: ollama pull "${AGENC_TRANSACTION_GUARD_MODEL}"
+
+      - name: Run live SLM transaction guard tests
+        run: npm run test:transaction-guard:live
+
+      - name: Print Ollama logs on failure
+        if: failure()
+        run: cat "${RUNNER_TEMP}/ollama.log" || true
+
+  status:
+    needs:
+      - changes
+      - live-ollama
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize transaction guard live check
+        env:
+          LIVE_RESULT: ${{ needs.live-ollama.result }}
+          SHOULD_RUN: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.transaction_guard == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "${SHOULD_RUN}" != "true" ]; then
+            echo "Live Ollama guard tests skipped: no transaction-guard-relevant paths changed."
+            exit 0
+          fi
+          if [ "${LIVE_RESULT}" = "success" ]; then
+            echo "Live Ollama guard tests passed."
+            exit 0
+          fi
+          echo "::error::Live Ollama guard tests did not pass (result: ${LIVE_RESULT})."
+          exit 1

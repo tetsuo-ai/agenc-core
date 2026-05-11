@@ -56,6 +56,9 @@
     "test:private-registry-scripts": "node --test scripts/private-registry-service.test.mjs scripts/bootstrap-private-registry-user.test.mjs scripts/private-kernel-distribution.test.mjs scripts/private-registry-rehearsal.test.mjs",
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
     "test": "npm run test --workspace=packages/agenc && npm run validate:runtime && npm run test --workspace=@tetsuo-ai/mcp && npm run test --workspace=@tetsuo-ai/proof-harness-tools && npm run test --workspace=@tetsuo-ai/desktop-server",
+    "test:transaction-guard:e2e": "npm run test:transaction-guard:e2e --workspace=@tetsuo-ai/runtime",
+    "test:transaction-guard:live": "npm run test:transaction-guard:live --workspace=@tetsuo-ai/runtime",
+    "smoke:transaction-guard:devnet": "npm run smoke:transaction-guard:devnet --workspace=@tetsuo-ai/runtime",
     "test:cross-repo-integration": "npm run test:cross-repo-integration --workspace=@tetsuo-ai/runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run typecheck --workspace=@tetsuo-ai/mcp && npm run typecheck --workspace=@tetsuo-ai/docs-mcp && npm run typecheck --workspace=@tetsuo-ai/proof-harness-tools",
     "build:product-surfaces": "npm run build --workspace=@tetsuo-ai/web",
@@ -85,7 +88,8 @@
   "devDependencies": {
     "@coral-xyz/anchor": "^0.32.1",
     "@solana/web3.js": "^1.98.4",
-    "agenc-marketplace-agent-kit": "https://github.com/tetsuo-ai/agenc-marketplace-agent-kit/archive/9bdba655b06d31cb33d6fc7d9b62a611b1db2cb2.tar.gz",
+    "@tetsuo-ai/marketplace-artifacts": "file:../../agenc-marketplace-agent-kit/packages/artifacts",
+    "@tetsuo-ai/marketplace-policy": "file:../../agenc-marketplace-agent-kit/packages/policy",
     "bn.js": "^5.2.3",
     "typescript": "^5.0.0",
     "vitest": "^1.0.0"

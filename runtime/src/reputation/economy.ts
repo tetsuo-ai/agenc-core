@@ -6,7 +6,8 @@
 import { PublicKey, SystemProgram, type Keypair } from "@solana/web3.js";
 import { sign, createPrivateKey } from "node:crypto";
 import { randomBytes } from "node:crypto";
-import { BN, type Program } from "@coral-xyz/anchor";
+import type { Program } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";

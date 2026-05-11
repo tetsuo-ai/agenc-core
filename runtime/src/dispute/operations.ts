@@ -68,6 +68,11 @@ import {
 import { encodeStatusByte, queryWithFallback } from "../utils/query.js";
 import type { MetricsProvider } from "../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../telemetry/metric-names.js";
+import {
+  guardTransactionIntent,
+  transactionGuardInputFromMarketplaceIntent,
+  type TransactionGuardContext,
+} from "../transaction-guard/index.js";
 
 // ============================================================================
 // Configuration
@@ -85,6 +90,8 @@ export interface DisputeOpsConfig {
   logger?: Logger;
   /** Optional metrics provider for telemetry */
   metrics?: MetricsProvider;
+  /** Optional fail-closed SLM guard for signer-backed dispute transactions. */
+  transactionGuard?: TransactionGuardContext | null;
 }
 
 // ============================================================================
@@ -117,6 +124,7 @@ export class DisputeOperations {
   private readonly agentId: Uint8Array;
   private readonly logger: Logger;
   private readonly metrics?: MetricsProvider;
+  private readonly transactionGuard: TransactionGuardContext | null;
 
   // Cached derived values
   private readonly agentPda: PublicKey;
@@ -129,12 +137,25 @@ export class DisputeOperations {
     this.agentId = new Uint8Array(config.agentId);
     this.logger = config.logger ?? silentLogger;
     this.metrics = config.metrics;
+    this.transactionGuard = config.transactionGuard ?? null;
 
     this.agentPda = findAgentPda(this.agentId, this.program.programId);
     this.protocolPda = findProtocolPda(this.program.programId);
     this.authorityRateLimitPda = findAuthorityRateLimitPda(
       this.program.provider.publicKey!,
       this.program.programId,
+    );
+  }
+
+  private async guardMarketplaceIntent(
+    source: string,
+    intent: MarketplaceTransactionIntent,
+    userText?: string | null,
+    metadata?: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    await guardTransactionIntent(
+      this.transactionGuard,
+      transactionGuardInputFromMarketplaceIntent(source, intent, userText, metadata),
     );
   }
 
@@ -564,12 +585,18 @@ export class DisputeOperations {
         undefined,
         params.defendantWorkers,
       );
-      this.buildInitiateDisputeIntent(
+      const intent = this.buildInitiateDisputeIntent(
         params,
         disputePda,
         initiatorClaimPda,
         taskSubmissionPda,
         remainingAccounts,
+      );
+      await this.guardMarketplaceIntent(
+        "DisputeOperations.initiateDispute",
+        intent,
+        params.evidence,
+        { resolutionType: params.resolutionType },
       );
       const signature = await this.buildInitiateDisputeBuilder(
         this.program,
@@ -662,7 +689,10 @@ export class DisputeOperations {
     this.logger.info(
       `Voting ${params.approve ? "for" : "against"} dispute ${params.disputePda.toBase58()}`,
     );
-    this.buildVoteDisputeIntent(params, dispute, votePda, authVotePda);
+    const intent = this.buildVoteDisputeIntent(params, dispute, votePda, authVotePda);
+    await this.guardMarketplaceIntent("DisputeOperations.voteOnDispute", intent, null, {
+      approve: params.approve,
+    });
 
     try {
       const signature = await this.program.methods
@@ -741,12 +771,16 @@ export class DisputeOperations {
         params.extraWorkers,
         params.acceptedBidSettlement,
       );
-      this.buildResolveDisputeIntent(
+      const intent = this.buildResolveDisputeIntent(
         params,
         escrowPda,
         treasury,
         tokenAccounts,
         remainingAccounts,
+      );
+      await this.guardMarketplaceIntent(
+        "DisputeOperations.resolveDispute",
+        intent,
       );
 
       const builder = this.program.methods.resolveDispute().accountsPartial({
@@ -823,7 +857,11 @@ export class DisputeOperations {
           "Dispute not found",
         );
       }
-      this.buildCancelDisputeIntent(disputePda, taskPda, dispute);
+      const intent = this.buildCancelDisputeIntent(disputePda, taskPda, dispute);
+      await this.guardMarketplaceIntent(
+        "DisputeOperations.cancelDispute",
+        intent,
+      );
 
       const signature = await (this.program.methods.cancelDispute() as any)
         .accountsPartial({
@@ -890,11 +928,15 @@ export class DisputeOperations {
         params.extraWorkers,
         params.acceptedBidSettlement,
       );
-      this.buildExpireDisputeIntent(
+      const intent = this.buildExpireDisputeIntent(
         params,
         escrowPda,
         tokenAccounts,
         remainingAccounts,
+      );
+      await this.guardMarketplaceIntent(
+        "DisputeOperations.expireDispute",
+        intent,
       );
 
       const builder = this.program.methods.expireDispute().accountsPartial({
@@ -961,7 +1003,16 @@ export class DisputeOperations {
         escrowPda,
         treasury,
       );
-      this.buildApplySlashIntent(params, escrowPda, treasury, tokenAccounts);
+      const intent = this.buildApplySlashIntent(
+        params,
+        escrowPda,
+        treasury,
+        tokenAccounts,
+      );
+      await this.guardMarketplaceIntent(
+        "DisputeOperations.applySlash",
+        intent,
+      );
 
       const signature = await this.program.methods
         .applyDisputeSlash()

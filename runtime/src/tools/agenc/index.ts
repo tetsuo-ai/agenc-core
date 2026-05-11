@@ -13,6 +13,7 @@ import { TaskOperations } from "../../task/operations.js";
 import { createProgram, createReadOnlyProgram } from "../../idl.js";
 import { AnchorProvider } from "@coral-xyz/anchor";
 import { wrapMarketplaceSignerPolicy } from "./signer-policy.js";
+import { patchConnectionForTransactionGuard } from "../../transaction-guard/gate.js";
 import {
   createListTasksTool,
   createInspectMarketplaceTool,
@@ -121,8 +122,12 @@ function createAgencProgram(
     context.program ??
     (() => {
       if (options.signerBacked === true && context.wallet) {
-        const provider = new AnchorProvider(
+        const connection = patchConnectionForTransactionGuard(
           context.connection,
+          context.transactionGuard,
+        );
+        const provider = new AnchorProvider(
+          connection,
           context.wallet,
           { commitment: "confirmed" },
         );
@@ -204,19 +209,31 @@ export function createAgencMutationTools(context: ToolContext): Tool[] {
 
   const program = createAgencProgram(context, { signerBacked: true });
   const tools = [
-    createCreateTaskFromTemplateTool(program, context.logger),
+    createCreateTaskFromTemplateTool(program, context.logger, {
+      transactionGuard: context.transactionGuard,
+    }),
     createSubmitTaskTemplateProposalTool(context.logger),
     createRegisterAgentTool(program, context.logger),
-    createCreateTaskTool(program, context.logger),
-    createClaimTaskTool(program, context.logger),
-    createCompleteTaskTool(program, context.logger),
+    createCreateTaskTool(program, context.logger, {
+      transactionGuard: context.transactionGuard,
+    }),
+    createClaimTaskTool(program, context.logger, {
+      transactionGuard: context.transactionGuard,
+    }),
+    createCompleteTaskTool(program, context.logger, {
+      transactionGuard: context.transactionGuard,
+    }),
     createRegisterSkillTool(program, context.logger),
     createPurchaseSkillTool(program, context.logger),
     createRateSkillTool(program, context.logger),
     createCreateProposalTool(program, context.logger),
     createVoteProposalTool(program, context.logger),
-    createInitiateDisputeTool(program, context.logger),
-    createResolveDisputeTool(program, context.logger),
+    createInitiateDisputeTool(program, context.logger, {
+      transactionGuard: context.transactionGuard,
+    }),
+    createResolveDisputeTool(program, context.logger, {
+      transactionGuard: context.transactionGuard,
+    }),
     createStakeReputationTool(program, context.logger),
     createDelegateReputationTool(program, context.logger),
   ];

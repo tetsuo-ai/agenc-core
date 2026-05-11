@@ -66,6 +66,7 @@ import {
 } from "./daemon-trace.js";
 import type { ResolvedTraceLoggingConfig } from "./daemon-trace.js";
 import { WebChatChannel } from "../channels/webchat/plugin.js";
+import { createTransactionGuardContextFromEnv } from "../transaction-guard/index.js";
 import { WorkspaceManager } from "./workspace.js";
 import {
   resolveHostWorkspacePath,
@@ -2309,6 +2310,7 @@ export class DaemonManager {
       approvalEngine: approvalEngine ?? undefined,
       skillToggle,
       connection: this._connectionManager?.getConnection(),
+      transactionGuard: createTransactionGuardContextFromEnv(),
       broadcastEvent: (type, data) => webChat.broadcastEvent(type, data),
       desktopManager: this._desktopManager ?? undefined,
       onDesktopSessionRebound: (webSessionId: string) => {

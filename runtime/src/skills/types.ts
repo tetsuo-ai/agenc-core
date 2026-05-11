@@ -10,6 +10,7 @@
 import type { Connection } from "@solana/web3.js";
 import type { Logger } from "../utils/logger.js";
 import type { Wallet } from "../types/wallet.js";
+import type { TransactionGuardContext } from "../transaction-guard/types.js";
 
 /**
  * Semantic version string in major.minor.patch format
@@ -87,6 +88,8 @@ export interface SkillContext {
   readonly logger: Logger;
   /** Optional review broker for irreversible skill side effects */
   readonly reviewBeforeSideEffect?: SkillSideEffectReviewer;
+  /** Optional fail-closed SLM guard for signer-backed Solana writes. */
+  readonly transactionGuard?: TransactionGuardContext | null;
 }
 
 /**

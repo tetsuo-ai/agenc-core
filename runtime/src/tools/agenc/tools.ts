@@ -29,7 +29,8 @@
  */
 
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import { AnchorProvider, BN, type Program } from '@coral-xyz/anchor';
+import { AnchorProvider, type Program } from '@coral-xyz/anchor';
+import BN from 'bn.js';
 import { getAssociatedTokenAddressSync } from '@tetsuo-ai/sdk';
 import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -39,6 +40,7 @@ import { GovernanceOperations } from '../../governance/operations.js';
 import { DisputeOperations } from '../../dispute/operations.js';
 import { findAgentPda, findAuthorityRateLimitPda, findProtocolPda } from '../../agent/pda.js';
 import { findTaskPda, findEscrowPda } from '../../task/pda.js';
+import { buildCreateTaskIntent } from '../../task/transaction-intent.js';
 import {
   taskStatusToString,
   taskTypeToString,
@@ -123,6 +125,11 @@ import type { Logger } from '../../utils/logger.js';
 import type { OnChainTask } from '../../task/types.js';
 import type { AgentState } from '../../agent/types.js';
 import type { ProtocolConfig } from '../../types/protocol.js';
+import {
+  guardTransactionIntent,
+  transactionGuardInputFromMarketplaceIntent,
+  type TransactionGuardContext,
+} from '../../transaction-guard/index.js';
 import type {
   SerializedAgent,
   SerializedDisputeDetail,
@@ -164,6 +171,7 @@ export interface CreateTaskToolOptions {
   readonly allowRawTaskCreation?: boolean;
   readonly verifiedTaskIssuerKeys?: VerifiedTaskIssuerKeyring;
   readonly verifiedTaskReplayStoreDir?: string;
+  readonly transactionGuard?: TransactionGuardContext | null;
   /**
    * Allow `verifiedAttestation` strings to be interpreted as a local filesystem
    * path. Must only be enabled for trusted local entry points (e.g. CLI). Remote
@@ -3089,6 +3097,41 @@ export function createCreateTaskTool(
           creator,
         );
 
+        const intent = buildCreateTaskIntent({
+          programId: program.programId,
+          signer: creator,
+          taskId,
+          creatorAgentPda,
+          rewardLamports: reward,
+          rewardMint,
+          jobSpecHash: jobSpecReference?.hash ?? null,
+          constraintHash,
+        });
+        await guardTransactionIntent(
+          options.transactionGuard,
+          transactionGuardInputFromMarketplaceIntent(
+            'agenc.createTask',
+            intent,
+            safeStringify({
+              taskDescription: taskDescriptionText,
+              jobSpec: args.jobSpec,
+              fullDescription: args.fullDescription,
+              acceptanceCriteria: args.acceptanceCriteria,
+              deliverables: args.deliverables,
+              constraints: args.constraints,
+              attachments: args.attachments,
+            }),
+            {
+              validationMode,
+              reviewWindowSecs:
+                validationMode === TaskValidationMode.CreatorReview
+                  ? reviewWindowSecs
+                  : null,
+              minReputation,
+            },
+          ),
+        );
+
         let verifiedTaskReplayReservation: VerifiedTaskReplayReservation | null = null;
         let verifiedTaskAcceptedAt: string | null = null;
         if (verifiedTaskVerification) {
@@ -3220,6 +3263,7 @@ export function createCreateTaskTool(
               program,
               agentId: new Uint8Array(TASK_ID_BYTES),
               logger,
+              transactionGuard: options.transactionGuard,
             });
             const validationResult = await ops.configureTaskValidation(
               taskPda,

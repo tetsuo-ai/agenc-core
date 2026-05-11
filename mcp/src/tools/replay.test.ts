@@ -199,23 +199,23 @@ test("replay compare returns schema-stable output", async () => {
     assert.equal(success.status, "ok");
     assert.equal(success.truncated, true);
   });
+});
 
-  test("replay compare emits stable error schema on malformed input", async () => {
-    const output = await runReplayCompareTool(
-      {} as ReplayCompareInput,
-      createReplayRuntime({
-        store: createInMemoryReplayStore(),
-        trace: "",
-      }),
-      buildReplayPolicy(),
-    );
-    const failure = ReplayToolErrorSchema.parse(output.structuredContent);
-    assert.equal(failure.status, "error");
-    assert.equal(failure.command, "agenc_replay_compare");
-    assert.equal(failure.schema, "replay.compare.output.v1");
-    assert.equal(failure.code, "replay.invalid_input");
-    assert.equal(failure.retriable, false);
-  });
+test("replay compare emits stable error schema on malformed input", async () => {
+  const output = await runReplayCompareTool(
+    {} as ReplayCompareInput,
+    createReplayRuntime({
+      store: createInMemoryReplayStore(),
+      trace: "",
+    }),
+    buildReplayPolicy(),
+  );
+  const failure = ReplayToolErrorSchema.parse(output.structuredContent);
+  assert.equal(failure.status, "error");
+  assert.equal(failure.command, "agenc_replay_compare");
+  assert.equal(failure.schema, "replay.compare.output.v1");
+  assert.equal(failure.code, "replay.invalid_input");
+  assert.equal(failure.retriable, false);
 });
 
 test("replay incident returns schema-stable reconstruction summary", async () => {

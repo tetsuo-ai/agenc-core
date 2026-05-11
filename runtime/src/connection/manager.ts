@@ -34,6 +34,8 @@ import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
 import type { MetricsProvider } from "../task/types.js";
 import { TELEMETRY_METRIC_NAMES } from "../telemetry/metric-names.js";
+import type { TransactionGuardContext } from "../transaction-guard/types.js";
+import { assertTransactionGuardReceipt } from "../transaction-guard/gate.js";
 
 // ============================================================================
 // Defaults
@@ -95,6 +97,7 @@ export class ConnectionManager {
   private readonly healthConfig: HealthCheckConfig;
   private readonly logger: Logger;
   private metrics?: MetricsProvider;
+  private readonly transactionGuard: TransactionGuardContext | null;
 
   // Shutdown
   private readonly abortController = new AbortController();
@@ -118,6 +121,7 @@ export class ConnectionManager {
     this.coalesceEnabled = config.coalesce !== false;
     this.logger = config.logger ?? silentLogger;
     this.metrics = config.metrics;
+    this.transactionGuard = config.transactionGuard ?? null;
 
     const commitment = config.commitment ?? "confirmed";
 
@@ -276,6 +280,8 @@ export class ConnectionManager {
     method: string,
     args: unknown[],
   ): Promise<unknown> {
+    assertTransactionGuardReceipt(this.transactionGuard);
+
     const activeUrl = this.endpointUrls[this.activeIndex];
     const conn = this.connections.get(activeUrl)!;
     const rpcStart = Date.now();

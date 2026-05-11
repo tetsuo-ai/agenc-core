@@ -1,17 +1,17 @@
+import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export function getDefaultTextEditorAllowedRoots(): readonly string[] {
-  const roots = ["/home/agenc", "/tmp"];
+  const roots = ["/home/agenc", "/tmp", tmpdir()].map((root) =>
+    resolvePolicyRootSync(root),
+  );
   const workspaceRoot = process.env.AGENC_WORKSPACE_ROOT?.trim();
-  if (
-    workspaceRoot &&
-    isAbsolute(workspaceRoot) &&
-    !roots.includes(workspaceRoot)
-  ) {
-    roots.unshift(resolve(workspaceRoot));
+  if (workspaceRoot && isAbsolute(workspaceRoot)) {
+    roots.unshift(resolvePolicyRootSync(workspaceRoot));
   }
-  return roots;
+  return [...new Set(roots)];
 }
 
 function getDefaultTextEditorBaseDir(): string {
@@ -60,6 +60,17 @@ function resolveInputPath(inputPath: string, baseDir: string): string {
 async function resolvePolicyRoot(root: string): Promise<string> {
   try {
     return await realpath(root);
+  } catch (error) {
+    if (isPathMissingError(error)) {
+      return resolve(root);
+    }
+    throw error;
+  }
+}
+
+function resolvePolicyRootSync(root: string): string {
+  try {
+    return realpathSync(root);
   } catch (error) {
     if (isPathMissingError(error)) {
       return resolve(root);

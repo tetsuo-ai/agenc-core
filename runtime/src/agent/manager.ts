@@ -8,7 +8,8 @@
  */
 
 import { Connection, PublicKey, TransactionSignature } from "@solana/web3.js";
-import { BN, Program, AnchorProvider } from "@coral-xyz/anchor";
+import { Program, AnchorProvider } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { PROGRAM_ID } from "@tetsuo-ai/sdk";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import {

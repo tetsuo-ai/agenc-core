@@ -72,6 +72,11 @@ import {
 } from "../tools/agenc/signer-policy.js";
 import { createCreateTaskTool } from "../tools/agenc/tools.js";
 import type { Tool, ToolResult } from "../tools/types.js";
+import {
+  createTransactionGuardContextFromEnv,
+  guardTransactionIntent,
+  patchConnectionForTransactionGuard,
+} from "../transaction-guard/index.js";
 import { silentLogger } from "../utils/logger.js";
 import type { BaseCliOptions, CliRuntimeContext, CliStatusCode } from "./types.js";
 
@@ -249,6 +254,7 @@ type MarketProgram = Program<AgencCoordination>;
 interface MarketProgramContext {
   connection: Connection;
   program: MarketProgram;
+  transactionGuard?: ReturnType<typeof createTransactionGuardContextFromEnv>;
 }
 
 interface MarketplaceCliProgramContextOverrides {
@@ -466,6 +472,7 @@ async function createReadOnlyProgramContext(options: BaseCliOptions): Promise<{
 async function createSignerProgramContext(options: BaseCliOptions): Promise<{
   connection: Connection;
   program: MarketProgram;
+  transactionGuard?: ReturnType<typeof createTransactionGuardContextFromEnv>;
 }> {
   if (marketplaceCliProgramContextOverrides?.createSignerProgramContext) {
     return marketplaceCliProgramContextOverrides.createSignerProgramContext(
@@ -473,7 +480,11 @@ async function createSignerProgramContext(options: BaseCliOptions): Promise<{
     );
   }
   const rpcUrl = options.rpcUrl!;
-  const connection = new Connection(rpcUrl);
+  const transactionGuard = createTransactionGuardContextFromEnv();
+  const connection = patchConnectionForTransactionGuard(
+    new Connection(rpcUrl),
+    transactionGuard,
+  );
   const programId = parseProgramId(options.programId);
   const keypairPath =
     options.keypairPath ??
@@ -484,6 +495,7 @@ async function createSignerProgramContext(options: BaseCliOptions): Promise<{
   return {
     connection,
     program: createProgram(provider, programId),
+    transactionGuard,
   };
 }
 
@@ -1192,7 +1204,7 @@ export async function runMarketTaskCreateCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
     const createTaskOptions = {
       ...(options.jobSpecStoreDir ? { jobSpecStoreDir: options.jobSpecStoreDir } : {}),
       ...(options.verifiedTaskReplayStoreDir
@@ -1211,6 +1223,7 @@ export async function runMarketTaskCreateCommand(
       // attestation JSON file is OK here. Webchat/HTTP callers MUST NOT enable
       // this — see CreateTaskToolOptions.allowVerifiedAttestationFilePath.
       allowVerifiedAttestationFilePath: true,
+      transactionGuard,
     };
     const tool = withMarketplaceSignerPolicy(
       createCreateTaskTool(program, silentLogger, createTaskOptions),
@@ -1326,7 +1339,7 @@ export async function runMarketTaskCancelCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
     const authority = program.provider.publicKey;
     if (!authority) {
       throw new Error("Signer-backed program context required");
@@ -1334,6 +1347,22 @@ export async function runMarketTaskCancelCommand(
     const taskPda = new PublicKey(options.taskPda);
     const escrowPda = findEscrowPda(taskPda, program.programId);
     const protocolPda = findProtocolPda(program.programId);
+    await guardTransactionIntent(transactionGuard, {
+      source: "market.tasks.cancel",
+      kind: "cancel_task",
+      programId: program.programId.toBase58(),
+      signer: authority.toBase58(),
+      metadata: {
+        taskPda: taskPda.toBase58(),
+        escrowPda: escrowPda.toBase58(),
+      },
+      accountMetas: [
+        { name: "authority", pubkey: authority.toBase58(), isSigner: true, isWritable: false },
+        { name: "task", pubkey: taskPda.toBase58(), isWritable: true },
+        { name: "escrow", pubkey: escrowPda.toBase58(), isWritable: true },
+        { name: "protocolConfig", pubkey: protocolPda.toBase58(), isWritable: false },
+      ],
+    });
     const transactionSignature = await program.methods
       .cancelTask()
       .accountsPartial({
@@ -1376,7 +1405,7 @@ export async function runMarketTaskClaimCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
     const tool = withMarketplaceSignerPolicy(
       createClaimTaskTool(
         program,
@@ -1391,6 +1420,7 @@ export async function runMarketTaskClaimCommand(
             ? { allowRemoteJobSpecResolution: true }
             : {}),
           claimJobSpecVerification: "required",
+          transactionGuard,
         },
       ),
       program,
@@ -1431,7 +1461,7 @@ export async function runMarketTaskCompleteCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
     const hasArtifact = Boolean(options.artifactFile?.trim() || options.artifactUri?.trim());
     const resultData = hasArtifact
       ? options.resultData?.trim()
@@ -1442,7 +1472,7 @@ export async function runMarketTaskCompleteCommand(
         ? undefined
         : createHash("sha256").update(resultData).digest("hex"));
     const tool = withMarketplaceSignerPolicy(
-      createCompleteTaskTool(program, silentLogger),
+      createCompleteTaskTool(program, silentLogger, { transactionGuard }),
       program,
     );
     const result = await tool.execute({
@@ -1488,7 +1518,7 @@ export async function runMarketTaskAcceptCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
     const taskPda = new PublicKey(options.taskPda);
     const workerAgentPda = options.workerAgentPda?.trim();
     if (!workerAgentPda) {
@@ -1505,6 +1535,7 @@ export async function runMarketTaskAcceptCommand(
       program,
       agentId: ZERO_AGENT_ID,
       logger: silentLogger,
+      transactionGuard,
     });
     const task = await ops.fetchTask(taskPda);
     if (!task) {
@@ -1551,7 +1582,7 @@ export async function runMarketTaskRejectCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
     const taskPda = new PublicKey(options.taskPda);
     const workerAgentPda = options.workerAgentPda?.trim();
     if (!workerAgentPda) {
@@ -1578,6 +1609,7 @@ export async function runMarketTaskRejectCommand(
       program,
       agentId: ZERO_AGENT_ID,
       logger: silentLogger,
+      transactionGuard,
     });
     const task = await ops.fetchTask(taskPda);
     if (!task) {
@@ -1630,8 +1662,10 @@ export async function runMarketTaskDisputeCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
-    const tool = createInitiateDisputeTool(program, silentLogger);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
+    const tool = createInitiateDisputeTool(program, silentLogger, {
+      transactionGuard,
+    });
     const result = await tool.execute({
       taskPda: options.taskPda,
       evidence: options.evidence,
@@ -2108,8 +2142,10 @@ export async function runMarketDisputeResolveCommand(
   if (!requireRpcUrl(context, options)) return 1;
 
   try {
-    const { program } = await createSignerProgramContext(options);
-    const tool = createResolveDisputeTool(program, silentLogger);
+    const { program, transactionGuard } = await createSignerProgramContext(options);
+    const tool = createResolveDisputeTool(program, silentLogger, {
+      transactionGuard,
+    });
     const result = await tool.execute({
       disputePda: options.disputePda,
       arbiterVotes: options.arbiterVotes,

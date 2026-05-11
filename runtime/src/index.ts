@@ -47,6 +47,38 @@ export const VERSION = "0.2.0";
 // Runtime class
 export { AgentRuntime } from "./runtime.js";
 
+// Transaction guard
+export {
+  TRANSACTION_GUARD_DENIED,
+  TRANSACTION_GUARD_UNAVAILABLE,
+  TRANSACTION_GUARD_RECEIPT_MISSING,
+  TransactionGuardError,
+  OllamaCourtGuard,
+  InMemoryTransactionGuardReceiptStore,
+  assertTransactionGuardReceipt,
+  buildTransactionGuardDocket,
+  createTransactionGuardContextFromEnv,
+  createTransactionGuardContextFromPolicy,
+  guardTransactionIntent,
+  hashTransactionGuardInput,
+  loadTransactionGuardPolicyFromEnv,
+  normalizeTransactionGuardInput,
+  patchConnectionForTransactionGuard,
+  resetDefaultTransactionGuardContextForTests,
+  serializeTransactionGuardInput,
+  transactionGuardInputFromMarketplaceIntent,
+  type TransactionGuard,
+  type TransactionGuardAccountMeta,
+  type TransactionGuardContext,
+  type TransactionGuardDecision,
+  type TransactionGuardInput,
+  type TransactionGuardPolicy,
+  type TransactionGuardProvider,
+  type TransactionGuardReceipt,
+  type TransactionGuardReceiptStore,
+  type TransactionGuardVerdict,
+} from "./transaction-guard/index.js";
+
 // Types (protocol, errors, wallet, config) — all via types barrel
 export {
   // Protocol types

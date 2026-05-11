@@ -46,6 +46,10 @@ import type {
 import type { Logger } from "../../utils/logger.js";
 import type { Wallet } from "../../types/wallet.js";
 import { Capability } from "../../agent/capabilities.js";
+import {
+  guardTransactionIntent,
+  type TransactionGuardContext,
+} from "../../transaction-guard/index.js";
 
 const DEFAULT_SLIPPAGE_BPS = 50;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -93,6 +97,7 @@ export class JupiterSkill implements Skill {
   private logger: Logger | null = null;
   private client: JupiterClient | null = null;
   private reviewBeforeSideEffect: SkillSideEffectReviewer | null = null;
+  private transactionGuard: TransactionGuardContext | null = null;
 
   private readonly defaultSlippageBps: number;
   private readonly apiBaseUrl: string;
@@ -164,6 +169,7 @@ export class JupiterSkill implements Skill {
       this.wallet = context.wallet;
       this.logger = context.logger;
       this.reviewBeforeSideEffect = context.reviewBeforeSideEffect ?? null;
+      this.transactionGuard = context.transactionGuard ?? null;
       this.client = new JupiterClient({
         apiBaseUrl: this.apiBaseUrl,
         timeoutMs: this.timeoutMs,
@@ -183,6 +189,7 @@ export class JupiterSkill implements Skill {
     this.wallet = null;
     this.logger = null;
     this.reviewBeforeSideEffect = null;
+    this.transactionGuard = null;
     this._state = SkillState.Stopped;
   }
 
@@ -250,6 +257,16 @@ export class JupiterSkill implements Skill {
 
     // 4. Send and confirm
     const rawTx = signedTx.serialize();
+    await guardTransactionIntent(this.transactionGuard, {
+      source: "jupiter.executeSwap",
+      kind: "send_raw_transaction",
+      signer: this.wallet!.publicKey.toBase58(),
+      transactionSummary: `Jupiter swap ${quote.inAmount.toString()} ${quote.inputMint} to ${quote.outputMint} with minimum output ${quote.otherAmountThreshold.toString()}`,
+      metadata: {
+        slippageBps: params.slippageBps ?? this.defaultSlippageBps,
+        priceImpactPct: quote.priceImpactPct,
+      },
+    });
     const txSignature = await this.connection!.sendRawTransaction(rawTx, {
       skipPreflight: false,
       maxRetries: 3,
@@ -375,6 +392,16 @@ export class JupiterSkill implements Skill {
 
     const tx = new VersionedTransaction(messageV0);
     const signedTx = await this.wallet!.signTransaction(tx);
+    await guardTransactionIntent(this.transactionGuard, {
+      source: "jupiter.transferSol",
+      kind: "send_raw_transaction",
+      signer: this.wallet!.publicKey.toBase58(),
+      transactionSummary: `Transfer ${params.lamports.toString()} lamports to ${params.recipient.toBase58()}`,
+      metadata: {
+        recipient: params.recipient.toBase58(),
+        lamports: params.lamports.toString(),
+      },
+    });
 
     const txSignature = await this.connection!.sendRawTransaction(
       signedTx.serialize(),
@@ -493,6 +520,17 @@ export class JupiterSkill implements Skill {
 
     const tx = new VersionedTransaction(messageV0);
     const signedTx = await this.wallet!.signTransaction(tx);
+    await guardTransactionIntent(this.transactionGuard, {
+      source: "jupiter.transferToken",
+      kind: "send_raw_transaction",
+      signer: this.wallet!.publicKey.toBase58(),
+      transactionSummary: `Transfer ${params.amount.toString()} of token ${params.mint.toBase58()} to ${params.recipient.toBase58()}`,
+      metadata: {
+        mint: params.mint.toBase58(),
+        recipient: params.recipient.toBase58(),
+        amount: params.amount.toString(),
+      },
+    });
 
     const txSignature = await this.connection!.sendRawTransaction(
       signedTx.serialize(),

@@ -84,6 +84,11 @@ import {
   namedAccountMeta,
   type MarketplaceTransactionIntent,
 } from "./transaction-intent.js";
+import {
+  guardTransactionIntent,
+  transactionGuardInputFromMarketplaceIntent,
+  type TransactionGuardContext,
+} from "../transaction-guard/index.js";
 
 // ============================================================================
 // Account Layout Constants
@@ -142,6 +147,8 @@ export interface TaskOpsConfig {
    * - "disabled": do not perform off-chain job spec verification before claim.
    */
   claimJobSpecVerification?: "when-present" | "required" | "disabled";
+  /** Optional fail-closed SLM guard for signer-backed task transactions. */
+  transactionGuard?: TransactionGuardContext | null;
 }
 
 // ============================================================================
@@ -178,6 +185,7 @@ export class TaskOperations {
     | "when-present"
     | "required"
     | "disabled";
+  private readonly transactionGuard: TransactionGuardContext | null;
 
   // Cached PDAs
   private cachedAgentPda: PublicKey | null = null;
@@ -193,6 +201,25 @@ export class TaskOperations {
     };
     this.claimJobSpecVerification =
       config.claimJobSpecVerification ?? "when-present";
+    this.transactionGuard = config.transactionGuard ?? null;
+  }
+
+  private async guardMarketplaceIntent(
+    source: string,
+    intent: MarketplaceTransactionIntent,
+    userText?: string | null,
+    metadata?: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    await guardTransactionIntent(
+      this.transactionGuard,
+      transactionGuardInputFromMarketplaceIntent(source, intent, userText, metadata),
+    );
+  }
+
+  private taskUserText(task: Pick<OnChainTask, "description"> | Partial<OnChainTask>): string {
+    return task.description
+      ? Buffer.from(task.description).toString("utf8").replace(/\0+$/g, "")
+      : "";
   }
 
   // ==========================================================================
@@ -433,6 +460,11 @@ export class TaskOperations {
    */
   async claimTask(taskPda: PublicKey, task: OnChainTask): Promise<ClaimResult> {
     const intent = await this.previewClaimTaskIntent(taskPda, task);
+    await this.guardMarketplaceIntent(
+      "TaskOperations.claimTask",
+      intent,
+      this.taskUserText(task),
+    );
 
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
@@ -713,13 +745,19 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
-    await this.previewConfigureTaskValidationIntent(
+    const intent = await this.previewConfigureTaskValidationIntent(
       taskPda,
       task,
       mode,
       reviewWindowSecs,
       validatorQuorum,
       attestor,
+    );
+    await this.guardMarketplaceIntent(
+      "TaskOperations.configureTaskValidation",
+      intent,
+      this.taskUserText(task),
+      { mode, reviewWindowSecs: reviewWindowSecs.toString(), validatorQuorum },
     );
 
     const methods = this.program.methods as unknown as {
@@ -869,7 +907,16 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
-    await this.previewSubmitTaskResultIntent(taskPda, task);
+    const intent = await this.previewSubmitTaskResultIntent(taskPda, task);
+    await this.guardMarketplaceIntent(
+      "TaskOperations.submitTaskResult",
+      intent,
+      this.taskUserText(task),
+      {
+        proofHash: Buffer.from(proofHash).toString("hex"),
+        resultData: resultData ? Buffer.from(resultData).toString("hex") : null,
+      },
+    );
 
     const methods = this.program.methods as unknown as {
       submitTaskResult: (
@@ -1022,7 +1069,18 @@ export class TaskOperations {
       options,
       workerAuthority,
     );
-    await this.previewAcceptTaskResultIntent(taskPda, task, workerPda, options);
+    const intent = await this.previewAcceptTaskResultIntent(
+      taskPda,
+      task,
+      workerPda,
+      options,
+    );
+    await this.guardMarketplaceIntent(
+      "TaskOperations.acceptTaskResult",
+      intent,
+      this.taskUserText(task),
+      { options },
+    );
 
     const methods = this.program.methods as unknown as {
       acceptTaskResult: () => {
@@ -1189,7 +1247,13 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
-    await this.previewRejectTaskResultIntent(taskPda, task, workerPda);
+    const intent = await this.previewRejectTaskResultIntent(taskPda, task, workerPda);
+    await this.guardMarketplaceIntent(
+      "TaskOperations.rejectTaskResult",
+      intent,
+      this.taskUserText(task),
+      { rejectionHash: Buffer.from(rejectionHash).toString("hex") },
+    );
 
     const methods = this.program.methods as unknown as {
       rejectTaskResult: (rejectionHashBytes: number[]) => {
@@ -1338,11 +1402,17 @@ export class TaskOperations {
       options,
       workerAuthority,
     );
-    await this.previewAutoAcceptTaskResultIntent(
+    const intent = await this.previewAutoAcceptTaskResultIntent(
       taskPda,
       task,
       workerPda,
       options,
+    );
+    await this.guardMarketplaceIntent(
+      "TaskOperations.autoAcceptTaskResult",
+      intent,
+      this.taskUserText(task),
+      { options },
     );
 
     const methods = this.program.methods as unknown as {
@@ -1539,12 +1609,18 @@ export class TaskOperations {
       options,
       workerAuthority,
     );
-    await this.previewValidateTaskResultIntent(
+    const intent = await this.previewValidateTaskResultIntent(
       taskPda,
       task,
       workerPda,
       validatorAgentPda,
       options,
+    );
+    await this.guardMarketplaceIntent(
+      "TaskOperations.validateTaskResult",
+      intent,
+      this.taskUserText(task),
+      { options },
     );
 
     const methods = this.program.methods as unknown as {
@@ -1737,7 +1813,17 @@ export class TaskOperations {
       };
     }
 
-    await this.previewCompleteTaskIntent(taskPda, task, options);
+    const intent = await this.previewCompleteTaskIntent(taskPda, task, options);
+    await this.guardMarketplaceIntent(
+      "TaskOperations.completeTask",
+      intent,
+      this.taskUserText(task),
+      {
+        proofHash: Buffer.from(proofHash).toString("hex"),
+        resultData: resultData ? Buffer.from(resultData).toString("hex") : null,
+        options,
+      },
+    );
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
       taskPda,
@@ -1907,12 +1993,23 @@ export class TaskOperations {
       throw new Error("sealBytes selector does not match trusted selector");
     }
 
-    await this.previewCompleteTaskPrivateIntent(
+    const intent = await this.previewCompleteTaskPrivateIntent(
       taskPda,
       task,
       bindingSeed,
       nullifierSeed,
       options,
+    );
+    await this.guardMarketplaceIntent(
+      "TaskOperations.completeTaskPrivate",
+      intent,
+      this.taskUserText(task),
+      {
+        imageId: Buffer.from(imageId).toString("hex"),
+        bindingSeed: Buffer.from(bindingSeed).toString("hex"),
+        nullifierSeed: Buffer.from(nullifierSeed).toString("hex"),
+        options,
+      },
     );
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(

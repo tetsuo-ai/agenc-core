@@ -9,7 +9,8 @@
 
 import { SystemProgram } from "@solana/web3.js";
 import type { PublicKey } from "@solana/web3.js";
-import { BN, type Program } from "@coral-xyz/anchor";
+import type { Program } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -23,6 +24,10 @@ import type { WorkflowState, WorkflowEdge } from "./types.js";
 import { WorkflowNodeStatus, OnChainDependencyType } from "./types.js";
 import { WorkflowSubmissionError } from "./errors.js";
 import { topologicalSort } from "./validation.js";
+import {
+  guardTransactionIntent,
+  type TransactionGuardContext,
+} from "../transaction-guard/index.js";
 
 /** Default retry delay in ms */
 const DEFAULT_RETRY_DELAY_MS = 1000;
@@ -37,6 +42,7 @@ interface DAGSubmitterConfig {
   logger?: Logger;
   maxRetries?: number;
   retryDelayMs?: number;
+  transactionGuard?: TransactionGuardContext | null;
 }
 
 /**
@@ -53,6 +59,7 @@ export class DAGSubmitter {
   private readonly retryDelayMs: number;
   private readonly agentPda;
   private readonly protocolPda;
+  private readonly transactionGuard: TransactionGuardContext | null;
 
   constructor(config: DAGSubmitterConfig) {
     this.program = config.program;
@@ -60,6 +67,7 @@ export class DAGSubmitter {
     this.logger = config.logger ?? silentLogger;
     this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.retryDelayMs = config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+    this.transactionGuard = config.transactionGuard ?? null;
     const authority = this.program.provider.publicKey;
     if (!authority) {
       throw new Error("Signer-backed program required for workflow submission");
@@ -160,6 +168,14 @@ export class DAGSubmitter {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
+        await this.guardWorkflowNodeIntent(
+          node,
+          creator,
+          taskId,
+          taskPda,
+          escrowPda,
+          defaultRewardMint,
+        );
         if (node.parentPda) {
           return await this.createDependentTask(
             taskId,
@@ -208,6 +224,49 @@ export class DAGSubmitter {
     }
 
     throw lastError ?? new Error("Unknown submission error");
+  }
+
+  private async guardWorkflowNodeIntent(
+    node: import("./types.js").WorkflowNode,
+    creator: import("@solana/web3.js").PublicKey,
+    taskId: Uint8Array,
+    taskPda: import("@solana/web3.js").PublicKey,
+    escrowPda: import("@solana/web3.js").PublicKey,
+    defaultRewardMint: PublicKey | null,
+  ): Promise<void> {
+    const mint = node.template.rewardMint ?? defaultRewardMint;
+    await guardTransactionIntent(this.transactionGuard, {
+      source: "DAGSubmitter.submitAll",
+      kind: node.parentPda ? "create_dependent_task" : "create_task",
+      programId: this.program.programId.toBase58(),
+      signer: creator.toBase58(),
+      userText: Buffer.from(node.template.description)
+        .toString("utf8")
+        .replace(/\0+$/g, ""),
+      metadata: {
+        nodeName: node.name,
+        taskId: Buffer.from(taskId).toString("hex"),
+        taskPda: taskPda.toBase58(),
+        escrowPda: escrowPda.toBase58(),
+        parentPda: node.parentPda?.toBase58() ?? null,
+        requiredCapabilities: node.template.requiredCapabilities.toString(),
+        rewardLamports: node.template.rewardAmount.toString(),
+        rewardMint: mint?.toBase58() ?? null,
+        maxWorkers: node.template.maxWorkers,
+        deadline: node.template.deadline,
+        taskType: node.template.taskType,
+      },
+      accountMetas: [
+        { name: "task", pubkey: taskPda.toBase58(), isWritable: true },
+        { name: "escrow", pubkey: escrowPda.toBase58(), isWritable: true },
+        { name: "creatorAgent", pubkey: this.agentPda.toBase58(), isWritable: true },
+        { name: "protocolConfig", pubkey: this.protocolPda.toBase58(), isWritable: false },
+        { name: "authority", pubkey: creator.toBase58(), isSigner: true, isWritable: false },
+        ...(node.parentPda
+          ? [{ name: "parentTask", pubkey: node.parentPda.toBase58(), isWritable: false }]
+          : []),
+      ],
+    });
   }
 
   /**

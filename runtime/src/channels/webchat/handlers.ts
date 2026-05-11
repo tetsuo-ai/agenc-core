@@ -68,6 +68,10 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseAgentState } from '../../agent/types.js';
+import {
+  guardTransactionIntent,
+  patchConnectionForTransactionGuard,
+} from '../../transaction-guard/index.js';
 
 export type SendFn = (response: ControlResponse) => void;
 export interface HandlerRequestContext {
@@ -154,6 +158,7 @@ async function createProgramContext(deps: WebChatDeps): Promise<{
   keypair: import('@solana/web3.js').Keypair;
   provider: AnchorProvider;
   program: ReturnType<typeof createProgram>;
+  transactionGuard: WebChatDeps['transactionGuard'];
 }> {
   if (!deps.connection) {
     throw new Error(SOLANA_NOT_CONFIGURED);
@@ -161,11 +166,16 @@ async function createProgramContext(deps: WebChatDeps): Promise<{
 
   const keypairPath = deps.gateway.config.connection?.keypairPath ?? getDefaultKeypairPath();
   const keypair = await loadKeypairFromFile(keypairPath);
-  const provider = createWalletProvider(deps.connection, keypair);
+  const connection = patchConnectionForTransactionGuard(
+    deps.connection,
+    deps.transactionGuard,
+  );
+  const provider = createWalletProvider(connection, keypair);
   return {
     keypair,
     provider,
     program: createProgram(provider),
+    transactionGuard: deps.transactionGuard,
   };
 }
 
@@ -903,8 +913,10 @@ async function handleMarketDisputesResolve(
   }
 
   try {
-    const { program } = await createProgramContext(deps);
-    const tool = createResolveDisputeTool(program, silentLogger);
+    const { program, transactionGuard } = await createProgramContext(deps);
+    const tool = createResolveDisputeTool(program, silentLogger, {
+      transactionGuard,
+    });
     const result = await tool.execute({
       disputePda,
       arbiterVotes: payload.arbiterVotes,
@@ -1266,9 +1278,10 @@ async function handleTasksCreate(
       }
       createArgs.verifiedAttestation = attestationInput;
     }
-    const { program } = await createProgramContext(deps);
+    const { program, transactionGuard } = await createProgramContext(deps);
     const tool = createCreateTaskTool(program, silentLogger, {
       allowRawTaskCreation: true,
+      transactionGuard,
     });
     const result = await tool.execute(createArgs);
     if (result.isError) {
@@ -1328,9 +1341,24 @@ async function handleTasksCancel(
   }
 
   try {
-    const { keypair, program } = await createProgramContext(deps);
+    const { keypair, program, transactionGuard } = await createProgramContext(deps);
     const taskPda = new PublicKey(taskId);
     const escrowPda = findEscrowPda(taskPda, program.programId);
+    await guardTransactionIntent(transactionGuard, {
+      source: "webchat.tasks.cancel",
+      kind: "cancel_task",
+      programId: program.programId.toBase58(),
+      signer: keypair.publicKey.toBase58(),
+      metadata: {
+        taskPda: taskPda.toBase58(),
+        escrowPda: escrowPda.toBase58(),
+      },
+      accountMetas: [
+        { name: "authority", pubkey: keypair.publicKey.toBase58(), isSigner: true },
+        { name: "task", pubkey: taskPda.toBase58(), isWritable: true },
+        { name: "escrow", pubkey: escrowPda.toBase58(), isWritable: true },
+      ],
+    });
 
     // Devnet cancel_task: only 4 accounts (task, escrow, creator, system_program)
     await program.methods
@@ -1368,8 +1396,10 @@ async function handleTasksClaim(
   }
 
   try {
-    const { program } = await createProgramContext(deps);
-    const tool = createClaimTaskTool(program, silentLogger);
+    const { program, transactionGuard } = await createProgramContext(deps);
+    const tool = createClaimTaskTool(program, silentLogger, {
+      transactionGuard,
+    });
     const result = await tool.execute({ taskPda: taskId });
     if (result.isError) {
       send({ type: 'error', error: `Failed to claim task: ${parseToolError(result)}`, id });
@@ -1403,9 +1433,11 @@ async function handleTasksComplete(
   }
 
   try {
-    const { program } = await createProgramContext(deps);
+    const { program, transactionGuard } = await createProgramContext(deps);
     const proofHash = createHash('sha256').update(resultData).digest('hex');
-    const tool = createCompleteTaskTool(program, silentLogger);
+    const tool = createCompleteTaskTool(program, silentLogger, {
+      transactionGuard,
+    });
     const result = await tool.execute({
       taskPda: taskId,
       proofHash,
@@ -1446,8 +1478,10 @@ async function handleTasksDispute(
   }
 
   try {
-    const { program } = await createProgramContext(deps);
-    const tool = createInitiateDisputeTool(program, silentLogger);
+    const { program, transactionGuard } = await createProgramContext(deps);
+    const tool = createInitiateDisputeTool(program, silentLogger, {
+      transactionGuard,
+    });
     const result = await tool.execute({
       taskPda: taskId,
       evidence,

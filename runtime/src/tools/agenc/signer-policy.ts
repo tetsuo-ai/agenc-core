@@ -1,9 +1,10 @@
 import type { PublicKey } from "@solana/web3.js";
 import {
   evaluateMarketplaceSignerPolicyForIntent as evaluateAgentKitMarketplaceSignerPolicyForIntent,
+  toolNameForIntent as agentKitToolNameForIntent,
   type MarketplaceSignerPolicy as AgentKitMarketplaceSignerPolicy,
   type MarketplaceTransactionIntent as AgentKitMarketplaceTransactionIntent,
-} from "agenc-marketplace-agent-kit/policy";
+} from "@tetsuo-ai/marketplace-policy";
 
 import type { MarketplaceTransactionIntent } from "../../task/transaction-intent.js";
 import type { Tool, ToolResult } from "../types.js";
@@ -48,7 +49,7 @@ export interface MarketplaceSignerPolicy {
   }[];
   /**
    * When expectedAccountMetas is supplied, require the final intent account-meta
-   * name set to match exactly. Delegated to agenc-marketplace-agent-kit/policy
+   * name set to match exactly. Delegated to @tetsuo-ai/marketplace-policy
    * and defaults to true there.
    */
   readonly strictAccountMetas?: boolean;
@@ -307,9 +308,10 @@ function toolNameForIntent(kind: MarketplaceTransactionIntent["kind"]): string {
 function toAgentKitMarketplaceIntent(
   intent: MarketplaceTransactionIntent,
 ): AgentKitMarketplaceTransactionIntent {
+  const kind = intent.kind as AgentKitMarketplaceTransactionIntent["kind"];
   return {
-    kind: intent.kind as AgentKitMarketplaceTransactionIntent["kind"],
-    toolName: toolNameForIntent(intent.kind),
+    kind,
+    toolName: agentKitToolNameForIntent(kind),
     programId: intent.programId,
     signer: intent.signer,
     ...(intent.taskPda ? { taskPda: intent.taskPda } : {}),
@@ -336,6 +338,24 @@ function toAgentKitMarketplaceIntent(
       ? { hasArtifactDelivery: intent.hasArtifactDelivery }
       : {}),
     accountMetas: intent.accountMetas,
+  };
+}
+
+function toAgentKitMarketplaceSignerPolicy(
+  policy: MarketplaceSignerPolicy,
+  intent: MarketplaceTransactionIntent,
+): AgentKitMarketplaceSignerPolicy {
+  const legacyToolName = toolNameForIntent(intent.kind);
+  const agentKitToolName = agentKitToolNameForIntent(
+    intent.kind as AgentKitMarketplaceTransactionIntent["kind"],
+  );
+  const allowedTools = new Set(policy.allowedTools ?? []);
+  if (allowedTools.has(legacyToolName)) {
+    allowedTools.add(agentKitToolName);
+  }
+  return {
+    ...(policy as AgentKitMarketplaceSignerPolicy),
+    allowedTools: [...allowedTools],
   };
 }
 
@@ -366,7 +386,7 @@ export function evaluateMarketplaceSignerPolicyForIntent(
   }
 
   const agentKitDecision = evaluateAgentKitMarketplaceSignerPolicyForIntent(
-    policy as AgentKitMarketplaceSignerPolicy,
+    toAgentKitMarketplaceSignerPolicy(policy, intent),
     toAgentKitMarketplaceIntent(intent),
   );
   if (!agentKitDecision.allowed) {

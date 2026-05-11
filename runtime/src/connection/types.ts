@@ -7,6 +7,7 @@
 import type { Commitment } from "@solana/web3.js";
 import type { Logger } from "../utils/logger.js";
 import type { MetricsProvider } from "../task/types.js";
+import type { TransactionGuardContext } from "../transaction-guard/types.js";
 
 // ============================================================================
 // Configuration
@@ -52,6 +53,8 @@ export interface ConnectionManagerConfig {
   logger?: Logger;
   /** Optional metrics provider for telemetry. */
   metrics?: MetricsProvider;
+  /** Optional fail-closed SLM transaction guard for Solana write RPC calls. */
+  transactionGuard?: TransactionGuardContext | null;
 }
 
 // ============================================================================

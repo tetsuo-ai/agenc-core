@@ -62,6 +62,7 @@ export class DAGOrchestrator {
       logger: this.logger,
       maxRetries: config.maxRetries,
       retryDelayMs: config.retryDelayMs,
+      transactionGuard: config.transactionGuard,
     });
 
     this.monitor = new DAGMonitor({

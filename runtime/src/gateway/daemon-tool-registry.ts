@@ -69,6 +69,7 @@ import {
   validateMCPServerStaticPolicy,
 } from "../policy/index.js";
 import { ConnectionManager } from "../connection/manager.js";
+import { createTransactionGuardContextFromEnv } from "../transaction-guard/index.js";
 import type { UnifiedTelemetryCollector } from "../telemetry/collector.js";
 import { PublicKey } from "@solana/web3.js";
 import {
@@ -830,10 +831,12 @@ export async function createDaemonToolRegistry(
           }
         }
       }
+      const transactionGuard = createTransactionGuardContextFromEnv();
       const connMgr = new ConnectionManager({
         endpoints,
         logger,
         metrics,
+        transactionGuard,
       });
       connectionManager = connMgr;
       const configuredProgramId = config.connection.programId?.trim()
@@ -859,6 +862,7 @@ export async function createDaemonToolRegistry(
                 }
               : {}),
             logger,
+            transactionGuard,
           },
           { includeMutationTools },
         ),
