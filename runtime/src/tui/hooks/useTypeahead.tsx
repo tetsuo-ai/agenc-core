@@ -31,17 +31,14 @@ import { getSlackChannelSuggestions, hasSlackMcpServer } from '../../utils/sugge
 import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { applyFileSuggestion, findLongestCommonPrefix, onIndexBuildComplete, startBackgroundCacheRefresh } from './fileSuggestions';
 import { generateUnifiedSuggestions } from './unifiedSuggestions';
-
-// Unicode-aware character class for file path tokens:
-// \p{L} = letters (CJK, Latin, Cyrillic, etc.)
-// \p{N} = numbers (incl. fullwidth)
-// \p{M} = combining marks (macOS NFD accents, Devanagari vowel signs)
-const AT_TOKEN_HEAD_RE = /^@[\p{L}\p{N}\p{M}_\-./\\()[\]~:]*/u;
-const PATH_CHAR_HEAD_RE = /^[\p{L}\p{N}\p{M}_\-./\\()[\]~:]+/u;
-const TOKEN_WITH_AT_RE = /(@[\p{L}\p{N}\p{M}_\-./\\()[\]~:]*|[\p{L}\p{N}\p{M}_\-./\\()[\]~:]+)$/u;
-const TOKEN_WITHOUT_AT_RE = /[\p{L}\p{N}\p{M}_\-./\\()[\]~:]+$/u;
-const HAS_AT_SYMBOL_RE = /(^|\s)@([\p{L}\p{N}\p{M}_\-./\\()[\]~:]*|"[^"]*"?)$/u;
-const HASH_CHANNEL_RE = /(^|\s)#([a-z0-9][a-z0-9_-]*)$/;
+import {
+  extractCompletionToken,
+  extractSearchToken,
+  HAS_AT_SYMBOL_RE,
+  HASH_CHANNEL_RE,
+} from './typeaheadTokens.js';
+// Re-export the pure utilities so existing call sites keep their imports.
+export { extractCompletionToken, extractSearchToken } from './typeaheadTokens.js';
 
 // Type guard for path completion metadata
 function isPathMetadata(metadata: unknown): metadata is {
@@ -116,25 +113,6 @@ type UseTypeaheadResult = {
   inlineGhostText?: InlineGhostText;
   handleKeyDown: (e: KeyboardEvent) => void;
 };
-
-/**
- * Extract search token from a completion token by removing @ prefix and quotes
- * @param completionToken The completion token
- * @returns The search token with @ and quotes removed
- */
-export function extractSearchToken(completionToken: {
-  token: string;
-  isQuoted?: boolean;
-}): string {
-  if (completionToken.isQuoted) {
-    // Remove @" prefix and optional closing "
-    return completionToken.token.slice(2).replace(/"$/, '');
-  } else if (completionToken.token.startsWith('@')) {
-    return completionToken.token.substring(1);
-  } else {
-    return completionToken.token;
-  }
-}
 
 /**
  * Format a replacement value with proper @ prefix and quotes based on context
@@ -253,78 +231,6 @@ export function applyDirectorySuggestion(input: string, suggestionId: string, to
   };
 }
 
-/**
- * Extract a completable token at the cursor position
- * @param text The input text
- * @param cursorPos The cursor position
- * @param includeAtSymbol Whether to consider @ symbol as part of the token
- * @returns The completable token and its start position, or null if not found
- */
-export function extractCompletionToken(text: string, cursorPos: number, includeAtSymbol = false): {
-  token: string;
-  startPos: number;
-  isQuoted?: boolean;
-} | null {
-  // Empty input check
-  if (!text) return null;
-
-  // Get text up to cursor
-  const textBeforeCursor = text.substring(0, cursorPos);
-
-  // Check for quoted @ mention first (e.g., @"my file with spaces")
-  if (includeAtSymbol) {
-    const quotedAtRegex = /@"([^"]*)"?$/;
-    const quotedMatch = textBeforeCursor.match(quotedAtRegex);
-    if (quotedMatch && quotedMatch.index !== undefined) {
-      // Include any remaining quoted content after cursor until closing quote or end
-      const textAfterCursor = text.substring(cursorPos);
-      const afterQuotedMatch = textAfterCursor.match(/^[^"]*"?/);
-      const quotedSuffix = afterQuotedMatch ? afterQuotedMatch[0] : '';
-      return {
-        token: quotedMatch[0] + quotedSuffix,
-        startPos: quotedMatch.index,
-        isQuoted: true
-      };
-    }
-  }
-
-  // Fast path for @ tokens: use lastIndexOf to avoid expensive $ anchor scan
-  if (includeAtSymbol) {
-    const atIdx = textBeforeCursor.lastIndexOf('@');
-    if (atIdx >= 0 && (atIdx === 0 || /\s/.test(textBeforeCursor[atIdx - 1]!))) {
-      const fromAt = textBeforeCursor.substring(atIdx);
-      const atHeadMatch = fromAt.match(AT_TOKEN_HEAD_RE);
-      if (atHeadMatch && atHeadMatch[0].length === fromAt.length) {
-        const textAfterCursor = text.substring(cursorPos);
-        const afterMatch = textAfterCursor.match(PATH_CHAR_HEAD_RE);
-        const tokenSuffix = afterMatch ? afterMatch[0] : '';
-        return {
-          token: atHeadMatch[0] + tokenSuffix,
-          startPos: atIdx,
-          isQuoted: false
-        };
-      }
-    }
-  }
-
-  // Non-@ token or cursor outside @ token — use $ anchor on (short) tail
-  const tokenRegex = includeAtSymbol ? TOKEN_WITH_AT_RE : TOKEN_WITHOUT_AT_RE;
-  const match = textBeforeCursor.match(tokenRegex);
-  if (!match || match.index === undefined) {
-    return null;
-  }
-
-  // Check if cursor is in the MIDDLE of a token (more word characters after cursor)
-  // If so, extend the token to include all characters until whitespace or end of string
-  const textAfterCursor = text.substring(cursorPos);
-  const afterMatch = textAfterCursor.match(PATH_CHAR_HEAD_RE);
-  const tokenSuffix = afterMatch ? afterMatch[0] : '';
-  return {
-    token: match[0] + tokenSuffix,
-    startPos: match.index,
-    isQuoted: false
-  };
-}
 function extractCommandNameAndArgs(value: string): {
   commandName: string;
   args: string;
@@ -938,6 +844,33 @@ export function useTypeahead({
 
     // If we have active suggestions, select one
     if (suggestions.length > 0) {
+      // L7: When the @-driven picker is open and the cursor sits at the end
+      // of the current @ token, Tab cycles suggestions instead of
+      // auto-accepting the top match. Readline/fzf users expect this; Enter
+      // and right-arrow still accept. This intentionally only fires for the
+      // file/directory pickers — slash-command, shell, agent, slack-channel,
+      // and custom-title keep their accept-on-Tab behavior.
+      if (
+        (suggestionType === 'file' || suggestionType === 'directory') &&
+        suggestions.length > 1
+      ) {
+        const cycleToken = extractCompletionToken(input, cursorOffset, true);
+        const cursorAtTokenEnd =
+          !!cycleToken &&
+          cycleToken.token.startsWith('@') &&
+          cursorOffset === cycleToken.startPos + cycleToken.token.length;
+        if (cursorAtTokenEnd) {
+          setSuggestionsState(prev => ({
+            ...prev,
+            selectedSuggestion:
+              prev.suggestions.length === 0
+                ? -1
+                : (Math.max(0, prev.selectedSuggestion) + 1) %
+                  prev.suggestions.length,
+          }));
+          return;
+        }
+      }
       // Cancel any pending debounced fetches to prevent flicker when accepting
       debouncedFetchFileSuggestions.cancel();
       debouncedFetchSlackChannels.cancel();
@@ -1338,22 +1271,40 @@ export function useTypeahead({
     // Handle Tab key fallback behaviors when no autocomplete suggestions
     // Don't handle tab if shift is pressed (used for mode cycle)
     if (e.key === 'tab' && !e.shift) {
-      // Skip if autocomplete is handling this (suggestions or ghost text exist)
+      // Skip if autocomplete is handling this (suggestions or ghost text exist).
+      // The Autocomplete keybinding context already stops propagation via
+      // tab → autocomplete:accept; we just need to not double-handle here.
       if (suggestions.length > 0 || effectiveGhostText) {
         return;
       }
+      // MD-NEW9: ALWAYS consume Tab in prompt mode so the raw byte (or its
+      // escape-sequence tail) never falls through to the text input. Without
+      // this, edge cases like "cursor inside an @ token but picker briefly
+      // empty" leak the Tab as a stray `l`/`e` character in the composer.
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
       // Accept prompt suggestion if it exists in AppState
       const suggestionText = promptSuggestion.text;
       const suggestionShownAt = promptSuggestion.shownAt;
       if (suggestionText && suggestionShownAt > 0 && input === '' && !isViewingTeammate) {
-        e.preventDefault();
         markAccepted();
         acceptSuggestionText(suggestionText);
         return;
       }
+      // MD-NEW9: if the cursor sits inside (or at the end of) an @ token,
+      // reopen the picker scoped to the substring before the cursor instead
+      // of swallowing the keystroke silently. This makes mid-cursor Tab
+      // behave like terminal readline completion.
+      if (mode !== 'bash' && input.trim() !== '') {
+        const atToken = extractCompletionToken(input, cursorOffset, true);
+        if (atToken && atToken.token.startsWith('@')) {
+          void handleTab();
+          return;
+        }
+      }
       // Remind user about thinking toggle shortcut if empty input
       if (input.trim() === '') {
-        e.preventDefault();
         addNotification({
           key: 'thinking-toggle-hint',
           jsx: <Text dimColor>
