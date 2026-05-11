@@ -117,14 +117,15 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
 // @[MODEL LAUNCH]: Update the latest frontier model.
-const FRONTIER_MODEL_NAME = 'AgenC Opus 4.6'
-
-// @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-const AGENC_4_5_OR_4_6_MODEL_IDS = {
-  opus: 'claude-opus-4-6',
-  sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5-20251001',
-}
+// `FRONTIER_MODEL_NAME` and `AGENC_4_5_OR_4_6_MODEL_IDS` were removed
+// when their only consumer — the "AgenC model family" marketing
+// paragraph injected into computeSimpleEnvInfo — was deleted. Those
+// constants hardcoded Anthropic model IDs (`claude-opus-4-6`,
+// `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`) as canonical for
+// AgenC and were causing non-Anthropic models (lmstudio/qwen, xAI,
+// OpenAI) to identify themselves as Claude in response to "what model
+// are you?" — the system prompt was telling them they belonged to a
+// Sonnet/Opus/Haiku family.
 
 function getHooksSection(): string {
   return `Users may configure 'hooks', shell commands that execute in response to events like tool calls, in settings. Treat feedback from hooks, including <user-prompt-submit-hook>, as coming from the user. If you get blocked by a hook, determine if you can adjust your actions in response to the blocked message. If not, ask the user to check their hooks configuration.`
@@ -679,15 +680,19 @@ export async function computeSimpleEnvInfo(
     `OS Version: ${unameSR}`,
     modelDescription,
     knowledgeCutoffMessage,
-    process.env.USER_TYPE === 'ant' && isUndercover()
-      ? null
-      : `The most recent AgenC model family is AgenC 4.5/4.6. Model IDs — Opus 4.6: '${AGENC_4_5_OR_4_6_MODEL_IDS.opus}', Sonnet 4.6: '${AGENC_4_5_OR_4_6_MODEL_IDS.sonnet}', Haiku 4.5: '${AGENC_4_5_OR_4_6_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable AgenC models.`,
-    process.env.USER_TYPE === 'ant' && isUndercover()
-      ? null
-      : `AgenC is available as a CLI in the terminal and can be used across local development environments and IDE workflows.`,
-    process.env.USER_TYPE === 'ant' && isUndercover()
-      ? null
-      : `Fast mode for AgenC uses the same ${FRONTIER_MODEL_NAME} model with faster output. It does NOT switch to a different model. It can be toggled with /fast.`,
+    // Removed: the "AgenC model family" paragraph that listed
+    // `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`
+    // as canonical model IDs. AgenC is multi-provider — the user might
+    // be running lmstudio, xAI, OpenAI, Vertex, Bedrock, Ollama. Telling
+    // a Qwen model that "the most recent AgenC model family is
+    // Sonnet/Opus/Haiku" makes that model identify as Claude in
+    // response to "what model are you?", because the system prompt is
+    // its only ground truth.
+    //
+    // Same reason: dropped the "AgenC is available as a CLI" marketing
+    // line and the "/fast uses Opus 4.6" line. Both belong in docs, not
+    // in every turn's system prompt — and the /fast claim is
+    // Anthropic-specific anyway.
   ].filter(item => item !== null)
 
   return [
