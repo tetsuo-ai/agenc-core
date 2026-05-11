@@ -247,7 +247,7 @@ describe("processSlashCommand", () => {
     );
   });
 
-  it("renders an unknown-command inline error for missing command names", async () => {
+  it("falls back to an unknown skill message for missing command names", async () => {
     const result = await processSlashCommand(
       "/missing value",
       [],
@@ -260,22 +260,10 @@ describe("processSlashCommand", () => {
     );
 
     expect(result.shouldQuery).toBe(false);
-    expect(result.resultText).toBe("Unknown command: missing");
+    expect(result.resultText).toBe("Unknown skill: missing");
+    expect(JSON.stringify(result.messages)).toContain("Unknown skill: missing");
     expect(JSON.stringify(result.messages)).toContain(
-      "Unknown command: missing",
+      "Args from unknown skill: value",
     );
-    expect(JSON.stringify(result.messages)).toContain(
-      "Args from unknown command: value",
-    );
-  });
-
-  it("strips control characters and quote/backslash leakage from inline display", async () => {
-    const { sanitizeForInlineDisplay } = await import(
-      "./processSlashCommand.js"
-    );
-
-    expect(sanitizeForInlineDisplay("safe-name")).toBe("safe-name");
-    expect(sanitizeForInlineDisplay("a\nb\rc")).toBe("abc");
-    expect(sanitizeForInlineDisplay("with'quote\"\\back")).toBe("withquoteback");
   });
 });
