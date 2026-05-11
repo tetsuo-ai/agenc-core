@@ -66,6 +66,23 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
   emitPhaseEvent?(event: PhaseEvent): void;
   clearDaemonSession?(): Promise<void>;
+  getDaemonSessionSnapshot?(): Promise<{
+    readonly sessionId: string;
+    readonly turnCount: number;
+    readonly tokenUsage: {
+      readonly inputTokens: number;
+      readonly outputTokens: number;
+      readonly totalTokens: number;
+      readonly costUsd: number;
+    };
+    readonly cacheStats: {
+      readonly requestCount: number;
+      readonly cacheReadInputTokens: number;
+      readonly cacheCreationInputTokens: number;
+      readonly cacheTotalInputTokens: number;
+      readonly hitRate: number | null;
+    };
+  }>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;
     readonly direction: "from" | "up_to";

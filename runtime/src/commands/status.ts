@@ -24,6 +24,22 @@ interface StatusLine {
 }
 
 /**
+ * Live counters fetched from the daemon-owned session via the
+ * `session.snapshot` RPC. The bridge session can't read these
+ * directly — `state.history`, `budgetTracker`, etc. live in the
+ * daemon's in-process Session.
+ */
+export interface StatusSnapshot {
+  readonly turnCount?: number;
+  readonly tokenUsage?: {
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+    readonly totalTokens?: number;
+    readonly costUsd?: number;
+  };
+}
+
+/**
  * Build the status lines from a Session. Exposed for tests so they can
  * assert structure without reaching through the formatting layer.
  */
@@ -31,6 +47,7 @@ export function collectStatus(
   session: Session,
   cwd: string,
   nowMs: number = monotonicMs(),
+  snapshot?: StatusSnapshot,
 ): StatusLine[] {
   const lines: StatusLine[] = [];
   // The deferred TUI flow seeds `conversationId` with a synthetic
@@ -97,11 +114,16 @@ export function collectStatus(
     lines.push({ key: "Provider", value: "unknown" });
   }
 
-  const turnCount = stateObj?.history?.length ?? 0;
+  // Turn count: prefer the daemon snapshot when available (bridge
+  // sessions have no local `state.history`), then the in-process
+  // state.history length.
+  const turnCount =
+    snapshot?.turnCount ?? stateObj?.history?.length ?? 0;
   lines.push({ key: "Turn count", value: String(turnCount) });
 
-  // Token usage: prefer BudgetTracker.emitted; remaining may be null
-  // (unbounded) or finite. Bridge sessions don't have a budgetTracker.
+  // Token usage: prefer BudgetTracker.emitted (in-process); then the
+  // daemon-vended snapshot; then a "n/a" placeholder. The daemon
+  // snapshot is what makes /status useful on TUI bridge sessions.
   const bt = (session as unknown as { budgetTracker?: typeof session.budgetTracker }).budgetTracker;
   if (bt) {
     const emitted = bt.emitted;
@@ -113,6 +135,25 @@ export function collectStatus(
         ? "unlimited"
         : String(remaining),
     });
+  } else if (snapshot?.tokenUsage) {
+    const u = snapshot.tokenUsage;
+    const inputTokens = u.inputTokens ?? 0;
+    const outputTokens = u.outputTokens ?? 0;
+    const totalTokens = u.totalTokens ?? 0;
+    // The runtime's per-turn accounting tracks aggregate totalTokens
+    // but most providers don't surface the input/output split through
+    // the same channel — when both are zero, show just the total.
+    const value =
+      inputTokens === 0 && outputTokens === 0
+        ? String(totalTokens)
+        : `${totalTokens} (in: ${inputTokens}, out: ${outputTokens})`;
+    lines.push({ key: "Tokens emitted", value });
+    if (typeof u.costUsd === "number" && u.costUsd > 0) {
+      lines.push({
+        key: "Cost (USD)",
+        value: `$${u.costUsd.toFixed(4)}`,
+      });
+    }
   } else {
     lines.push({ key: "Tokens emitted", value: "n/a (budget disabled)" });
   }
@@ -159,7 +200,24 @@ export const statusCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const lines = collectStatus(ctx.session, ctx.cwd);
+      // Pull live counters from the daemon if this is a bridge
+      // session. Bridge sessions have no local state.history /
+      // budgetTracker so we'd otherwise show zeros. Best-effort: if
+      // the daemon is unreachable, just render what we have.
+      let snapshot: StatusSnapshot | undefined;
+      const getDaemonSnapshot = (
+        ctx.session as unknown as {
+          getDaemonSessionSnapshot?: () => Promise<StatusSnapshot>;
+        }
+      ).getDaemonSessionSnapshot;
+      if (typeof getDaemonSnapshot === "function") {
+        try {
+          snapshot = await getDaemonSnapshot();
+        } catch {
+          /* best-effort */
+        }
+      }
+      const lines = collectStatus(ctx.session, ctx.cwd, undefined, snapshot);
       return { kind: "text", text: formatStatus(lines) };
     }),
 };
