@@ -920,6 +920,57 @@ export class AgenCDaemonAgentManager {
     return agents.length;
   }
 
+  /**
+   * Transition agents to `error` when the runner has gone away without
+   * firing the terminal callback, or when a recovered run came back
+   * without a live runtime. Without this sweep, `agent.list` keeps
+   * showing those entries as `running`/`idle` and the durable
+   * `agent_runs.status` never reaches a terminal value, so the next
+   * daemon restart loads them right back into the same broken state.
+   *
+   * Safe to call repeatedly. Returns the agent ids that were reaped.
+   */
+  async reapStaleAgents(
+    options: { readonly reason?: string } = {},
+  ): Promise<readonly string[]> {
+    const reason = options.reason ?? "stale_runner";
+    const candidates = await this.#state.with(async (state) => {
+      await this.#refreshAgentsFromRunner(state);
+      return [...state.agents.values()].filter(isStaleAgent);
+    });
+    if (candidates.length === 0) return [];
+    const reaped: string[] = [];
+    for (const candidate of candidates) {
+      const transitionAt = this.#now();
+      const target = await this.#state.with((state) => {
+        const agent = state.agents.get(candidate.agentId);
+        if (agent === undefined || !isStaleAgent(agent)) return null;
+        agent.status = "error";
+        agent.lastActiveAt = transitionAt;
+        agent.runtimeAvailable = false;
+        const sessionIds = [...agent.sessionIds];
+        agent.logSessionIds = uniqueNonEmptyStrings([
+          ...agent.logSessionIds,
+          ...agent.sessionIds,
+        ]);
+        agent.sessionIds = [];
+        return { sessionIds, route: snapshotRouteForAgent(agent) };
+      });
+      if (target === null) continue;
+      reaped.push(candidate.agentId);
+      await this.#recordAgentStatusSnapshots(
+        target.sessionIds,
+        candidate.agentId,
+        "error",
+        transitionAt,
+        reason,
+        target.route,
+      );
+      await this.#terminateAgentSessions(target.sessionIds, reason);
+    }
+    return reaped;
+  }
+
   async listPermissions(
     params: PermissionListParams = {},
   ): Promise<PermissionListResult> {
@@ -1693,6 +1744,19 @@ function isActiveAgent(agent: MutableAgent): boolean {
 
 function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {
   return agent.recovered === true && agent.runtimeAvailable !== true;
+}
+
+/**
+ * Lifecycle still treats the agent as active but the runner has gone
+ * away. `#refreshAgentFromRunner` flips `runtimeAvailable` to false
+ * either when the runner reports no snapshot for a live agent or when
+ * the daemon restored the run from durable state without an attached
+ * runtime. Either way the agent can no longer make progress and is a
+ * reaper target.
+ */
+function isStaleAgent(agent: MutableAgent): boolean {
+  if (!isActiveAgent(agent)) return false;
+  return agent.runtimeAvailable === false;
 }
 
 function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {
