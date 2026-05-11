@@ -1,10 +1,7 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import {
   getModelStrings as getModelStringsState,
   setModelStrings as setModelStringsState,
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-} from 'src/bootstrap/state.js'
+} from '../../bootstrap/state.js'
 import { logError } from '../log.js'
 import { sequential } from '../sequential.js'
 import { getInitialSettings } from '../settings/settings.js'
@@ -15,7 +12,7 @@ import {
   type CanonicalModelId,
   type ModelKey,
 } from './configs.js'
-import { type APIProvider, getAPIProvider } from './providers.js'
+import { getAPIProvider } from './providers.js'
 
 /**
  * Maps each model version to its provider-specific model ID string.
@@ -25,14 +22,13 @@ export type ModelStrings = Record<ModelKey, string>
 
 const MODEL_KEYS = Object.keys(ALL_MODEL_CONFIGS) as ModelKey[]
 
-function getBuiltinModelStrings(provider: APIProvider): ModelStrings {
+function getBuiltinModelStrings(provider: string): ModelStrings {
   // Agenc piggybacks on the openai provider transport for provider tier aliases.
   // Reuse openai mappings so model string lookups never return undefined.
   const providerKey = provider === 'agenc' || provider === 'github' ? 'openai' : provider
   const out = {} as ModelStrings
   for (const key of MODEL_KEYS) {
-    // @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
-    out[key] = ALL_MODEL_CONFIGS[key][providerKey]
+    out[key] = (ALL_MODEL_CONFIGS[key] as Record<string, string>)[providerKey]
   }
   return out
 }
@@ -129,7 +125,7 @@ function initModelStrings(): void {
     return
   }
   // Initial with default values for non-Bedrock providers
-  if (getAPIProvider() !== 'bedrock') {
+  if ((getAPIProvider() as string) !== 'bedrock') {
     setModelStringsState(getBuiltinModelStrings(getAPIProvider()))
     return
   }
@@ -141,7 +137,7 @@ function initModelStrings(): void {
 }
 
 export function getModelStrings(): ModelStrings {
-  const ms = getModelStringsState()
+  const ms = getModelStringsState() as ModelStrings | null
   if (ms === null) {
     initModelStrings()
     // Bedrock path falls through here while the profile fetch runs in the
@@ -163,7 +159,7 @@ export async function ensureModelStringsInitialized(): Promise<void> {
   }
 
   // For non-Bedrock, initialize synchronously
-  if (getAPIProvider() !== 'bedrock') {
+  if ((getAPIProvider() as string) !== 'bedrock') {
     setModelStringsState(getBuiltinModelStrings(getAPIProvider()))
     return
   }

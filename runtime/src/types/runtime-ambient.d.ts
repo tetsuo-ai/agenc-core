@@ -14,8 +14,38 @@ declare module "@opentelemetry/sdk-metrics" {
 // dependencies list, so a real declaration would force every consumer
 // to install AWS SDK packages they don't need.
 declare module "@aws-sdk/client-bedrock-runtime" {
+  export const BedrockRuntimeClient: new (
+    config: Record<string, unknown>,
+  ) => unknown;
   const mod: Record<string, unknown>;
-  export = mod;
+  export default mod;
+}
+
+// Optional runtime deps for the Bedrock provider — same rationale as
+// `@aws-sdk/client-bedrock-runtime` above: declared loosely so dynamic
+// imports compile without forcing consumers to install the SDK.
+declare module "@aws-sdk/client-bedrock" {
+  export const BedrockClient: new (config: Record<string, unknown>) => {
+    send(command: unknown): Promise<{
+      inferenceProfileSummaries?: Array<{ inferenceProfileId?: string }>;
+      nextToken?: string;
+      models?: Array<{ modelArn?: string }>;
+    }>;
+  };
+  export const ListInferenceProfilesCommand: new (
+    args: Record<string, unknown>,
+  ) => unknown;
+  export const GetInferenceProfileCommand: new (
+    args: Record<string, unknown>,
+  ) => unknown;
+}
+
+declare module "@smithy/node-http-handler" {
+  export const NodeHttpHandler: new (...args: unknown[]) => unknown;
+}
+
+declare module "@smithy/core" {
+  export const NoAuthSigner: new (...args: unknown[]) => unknown;
 }
 
 declare module "@opentelemetry/sdk-trace-base" {

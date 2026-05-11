@@ -1,8 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { shouldUseProviderCodeTransport } from '../../services/api/providerConfig.js'
 import { isEnvTruthy } from '../envUtils.js'
 

@@ -1,8 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { getSessionId } from '../../../bootstrap/state.js'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import type { ToolUseContext } from '../../../tools/Tool.js'
 import { formatAgentId, parseAgentId } from '../../agentId.js'
 import { quote } from '../../bash/shellQuote.js'

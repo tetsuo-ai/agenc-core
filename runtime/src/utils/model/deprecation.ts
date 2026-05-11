@@ -1,4 +1,3 @@
-// @ts-nocheck
 // Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 /**
  * Model deprecation utilities
@@ -6,7 +5,7 @@
  * Contains information about deprecated models and their retirement dates.
  */
 
-import { type APIProvider, getAPIProvider } from './providers.js'
+import { getAPIProvider } from './providers.js'
 
 type DeprecatedModelInfo = {
   isDeprecated: true
@@ -24,7 +23,7 @@ type DeprecationEntry = {
   /** Human-readable model name */
   modelName: string
   /** Retirement dates by provider (null = not deprecated for that provider) */
-  retirementDates: Record<APIProvider, string | null>
+  retirementDates: Record<string, string | null>
 }
 
 /**

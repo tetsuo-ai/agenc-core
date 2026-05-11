@@ -1,5 +1,4 @@
-// @ts-nocheck
-// Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
+// @ts-nocheck -- react-compiler-runtime generated TSX with synthesized identifiers that lose component prop typing.
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useEffect, useState } from 'react';
 import { type OptionWithDescription, Select } from '../../tui/components/CustomSelect/select.js';
