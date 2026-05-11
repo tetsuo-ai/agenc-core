@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  recordInputBurst,
+  resetBurstDetector,
+} from "./burst-detector.js";
 import { processBashCommand } from "./processBashCommand.js";
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +24,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../components/BashModeProgress.js", () => ({
   BashModeProgress: vi.fn(() => null),
+}));
+
+vi.mock("../components/PasteConfirmDialog.js", () => ({
+  PasteConfirmDialog: vi.fn(() => null),
 }));
 
 vi.mock("../../services/analytics/index.js", () => ({
@@ -89,6 +97,7 @@ vi.mock("../../utils/xml.js", () => ({
 describe("processBashCommand", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetBurstDetector();
   });
 
   it("executes bash input and formats stdout without querying the model", async () => {
@@ -198,5 +207,83 @@ describe("processBashCommand", () => {
         showSpinner: false,
       }),
     );
+  });
+
+  it("aborts bash exec when suspectedPaste is set and the user denies", async () => {
+    // Arm the burst detector with an unbracketed batch over threshold.
+    recordInputBurst(120, false);
+
+    const setToolJSX = vi.fn((node: unknown) => {
+      // First call should render the confirm dialog. Simulate a "no" press
+      // by invoking the onDecide(false) prop on the rendered element.
+      if (
+        node &&
+        typeof node === "object" &&
+        "jsx" in node &&
+        (node as { jsx?: { props?: { onDecide?: (allow: boolean) => void } } }).jsx?.props?.onDecide
+      ) {
+        (node as { jsx: { props: { onDecide: (allow: boolean) => void } } }).jsx.props.onDecide(false);
+      }
+    });
+
+    const result = await processBashCommand(
+      "rm -rf /",
+      [],
+      [],
+      { options: { verbose: false } } as never,
+      setToolJSX,
+    );
+
+    expect(mocks.bashCall).not.toHaveBeenCalled();
+    expect(result.shouldQuery).toBe(false);
+    expect(JSON.stringify(result.messages)).toContain(
+      "Bash submission aborted",
+    );
+  });
+
+  it("runs bash exec when suspectedPaste is set and the user confirms", async () => {
+    recordInputBurst(120, false);
+
+    let calls = 0;
+    const setToolJSX = vi.fn((node: unknown) => {
+      calls += 1;
+      // Only the FIRST call is the confirm dialog. Subsequent calls are
+      // BashModeProgress and the final null.
+      if (calls === 1 && node && typeof node === "object" && "jsx" in node) {
+        const jsx = (node as { jsx?: { props?: { onDecide?: (allow: boolean) => void } } }).jsx;
+        if (jsx?.props?.onDecide) {
+          jsx.props.onDecide(true);
+        }
+      }
+    });
+
+    const result = await processBashCommand(
+      "echo ok",
+      [],
+      [],
+      { options: { verbose: false } } as never,
+      setToolJSX,
+    );
+
+    expect(mocks.bashCall).toHaveBeenCalled();
+    expect(result.shouldQuery).toBe(false);
+    expect(JSON.stringify(result.messages)).toContain(
+      "<bash-stdout>ok</bash-stdout>",
+    );
+  });
+
+  it("does not gate execution when no burst was recorded", async () => {
+    // No recordInputBurst → flag clean.
+    const setToolJSX = vi.fn();
+
+    await processBashCommand(
+      "echo direct",
+      [],
+      [],
+      { options: { verbose: false } } as never,
+      setToolJSX,
+    );
+
+    expect(mocks.bashCall).toHaveBeenCalled();
   });
 });
