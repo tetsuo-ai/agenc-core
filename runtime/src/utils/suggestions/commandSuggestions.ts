@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import Fuse from 'fuse.js'
 import {
   type Command,
@@ -237,8 +235,9 @@ function getCommandId(cmd: Command): string {
   const commandName = getCommandName(cmd)
   if (cmd.type === 'prompt') {
     // For plugin commands, include the repository to disambiguate
-    if (cmd.source === 'plugin' && cmd.pluginInfo?.repository) {
-      return `${commandName}:${cmd.source}:${cmd.pluginInfo.repository}`
+    const pluginInfo = cmd.pluginInfo as { repository?: string } | undefined
+    if (cmd.source === 'plugin' && pluginInfo?.repository) {
+      return `${commandName}:${cmd.source}:${pluginInfo.repository}`
     }
     return `${commandName}:${cmd.source}`
   }

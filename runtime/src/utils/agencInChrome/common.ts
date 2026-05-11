@@ -1,10 +1,7 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { readdirSync } from 'fs'
 import { stat } from 'fs/promises'
 import { homedir, platform, tmpdir, userInfo } from 'os'
 import { join } from 'path'
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { normalizeNameForMCP } from '../../services/mcp/normalization.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isFsInaccessible } from '../errors.js'

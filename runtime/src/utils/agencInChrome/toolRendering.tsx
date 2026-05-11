@@ -1,10 +1,7 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
 import { supportsHyperlinks } from '../../tui/ink/supports-hyperlinks.js';
 import { Link, Text } from '../../tui/ink.js';
-// @ts-expect-error -- moved-source note: moved utility depends on not-yet-absorbed subsystem types.
 import { renderToolResultMessage as renderDefaultMCPToolResultMessage } from '../../tools/MCPTool/UI.js';
 import type { MCPToolResult } from '../mcpValidation.js';
 import { truncateToWidth } from '../format.js';
