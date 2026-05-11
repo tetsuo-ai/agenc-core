@@ -32,21 +32,47 @@ import {
   type WritableRoot,
 } from "./index.js";
 
-const MACOS_SEATBELT_BASE_POLICY = fs.readFileSync(
-  new URL("./policies/seatbelt_base_policy.sbpl", import.meta.url),
-  "utf8",
-);
-const MACOS_SEATBELT_NETWORK_POLICY = fs.readFileSync(
-  new URL("./policies/seatbelt_network_policy.sbpl", import.meta.url),
-  "utf8",
-);
-const MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS = fs.readFileSync(
-  new URL(
-    "./policies/restricted_read_only_platform_defaults.sbpl",
-    import.meta.url,
-  ),
-  "utf8",
-);
+// Policies are read on first use rather than at module init so a
+// partially-built `dist/` (where `dist/bin/agenc.js` exists but
+// `dist/policies/*.sbpl` have not yet been copied by the post-build step)
+// cannot crash startup. Any missing-file error now surfaces only when a
+// sandbox is actually about to be spawned.
+let MACOS_SEATBELT_BASE_POLICY_CACHE: string | undefined;
+let MACOS_SEATBELT_NETWORK_POLICY_CACHE: string | undefined;
+let MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS_CACHE: string | undefined;
+
+function getMacosSeatbeltBasePolicy(): string {
+  if (MACOS_SEATBELT_BASE_POLICY_CACHE === undefined) {
+    MACOS_SEATBELT_BASE_POLICY_CACHE = fs.readFileSync(
+      new URL("./policies/seatbelt_base_policy.sbpl", import.meta.url),
+      "utf8",
+    );
+  }
+  return MACOS_SEATBELT_BASE_POLICY_CACHE;
+}
+
+function getMacosSeatbeltNetworkPolicy(): string {
+  if (MACOS_SEATBELT_NETWORK_POLICY_CACHE === undefined) {
+    MACOS_SEATBELT_NETWORK_POLICY_CACHE = fs.readFileSync(
+      new URL("./policies/seatbelt_network_policy.sbpl", import.meta.url),
+      "utf8",
+    );
+  }
+  return MACOS_SEATBELT_NETWORK_POLICY_CACHE;
+}
+
+function getMacosRestrictedReadOnlyPlatformDefaults(): string {
+  if (MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS_CACHE === undefined) {
+    MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS_CACHE = fs.readFileSync(
+      new URL(
+        "./policies/restricted_read_only_platform_defaults.sbpl",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+  }
+  return MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS_CACHE;
+}
 
 const PROXY_URL_ENV_KEYS = [
   "HTTP_PROXY",
@@ -132,14 +158,14 @@ export function createSeatbeltCommandArgs(
   );
 
   const policySections = [
-    MACOS_SEATBELT_BASE_POLICY,
+    getMacosSeatbeltBasePolicy(),
     fileReadPolicy,
     fileWritePolicy,
     denyReadPolicy,
     networkPolicy,
   ];
   if (includePlatformDefaults(fileSystemSandboxPolicy)) {
-    policySections.push(MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS);
+    policySections.push(getMacosRestrictedReadOnlyPlatformDefaults());
   }
   const fullPolicy = policySections.join("\n");
 
@@ -363,7 +389,7 @@ function dynamicNetworkPolicyForNetwork(
       policy.push("; allow unix domain sockets for local IPC");
       policy.push(socketPolicy.trimEnd());
     }
-    policy.push(MACOS_SEATBELT_NETWORK_POLICY);
+    policy.push(getMacosSeatbeltNetworkPolicy());
     return policy.join("\n");
   }
 
@@ -378,7 +404,7 @@ function dynamicNetworkPolicyForNetwork(
       policy.push("; allow unix domain sockets for local IPC");
       policy.push(socketPolicy.trimEnd());
     }
-    policy.push(MACOS_SEATBELT_NETWORK_POLICY);
+    policy.push(getMacosSeatbeltNetworkPolicy());
     return policy.join("\n");
   }
 
