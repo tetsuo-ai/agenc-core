@@ -614,42 +614,6 @@ function createFileSuggestionItem(
 }
 
 /**
- * Annotate any suggestion whose path is a broken symlink (symlink target
- * missing) with a "(broken)" description. The renderer dim-styles
- * descriptions for file-type rows, so this gives users a visual hint
- * before they `@` a dangling link and hit ENOENT on read.
- *
- * Synchronous lstat/stat is fine here: the input is bounded to
- * MAX_SUGGESTIONS items so the total work is a handful of stat calls.
- */
-export function annotateBrokenSymlinks(items: SuggestionItem[]): SuggestionItem[] {
-  const fs = getFsImplementation()
-  const cwd = getCwd()
-  return items.map(item => {
-    // displayText may be a directory path ending in path.sep; strip it before
-    // stat'ing so we resolve the entry itself.
-    const trimmed = item.displayText.endsWith(path.sep)
-      ? item.displayText.slice(0, -1)
-      : item.displayText
-    const abs = path.isAbsolute(trimmed) ? trimmed : path.join(cwd, trimmed)
-    let isSymlink: boolean
-    try {
-      isSymlink = fs.lstatSync(abs).isSymbolicLink()
-    } catch {
-      // Row vanished between listing and stat — leave it untouched.
-      return item
-    }
-    if (!isSymlink) return item
-    try {
-      fs.statSync(abs)
-      return item
-    } catch {
-      return { ...item, description: '(broken)' }
-    }
-  })
-}
-
-/**
  * Find matching files and folders for a given query using the TS file index
  */
 const MAX_SUGGESTIONS = 15
@@ -661,31 +625,6 @@ function findMatchingFiles(
   return results.map(result =>
     createFileSuggestionItem(result.path, result.score),
   )
-}
-
-/**
- * Read top-level cwd entries that match `prefix` (case-sensitive, leading
- * substring). Used to backfill hidden-file suggestions when the user types
- * an explicit dotted prefix like `@.hi` — the FileIndex source (git ls-files,
- * or ripgrep with vcs ignore) does not include untracked dotfiles, so the
- * prefix-query path would otherwise come up empty while the empty-query
- * path (readdir-based) lists them. Both paths now surface the same set.
- */
-export async function getHiddenTopLevelMatches(prefix: string): Promise<string[]> {
-  const fs = getFsImplementation()
-  const cwd = getCwd()
-  try {
-    const entries = await fs.readdir(cwd)
-    const matches: string[] = []
-    for (const entry of entries) {
-      if (!entry.name.startsWith('.')) continue
-      if (!entry.name.startsWith(prefix)) continue
-      matches.push(entry.isDirectory() ? entry.name + path.sep : entry.name)
-    }
-    return matches
-  } catch {
-    return []
-  }
 }
 
 /**
@@ -799,9 +738,7 @@ export async function generateFileSuggestions(
   if (partialPath === '' || partialPath === '.' || partialPath === './') {
     const topLevelPaths = await getTopLevelPaths()
     startBackgroundCacheRefresh()
-    return annotateBrokenSymlinks(
-      topLevelPaths.slice(0, MAX_SUGGESTIONS).map(p => createFileSuggestionItem(p)),
-    )
+    return topLevelPaths.slice(0, MAX_SUGGESTIONS).map(createFileSuggestionItem)
   }
 
   const startTime = Date.now()
@@ -826,31 +763,9 @@ export async function generateFileSuggestions(
       normalizedPath = expandPath(normalizedPath)
     }
 
-    let matches = fileIndex
+    const matches = fileIndex
       ? findMatchingFiles(fileIndex, normalizedPath)
       : []
-
-    // Hidden-file parity with the empty-query path: when the user types an
-    // explicit dotted prefix (e.g. `@.hi`), backfill from readdir so
-    // untracked dotfiles surface the same way `@` alone shows them.
-    if (
-      normalizedPath.startsWith('.') &&
-      !normalizedPath.startsWith('..') &&
-      !normalizedPath.includes(path.sep) &&
-      matches.length < MAX_SUGGESTIONS
-    ) {
-      const hiddenPaths = await getHiddenTopLevelMatches(normalizedPath)
-      if (hiddenPaths.length > 0) {
-        const seen = new Set(matches.map(m => m.displayText))
-        for (const p of hiddenPaths) {
-          if (seen.has(p)) continue
-          matches.push(createFileSuggestionItem(p))
-          if (matches.length >= MAX_SUGGESTIONS) break
-        }
-      }
-    }
-
-    matches = annotateBrokenSymlinks(matches)
 
     const duration = Date.now() - startTime
     logForDebugging(
