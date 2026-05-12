@@ -12,10 +12,6 @@ import {
 import { extname, join } from 'path'
 import type { Command } from '../commands.js'
 import { queryWithModel } from '../services/api/anthropic.js'
-import {
-  AGENT_TOOL_NAME,
-  LEGACY_AGENT_TOOL_NAME,
-} from 'src/tools/AgentTool/constants.js'
 import type { LogOption } from '../types/logs.js'
 import { getAgenCConfigHomeDir } from '../utils/envUtils.js'
 import { toError } from '../utils/errors.js'
@@ -32,6 +28,9 @@ import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
 import { countCharInString } from '../utils/stringUtils.js'
 import { asSystemPrompt } from '../utils/systemPromptType.js'
 import { escapeXmlAttr as escapeHtml } from '../utils/xml.js'
+
+const AGENT_TOOL_NAME = 'spawn_agent'
+const LEGACY_AGENT_TOOL_NAME = 'Task'
 
 // Model for facet extraction and summarization (Opus - best quality)
 function getAnalysisModel(): string {

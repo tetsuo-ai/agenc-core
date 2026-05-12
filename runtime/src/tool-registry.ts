@@ -608,12 +608,12 @@ export function buildToolRegistry(
     taskOutput: "TaskOutput",
     taskStop: "TaskStop",
   } as const;
-  // The retired AgentTool / agent_tool spellings are intentionally not
-  // registered. The canonical delegation surface is the TL-22 spawn_agent
-  // tool; this registry entry only preserves its plain-string argument field.
-  const spawnAgentToolName = "spawn_agent";
-  // SkillTool-style invocation is exposed as the model-facing `Skill` tool.
-  // Preserve raw string dispatch so `arguments: "commit"` maps to `{ skill }`.
+  // Retired delegation spellings are intentionally not registered. The
+  // canonical delegation surface is the TL-22 spawn_agent tool; this entry
+  // only preserves its plain-string argument field.
+  const spawnToolName = "spawn_agent";
+  // Preserve raw string dispatch for `Skill` so `arguments: "commit"` maps
+  // to `{ skill }`.
   // TL-13's SkillCreate half is a skill-file lifecycle concern; the registry
   // owns the invocation surface that loads those files into a turn.
   const skillToolInvocationName = "Skill";
@@ -621,7 +621,7 @@ export function buildToolRegistry(
     [modelFacingProviderNativeSurface.webFetch]: "url",
     [modelFacingProviderNativeSurface.legacyWebFetch]: "url",
     [modelFacingProviderNativeSurface.webSearch]: "query",
-    [spawnAgentToolName]: "message",
+    [spawnToolName]: "message",
     [skillToolInvocationName]: "skill",
     NotebookRead: "notebook_path",
     NotebookEdit: "notebook_path",

@@ -4,7 +4,6 @@ import { feature } from 'bun:bundle'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../tui/state/AppStateStore.js'
 import type { Tools, ToolUseContext } from '../../tools/Tool.js'
-import type { AgentDefinitionsResult } from 'src/tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../../types/message.js'
 import {
   analyzeContextUsage,
@@ -14,6 +13,13 @@ import { formatTokens } from '../../utils/format.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { getSourceDisplayName } from '../../utils/settings/constants.js'
 import { plural } from '../../utils/stringUtils.js'
+
+type AgentDefinitionsResult = {
+  activeAgents: unknown[]
+  allAgents?: unknown[]
+  failedFiles?: unknown[]
+  allowedAgentTypes?: string[]
+}
 
 /**
  * Shared data-collection path for `/context` (slash command) and the SDK

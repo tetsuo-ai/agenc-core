@@ -6,8 +6,6 @@ import { logError } from '../../../../utils/log.js'; // upstream-import: keep ta
 import { getOriginalCwd } from '../../../../bootstrap/state';
 import { Box, Text } from '../../../ink.js';
 import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata';
-import { SKILL_TOOL_NAME } from '../../../../tools/SkillTool/constants';
-import { SkillTool } from '../../../../tools/SkillTool/SkillTool';
 import { env } from '../../../../utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
 import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logUnaryEvent } from '../../../../utils/unaryLogging'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -17,6 +15,7 @@ import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContex
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
 type SkillOptionValue = 'yes' | 'yes-exact' | 'yes-prefix' | 'no';
+const SKILL_PERMISSION_TOOL_NAME = "Skill";
 export function SkillPermissionRequest(props) {
   const $ = _c(51);
   const {
@@ -218,7 +217,7 @@ export function SkillPermissionRequest(props) {
             toolUseConfirm.onAllow(toolUseConfirm.input, [{
               type: "addRules",
               rules: [{
-                toolName: SKILL_TOOL_NAME,
+                toolName: SKILL_PERMISSION_TOOL_NAME,
                 ruleContent: skill
               }],
               behavior: "allow",
@@ -243,7 +242,7 @@ export function SkillPermissionRequest(props) {
             toolUseConfirm.onAllow(toolUseConfirm.input, [{
               type: "addRules",
               rules: [{
-                toolName: SKILL_TOOL_NAME,
+                toolName: SKILL_PERMISSION_TOOL_NAME,
                 ruleContent: `${commandPrefix_0}:*`
               }],
               behavior: "allow",
@@ -361,10 +360,14 @@ export function SkillPermissionRequest(props) {
   return t19;
 }
 function _temp(input) {
-  const result = SkillTool.inputSchema.safeParse(input);
-  if (!result.success) {
-    logError(new Error(`Failed to parse skill tool input: ${result.error.message}`));
+  if (input && typeof input === "object") {
+    const skill = input.skill ?? input.name;
+    if (typeof skill === "string") {
+      return skill;
+    }
+  }
+  {
+    logError(new Error("Failed to parse skill tool input: missing skill"));
     return "";
   }
-  return result.data.skill;
 }

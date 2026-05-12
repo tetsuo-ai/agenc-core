@@ -1,6 +1,13 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 
-import { listAgentRoles } from "./role.js";
+import {
+  _resetAgentRolesForTesting,
+  listAgentRoles,
+  loadMarkdownAgentRoles,
+} from "./role.js";
 import { listAgentRoleDefinitions } from "./role-definitions.js";
 
 describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
@@ -93,5 +100,34 @@ describe("listAgentRoleDefinitions (TUI agent picker wiring)", () => {
         expected,
       );
     }
+  });
+
+  it("projects markdown roles from the same registry used by spawn_agent", () => {
+    _resetAgentRolesForTesting();
+    const root = mkdtempSync(join(tmpdir(), "agenc-role-definitions-"));
+    const dir = join(root, ".agenc", "agents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "audit.md"),
+      [
+        "---",
+        "name: audit-role",
+        "description: Audit local changes",
+        "---",
+        "Audit the diff.",
+      ].join("\n"),
+    );
+
+    loadMarkdownAgentRoles(root);
+
+    const projected = listAgentRoleDefinitions().find(
+      (role) => role.agentType === "audit-role",
+    );
+    expect(projected).toBeDefined();
+    expect(projected?.whenToUse).toBe("Audit local changes");
+    expect(
+      (projected as { getSystemPrompt: () => string }).getSystemPrompt(),
+    ).toBe("Audit the diff.");
+    _resetAgentRolesForTesting();
   });
 });

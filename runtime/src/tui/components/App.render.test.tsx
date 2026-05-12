@@ -253,6 +253,9 @@ vi.mock("../state/AppState.js", async () => {
       mainLoopModel: null,
       mainLoopModelForSession: null,
       toolPermissionContext: defaultPermissionContext,
+      activeOverlays: new Set(),
+      notifications: { current: null, queue: [] },
+      elicitation: { queue: [] },
     }),
     AppStateProvider: ({
       children,

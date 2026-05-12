@@ -13,7 +13,6 @@ import { generateSessionName } from '../../../../commands/rename/generateSession
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
 import type { AppState } from '../../../state/AppStateStore.js';
-import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js';
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../../../../tools/ExitPlanModeTool/constants';
 import type { AllowedPrompt } from '../../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool';
 import { TEAM_CREATE_TOOL_NAME } from '../../../../tools/TeamCreateTool/constants';
@@ -39,6 +38,8 @@ import { getSettings_DEPRECATED } from '../../../../utils/settings/settings'; //
 import { type OptionWithDescription, Select } from '../../CustomSelect/select';
 import { Markdown } from '../../markdown/Markdown.js';
 import { PermissionDialog } from '../PermissionDialog';
+
+const AGENT_TOOL_NAME = 'spawn_agent';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
 

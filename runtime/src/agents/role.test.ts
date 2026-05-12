@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   getAgentRole,
   getDefaultAgentRole,
   listAgentRoles,
+  loadMarkdownAgentRoles,
   loadRoleLayerToml,
   registerAgentRole,
   releaseNickname,
@@ -115,6 +116,33 @@ describe("role registry", () => {
       config: { description: "override" },
     });
     expect(getAgentRole("explorer")!.config.description).toBe("override");
+  });
+
+  it("registers project markdown agents into the spawn_agent role registry", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-markdown-role-"));
+    const dir = join(root, ".agenc", "agents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "reviewer.md"),
+      [
+        "---",
+        "name: project-reviewer",
+        "description: Project reviewer",
+        "tools:",
+        "  - Read",
+        "effort: high",
+        "---",
+        "Review the current project changes.",
+      ].join("\n"),
+    );
+
+    loadMarkdownAgentRoles(root);
+
+    const role = requireAgentRole("project-reviewer");
+    expect(role.config.description).toBe("Project reviewer");
+    expect(role.config.systemPrompt).toBe("Review the current project changes.");
+    expect(role.config.allowlist).toEqual(["Read"]);
+    expect(role.config.reasoningEffort).toBe("high");
   });
 });
 

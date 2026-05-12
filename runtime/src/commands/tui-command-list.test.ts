@@ -94,6 +94,12 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(memory?.description).toBe("Edit AgenC memory files");
   });
 
+  it("does not include removed side-question commands", () => {
+    const names = listTuiCommandList().map((cmd) => cmd.name);
+    expect(names).not.toContain("btw");
+    expect(names).not.toContain("buddy");
+  });
+
   it("projects registered legacy command surfaces to executable descriptors", () => {
     const commands = new Map(getCommandsSync().map((cmd) => [cmd.name, cmd]));
     for (const name of registeredLegacyCommandSurfaceNames()) {
@@ -157,6 +163,12 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(commit.contentLength).toBe(0);
     expect(commit.progressMessage).toBe("creating commit");
     expect(commit.source).toBe("builtin");
+
+    const renameSource = (await import("./rename/index.js")).default;
+    const rename = command("rename");
+    expect(rename.type).toBe(renameSource.type);
+    expect(rename.argumentHint).toBe(renameSource.argumentHint);
+    expect(rename.immediate).toBe(renameSource.immediate);
 
     const knowledgeSource = (await import("./knowledge/index.js")).default;
     const knowledge = command("knowledge") as Extract<Command, { type: "local" }>;

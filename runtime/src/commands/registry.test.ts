@@ -291,7 +291,7 @@ describe("buildDefaultRegistry()", () => {
     expect(reg.has("exit-worktree")).toBe(true);
   });
 
-  it("includes the current runtime command surfaces", () => {
+  it("includes retained command surfaces", () => {
     const reg = buildDefaultRegistry();
     expect(reg.has("copy")).toBe(true);
     expect(reg.has("mcp")).toBe(true);
