@@ -16,19 +16,16 @@
  *
  * Hard requirements implemented here:
  *   - Import `runtime/dist/tui/main.js` and confirm it exposes `bootTUI`.
- *   - Spawn `agenc` and `agenc --yolo` under a pseudo-terminal when
- *     `@homebridge/node-pty-prebuilt-multiarch` is loadable; fall back
- *     to plain pipe stdio when it is not (still catches import errors
- *     and unhandled rejections from startup).
+ *   - Spawn `agenc` and `agenc --yolo` under a real pseudo-terminal
+ *     through the required `node-pty` dependency.
  *   - Inject XTVERSION + DA1 replies after first-paint, wait for the
  *     post-reply tick, then send SIGTERM and collect output.
  *   - Scan stdout/stderr for fatal startup patterns. Exit non-zero on
- *     any match.
+ *     any match or if the native PTY dependency cannot load.
  *
  * Usage:
  *   node scripts/check-tui-runtime-startup.mjs
  */
-import { spawn as childSpawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
@@ -83,9 +80,6 @@ function red(text) {
 function green(text) {
   return process.stdout.isTTY ? `\x1b[32m${text}\x1b[0m` : text;
 }
-function yellow(text) {
-  return process.stdout.isTTY ? `\x1b[33m${text}\x1b[0m` : text;
-}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -122,9 +116,15 @@ async function importBuiltArtifact() {
 
 function loadPtyModule() {
   try {
-    return require("@homebridge/node-pty-prebuilt-multiarch");
-  } catch {
-    return null;
+    return require("node-pty");
+  } catch (error) {
+    const message =
+      error && typeof error === "object" && "message" in error
+        ? String(error.message).split("\n")[0]
+        : String(error);
+    throw new Error(
+      `node-pty is required for TUI runtime startup validation under ${process.version}: ${message}`,
+    );
   }
 }
 
@@ -139,9 +139,6 @@ function scanOutput(buffer) {
 
 async function ptyStartupSmoke(label, args) {
   const pty = loadPtyModule();
-  if (pty === null) {
-    return pipeStartupSmoke(label, args);
-  }
 
   console.log(
     `[2/3] PTY spawn ${label}: ${args.join(" ") || "(no args)"} (real PTY)`,
@@ -170,55 +167,15 @@ async function ptyStartupSmoke(label, args) {
   term.write(DA1_REPLY);
   await delay(POST_REPLY_MS);
 
-  return await collectAndKill(label, buffer, () => term.kill("SIGTERM"));
+  return await collectAndKill(label, () => buffer, () => term.kill("SIGTERM"));
 }
 
-async function pipeStartupSmoke(label, args) {
-  console.log(
-    `[2/3] ${yellow(
-      "fallback",
-    )} pipe-stdio spawn ${label}: ${args.join(" ") || "(no args)"} (real PTY unavailable; @homebridge/node-pty-prebuilt-multiarch optional dep is not installed on this host)`,
-  );
-  const child = childSpawn(process.execPath, [BIN_AGENC_PATH, ...args], {
-    cwd: RUNTIME_DIR,
-    env: {
-      ...process.env,
-      AGENC_DISABLE_TELEMETRY: "1",
-      // Tell the runtime stdin/stdout are TTYs even though they are
-      // pipes. Some startup paths early-exit when isTTY is false; we
-      // want to exercise the TTY path so this smoke catches the same
-      // failures a real terminal would.
-      FORCE_COLOR: "1",
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  let buffer = "";
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
-  });
-  child.stderr.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
-  });
-
-  await delay(FIRST_PAINT_MS);
-  child.stdin.write(XTVERSION_REPLY);
-  child.stdin.write(DA1_REPLY);
-  await delay(POST_REPLY_MS);
-
-  return await collectAndKill(label, buffer, () => {
-    child.kill("SIGTERM");
-  });
-}
-
-async function collectAndKill(label, initialBuffer, killFn) {
-  let buffer = initialBuffer;
+async function collectAndKill(label, getBuffer, killFn) {
   killFn();
   await delay(SIGTERM_GRACE_MS);
 
-  // Re-read whatever extra output landed during the grace window. The
-  // real-PTY and pipe paths both append directly to `buffer` via the
-  // shared closure, so the kill grace simply lets late writes land.
+  // Re-read whatever extra output landed during the grace window.
+  const buffer = getBuffer();
 
   const matches = scanOutput(buffer);
   if (matches.length === 0) {

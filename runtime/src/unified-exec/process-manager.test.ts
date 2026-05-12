@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -21,16 +20,6 @@ import {
   type TelemetrySpan,
   type TelemetryTimer,
 } from "../observability/telemetry.js";
-
-const require = createRequire(import.meta.url);
-const hasPtySupport = (() => {
-  try {
-    require.resolve("@homebridge/node-pty-prebuilt-multiarch");
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 afterEach(() => {
   resetAgencTelemetryClient();
@@ -406,7 +395,7 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test.runIf(hasPtySupport)(
+  test(
     "persists PTY shell state across write_stdin calls",
     async () => {
       const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
@@ -440,7 +429,7 @@ describe("UnifiedExecProcessManager", () => {
     10_000,
   );
 
-  test.runIf(hasPtySupport)(
+  test(
     "rejects restricted write_stdin for a non-sandboxed PTY session",
     async () => {
       const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
@@ -592,7 +581,7 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test.runIf(hasPtySupport)(
+  test(
     "allows restricted write_stdin for a compatible sandboxed PTY session",
     async () => {
       const startProfile = permissionProfileFromRuntimePermissions(
@@ -694,7 +683,6 @@ describe("UnifiedExecProcessManager", () => {
     // tty=true is the interactive-session path. We deliberately exempt tty
     // from the default hard timeout so persistent shells stay
     // alive across write_stdin polls. This test asserts that exemption.
-    if (!hasPtySupport) return;
     const manager = new UnifiedExecProcessManager({
       cwd: process.cwd(),
       maxTimeoutMs: 200,
@@ -719,7 +707,7 @@ describe("UnifiedExecProcessManager", () => {
     }
   }, 10_000);
 
-  test.runIf(hasPtySupport)("closeAll terminates live PTY sessions", async () => {
+  test("closeAll terminates live PTY sessions", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
     const started = await manager.execCommand({
       cmd: "bash -i",

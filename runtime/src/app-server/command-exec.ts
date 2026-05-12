@@ -8,7 +8,6 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { createRequire } from "node:module";
 import type { Writable } from "node:stream";
 
 import { AgenCDaemonAgentLifecycleError } from "./agent-lifecycle.js";
@@ -32,43 +31,13 @@ import {
   type CommandExecWriteResponse,
   type JsonObject,
 } from "./protocol/index.js";
+import { loadPty, type IPty } from "../pty/loadPty.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_OUTPUT_BYTES_CAP = 1024 * 1024;
 const EXEC_TIMEOUT_EXIT_CODE = 124;
 const IO_DRAIN_TIMEOUT_MS = 2_000;
 const FORCE_KILL_DELAY_MS = 500;
-
-const require = createRequire(import.meta.url);
-
-interface IPty {
-  readonly pid: number;
-  write(data: string | Buffer): void;
-  resize(columns: number, rows: number): void;
-  kill(signal?: string): void;
-  onData(listener: (data: string | Buffer) => void): { dispose(): void };
-  onExit(
-    listener: (event: {
-      readonly exitCode: number;
-      readonly signal?: number | string;
-    }) => void,
-  ): { dispose(): void };
-}
-
-interface PtyModule {
-  spawn(
-    file: string,
-    args: readonly string[],
-    options: {
-      readonly name?: string;
-      readonly cols?: number;
-      readonly rows?: number;
-      readonly cwd?: string;
-      readonly env?: Record<string, string>;
-      readonly encoding?: string | null;
-    },
-  ): IPty;
-}
 
 export interface CommandExecContext {
   readonly connectionId: string;
@@ -399,7 +368,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       throw invalidArgument("commandExec.start requires command");
     }
     if (session.tty) {
-      const pty = loadPtyModule().spawn(program, args, {
+      const pty = loadPty().spawn(program, args, {
         name: "xterm-256color",
         cols: params.size?.cols ?? 80,
         rows: params.size?.rows ?? 24,
@@ -811,18 +780,6 @@ function decodeBase64(value: string): Buffer {
     throw invalidArgument("invalid deltaBase64");
   }
   return Buffer.from(value, "base64");
-}
-
-function loadPtyModule(): PtyModule {
-  try {
-    return require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
-  } catch (error) {
-    throw new Error(
-      `PTY support is unavailable. Install @homebridge/node-pty-prebuilt-multiarch to use commandExec.start with tty true. ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
 }
 
 function normalizeExitCode(code: number | null): number {

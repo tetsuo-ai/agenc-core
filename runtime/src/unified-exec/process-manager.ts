@@ -1,5 +1,4 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { createRequire } from "node:module";
 import { basename, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
@@ -32,6 +31,11 @@ import {
   agencTelemetry,
   toMetricTags,
 } from "../observability/telemetry.js";
+import {
+  loadPty as loadRequiredPty,
+  type IPty,
+  type PtyModule,
+} from "../pty/loadPty.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
@@ -49,7 +53,6 @@ const PTY_ARGV0_EXECVE_SCRIPT =
   "process.exit(126);" +
   "}" +
   "execve(program, [argv0, ...args], process.env);";
-const require = createRequire(import.meta.url);
 
 type ExitState = {
   readonly exitCode: number | null;
@@ -59,34 +62,6 @@ type ExitState = {
 type StoredProcess =
   | { readonly kind: "pty"; readonly process: IPty }
   | { readonly kind: "pipe"; readonly process: ChildProcessByStdio<null, Readable, Readable> };
-
-interface IPty {
-  readonly pid: number;
-  write(data: string): void;
-  resize(columns: number, rows: number): void;
-  kill(signal?: string): void;
-  onData(listener: (data: string) => void): { dispose(): void };
-  onExit(
-    listener: (event: {
-      readonly exitCode: number;
-      readonly signal?: number | string;
-    }) => void,
-  ): { dispose(): void };
-}
-
-interface PtyModule {
-  spawn(
-    file: string,
-    args: readonly string[],
-    options: {
-      readonly name?: string;
-      readonly cols?: number;
-      readonly rows?: number;
-      readonly cwd?: string;
-      readonly env?: Record<string, string>;
-    },
-  ): IPty;
-}
 
 interface OutputChunk {
   readonly stream: UnifiedExecStream;
@@ -553,13 +528,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   private async loadPty(): Promise<PtyModule> {
     try {
-      return require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
+      return loadRequiredPty();
     } catch (error) {
       throw new UnifiedExecError(
         "create_process",
-        `PTY support is unavailable. Install @homebridge/node-pty-prebuilt-multiarch to use tty:true and write_stdin. ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        error instanceof Error ? error.message : String(error),
       );
     }
   }
@@ -644,7 +617,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ...entryBase,
         stored: { kind: "pty", process: processHandle },
       };
-      processHandle.onData((data) => notifyData("stdout", data));
+      processHandle.onData((data) =>
+        notifyData("stdout", Buffer.isBuffer(data) ? data.toString("utf8") : data),
+      );
       processHandle.onExit((event) => {
         complete(entry, { exitCode: event.exitCode, signal: event.signal });
       });

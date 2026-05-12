@@ -427,7 +427,7 @@ const external = [
   'playwright',
   'edge-tts',
   '@modelcontextprotocol/sdk',
-  '@homebridge/node-pty-prebuilt-multiarch',
+  'node-pty',
   '@anthropic-ai/bedrock-sdk',
   '@aws-sdk/client-bedrock',
   '@aws-sdk/client-bedrock-runtime',

@@ -1,5 +1,4 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -73,16 +72,6 @@ function signalKilledExecOutput(partialStdout: string): ExecCommandToolOutput {
     original_token_count: 2,
   };
 }
-
-const require = createRequire(import.meta.url);
-const hasPtySupport = (() => {
-  try {
-    require.resolve("@homebridge/node-pty-prebuilt-multiarch");
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 describe("exec_command tool", () => {
   let root = "";
@@ -344,7 +333,7 @@ describe("exec_command tool", () => {
     expect(writeStdin).not.toHaveBeenCalled();
   });
 
-  test.runIf(hasPtySupport)(
+  test(
     "returns a session id for live PTY commands and write_stdin can resume it",
     async () => {
       const manager = new UnifiedExecProcessManager({ cwd: root });

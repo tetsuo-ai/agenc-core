@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
@@ -11,15 +10,6 @@ import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
 
 const idleScript = "setInterval(() => {}, 1000)";
-const require = createRequire(import.meta.url);
-const hasPty = (() => {
-  try {
-    require("@homebridge/node-pty-prebuilt-multiarch");
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 async function waitForNotification(
   notifications: readonly JsonObject[],
@@ -307,7 +297,7 @@ describe("AgenC daemon command exec", () => {
     });
   });
 
-  it.skipIf(!hasPty)("runs a byte-preserving PTY-backed session and resizes it", async () => {
+  it("runs a byte-preserving PTY-backed session and resizes it", async () => {
     const service = new AgenCCommandExecService();
     const notifications: JsonObject[] = [];
     const context = {
@@ -378,7 +368,7 @@ describe("AgenC daemon command exec", () => {
     expect(stdoutBytes.includes(Buffer.from([0xff, 0xfe, 0x41]))).toBe(true);
   });
 
-  it.skipIf(!hasPty)(
+  it(
     "drives a live PTY command through JSON-RPC while start is pending",
     async () => {
       const notifications: JsonObject[] = [];

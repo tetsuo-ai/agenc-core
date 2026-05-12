@@ -36,7 +36,7 @@ const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..", "..");
 const BIN_AGENC = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 
 const require = createRequire(path.join(RUNTIME_DIR, "package.json"));
-const pty = require("@homebridge/node-pty-prebuilt-multiarch");
+const pty = require("node-pty");
 
 const TRUST_FILE = path.join(homedir(), ".agenc", "trusted-projects.json");
 
