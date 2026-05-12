@@ -38,6 +38,7 @@ import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../bootstrap/state.js';
 import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../../ink.js';
+import { formatRunningAgentSummary, getRunningLocalAgentTasks } from './agentActivity.js';
 export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
@@ -186,6 +187,8 @@ function SpinnerWithVerbInner({
   // Check if any running in-process teammates exist (needed for both modes)
   const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');
   const hasRunningTeammates = runningTeammates.length > 0;
+  const runningLocalAgents = getRunningLocalAgentTasks(tasks);
+  const hasRunningLocalAgents = runningLocalAgents.length > 0;
   const allIdle = hasRunningTeammates && runningTeammates.every(t_0 => t_0.isIdle);
 
   // Gather aggregate token stats from all running swarm teammates
@@ -225,14 +228,15 @@ function SpinnerWithVerbInner({
   // When leader is idle but teammates are running (and we're viewing the leader),
   // show a static dim idle display instead of the animated spinner — otherwise
   // useStalledAnimation detects no new tokens after 3s and turns the spinner red.
-  if (leaderIsIdle && hasRunningTeammates && !foregroundedTeammate) {
+  if (leaderIsIdle && (hasRunningTeammates || hasRunningLocalAgents) && !foregroundedTeammate) {
     return <Box flexDirection="column" width="100%" alignItems="flex-start">
         <Box flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
           <Text dimColor>
             {TEARDROP_ASTERISK} Idle
-            {!allIdle && ' · teammates running'}
+            {hasRunningLocalAgents ? ' · agents running' : !allIdle && ' · teammates running'}
           </Text>
         </Box>
+        {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
         {showSpinnerTree && <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderTokenCount={leaderTokenCount} leaderIdleText="Idle" />}
       </Box>;
   }
@@ -277,6 +281,7 @@ function SpinnerWithVerbInner({
   }
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
       <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={effortSuffix} />
+      {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
       {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} /> : showExpandedTodos && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />
@@ -440,6 +445,15 @@ function BriefSpinner(t0) {
 function _temp6(s_0) {
   return count(Object.values(s_0.tasks), isBackgroundTask) + s_0.remoteBackgroundTaskCount;
 }
+function RunningLocalAgentsLine({
+  agents
+}: {
+  agents: readonly ReturnType<typeof getRunningLocalAgentTasks>[number][];
+}) {
+  return <MessageResponse>
+      <Text color="cyan_FOR_SUBAGENTS_ONLY">{figures.play} {formatRunningAgentSummary(agents)}</Text>
+    </MessageResponse>;
+}
 function _temp5(s) {
   return s.remoteConnectionStatus;
 }
@@ -450,13 +464,15 @@ export function BriefIdleStatus() {
   const $ = _c(9);
   const connStatus = useAppState(_temp7);
   const runningCount = useAppState(_temp8);
+  const tasks = useAppState(s => s.tasks);
+  const runningLocalAgents = getRunningLocalAgentTasks(tasks);
   const {
     columns
   } = useTerminalSize();
   const showConnWarning = connStatus === "reconnecting" || connStatus === "disconnected";
   const connText = connStatus === "reconnecting" ? "Reconnecting\u2026" : "Disconnected";
   const leftText = showConnWarning ? connText : "";
-  const rightText = runningCount > 0 ? `${runningCount} in background` : "";
+  const rightText = runningLocalAgents.length > 0 ? `${runningLocalAgents.length} ${runningLocalAgents.length === 1 ? "agent" : "agents"} running` : runningCount > 0 ? `${runningCount} in background` : "";
   if (!leftText && !rightText) {
     let t0;
     if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
