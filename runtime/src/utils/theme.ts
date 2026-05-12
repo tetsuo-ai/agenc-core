@@ -278,24 +278,24 @@ const lightAnsiTheme: Theme = {
 const darkAnsiTheme: Theme = {
   autoAccept: 'ansi:magentaBright',
   bashBorder: 'ansi:magentaBright',
-  agenc: 'ansi:redBright',
-  agencShimmer: 'ansi:yellowBright',
+  agenc: 'ansi:magentaBright',
+  agencShimmer: 'ansi:whiteBright',
   agencBlue_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
   agencBlueShimmer_FOR_SYSTEM_SPINNER: 'ansi:blueBright',
-  permission: 'ansi:blueBright',
-  permissionShimmer: 'ansi:blueBright',
-  planMode: 'ansi:cyanBright',
-  ide: 'ansi:blue',
-  promptBorder: 'ansi:white',
+  permission: 'ansi:magentaBright',
+  permissionShimmer: 'ansi:whiteBright',
+  planMode: 'ansi:magentaBright',
+  ide: 'ansi:cyan',
+  promptBorder: 'ansi:magentaBright',
   promptBorderShimmer: 'ansi:whiteBright',
   text: 'ansi:whiteBright',
   inverseText: 'ansi:black',
   inactive: 'ansi:white',
   inactiveShimmer: 'ansi:whiteBright',
-  subtle: 'ansi:white',
-  suggestion: 'ansi:blueBright',
-  remember: 'ansi:blueBright',
-  background: 'ansi:cyanBright',
+  subtle: 'ansi:blackBright',
+  suggestion: 'ansi:magentaBright',
+  remember: 'ansi:magentaBright',
+  background: 'ansi:magenta',
   success: 'ansi:greenBright',
   error: 'ansi:redBright',
   warning: 'ansi:yellowBright',
@@ -321,12 +321,12 @@ const darkAnsiTheme: Theme = {
   // Chrome colors
   chromeYellow: 'ansi:yellowBright', // Chrome yellow
   // TUI V2 colors
-  clawd_body: 'ansi:redBright',
+  clawd_body: 'ansi:magentaBright',
   clawd_background: 'ansi:black',
   userMessageBackground: 'ansi:blackBright',
-  userMessageBackgroundHover: 'ansi:white',
+  userMessageBackgroundHover: 'ansi:magenta',
   messageActionsBackground: 'ansi:blackBright',
-  selectionBg: 'ansi:blue', // darker named bg for dark-ansi; bright fgs stay readable
+  selectionBg: 'ansi:magenta', // darker named bg for dark-ansi; bright fgs stay readable
   bashMessageBackgroundColor: 'ansi:black',
 
   memoryBackgroundColor: 'ansi:blackBright',
@@ -335,7 +335,7 @@ const darkAnsiTheme: Theme = {
   fastMode: 'ansi:redBright',
   fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blueBright',
-  briefLabelAgenC: 'ansi:redBright',
+  briefLabelAgenC: 'ansi:magentaBright',
   rainbow_red: 'ansi:red',
   rainbow_orange: 'ansi:redBright',
   rainbow_yellow: 'ansi:yellow',
@@ -438,66 +438,66 @@ const lightDaltonizedTheme: Theme = {
  * from users' custom terminal ANSI color definitions
  */
 const darkTheme: Theme = {
-  autoAccept: 'rgb(175,135,255)', // Electric violet
-  bashBorder: 'rgb(253,93,177)', // Bright pink
-  agenc: 'rgb(215,119,87)', // AgenC orange
-  agencShimmer: 'rgb(235,159,127)', // Lighter agenc orange for shimmer effect
-  agencBlue_FOR_SYSTEM_SPINNER: 'rgb(147,165,255)', // Blue for system spinner
-  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(177,195,255)', // Lighter blue for system spinner shimmer
-  permission: 'rgb(177,185,249)', // Light blue-purple
-  permissionShimmer: 'rgb(207,215,255)', // Lighter blue-purple for shimmer
-  planMode: 'rgb(72,150,140)', // Muted sage green
-  ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(136,136,136)', // Medium gray
-  promptBorderShimmer: 'rgb(166,166,166)', // Lighter gray for shimmer
+  autoAccept: 'rgb(206,92,255)', // hot violet
+  bashBorder: 'rgb(255,132,66)', // command orange
+  agenc: 'rgb(206,92,255)', // neon purple
+  agencShimmer: 'rgb(238,196,255)', // pale lavender shimmer
+  agencBlue_FOR_SYSTEM_SPINNER: 'rgb(161,92,255)', // violet for system spinner
+  agencBlueShimmer_FOR_SYSTEM_SPINNER: 'rgb(215,174,255)', // lighter spinner shimmer
+  permission: 'rgb(177,91,255)', // panel purple
+  permissionShimmer: 'rgb(227,187,255)', // lighter panel shimmer
+  planMode: 'rgb(142,99,255)', // muted violet
+  ide: 'rgb(82,214,255)', // cool cyan
+  promptBorder: 'rgb(129,55,176)', // purple chrome line
+  promptBorderShimmer: 'rgb(190,122,255)', // lighter chrome line
   text: 'rgb(255,255,255)', // White
-  inverseText: 'rgb(0,0,0)', // Black
-  inactive: 'rgb(153,153,153)', // Light gray
-  inactiveShimmer: 'rgb(193,193,193)', // Lighter gray for shimmer effect
-  subtle: 'rgb(80,80,80)', // Dark gray
-  suggestion: 'rgb(177,185,249)', // Light blue-purple
-  remember: 'rgb(177,185,249)', // Light blue-purple
-  background: 'rgb(0,204,204)', // Bright cyan
-  success: 'rgb(78,186,101)', // Bright green
-  error: 'rgb(255,107,128)', // Bright red
-  warning: 'rgb(255,193,7)', // Bright amber
-  merged: 'rgb(175,135,255)', // Electric violet (matches autoAccept)
-  warningShimmer: 'rgb(255,223,57)', // Lighter amber for shimmer
-  diffAdded: 'rgb(34,92,43)', // Dark green
-  diffRemoved: 'rgb(122,41,54)', // Dark red
-  diffAddedDimmed: 'rgb(71,88,74)', // Very dark green
-  diffRemovedDimmed: 'rgb(105,72,77)', // Very dark red
-  diffAddedWord: 'rgb(56,166,96)', // Medium green
-  diffRemovedWord: 'rgb(179,89,107)', // Softer red (less intense than bright red)
+  inverseText: 'rgb(13,10,20)', // near-black
+  inactive: 'rgb(139,120,157)', // muted lavender gray
+  inactiveShimmer: 'rgb(193,170,216)', // lighter inactive shimmer
+  subtle: 'rgb(74,61,92)', // dark lavender gray
+  suggestion: 'rgb(178,95,255)', // menu purple
+  remember: 'rgb(178,95,255)', // menu purple
+  background: 'rgb(39,22,54)', // panel purple background
+  success: 'rgb(44,214,139)', // task-settled green
+  error: 'rgb(255,79,122)', // slashed red
+  warning: 'rgb(255,151,72)', // approval orange
+  merged: 'rgb(206,92,255)', // hot violet
+  warningShimmer: 'rgb(255,195,124)', // lighter approval orange
+  diffAdded: 'rgb(18,94,62)', // dark green
+  diffRemoved: 'rgb(107,32,56)', // dark red
+  diffAddedDimmed: 'rgb(23,62,48)', // very dark green
+  diffRemovedDimmed: 'rgb(72,35,50)', // very dark red
+  diffAddedWord: 'rgb(45,226,146)', // bright green
+  diffRemovedWord: 'rgb(255,88,128)', // bright red
   // Agent colors
-  red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
-  green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
-  yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
-  cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
+  red_FOR_SUBAGENTS_ONLY: 'rgb(255,79,122)',
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(82,164,255)',
+  green_FOR_SUBAGENTS_ONLY: 'rgb(44,214,139)',
+  yellow_FOR_SUBAGENTS_ONLY: 'rgb(255,210,92)',
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(178,95,255)',
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(255,151,72)',
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(255,91,190)',
+  cyan_FOR_SUBAGENTS_ONLY: 'rgb(82,214,255)',
   // Grove colors
-  professionalBlue: 'rgb(106,155,204)',
+  professionalBlue: 'rgb(82,164,255)',
   // Chrome colors
-  chromeYellow: 'rgb(251,188,4)', // Chrome yellow
+  chromeYellow: 'rgb(255,210,92)', // Chrome yellow
   // TUI V2 colors
-  clawd_body: 'rgb(215,119,87)',
-  clawd_background: 'rgb(0,0,0)',
-  userMessageBackground: 'rgb(55, 55, 55)', // Lighter grey for better visual contrast
-  userMessageBackgroundHover: 'rgb(70, 70, 70)',
-  messageActionsBackground: 'rgb(44, 50, 62)', // cool gray, slight blue
-  selectionBg: 'rgb(38, 79, 120)', // classic dark-mode selection blue (VS Code dark default); light fgs stay readable
-  bashMessageBackgroundColor: 'rgb(65, 60, 65)',
+  clawd_body: 'rgb(206,92,255)',
+  clawd_background: 'rgb(6,5,10)',
+  userMessageBackground: 'rgb(34, 20, 48)',
+  userMessageBackgroundHover: 'rgb(48, 29, 68)',
+  messageActionsBackground: 'rgb(44, 27, 61)',
+  selectionBg: 'rgb(96, 44, 150)', // violet selection against light text
+  bashMessageBackgroundColor: 'rgb(24, 15, 32)',
 
-  memoryBackgroundColor: 'rgb(55, 65, 70)',
-  rate_limit_fill: 'rgb(177,185,249)', // Light blue-purple
-  rate_limit_empty: 'rgb(80,83,112)', // Medium blue-purple
-  fastMode: 'rgb(255,120,20)', // Electric orange for dark bg
-  fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
-  briefLabelYou: 'rgb(122,180,232)', // Light blue
-  briefLabelAgenC: 'rgb(215,119,87)', // Brand orange
+  memoryBackgroundColor: 'rgb(22, 40, 48)',
+  rate_limit_fill: 'rgb(178,95,255)',
+  rate_limit_empty: 'rgb(55,39,72)',
+  fastMode: 'rgb(255,151,72)',
+  fastModeShimmer: 'rgb(255,195,124)',
+  briefLabelYou: 'rgb(82,214,255)',
+  briefLabelAgenC: 'rgb(206,92,255)',
   rainbow_red: 'rgb(235,95,87)',
   rainbow_orange: 'rgb(245,139,87)',
   rainbow_yellow: 'rgb(250,195,95)',

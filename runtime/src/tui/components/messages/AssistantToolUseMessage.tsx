@@ -280,17 +280,8 @@ export function AssistantToolUseMessage(t0) {
   } else {
     t15 = $[76];
   }
-  let t16;
-  if ($[77] !== bg || $[78] !== t15 || $[79] !== t5) {
-    t16 = <Box flexDirection="row" justifyContent="space-between" marginTop={t5} width="100%" backgroundColor={bg}>{t15}</Box>;
-    $[77] = bg;
-    $[78] = t15;
-    $[79] = t5;
-    $[80] = t16;
-  } else {
-    t16 = $[80];
-  }
-  return t16;
+  const toolBorderColor = lookups.erroredToolUseIDs.has(param.id) ? "error" : isResolved ? "success" : "promptBorder";
+  return <Box flexDirection="column" justifyContent="space-between" marginTop={t5} width="100%" borderStyle="round" borderColor={toolBorderColor} paddingX={1} backgroundColor={bg}>{t15}</Box>;
 }
 function _temp3(state_1) {
   return !!state_1.toolPermissionContext.strippedDangerousRules;

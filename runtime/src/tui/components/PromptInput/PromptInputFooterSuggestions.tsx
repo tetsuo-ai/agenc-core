@@ -58,9 +58,11 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   const columns = useTerminalSize().columns
   const selectionPrefix = isSelected ? SELECTED_PREFIX : UNSELECTED_PREFIX
   const rowBackgroundColor: keyof Theme | undefined = isSelected
-    ? 'suggestion'
+    ? 'userMessageBackground'
     : undefined
-  const textColor: keyof Theme | undefined = isSelected ? 'inverseText' : undefined
+  const textColor: keyof Theme | undefined = isSelected
+    ? 'text'
+    : item.color
   // Every row is one line. The expanded second-line description was
   // dropped after it kept reading as a duplicate of the inline
   // description and made the selected row taller than its neighbours.
@@ -165,7 +167,7 @@ export function PromptInputFooterSuggestions({
   maxColumnWidth: maxColumnWidthProp,
   overlay,
 }: Props): ReactNode {
-  const { rows } = useTerminalSize()
+  const { rows, columns } = useTerminalSize()
   const maxVisibleItems = overlay ? OVERLAY_MAX_ITEMS : Math.min(6, Math.max(1, rows - 3))
 
   if (suggestions.length === 0) {
@@ -193,29 +195,65 @@ export function PromptInputFooterSuggestions({
   const hiddenAfter = suggestions.length - endIndex
   const hiddenBefore = startIndex
 
+  const width = Math.max(32, columns - 4)
+  const headerHint = suggestions.length === 1
+    ? '1 match'
+    : `${suggestions.length} matches`
+
   return (
     <Box
       flexDirection="column"
       justifyContent={overlay ? undefined : 'flex-end'}
+      width={width}
+      marginX={1}
+      borderStyle="round"
+      borderColor="promptBorder"
+      paddingX={1}
+      backgroundColor="clawd_background"
     >
+      <Box justifyContent="space-between" width="100%">
+        <Text color="inactive" bold>
+          SLASH COMMANDS
+        </Text>
+        <Text color="inactive">{headerHint}</Text>
+      </Box>
+      <Box justifyContent="space-between" width="100%">
+        <Text color="promptBorder">command</Text>
+        <Text color="inactive">navigate ↑↓ · run ↵</Text>
+      </Box>
       {hiddenBefore > 0 ? (
         <Box>
           <Text dimColor>↑ {hiddenBefore} more above</Text>
         </Box>
       ) : null}
-      {visibleItems.map(item => (
-        <SuggestionItemRow
-          key={`${item.id}:${item.id === suggestions[selectedSuggestion]?.id ? 'selected' : 'idle'}`}
-          item={item}
-          maxColumnWidth={maxColumnWidth}
-          isSelected={item.id === suggestions[selectedSuggestion]?.id}
-        />
-      ))}
+      {visibleItems.map(item => {
+        const isSelected = item.id === suggestions[selectedSuggestion]?.id
+        return (
+          <Box
+            key={`${item.id}:${isSelected ? 'selected' : 'idle'}`}
+            flexDirection="column"
+          >
+            <SuggestionItemRow
+              item={item}
+              maxColumnWidth={maxColumnWidth}
+              isSelected={isSelected}
+            />
+            {isSelected && item.description ? (
+              <Box paddingLeft={PREFIX_WIDTH + 2}>
+                <Text color="inactive" wrap="wrap">
+                  {item.description.replace(/\s+/g, ' ')}
+                </Text>
+              </Box>
+            ) : null}
+          </Box>
+        )
+      })}
       {hiddenAfter > 0 ? (
         <Box>
           <Text dimColor>↓ {hiddenAfter} more below</Text>
         </Box>
       ) : null}
+      <Text color="inactive">type to filter · esc closes</Text>
     </Box>
   )
 }

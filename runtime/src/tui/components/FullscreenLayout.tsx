@@ -14,9 +14,11 @@ import type { Message } from '../../types/message';
 import { openBrowser, openPath } from '../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { plural } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { modelDisplayString } from '../../utils/model/model.js';
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
 import type { StickyPrompt } from './VirtualMessageList';
+import { useAppState } from '../state/AppState.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
@@ -434,17 +436,7 @@ export function FullscreenLayout(t0) {
     } else {
       t18 = $[37];
     }
-    let t19;
-    if ($[38] !== t14 || $[39] !== t17 || $[40] !== t18) {
-      t19 = <PromptOverlayProvider>{t14}{t17}{t18}</PromptOverlayProvider>;
-      $[38] = t14;
-      $[39] = t17;
-      $[40] = t18;
-      $[41] = t19;
-    } else {
-      t19 = $[41];
-    }
-    return t19;
+    return <PromptOverlayProvider><DesignTopChrome columns={columns} />{t14}{t17}<DesignBottomChrome columns={columns} />{t18}</PromptOverlayProvider>;
   }
   let t8;
   if ($[42] !== bottom || $[43] !== modal || $[44] !== overlay || $[45] !== scrollable) {
@@ -458,6 +450,51 @@ export function FullscreenLayout(t0) {
     t8 = $[46];
   }
   return t8;
+}
+
+function trimMiddle(value: string, maxWidth: number): string {
+  if (value.length <= maxWidth) return value;
+  if (maxWidth <= 1) return value.slice(0, Math.max(0, maxWidth));
+  const left = Math.ceil((maxWidth - 1) / 2);
+  const right = Math.floor((maxWidth - 1) / 2);
+  return `${value.slice(0, left)}…${value.slice(value.length - right)}`;
+}
+
+function DesignTopChrome({ columns }: { columns: number }): React.ReactNode {
+  const cwdName = React.useMemo(() => process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace', []);
+  const title = trimMiddle(`agenc - ${cwdName}`, Math.max(12, Math.floor(columns * 0.44)));
+  const showTask = columns >= 84;
+  return <Box flexDirection="column" flexShrink={0} width="100%">
+      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="clawd_background">
+        <Box gap={1} flexShrink={0}>
+          <Text color="error">●</Text>
+          <Text color="warning">●</Text>
+          <Text color="success">●</Text>
+          {columns >= 56 ? <Text dimColor> agenc</Text> : null}
+          {columns >= 64 ? <Text color="success">● orchestrator</Text> : null}
+        </Box>
+        <Text dimColor wrap="truncate">{title}</Text>
+        <Box flexShrink={0}>
+          {showTask ? <Text dimColor>TASK SYSTEMIC</Text> : null}
+        </Box>
+      </Box>
+      <Text color="promptBorder">{'─'.repeat(Math.max(0, columns))}</Text>
+    </Box>;
+}
+
+function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
+  const model = useAppState(state => state.mainLoopModel);
+  const mode = useAppState(state => state.toolPermissionContext.mode);
+  const modelLabel = modelDisplayString(model);
+  const left = columns >= 70 ? `MODEL ${modelLabel}` : modelLabel;
+  const right = columns >= 70 ? `MODE ${mode}  CTX live` : mode;
+  return <Box flexDirection="column" flexShrink={0} width="100%">
+      <Text color="promptBorder">{'─'.repeat(Math.max(0, columns))}</Text>
+      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="clawd_background">
+        <Text color="inactive" wrap="truncate">{left}</Text>
+        <Text color="inactive" wrap="truncate">{right}</Text>
+      </Box>
+    </Box>;
 }
 
 // Slack-style pill. Absolute overlay at bottom={0} of the scrollwrap — floats

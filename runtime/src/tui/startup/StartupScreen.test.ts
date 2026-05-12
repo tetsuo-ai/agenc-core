@@ -129,7 +129,7 @@ describe('printStartupScreen', () => {
 
     const plain = stripAnsi(output)
     expect(plain).toContain('█████╗  ██████╗  ███████╗███╗   ██╗ ██████╗')
-    expect(plain).toContain('Any model. Every tool. Zero limits.')
+    expect(plain).toContain('Orchestrator online. Multi-agent terminal ready.')
     expect(plain).toContain('agenc v0.0.0-test')
     expect(plain).not.toContain('████████╗ ████████╗ ████████╗ ██╗  ██╗')
     expect(plain).not.toContain('████████╗ ██╗      ████████╗ ██╗   ██╗')

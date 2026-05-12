@@ -77,7 +77,11 @@ export function CoordinatorTaskPanel(): React.ReactNode {
   if (visibleTasks.length === 0) {
     return null;
   }
-  return <Box flexDirection="column" marginTop={1}>
+  return <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="promptBorder" paddingX={1} backgroundColor="clawd_background">
+      <Box justifyContent="space-between">
+        <Text color="inactive" bold={true}>AGENTS</Text>
+        <Text color="promptBorder">{visibleTasks.length} active</Text>
+      </Box>
       <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} onClick={() => exitTeammateView(setAppState)} />
       {visibleTasks.map((task, i) => <AgentLine key={task.id} task={task} name={nameByAgentId.get(task.id)} isSelected={selectedIndex === i + 1} isViewed={viewingAgentTaskId === task.id} onClick={() => enterTeammateView(task.id, setAppState)} />)}
     </Box>;
@@ -119,7 +123,7 @@ function MainLine(t0) {
   const t3 = !isSelected && !isViewed && !hover;
   let t4;
   if ($[2] !== bullet || $[3] !== isViewed || $[4] !== prefix || $[5] !== t3) {
-    t4 = <Text dimColor={t3} bold={isViewed}>{prefix}{bullet} main</Text>;
+    t4 = <Text color={isViewed ? "agenc" : undefined} dimColor={t3} bold={isViewed}>{prefix}{bullet} orchestrator</Text>;
     $[2] = bullet;
     $[3] = isViewed;
     $[4] = prefix;
@@ -234,7 +238,7 @@ function AgentLine(t0) {
   }
   let t8;
   if ($[15] !== bullet || $[16] !== dim || $[17] !== elapsed || $[18] !== isViewed || $[19] !== prefix || $[20] !== sep || $[21] !== t5 || $[22] !== t6 || $[23] !== t7 || $[24] !== tokenText || $[25] !== truncated) {
-    t8 = <Text dimColor={dim} bold={isViewed}>{prefix}{bullet}{" "}{t5}{truncated} {sep} {elapsed}{tokenText}{t6}{t7}</Text>;
+    t8 = <Text color={isViewed ? "success" : undefined} dimColor={dim} bold={isViewed}>{prefix}{bullet}{" "}{t5}{truncated} {sep} {elapsed}{tokenText}{t6}{t7}</Text>;
     $[15] = bullet;
     $[16] = dim;
     $[17] = elapsed;

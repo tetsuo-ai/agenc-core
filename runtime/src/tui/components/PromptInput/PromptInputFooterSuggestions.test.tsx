@@ -92,11 +92,8 @@ describe('PromptInputFooterSuggestions', () => {
       80,
     )
 
-    const visibleLines = output
-      .split('\n')
-      .map(line => line.trimEnd())
-      .filter(line => line.length > 0)
-    expect(visibleLines).toHaveLength(1)
-    expect(visibleLines[0]).toContain('/noop')
+    expect(output).toContain('SLASH COMMANDS')
+    expect(output).toContain('/noop')
+    expect(output).not.toContain('undefined')
   })
 })

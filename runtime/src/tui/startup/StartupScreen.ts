@@ -1,7 +1,7 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
- * AgenC startup screen — filled-block text logo with sunset gradient.
+ * AgenC startup screen — filled-block text logo with signal gradient.
  * Called once at CLI startup before the Ink UI renders.
  *
  * Addresses: issue #55
@@ -51,18 +51,21 @@ function paintLine(text: string, stops: RGB[], lineT: number): string {
 // ─── Colors ───────────────────────────────────────────────────────────────────
 
 const SUNSET_GRAD: RGB[] = [
-  [255, 180, 100],
-  [240, 140, 80],
-  [217, 119, 87],
-  [193, 95, 60],
-  [160, 75, 55],
-  [130, 60, 50],
+  [255, 79, 122],
+  [221, 82, 255],
+  [178, 95, 255],
+  [130, 86, 255],
+  [82, 214, 255],
+  [44, 214, 139],
 ]
 
-const ACCENT: RGB = [240, 148, 100]
-const CREAM: RGB = [220, 195, 170]
-const DIMCOL: RGB = [120, 100, 82]
-const BORDER: RGB = [100, 80, 65]
+const ACCENT: RGB = [206, 92, 255]
+const CREAM: RGB = [239, 229, 255]
+const DIMCOL: RGB = [139, 120, 157]
+const BORDER: RGB = [129, 55, 176]
+const GREEN: RGB = [44, 214, 139]
+const RED: RGB = [255, 79, 122]
+const ORANGE: RGB = [255, 151, 72]
 
 // ─── Filled Block Text Logo ───────────────────────────────────────────────────
 
@@ -186,6 +189,9 @@ export function printStartupScreen(modelOverride?: string): void {
   const out: string[] = []
 
   out.push('')
+  out.push(`${rgb(...RED)}●${RESET} ${rgb(...ORANGE)}●${RESET} ${rgb(...GREEN)}●${RESET} ${DIM}${rgb(...DIMCOL)} agenc - orchestrator${RESET}`)
+  out.push(`${rgb(...BORDER)}${'─'.repeat(W)}${RESET}`)
+  out.push('')
 
   // Gradient logo
   const allLogo = LOGO_AGENC
@@ -202,7 +208,7 @@ export function printStartupScreen(modelOverride?: string): void {
   out.push('')
 
   // Tagline
-  out.push(`  ${rgb(...ACCENT)}\u2726${RESET} ${rgb(...CREAM)}Any model. Every tool. Zero limits.${RESET} ${rgb(...ACCENT)}\u2726${RESET}`)
+  out.push(`  ${rgb(...ACCENT)}\u2726${RESET} ${rgb(...CREAM)}Orchestrator online. Multi-agent terminal ready.${RESET} ${rgb(...ACCENT)}\u2726${RESET}`)
   out.push('')
 
   // Provider info box
@@ -213,7 +219,7 @@ export function printStartupScreen(modelOverride?: string): void {
     return [` ${DIM}${rgb(...DIMCOL)}${padK}${RESET} ${rgb(...c)}${v}${RESET}`, ` ${padK} ${v}`.length]
   }
 
-  const provC: RGB = p.isLocal ? [130, 175, 130] : ACCENT
+  const provC: RGB = p.isLocal ? GREEN : ACCENT
   let [r, l] = lbl('Provider', p.name, provC)
   out.push(boxRow(r, W, l))
   ;[r, l] = lbl('Model', p.model)
@@ -224,10 +230,10 @@ export function printStartupScreen(modelOverride?: string): void {
 
   out.push(`${rgb(...BORDER)}\u2560${'\u2550'.repeat(W - 2)}\u2563${RESET}`)
 
-  const sC: RGB = p.isLocal ? [130, 175, 130] : ACCENT
+  const sC: RGB = p.isLocal ? GREEN : ACCENT
   const sL = p.isLocal ? 'local' : 'cloud'
-  const sRow = ` ${rgb(...sC)}\u25cf${RESET} ${DIM}${rgb(...DIMCOL)}${sL}${RESET}    ${DIM}${rgb(...DIMCOL)}Ready \u2014 type ${RESET}${rgb(...ACCENT)}/help${RESET}${DIM}${rgb(...DIMCOL)} to begin${RESET}`
-  const sLen = ` \u25cf ${sL}    Ready \u2014 type /help to begin`.length
+  const sRow = ` ${rgb(...sC)}\u25cf${RESET} ${DIM}${rgb(...DIMCOL)}${sL}${RESET}    ${DIM}${rgb(...DIMCOL)}Ready :: type ${RESET}${rgb(...ACCENT)}/help${RESET}${DIM}${rgb(...DIMCOL)} to begin${RESET}`
+  const sLen = ` \u25cf ${sL}    Ready :: type /help to begin`.length
   out.push(boxRow(sRow, W, sLen))
 
   out.push(`${rgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
