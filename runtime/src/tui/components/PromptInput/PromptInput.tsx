@@ -722,7 +722,7 @@ function PromptInput({
   // ─── Footer pill navigation ─────────────────────────────────────────────
   // Which pills render below the input box. Order here IS the nav order
   // (down/right = forward, up/left = back).
-  const runningTaskCount = useMemo(() => count(Object.values(tasks), t => t.status === 'running'), [tasks]);
+  const runningTaskCount = useMemo(() => count(Object.values(tasks), isBackgroundTask), [tasks]);
   // Panel shows retained-completed agents too (getVisibleAgentTasks), so the
   // pill must stay navigable whenever the panel has rows — not just when
   // something is running.

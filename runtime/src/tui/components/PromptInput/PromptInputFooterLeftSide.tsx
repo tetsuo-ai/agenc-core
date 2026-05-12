@@ -333,7 +333,7 @@ function ModeIndicator({
 
   // Check if any in-process teammates exist (for hint text cycling)
   const hasAnyInProcessTeammates = Object.values(tasks).some(t_2 => t_2.type === 'in_process_teammate' && t_2.status === 'running');
-  const hasRunningAgentTasks = Object.values(tasks).some(t_3 => t_3.type === 'local_agent' && t_3.status === 'running');
+  const hasRunningAgentTasks = Object.values(tasks).some(t_3 => t_3.type === 'local_agent' && (t_3.status === 'pending' || t_3.status === 'running'));
 
   // Get hint parts separately for potential second-line rendering
   const hintParts = showHint ? getSpinnerHintParts(isLoading, escShortcut, todosShortcut, killAgentsShortcut, hasTaskItems, expandedView, hasAnyInProcessTeammates, hasRunningAgentTasks, isKillAgentsConfirmShowing) : [];

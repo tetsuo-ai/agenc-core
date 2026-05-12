@@ -71,6 +71,7 @@ import { SkillImprovementSurvey } from '../components/SkillImprovementSurvey.js'
 import { useSkillImprovementSurvey } from '../hooks/useSkillImprovementSurvey.js';
 import { useMoreRight } from '../moreright/useMoreRight.js';
 import { SpinnerWithVerb, BriefIdleStatus, type SpinnerMode } from '../components/spinner/Spinner.js';
+import { getActiveLocalAgentTasks } from '../components/spinner/agentActivity.js';
 import { getSystemPrompt } from '../../constants/prompts.js';
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js';
 import { getSystemContext, getUserContext } from '../../context.js';
@@ -1640,6 +1641,7 @@ export function REPL({
   // Session backgrounding — hook is below, after getToolUseContext
 
   const hasRunningTeammates = useMemo(() => getAllInProcessTeammateTasks(tasks).some(t => t.status === 'running'), [tasks]);
+  const hasActiveLocalAgents = useMemo(() => getActiveLocalAgentTasks(tasks).length > 0, [tasks]);
 
   // Show deferred turn duration message once all swarm teammates finish
   useEffect(() => {
@@ -1723,7 +1725,7 @@ export function REPL({
   const showSpinner = (!toolJSX || toolJSX.showSpinner === true) && toolUseConfirmQueue.length === 0 && promptQueue.length === 0 && (
     // Show spinner during input processing, API call, while teammates are running,
     // or while pending task notifications are queued (prevents spinner bounce between consecutive notifications)
-    isLoading || userInputOnProcessing || hasRunningTeammates ||
+    isLoading || userInputOnProcessing || hasRunningTeammates || hasActiveLocalAgents ||
     // Keep spinner visible while task notifications are queued for processing.
     // Without this, the spinner briefly disappears between consecutive notifications
     // (e.g., multiple background agents completing in rapid succession) because
@@ -4615,7 +4617,7 @@ export function REPL({
         {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
         <Box flexGrow={1} />
         {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
-        {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
+        {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && (isBriefOnly || hasActiveLocalAgents) && !viewedAgentTask && <BriefIdleStatus />}
         {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       </>} bottom={<Box flexDirection="row" width="100%" alignItems="flex-end">
         <Box flexDirection="column" flexGrow={1}>

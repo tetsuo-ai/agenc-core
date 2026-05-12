@@ -38,7 +38,7 @@ import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../bootstrap/state.js';
 import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../../ink.js';
-import { formatRunningAgentSummary, getRunningLocalAgentTasks } from './agentActivity.js';
+import { formatRunningAgentSummary, getActiveLocalAgentTasks } from './agentActivity.js';
 export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
@@ -187,7 +187,7 @@ function SpinnerWithVerbInner({
   // Check if any running in-process teammates exist (needed for both modes)
   const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');
   const hasRunningTeammates = runningTeammates.length > 0;
-  const runningLocalAgents = getRunningLocalAgentTasks(tasks);
+  const runningLocalAgents = getActiveLocalAgentTasks(tasks);
   const hasRunningLocalAgents = runningLocalAgents.length > 0;
   const allIdle = hasRunningTeammates && runningTeammates.every(t_0 => t_0.isIdle);
 
@@ -448,7 +448,7 @@ function _temp6(s_0) {
 function RunningLocalAgentsLine({
   agents
 }: {
-  agents: readonly ReturnType<typeof getRunningLocalAgentTasks>[number][];
+  agents: readonly ReturnType<typeof getActiveLocalAgentTasks>[number][];
 }) {
   return <MessageResponse>
       <Text color="cyan_FOR_SUBAGENTS_ONLY">{figures.play} {formatRunningAgentSummary(agents)}</Text>
@@ -465,7 +465,7 @@ export function BriefIdleStatus() {
   const connStatus = useAppState(_temp7);
   const runningCount = useAppState(_temp8);
   const tasks = useAppState(s => s.tasks);
-  const runningLocalAgents = getRunningLocalAgentTasks(tasks);
+  const runningLocalAgents = getActiveLocalAgentTasks(tasks);
   const {
     columns
   } = useTerminalSize();

@@ -1,6 +1,6 @@
 import { formatNumber } from "../../../utils/format.js";
 
-export type RunningLocalAgentTask = {
+export type ActiveLocalAgentTask = {
   readonly id?: unknown;
   readonly type?: unknown;
   readonly status?: unknown;
@@ -15,23 +15,24 @@ export type RunningLocalAgentTask = {
   };
 };
 
-export function getRunningLocalAgentTasks(
+export function getActiveLocalAgentTasks(
   tasks: Record<string, unknown> | undefined,
-): RunningLocalAgentTask[] {
+): ActiveLocalAgentTask[] {
   return Object.values(tasks ?? {})
     .filter(
-      (task): task is RunningLocalAgentTask =>
+      (task): task is ActiveLocalAgentTask =>
         typeof task === "object" &&
         task !== null &&
-        (task as RunningLocalAgentTask).type === "local_agent" &&
-        (task as RunningLocalAgentTask).status === "running",
+        (task as ActiveLocalAgentTask).type === "local_agent" &&
+        ((task as ActiveLocalAgentTask).status === "pending" ||
+          (task as ActiveLocalAgentTask).status === "running"),
     )
     .sort((left, right) =>
       formatLocalAgentName(left).localeCompare(formatLocalAgentName(right)),
     );
 }
 
-export function formatLocalAgentName(task: RunningLocalAgentTask): string {
+export function formatLocalAgentName(task: ActiveLocalAgentTask): string {
   const description =
     typeof task.description === "string" ? task.description.trim() : "";
   if (description && description.length <= 48 && !description.includes("\n")) {
@@ -46,7 +47,7 @@ export function formatLocalAgentName(task: RunningLocalAgentTask): string {
 }
 
 export function formatRunningAgentSummary(
-  agents: readonly RunningLocalAgentTask[],
+  agents: readonly ActiveLocalAgentTask[],
 ): string {
   const count = agents.length;
   const names = agents.slice(0, 3).map(formatLocalAgentName);

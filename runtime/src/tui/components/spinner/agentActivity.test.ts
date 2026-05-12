@@ -3,19 +3,19 @@ import { describe, expect, test } from "vitest";
 import {
   formatLocalAgentName,
   formatRunningAgentSummary,
-  getRunningLocalAgentTasks,
+  getActiveLocalAgentTasks,
 } from "./agentActivity.js";
 
 describe("agent spinner activity helpers", () => {
-  test("selects running local agents and sorts them by display name", () => {
+  test("selects active local agents and sorts them by display name", () => {
     const tasks = {
       shell: { id: "shell", type: "local_bash", status: "running" },
       done: { id: "done", type: "local_agent", status: "completed" },
       zed: { id: "zed", type: "local_agent", status: "running", description: "Zed" },
-      ada: { id: "ada", type: "local_agent", status: "running", description: "Ada" },
+      ada: { id: "ada", type: "local_agent", status: "pending", description: "Ada" },
     };
 
-    expect(getRunningLocalAgentTasks(tasks).map(formatLocalAgentName)).toEqual([
+    expect(getActiveLocalAgentTasks(tasks).map(formatLocalAgentName)).toEqual([
       "Ada",
       "Zed",
     ]);

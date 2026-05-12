@@ -17,6 +17,7 @@ import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { AlternateScreen } from "../ink/components/AlternateScreen.js";
 import { isFullscreenEnvEnabled, isMouseTrackingEnabled } from "../../utils/fullscreen.js";
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
+import { getActiveLocalAgentTasks } from "./spinner/agentActivity.js";
 import type { SpinnerMode } from "./spinner/types.js";
 import { parseSlashCommand, dispatchSlashCommand } from "../../commands/dispatcher.js";
 import { buildDefaultRegistry } from "../../commands/registry.js";
@@ -1843,7 +1844,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // sees the response itself, so the spinner is suppressed.
   const inProgressToolCount = transcript.inProgressToolUseIDs.size;
   const isLoading = transcript.isStreaming || pendingSubmission;
-  const showSpinner = isLoading && permissionRequests.length === 0 && elicitation.prompt === null && !isMessageSelectorVisible && !transcript.streamingText;
+  const appTasks = useAppState(s => s.tasks);
+  const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
+  const showSpinner = (isLoading || hasActiveLocalAgents) && permissionRequests.length === 0 && elicitation.prompt === null && !isMessageSelectorVisible && !transcript.streamingText;
   if (isLoading && !wasStreamingRef.current) {
     loadingStartTimeRef.current = Date.now();
     totalPausedMsRef.current = 0;
