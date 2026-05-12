@@ -15,9 +15,16 @@ import {
   createChordInputHandler,
   formatKeybindingWarningSummary,
 } from "./KeybindingProviderSetup.js";
+import { DEFAULT_BINDINGS } from "./defaultBindings.js";
 import { parseBindings } from "./parser.js";
+import { resolveKeyWithChordState } from "./resolver.js";
 import type { Key } from "../ink.js";
-import type { InputEvent } from "../ink/events/input-event.js";
+import {
+  INITIAL_STATE,
+  parseMultipleKeypresses,
+  type ParsedKey,
+} from "../ink/parse-keypress.js";
+import { InputEvent } from "../ink/events/input-event.js";
 import type { KeybindingContextName, ParsedKeystroke } from "./types.js";
 
 type HandlerRegistration = {
@@ -59,6 +66,14 @@ function inputEvent(): InputEvent & { stopped: boolean } {
       this.stopped = true;
     },
   } as InputEvent & { stopped: boolean };
+}
+
+function parseInputEvent(sequence: string): InputEvent {
+  const [items] = parseMultipleKeypresses(INITIAL_STATE, sequence);
+  expect(items).toHaveLength(1);
+  const item = items[0];
+  expect(item?.kind).toBe("key");
+  return new InputEvent(item as ParsedKey);
 }
 
 describe("KeybindingProviderSetup", () => {
@@ -119,5 +134,31 @@ describe("KeybindingProviderSetup", () => {
     expect(completionEvent.stopped).toBe(true);
     expect(pendingChordRef.current).toBeNull();
     expect(invoked).toBe(1);
+  });
+
+  test("resolves raw footer x and enter input from terminal bytes", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+
+    const closeEvent = parseInputEvent("x");
+    expect(
+      resolveKeyWithChordState(
+        closeEvent.input,
+        closeEvent.key,
+        ["Footer", "Chat", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "footer:close" });
+
+    const openEvent = parseInputEvent("\r");
+    expect(
+      resolveKeyWithChordState(
+        openEvent.input,
+        openEvent.key,
+        ["Footer", "Chat", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "footer:openSelected" });
   });
 });
