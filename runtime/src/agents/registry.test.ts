@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  AgentLimitReachedError,
   InvalidAgentPathError,
   AgentPathExistsError,
   AgentRegistry,
@@ -16,7 +15,7 @@ import {
 import { resolveAgentRole } from "./role.js";
 
 describe("AgentRegistry", () => {
-  it("I-63: slot acquisition is atomic under the lock", async () => {
+  it("I-63: slot acquisition is atomic and uncapped under the lock", async () => {
     const reg = new AgentRegistry({ maxThreads: 3 });
     const reservations = await Promise.all([
       reg.reserveSpawnSlot(),
@@ -24,9 +23,7 @@ describe("AgentRegistry", () => {
       reg.reserveSpawnSlot(),
     ]);
     expect(reservations).toHaveLength(3);
-    await expect(reg.reserveSpawnSlot()).rejects.toBeInstanceOf(
-      AgentLimitReachedError,
-    );
+    await expect(reg.reserveSpawnSlot()).resolves.toBeDefined();
   });
 
   it("release() rolls back the slot counter", async () => {
@@ -137,7 +134,7 @@ describe("AgentRegistry", () => {
     },
   );
 
-  it("root thread is exempt from maxThreads", () => {
+  it("registers the root thread outside the spawn counter", () => {
     const reg = new AgentRegistry({ maxThreads: 1 });
     reg.registerRootThread("root-id");
     expect(reg.agentIdForPath("/root")).toBe("root-id");

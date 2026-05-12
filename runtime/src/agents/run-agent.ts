@@ -1210,12 +1210,20 @@ const THREAD_SPAWN_DEPTH_CAPPED_TOOL_NAMES = new Set([
   ...V2_AGENT_TOOL_NAMES,
 ]);
 
+const THREAD_SPAWN_SUBAGENT_TOOL_NAMES = new Set([
+  ...THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES,
+  "spawn_agent",
+]);
+
 export function resolveThreadSpawnDisabledTools(opts: {
   readonly depth: number;
   readonly maxDepth: number;
 }): ReadonlySet<string> {
-  return opts.depth >= opts.maxDepth
-    ? THREAD_SPAWN_DEPTH_CAPPED_TOOL_NAMES
+  if (opts.depth >= opts.maxDepth) {
+    return THREAD_SPAWN_DEPTH_CAPPED_TOOL_NAMES;
+  }
+  return opts.depth > 0
+    ? THREAD_SPAWN_SUBAGENT_TOOL_NAMES
     : THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES;
 }
 

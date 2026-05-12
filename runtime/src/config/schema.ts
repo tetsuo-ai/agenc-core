@@ -668,7 +668,6 @@ export function defaultConfig(): AgenCConfig {
     }) as SandboxConfig,
     reasoning_effort: "medium" as ReasoningEffort,
     approvals_reviewer: "user" as ApprovalsReviewer,
-    agent_max_threads: 4,
     agent_max_depth: 1,
     auth: Object.freeze({
       backend: "local",

@@ -148,6 +148,9 @@ vi.mock("../ink.js", async () => {
     useInput: () => {},
     useTerminalFocus: () => true,
     useTerminalTitle: () => {},
+    useAnimationFrame: () => [{ current: null }, 0],
+    useTheme: () => ["dark", () => {}],
+    useThemeSetting: () => "dark",
   };
 });
 
@@ -209,6 +212,7 @@ vi.mock("../../utils/settings/applySettingsChange.js", () => ({
 
 vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),
+  getSettings_DEPRECATED: () => ({}),
 }));
 
 vi.mock("../../utils/teammate.js", () => ({
@@ -376,6 +380,14 @@ vi.mock("./MessageSelector.js", async () => {
   };
 });
 
+vi.mock("./Message.js", async () => {
+  const React = await import("react");
+  return {
+    Message: (props: Record<string, unknown>) =>
+      React.createElement("ink-text", null, `queued-message:${String(props.message ?? "")}`),
+  };
+});
+
 vi.mock("./ExitFlow.js", async () => {
   const React = await import("react");
   return {
@@ -409,6 +421,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setVimMode,
       mcpClients,
       getToolUseContext,
+      isLoading,
     }: {
       input: string;
       onSubmit: (input: string, helpers: {
@@ -423,6 +436,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setVimMode?: unknown;
       mcpClients?: unknown;
       getToolUseContext?: unknown;
+      isLoading?: boolean;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
       providerProbe.promptProps.push({
@@ -434,6 +448,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         setVimMode,
         mcpClients,
         getToolUseContext,
+        isLoading,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -1341,6 +1356,56 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         });
       },
     );
+  });
+
+  test("queues prompt submissions visibly while the live session is busy", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { getCommandQueue, resetCommandQueue } = await import("../../utils/messageQueueManager.js");
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      activeTurn: {
+        unsafePeek: () => ({ turnId: "busy-turn" }),
+      },
+      submit,
+    };
+    const queuedHelpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    resetShellSurfaceProbe();
+    resetCommandQueue();
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+        async () => {
+          const onSubmit = providerProbe.promptSubmits.at(-1);
+          expect(onSubmit).toBeDefined();
+
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(true);
+
+          await onSubmit!("queued message", queuedHelpers);
+
+          expect(submit).not.toHaveBeenCalled();
+          expect(getCommandQueue()).toMatchObject([
+            { value: "queued message", mode: "prompt" },
+          ]);
+          expect(queuedHelpers.clearBuffer).toHaveBeenCalledTimes(1);
+          expect(queuedHelpers.resetHistory).toHaveBeenCalledTimes(1);
+          expect(queuedHelpers.setCursorOffset).toHaveBeenCalledWith(0);
+        },
+      );
+    } finally {
+      resetCommandQueue();
+    }
   });
 
   test("skips first-run onboarding after completion is persisted", async () => {

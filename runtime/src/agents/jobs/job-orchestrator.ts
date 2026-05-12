@@ -105,21 +105,6 @@ export interface AgentJobThreadOps {
 }
 
 /**
- * Thrown by an `AgentJobSpawn.spawn` adapter when the underlying agent
- * control plane refuses to spawn because the session is at its concurrent
- * thread cap. Mirrors the reference `AgentLimitReached` arm at
- * `agent_jobs.rs:658`. The orchestrator catches this specifically: it
- * rolls the item back to `pending` and breaks the dispatch loop until
- * an inflight worker completes (capacity opens up).
- */
-export class AgentJobCapacityError extends Error {
-  constructor(reason: string) {
-    super(reason);
-    this.name = "AgentJobCapacityError";
-  }
-}
-
-/**
  * One progress notification, mirroring reference `AgentJobProgressUpdate`
  * (the payload of `agent_job_progress:{...}` events emitted via
  * `notify_background_event` at `agent_jobs.rs:172-174`). Fields match
@@ -160,13 +145,6 @@ export interface RunAgentsOnCsvOpts {
    * reference parity on the emitted line.
    */
   readonly progressEmitter?: AgentJobProgressEmitter;
-  /**
-   * Session-level cap on concurrent agent threads. Mirrors reference
-   * `turn.config.agent_max_threads`. When set, the effective
-   * concurrency is `min(min(requested_or_16, 64), agent_max_threads)`
-   * (reference `normalize_concurrency` at agent_jobs.rs:552-560).
-   */
-  readonly agentMaxThreads?: number;
 }
 
 export interface RunAgentsOnCsvResult {
@@ -318,7 +296,7 @@ export async function runAgentsOnCsv(
     jobId,
     instruction: opts.instruction,
     ...(opts.outputSchema !== undefined ? { outputSchema: opts.outputSchema } : {}),
-    maxConcurrency: clampConcurrency(opts.maxConcurrency, opts.agentMaxThreads),
+    maxConcurrency: clampConcurrency(opts.maxConcurrency),
     maxRuntimeSeconds: opts.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS,
   };
   const items = new Map<ItemId, JobItemRecord>();
@@ -442,20 +420,13 @@ export async function runAgentsOnCsv(
 
 function clampConcurrency(
   requested: number | undefined,
-  agentMaxThreads: number | undefined,
 ): number {
-  // Mirrors reference `normalize_concurrency` (agent_jobs.rs:552-560):
-  //   requested = unwrap_or(16).max(1).min(64);
-  //   if let Some(max_threads) = max_threads { requested.min(max_threads.max(1)) } else { requested }
   const raw = requested ?? DEFAULT_MAX_CONCURRENCY;
-  let effective =
+  return (
     !Number.isFinite(raw) || raw <= 0
       ? DEFAULT_MAX_CONCURRENCY
-      : Math.max(1, Math.min(64, Math.floor(raw)));
-  if (agentMaxThreads !== undefined) {
-    effective = Math.min(effective, Math.max(1, Math.floor(agentMaxThreads)));
-  }
-  return effective;
+      : Math.max(1, Math.min(64, Math.floor(raw)))
+  );
 }
 
 /**
@@ -647,13 +618,6 @@ async function processItems(
       }
       return {};
     } catch (err) {
-      if (err instanceof AgentJobCapacityError) {
-        // reference agent_jobs.rs:658-665: capacity rejection rolls the
-        // item back to pending and the dispatch loop breaks until an
-        // inflight worker frees a slot.
-        state.repository?.markItemPending(state.config.jobId, itemId);
-        return { retryItemId: itemId };
-      }
       const reason = err instanceof Error ? err.message : String(err);
       item.status = "failed";
       item.error = reason;

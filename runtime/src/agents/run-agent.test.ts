@@ -951,7 +951,7 @@ describe("runAgent", () => {
     });
   });
 
-  it("filters task and main-thread coordination tools from V2 child agents", async () => {
+  it("filters spawn, task, and main-thread coordination tools from V2 child agents", async () => {
     const leakedToolNames = [
       "TaskCreate",
       "TaskGet",
@@ -989,12 +989,11 @@ describe("runAgent", () => {
 
     const advertisedNames = registry.tools.map((tool) => tool.name);
     expect(advertisedNames).toEqual([
-      "spawn_agent",
       "wait_agent",
       "StructuredOutput",
       "system.echo",
     ]);
-    for (const toolName of leakedToolNames) {
+    for (const toolName of ["spawn_agent", ...leakedToolNames]) {
       expect(advertisedNames).not.toContain(toolName);
       await expect(
         registry.dispatch({ id: `call-${toolName}`, name: toolName, arguments: "{}" }),

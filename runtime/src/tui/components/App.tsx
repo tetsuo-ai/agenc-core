@@ -19,6 +19,9 @@ import { isFullscreenEnvEnabled, isMouseTrackingEnabled } from "../../utils/full
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
 import { getActiveLocalAgentTasks } from "./spinner/agentActivity.js";
 import type { SpinnerMode } from "./spinner/types.js";
+import { PromptInputQueuedCommands } from "./PromptInput/PromptInputQueuedCommands.js";
+import { useCommandQueue } from "../hooks/useCommandQueue.js";
+import { dequeue, enqueue, peek } from "../../utils/messageQueueManager.js";
 import { parseSlashCommand, dispatchSlashCommand } from "../../commands/dispatcher.js";
 import { buildDefaultRegistry } from "../../commands/registry.js";
 import { setGlobalCommandRegistry } from "../../commands/types.js";
@@ -47,7 +50,7 @@ import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
 import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import type { Command } from "../../commands.js";
-import type { VimMode } from "../../types/textInputTypes.js";
+import type { QueuedCommand, VimMode } from "../../types/textInputTypes.js";
 import { installCompactProgressControls, type AgenCTuiProps } from "../session-types.js";
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
 import { useCostSummary } from "../../cost/hook.js";
@@ -72,6 +75,32 @@ export type McpFieldParseResult = {
   readonly ok: false;
   readonly message: string;
 };
+
+type LiveSubmitOptions = {
+  readonly fromQueue?: boolean;
+  readonly pastedContentsOverride?: Record<number, any>;
+};
+
+function isMainThreadPromptCommand(command: QueuedCommand): boolean {
+  return command.agentId === undefined && command.mode === "prompt";
+}
+
+function dequeueNextMainThreadPromptCommand(): QueuedCommand | undefined {
+  const next = peek(isMainThreadPromptCommand);
+  if (next === undefined) return undefined;
+  return dequeue(command => command === next);
+}
+
+function queuedCommandInputText(command: QueuedCommand): string {
+  if (typeof command.value === "string") return command.value;
+  return command.value.map(block => {
+    if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
+      return block.text;
+    }
+    return "[image]";
+  }).filter(Boolean).join("\n");
+}
+
 export type UserPending = {
   readonly kind: "user";
   readonly request: RequestUserInputEvent;
@@ -1317,6 +1346,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   }, [commandRegistry]);
   const commands = listTuiCommandList(commandRegistry);
   const agents = useMemo(() => listAgentRoleDefinitions(), []);
+  const appTasks = useAppState(s => s.tasks);
+  const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
+  const hasActiveSessionTurn = hasActiveConversationTurn(props.session);
+  const isLoading = transcript.isStreaming || pendingSubmission || hasActiveSessionTurn;
+  const effectiveInputBusy = isLoading || hasActiveLocalAgents;
+  const effectiveInputBusyRef = useRef(effectiveInputBusy);
+  effectiveInputBusyRef.current = effectiveInputBusy;
+  const queuedCommands = useCommandQueue();
+  const queueDrainActiveRef = useRef(false);
+  const [, setQueueDrainTick] = useState(0);
 
   // Tool-use context builder. Declared above submit so the slash-command
   // interceptor can read it without TDZ on first render. Also handed to
@@ -1377,10 +1416,31 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
     };
   }, []);
-  const submit = useCallback(async (value: string) => {
+  const submit = useCallback(async (value: string, options?: LiveSubmitOptions) => {
     const text_0 = value.trim();
-    const hasAttachments = Object.keys(pastedContents).length > 0;
+    const activePastedContents = options?.pastedContentsOverride ?? pastedContents;
+    const hasAttachments = Object.keys(activePastedContents).length > 0;
     if (text_0.length === 0 && !hasAttachments) return;
+    if (!options?.fromQueue && effectiveInputBusyRef.current) {
+      enqueue({
+        value: text_0,
+        preExpansionValue: text_0,
+        mode: "prompt",
+        ...(hasAttachments ? { pastedContents: activePastedContents } : {}),
+      });
+      setInput("");
+      setPastedContents({});
+      if (text_0.length > 0) {
+        try {
+          addToHistory({
+            display: text_0,
+            pastedContents: activePastedContents,
+          });
+        } catch {
+        }
+      }
+      return;
+    }
     // Clear any pending transient status overlay (e.g. a slash-command
     // usage error) so the prior status doesn't bleed into the new turn.
     // The 3s auto-clear timer is a safety net; this is the immediate
@@ -1392,6 +1452,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }
     setSubmitCount(count => count + 1);
     setPendingSubmission(true);
+    effectiveInputBusyRef.current = true;
     setInput("");
     // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
     // can find it. The daemon-backed AgenCTuiApp dispatch path used to
@@ -1400,18 +1461,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // by the power-chainer + returning-user personas). REPL.tsx
     // (legacy moved-source) already does this; mirror it here for
     // the live mount path.
-    if (text_0.length > 0) {
+    if (!options?.fromQueue && text_0.length > 0) {
       try {
         addToHistory({
           display: text_0,
-          pastedContents,
+          pastedContents: activePastedContents,
         });
       } catch {
         // best-effort: history persistence must not block submit
       }
     }
     if (hasAttachments) {
-      const attachmentsMessage = pastedContentsToLLMMessage(pastedContents);
+      const attachmentsMessage = pastedContentsToLLMMessage(activePastedContents);
       if (attachmentsMessage !== null) {
         props.session.enqueueIdleInput?.(attachmentsMessage);
       }
@@ -1594,6 +1655,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }
   }, [transcript.isStreaming, transcript.streamingText, assistantMessageCount]);
   useInitialSubmit(props.session, submit, props.initialPrompt, props.initialUserMessages);
+  useEffect(() => {
+    if (queueDrainActiveRef.current) return;
+    if (effectiveInputBusy) return;
+    if (permissionRequests.length > 0 || elicitation.prompt !== null || isMessageSelectorVisible || onboarding.active) return;
+    if (queuedCommands.length === 0) return;
+    const command = dequeueNextMainThreadPromptCommand();
+    if (command === undefined) return;
+    queueDrainActiveRef.current = true;
+    void submit(queuedCommandInputText(command), {
+      fromQueue: true,
+      ...(command.pastedContents !== undefined ? { pastedContentsOverride: command.pastedContents } : {}),
+    }).finally(() => {
+      queueDrainActiveRef.current = false;
+      setQueueDrainTick(tick => tick + 1);
+    });
+  }, [effectiveInputBusy, permissionRequests.length, elicitation.prompt, isMessageSelectorVisible, onboarding.active, queuedCommands, submit]);
   const toolUseConfirmQueue = useMemo(() => buildToolUseConfirmQueue(permissionRequests, availableTools), [permissionRequests, availableTools]);
 
   // Per-turn AbortController. CancelRequestHandler reads
@@ -1843,9 +1920,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // Streaming text is its own feedback: while text is flowing the user
   // sees the response itself, so the spinner is suppressed.
   const inProgressToolCount = transcript.inProgressToolUseIDs.size;
-  const isLoading = transcript.isStreaming || pendingSubmission;
-  const appTasks = useAppState(s => s.tasks);
-  const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
   const showSpinner = (isLoading || hasActiveLocalAgents) && permissionRequests.length === 0 && elicitation.prompt === null && !isMessageSelectorVisible && !transcript.streamingText;
   if (isLoading && !wasStreamingRef.current) {
     loadingStartTimeRef.current = Date.now();
@@ -1875,7 +1949,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} />
       </Box>;
   }
-  const messagesElement = <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={false} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={transcript.isStreaming || pendingSubmission} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
+  const messagesElement = <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
   const scrollableContent = <>
       {messagesElement}
       <RealtimePanel state={realtimeState} />
@@ -1892,6 +1966,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           viewport in fullscreen mode (matches upstream REPL.tsx pattern). */}
       {fullscreen ? <Box flexGrow={1} /> : null}
       {showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} /> : null}
+      {fullscreen ? <PromptInputQueuedCommands /> : null}
     </>;
 
   // PermissionOverlay + ElicitationOverlay live in `overlay` slot — rendered
@@ -1906,7 +1981,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.
   const showPromptInput = !isMessageSelectorVisible && permissionRequests.length === 0 && elicitation.prompt === null;
-  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={transcript.isStreaming || pendingSubmission} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_1, helpers_0) => {
+  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_1, helpers_0) => {
     if (await executeRealtimeComposerCommand(props.session.realtime, value_1)) {
       helpers_0.clearBuffer();
       helpers_0.resetHistory();

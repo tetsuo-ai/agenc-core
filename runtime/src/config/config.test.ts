@@ -91,7 +91,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.sandbox_mode).toBe("workspace-write");
     expect(cfg.sandbox?.mode).toBe("workspace-write");
     expect(cfg.max_turns).toBeGreaterThan(0);
-    expect(cfg.agent_max_threads).toBe(4);
+    expect(cfg.agent_max_threads).toBeUndefined();
     expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.auth?.backend).toBe("local");
     expect(cfg.auth?.managedKeys?.enabled).toBe(false);

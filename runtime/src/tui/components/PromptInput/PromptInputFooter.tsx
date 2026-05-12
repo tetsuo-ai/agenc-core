@@ -18,7 +18,7 @@ import type { Message } from '../../../types/message.js';
 import type { PromptInputMode, VimMode } from '../../../types/textInputTypes.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
-import { useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
+import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
@@ -157,6 +157,7 @@ function PromptInputFooter({
           <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
         </Box>
       </Box>
+      <CoordinatorTaskPanel />
     </>;
 }
 export default memo(PromptInputFooter);

@@ -40,7 +40,6 @@ import type {
 import type { Session } from "../session/session.js";
 import { Mailbox, MailboxClosedError } from "./mailbox.js";
 import {
-  AgentLimitReachedError,
   AgentPathExistsError,
   type AgentPath,
   type AgentRegistry,
@@ -346,20 +345,7 @@ export class AgentControl {
     }
 
     // I-63: atomic slot acquisition.
-    let reservation;
-    try {
-      reservation = await this.registry.reserveSpawnSlot();
-    } catch (err) {
-      if (err instanceof AgentLimitReachedError) {
-        emitWarning(
-          this.session.eventLog,
-          this.session.nextInternalSubId(),
-          "agent_limit_reached",
-          `spawn rejected: max_threads=${err.maxThreads}`,
-        );
-      }
-      throw err;
-    }
+    const reservation = await this.registry.reserveSpawnSlot();
 
     let nickname!: string;
     let threadId!: ThreadId;

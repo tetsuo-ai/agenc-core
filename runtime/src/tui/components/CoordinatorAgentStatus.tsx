@@ -33,6 +33,12 @@ import { isTerminalStatus } from './tasks/taskStatusUtils';
 export function getVisibleAgentTasks(tasks: AppState['tasks']): LocalAgentTaskState[] {
   return Object.values(tasks).filter((t): t is LocalAgentTaskState => isPanelAgentTask(t) && t.evictAfter !== 0).sort((a, b) => a.startTime - b.startTime);
 }
+
+export function getCoordinatorTaskCount(tasks: AppState['tasks']): number {
+  const visibleTasks = getVisibleAgentTasks(tasks);
+  return visibleTasks.length === 0 ? 0 : visibleTasks.length + 1;
+}
+
 export function CoordinatorTaskPanel(): React.ReactNode {
   const tasks = useAppState(s => s.tasks);
   const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
@@ -84,9 +90,7 @@ export function CoordinatorTaskPanel(): React.ReactNode {
  */
 export function useCoordinatorTaskCount() {
   const tasks = useAppState(_temp);
-  let t0;
-  t0 = 0;
-  return t0;
+  return getCoordinatorTaskCount(tasks);
 }
 function _temp(s) {
   return s.tasks;

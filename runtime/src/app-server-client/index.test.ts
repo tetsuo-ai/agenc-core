@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  createAgenCDaemonOnlyTuiContext,
   findAgenCDaemonAgentBySessionId,
   listAgenCDaemonAgents,
 } from "./index.js";
@@ -170,5 +174,20 @@ describe("app-server-client daemon helpers", () => {
       vi.doUnmock("../app-server/agent-cli.js");
       vi.resetModules();
     }
+  });
+
+  it("seeds daemon-only TUI context with bypass permissions for yolo launch", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-context-"));
+    const context = await createAgenCDaemonOnlyTuiContext({
+      env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+      cwd: "/workspace",
+      conversationId: "agenc-tui-idle-test",
+      permissionMode: "bypassPermissions",
+    });
+
+    const permissionContext =
+      context.baseSession.services.permissionModeRegistry.current();
+    expect(permissionContext.mode).toBe("bypassPermissions");
+    expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
   });
 });

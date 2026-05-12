@@ -12,7 +12,8 @@ import type { VimMode, PromptInputMode } from '../../../types/textInputTypes.js'
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
 import { formatVimModeIndicator, isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../../utils/permissions/PermissionMode.js';
+import { isDefaultMode, getModeColor } from '../../../utils/permissions/PermissionMode.js';
+import { permissionModeFooterChrome } from './permissionModeChrome.js';
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { getVisibleAgentTasks } from '../CoordinatorAgentStatus.js';
@@ -284,6 +285,7 @@ function ModeIndicator({
   }
   const currentMode = toolPermissionContext?.mode;
   const hasActiveMode = !isDefaultMode(currentMode);
+  const currentModeChrome = currentMode && hasActiveMode ? permissionModeFooterChrome(currentMode) : null;
   const viewedTask = viewingAgentTaskId ? tasks[viewingAgentTaskId] : undefined;
   const isViewingTeammate = viewSelectionMode === 'viewing-agent' && viewedTask?.type === 'in_process_teammate';
   const isViewingCompletedTeammate = isViewingTeammate && viewedTask != null && viewedTask.status !== 'running';
@@ -310,9 +312,8 @@ function ModeIndicator({
   // the local permission mode shown here doesn't reflect the agent's state.
   // Rendered before the tasks pill so a long pill label (e.g. ultraplan URL)
   // doesn't push the mode indicator off-screen.
-  const modePart = currentMode && hasActiveMode && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} key="mode">
-        {permissionModeSymbol(currentMode)}{' '}
-        {permissionModeTitle(currentMode).toLowerCase()} on
+  const modePart = currentMode && currentModeChrome && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} bold={currentModeChrome.emphasize} key="mode">
+        {currentModeChrome.symbol}{currentModeChrome.symbol ? ' ' : ''}{currentModeChrome.label}
         {shouldShowModeHint && <Text dimColor>
             {' '}
             <KeyboardShortcutHint shortcut={modeCycleShortcut} action="cycle" parens />

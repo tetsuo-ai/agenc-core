@@ -3620,7 +3620,6 @@ function deriveMinimalSessionConfig(
     cwd,
     features,
     multiAgentV2: {
-      maxConcurrentThreadsPerSession: 4,
       minWaitTimeoutMs: 10_000,
       usageHintEnabled: false,
       usageHintText: "",

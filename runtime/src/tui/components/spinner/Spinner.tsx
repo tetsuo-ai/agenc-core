@@ -98,7 +98,7 @@ function SpinnerWithVerbInner({
   leaderIsIdle = false
 }: Props): React.ReactNode {
   const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  const reducedMotion = settings?.prefersReducedMotion ?? false;
 
   // NOTE: useAnimationFrame(50) lives in SpinnerAnimationRow, not here.
   // This component only re-renders when props or app state change —
@@ -185,7 +185,7 @@ function SpinnerWithVerbInner({
   const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
 
   // Check if any running in-process teammates exist (needed for both modes)
-  const runningTeammates = getAllInProcessTeammateTasks(tasks).filter(t => t.status === 'running');
+  const runningTeammates = getAllInProcessTeammateTasks(tasks ?? {}).filter(t => t.status === 'running');
   const hasRunningTeammates = runningTeammates.length > 0;
   const runningLocalAgents = getActiveLocalAgentTasks(tasks);
   const hasRunningLocalAgents = runningLocalAgents.length > 0;
@@ -195,7 +195,7 @@ function SpinnerWithVerbInner({
   // In spinner-tree mode, skip aggregation (teammates have their own lines in the tree)
   let teammateTokens = 0;
   if (!showSpinnerTree) {
-    for (const task_0 of Object.values(tasks)) {
+    for (const task_0 of Object.values(tasks ?? {})) {
       if (isInProcessTeammateTask(task_0) && task_0.status === 'running') {
         if (task_0.progress?.tokenCount) {
           teammateTokens += task_0.progress.tokenCount;
@@ -256,7 +256,7 @@ function SpinnerWithVerbInner({
   // off the 50ms clock) is fine. Other triggers (mode change, setMessages)
   // cause re-renders that refresh this in practice.
   let contextTipsActive = false;
-  const tipsEnabled = settings.spinnerTipsEnabled !== false;
+  const tipsEnabled = settings?.spinnerTipsEnabled !== false;
   const showClearTip = tipsEnabled && elapsedSnapshot > 1_800_000;
   const effectiveTip = contextTipsActive ? undefined : showClearTip && !nextTask ? 'Use /clear to start fresh when switching topics and free up context' : spinnerTip;
 
@@ -323,7 +323,7 @@ function BriefSpinner(t0) {
     overrideMessage
   } = t0;
   const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  const reducedMotion = settings?.prefersReducedMotion ?? false;
   const [randomVerb] = useState(_temp4);
   const verb = overrideMessage ?? randomVerb;
   const connStatus = useAppState(_temp5);
@@ -443,7 +443,7 @@ function BriefSpinner(t0) {
 // working/idle/disconnected. See BriefSpinner's comment for the
 // Notifications overlay coupling.
 function _temp6(s_0) {
-  return count(Object.values(s_0.tasks), isBackgroundTask) + s_0.remoteBackgroundTaskCount;
+  return count(Object.values(s_0.tasks ?? {}), isBackgroundTask) + (s_0.remoteBackgroundTaskCount ?? 0);
 }
 function RunningLocalAgentsLine({
   agents
@@ -513,7 +513,7 @@ export function BriefIdleStatus() {
   return t2;
 }
 function _temp8(s_0) {
-  return count(Object.values(s_0.tasks), isBackgroundTask) + s_0.remoteBackgroundTaskCount;
+  return count(Object.values(s_0.tasks ?? {}), isBackgroundTask) + (s_0.remoteBackgroundTaskCount ?? 0);
 }
 function _temp7(s) {
   return s.remoteConnectionStatus;
@@ -521,7 +521,7 @@ function _temp7(s) {
 export function Spinner() {
   const $ = _c(8);
   const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  const reducedMotion = settings?.prefersReducedMotion ?? false;
   const [ref, time] = useAnimationFrame(reducedMotion ? null : 120);
   if (reducedMotion) {
     let t0;

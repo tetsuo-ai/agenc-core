@@ -3,7 +3,7 @@
  *
  * Hand-port of reference runtime `core/src/agent/registry.rs` (344 LOC).
  * Owns:
- *   - Spawn-slot counter (bounded by `maxThreads`)
+ *   - Spawn-slot counter
  *   - `agentPath` → `AgentMetadata` map (hierarchical "/root/worker/sub")
  *   - `agentId` → `metadata` reverse index
  *   - Nickname cycle bookkeeping
@@ -48,13 +48,6 @@ export interface AgentMetadata {
 // Errors
 // ─────────────────────────────────────────────────────────────────────
 
-export class AgentLimitReachedError extends Error {
-  constructor(public readonly maxThreads: number) {
-    super(`agent limit reached (max=${maxThreads})`);
-    this.name = "AgentLimitReachedError";
-  }
-}
-
 export class AgentPathExistsError extends Error {
   constructor(public readonly path: AgentPath) {
     super(`agent path already exists: ${path}`);
@@ -84,7 +77,6 @@ export class SpawnReservation {
 
   constructor(
     private readonly registry: AgentRegistry,
-    private readonly maxThreads: number | undefined,
     public readonly cancellationToken: AbortController,
   ) {}
 
@@ -113,7 +105,7 @@ export class SpawnReservation {
       this.registry.releaseReservedAgentPath(this.reservedAgentPath);
       this.reservedAgentPath = undefined;
     }
-    this.registry.rollbackSpawnReservation(this.maxThreads);
+    this.registry.rollbackSpawnReservation();
     this.released = true;
   }
 
@@ -127,7 +119,7 @@ export class SpawnReservation {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface AgentRegistryOpts {
-  /** Optional global cap on live non-root agents. */
+  /** Deprecated. Root agent spawning is intentionally uncapped. */
   readonly maxThreads?: number;
 }
 
@@ -143,10 +135,8 @@ export class AgentRegistry {
   private nicknameResetCount = 0;
   private readonly slotLock: AsyncLock<void> = new AsyncLock<void>(undefined);
   private totalCount = 0;
-  private readonly maxThreads: number | undefined;
-
-  constructor(opts: AgentRegistryOpts = {}) {
-    this.maxThreads = opts.maxThreads;
+  constructor(_opts: AgentRegistryOpts = {}) {
+    void _opts;
   }
 
   /**
@@ -161,20 +151,13 @@ export class AgentRegistry {
    */
   async reserveSpawnSlot(): Promise<SpawnReservation> {
     return this.slotLock.with(() => {
-      if (
-        this.maxThreads !== undefined &&
-        this.totalCount >= this.maxThreads
-      ) {
-        throw new AgentLimitReachedError(this.maxThreads);
-      }
       this.totalCount += 1;
-      return new SpawnReservation(this, this.maxThreads, new AbortController());
+      return new SpawnReservation(this, new AbortController());
     });
   }
 
   /** Called by SpawnReservation.release() to roll back the counter. */
-  rollbackSpawnReservation(_maxThreads: number | undefined): void {
-    void _maxThreads;
+  rollbackSpawnReservation(): void {
     this.totalCount = Math.max(0, this.totalCount - 1);
   }
 
@@ -220,7 +203,7 @@ export class AgentRegistry {
     });
   }
 
-  /** Register the session's root thread — never counted against maxThreads. */
+  /** Register the session's root thread. */
   registerRootThread(threadId: ThreadId): void {
     if (this.byPath.has(ROOT_AGENT_PATH)) return;
     this.byPath.set(ROOT_AGENT_PATH, {

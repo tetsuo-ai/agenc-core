@@ -53,7 +53,6 @@ import {
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
 import {
-  AgentJobCapacityError,
   runAgentsOnCsv,
   recordAgentJobResult,
   type AgentJobProgressEmitter,
@@ -982,18 +981,6 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
-    const agentMaxThreads =
-      session.config?.agent_max_threads ??
-      session.config?.multiAgentV2?.maxConcurrentThreadsPerSession;
-    if (agentMaxThreads === 0) {
-      // Mirrors agenc `spawn_agents_on_csv` early reject at
-      // agent_jobs.rs:537 when the session forbids any concurrent
-      // worker threads.
-      return json(
-        { error: "agent_max_threads is 0; spawn_agents_on_csv is disabled" },
-        true,
-      );
-    }
     const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
     const instruction = stringValue(args.instruction);
@@ -1024,13 +1011,6 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
           runInBackground: true,
         });
         if (outcome.kind === "rejected") {
-          // AgenC's `AgenCErr::AgentLimitReached` arm at
-          // agent_jobs.rs:658 surfaces as the AgenC
-          // `AgentLimitReachedError` ("agent limit reached (max=N)")
-          // re-thrown by `delegate` -> rejected outcome.
-          if (outcome.reason.toLowerCase().includes("agent limit reached")) {
-            throw new AgentJobCapacityError(outcome.reason);
-          }
           throw new Error(
             `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
           );
@@ -1096,7 +1076,6 @@ function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly 
         ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
         ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
         ...(outputSchema !== undefined ? { outputSchema } : {}),
-        ...(agentMaxThreads !== undefined ? { agentMaxThreads } : {}),
         spawn,
         repository,
         progressEmitter,

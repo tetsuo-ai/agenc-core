@@ -4,7 +4,7 @@ import type { ReasoningEffort } from "../../session/turn-context.js";
 import { delegate } from "../delegate.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
-import { assertValidAgentName } from "../registry.js";
+import { assertValidAgentName, ROOT_AGENT_PATH } from "../registry.js";
 import { requireAgentRole } from "../role.js";
 import { canonicalAgentRoleName, formatAgentRoleLabel } from "../role-presentation.js";
 import {
@@ -73,18 +73,12 @@ identifiers (the root agent is named "/root", its children are
 from the Environment section of this prompt — never assume "/root" or
 "/root/<x>" is a real directory.
 
-If your current task is \`/root/task1\` and you spawn_agent with task_name "task_3" the agent will have canonical task name \`/root/task1/task_3\`.
-You are then able to refer to this agent as \`task_3\` or \`/root/task1/task_3\` interchangeably. However an agent \`/root/task2/task_3\` would only be able to communicate with this agent via its canonical name \`/root/task1/task_3\`.
-The spawned agent will have the same tools as you and the ability to spawn its own subagents.
+Only the root task may call spawn_agent. Spawned agents cannot spawn additional agents.
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.`;
   const cfg = session?.config?.multiAgentV2;
-  const concurrency =
-    cfg?.maxConcurrentThreadsPerSession !== undefined
-      ? `\nThis session is configured with \`max_concurrent_threads_per_session = ${cfg.maxConcurrentThreadsPerSession}\` for concurrently open agent threads.`
-      : "";
-  let result = `${base}${concurrency}${SPAWN_AGENT_DELEGATION_DISCIPLINE}`;
+  let result = `${base}${SPAWN_AGENT_DELEGATION_DISCIPLINE}`;
   if (cfg?.usageHintEnabled && cfg.usageHintText) {
     result = `${result}\n${cfg.usageHintText}`;
   }
@@ -300,6 +294,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(reason);
       return json({ error: reason }, true);
     };
+    if (current.agentPath !== ROOT_AGENT_PATH) {
+      return failSpawn("Subagents cannot spawn agents. Ask the main session to spawn agents.");
+    }
 
     try {
       if (role !== undefined) requireAgentRole(role);

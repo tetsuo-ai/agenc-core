@@ -1873,7 +1873,7 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("rejects over-depth spawn_agent and emits a begin/end-errored lifecycle pair", async () => {
+  it("rejects subagent spawn_agent and emits a begin/end-errored lifecycle pair", async () => {
     const session = fakeSession();
     (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
     const emit = vi.fn();
@@ -1911,7 +1911,7 @@ describe("model-facing tools", () => {
 
       expect(result.isError).toBe(true);
       expect(JSON.parse(result.content).error).toBe(
-        "Agent depth limit reached. Solve the task yourself.",
+        "Subagents cannot spawn agents. Ask the main session to spawn agents.",
       );
       expect(delegateMock).not.toHaveBeenCalled();
       // Upstream parity: every spawn attempt that passes basic argument
@@ -1938,7 +1938,7 @@ describe("model-facing tools", () => {
         | undefined;
       expect(endEnvelope?.msg?.payload?.status?.status).toBe("errored");
       expect(endEnvelope?.msg?.payload?.status?.error).toBe(
-        "Agent depth limit reached. Solve the task yourself.",
+        "Subagents cannot spawn agents. Ask the main session to spawn agents.",
       );
     } finally {
       _clearAgentControlCacheForTesting(session);
