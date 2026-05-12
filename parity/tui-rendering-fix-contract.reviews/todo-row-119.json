@@ -1,0 +1,21 @@
+{
+  "rowId": "todo-row-119",
+  "reviewer": "Planck reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Local agent summary covers idle, starting, running, waiting-on-user, completing, failing, completed, and cancelled statuses when task records contain those states."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Completed local agents remain visible long enough for status summary.",
+      "Failed and killed agents use distinct labels.",
+      "Pending remains starting and running remains running."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

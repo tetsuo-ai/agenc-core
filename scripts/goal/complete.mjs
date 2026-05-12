@@ -28,6 +28,11 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, w
 import path from "node:path";
 import process from "node:process";
 import { findItem, repoRoot, mainCheckoutRoot, worktreePath, markerDir, markerPath, setItemStatus, STATUS, fail } from "./checklist-utils.mjs";
+import {
+  createCompletionPipelineEvent,
+  emitCompletionPipelineEvent,
+  startCompletionPipelineGate,
+} from "./pipeline-events.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -141,6 +146,27 @@ function header(name) {
 function ok(msg) {
   process.stdout.write(`${GREEN}✓${RESET} ${msg}\n`);
 }
+
+let activeCompletionGate = null;
+function beginCompletionPipelineGate(gateId) {
+  if (activeCompletionGate !== null && !activeCompletionGate.finalized) {
+    activeCompletionGate.succeeded();
+  }
+  activeCompletionGate = startCompletionPipelineGate(gateId, {
+    pipelineId: id,
+    message: `${id}: ${gateId}`,
+  });
+}
+
+process.once("exit", (code) => {
+  if (
+    code !== 0 &&
+    activeCompletionGate !== null &&
+    !activeCompletionGate.finalized
+  ) {
+    activeCompletionGate.failed(`complete exited ${code}`);
+  }
+});
 
 function abort(msg) {
   process.stderr.write(`${BOLD}${RED}✗${RESET} ${msg}\n`);
@@ -370,7 +396,8 @@ ok(`on ${expected}`);
 // ---- step 4: senior-engineer reviewer subagent -------------------------
 
 // branding-scan: allow names the reviewer CLI binary in the gate header
-header("step 4 — reviewer subagent (codex exec review)");
+beginCompletionPipelineGate("review");
+header("step 4 — reviewer subagent (agent CLI review)");
 const reviewScript = path.join(root, "scripts/goal/review.mjs");
 const reviewRes = run("node", [reviewScript, id]);
 if (reviewRes.status !== 0) {
@@ -415,6 +442,7 @@ header("step 4.5 — main-ancestry guard (branch must contain main)");
 
 // ---- step 5: switch to main + merge ------------------------------------
 
+beginCompletionPipelineGate("local_merge");
 header(`step 5 — local merge ${expected} → main (--no-ff)${isWorktree ? ` (from worktree)` : ""}`);
 if (isWorktree) {
   process.stdout.write(`${DIM}worktree: ${root}${RESET}\n`);
@@ -435,7 +463,7 @@ failIfInFlightJournalsFound();
 // Note: we no longer require the main checkout's working tree to be
 // clean. The previous mechanic (`git checkout main && git merge`)
 // would clobber uncommitted work in mainRoot's working tree whenever a
-// parallel session (claude, editor, another goal worker) happened to
+  // parallel session (agent CLI, editor, another goal worker) happened to
 // be editing there. The new mechanic (merge-tree + commit-tree +
 // update-ref) computes the merge purely against the object database
 // and advances refs/heads/main without ever touching a working tree.
@@ -594,6 +622,18 @@ try {
 }
 releaseMergeLock();
 removeCompletionMarkerDirForFinalItem();
+
+if (activeCompletionGate !== null && !activeCompletionGate.finalized) {
+  activeCompletionGate.succeeded();
+}
+emitCompletionPipelineEvent(
+  createCompletionPipelineEvent({
+    pipelineId: id,
+    gateId: "local_merge",
+    status: "completed",
+    detail: `${id} complete`,
+  }),
+);
 
 process.stdout.write(`\n${BOLD}${GREEN}✓ ${id} complete${RESET} — ${item.title}\n`);
 if (id === "Z-FINAL") {

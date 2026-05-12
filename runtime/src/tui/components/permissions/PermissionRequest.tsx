@@ -1,13 +1,14 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
+import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
 import { feature } from 'bun:bundle';
 import * as React from 'react';
+import { z } from 'zod/v4';
 import { EnterPlanModeTool } from '../../../tools/EnterPlanModeTool/EnterPlanModeTool.js';
 import { ExitPlanModeV2Tool } from '../../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js';
 import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { AnyObject, Tool, ToolUseContext } from '../../../tools/Tool.js';
+import { buildTool, type AnyObject, type Tool, type ToolDef, type ToolUseContext } from '../../../tools/Tool.js';
 import { AskUserQuestionTool } from '../../../tools/ask-user-question/tui-tool.js';
 import { PowerShellTool } from '../../../tools/PowerShellTool/PowerShellTool.js';
 import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
@@ -28,27 +29,54 @@ import { SkillPermissionRequest } from './SkillPermissionRequest/SkillPermission
 import { WebFetchPermissionRequest } from './WebFetchPermissionRequest/WebFetchPermissionRequest.js';
 import { MonitorPermissionRequest as MonitorPermissionRequestImpl } from './MonitorPermissionRequest/MonitorPermissionRequest.js';
 
-function unsupportedPermissionFeature<T>(featureName: string): T {
-  throw new Error(
-    `AgenC build enabled ${featureName}, but that permission UI is not present in this runtime snapshot.`,
-  );
+const unsupportedPermissionInputSchema = z.object({}).passthrough();
+type UnsupportedPermissionInputSchema = typeof unsupportedPermissionInputSchema;
+
+function unsupportedPermissionTool(
+  featureName: string,
+): Tool<UnsupportedPermissionInputSchema, string> {
+  return buildTool({
+    name: featureName,
+    inputSchema: unsupportedPermissionInputSchema,
+    maxResultSizeChars: 1024,
+    async description() {
+      return `${featureName} permission request`;
+    },
+    async prompt() {
+      return `${featureName} permission request`;
+    },
+    async call() {
+      throw new Error(`${featureName} permission requests are rendered by the TUI`);
+    },
+    renderToolUseMessage() {
+      return featureName;
+    },
+    mapToolResultToToolResultBlockParam(
+      content: string,
+      toolUseID: string,
+    ): ToolResultBlockParam {
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUseID,
+        content,
+      };
+    },
+  } satisfies ToolDef<UnsupportedPermissionInputSchema, string>);
 }
 const ReviewArtifactTool: Tool | null = feature('REVIEW_ARTIFACT')
-  ? unsupportedPermissionFeature('REVIEW_ARTIFACT tool')
+  ? unsupportedPermissionTool('review artifact')
   : null;
 const ReviewArtifactPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('REVIEW_ARTIFACT')
-  ? unsupportedPermissionFeature('REVIEW_ARTIFACT permission UI')
+  ? FallbackPermissionRequest
   : null;
 const WorkflowTool: Tool | null = feature('WORKFLOW_SCRIPTS')
-  ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS tool')
+  ? unsupportedPermissionTool('workflow')
   : null;
 const WorkflowPermissionRequest: React.ComponentType<PermissionRequestProps> | null = feature('WORKFLOW_SCRIPTS')
-  ? unsupportedPermissionFeature('WORKFLOW_SCRIPTS permission UI')
+  ? FallbackPermissionRequest
   : null;
 const MonitorTool = feature('MONITOR_TOOL') ? MonitorToolImpl : null;
 const MonitorPermissionRequest = feature('MONITOR_TOOL') ? MonitorPermissionRequestImpl : null;
-import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-import type { z } from 'zod/v4';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import type { WorkerBadgeProps } from './WorkerBadge.js';
 function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionRequestProps> {
@@ -69,6 +97,9 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
     case 'FileRead':
       return FilesystemPermissionRequest;
   }
+  if (tool.name === AskUserQuestionTool.name) {
+    return AskUserQuestionPermissionRequest;
+  }
   switch (tool) {
     case PowerShellTool:
       return PowerShellPermissionRequest;
@@ -80,8 +111,6 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return ExitPlanModePermissionRequest;
     case EnterPlanModeTool:
       return EnterPlanModePermissionRequest;
-    case AskUserQuestionTool:
-      return AskUserQuestionPermissionRequest;
     case WorkflowTool:
       return WorkflowPermissionRequest ?? FallbackPermissionRequest;
     case MonitorTool:
@@ -165,8 +194,7 @@ export const __permissionRequestTest = {
   },
 };
 
-// Follow-up: Move this to Tool.renderPermissionRequest
-export function PermissionRequest(t0) {
+export function PermissionRequest(t0: PermissionRequestProps) {
   const $ = _c(18);
   const {
     toolUseConfirm,

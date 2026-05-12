@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { createContext, type RefObject, useContext } from 'react';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';

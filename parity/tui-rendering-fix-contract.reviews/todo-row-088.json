@@ -1,0 +1,20 @@
+{
+  "rowId": "todo-row-088",
+  "reviewer": "Hilbert reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Paste line threshold is clamped so tiny terminal height does not force every paste into reference mode."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "rows below 10 use a zero-or-positive threshold.",
+      "normal rows preserve the current two-line threshold cap."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

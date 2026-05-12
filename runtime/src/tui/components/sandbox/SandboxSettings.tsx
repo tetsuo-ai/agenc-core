@@ -7,7 +7,7 @@ import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { CommandResultDisplay } from '../../../types/command';
 import type { SandboxDependencyCheck } from '../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
 import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSettings_DEPRECATED } from '../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings } from '../../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { Pane } from '../design-system/Pane';
 import { Tab, Tabs, useTabHeaderFocus } from '../design-system/Tabs';
@@ -33,7 +33,7 @@ export function SandboxSettings(t0) {
   const hasWarnings = depCheck.warnings.length > 0;
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = getSettings_DEPRECATED();
+    t1 = getInitialSettings();
     $[0] = t1;
   } else {
     t1 = $[0];

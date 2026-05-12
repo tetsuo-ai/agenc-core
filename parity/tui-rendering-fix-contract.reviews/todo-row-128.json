@@ -1,0 +1,20 @@
+{
+  "rowId": "todo-row-128",
+  "reviewer": "Planck reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Waiting-on-user or awaiting-permission agent status renders distinctly from running and idle in transcript and spinner surfaces."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Waiting-on-user status text does not say running.",
+      "Awaiting permission/user aliases map to waiting-on-user wording."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

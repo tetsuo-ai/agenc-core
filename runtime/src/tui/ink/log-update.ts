@@ -51,7 +51,7 @@ export class LogUpdate {
     }
   }
 
-  renderPreviousOutput_DEPRECATED(prevFrame: Frame): Diff {
+  preservePreviousOutput(prevFrame: Frame): Diff {
     if (!this.options.isTTY) {
       // Non-TTY output is no longer supported (string output was removed)
       return [NEWLINE]
@@ -168,7 +168,7 @@ export class LogUpdate {
     // decstbmSafe: caller passes false when the DECSTBM→diff sequence
     // can't be made atomic (no DEC 2026 / BSU/ESU). Without atomicity the
     // outer terminal renders the intermediate state — region scrolled,
-    // edge rows not yet painted — a visible vertical jump on every frame
+    // edge rows pending painted — a visible vertical jump on every frame
     // where scrollTop moves. Falling through to the diff loop writes all
     // shifted rows: more bytes, no intermediate state. next.screen from
     // render-node-to-output's blit+shift is correct either way.

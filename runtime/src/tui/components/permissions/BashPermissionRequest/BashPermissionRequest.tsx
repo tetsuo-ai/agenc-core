@@ -1,38 +1,38 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// AgenC permission surface.
+// Rendering audit marker removed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import figures from 'figures';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../../services/analytics/growthbook';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index';
-import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../../services/analytics/growthbook.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index.js';
+import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata.js';
 import { useAppState } from '../../../state/AppState.js';
-import { BashTool } from '../../../../tools/BashTool/BashTool';
-import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../../tools/BashTool/bashPermissions';
-import { getDestructiveCommandWarning } from '../../../../tools/BashTool/destructiveCommandWarning';
-import { parseSedEditCommand } from '../../../../tools/BashTool/sedEditParser';
-import { shouldUseSandbox } from '../../../../tools/BashTool/shouldUseSandbox';
-import { getCompoundCommandPrefixesStatic } from '../../../../utils/bash/prefix'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractRules } from '../../../../utils/permissions/PermissionUpdate'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Select } from '../../CustomSelect/select';
+import { BashTool } from '../../../../tools/BashTool/BashTool.js';
+import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../../tools/BashTool/bashPermissions.js';
+import { getDestructiveCommandWarning } from '../../../../tools/BashTool/destructiveCommandWarning.js';
+import { parseSedEditCommand } from '../../../../tools/BashTool/sedEditParser.js';
+import { shouldUseSandbox } from '../../../../tools/BashTool/shouldUseSandbox.js';
+import { getCompoundCommandPrefixesStatic } from '../../../../utils/bash/prefix.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { createPromptRuleContent, generateGenericDescription, getBashPromptAllowDescriptions, isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { extractRules } from '../../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { SandboxManager } from '../../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { Select } from '../../CustomSelect/select.js';
 import { ShimmerChar } from '../../spinner/ShimmerChar.js';
 import { useShimmerAnimation } from '../../spinner/useShimmerAnimation.js';
-import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
-import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo';
-import { PermissionDialog } from '../PermissionDialog';
-import { PermissionExplainerContent, usePermissionExplainerUI } from '../PermissionExplanation';
+import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
+import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js';
+import { PermissionDialog } from '../PermissionDialog.js';
+import { PermissionExplainerContent, usePermissionExplainerUI } from '../PermissionExplanation.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
-import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
-import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest';
-import { useShellPermissionFeedback } from '../useShellPermissionFeedback';
-import { logUnaryPermissionEvent } from '../utils';
-import { bashToolUseOptions } from './bashToolUseOptions';
+import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
+import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest.js';
+import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js';
+import { logUnaryPermissionEvent } from '../utils.js';
+import { bashToolUseOptions } from './bashToolUseOptions.js';
 const CHECKING_TEXT = 'Attempting to auto-approve\u2026';
 
 // Isolates the 20fps shimmer clock from BashPermissionRequestInner. Before this
@@ -53,7 +53,7 @@ function ClassifierCheckingSubtitle() {
   }
   let t1;
   if ($[1] !== glimmerIndex) {
-    t1 = <Text>{t0.map((char, i) => <ShimmerChar key={i} char={char} index={i} glimmerIndex={glimmerIndex} messageColor="inactive" shimmerColor="subtle" />)}</Text>;
+    t1 = <Text>{t0.map((char: string, i: number) => <ShimmerChar key={i} char={char} index={i} glimmerIndex={glimmerIndex} messageColor="inactive" shimmerColor="subtle" />)}</Text>;
     $[1] = glimmerIndex;
     $[2] = t1;
   } else {
@@ -70,7 +70,7 @@ function ClassifierCheckingSubtitle() {
   }
   return t2;
 }
-export function BashPermissionRequest(props) {
+export function BashPermissionRequest(props: PermissionRequestProps) {
   const $ = _c(21);
   const {
     toolUseConfirm,
@@ -149,7 +149,7 @@ function BashPermissionRequestInner({
   description?: string;
 }): React.ReactNode {
   const [theme] = useTheme();
-  const toolPermissionContext = useAppState(s => s.toolPermissionContext);
+  const toolPermissionContext = useAppState((s: any) => s.toolPermissionContext);
   const explainerState = usePermissionExplainerUI({
     toolName: toolUseConfirm.tool.name,
     toolInput: toolUseConfirm.input,
@@ -185,7 +185,7 @@ function BashPermissionRequestInner({
   useEffect(() => {
     if (!isClassifierPermissionsEnabled()) return;
     const abortController = new AbortController();
-    generateGenericDescription(command, description, abortController.signal).then(generic => {
+    generateGenericDescription(command, description, abortController.signal).then((generic: string | null) => {
       if (generic && !abortController.signal.aborted) {
         setClassifierDescription(generic);
         setInitialClassifierDescriptionEmpty(false);
@@ -223,7 +223,7 @@ function BashPermissionRequestInner({
       // Backend suggestion is the source of truth for compound commands.
       // Single rule → seed the editable input so the user can refine it.
       // Multiple/zero rules → undefined → yes-apply-suggestions handles it.
-      const backendBashRules = extractRules('suggestions' in toolUseConfirm.permissionResult ? toolUseConfirm.permissionResult.suggestions : undefined).filter(r => r.toolName === BashTool.name && r.ruleContent);
+      const backendBashRules = extractRules('suggestions' in toolUseConfirm.permissionResult ? toolUseConfirm.permissionResult.suggestions : undefined).filter((r: any) => r.toolName === BashTool.name && r.ruleContent);
       return backendBashRules.length === 1 ? backendBashRules[0]!.ruleContent : undefined;
     }
     const two = getSimpleCommandPrefix(command);
@@ -242,9 +242,9 @@ function BashPermissionRequestInner({
     // the full per-subcommand analysis and its suggestion is correct.
     if (isCompound) return;
     let cancelled = false;
-    getCompoundCommandPrefixesStatic(command, subcmd => BashTool.isReadOnly({
+    getCompoundCommandPrefixesStatic(command, (subcmd: string) => BashTool.isReadOnly({
       command: subcmd
-    })).then(prefixes => {
+    })).then((prefixes: string[]) => {
       if (cancelled || hasUserEditedPrefix.current) return;
       if (prefixes.length > 0) {
         setEditablePrefix(`${prefixes[0]}:*`);
@@ -465,7 +465,7 @@ function BashPermissionRequestInner({
             <Text dimColor={feature('BASH_CLASSIFIER') ? toolUseConfirm.classifierAutoApproved : false}>
               Do you want to proceed?
             </Text>
-            <Select options={feature('BASH_CLASSIFIER') ? toolUseConfirm.classifierAutoApproved ? options.map(o => ({
+            <Select options={feature('BASH_CLASSIFIER') ? toolUseConfirm.classifierAutoApproved ? options.map((o: any) => ({
           ...o,
           disabled: true
         })) : options : options} isDisabled={feature('BASH_CLASSIFIER') ? toolUseConfirm.classifierAutoApproved : false} inlineDescriptions onChange={onSelect} onCancel={() => handleReject()} onFocus={handleFocus} onInputModeToggle={handleInputModeToggle} />

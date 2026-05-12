@@ -34,6 +34,14 @@ export function getNewlineInstructions(): string {
     : 'backslash (\\) + return (⏎) for newline'
 }
 
+export function clampPromptTextInputColumns(columns: number): number {
+  return Math.max(0, columns - 3)
+}
+
+export function pasteReferenceLineThreshold(rows: number): number {
+  return Math.max(1, Math.min(Math.max(0, rows - 10), 2))
+}
+
 /**
  * True when the keystroke is a printable character that does not begin
  * with whitespace — i.e., a normal letter/digit/symbol the user typed.

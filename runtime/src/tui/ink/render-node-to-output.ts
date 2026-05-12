@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import indentString from 'indent-string'
 import { applyTextStyles } from './colorize.js'
 import type { DOMElement, DOMNode } from './dom.js'
@@ -389,9 +387,14 @@ function isElementNode(node: DOMNode | undefined): node is DOMElement {
   return Boolean(node && node.nodeName !== '#text')
 }
 
-function isRenderableElementNode(node: unknown): node is DOMElement {
+function isRenderableElementNode(node: any): node is DOMElement {
   if (!node || typeof node !== 'object') return false
-  const candidate = node as Partial<DOMElement> & { nodeName?: string }
+  const candidate = node as {
+    nodeName?: string
+    style?: object
+    dirty?: boolean
+    childNodes?: readonly DOMNode[]
+  }
   return (
     candidate.nodeName !== undefined &&
     candidate.nodeName !== '#text' &&

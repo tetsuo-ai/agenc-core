@@ -4,21 +4,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { logEvent } from '../../services/analytics/index.js'
 import { readFileSync } from '../../utils/fileRead.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { expandPath } from '../../utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionOption } from '../components/permissions/FilePermissionDialog/permissionOptions'
+import type { PermissionOption } from '../components/permissions/FilePermissionDialog/permissionOptions.js'
 import type {
   MCPServerConnection,
   McpSSEIDEServerConfig,
   McpWebSocketIDEServerConfig,
-} from '../../services/mcp/types'
-import type { ToolUseContext } from '../../tools/Tool'
-import type { FileEdit } from '../../tools/FileEditTool/types'
+} from '../../services/mcp/types.js'
+import type { ToolUseContext } from '../../tools/Tool.js'
+import type { FileEdit } from '../../tools/FileEditTool/types.js'
 import {
   getEditsForPatch,
   getPatchForEdits,
-} from '../../tools/FileEditTool/utils'
-import { getGlobalConfig } from '../../utils/config' // upstream-import: keep target is owned by another Z-PURGE item
-import { getPatchFromContents } from '../../utils/diff' // upstream-import: keep target is owned by another Z-PURGE item
-import { isENOENT } from '../../utils/errors' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../tools/FileEditTool/utils.js'
+import { getGlobalConfig } from '../../utils/config.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchFromContents } from '../../utils/diff.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isENOENT } from '../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   callIdeRpc,
   getConnectedIdeClient,

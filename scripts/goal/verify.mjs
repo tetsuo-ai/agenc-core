@@ -53,6 +53,7 @@ import {
   stripKnipIssueAllowlists,
 } from "./knip-issue-audit.mjs";
 import { collectIncompleteZFinalPredecessors } from "./z-final-contracts.mjs";
+import { startCompletionPipelineGate } from "./pipeline-events.mjs";
 
 const RESET = "\x1b[0m";
 const BOLD = "\x1b[1m";
@@ -2814,6 +2815,27 @@ function header(name) {
   process.stdout.write(`\n${BOLD}━━ gate: ${name}${RESET}\n`);
 }
 
+let activeCompletionGate = null;
+function beginCompletionPipelineGate(gateId) {
+  if (activeCompletionGate !== null && !activeCompletionGate.finalized) {
+    activeCompletionGate.succeeded();
+  }
+  activeCompletionGate = startCompletionPipelineGate(gateId, {
+    pipelineId: id,
+    message: `${id}: ${gateId}`,
+  });
+}
+
+process.once("exit", (code) => {
+  if (
+    code !== 0 &&
+    activeCompletionGate !== null &&
+    !activeCompletionGate.finalized
+  ) {
+    activeCompletionGate.failed(`verify exited ${code}`);
+  }
+});
+
 function pass(msg) {
   process.stdout.write(`${GREEN}✓${RESET} ${msg}\n`);
 }
@@ -2838,6 +2860,7 @@ function git(...argv) {
 
 // --- Gate 1: branch shape -----------------------------------------------
 
+beginCompletionPipelineGate("branch_shape");
 header("branch shape");
 const branchRes = git("rev-parse", "--abbrev-ref", "HEAD");
 if (branchRes.status !== 0) failGate("could not read current branch");
@@ -2850,6 +2873,7 @@ pass(`on ${branch}`);
 
 // --- Gate 2: branding scan ----------------------------------------------
 
+beginCompletionPipelineGate("branding");
 header("branding scan (changed vs main)");
 const scanScript = path.join(root, "scripts", "branding-scan.mjs");
 if (!existsSync(scanScript)) failGate(`branding scan missing at ${scanScript}`);
@@ -2916,6 +2940,7 @@ if (toScan.length === 0 && candidates.size === 0) {
 //      re-exports + single-line forwarders (catches barrel/index files that the
 //      filename suffix wouldn't flag — wrapper-by-another-name).
 
+beginCompletionPipelineGate("shape_evidence");
 header("no upstream growth; no new shim/adapter/compat/legacy/bridge files");
 const addedRes = git("diff", "--name-only", "--diff-filter=ACR", "-M", "-C", "main...HEAD");
 const addedStagedRes = git("diff", "--name-only", "--diff-filter=ACR", "-M", "-C", "--cached");
@@ -3120,6 +3145,7 @@ if (sdkDaemonDriftRelevant) {
 
 // --- Gate 2.5: per-item named evidence ----------------------------------
 
+beginCompletionPipelineGate("item_specific");
 header(`item evidence for ${id}`);
 const evidence = ITEM_EVIDENCE[id];
 if (evidence) {
@@ -3483,6 +3509,7 @@ header("upstream-import non-growth + opportunistic migration (Gate 3.7)");
 if (skipTypecheck) {
   process.stdout.write(`\n${YELLOW}!${RESET} typecheck skipped (--skip-typecheck). Cannot complete with this flag.\n`);
 } else {
+  beginCompletionPipelineGate("typecheck");
   header("typecheck (baseline + delta)");
   const r = run("npm", ["run", "typecheck"], { silent: true });
   const errCount = countTscErrors((r.stdout || "") + "\n" + (r.stderr || ""));
@@ -3525,6 +3552,7 @@ if (skipTypecheck) {
 if (skipValidate) {
   process.stdout.write(`\n${YELLOW}!${RESET} agenc-tui-validate skipped (--skip-validate). Cannot complete with this flag.\n`);
 } else {
+  beginCompletionPipelineGate("tui_validate");
   header("agenc-tui-validate");
   // branding-scan: allow real on-disk skill path under user home
   const skillBase = path.join(process.env.HOME || "", ".claude/skills/agenc-tui-validate/scripts");
@@ -3542,6 +3570,9 @@ if (skipValidate) {
   }
 }
 
+if (activeCompletionGate !== null && !activeCompletionGate.finalized) {
+  activeCompletionGate.succeeded();
+}
 process.stdout.write(`\n${BOLD}${GREEN}all gates passed for ${id}${RESET}\n`);
 process.exit(0);
 

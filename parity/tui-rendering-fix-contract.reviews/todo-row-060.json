@@ -1,0 +1,21 @@
+{
+  "rowId": "todo-row-060",
+  "reviewer": "Hilbert reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Non-error background agent status events render visible system rows for idle, starting, running, waiting-on-user, completing, cancelled, completed, and failed states."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Unrecognized statuses render as a generic status rather than disappearing.",
+      "Error statuses still use the existing error rendering path.",
+      "Repeated status events remain deduped by event identity."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

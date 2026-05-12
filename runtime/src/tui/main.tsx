@@ -13,6 +13,7 @@ import type {
   ConfigStoreLike,
 } from "./session-types.js";
 import type { Event } from "../session/event-log.js";
+import { FpsTracker } from "../utils/fpsTracker.js";
 
 export interface StdinLossSession extends AgenCBridgeSession {
   readonly abortTerminal?: (reason: string) => void;
@@ -186,6 +187,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   stdin.once("error", onStdinLoss);
 
   let instance: Awaited<ReturnType<typeof renderInk>>;
+  const fpsTracker = new FpsTracker();
   try {
     instance = await renderInk(
       <AgenCTuiApp
@@ -196,6 +198,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         initialPrompt={options.initialPrompt}
         initialUserMessages={options.initialUserMessages}
         initialComposerText={options.initialComposerText}
+        getFpsMetrics={() => fpsTracker.getMetrics()}
       />,
       {
         stdin,
@@ -203,6 +206,9 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         stderr,
         patchConsole: true,
         exitOnCtrlC: false,
+        onFrame: (event) => {
+          fpsTracker.record(event.durationMs);
+        },
       },
     );
   } catch (err) {

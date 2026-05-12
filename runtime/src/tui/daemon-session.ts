@@ -815,6 +815,7 @@ function connectionNoticeEvents(
       type: "warning",
       payload: {
         message: state.message ?? AGENC_DAEMON_RECONNECTING_MESSAGE,
+        cause: "daemon_connection_state",
         status: state.status,
       },
     },

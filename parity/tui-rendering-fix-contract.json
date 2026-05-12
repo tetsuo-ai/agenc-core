@@ -1,0 +1,1374 @@
+{
+  "contractName": "tui-rendering-fix-contract",
+  "scope": "Fix every non-OK row in TODO.MD for the AgenC TUI rendering audit on local main.",
+  "generatedAt": "2026-05-12T00:00:00.000-06:00",
+  "sourceRoot": "..",
+  "targetRoot": "..",
+  "approvedExceptions": [
+    {
+      "id": "typescript-unknown-type-syntax",
+      "type": "forbidden-language",
+      "pattern": "(?::|<|\\(|,|=>|\\[key: string\\]:|Record<[^>]*,\\s*)\\s*(?:readonly\\s+)?unknown\\b|\\bas\\s+unknown\\b|\\bunknown\\[\\]",
+      "files": [
+        "runtime/src/agents/status.ts",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/ProviderManager.test.tsx",
+        "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx",
+        "runtime/src/tui/components/spinner/agentActivity.ts",
+        "runtime/src/tui/daemon-session.contract.test.ts",
+        "runtime/src/tui/daemon-session.ts",
+        "runtime/src/tui/ink/ink.tsx",
+        "runtime/src/tui/interactiveHelpers.tsx",
+        "runtime/src/tui/session-transcript.ts",
+        "runtime/src/tui/session-types.ts"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "Allows the TypeScript unknown type only in existing audited files that already parse untrusted data. New pipeline helper files are intentionally excluded."
+    },
+    {
+      "id": "typescript-partial-utility-type",
+      "type": "forbidden-language",
+      "pattern": "\\bPartial<",
+      "files": [
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/ink/ink.tsx",
+        "runtime/src/tui/ink/render-node-to-output.ts",
+        "runtime/src/tui/session-transcript.ts"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "Allows the TypeScript Partial utility type in existing typed adapters only; lowercase partial domain text is handled by a separate narrower exception."
+    },
+    {
+      "id": "ui-placeholder-prop-token",
+      "type": "forbidden-language",
+      "pattern": "\\bplaceholder\\b",
+      "files": [
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/ProviderManager.tsx",
+        "runtime/src/tui/components/spinner/Spinner.tsx"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "Placeholder is an active UI input prop/string in these audited components, not a marker for missing implementation. New helper/test files are excluded."
+    },
+    {
+      "id": "render-and-input-skip-control-token",
+      "type": "forbidden-language",
+      "pattern": "\\bskip(?:ped)?\\b",
+      "files": [
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/components/FullscreenLayout.tsx",
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/ProviderManager.tsx",
+        "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
+        "runtime/src/tui/components/sandbox/SandboxSettings.tsx",
+        "runtime/src/tui/components/spinner/Spinner.tsx",
+        "runtime/src/tui/ink/components/App.tsx",
+        "runtime/src/tui/ink/ink.tsx",
+        "runtime/src/tui/ink/log-update.ts",
+        "runtime/src/tui/ink/render-node-to-output.ts",
+        "runtime/src/tui/interactiveHelpers.tsx",
+        "runtime/src/tui/session-transcript.ts",
+        "runtime/src/tui/startup/StartupScreen.ts"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "Skip/skipped is active control-flow, input-option, or render-optimization language in these existing audited files. It is not allowed in new pipeline files or unresolved-work notes."
+    },
+    {
+      "id": "streaming-and-compaction-partial-domain-token",
+      "type": "forbidden-language",
+      "pattern": "\\bpartial\\b|partialCompactFromMessage|allowPartialCompact|partial-port",
+      "files": [
+        "runtime/src/tui/daemon-session.contract.test.ts",
+        "runtime/src/tui/ink/ink.tsx",
+        "runtime/src/tui/ink/render-node-to-output.ts",
+        "runtime/src/tui/parity/session-transcript.test.ts",
+        "runtime/src/tui/session-transcript.ts"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "Partial is a domain term for streaming text/tool deltas, row rendering, and compaction in these exact files, not a partial-implementation marker."
+    },
+    {
+      "id": "agent-and-gate-waiting-domain-token",
+      "type": "forbidden-language",
+      "pattern": "\\bblocked\\b",
+      "files": [
+        "runtime/src/tui/session-transcript.ts",
+        "runtime/src/tui/parity/session-transcript.test.ts",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/components/spinner/agentActivity.ts",
+        "runtime/src/tui/components/spinner/agentActivity.test.ts"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "Blocked is a domain state for agent/gate rendering, not a deferred-work marker. The exception is limited to files that own status rendering or tests."
+    },
+    {
+      "id": "goal-gate-enforcement-string-fixtures",
+      "type": "forbidden-language",
+      "pattern": "TODO\\b|not implemented|\\bstub\\b|\\bstubbed\\b|\\bdeferred\\b|\\bfollow-?up\\b|not yet|\\blegacy\\b|\\bblocked\\b",
+      "files": [
+        "scripts/goal/prep.mjs",
+        "scripts/goal/verify.mjs",
+        "scripts/goal/complete.mjs"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "These goal-gate scripts intentionally contain enforcement prompts and verifier fixtures that name forbidden debt markers. The exception is file-scoped to the existing gate scripts and does not apply to new TUI runtime modules, UI tests, or the pipeline event helper."
+    },
+    {
+      "id": "goal-gate-skip-control-flags",
+      "type": "forbidden-language",
+      "pattern": "\\bskip(?:ped)?\\b",
+      "files": [
+        "scripts/goal/prep.mjs",
+        "scripts/goal/verify.mjs",
+        "scripts/goal/complete.mjs"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "The existing goal scripts expose and reject skip flags and skipped checklist states as gate-control behavior. This exception is limited to those scripts."
+    },
+    {
+      "id": "goal-gate-partial-fixtures",
+      "type": "forbidden-language",
+      "pattern": "\\bpartial\\b|\\bPartial<|partialCompactFromMessage|allowPartialCompact|partial-port",
+      "files": [
+        "scripts/goal/prep.mjs",
+        "scripts/goal/verify.mjs",
+        "scripts/goal/complete.mjs"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "The existing goal verifier contains fixtures for partial compaction and related enforcement checks. This exception is limited to the gate scripts."
+    },
+    {
+      "id": "goal-gate-unknown-type-and-fixtures",
+      "type": "forbidden-language",
+      "pattern": "\\bunknown\\b|\\bas\\s+unknown\\b",
+      "files": [
+        "scripts/goal/prep.mjs",
+        "scripts/goal/verify.mjs",
+        "scripts/goal/complete.mjs"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "The existing goal scripts contain TypeScript fixture text and verifier strings with the unknown type/domain word. This exception is limited to the gate scripts."
+    },
+    {
+      "id": "goal-gate-placeholder-enforcement-fixtures",
+      "type": "forbidden-language",
+      "pattern": "\\bplaceholder\\b",
+      "files": [
+        "scripts/goal/prep.mjs",
+        "scripts/goal/verify.mjs",
+        "scripts/goal/complete.mjs"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "The existing goal verifier contains enforcement fixtures that search for placeholder debt. This exception is limited to the gate scripts."
+    },
+    {
+      "id": "session-transcript-grep-fixture-todo-token",
+      "type": "forbidden-language",
+      "pattern": "TODO",
+      "files": [
+        "runtime/src/tui/parity/session-transcript.test.ts"
+      ],
+      "approvedBy": "user-goal",
+      "approvedAt": "2026-05-12T00:00:00.000-06:00",
+      "reason": "This test fixture asserts literal grep output containing TODO tokens; it is not a pending implementation marker."
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "parity/tui-rendering-fix-source-snapshot.json",
+      "sha256": "b1318ce21d534f654e98051c6a592b97ba5d6bc0a8af0f612617dcc9e855d6c2"
+    }
+  ],
+  "targetFiles": [
+    "runtime/src/agents/status.ts",
+    "runtime/src/tui/completion-pipeline.test.ts",
+    "runtime/src/tui/completion-pipeline.ts",
+    "runtime/src/tui/components/App.tsx",
+    "runtime/src/tui/components/FullscreenLayout.tsx",
+    "runtime/src/tui/components/HelpV2/HelpV2.tsx",
+    "runtime/src/tui/components/MCPServerMultiselectDialog.tsx",
+    "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+    "runtime/src/tui/components/PromptInput/utils.ts",
+    "runtime/src/tui/components/ProviderManager.tsx",
+    "runtime/src/tui/components/Settings/Settings.tsx",
+    "runtime/src/tui/components/TrustDialog/TrustDialog.tsx",
+    "runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx",
+    "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx",
+    "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.tsx",
+    "runtime/src/tui/components/permissions/PermissionRequest.tsx",
+    "runtime/src/tui/components/sandbox/SandboxSettings.tsx",
+    "runtime/src/tui/components/skills/SkillsMenu.tsx",
+    "runtime/src/tui/components/spinner/Spinner.tsx",
+    "runtime/src/tui/components/spinner/agentActivity.ts",
+    "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx",
+    "runtime/src/tui/components/teams/TeamStatus.tsx",
+    "runtime/src/tui/components/teams/TeamsDialog.tsx",
+    "runtime/src/tui/context/modalContext.tsx",
+    "runtime/src/tui/context/overlayContext.tsx",
+    "runtime/src/tui/context/promptOverlayContext.tsx",
+    "runtime/src/tui/daemon-session.ts",
+    "runtime/src/tui/glyphs.ts",
+    "runtime/src/tui/hooks/useSettingsChange.ts",
+    "runtime/src/tui/ink.ts",
+    "runtime/src/tui/ink/components/App.tsx",
+    "runtime/src/tui/ink/ink.tsx",
+    "runtime/src/tui/ink/log-update.ts",
+    "runtime/src/tui/ink/render-node-to-output.ts",
+    "runtime/src/tui/interactiveHelpers.tsx",
+    "runtime/src/tui/screens/orphan-rendering.test.ts",
+    "runtime/src/tui/session-transcript.ts",
+    "runtime/src/tui/session-types.ts",
+    "runtime/src/tui/startup/StartupScreen.ts",
+    "runtime/src/utils/swarm/backends/types.ts",
+    "runtime/src/utils/swarm/teamHelpers.ts",
+    "scripts/goal/complete.mjs",
+    "scripts/goal/pipeline-events.mjs",
+    "scripts/goal/pipeline-events.test.mjs",
+    "scripts/goal/prep.mjs",
+    "scripts/goal/verify.mjs",
+    "scripts/check-tui-rendering-todo-resolved.mjs",
+    "scripts/goal/pipeline-events-producers.test.mjs"
+  ],
+  "testFiles": [
+    "runtime/src/tui/completion-pipeline.test.ts",
+    "runtime/src/tui/components/App.completion-pipeline.test.tsx",
+    "runtime/src/tui/components/App.local-agents.test.tsx",
+    "runtime/src/tui/components/FullscreenLayout.test.tsx",
+    "runtime/src/tui/components/HelpV2/HelpV2.test.tsx",
+    "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx",
+    "runtime/src/tui/components/PromptInput/utils.test.ts",
+    "runtime/src/tui/components/ProviderManager.test.tsx",
+    "runtime/src/tui/components/Settings/Settings.test.tsx",
+    "runtime/src/tui/components/TrustDialog/TrustDialog.test.tsx",
+    "runtime/src/tui/components/mcp/MCPRemoteServerMenu.test.tsx",
+    "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx",
+    "runtime/src/tui/components/permissions/PermissionRequest.test.tsx",
+    "runtime/src/tui/components/renderHealth.test.ts",
+    "runtime/src/tui/components/skills/SkillsMenu.test.tsx",
+    "runtime/src/tui/components/spinner/agentActivity.test.ts",
+    "runtime/src/tui/components/teams/TeamsDialog.test.tsx",
+    "runtime/src/tui/daemon-session.contract.test.ts",
+    "runtime/src/tui/glyphs.test.ts",
+    "runtime/src/tui/ink/components/App.render-error.test.tsx",
+    "runtime/src/tui/ink/log-update.test.ts",
+    "runtime/src/tui/moved-source-markers.test.ts",
+    "runtime/src/tui/parity/session-transcript.test.ts",
+    "runtime/src/tui/screens/orphan-rendering.test.ts",
+    "runtime/src/tui/startup/StartupScreen.test.ts",
+    "scripts/goal/pipeline-events.test.mjs",
+    "scripts/goal/pipeline-events-producers.test.mjs"
+  ],
+  "rows": [
+    {
+      "id": "todo-row-011",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/FullscreenLayout.tsx"
+      ],
+      "requiredBehaviors": [
+        "Clamp modal context rows and modal maxHeight to non-negative values on tiny terminals while preserving bottom chrome ownership."
+      ],
+      "edgeCases": [
+        "terminalRows is 0, 1, 2, or exactly MODAL_TRANSCRIPT_PEEK and does not produce a negative modal viewport."
+      ],
+      "tests": [
+        "runtime/src/tui/components/FullscreenLayout.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/FullscreenLayout.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/FullscreenLayout.tsx"
+    },
+    {
+      "id": "todo-row-024",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/glyphs.ts",
+        "runtime/src/tui/components/FullscreenLayout.tsx"
+      ],
+      "requiredBehaviors": [
+        "Introduce an explicit AgenC unicode/ascii glyph mode and route fullscreen chrome through it instead of direct figure glyph use."
+      ],
+      "edgeCases": [
+        "AGENC_TUI_GLYPHS=ascii forces ASCII arrows and pointers even when the terminal can render Unicode.",
+        "Unset or unicode mode preserves the existing Unicode glyphs."
+      ],
+      "tests": [
+        "runtime/src/tui/glyphs.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/glyphs.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/glyphs.ts"
+    },
+    {
+      "id": "todo-row-030",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/interactiveHelpers.tsx"
+      ],
+      "requiredBehaviors": [
+        "Surface slow render or dropped frame metrics in an operator-visible TUI status row when average FPS is below 20 or 1 percent low FPS is below 12."
+      ],
+      "edgeCases": [
+        "Undefined metrics render nothing.",
+        "Healthy metrics render nothing.",
+        "Average FPS below 20 or 1 percent low FPS below 12 renders a bounded warning line without stealing focus."
+      ],
+      "tests": [
+        "runtime/src/tui/components/renderHealth.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/renderHealth.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/App.tsx"
+    },
+    {
+      "id": "todo-row-031",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/ink/components/App.tsx"
+      ],
+      "requiredBehaviors": [
+        "Keep the visible render error overview on screen after a caught React render error and still provide a terminal cleanup path."
+      ],
+      "edgeCases": [
+        "A caught render error does not immediately call the exit handler before the error UI can paint.",
+        "Unmount after the error still restores cursor/raw-mode state through the existing teardown path."
+      ],
+      "tests": [
+        "runtime/src/tui/ink/components/App.render-error.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/ink/components/App.render-error.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/ink/components/App.tsx"
+    },
+    {
+      "id": "todo-row-035",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/ink/log-update.ts",
+        "runtime/src/tui/ink/ink.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove the deprecated previous-output method from the active shutdown path and replace it with a current AgenC-named operation."
+      ],
+      "edgeCases": [
+        "Main-screen unmount still preserves the last frame without calling a deprecated method name."
+      ],
+      "tests": [
+        "runtime/src/tui/ink/log-update.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/ink/log-update.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/ink/log-update.ts"
+    },
+    {
+      "id": "todo-row-043",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/daemon-session.ts",
+        "runtime/src/tui/session-transcript.ts"
+      ],
+      "requiredBehaviors": [
+        "Daemon disconnected or reconnecting notices include an allowlisted warning cause and render as visible warning system messages."
+      ],
+      "edgeCases": [
+        "A connection warning with no cause is still suppressed by policy, while daemon connection warnings with the explicit cause render."
+      ],
+      "tests": [
+        "runtime/src/tui/parity/session-transcript.test.ts",
+        "runtime/src/tui/daemon-session.contract.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/parity/session-transcript.test.ts src/tui/daemon-session.contract.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/daemon-session.ts"
+    },
+    {
+      "id": "todo-row-045",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/session-transcript.ts"
+      ],
+      "requiredBehaviors": [
+        "Out-of-order tool result events render recoverable visible fallback rows instead of being dropped when their tool start has not arrived yet."
+      ],
+      "edgeCases": [
+        "Tool result before start is visible.",
+        "Duplicate later tool result is deduped by existing event identity handling.",
+        "In-order tool result still attaches to the open tool block."
+      ],
+      "tests": [
+        "runtime/src/tui/parity/session-transcript.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/parity/session-transcript.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/session-transcript.ts"
+    },
+    {
+      "id": "todo-row-051",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/session-transcript.ts"
+      ],
+      "requiredBehaviors": [
+        "Tool input deltas that arrive before their start event are buffered and replayed when the corresponding start arrives."
+      ],
+      "edgeCases": [
+        "Multiple deltas before start preserve order.",
+        "A delta for an unrelated index remains isolated from later tool starts.",
+        "Normal in-order delta handling is unchanged."
+      ],
+      "tests": [
+        "runtime/src/tui/parity/session-transcript.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/parity/session-transcript.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/session-transcript.ts"
+    },
+    {
+      "id": "todo-row-057",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/App.tsx"
+      ],
+      "requiredBehaviors": [
+        "Local-agent cancellation callbacks surface a visible notification with killed agent names or counts when cancellation data exists."
+      ],
+      "edgeCases": [
+        "Empty killed-agent lists do not render noise.",
+        "Known agent labels are shown.",
+        "Agent labels absent fall back to a count without throwing."
+      ],
+      "tests": [
+        "runtime/src/tui/components/App.local-agents.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/App.local-agents.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/App.tsx"
+    },
+    {
+      "id": "todo-row-060",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/session-transcript.ts",
+        "runtime/src/tui/daemon-session.ts"
+      ],
+      "requiredBehaviors": [
+        "Non-error background agent status events render visible system rows for idle, starting, running, waiting-on-user, completing, cancelled, completed, and failed states."
+      ],
+      "edgeCases": [
+        "Unrecognized statuses render as a generic status rather than disappearing.",
+        "Error statuses still use the existing error rendering path.",
+        "Repeated status events remain deduped by event identity."
+      ],
+      "tests": [
+        "runtime/src/tui/parity/session-transcript.test.ts",
+        "runtime/src/tui/daemon-session.contract.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/parity/session-transcript.test.ts src/tui/daemon-session.contract.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/session-transcript.ts"
+    },
+    {
+      "id": "todo-row-072",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx"
+      ],
+      "requiredBehaviors": [
+        "Orphan user tool result messages render a visible recovery fallback row instead of returning null."
+      ],
+      "edgeCases": [
+        "Missing matching tool use renders generic tool-result content.",
+        "Known error results continue to render the existing error component.",
+        "Known tool results keep the current tool-specific display."
+      ],
+      "tests": [
+        "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx"
+    },
+    {
+      "id": "todo-row-079",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/PromptInput/utils.ts"
+      ],
+      "requiredBehaviors": [
+        "Prompt text input columns are clamped to a valid non-negative width on very narrow terminals."
+      ],
+      "edgeCases": [
+        "columns less than 3 produces 0 input columns.",
+        "normal terminal widths preserve existing width calculation."
+      ],
+      "tests": [
+        "runtime/src/tui/components/PromptInput/utils.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/PromptInput/utils.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+    },
+    {
+      "id": "todo-row-088",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/PromptInput/utils.ts"
+      ],
+      "requiredBehaviors": [
+        "Paste line threshold is clamped so tiny terminal height does not force every paste into reference mode."
+      ],
+      "edgeCases": [
+        "rows below 10 use a zero-or-positive threshold.",
+        "normal rows preserve the current two-line threshold cap."
+      ],
+      "tests": [
+        "runtime/src/tui/components/PromptInput/utils.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/PromptInput/utils.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+    },
+    {
+      "id": "todo-row-100",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/permissions/PermissionRequest.tsx"
+      ],
+      "requiredBehaviors": [
+        "Unsupported review-artifact and workflow permission feature paths fail gracefully through fallback permission UI instead of throwing during render."
+      ],
+      "edgeCases": [
+        "Review-artifact permission request returns fallback content when enabled.",
+        "Workflow permission request returns fallback content when enabled.",
+        "Normal supported permission renderers are unchanged."
+      ],
+      "tests": [
+        "runtime/src/tui/components/permissions/PermissionRequest.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/permissions/PermissionRequest.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/permissions/PermissionRequest.tsx"
+    },
+    {
+      "id": "todo-row-110",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/ProviderManager.tsx"
+      ],
+      "requiredBehaviors": [
+        "Provider manager OAuth labels render AgenC-owned or provider-protocol labels instead of donor-branded labels."
+      ],
+      "edgeCases": [
+        "Logged-out OAuth state has no donor-branded visible text.",
+        "Configured OAuth state has no donor-branded visible text.",
+        "Real provider identifiers that product rules allow remain untouched."
+      ],
+      "tests": [
+        "runtime/src/tui/components/ProviderManager.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/ProviderManager.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/ProviderManager.tsx"
+    },
+    {
+      "id": "todo-row-112",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx"
+      ],
+      "requiredBehaviors": [
+        "Manual MCP callback URL TextInput columns are clamped to a valid non-negative width on narrow terminals."
+      ],
+      "edgeCases": [
+        "terminalColumns below 8 produces 0 input columns.",
+        "normal widths preserve existing width calculation."
+      ],
+      "tests": [
+        "runtime/src/tui/components/mcp/MCPRemoteServerMenu.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/mcp/MCPRemoteServerMenu.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx"
+    },
+    {
+      "id": "todo-row-119",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/spinner/agentActivity.ts",
+        "runtime/src/tui/components/spinner/Spinner.tsx"
+      ],
+      "requiredBehaviors": [
+        "Local agent summary covers idle, starting, running, waiting-on-user, completing, failing, completed, and cancelled statuses when task records contain those states."
+      ],
+      "edgeCases": [
+        "Completed local agents remain visible long enough for status summary.",
+        "Failed and killed agents use distinct labels.",
+        "Pending remains starting and running remains running."
+      ],
+      "tests": [
+        "runtime/src/tui/components/spinner/agentActivity.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/spinner/agentActivity.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/spinner/agentActivity.ts"
+    },
+    {
+      "id": "todo-row-125",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/teams/TeamsDialog.tsx",
+        "runtime/src/utils/swarm/teamHelpers.ts",
+        "runtime/src/utils/swarm/backends/types.ts"
+      ],
+      "requiredBehaviors": [
+        "Teams dialog hide/show actions call the active backend and update hidden-pane state when the backend supports the operation."
+      ],
+      "edgeCases": [
+        "Hide failure does not mutate hidden state.",
+        "Show failure does not mutate hidden state.",
+        "Missing pane id or missing backend returns without throwing."
+      ],
+      "tests": [
+        "runtime/src/tui/components/teams/TeamsDialog.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/teams/TeamsDialog.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/teams/TeamsDialog.tsx"
+    },
+    {
+      "id": "todo-row-128",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/session-transcript.ts",
+        "runtime/src/tui/components/spinner/agentActivity.ts"
+      ],
+      "requiredBehaviors": [
+        "Waiting-on-user or awaiting-permission agent status renders distinctly from running and idle in transcript and spinner surfaces."
+      ],
+      "edgeCases": [
+        "Waiting-on-user status text does not say running.",
+        "Awaiting permission/user aliases map to waiting-on-user wording."
+      ],
+      "tests": [
+        "runtime/src/tui/parity/session-transcript.test.ts",
+        "runtime/src/tui/components/spinner/agentActivity.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/parity/session-transcript.test.ts src/tui/components/spinner/agentActivity.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/session-transcript.ts"
+    },
+    {
+      "id": "todo-row-129",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/agents/status.ts",
+        "runtime/src/tui/session-transcript.ts"
+      ],
+      "requiredBehaviors": [
+        "Supervisor subagent completion envelopes render as structured agent status messages instead of raw XML-like envelope text."
+      ],
+      "edgeCases": [
+        "A well-formed subagent notification envelope is parsed.",
+        "Malformed envelope text still renders safely as assistant text.",
+        "Normal assistant messages are unchanged."
+      ],
+      "tests": [
+        "runtime/src/tui/parity/session-transcript.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/parity/session-transcript.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/agents/status.ts"
+    },
+    {
+      "id": "todo-row-131",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "scripts/goal/prep.mjs",
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/components/App.tsx",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Completion pipeline start events from scripts/goal/prep.mjs are persisted to .tmp/agenc-tui-completion-pipeline/events.jsonl and TUI renders the first gate as active while preserving transcript context."
+      ],
+      "edgeCases": [
+        "Missing persisted pipeline file renders nothing.",
+        "Malformed persisted event is ignored without crashing.",
+        "A prep started event produces an active first gate line."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "scripts/goal/prep.mjs"
+    },
+    {
+      "id": "todo-row-132",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/components/App.tsx",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Each running completion gate renders with current gate name, ordinal ordering from the nine-gate protocol, and prompt ownership state."
+      ],
+      "edgeCases": [
+        "Unrecognized gate id uses a safe label.",
+        "Running gate replaces older active gate only when sequence order allows it.",
+        "The displayed ordinal matches the locked gateIds list."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/completion-pipeline.ts"
+    },
+    {
+      "id": "todo-row-133",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/components/App.tsx",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Succeeded completion gates persist in protocol order until the pipeline completes or clears."
+      ],
+      "edgeCases": [
+        "Success before start is held until the matching start exists.",
+        "Pipeline complete keeps an audit summary but clears active prompt suppression.",
+        "Duplicate success events for the same sequence are deduped."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/completion-pipeline.ts"
+    },
+    {
+      "id": "todo-row-134",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/components/App.tsx",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Failed completion gates render the exact failing gate and detail as a first-class gate failure state."
+      ],
+      "edgeCases": [
+        "Failure before start is held until the matching start exists.",
+        "Failure detail is bounded and does not replace unrelated generic errors.",
+        "A failed terminal state clears prompt ownership."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/completion-pipeline.ts"
+    },
+    {
+      "id": "todo-row-135",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/components/App.tsx",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Completion pipeline cancellation clears active gate ownership and renders a cancellation reason."
+      ],
+      "edgeCases": [
+        "Cancellation while no active gate exists still renders safely.",
+        "Cancellation reason missing uses a default reason.",
+        "Cancelled terminal state clears prompt ownership."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/completion-pipeline.ts"
+    },
+    {
+      "id": "todo-row-136",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/completion-pipeline.ts",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Completion pipeline gate events are ordered by sequence and gate index and hold out-of-order success or failure until the matching start exists."
+      ],
+      "edgeCases": [
+        "Duplicate sequence events are deduped.",
+        "Success for a future gate waits until predecessor state exists.",
+        "Older events cannot regress a newer gate state."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/completion-pipeline.ts"
+    },
+    {
+      "id": "todo-row-137",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "scripts/goal/verify.mjs",
+        "scripts/goal/complete.mjs",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/components/App.tsx",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "TUI boot reads the local .tmp/agenc-tui-completion-pipeline/events.jsonl pipeline event file directly through runtime/src/tui/completion-pipeline.ts and reconstructs current gate and prior results."
+      ],
+      "edgeCases": [
+        "Missing file and unreadable file render no pipeline status.",
+        "Snapshot plus later events merge deterministically.",
+        "Old completed pipeline does not suppress prompt input on boot."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "scripts/goal/verify.mjs"
+    },
+    {
+      "id": "todo-row-138",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/completion-pipeline.ts",
+        "runtime/src/tui/components/App.tsx",
+        "scripts/goal/pipeline-events.mjs",
+        "scripts/goal/pipeline-events.test.mjs",
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/session-types.ts",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "requiredBehaviors": [
+        "Active completion gates suppress prompt input and unrelated keybinding focus through an explicit TUI gate ownership state."
+      ],
+      "edgeCases": [
+        "Prompt is hidden while a gate is running.",
+        "Prompt returns after success, failure, cancellation, or completion.",
+        "Permissions and modal overlays retain higher-priority suppression."
+      ],
+      "tests": [
+        "runtime/src/tui/completion-pipeline.test.ts",
+        "runtime/src/tui/components/App.completion-pipeline.test.tsx",
+        "scripts/goal/pipeline-events.test.mjs",
+        "scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/completion-pipeline.test.ts src/tui/components/App.completion-pipeline.test.tsx",
+        "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/completion-pipeline.ts"
+    },
+    {
+      "id": "todo-row-139",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/screens/orphan-rendering.test.ts"
+      ],
+      "requiredBehaviors": [
+        "Confirm replStartupGates has no runtime TUI import references, then remove the orphan helper and its test-only coverage."
+      ],
+      "edgeCases": [
+        "A repository scan finds no replStartupGates runtime import after deletion.",
+        "The prior test-only import is removed with the orphan helper."
+      ],
+      "tests": [
+        "runtime/src/tui/screens/orphan-rendering.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/screens/orphan-rendering.test.ts",
+        "test ! -e runtime/src/tui/screens/replStartupGates.ts && test ! -e runtime/src/tui/screens/replStartupGates.test.ts && ! rg -n \"replStartupGates\" runtime/src/tui scripts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/screens/orphan-rendering.test.ts"
+    },
+    {
+      "id": "todo-row-140",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/screens/orphan-rendering.test.ts"
+      ],
+      "requiredBehaviors": [
+        "Confirm replInputSuppression has no runtime TUI import references, then remove the orphan helper and its test-only coverage."
+      ],
+      "edgeCases": [
+        "A repository scan finds no replInputSuppression runtime import after deletion.",
+        "The prior test-only import is removed with the orphan helper."
+      ],
+      "tests": [
+        "runtime/src/tui/screens/orphan-rendering.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/screens/orphan-rendering.test.ts",
+        "test ! -e runtime/src/tui/screens/replInputSuppression.ts && test ! -e runtime/src/tui/screens/replInputSuppression.test.ts && ! rg -n \"replInputSuppression\" runtime/src/tui scripts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/screens/orphan-rendering.test.ts"
+    },
+    {
+      "id": "todo-row-141",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/Settings/Settings.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove disabled Settings Gates tab type/state/render branches or implement an active tab; this row removes the disabled legacy branch."
+      ],
+      "edgeCases": [
+        "No defaultTab value can select Gates.",
+        "Esc handling no longer tracks an impossible Gates owner."
+      ],
+      "tests": [
+        "runtime/src/tui/components/Settings/Settings.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/Settings/Settings.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/Settings/Settings.tsx"
+    },
+    {
+      "id": "todo-row-142",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove dead tmux/tungsten footer pill code that can never render."
+      ],
+      "edgeCases": [
+        "Footer construction has no impossible tmux item.",
+        "Remaining footer items preserve ordering."
+      ],
+      "tests": [
+        "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+    },
+    {
+      "id": "todo-row-143",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove dead browser footer pill code that can never render."
+      ],
+      "edgeCases": [
+        "Footer construction has no impossible browser item.",
+        "Remaining footer items preserve ordering."
+      ],
+      "tests": [
+        "runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+    },
+    {
+      "id": "todo-row-144",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/HelpV2/HelpV2.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove disabled internal-only Help tab code and its impossible empty command collection."
+      ],
+      "edgeCases": [
+        "Help tab index remains stable after removal.",
+        "No branch guarded by false remains."
+      ],
+      "tests": [
+        "runtime/src/tui/components/HelpV2/HelpV2.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/HelpV2/HelpV2.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/HelpV2/HelpV2.tsx"
+    },
+    {
+      "id": "todo-row-145",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/ink.ts",
+        "runtime/src/tui/ink/ink.tsx",
+        "runtime/src/tui/ink/render-node-to-output.ts"
+      ],
+      "requiredBehaviors": [
+        "Remove moved-source markers and ts-nocheck headers from the active Ink render substrate files named by the audit row."
+      ],
+      "edgeCases": [
+        "The files no longer start with ts-nocheck.",
+        "Runtime build and TUI validation still pass after marker removal."
+      ],
+      "tests": [
+        "runtime/src/tui/moved-source-markers.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/moved-source-markers.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/ink.ts"
+    },
+    {
+      "id": "todo-row-146",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/context/overlayContext.tsx",
+        "runtime/src/tui/context/promptOverlayContext.tsx",
+        "runtime/src/tui/context/modalContext.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove moved-source markers and ts-nocheck headers from active overlay and modal context files named by the audit row."
+      ],
+      "edgeCases": [
+        "The files no longer start with ts-nocheck.",
+        "Overlay/modal runtime behavior remains covered by TUI validation."
+      ],
+      "tests": [
+        "runtime/src/tui/moved-source-markers.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/moved-source-markers.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/context/overlayContext.tsx"
+    },
+    {
+      "id": "todo-row-147",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx",
+        "runtime/src/tui/components/spinner/Spinner.tsx",
+        "runtime/src/tui/components/teams/TeamStatus.tsx",
+        "runtime/src/tui/components/teams/TeamsDialog.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove moved-source markers and ts-nocheck headers from active task, spinner, and team rendering files named by the audit row."
+      ],
+      "edgeCases": [
+        "The files no longer start with ts-nocheck.",
+        "Spinner/team focused tests and TUI validation still pass after marker removal."
+      ],
+      "tests": [
+        "runtime/src/tui/components/spinner/agentActivity.test.ts",
+        "runtime/src/tui/moved-source-markers.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/spinner/agentActivity.test.ts",
+        "cd runtime && npm test -- src/tui/moved-source-markers.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx"
+    },
+    {
+      "id": "todo-row-148",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/permissions/PermissionRequest.tsx",
+        "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
+        "runtime/src/tui/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove moved-source markers and ts-nocheck headers from active permission rendering files named by the audit row."
+      ],
+      "edgeCases": [
+        "The files no longer start with ts-nocheck.",
+        "Permission focused tests and TUI validation still pass after marker removal."
+      ],
+      "tests": [
+        "runtime/src/tui/components/permissions/PermissionRequest.test.tsx",
+        "runtime/src/tui/moved-source-markers.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/permissions/PermissionRequest.test.tsx",
+        "cd runtime && npm test -- src/tui/moved-source-markers.test.ts"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/permissions/PermissionRequest.tsx"
+    },
+    {
+      "id": "todo-row-149",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/startup/StartupScreen.ts",
+        "runtime/src/tui/hooks/useSettingsChange.ts",
+        "runtime/src/tui/components/sandbox/SandboxSettings.tsx",
+        "runtime/src/tui/components/MCPServerMultiselectDialog.tsx"
+      ],
+      "requiredBehaviors": [
+        "Replace deprecated TUI settings reads with current settings accessors in active boot/dialog surfaces."
+      ],
+      "edgeCases": [
+        "Startup settings fallback still handles missing settings.",
+        "Dialog settings loads keep existing values.",
+        "No audited TUI file still imports getSettings_DEPRECATED."
+      ],
+      "tests": [
+        "runtime/src/tui/startup/StartupScreen.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/startup/StartupScreen.test.ts && ! rg -n \"getSettings_DEPRECATED\" src/tui/startup/StartupScreen.ts src/tui/hooks/useSettingsChange.ts src/tui/components/sandbox/SandboxSettings.tsx src/tui/components/MCPServerMultiselectDialog.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/startup/StartupScreen.ts"
+    },
+    {
+      "id": "todo-row-150",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/TrustDialog/TrustDialog.tsx",
+        "runtime/src/tui/components/skills/SkillsMenu.tsx"
+      ],
+      "requiredBehaviors": [
+        "Remove deprecated command-source rendering branches from active Trust and Skills TUI surfaces."
+      ],
+      "edgeCases": [
+        "Skills from current skill/plugin/MCP sources still render.",
+        "Deprecated command-source checks no longer appear in the audited TUI files."
+      ],
+      "tests": [
+        "runtime/src/tui/components/TrustDialog/TrustDialog.test.tsx",
+        "runtime/src/tui/components/skills/SkillsMenu.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/TrustDialog/TrustDialog.test.tsx src/tui/components/skills/SkillsMenu.test.tsx"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/TrustDialog/TrustDialog.tsx"
+    },
+    {
+      "id": "todo-row-151",
+      "source": "parity/tui-rendering-fix-source-snapshot.json",
+      "targetFiles": [
+        "runtime/src/tui/components/PromptInput/PromptInput.tsx",
+        "runtime/src/tui/components/ProviderManager.tsx",
+        "runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx",
+        "scripts/check-tui-rendering-todo-resolved.mjs"
+      ],
+      "requiredBehaviors": [
+        "Replace donor-prefixed analytics/event identifiers in audited active TUI interaction paths with AgenC-owned names.",
+        "The final audit-status verifier is owned by this matrix and fails closed when any source row remains outside the accepted final state."
+      ],
+      "edgeCases": [
+        "Prompt, provider, and MCP interactions still log events.",
+        "Audited files no longer contain donor-prefixed event names.",
+        "The verifier fails if any source audit row remains outside the accepted final state."
+      ],
+      "tests": [
+        "runtime/src/tui/components/ProviderManager.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npm test -- src/tui/components/ProviderManager.test.tsx && ! rg -n \"tengu_\" src/tui/components/PromptInput/PromptInput.tsx src/tui/components/ProviderManager.tsx src/tui/components/mcp/MCPRemoteServerMenu.tsx",
+        "node scripts/check-tui-rendering-todo-resolved.mjs"
+      ],
+      "status": "required",
+      "target": "runtime/src/tui/components/PromptInput/PromptInput.tsx"
+    }
+  ],
+  "completionPipelineProtocol": {
+    "eventLogPath": ".tmp/agenc-tui-completion-pipeline/events.jsonl",
+    "envOverride": "AGENC_TUI_COMPLETION_PIPELINE_LOG",
+    "writerModule": "scripts/goal/pipeline-events.mjs",
+    "tuiModule": "runtime/src/tui/completion-pipeline.ts",
+    "persistence": "best-effort local JSONL under ignored .tmp/ project state; write failures must not mask the original goal-script result",
+    "snapshotFormat": {
+      "pipelineId": "string",
+      "sequence": "monotonic integer",
+      "gateId": "one of gateIds",
+      "gateIndex": "zero-based integer matching gateIds order",
+      "status": "one of allowedStatuses",
+      "message": "optional bounded display text",
+      "detail": "optional bounded failure or cancellation detail",
+      "timestamp": "ISO-8601 string"
+    },
+    "gateIds": [
+      "prep",
+      "branch_shape",
+      "branding",
+      "shape_evidence",
+      "item_specific",
+      "typecheck",
+      "tui_validate",
+      "review",
+      "local_merge"
+    ],
+    "allowedStatuses": [
+      "started",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "completed"
+    ],
+    "orderingRules": [
+      "sort accepted events by sequence, then gateIndex",
+      "dedupe events with the same pipelineId and sequence",
+      "hold succeeded, failed, or cancelled events until the same gate has a started event",
+      "older events cannot regress a newer terminal gate state",
+      "completed, failed, and cancelled clear prompt ownership"
+    ],
+    "producerAssertions": [
+      "prep.mjs emits started and succeeded or failed for the prep gate",
+      "verify.mjs emits started and succeeded or failed for branch_shape, branding, shape_evidence, item_specific, typecheck, and tui_validate",
+      "complete.mjs emits started and succeeded or failed for review and local_merge and emits completed for a successful pipeline",
+      "signal interruption or explicit abort emits cancelled when the producer can observe cancellation"
+    ]
+  },
+  "finalValidationCommands": [
+    "cd runtime && npm test -- src/tui/components/FullscreenLayout.test.tsx src/tui/components/PromptInput/utils.test.ts src/tui/components/PromptInput/PromptInputFooterLeftSide.test.tsx src/tui/components/mcp/MCPRemoteServerMenu.test.tsx src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx src/tui/components/permissions/PermissionRequest.test.tsx src/tui/components/spinner/agentActivity.test.ts src/tui/parity/session-transcript.test.ts src/tui/components/renderHealth.test.ts src/tui/components/App.local-agents.test.tsx src/tui/components/App.completion-pipeline.test.tsx src/tui/ink/components/App.render-error.test.tsx src/tui/ink/log-update.test.ts src/tui/components/teams/TeamsDialog.test.tsx src/tui/completion-pipeline.test.ts src/tui/components/HelpV2/HelpV2.test.tsx src/tui/components/Settings/Settings.test.tsx src/tui/components/TrustDialog/TrustDialog.test.tsx src/tui/components/skills/SkillsMenu.test.tsx src/tui/glyphs.test.ts src/tui/screens/orphan-rendering.test.ts src/tui/moved-source-markers.test.ts src/tui/startup/StartupScreen.test.ts src/tui/components/ProviderManager.test.tsx",
+    "node --test scripts/goal/pipeline-events.test.mjs scripts/goal/pipeline-events-producers.test.mjs",
+    "node scripts/check-tui-rendering-todo-resolved.mjs",
+    "node scripts/branding-scan.mjs --changed",
+    "cd runtime && npm run build",
+    "cd runtime && npm run typecheck",
+    "node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full"
+  ],
+  "sourceSnapshotHash": "957b80b5c8333d28c75eb8ec6060cc580ae4e3dc344a29b6b49e2711bcc5e12e",
+  "reviewsDir": "tui-rendering-fix-contract.reviews"
+}

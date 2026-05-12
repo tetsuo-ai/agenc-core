@@ -1,0 +1,21 @@
+{
+  "rowId": "todo-row-030",
+  "reviewer": "Hilbert reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Surface slow render or dropped frame metrics in an operator-visible TUI status row when average FPS is below 20 or 1 percent low FPS is below 12."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Undefined metrics render nothing.",
+      "Healthy metrics render nothing.",
+      "Average FPS below 20 or 1 percent low FPS below 12 renders a bounded warning line without stealing focus."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

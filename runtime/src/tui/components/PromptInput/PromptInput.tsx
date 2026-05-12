@@ -118,7 +118,7 @@ import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
 import { useSwarmBanner } from './useSwarmBanner.js';
-import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
+import { clampPromptTextInputColumns, isNonSpacePrintable, isVimModeEnabled, pasteReferenceLineThreshold } from './utils.js';
 
 type PromptSuggestionHookProps = {
   inputValue: string;
@@ -244,7 +244,7 @@ function FastModePicker({
 
 function isUltrareviewEnabled(): boolean {
   const config = getFeatureValue_CACHED_MAY_BE_STALE<Record<string, unknown> | null>(
-    'tengu_review_bughunter_config',
+    'agenc_review_bughunter_config',
     null,
   );
   return config?.enabled === true;
@@ -360,7 +360,7 @@ function usePromptSuggestion({
       });
       if (!outcome) return;
 
-      logPromptSuggestionEvent('tengu_prompt_suggestion', {
+      logPromptSuggestionEvent('agenc_prompt_suggestion', {
         source: 'cli' as PromptSuggestionAnalyticsMetadata,
         outcome: (outcome.wasAccepted ? 'accepted' : 'ignored') as PromptSuggestionAnalyticsMetadata,
         prompt_id: promptId as PromptSuggestionAnalyticsMetadata,
@@ -623,11 +623,6 @@ function PromptInput({
   const store = useAppStateStore();
   const setAppState = useSetAppState();
   const tasks = useAppState(s => s.tasks);
-  // Tmux pill (internal-only) — visible when there's an active tungsten session
-  const hasTungstenSession = false;
-  const tmuxFooterVisible = false;
-  // WebBrowser pill — visible when a browser is open
-  const bagelFooterVisible = useAppState(s => false);
   const teamContext = useAppState(s => s.teamContext);
   const queuedCommands = useCommandQueue();
   const promptSuggestionState = useAppState(s => s.promptSuggestion);
@@ -777,7 +772,7 @@ function PromptInput({
   // something is running.
   const tasksFooterVisible = runningTaskCount > 0 && !shouldHideTasksFooter(tasks, showSpinnerTree);
   const teamsFooterVisible = cachedTeams.length > 0;
-  const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', tmuxFooterVisible && 'tmux', bagelFooterVisible && 'bagel', teamsFooterVisible && 'teams'].filter(Boolean) as FooterItem[], [tasksFooterVisible, tmuxFooterVisible, bagelFooterVisible, teamsFooterVisible]);
+  const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', teamsFooterVisible && 'teams'].filter(Boolean) as FooterItem[], [tasksFooterVisible, teamsFooterVisible]);
 
   // Effective selection: null if the selected pill stopped rendering (bridge
   // disconnected, task finished). The derivation makes the UI correct
@@ -794,8 +789,6 @@ function PromptInput({
     }
   }, [rawFooterSelection, footerItemSelected, setAppState]);
   const tasksSelected = footerItemSelected === 'tasks';
-  const tmuxSelected = footerItemSelected === 'tmux';
-  const bagelSelected = footerItemSelected === 'bagel';
   const teamsSelected = footerItemSelected === 'teams';
   function selectFooterItem(item: FooterItem | null): void {
     setAppState(prev => prev.footerSelection === item ? prev : {
@@ -1153,7 +1146,7 @@ function PromptInput({
   });
   const onChange = useCallback((value: string) => {
     if (value === '?') {
-      logEvent('tengu_help_toggled', {});
+      logEvent('agenc_help_toggled', {});
       setHelpOpen(v => !v);
       return;
     }
@@ -1361,7 +1354,7 @@ function PromptInput({
         } else if (result.error === 'no_team_context') {
           // No team context - fall through to normal prompt submission
         } else {
-          // Unknown recipient - fall through to normal prompt submission
+          // Unrecognized recipient - fall through to normal prompt submission
           // This allows e.g. "@utils explain this code" to be sent as a prompt
         }
       }
@@ -1391,7 +1384,7 @@ function PromptInput({
     // Route input to viewed agent (in-process teammate or named local_agent).
     const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
-      logEvent('tengu_transcript_input_to_teammate', {});
+      logEvent('agenc_transcript_input_to_teammate', {});
       await onAgentSubmit(inputParam, activeAgent.task, {
         setCursorOffset,
         clearBuffer,
@@ -1547,7 +1540,7 @@ function PromptInput({
     }));
   }
   function onImagePaste(image: string, mediaType?: string, filename?: string, dimensions?: ImageDimensions, sourcePath?: string) {
-    logEvent('tengu_paste_image', {});
+    logEvent('agenc_paste_image', {});
     onModeChange('prompt');
     const pasteId = nextPasteIdRef.current++;
     const newContent: PastedContent = {
@@ -1631,7 +1624,7 @@ function PromptInput({
     // the entire terminal.
     // The actual required height is dependent on the content, this
     // is just an estimate.
-    const maxLines = Math.min(rows - 10, 2);
+    const maxLines = pasteReferenceLineThreshold(rows);
 
     // Use special handling for long pasted text (>PASTE_THRESHOLD chars)
     // or if it exceeds the number of lines we want to show
@@ -1706,7 +1699,7 @@ function PromptInput({
   // Insert the at-mentioned reference (the file and, optionally, a line range) when
   // we receive an at-mentioned notification the IDE.
   const onIdeAtMentioned = function (atMentioned: IDEAtMentioned) {
-    logEvent('tengu_ext_at_mentioned', {});
+    logEvent('agenc_ext_at_mentioned', {});
     let atMentionedText: string;
     const relativePath = path.relative(getCwd(), atMentioned.filePath);
     if (atMentioned.lineStart && atMentioned.lineEnd) {
@@ -1744,7 +1737,7 @@ function PromptInput({
 
   // Handler for chat:externalEditor - edit in $EDITOR
   const handleExternalEditor = useCallback(async () => {
-    logEvent('tengu_external_editor_used', {});
+    logEvent('agenc_external_editor_used', {});
     setIsExternalEditorActive(true);
     try {
       // Pass pastedContents to expand collapsed text references
@@ -1841,7 +1834,7 @@ function PromptInput({
       };
       // Pass undefined for teamContext (unused but kept for API compatibility)
       const nextMode = getNextPermissionMode(teammateContext, undefined);
-      logEvent('tengu_mode_cycle', {
+      logEvent('agenc_mode_cycle', {
         to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       const teammateTaskId = viewingAgentTaskId;
@@ -1925,7 +1918,7 @@ function PromptInput({
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
         if (showAutoModeOptIn) {
-          logEvent('tengu_auto_mode_opt_in_dialog_decline', {});
+          logEvent('agenc_auto_mode_opt_in_dialog_decline', {});
         }
         setShowAutoModeOptIn(false);
         if (autoModeOptInTimeoutRef.current) {
@@ -1943,7 +1936,7 @@ function PromptInput({
     const {
       context: preparedContext
     } = cyclePermissionMode(toolPermissionContext, teamContext);
-    logEvent('tengu_mode_cycle', {
+    logEvent('agenc_mode_cycle', {
       to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
 
@@ -2220,10 +2213,6 @@ function PromptInput({
             selectFooterItem(null);
           }
           break;
-        case 'tmux':
-          break;
-        case 'bagel':
-          break;
         case 'teams':
           setShowTeamsDialog(true);
           selectFooterItem(null);
@@ -2373,7 +2362,7 @@ function PromptInput({
     columns,
     rows
   } = useTerminalSize();
-  const textInputColumns = columns - 3;
+  const textInputColumns = clampPromptTextInputColumns(columns);
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen TUI.
@@ -2443,7 +2432,7 @@ function PromptInput({
       priority: 'immediate',
       timeoutMs: 3000
     });
-    logEvent('tengu_model_picker_hotkey', {
+    logEvent('agenc_model_picker_hotkey', {
       model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
   }, [setAppState, addNotification, isFastMode]);
@@ -2486,7 +2475,7 @@ function PromptInput({
       thinkingEnabled: enabled
     }));
     setShowThinkingToggle(false);
-    logEvent('tengu_thinking_toggled_hotkey', {
+    logEvent('agenc_thinking_toggled_hotkey', {
       enabled
     });
     addNotification({
@@ -2666,7 +2655,7 @@ function PromptInput({
           slash command picker / @-mention list) needs the same row,
           which the suggestions branch in PromptInputFooter handles
           via its own early return. */}
-      <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
+      <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * AgenC startup screen — filled-block text logo with signal gradient.
  * Called once at CLI startup before the Ink UI renders.
@@ -8,8 +6,8 @@
  */
 
 import { isLocalProviderUrl, resolveProviderRequest } from '../../services/api/providerConfig.js'
-import { getLocalOpenAiCompatibleProviderLabel } from '../../utils/providerDiscovery.js'
-import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
+import { getLocalOpenAICompatibleProviderLabel } from '../../utils/providerDiscovery.js' // branding-scan: allow real provider helper name
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
 import { containsExactZaiGlmModelId, isZaiBaseUrl } from '../../utils/zaiProvider.js'
 
@@ -113,7 +111,7 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
     })
     const baseUrl = resolvedRequest.baseUrl
     const isLocal = isLocalProviderUrl(baseUrl)
-    let name = 'OpenAi'
+    let name = 'OpenAI' // branding-scan: allow real provider display name
     // Explicit dedicated-provider env flags win.
     if (process.env.NVIDIA_NIM) name = 'NVIDIA NIM'
     else if (process.env.MINIMAX_API_KEY) name = 'MiniMax'
@@ -121,14 +119,14 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
       resolvedRequest.transport === 'providerCode_responses' || // branding-scan: allow provider transport literal
       baseUrl.includes('chatgpt.com/backend-api/providerCode') // branding-scan: allow provider endpoint path
     )
-      name = 'OpenAi Responses'
+      name = 'OpenAI Responses' // branding-scan: allow real provider display name
     // Base URL is authoritative — must precede rawModel checks so aggregators
     // (OpenRouter/Together/Groq) aren't mislabelled as DeepSeek/Kimi/etc.
     // when routed to models whose IDs contain a vendor prefix. See issue #855.
     else if (/openrouter/i.test(baseUrl)) name = 'OpenRouter'
     else if (/together/i.test(baseUrl)) name = 'Together AI'
     else if (/groq/i.test(baseUrl)) name = 'Groq'
-    else if (/azure/i.test(baseUrl)) name = 'Azure OpenAi'
+    else if (/azure/i.test(baseUrl)) name = 'Azure OpenAI' // branding-scan: allow real provider display name
     else if (/nvidia/i.test(baseUrl)) name = 'NVIDIA NIM'
     else if (/minimax/i.test(baseUrl)) name = 'MiniMax'
     else if (/api\.kimi\.com/i.test(baseUrl)) name = 'Moonshot AI - Kimi Code'
@@ -151,7 +149,7 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
     else if (/llama/i.test(rawModel)) name = 'Meta Llama'
     else if (/bankr/i.test(baseUrl)) name = 'Bankr'
     else if (/bankr/i.test(rawModel)) name = 'Bankr'
-    else if (isLocal) name = getLocalOpenAiCompatibleProviderLabel(baseUrl)
+    else if (isLocal) name = getLocalOpenAICompatibleProviderLabel(baseUrl) // branding-scan: allow real provider helper name
     
     // Resolve model alias to actual model name + reasoning effort
     let displayModel = resolvedRequest.resolvedModel
@@ -163,12 +161,12 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
   }
 
   // Default: provider - check settings.model first, then env vars
-  const settings = getSettings_DEPRECATED() || {}
+  const settings = getInitialSettings() || {}
   const modelSetting = modelOverride || settings.model || process.env.ANTHROPIC_MODEL || process.env.AGENC_MODEL || 'claude-sonnet-4-6'
   const resolvedModel = parseUserSpecifiedModel(modelSetting)
   const baseUrl = process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com'
   const isLocal = isLocalProviderUrl(baseUrl)
-  return { name: 'provider', model: resolvedModel, baseUrl, isLocal }
+  return { name: 'Anthropic', model: resolvedModel, baseUrl, isLocal } // branding-scan: allow real provider display name
 }
 
 // ─── Box drawing ──────────────────────────────────────────────────────────────

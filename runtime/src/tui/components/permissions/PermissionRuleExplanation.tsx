@@ -1,13 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import chalk from 'chalk';
-import React from 'react';
 import { Ansi, Box, Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import type { PermissionDecision, PermissionDecisionReason } from '../../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import ThemedText from '../design-system/ThemedText';
+import ThemedText from '../design-system/ThemedText.js';
 export type PermissionRuleExplanationProps = {
   permissionResult: PermissionDecision;
   toolType: 'tool' | 'command' | 'edit' | 'read';
@@ -65,7 +64,7 @@ function stringsForDecisionReason(reason: PermissionDecisionReason | undefined, 
       return null;
   }
 }
-export function PermissionRuleExplanation(t0) {
+export function PermissionRuleExplanation(t0: PermissionRuleExplanationProps) {
   const $ = _c(11);
   const {
     permissionResult,
@@ -115,6 +114,6 @@ export function PermissionRuleExplanation(t0) {
   }
   return t5;
 }
-function _temp(s) {
+function _temp(s: { toolPermissionContext: { mode: string } }) {
   return s.toolPermissionContext.mode;
 }

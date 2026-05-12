@@ -1,0 +1,21 @@
+{
+  "rowId": "todo-row-110",
+  "reviewer": "Hilbert reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Provider manager OAuth labels render AgenC-owned or provider-protocol labels instead of donor-branded labels."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Logged-out OAuth state has no donor-branded visible text.",
+      "Configured OAuth state has no donor-branded visible text.",
+      "Real provider identifiers that product rules allow remain untouched."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

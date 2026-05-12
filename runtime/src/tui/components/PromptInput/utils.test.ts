@@ -1,7 +1,11 @@
 import { describe, expect, test, vi } from 'vitest'
 
 import type { GlobalConfig } from '../../../utils/config.js'
-import { isVimModeEnabled } from './utils.js'
+import {
+  clampPromptTextInputColumns,
+  isVimModeEnabled,
+  pasteReferenceLineThreshold,
+} from './utils.js'
 
 vi.mock('../../../utils/config.js', () => ({
   getGlobalConfig: () => ({ editorMode: 'normal' }),
@@ -43,5 +47,23 @@ describe('PromptInput vim mode config', () => {
         editorMode: 'vim',
       }),
     ).toBe(true)
+  })
+})
+
+describe('PromptInput terminal geometry helpers', () => {
+  test('clamps input columns to a valid width', () => {
+    expect(clampPromptTextInputColumns(0)).toBe(0)
+    expect(clampPromptTextInputColumns(2)).toBe(0)
+    expect(clampPromptTextInputColumns(3)).toBe(0)
+    expect(clampPromptTextInputColumns(80)).toBe(77)
+  })
+
+  test('keeps paste threshold usable on tiny terminal heights', () => {
+    expect(pasteReferenceLineThreshold(0)).toBe(1)
+    expect(pasteReferenceLineThreshold(9)).toBe(1)
+    expect(pasteReferenceLineThreshold(10)).toBe(1)
+    expect(pasteReferenceLineThreshold(11)).toBe(1)
+    expect(pasteReferenceLineThreshold(12)).toBe(2)
+    expect(pasteReferenceLineThreshold(24)).toBe(2)
   })
 })

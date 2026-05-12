@@ -1,10 +1,8 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import autoBind from 'auto-bind';
 import { closeSync, constants as fsConstants, openSync, readSync, writeSync } from 'fs';
 import noop from 'lodash-es/noop.js';
 import throttle from 'lodash-es/throttle.js';
-import React, { type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import type { FiberRoot } from 'react-reconciler';
 import { LegacyRoot } from 'react-reconciler/constants.js';
 import { onExit } from 'signal-exit';
@@ -179,7 +177,7 @@ export default class Ink {
     x: number;
     y: number;
   } | null = null;
-  private reportRenderError = (label: string, error: unknown): void => {
+  private reportRenderError = (label: string, error: any): void => {
     const message =
       error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     logForDebugging(`[Ink:${label}] ${message}`, {
@@ -224,8 +222,8 @@ export default class Ink {
     // a one-keystroke lag. Same event-loop tick, so throughput is unchanged.
     // Test env uses onImmediateRender (direct onRender, no throttle) so
     // existing synchronous lastFrame() tests are unaffected.
-    const deferredRender = (): void => queueMicrotask(this.onRender);
-    this.scheduleRender = throttle(deferredRender, FRAME_INTERVAL_MS, {
+    const delayedRender = (): void => queueMicrotask(this.onRender);
+    this.scheduleRender = throttle(delayedRender, FRAME_INTERVAL_MS, {
       leading: true,
       trailing: true
     });
@@ -272,7 +270,7 @@ export default class Ink {
       }
     };
 
-    // @ts-expect-error @types/react-reconciler@0.32.3 declares 11 args with transitionCallbacks,
+    // @ts-ignore @types/react-reconciler@0.32.3 declares 11 args with transitionCallbacks,
     // but react-reconciler 0.33.0 source only accepts 10 args (no transitionCallbacks)
     this.container = reconciler.createContainer(
       this.rootNode,
@@ -283,19 +281,19 @@ export default class Ink {
       'id',
       noop,
       // onUncaughtError
-      error => {
+      (error: unknown) => {
         this.reportRenderError('uncaught', error);
       },
       // onCaughtError
-      error => {
+      (error: unknown) => {
         this.reportRenderError('caught', error);
       },
       // onRecoverableError
-      error => {
+      (error: unknown) => {
         this.reportRenderError('recoverable', error);
       }, // onDefaultTransitionIndicator
     );
-    if ("production" === 'development') {
+    if (process.env.NODE_ENV === 'development') {
       reconciler.injectIntoDevTools({
         bundleType: 0,
         // Reporting React DOM's version, not Ink's
@@ -322,7 +320,7 @@ export default class Ink {
     this.frontFrame = emptyFrame(this.frontFrame.viewport.height, this.frontFrame.viewport.width, this.stylePool, this.charPool, this.hyperlinkPool);
     this.backFrame = emptyFrame(this.backFrame.viewport.height, this.backFrame.viewport.width, this.stylePool, this.charPool, this.hyperlinkPool);
     this.log.reset();
-    // Physical cursor position is unknown after the shell took over during
+    // Physical cursor position is not tracked after the shell took over during
     // suspend. Clear displayCursor so the next frame's cursor preamble
     // doesn't emit a relative move from a stale park position.
     this.displayCursor = null;
@@ -387,7 +385,7 @@ export default class Ink {
     this.suspendStdin();
     this.options.stdout.write(
     // Disable extended key reporting first — editors that don't speak
-    // CSI-u (e.g. nano) show "Unknown sequence" for every Ctrl-<key> if
+    // CSI-u (e.g. nano) show "Unrecognized sequence" for every Ctrl-<key> if
     // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
     DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
     // disable mouse (no-op if off)
@@ -457,7 +455,7 @@ export default class Ink {
       this.drainTimer = null;
     }
 
-    // Flush deferred interaction-time update before rendering so we call
+    // Flush delayed interaction-time update before rendering so we call
     // Date.now() at most once per frame instead of once per keypress.
     // Done before the render to avoid dirtying state that would trigger
     // an extra React re-render cycle.
@@ -601,7 +599,7 @@ export default class Ink {
     // passing prev.cursor=(0,0) makes the diff compute from the same spot.
     // Self-healing against any external cursor manipulation. Main-screen
     // can't do this — cursor.y tracks scrollback rows CSI H can't reach.
-    // The CSI H write is deferred until after the diff is computed so we
+    // The CSI H write is delayed until after the diff is computed so we
     // can skip it for empty diffs (no writes → physical cursor unused).
     let prevFrame = this.frontFrame;
     if (this.altScreenActive) {
@@ -819,7 +817,7 @@ export default class Ink {
   }
   pause(): void {
     // Flush pending React updates and render before pausing.
-    // @ts-expect-error flushSyncFromReconciler exists in react-reconciler 0.31 but not in @types/react-reconciler
+    // @ts-ignore flushSyncFromReconciler exists in react-reconciler 0.31 but not in @types/react-reconciler
     reconciler.flushSyncFromReconciler();
     this.onRender();
     this.isPaused = true;
@@ -838,7 +836,7 @@ export default class Ink {
     this.frontFrame = emptyFrame(this.frontFrame.viewport.height, this.frontFrame.viewport.width, this.stylePool, this.charPool, this.hyperlinkPool);
     this.backFrame = emptyFrame(this.backFrame.viewport.height, this.backFrame.viewport.width, this.stylePool, this.charPool, this.hyperlinkPool);
     this.log.reset();
-    // Physical cursor position is unknown after external terminal corruption.
+    // Physical cursor position is not tracked after external terminal corruption.
     // Clear displayCursor so the cursor preamble doesn't emit a stale
     // relative move from where we last parked it.
     this.displayCursor = null;
@@ -952,7 +950,7 @@ export default class Ink {
    * Mark this instance as unmounted so future unmount() calls early-return.
    * Called by gracefulShutdown's cleanupTerminalModes() after it has sent
    * EXIT_ALT_SCREEN but before the remaining terminal-reset sequences.
-   * Without this, signal-exit's deferred ink.unmount() (triggered by
+   * Without this, signal-exit's delayed ink.unmount() (triggered by
    * process.exit()) runs the full unmount path: onRender() + writeSync
    * cleanup block + updateContainerSync → AlternateScreen unmount cleanup.
    * The result is 2-3 redundant EXIT_ALT_SCREEN sequences landing on the
@@ -1390,7 +1388,7 @@ export default class Ink {
   // This is needed to prevent Ink from swallowing keystrokes when an external editor is active
   private stdinListeners: Array<{
     event: string;
-    listener: (...args: unknown[]) => void;
+    listener: (...args: any[]) => void;
   }> = [];
   private wasRawMode = false;
   suspendStdin(): void {
@@ -1408,9 +1406,9 @@ export default class Ink {
     readableListeners.forEach(listener => {
       this.stdinListeners.push({
         event: 'readable',
-        listener: listener as (...args: unknown[]) => void
+        listener: listener as (...args: any[]) => void
       });
-      stdin.removeListener('readable', listener as (...args: unknown[]) => void);
+      stdin.removeListener('readable', listener as (...args: any[]) => void);
     });
 
     // If raw mode is enabled, disable it temporarily
@@ -1478,9 +1476,9 @@ export default class Ink {
         </TerminalWriteProvider>
       </App>;
 
-    // @ts-expect-error updateContainerSync exists in react-reconciler but not in @types/react-reconciler
+    // @ts-ignore updateContainerSync exists in react-reconciler but not in @types/react-reconciler
     reconciler.updateContainerSync(tree, this.container, null, noop);
-    // @ts-expect-error flushSyncWork exists in react-reconciler but not in @types/react-reconciler
+    // @ts-ignore flushSyncWork exists in react-reconciler but not in @types/react-reconciler
     reconciler.flushSyncWork();
     logForDebugging('[Ink:render] updateContainer complete');
   }
@@ -1498,7 +1496,7 @@ export default class Ink {
 
     // Non-TTY environments don't handle erasing ansi escapes well, so it's better to
     // only render last frame of non-static output
-    const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame);
+    const diff = this.log.preservePreviousOutput(this.frontFrame);
     writeDiffToTerminal(this.terminal, optimize(diff));
 
     // Clean up terminal modes synchronously before process exit.
@@ -1517,7 +1515,7 @@ export default class Ink {
       }
       // Disable mouse tracking — unconditional because altScreenActive can be
       // stale if AlternateScreen's unmount (which flips the flag) raced a
-      // blocked event loop + SIGINT. No-op if tracking was never enabled.
+      // busy event loop + SIGINT. No-op if tracking was never enabled.
       writeSync(1, DISABLE_MOUSE_TRACKING);
       // Drain stdin so in-flight mouse events don't leak to the shell
       this.drainStdin();
@@ -1546,9 +1544,9 @@ export default class Ink {
       this.drainTimer = null;
     }
 
-    // @ts-expect-error updateContainerSync exists in react-reconciler but not in @types/react-reconciler
+    // @ts-ignore updateContainerSync exists in react-reconciler but not in @types/react-reconciler
     reconciler.updateContainerSync(null, this.container, null, noop);
-    // @ts-expect-error flushSyncWork exists in react-reconciler but not in @types/react-reconciler
+    // @ts-ignore flushSyncWork exists in react-reconciler but not in @types/react-reconciler
     reconciler.flushSyncWork();
     deleteInkInstance(this.options.stdout);
 
@@ -1604,8 +1602,8 @@ export default class Ink {
     // biome-ignore lint/suspicious/noConsole: intentionally patching global console
     const con = console;
     const originals: Partial<Record<keyof Console, Console[keyof Console]>> = {};
-    const toDebug = (...args: unknown[]) => logForDebugging(`console.log: ${format(...args)}`);
-    const toError = (...args: unknown[]) => logError(new Error(`console.error: ${format(...args)}`));
+    const toDebug = (...args: any[]) => logForDebugging(`console.log: ${format(...args)}`);
+    const toError = (...args: any[]) => logError(new Error(`console.error: ${format(...args)}`));
     for (const m of CONSOLE_STDOUT_METHODS) {
       originals[m] = con[m];
       con[m] = toDebug;
@@ -1615,7 +1613,7 @@ export default class Ink {
       con[m] = toError;
     }
     originals.assert = con.assert;
-    con.assert = (condition: unknown, ...args: unknown[]) => {
+    con.assert = (condition: any, ...args: any[]) => {
       if (!condition) toError(...args);
     };
     return () => Object.assign(con, originals);
@@ -1644,7 +1642,7 @@ export default class Ink {
       // don't stack-overflow.
       if (reentered) {
         const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : undefined;
-        return originalWrite.call(stderr, chunk, encoding, callback);
+        return originalWrite.call(stderr, chunk, encoding, callback as ((err?: Error | null) => void) | undefined);
       }
       reentered = true;
       try {

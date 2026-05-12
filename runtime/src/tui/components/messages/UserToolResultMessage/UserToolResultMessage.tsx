@@ -1,6 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
+import { Text } from '../../../ink.js';
 import type { Tools } from '../../../../tools/Tool';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../../types/message';
 import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -20,6 +21,23 @@ type Props = {
   width: number | string;
   isTranscriptMode?: boolean;
 };
+
+export function formatOrphanToolResultContent(content: ToolResultBlockParam["content"]): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
+          return block.text;
+        }
+        return JSON.stringify(block);
+      })
+      .join("\n");
+  }
+  return content == null ? "" : String(content);
+}
+
 export function UserToolResultMessage(t0) {
   const $ = _c(28);
   const {
@@ -35,7 +53,10 @@ export function UserToolResultMessage(t0) {
   } = t0;
   const toolUse = useGetToolFromMessages(param.tool_use_id, tools, lookups);
   if (!toolUse) {
-    return null;
+    if (param.is_error) {
+      return <UserToolErrorMessage progressMessagesForMessage={progressMessagesForMessage} tool={undefined} tools={tools} param={param} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
+    }
+    return <Text dimColor={true}>Tool result recovered without matching tool call: {formatOrphanToolResultContent(param.content)}</Text>;
   }
   if (typeof param.content === "string" && param.content.startsWith(CANCEL_MESSAGE)) {
     let t1;

@@ -4,20 +4,41 @@ import {
   formatLocalAgentName,
   formatRunningAgentSummary,
   getActiveLocalAgentTasks,
+  isActiveLocalAgentStatus,
+  normalizeLocalAgentStatus,
 } from "./agentActivity.js";
 
 describe("agent spinner activity helpers", () => {
   test("selects active local agents and sorts them by display name", () => {
     const tasks = {
       shell: { id: "shell", type: "local_bash", status: "running" },
-      done: { id: "done", type: "local_agent", status: "completed" },
+      done: { id: "done", type: "local_agent", status: "completed", description: "Done" },
       zed: { id: "zed", type: "local_agent", status: "running", description: "Zed" },
       ada: { id: "ada", type: "local_agent", status: "pending", description: "Ada" },
+      blocked: { id: "blocked", type: "local_agent", status: "blocked", description: "Blocked" },
     };
 
     expect(getActiveLocalAgentTasks(tasks).map(formatLocalAgentName)).toEqual([
       "Ada",
+      "Blocked",
       "Zed",
+    ]);
+  });
+
+  test("does not keep terminal or idle local agent states active", () => {
+    expect(["idle", "failed", "completed", "cancelled", "killed"].map(isActiveLocalAgentStatus)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+    expect(["pending", "running", "awaiting_permission", "completing", "failing"].map(isActiveLocalAgentStatus)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
     ]);
   });
 
@@ -46,11 +67,37 @@ describe("agent spinner activity helpers", () => {
         {
           id: "b",
           type: "local_agent",
-          status: "running",
+          status: "waiting-on-user",
           description: "SignalJacker",
           progress: { tokenCount: 300 },
         },
       ]),
-    ).toBe("2 agents running: Da5id, SignalJacker · 1.5k tokens");
+    ).toBe("2 agents: Da5id running, SignalJacker waiting on user · 1.5k tokens");
+  });
+
+  test("normalizes local agent lifecycle states for summaries", () => {
+    expect(
+      [
+        "idle",
+        "pending",
+        "running",
+        "awaiting_permission",
+        "completing",
+        "failing",
+        "failed",
+        "completed",
+        "killed",
+      ].map(normalizeLocalAgentStatus),
+    ).toEqual([
+      "idle",
+      "starting",
+      "running",
+      "waiting on user",
+      "completing",
+      "failing",
+      "failed",
+      "completed",
+      "cancelled",
+    ]);
   });
 });

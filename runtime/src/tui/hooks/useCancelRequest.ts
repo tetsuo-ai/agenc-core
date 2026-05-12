@@ -42,7 +42,9 @@ type CancelRequestHandlerProps = {
     f: (toolUseConfirmQueue: ToolUseConfirm[]) => ToolUseConfirm[],
   ) => void
   onCancel: () => void
-  onAgentsKilled: () => void
+  onAgentsKilled: (
+    agents: readonly { taskId: string; description: string }[],
+  ) => void
   isMessageSelectorVisible: boolean
   screen: Screen
   abortSignal?: AbortSignal
@@ -100,7 +102,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     // Priority 1: If there's an active task running, cancel it first
     // This takes precedence over queue management so users can always interrupt AgenC
     if (abortSignal !== undefined && !abortSignal.aborted) {
-      logEvent('tengu_cancel', cancelProps)
+      logEvent('agenc_cancel', cancelProps)
       setToolUseConfirmQueue(() => [])
       onCancel()
       return
@@ -130,7 +132,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     }
 
     // Fallback: nothing to cancel or pop (shouldn't reach here if isActive is correct)
-    logEvent('tengu_cancel', cancelProps)
+    logEvent('agenc_cancel', cancelProps)
     setToolUseConfirmQueue(() => [])
     onCancel()
   }, [
@@ -198,21 +200,22 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     )
     if (running.length === 0) return false
     killAllRunningAgentTasks(tasks, setAppState)
-    const descriptions: string[] = []
+    const killedAgents: Array<{ taskId: string; description: string }> = []
     for (const [taskId, task] of running) {
       markAgentsNotified(taskId, setAppState)
-      descriptions.push(task.description)
+      killedAgents.push({ taskId, description: task.description })
       emitTaskTerminatedSdk(taskId, 'stopped', {
         toolUseId: task.toolUseId,
         summary: task.description,
       })
     }
+    const descriptions = killedAgents.map(agent => agent.description)
     const summary =
       descriptions.length === 1
         ? `Background agent "${descriptions[0]}" was stopped by the user.`
         : `${descriptions.length} background agents were stopped by the user: ${descriptions.map(d => `"${d}"`).join(', ')}.`
     enqueuePendingNotification({ value: summary, mode: 'task-notification' })
-    onAgentsKilled()
+    onAgentsKilled(killedAgents)
     return true
   }, [store, setAppState, onAgentsKilled])
 
@@ -264,7 +267,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       // Second press within window -- kill all background agents
       lastKillAgentsPressRef.current = 0
       removeNotification('kill-agents-confirm')
-      logEvent('tengu_cancel', {
+      logEvent('agenc_cancel', {
         source:
           'kill_agents' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })

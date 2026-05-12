@@ -14,6 +14,7 @@ import type {
   RequestUserInputResponse,
 } from "../elicitation/types.js";
 import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
+import type { FpsMetrics } from "../utils/fpsTracker.js";
 
 export interface AgenCCompactProgressControls {
   setStreamMode?(mode: "requesting" | "responding" | null): void;
@@ -227,4 +228,5 @@ export interface AgenCTuiProps {
   readonly initialPrompt?: string;
   readonly initialComposerText?: string;
   readonly initialUserMessages?: readonly LLMMessage[];
+  readonly getFpsMetrics?: () => FpsMetrics | undefined;
 }

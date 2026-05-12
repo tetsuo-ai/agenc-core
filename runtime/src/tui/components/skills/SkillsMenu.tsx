@@ -44,8 +44,7 @@ function getSourceSubtitle(source: SkillSource, skills: SkillCommand[]): string 
     return servers.length > 0 ? servers.join(', ') : undefined;
   }
   const skillsPath = getDisplayPath(getSkillsPath(source, 'skills'));
-  const hasCommandsSkills = skills.some(s => s.loadedFrom === 'commands_DEPRECATED');
-  return hasCommandsSkills ? `${skillsPath}, ${getDisplayPath(getSkillsPath(source, 'commands'))}` : skillsPath;
+  return skillsPath;
 }
 function getSkillListLabel(skill: SkillCommand): string {
   const leafName = skill.name.split(':').pop() ?? skill.name;
@@ -239,5 +238,5 @@ function _temp2(a, b) {
   return a.name.localeCompare(b.name);
 }
 function _temp(cmd) {
-  return cmd.type === "prompt" && (cmd.loadedFrom === "skills" || cmd.loadedFrom === "commands_DEPRECATED" || cmd.loadedFrom === "plugin" || cmd.loadedFrom === "mcp");
+  return cmd.type === "prompt" && (cmd.loadedFrom === "skills" || cmd.loadedFrom === "plugin" || cmd.loadedFrom === "mcp");
 }

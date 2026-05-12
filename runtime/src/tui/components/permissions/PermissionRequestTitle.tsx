@@ -2,14 +2,14 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { WorkerBadgeProps } from './WorkerBadge';
+import type { WorkerBadgeProps } from './WorkerBadge.js';
 type Props = {
   title: string;
   subtitle?: React.ReactNode;
   color?: keyof Theme;
   workerBadge?: WorkerBadgeProps;
 };
-export function PermissionRequestTitle(t0) {
+export function PermissionRequestTitle(t0: Props) {
   const $ = _c(13);
   const {
     title,

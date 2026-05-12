@@ -1,12 +1,24 @@
 import { PassThrough } from 'node:stream'
 
-import { afterEach, expect, mock, test } from 'bun:test'
+import { afterEach, expect, test, vi } from 'vitest'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
-import { createRoot } from '../../../tui/ink.js'
-import { KeybindingSetup } from '../../../tui/keybindings/KeybindingProviderSetup.js'
-import { AppStateProvider } from '../../../tui/state/AppState.js'
+const mock = Object.assign(vi.fn, {
+  module: vi.doMock.bind(vi),
+  restore: () => {
+    vi.restoreAllMocks()
+    vi.resetModules()
+    vi.unmock('../../utils/providerProfiles.js')
+    vi.unmock('../../utils/providerDiscovery.js')
+    vi.unmock('../../utils/githubModelsCredentials.js')
+    vi.unmock('../../utils/agencCredentials.js')
+    vi.unmock('../../utils/providerProfile.js')
+    vi.unmock('../../utils/settings/settings.js')
+    vi.unmock('./useOpenAiCodeOAuthFlow.js') // branding-scan: allow upstream mirror mock path pending purge
+  },
+})
+
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'
@@ -91,11 +103,14 @@ async function waitForCondition(
     if (predicate()) {
       return
     }
-    await Bun.sleep(intervalMs)
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
   }
 
   throw new Error('Timed out waiting for ProviderManager test condition')
 }
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise(resolve => setTimeout(resolve, ms))
 
 // Provider list is sorted alphabetically by label in the preset picker, so
 // reaching a given provider takes more keypresses than it used to. Keep the
@@ -111,7 +126,7 @@ const PRESET_ORDER = [
   'Atomic Chat',
   'Azure OpenAI',
   'Bankr',
-  'Codex OAuth',
+  'ChatGPT OAuth',
   'DeepSeek',
   'Google Gemini',
   'Groq',
@@ -135,10 +150,10 @@ async function navigateToPreset(
   label: (typeof PRESET_ORDER)[number],
 ): Promise<void> {
   const index = PRESET_ORDER.indexOf(label)
-  if (index < 0) throw new Error(`Unknown preset label: ${label}`)
+  if (index < 0) throw new Error(`Unrecognized preset label: ${label}`)
   for (let i = 0; i < index; i++) {
     stdin.write('j')
-    await Bun.sleep(25)
+    await sleep(25)
   }
 }
 
@@ -160,7 +175,7 @@ function mockProviderProfilesModule(options?: {
   updateProviderProfile?: (...args: unknown[]) => unknown
   setActiveProviderProfile?: (...args: unknown[]) => unknown
 }): void {
-  mock.module('../utils/providerProfiles.js', () => ({
+  mock.module('../../utils/providerProfiles.js', () => ({
     addProviderProfile: options?.addProviderProfile ?? (() => null),
     applyActiveProviderProfileFromConfig: () => {},
     deleteProviderProfile: () => ({ removed: false, activeProfileId: null }),
@@ -240,7 +255,7 @@ function mockProviderManagerDependencies(
     setActiveProviderProfile: options?.setActiveProviderProfile,
   })
 
-  mock.module('../utils/providerDiscovery.js', () => ({
+  mock.module('../../utils/providerDiscovery.js', () => ({
     probeOllamaGenerationReadiness:
       options?.probeOllamaGenerationReadiness ??
       (async () => ({
@@ -249,7 +264,7 @@ function mockProviderManagerDependencies(
       })),
   }))
 
-  mock.module('../utils/githubModelsCredentials.js', () => ({
+  mock.module('../../utils/githubModelsCredentials.js', () => ({
     clearGithubModelsToken: () => ({ success: true }),
     GITHUB_MODELS_HYDRATED_ENV_MARKER: 'AGENC_GITHUB_TOKEN_HYDRATED',
     hydrateGithubModelsTokenFromSecureStorage: () => {},
@@ -257,7 +272,7 @@ function mockProviderManagerDependencies(
     readGithubModelsTokenAsync: githubAsyncRead,
   }))
 
-  mock.module('../utils/codexCredentials.js', () => ({ // branding-scan: allow upstream mirror mock path pending purge
+  mock.module('../../utils/agencCredentials.js', () => ({
     attachAgencProfileIdToStoredCredentials: () => ({ success: true }),
     clearAgencCredentials:
       options?.clearAgencCredentials ?? (() => ({ success: true })),
@@ -267,7 +282,7 @@ function mockProviderManagerDependencies(
       options?.codexAsyncRead ?? (async () => undefined),
   }))
 
-  mock.module('../utils/providerProfile.js', () => ({
+  mock.module('../../utils/providerProfile.js', () => ({
     applySavedProfileToCurrentSession:
       options?.applySavedProfileToCurrentSession ?? (async () => null),
     buildCodexOAuthProfileEnv: (tokens: {
@@ -285,7 +300,7 @@ function mockProviderManagerDependencies(
       }
 
       return {
-        OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/codex',
+        OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/providerCode',
         OPENAI_MODEL: 'codexplan',
         CHATGPT_ACCOUNT_ID: accountId,
         CODEX_CREDENTIAL_SOURCE: 'oauth' as const,
@@ -299,7 +314,11 @@ function mockProviderManagerDependencies(
     }),
   }))
 
-  mock.module('../utils/settings/settings.js', () => ({
+  mock.module('../../utils/settings/settings.js', () => ({
+    getInitialSettings: () => ({}),
+    getSettingsWithErrors: () => ({ settings: {}, errors: [] }),
+    getSettingsForSource: () => ({}),
+    hasAutoModeOptIn: () => false,
     updateSettingsForSource: () => ({ error: null }),
   }))
 
@@ -348,19 +367,27 @@ async function mountProviderManager(
   dispose: () => Promise<void>
 }> {
   const { stdout, stdin, getOutput } = createTestStreams()
+  const { createRoot } = await import('../../../tui/ink.js')
   const root = await createRoot({
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
   })
+  const [{ AppStateProvider }, { KeybindingSetup }, { TerminalSizeContext }] = await Promise.all([
+    import('../../../tui/state/AppState.js'),
+    import('../../../tui/keybindings/KeybindingProviderSetup.js'),
+    import('../../../tui/ink/components/TerminalSizeContext.js'),
+  ])
 
   root.render(
     <AppStateProvider onChangeAppState={options?.onChangeAppState}>
       <KeybindingSetup>
-        <ProviderManager
-          mode={options?.mode ?? 'manage'}
-          onDone={options?.onDone ?? (() => {})}
-        />
+        <TerminalSizeContext.Provider value={{ columns: 120, rows: 40 }}>
+          <ProviderManager
+            mode={options?.mode ?? 'manage'}
+            onDone={options?.onDone ?? (() => {})}
+          />
+        </TerminalSizeContext.Provider>
       </KeybindingSetup>
     </AppStateProvider>,
   )
@@ -372,7 +399,7 @@ async function mountProviderManager(
       root.unmount()
       stdin.end()
       stdout.end()
-      await Bun.sleep(0)
+      await new Promise(resolve => setTimeout(resolve, 0))
     },
   }
 }
@@ -430,8 +457,7 @@ test('ProviderManager resolves GitHub virtual provider from async storage withou
 
   mockProviderManagerDependencies(syncRead, asyncRead)
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const output = await renderProviderManagerFrame(ProviderManager, {
     waitForOutput: frame =>
       frame.includes('Provider manager') &&
@@ -461,8 +487,7 @@ test('ProviderManager avoids first-frame false negative while stored-token looku
 
   mockProviderManagerDependencies(syncRead, asyncRead)
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager)
 
   const firstFrame = await waitForFrameOutput(
@@ -534,8 +559,7 @@ test('ProviderManager first-run Ollama preset auto-detects installed models', as
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager, {
     mode: 'first-run',
     onDone,
@@ -560,7 +584,7 @@ test('ProviderManager first-run Ollama preset auto-detects installed models', as
   expect(modelFrame).toContain('Choose an Ollama model')
   expect(modelFrame).toContain('gemma4:31b-cloud')
 
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForCondition(() => onDone.mock.calls.length > 0)
@@ -581,7 +605,7 @@ test('ProviderManager first-run Ollama preset auto-detects installed models', as
   await mounted.dispose()
 })
 
-test('ProviderManager first-run Codex OAuth switches the current session after login completes', async () => {
+test('ProviderManager first-run ChatGPT OAuth switches the current session after login completes', async () => {
   delete process.env.AGENC_SIMPLE
   delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
@@ -629,8 +653,7 @@ test('ProviderManager first-run Codex OAuth switches the current session after l
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager, {
     mode: 'first-run',
     onDone,
@@ -638,10 +661,10 @@ test('ProviderManager first-run Codex OAuth switches the current session after l
 
   await waitForFrameOutput(
     mounted.getOutput,
-    frame => frame.includes('Set up provider') && frame.includes('Codex OAuth'),
+    frame => frame.includes('Set up provider') && frame.includes('ChatGPT OAuth'),
   )
 
-  await navigateToPreset(mounted.stdin, 'Codex OAuth')
+  await navigateToPreset(mounted.stdin, 'ChatGPT OAuth')
   mounted.stdin.write('\r')
 
   await waitForCondition(() => onDone.mock.calls.length > 0)
@@ -649,8 +672,8 @@ test('ProviderManager first-run Codex OAuth switches the current session after l
   expect(addProviderProfile).toHaveBeenCalledWith(
     expect.objectContaining({
       provider: 'openai',
-      name: 'Codex OAuth',
-      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      name: 'ChatGPT OAuth',
+      baseUrl: 'https://chatgpt.com/backend-api/providerCode',
       model: 'codexplan',
       apiKey: '',
     }),
@@ -664,14 +687,14 @@ test('ProviderManager first-run Codex OAuth switches the current session after l
     expect.objectContaining({
       action: 'saved',
       message:
-        'Codex OAuth configured. AgenC switched to it for this session.',
+        'ChatGPT OAuth configured. AgenC switched to it for this session.',
     }),
   )
 
   await mounted.dispose()
 })
 
-test('ProviderManager first-run Codex OAuth reports next-startup fallback when session activation fails', async () => {
+test('ProviderManager first-run ChatGPT OAuth reports next-startup fallback when session activation fails', async () => {
   delete process.env.AGENC_SIMPLE
   delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
@@ -721,8 +744,7 @@ test('ProviderManager first-run Codex OAuth reports next-startup fallback when s
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager, {
     mode: 'first-run',
     onDone,
@@ -730,10 +752,10 @@ test('ProviderManager first-run Codex OAuth reports next-startup fallback when s
 
   await waitForFrameOutput(
     mounted.getOutput,
-    frame => frame.includes('Set up provider') && frame.includes('Codex OAuth'),
+    frame => frame.includes('Set up provider') && frame.includes('ChatGPT OAuth'),
   )
 
-  await navigateToPreset(mounted.stdin, 'Codex OAuth')
+  await navigateToPreset(mounted.stdin, 'ChatGPT OAuth')
   mounted.stdin.write('\r')
 
   await waitForCondition(() => onDone.mock.calls.length > 0)
@@ -745,14 +767,14 @@ test('ProviderManager first-run Codex OAuth reports next-startup fallback when s
     expect.objectContaining({
       action: 'saved',
       message:
-        'Codex OAuth configured. Saved for next startup. Warning: validation failed.',
+        'ChatGPT OAuth configured. Saved for next startup. Warning: validation failed.',
     }),
   )
 
   await mounted.dispose()
 })
 
-test('ProviderManager does not hijack a manual Codex profile when OAuth credentials are not yet linked', async () => {
+test('ProviderManager does not hijack a manual ChatGPT profile when OAuth credentials are without linked credentials', async () => {
   delete process.env.AGENC_SIMPLE
   delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
@@ -762,8 +784,8 @@ test('ProviderManager does not hijack a manual Codex profile when OAuth credenti
   const manualProfile = {
     id: 'provider_manual_codex',
     provider: 'openai',
-    name: 'Codex OAuth',
-    baseUrl: 'https://chatgpt.com/backend-api/codex',
+    name: 'ChatGPT OAuth',
+    baseUrl: 'https://chatgpt.com/backend-api/providerCode',
     model: 'gpt-5.4',
     apiKey: 'manual-key',
   }
@@ -815,8 +837,7 @@ test('ProviderManager does not hijack a manual Codex profile when OAuth credenti
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager, {
     mode: 'first-run',
     onDone,
@@ -824,10 +845,10 @@ test('ProviderManager does not hijack a manual Codex profile when OAuth credenti
 
   await waitForFrameOutput(
     mounted.getOutput,
-    frame => frame.includes('Set up provider') && frame.includes('Codex OAuth'),
+    frame => frame.includes('Set up provider') && frame.includes('ChatGPT OAuth'),
   )
 
-  await navigateToPreset(mounted.stdin, 'Codex OAuth')
+  await navigateToPreset(mounted.stdin, 'ChatGPT OAuth')
   mounted.stdin.write('\r')
 
   await waitForCondition(() => onDone.mock.calls.length > 0)
@@ -841,7 +862,7 @@ test('ProviderManager does not hijack a manual Codex profile when OAuth credenti
   await mounted.dispose()
 })
 
-test('ProviderManager keeps Codex OAuth as next-startup only when activating the session fails from the menu', async () => {
+test('ProviderManager keeps ChatGPT OAuth as next-startup only when activating the session fails from the menu', async () => {
   delete process.env.AGENC_SIMPLE
   delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
@@ -850,8 +871,8 @@ test('ProviderManager keeps Codex OAuth as next-startup only when activating the
   const codexProfile = {
     id: 'provider_codex_oauth',
     provider: 'openai',
-    name: 'Codex OAuth',
-    baseUrl: 'https://chatgpt.com/backend-api/codex',
+    name: 'ChatGPT OAuth',
+    baseUrl: 'https://chatgpt.com/backend-api/providerCode',
     model: 'codexplan',
     apiKey: '',
   }
@@ -877,8 +898,7 @@ test('ProviderManager keeps Codex OAuth as next-startup only when activating the
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager)
 
   await waitForFrameOutput(
@@ -886,30 +906,30 @@ test('ProviderManager keeps Codex OAuth as next-startup only when activating the
     frame =>
       frame.includes('Provider manager') &&
       frame.includes('Set active provider') &&
-      frame.includes('Log out Codex OAuth'),
+      frame.includes('Log out ChatGPT OAuth'),
   )
 
   mounted.stdin.write('j')
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForFrameOutput(
     mounted.getOutput,
-    frame => frame.includes('Set active provider') && frame.includes('Codex OAuth'),
+    frame => frame.includes('Set active provider') && frame.includes('ChatGPT OAuth'),
   )
 
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForCondition(() => setActiveProviderProfile.mock.calls.length > 0)
   await waitForCondition(
     () => applySavedProfileToCurrentSession.mock.calls.length > 0,
   )
-  await Bun.sleep(50)
+  await sleep(50)
   const output = stripAnsi(extractLastFrame(mounted.getOutput()))
 
   expect(output).toContain(
-    'Active provider: Codex OAuth. Saved for next startup. Warning: validation failed.',
+    'Active provider: ChatGPT OAuth. Saved for next startup. Warning: validation failed.',
   )
   expect(applySavedProfileToCurrentSession).toHaveBeenCalled()
   expect(setActiveProviderProfile).toHaveBeenCalledWith('provider_codex_oauth')
@@ -944,8 +964,7 @@ test('ProviderManager activating a multi-model provider sets the session model t
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager, {
     onChangeAppState: args => {
       appStateChanges.push(args as { newState: any; oldState: any })
@@ -960,7 +979,7 @@ test('ProviderManager activating a multi-model provider sets the session model t
   )
 
   mounted.stdin.write('j')
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForFrameOutput(
@@ -970,7 +989,7 @@ test('ProviderManager activating a multi-model provider sets the session model t
       frame.includes('Multi Model Provider'),
   )
 
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForCondition(() => setActiveProviderProfile.mock.calls.length > 0)
@@ -1027,8 +1046,7 @@ test('ProviderManager editing an active multi-model provider keeps app state on 
     },
   )
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const mounted = await mountProviderManager(ProviderManager, {
     onChangeAppState: args => {
       appStateChanges.push(args as { newState: any; oldState: any })
@@ -1043,9 +1061,9 @@ test('ProviderManager editing an active multi-model provider keeps app state on 
   )
 
   mounted.stdin.write('j')
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('j')
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForFrameOutput(
@@ -1055,7 +1073,7 @@ test('ProviderManager editing an active multi-model provider keeps app state on 
       frame.includes('Multi Model Provider'),
   )
 
-  await Bun.sleep(25)
+  await sleep(25)
   mounted.stdin.write('\r')
 
   await waitForFrameOutput(
@@ -1134,7 +1152,7 @@ test('ProviderManager editing an active multi-model provider keeps app state on 
   await mounted.dispose()
 })
 
-test('ProviderManager resolves Codex OAuth state from async storage without sync reads in render flow', async () => {
+test('ProviderManager resolves ChatGPT OAuth state from async storage without sync reads in render flow', async () => {
   delete process.env.AGENC_SIMPLE
   delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
@@ -1155,21 +1173,20 @@ test('ProviderManager resolves Codex OAuth state from async storage without sync
     codexAsyncRead,
   })
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const output = await renderProviderManagerFrame(ProviderManager, {
     waitForOutput: frame =>
       frame.includes('Provider manager') &&
-      frame.includes('Log out Codex OAuth'),
+      frame.includes('Log out ChatGPT OAuth'),
   })
 
   expect(output).toContain('Provider manager')
-  expect(output).toContain('Log out Codex OAuth')
+  expect(output).toContain('Log out ChatGPT OAuth')
   expect(codexSyncRead).not.toHaveBeenCalled()
   expect(codexAsyncRead).toHaveBeenCalled()
 })
 
-test('ProviderManager hides Codex OAuth setup in bare mode', async () => {
+test('ProviderManager hides ChatGPT OAuth setup in bare mode', async () => {
   process.env.AGENC_SIMPLE = '1'
   delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
@@ -1180,8 +1197,7 @@ test('ProviderManager hides Codex OAuth setup in bare mode', async () => {
 
   mockProviderManagerDependencies(githubSyncRead, githubAsyncRead)
 
-  const nonce = `${Date.now()}-${Math.random()}`
-  const { ProviderManager } = await import(`./ProviderManager.js?ts=${nonce}`)
+  const { ProviderManager } = await import('./ProviderManager.js')
   const output = await renderProviderManagerFrame(ProviderManager, {
     mode: 'first-run',
     waitForOutput: frame =>
@@ -1189,5 +1205,5 @@ test('ProviderManager hides Codex OAuth setup in bare mode', async () => {
   })
 
   expect(output).toContain('Set up provider')
-  expect(output).not.toContain('Codex OAuth')
+  expect(output).not.toContain('ChatGPT OAuth')
 })

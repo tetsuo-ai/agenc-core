@@ -1,0 +1,21 @@
+{
+  "rowId": "todo-row-125",
+  "reviewer": "Planck reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Teams dialog hide/show actions call the active backend and update hidden-pane state when the backend supports the operation."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Hide failure does not mutate hidden state.",
+      "Show failure does not mutate hidden state.",
+      "Missing pane id or missing backend returns without throwing."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

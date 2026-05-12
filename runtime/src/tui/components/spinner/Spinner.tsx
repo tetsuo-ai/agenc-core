@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { Box, Text } from '../../ink.js';
@@ -12,7 +10,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics
 import { isEnvTruthy } from '../../../utils/envUtils.js';
 import { count } from '../../../utils/array.js';
 import sample from 'lodash-es/sample.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../../../utils/format.js';
+import { formatDuration, formatNumber } from '../../../utils/format.js';
 import type { Theme } from '../../../utils/theme.js';
 import { activityManager } from '../../../utils/activityManager.js';
 import { getSpinnerVerbs } from '../../../constants/spinnerVerbs.js';
@@ -42,6 +40,28 @@ import { formatRunningAgentSummary, getActiveLocalAgentTasks } from './agentActi
 export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
+const SHIMMER_INTERVAL_MS = 120;
+
+function computeGlimmerIndex(frame: number, width: number): number {
+  if (width <= 0) return -100;
+  return frame % (width + 6) - 3;
+}
+
+function computeShimmerSegments(text: string, glimmerIndex: number): {
+  before: string;
+  shimmer: string;
+  after: string;
+} {
+  if (glimmerIndex < 0 || glimmerIndex >= text.length) {
+    return { before: text, shimmer: "", after: "" };
+  }
+  return {
+    before: text.slice(0, glimmerIndex),
+    shimmer: text[glimmerIndex],
+    after: text.slice(glimmerIndex + 1),
+  };
+}
+
 type Props = {
   mode: SpinnerMode;
   loadingStartTimeRef: React.RefObject<number>;
@@ -63,12 +83,12 @@ type Props = {
 // hook call chains. Without this split, toggling /brief mid-render would
 // violate Rules of Hooks (the inner variant calls ~10 more hooks).
 export function SpinnerWithVerb(props: Props): React.ReactNode {
-  const isBriefOnly = useAppState(s => s.isBriefOnly);
+  const isBriefOnly = useAppState((s: any) => s.isBriefOnly);
   // REPL overrides isBriefOnly→false when viewing a teammate transcript
   // (see isBriefOnly={viewedTeammateTask ? false : isBriefOnly}). That
   // prop isn't threaded here, so replicate the gate from the store —
   // teammate view needs the real spinner (which shows teammate status).
-  const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
+  const viewingAgentTaskId = useAppState((s_0: any) => s_0.viewingAgentTaskId);
   // Hoisted to mount-time — this component re-renders at animation framerate.
   const briefEnvEnabled = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
@@ -106,13 +126,13 @@ function SpinnerWithVerbInner({
   // (frame, glimmer, stalled intensity, token counter, thinking shimmer,
   // elapsed-time timer) are computed inside the child.
 
-  const tasks = useAppState(s => s.tasks);
-  const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
-  const expandedView = useAppState(s_1 => s_1.expandedView);
+  const tasks = useAppState((s: any) => s.tasks);
+  const viewingAgentTaskId = useAppState((s_0: any) => s_0.viewingAgentTaskId);
+  const expandedView = useAppState((s_1: any) => s_1.expandedView);
   const showExpandedTodos = expandedView === 'tasks';
   const showSpinnerTree = expandedView === 'teammates';
-  const selectedIPAgentIndex = useAppState(s_2 => s_2.selectedIPAgentIndex);
-  const viewSelectionMode = useAppState(s_3 => s_3.viewSelectionMode);
+  const selectedIPAgentIndex = useAppState((s_2: any) => s_2.selectedIPAgentIndex);
+  const viewSelectionMode = useAppState((s_3: any) => s_3.viewSelectionMode);
   // Get foregrounded teammate (if viewing a teammate's transcript)
   const foregroundedTeammate = viewingAgentTaskId ? getViewedTeammateTask({
     viewingAgentTaskId,
@@ -161,15 +181,15 @@ function SpinnerWithVerbInner({
     };
   }, [mode]);
 
-  // Find the current in-progress task and next pending task
-  const currentTodo = tasksV2?.find(task => task.status !== 'pending' && task.status !== 'completed');
+  // Find the current in-progress task and next queued task.
+  const currentTask = tasksV2?.find(task => task.status !== 'pending' && task.status !== 'completed');
   const nextTask = findNextPendingTask(tasksV2);
 
   // Use useState with initializer to pick a random verb once on mount
   const [randomVerb] = useState(() => sample(getSpinnerVerbs()));
 
   // Leader's own verb (always the leader's, regardless of who is foregrounded)
-  const leaderVerb = overrideMessage ?? currentTodo?.activeForm ?? currentTodo?.subject ?? randomVerb;
+  const leaderVerb = overrideMessage ?? currentTask?.activeForm ?? currentTask?.subject ?? randomVerb;
   const effectiveVerb = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.spinnerVerb ?? randomVerb : leaderVerb;
   const message = effectiveVerb + '…';
 
@@ -181,7 +201,7 @@ function SpinnerWithVerbInner({
       activityManager.endCLIActivity(operationId);
     };
   }, [mode]);
-  const effortValue = useAppState(s_4 => s_4.effortValue);
+  const effortValue = useAppState((s_4: any) => s_4.effortValue);
   const effortSuffix = getEffortSuffix(getMainLoopModel(), effortValue);
 
   // Check if any running in-process teammates exist (needed for both modes)
@@ -214,16 +234,6 @@ function SpinnerWithVerbInner({
   const defaultShimmerColor: keyof Theme = 'suggestion';
   const messageColor = overrideColor ?? defaultColor;
   const shimmerColor = overrideShimmerColor ?? defaultShimmerColor;
-
-  // Compute TTFT string here (off the 50ms animation clock) and pass to
-  // SpinnerAnimationRow so it folds into the `(thought for Ns · ...)` status
-  // line instead of taking a separate row. apiMetricsRef is a ref so this
-  // doesn't trigger re-renders; we pick up updates on the parent's ~25x/turn
-  // re-render cadence, same as the old ApiMetricsLine did.
-  let ttftText: string | null = null;
-  if ("external" === 'ant' && apiMetricsRef?.current && apiMetricsRef.current.length > 0) {
-    ttftText = computeTtftText(apiMetricsRef.current);
-  }
 
   // When leader is idle but teammates are running (and we're viewing the leader),
   // show a static dim idle display instead of the animated spinner — otherwise
@@ -287,9 +297,8 @@ function SpinnerWithVerbInner({
             <TaskListV2 tasks={tasksV2} />
           </MessageResponse>
         </Box> : nextTask || effectiveTip || budgetText ?
-    // IMPORTANT: we need this width="100%" to avoid an Ink bug where the
-    // tip gets duplicated over and over while the spinner is running if
-    // the terminal is very small. Follow-up: fix this in Ink.
+    // IMPORTANT: width="100%" avoids an Ink bug where the tip is duplicated
+    // while the spinner is running in very small terminals.
     <Box width="100%" flexDirection="column">
           {budgetText && <MessageResponse>
               <Text dimColor>{budgetText}</Text>
@@ -316,7 +325,7 @@ type BriefSpinnerProps = {
   mode: SpinnerMode;
   overrideMessage?: string | null;
 };
-function BriefSpinner(t0) {
+function BriefSpinner(t0: BriefSpinnerProps) {
   const $ = _c(31);
   const {
     mode,
@@ -442,7 +451,7 @@ function BriefSpinner(t0) {
 // as BriefSpinner so the input bar never jumps when toggling between
 // working/idle/disconnected. See BriefSpinner's comment for the
 // Notifications overlay coupling.
-function _temp6(s_0) {
+function _temp6(s_0: any) {
   return count(Object.values(s_0.tasks ?? {}), isBackgroundTask) + (s_0.remoteBackgroundTaskCount ?? 0);
 }
 function RunningLocalAgentsLine({
@@ -454,7 +463,7 @@ function RunningLocalAgentsLine({
       <Text color="cyan_FOR_SUBAGENTS_ONLY">{figures.play} {formatRunningAgentSummary(agents)}</Text>
     </MessageResponse>;
 }
-function _temp5(s) {
+function _temp5(s: any) {
   return s.remoteConnectionStatus;
 }
 function _temp4() {
@@ -464,7 +473,7 @@ export function BriefIdleStatus() {
   const $ = _c(9);
   const connStatus = useAppState(_temp7);
   const runningCount = useAppState(_temp8);
-  const tasks = useAppState(s => s.tasks);
+  const tasks = useAppState((s: any) => s.tasks);
   const runningLocalAgents = getActiveLocalAgentTasks(tasks);
   const {
     columns
@@ -512,10 +521,10 @@ export function BriefIdleStatus() {
   }
   return t2;
 }
-function _temp8(s_0) {
+function _temp8(s_0: any) {
   return count(Object.values(s_0.tasks ?? {}), isBackgroundTask) + (s_0.remoteBackgroundTaskCount ?? 0);
 }
-function _temp7(s) {
+function _temp7(s: any) {
   return s.remoteConnectionStatus;
 }
 export function Spinner() {

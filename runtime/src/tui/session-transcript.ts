@@ -113,6 +113,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "invalid_args",
   "schema_validation_failed",
   "malformed_tool_call",
+  "daemon_connection_state",
 ]);
 
 /**
@@ -402,7 +403,7 @@ function unwrap(event: SessionTranscriptEvent): {
   if ("msg" in event && event.msg && typeof event.msg === "object") {
     const msg = event.msg as { readonly type?: unknown; readonly payload?: unknown };
     return {
-      type: typeof msg.type === "string" ? msg.type : "unknown",
+      type: typeof msg.type === "string" ? msg.type : "unavailable",
       payload: msg.payload,
       key: eventKey(event),
     };
@@ -458,36 +459,28 @@ function pushToolUse(
 function pushToolResult(
   out: any[],
   openTools: Set<string>,
+  settledToolCallIds: Set<string>,
   callId: string,
   result: unknown,
   isError = false,
 ): void {
-  // Phase 5 #58 + #59: previously this function always pushed a
-  // tool_result row, regardless of whether `callId` was actually
-  // open in the tool-tracking set. Two real failures fell out:
-  //
-  //   #58 — collab_agent_spawn_end and collab_agent_interaction_end
-  //   (and the close/resume/waiting variants) all called pushToolResult
-  //   with the same callId. A normal subagent lifecycle produced two
-  //   or three duplicate tool_result rows in the transcript.
-  //
-  //   #59 — when tool_call_completed arrived without a preceding
-  //   tool_call_started (out-of-order events from a flaky daemon
-  //   stream, or a duplicate completion event), pushToolResult still
-  //   emitted a tool_result row with no matching tool_use. The model
-  //   on the next iteration saw an orphan tool message and could
-  //   fail wire-format validation downstream.
-  //
-  // Guard: only emit when the callId is currently open. The
-  // `openTools.delete` on first call closes the slot; subsequent
-  // calls for the same callId become no-ops.
-  if (!openTools.has(callId)) return;
+  if (!openTools.has(callId)) {
+    settledToolCallIds.add(callId);
+    out.push(
+      makeSystemMessage(
+        `Recovered tool result without matching start (${callId}): ${stringResult(result)}`,
+        isError ? "error" : "warning",
+      ),
+    );
+    return;
+  }
   openTools.delete(callId);
+  settledToolCallIds.add(callId);
   out.push(makeToolResultMessage(callId, result, isError));
 }
 
 function formatAgentStatus(status: unknown): string {
-  if (!status || typeof status !== "object") return String(status ?? "unknown");
+  if (!status || typeof status !== "object") return String(status ?? "unavailable");
   if ("status" in status && typeof status.status === "string") {
     if ("error" in status && typeof status.error === "string") {
       return `${status.status}: ${status.error}`;
@@ -626,8 +619,50 @@ function collabStatusState(status: unknown): CollabAgentMessageState {
   }
 }
 
+function normalizeBackgroundStatus(status: unknown): string {
+  if (typeof status !== "string" || status.trim().length === 0) return "idle";
+  const value = status.trim().toLowerCase().replaceAll("_", "-");
+  switch (value) {
+    case "pending":
+    case "pending-init":
+    case "starting":
+      return "starting";
+    case "running":
+      return "running";
+    case "idle":
+      return "idle";
+    case "blocked":
+    case "awaiting-user":
+    case "awaiting-permission":
+    case "waiting-on-user":
+      return "waiting on user";
+    case "completing":
+      return "completing";
+    case "failed":
+    case "errored":
+      return "failed";
+    case "completed":
+    case "complete":
+      return "completed";
+    case "cancelled":
+    case "canceled":
+    case "killed":
+      return "cancelled";
+    default:
+      return value;
+  }
+}
+
+function formatBackgroundAgentStatus(payload: Record<string, unknown>): string {
+  const status = normalizeBackgroundStatus(payload.status);
+  const message = nonEmptyString(payload.message);
+  return message
+    ? `Background agent ${status}: ${truncatePreview(message, 160)}`
+    : `Background agent ${status}`;
+}
+
 function collabStatusSummary(status: unknown): string {
-  if (!status || typeof status !== "object") return String(status ?? "unknown");
+  if (!status || typeof status !== "object") return String(status ?? "unavailable");
   const value = status as Record<string, unknown>;
   switch (value.status) {
     case "pending_init":
@@ -652,6 +687,49 @@ function collabStatusSummary(status: unknown): string {
       return "Not found";
     default:
       return formatAgentStatus(status);
+  }
+}
+
+function parseSubagentNotification(message: string): {
+  readonly title: string;
+  readonly details: readonly string[];
+  readonly state: CollabAgentMessageState;
+} | null {
+  const match = message.match(/<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>/);
+  if (!match) return null;
+  try {
+    const data = JSON.parse(match[1] ?? "{}") as Record<string, unknown>;
+    const agentPath = nonEmptyString(data.agent_path) ?? "subagent";
+    const status = data.status;
+    if (typeof status === "string") {
+      return {
+        title: `Subagent ${shortThreadId(agentPath)} ${collabStatusSummary({ status })}`,
+        details: [`status: ${collabStatusSummary({ status })}`],
+        state: collabStatusState({ status }),
+      };
+    }
+    if (status && typeof status === "object") {
+      const value = status as Record<string, unknown>;
+      if ("completed" in value) {
+        const lastMessage = nonEmptyString(value.completed);
+        return {
+          title: `Subagent ${shortThreadId(agentPath)} completed`,
+          details: lastMessage ? [truncatePreview(lastMessage, 160)] : [],
+          state: "success",
+        };
+      }
+      if ("errored" in value) {
+        const error = nonEmptyString(value.errored) ?? "error";
+        return {
+          title: `Subagent ${shortThreadId(agentPath)} failed`,
+          details: [truncatePreview(error, 160)],
+          state: "error",
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -997,6 +1075,9 @@ export function adaptTranscriptEvents(
   const openTools = new Set<string>();
   const toolNames = new Set<string>();
   const runningToolNames = new Map<string, string>();
+  const settledToolCallIds = new Set<string>();
+  const suppressedToolResults = new Set<string>();
+  const pendingToolInputDeltas = new Map<number, string[]>();
   const collabAgents = new Map<string, CollabAgentDisplay>();
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
@@ -1029,6 +1110,9 @@ export function adaptTranscriptEvents(
         openTools.clear();
         toolNames.clear();
         runningToolNames.clear();
+        settledToolCallIds.clear();
+        suppressedToolResults.clear();
+        pendingToolInputDeltas.clear();
         collabAgents.clear();
         streamingToolUses.length = 0;
         streamingText = "";
@@ -1046,6 +1130,9 @@ export function adaptTranscriptEvents(
         openTools.clear();
         toolNames.clear();
         runningToolNames.clear();
+        settledToolCallIds.clear();
+        suppressedToolResults.clear();
+        pendingToolInputDeltas.clear();
         collabAgents.clear();
         streamingToolUses.length = 0;
         streamingText = "";
@@ -1067,11 +1154,12 @@ export function adaptTranscriptEvents(
         streamingText = "";
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
-        // Clear streaming tool state when a new turn boundary arrives.
-        // a new turn boundary — any partially-streamed tool inputs from the
-        // previous turn are abandoned because they will never receive a
-        // matching completion event in this turn.
+        // Clear streaming tool state when a new turn boundary arrives. Any
+        // partially-streamed tool inputs from the previous turn are abandoned
+        // because they will never receive a matching completion event in this
+        // turn.
         streamingToolUses.length = 0;
+        pendingToolInputDeltas.clear();
         // Drop any thinking accumulator from a previous turn so the live
         // visibility window resets cleanly. Persisted `agent_thinking`
         // rows from the prior turn are already in `out`.
@@ -1090,6 +1178,8 @@ export function adaptTranscriptEvents(
           lastAssistantText = content;
         }
         streamingText = "";
+        streamingToolUses.length = 0;
+        pendingToolInputDeltas.clear();
         isStreaming = false;
         break;
       }
@@ -1127,6 +1217,7 @@ export function adaptTranscriptEvents(
         // abandoned because their completion events will never arrive
         // for this turn.
         streamingToolUses.length = 0;
+        pendingToolInputDeltas.clear();
         out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning"));
         break;
       case "user_message":
@@ -1252,8 +1343,19 @@ export function adaptTranscriptEvents(
         break;
       case "agent_message":
         if (typeof payload.message === "string" && payload.message !== lastAssistantText) {
-          out.push(makeAssistantTextMessage(payload.message));
-          lastAssistantText = payload.message;
+          const subagent = parseSubagentNotification(payload.message);
+          if (subagent !== null) {
+            out.push(
+              makeCollabAgentMessage(
+                subagent.title,
+                subagent.details,
+                subagent.state,
+              ),
+            );
+          } else {
+            out.push(makeAssistantTextMessage(payload.message));
+            lastAssistantText = payload.message;
+          }
         }
         streamingText = "";
         break;
@@ -1288,6 +1390,7 @@ export function adaptTranscriptEvents(
           pushToolResult(
             out,
             openTools,
+            settledToolCallIds,
             toolCall.id ?? randomUUID(),
             "result" in raw ? raw.result : "",
             false,
@@ -1300,6 +1403,9 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
+        if (settledToolCallIds.has(callId)) {
+          break;
+        }
         const toolName =
           typeof payload.toolName === "string"
             ? payload.toolName
@@ -1317,6 +1423,7 @@ export function adaptTranscriptEvents(
         // `pushToolResult` already no-ops when the callId is not open,
         // so the matching `tool_call_completed` row drops naturally.
         if (COLLAB_V2_TOOL_NAMES.has(toolName)) {
+          suppressedToolResults.add(callId);
           break;
         }
         pushToolUse(out, openTools, toolNames, callId, toolName, toolInput(payload));
@@ -1364,6 +1471,20 @@ export function adaptTranscriptEvents(
             contentBlock,
             unparsedToolInput: "",
           });
+          const pending = pendingToolInputDeltas.get(indexCandidate);
+          if (pending && pending.length > 0) {
+            const slot = streamingToolUses.findIndex(
+              (entry) => entry.index === indexCandidate,
+            );
+            if (slot !== -1) {
+              const previous = streamingToolUses[slot]!;
+              streamingToolUses[slot] = {
+                ...previous,
+                unparsedToolInput: previous.unparsedToolInput + pending.join(""),
+              };
+            }
+            pendingToolInputDeltas.delete(indexCandidate);
+          }
         }
         break;
       }
@@ -1386,7 +1507,12 @@ export function adaptTranscriptEvents(
         const slot = streamingToolUses.findIndex(
           (entry) => entry.index === indexCandidate,
         );
-        if (slot === -1) break;
+        if (slot === -1) {
+          const pending = pendingToolInputDeltas.get(indexCandidate) ?? [];
+          pending.push(partialJson);
+          pendingToolInputDeltas.set(indexCandidate, pending);
+          break;
+        }
         const previous = streamingToolUses[slot]!;
         streamingToolUses[slot] = {
           ...previous,
@@ -1400,6 +1526,11 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
+        if (suppressedToolResults.has(callId)) {
+          suppressedToolResults.delete(callId);
+          settledToolCallIds.add(callId);
+          break;
+        }
         const isError =
           typeof payload.isError === "boolean"
             ? payload.isError
@@ -1412,7 +1543,7 @@ export function adaptTranscriptEvents(
               ? "MCP"
               : "tool");
         const result = formatStructuredToolResult(toolName, event.type, payload);
-        pushToolResult(out, openTools, callId, result, isError);
+        pushToolResult(out, openTools, settledToolCallIds, callId, result, isError);
         runningToolNames.delete(callId);
         // Remove the matching streaming-tool-use element so the upstream
         // <Messages> consumer stops rendering a synthetic streaming cell
@@ -1453,6 +1584,9 @@ export function adaptTranscriptEvents(
         out.push(makeSystemMessage(stringResult(payload.message), "warning"));
         break;
       }
+      case "background_agent_status":
+        out.push(makeSystemMessage(formatBackgroundAgentStatus(payload), "info"));
+        break;
       case "error":
       case "stream_error":
         out.push(makeSystemMessage(stringResult(payload.message), "error"));
@@ -1480,7 +1614,7 @@ export function adaptTranscriptEvents(
           const text = typeof msg === "string" ? msg : stringResult(msg);
           // Never render a bare "Error: " row. The dispatcher path
           // populates `message` (e.g.
-          // "Unknown command: /foo"); fall back to a generic label
+          // "Unrecognized command: /foo"); fall back to a generic label
           // only if something upstream drops it.
           out.push(
             makeSystemMessage(
@@ -1496,7 +1630,7 @@ export function adaptTranscriptEvents(
           // need a transcript row.
           break;
         }
-        // Unknown kind — fall back to the original behaviour so we
+        // Unrecognized kind — fall back to the original behaviour so we
         // still surface SOMETHING rather than swallowing it silently.
         out.push(makeSystemMessage(stringResult(candidate), "info"));
         break;

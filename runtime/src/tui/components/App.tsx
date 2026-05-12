@@ -55,6 +55,7 @@ import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStat
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
 import { logEvent } from "../../services/analytics/index.js";
+import { useNotifications } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
 import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
 import { createFileStateCacheWithSizeLimit, READ_FILE_STATE_CACHE_SIZE } from "../../utils/fileStateCache.js";
@@ -62,6 +63,12 @@ import { fileHistoryRewind } from "../../utils/fileHistory.js";
 import { getCurrentWorktreeSession } from "../../utils/worktree.js";
 import { Onboarding, type FirstRunOnboardingState, useFirstRunOnboardingController } from "../../onboarding/Onboarding.js";
 import type { MCPServerConnection } from "../../services/mcp/types.js";
+import {
+  completionPipelineOwnsPrompt,
+  formatCompletionPipelineRows,
+  readCompletionPipelineState,
+  type CompletionPipelineState,
+} from "../completion-pipeline.js";
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
@@ -867,6 +874,56 @@ type AppProviderProps = {
   children: ReactNode;
 };
 
+const DEFAULT_FPS_METRICS_GETTER = () => undefined;
+
+export function formatRenderHealthWarning(metrics: FpsMetrics | undefined): string | null {
+  if (metrics === undefined) return null;
+  const averageFps = Number.isFinite(metrics.averageFps) ? metrics.averageFps : 0;
+  const low1PctFps = Number.isFinite(metrics.low1PctFps) ? metrics.low1PctFps : 0;
+  if (averageFps >= 20 && low1PctFps >= 12) return null;
+  return `Render health: average ${averageFps.toFixed(1)} FPS, 1% low ${low1PctFps.toFixed(1)} FPS`;
+}
+
+export type KilledAgentSummary = {
+  readonly taskId?: string;
+  readonly description?: string;
+};
+
+export function formatAgentsKilledNotification(
+  agents: readonly KilledAgentSummary[],
+): string | null {
+  if (agents.length === 0) return null;
+  const labels = agents
+    .map(agent => agent.description?.trim())
+    .filter((label): label is string => Boolean(label));
+  if (labels.length !== agents.length) {
+    return agents.length === 1
+      ? "Stopped 1 background agent"
+      : `Stopped ${agents.length} background agents`;
+  }
+  if (labels.length === 1) return `Stopped background agent: ${labels[0]}`;
+  if (labels.length > 1) {
+    return `Stopped ${labels.length} background agents: ${labels.join(", ")}`;
+  }
+  return agents.length === 1
+    ? "Stopped 1 background agent"
+    : `Stopped ${agents.length} background agents`;
+}
+
+export function shouldShowPromptInputState(options: {
+  readonly isMessageSelectorVisible: boolean;
+  readonly permissionRequestCount: number;
+  readonly hasElicitationPrompt: boolean;
+  readonly completionPipelineOwnsPrompt: boolean;
+}): boolean {
+  return (
+    !options.isMessageSelectorVisible &&
+    options.permissionRequestCount === 0 &&
+    !options.hasElicitationPrompt &&
+    !options.completionPipelineOwnsPrompt
+  );
+}
+
 /**
  * Top-level wrapper for interactive sessions.
  * Provides FPS metrics, stats context, and app state to the component tree.
@@ -1189,7 +1246,7 @@ const TITLE_ANIMATION_INTERVAL_MS = 960;
  * leaf onto the live AgenC TUI shell.
  *
  * Shape difference from upstream:
- *   - AgenC does not yet carry upstream session rename or generated-title
+ *   - AgenC currently does not carry upstream session rename or generated-title
  *     state in this bridge, so the title is derived from the active
  *     provider/model when available and otherwise falls back to the product
  *     name.
@@ -1253,7 +1310,20 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const {
     exit
   } = useApp();
-  useCostSummary(useFpsMetrics());
+  const getFpsMetrics = useFpsMetrics();
+  useCostSummary(getFpsMetrics);
+  const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
+  const { addNotification } = useNotifications();
+  const [completionPipelineState, setCompletionPipelineState] =
+    useState<CompletionPipelineState>(() => readCompletionPipelineState());
+  useEffect(() => {
+    const refresh = () => setCompletionPipelineState(readCompletionPipelineState());
+    refresh();
+    const interval = setInterval(refresh, 1000);
+    return () => clearInterval(interval);
+  }, []);
+  const completionPipelineRows = formatCompletionPipelineRows(completionPipelineState);
+  const completionPipelineActive = completionPipelineOwnsPrompt(completionPipelineState);
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const fullscreen = isFullscreenEnvEnabled();
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
@@ -1391,7 +1461,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
   const hasActiveSessionTurn = hasActiveConversationTurn(props.session);
   const isLoading = transcript.isStreaming || pendingSubmission || hasActiveSessionTurn;
-  const effectiveInputBusy = isLoading || hasActiveLocalAgents;
+  const effectiveInputBusy = isLoading || hasActiveLocalAgents || completionPipelineActive;
   const effectiveInputBusyRef = useRef(effectiveInputBusy);
   effectiveInputBusyRef.current = effectiveInputBusy;
   const queuedCommands = useCommandQueue();
@@ -1580,7 +1650,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // otherwise be forwarded to the model as plain text and the model
     // would respond with generic prose instead of running the command.
     //
-    // Slash commands route through the canonical registry. Unknown names go
+    // Slash commands route through the canonical registry. Unrecognized names go
     // through the dispatcher so the TUI matches the daemon/CLI slash path.
     if (text_0.startsWith("/") && text_0.length > 1) {
       try {
@@ -1649,7 +1719,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
               return { forwardedToModel: false };
             }
             if (result.kind === "prompt") {
-              // Slash command produced a follow-up prompt for the model.
+              // Slash command produced a next prompt for the model.
               // Queue it through the same next-turn path used by busy input
               // so `nextInput`/prompt results are visible and never bypass
               // ordering gates.
@@ -1806,13 +1876,16 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }
     void props.session.cancelActiveTurn?.("interrupted");
   }, [turnAbortController, props.session]);
-  const handleAgentsKilledNoOp = useCallback(() => {
-    // App.tsx does not currently track local background agents directly.
-    // In daemon mode they are owned by the daemon and torn down via
-    // cancelActiveTurn cascade (control.interrupt cascades to
-    // descendants). This callback is a hook for future per-agent
-    // notifications surfaced from the TUI side.
-  }, []);
+  const handleAgentsKilled = useCallback((agents: readonly KilledAgentSummary[]) => {
+    const text = formatAgentsKilledNotification(agents);
+    if (text === null) return;
+    addNotification({
+      key: "agents-killed-summary",
+      text,
+      priority: "immediate",
+      timeoutMs: 4000
+    });
+  }, [addNotification]);
   useMcpConnectivityStatus({
     mcpClients: mcpClients as MCPServerConnection[]
   });
@@ -1821,7 +1894,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   useEffect(() => {
     if (haveShownCostDialog || showCostDialog) return;
     if (getTotalCost() < 5) return;
-    logEvent("tengu_cost_threshold_reached", {});
+    logEvent("agenc_cost_threshold_reached", {});
     setHaveShownCostDialog(true);
     if (hasConsoleBillingAccess()) {
       setShowCostDialog(true);
@@ -2002,7 +2075,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       ...current,
       hasAcknowledgedCostThreshold: true
     }));
-    logEvent("tengu_cost_threshold_acknowledged", {});
+    logEvent("agenc_cost_threshold_acknowledged", {});
   }, []);
 
   // Spinner gating + mode derivation.
@@ -2056,12 +2129,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const scrollableContent = <>
       {messagesElement}
       <RealtimePanel state={realtimeState} />
+      {completionPipelineRows.map(row => <Text key={row} color={completionPipelineActive ? "warning" : undefined} wrap="truncate">{row}</Text>)}
       {compactProgress.status !== "idle" ? <Box flexDirection="row" width="100%">
           <Text dimColor>
             {compactProgress.label ?? "Compacting conversation"}
           </Text>
           {compactProgress.responseLength > 0 ? <Text dimColor>{` · ${compactProgress.responseLength} chars`}</Text> : null}
         </Box> : null}
+      {renderHealthWarning !== null ? <Text color="warning" wrap="truncate">{renderHealthWarning}</Text> : null}
       {toolJSX !== null ? <Box flexDirection="column" width="100%">
           {toolJSX.jsx}
         </Box> : null}
@@ -2083,7 +2158,12 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.
-  const showPromptInput = !isMessageSelectorVisible && permissionRequests.length === 0 && elicitation.prompt === null;
+  const showPromptInput = shouldShowPromptInputState({
+    isMessageSelectorVisible,
+    permissionRequestCount: permissionRequests.length,
+    hasElicitationPrompt: elicitation.prompt !== null,
+    completionPipelineOwnsPrompt: completionPipelineActive
+  });
   const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_1, helpers_0) => {
     if (await executeRealtimeComposerCommand(props.session.realtime, value_1)) {
       helpers_0.clearBuffer();
@@ -2112,7 +2192,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       <CancelRequestHandler
     // Daemon-mode no-op: permission requests are owned by the daemon
     // and resolved via session.cancelTurn cascade.
-    setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilledNoOp} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
+    setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={transcript.isStreaming ? "requesting" as never : undefined} />
       <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={permissionRequests.length > 0 || elicitation.prompt !== null ? overlayContent : undefined} />
@@ -2130,7 +2210,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
   const initial = useMemo(() => initialState(props), []);
-  return <App initialState={initial} getFpsMetrics={() => undefined}>
+  return <App initialState={initial} getFpsMetrics={props.getFpsMetrics ?? DEFAULT_FPS_METRICS_GETTER}>
       <PromptOverlayProvider>
         <KeybindingSetup>
           <AgenCTuiShell {...props} />

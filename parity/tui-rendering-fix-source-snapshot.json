@@ -1,0 +1,297 @@
+{
+  "snapshotName": "tui-rendering-fix-source-snapshot",
+  "generatedAt": "2026-05-12T00:00:00.000-06:00",
+  "source": "TODO.MD",
+  "todoMdSha256": "945270096484163b5af6fdafa86bfcbece8852876174391456466b822ba80449",
+  "nonOkRowsSha256": "9531940ec99f7cf87cdc17e11df57fcba402175f6c32a61dcbdfb3e7d556c013",
+  "nonOkRowCount": 41,
+  "rows": [
+    {
+      "row": 11,
+      "scenario": "Modal overlay on tiny terminal height",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 11 | Modal overlay on tiny terminal height | A modal must never receive negative rows or negative max height. On a tiny terminal it should clamp to a non-negative modal viewport and preserve bottom chrome ownership. | Modal context computes `rows: terminalRows - MODAL_TRANSCRIPT_PEEK - 1` and modal `maxHeight={terminalRows - MODAL_TRANSCRIPT_PEEK}` without clamping. | BUG | `runtime/src/tui/components/FullscreenLayout.tsx:424`, `runtime/src/tui/components/FullscreenLayout.tsx:427`, `runtime/src/tui/components/FullscreenLayout.tsx:430` | Tiny heights can pass negative row counts into modal content. | P1 |"
+    },
+    {
+      "row": 24,
+      "scenario": "Explicit unicode/ascii rendering mode",
+      "originalStatus": "MISSING",
+      "priority": "P2",
+      "matrixLine": "| 24 | Explicit unicode/ascii rendering mode | TUI should have a deliberate AgenC unicode/ascii mode so operators can force ASCII in terminals that render Unicode poorly. | Rendering uses direct `figures` glyphs and Unicode chrome without an audited explicit AgenC unicode/ascii switch in the substrate. | MISSING | `runtime/src/tui/components/FullscreenLayout.tsx:4`, `runtime/src/tui/components/FullscreenLayout.tsx:559`, `runtime/src/tui/components/FullscreenLayout.tsx:611` | No explicit mode switch was found in the audited render substrate. | P2 |"
+    },
+    {
+      "row": 30,
+      "scenario": "Slow render and dropped-frame visibility",
+      "originalStatus": "MISSING",
+      "priority": "P2",
+      "matrixLine": "| 30 | Slow render and dropped-frame visibility | Slow rendering should have a user-visible or operator-visible status path when frames drop or frame latency becomes significant. | Ink records frame duration/phases via `onFrame`, but no audited TUI status row or warning renders dropped frames or slow render state. | MISSING | `runtime/src/tui/ink/ink.tsx:802`, `runtime/src/tui/ink/ink.tsx:803`, `runtime/src/tui/ink/ink.tsx:815` | Metrics are collected but not surfaced in the TUI. | P2 |"
+    },
+    {
+      "row": 31,
+      "scenario": "Render error visible recovery",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 31 | Render error visible recovery | If React render throws after boot, the user should see a visible error overview long enough to understand the failure, and terminal cleanup should still happen. | `ErrorOverview` is reachable in render state, but `componentDidCatch` immediately calls `handleExit(error)`. | BUG | `runtime/src/tui/ink/components/App.tsx:160`, `runtime/src/tui/ink/components/App.tsx:179`, `runtime/src/tui/ink/components/App.tsx:212` | Error UI exists but normal caught errors exit immediately. | P1 |"
+    },
+    {
+      "row": 35,
+      "scenario": "Main-screen deprecated previous-output path",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 35 | Main-screen deprecated previous-output path | Deprecated previous-output rendering should not be part of the active AgenC fullscreen render contract. | The deprecated method still exists and is invoked on unmount. | LEGACY | `runtime/src/tui/ink/log-update.ts:54`, `runtime/src/tui/ink/ink.tsx:1499`, `runtime/src/tui/ink/ink.tsx:1501` | Deprecated previous-output rendering remains reachable on shutdown. | P3 |"
+    },
+    {
+      "row": 43,
+      "scenario": "Daemon disconnected/reconnecting boot notice",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 43 | Daemon disconnected/reconnecting boot notice | Boot-time connection recovery warnings should be visible to the user so a recovered or degraded daemon state is not silent. | Daemon creates a warning event without `cause`; transcript warning renderer suppresses warnings with no allowlisted cause. | BUG | `runtime/src/tui/daemon-session.ts:808`, `runtime/src/tui/daemon-session.ts:815`, `runtime/src/tui/session-transcript.ts:1434`, `runtime/src/tui/session-transcript.ts:1452` | Connection warning is generated but filtered before rendering. | P1 |"
+    },
+    {
+      "row": 45,
+      "scenario": "Out-of-order event ordering",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 45 | Out-of-order event ordering | Events that arrive out of order should either be reordered by sequence or buffered until causal predecessors exist; the transcript must not silently lose visible state. | Reducer preserves arrival order and only deduplicates. Tool completion before start is suppressed by `pushToolResult` rather than buffered. | BUG | `runtime/src/tui/session-transcript.ts:458`, `runtime/src/tui/session-transcript.ts:474`, `runtime/src/tui/session-transcript.ts:484`, `runtime/src/tui/session-transcript.ts:1766`, `runtime/src/tui/session-transcript.ts:1797` | Guard prevents orphan rows but drops completion visibility when completion arrives before start. | P1 |"
+    },
+    {
+      "row": 51,
+      "scenario": "Tool input delta without start",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 51 | Tool input delta without start | Tool input deltas that arrive before their `tool_input_block_start` should not be lost if later start arrives. | Transcript breaks when no streaming tool slot exists; no buffer or replay path exists. | BUG | `runtime/src/tui/session-transcript.ts:1370`, `runtime/src/tui/session-transcript.ts:1386`, `runtime/src/tui/session-transcript.ts:1389` | Out-of-order tool input deltas are dropped. | P1 |"
+    },
+    {
+      "row": 57,
+      "scenario": "Local agents killed notification callback",
+      "originalStatus": "MISSING",
+      "priority": "P2",
+      "matrixLine": "| 57 | Local agents killed notification callback | When cancel cascades to local agents, TUI should surface which visible local agents were killed if that data exists. | `handleAgentsKilledNoOp` is intentionally empty and comments say future per-agent notifications are not surfaced from the TUI side. | MISSING | `runtime/src/tui/components/App.tsx:1809`, `runtime/src/tui/components/App.tsx:1810`, `runtime/src/tui/components/App.tsx:1814` | Callback exists but does not render anything. | P2 |"
+    },
+    {
+      "row": 60,
+      "scenario": "Background agent status events",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 60 | Background agent status events | Non-error `agent_status` events should have a visible rendering state for idle, starting, running, blocked, completing, cancelled, and completed if those events are intended for the operator. | Daemon maps non-error status to `background_agent_status`; transcript has no matching case and defaults to `break`. | MISSING | `runtime/src/tui/daemon-session.ts:774`, `runtime/src/tui/daemon-session.ts:787`, `runtime/src/tui/daemon-session.ts:789`, `runtime/src/tui/session-transcript.ts:1735` | Non-error background agent status events are not rendered. | P1 |"
+    },
+    {
+      "row": 72,
+      "scenario": "Orphan tool result row",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 72 | Orphan tool result row | If a resumed/corrupt/out-of-order transcript contains a tool result with no matching tool use, the UI should still surface a visible recovery/fallback row rather than hiding evidence. | `UserToolResultMessage` returns `null` when lookup cannot find the tool use. | BUG | `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx:36`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx:37`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx:38` | Orphan tool result is silently hidden. | P1 |"
+    },
+    {
+      "row": 79,
+      "scenario": "Narrow terminal prompt width",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 79 | Narrow terminal prompt width | Prompt text input columns should be clamped to a valid non-negative width on very narrow terminals. | Prompt input computes `textInputColumns = columns - 3` and passes it directly to the text input. | BUG | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2372`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2376`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2580` | Width can be negative when `columns < 3`. | P1 |"
+    },
+    {
+      "row": 88,
+      "scenario": "Tiny-height paste threshold",
+      "originalStatus": "BUG",
+      "priority": "P2",
+      "matrixLine": "| 88 | Tiny-height paste threshold | Tiny terminal height should not cause unrelated paste behavior to degrade into surprising one-line reference mode unless explicitly intended. | Paste line threshold uses `Math.min(rows - 10, 2)` with no lower clamp, so any terminal below 10 rows makes `maxLines` negative. | BUG | `runtime/src/tui/components/PromptInput/PromptInput.tsx:1628`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1634`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1638` | Very small heights force all pasted text into reference mode because `numLines > maxLines` is always true. | P2 |"
+    },
+    {
+      "row": 100,
+      "scenario": "Unsupported permission feature render paths",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 100 | Unsupported permission feature render paths | If build/runtime enables review-artifact or workflow permission features, the permission renderer should fail gracefully or render a supported request type. | Feature placeholders throw runtime errors when enabled. | BUG | `runtime/src/tui/components/permissions/PermissionRequest.tsx:31`, `runtime/src/tui/components/permissions/PermissionRequest.tsx:47` | Render path can throw if those feature flags become active. | P1 |"
+    },
+    {
+      "row": 110,
+      "scenario": "Provider manager donor-branded OAuth labels",
+      "originalStatus": "LEGACY",
+      "priority": "P1",
+      "matrixLine": "| 110 | Provider manager donor-branded OAuth labels | UI should not expose donor-branded labels in AgenC-owned surfaces unless the string is a real provider/model ID allowlisted by product rules. | Provider manager contains visible strings such as `Codex OAuth logged out` and `Codex OAuth configured`. | LEGACY | `runtime/src/tui/components/ProviderManager.tsx:1630`, `runtime/src/tui/components/ProviderManager.tsx:1666`, `runtime/src/tui/components/ProviderManager.tsx:1815` | Donor-branded UI text remains in active provider manager render path. | P1 |"
+    },
+    {
+      "row": 112,
+      "scenario": "MCP remote auth narrow callback input",
+      "originalStatus": "BUG",
+      "priority": "P2",
+      "matrixLine": "| 112 | MCP remote auth narrow callback input | Manual callback URL input should never receive negative columns on a narrow terminal. | Callback `TextInput` receives `columns={terminalColumns - 8}` with no clamp. | BUG | `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:52`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:371`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:375` | Very narrow terminals can pass negative callback input width. | P2 |"
+    },
+    {
+      "row": 119,
+      "scenario": "Local agent status coverage",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 119 | Local agent status coverage | Local agent status should cover idle, starting, running, blocked, completing, failing, completed, and cancelled if task records contain those states. | `getActiveLocalAgentTasks` includes only `pending` and `running`; completed, failed, cancelled, blocked, and completing states are excluded from spinner summary. | MISSING | `runtime/src/tui/components/spinner/agentActivity.ts:18`, `runtime/src/tui/components/spinner/agentActivity.ts:26`, `runtime/src/tui/components/spinner/agentActivity.ts:27`, `runtime/src/tui/components/spinner/agentActivity.ts:28` | Spinner summary only covers pending/running local agents. | P1 |"
+    },
+    {
+      "row": 125,
+      "scenario": "Teams hide/show actions",
+      "originalStatus": "BUG",
+      "priority": "P1",
+      "matrixLine": "| 125 | Teams hide/show actions | If the dialog advertises hide/show actions and backend supports them, those actions should change visibility state. | `toggleTeammateVisibility` calls `hideTeammate`/`showTeammate`, but both functions are empty. | BUG | `runtime/src/tui/components/teams/TeamsDialog.tsx:179`, `runtime/src/tui/components/teams/TeamsDialog.tsx:195`, `runtime/src/tui/components/teams/TeamsDialog.tsx:623`, `runtime/src/tui/components/teams/TeamsDialog.tsx:635`, `runtime/src/tui/components/teams/TeamsDialog.tsx:641` | UI advertises hide/show but active implementation is no-op. | P1 |"
+    },
+    {
+      "row": 128,
+      "scenario": "Blocked agent status",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 128 | Blocked agent status | Agent surfaces should represent blocked/awaiting-user/awaiting-permission state distinctly from running and idle. | Collab status mapping covers generic status summaries, but active local-agent summary filters only pending/running and there is no dedicated blocked local-agent display. | MISSING | `runtime/src/tui/session-transcript.ts:612`, `runtime/src/tui/session-transcript.ts:627`, `runtime/src/tui/components/spinner/agentActivity.ts:26`, `runtime/src/tui/components/spinner/agentActivity.ts:28` | Blocked is not a first-class local-agent render state. | P1 |"
+    },
+    {
+      "row": 129,
+      "scenario": "Supervisor subagent notification rendering",
+      "originalStatus": "MISSING",
+      "priority": "P2",
+      "matrixLine": "| 129 | Supervisor subagent notification rendering | Supervisor/subagent completion messages should render as structured agent status, not raw envelope text. | Agent status formatter emits `<subagent_notification>` envelope; transcript `agent_message` renders payload message as assistant text without a TUI-specific parse case. | MISSING | `runtime/src/agents/status.ts:182`, `runtime/src/agents/status.ts:186`, `runtime/src/tui/session-transcript.ts:1253`, `runtime/src/tui/session-transcript.ts:1255` | No TUI renderer for the supervisor envelope was found. | P2 |"
+    },
+    {
+      "row": 131,
+      "scenario": "Completion pipeline gate start",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 131 | Completion pipeline gate start | When the external goal/completion pipeline begins, TUI should show the first gate as active with clear label and preserve transcript context. | Completion pipeline is described in scripts/docs, but the TUI has no gate-start event renderer; only generic compact progress and generic plan rows exist. | MISSING | `scripts/goal/prep.mjs:184`, `scripts/goal/prep.mjs:218`, `runtime/src/tui/components/App.tsx:1843`, `runtime/src/tui/session-transcript.ts:1726` | No TUI start state for completion gates. | P1 |"
+    },
+    {
+      "row": 132,
+      "scenario": "Completion pipeline per-gate running state",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 132 | Completion pipeline per-gate running state | Each gate in the completion pipeline should render when running, including current gate name, ordering, and whether user input is blocked. | TUI compact progress knows only `hooks_start`, `compact_start`, and `compact_end`; Settings has a disabled Gates tab. | MISSING | `runtime/src/tui/components/App.tsx:1168`, `runtime/src/tui/components/App.tsx:1176`, `runtime/src/tui/components/Settings/Settings.tsx:22`, `runtime/src/tui/components/Settings/Settings.tsx:100` | No general gate-running renderer exists. | P1 |"
+    },
+    {
+      "row": 133,
+      "scenario": "Completion pipeline per-gate success state",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 133 | Completion pipeline per-gate success state | Each completed gate should persist as succeeded until the pipeline completes or clears, so users can audit lifecycle order. | TUI only clears compact progress to idle on compact end; generic plan item completed renders final text only. | MISSING | `runtime/src/tui/components/App.tsx:1861`, `runtime/src/tui/session-transcript.ts:1729`, `runtime/src/tui/session-transcript.ts:1730` | No persisted per-gate success rows exist. | P1 |"
+    },
+    {
+      "row": 134,
+      "scenario": "Completion pipeline per-gate failure state",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 134 | Completion pipeline per-gate failure state | Gate failure should render exact failing gate and failure detail without collapsing into a generic error. | Transcript can render generic `error` rows, but no gate-specific failure event or renderer is present. | MISSING | `runtime/src/tui/session-transcript.ts:1456`, `runtime/src/tui/session-transcript.ts:1458`, `runtime/src/tui/session-transcript.ts:1735` | Gate failure is not represented as a first-class TUI state. | P1 |"
+    },
+    {
+      "row": 135,
+      "scenario": "Completion pipeline cancellation state",
+      "originalStatus": "MISSING",
+      "priority": "P2",
+      "matrixLine": "| 135 | Completion pipeline cancellation state | If pipeline is cancelled, UI should clear active spinner/gate rows and render cancellation reason. | Turn cancellation has a rendering path; completion pipeline cancellation has no audited TUI event case. | MISSING | `runtime/src/tui/session-transcript.ts:1096`, `runtime/src/tui/session-transcript.ts:1130`, `runtime/src/tui/session-transcript.ts:1735` | Only turn abort is rendered, not pipeline cancel. | P2 |"
+    },
+    {
+      "row": 136,
+      "scenario": "Completion pipeline out-of-order gate events",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 136 | Completion pipeline out-of-order gate events | Gate events should be ordered by gate index/sequence and buffer out-of-order success/failure until corresponding start exists. | Transcript reducer preserves arrival order and no gate event model exists. | MISSING | `runtime/src/tui/session-transcript.ts:1766`, `runtime/src/tui/session-transcript.ts:1797`, `runtime/src/tui/components/App.tsx:1168` | There is no gate sequence state machine in TUI. | P1 |"
+    },
+    {
+      "row": 137,
+      "scenario": "Completion pipeline boot-time recovery",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 137 | Completion pipeline boot-time recovery | If TUI reconnects while a completion pipeline is running, it should reconstruct current gate and prior gate results from persisted state. | Daemon session initial events include base transcript and connection notices; no pipeline/gate snapshot is read into TUI. | MISSING | `runtime/src/tui/daemon-session.ts:363`, `runtime/src/tui/daemon-session.ts:365`, `runtime/src/tui/session-transcript.ts:1817` | Boot recovery lacks completion-gate state. | P1 |"
+    },
+    {
+      "row": 138,
+      "scenario": "Completion pipeline hidden/suppressed states",
+      "originalStatus": "MISSING",
+      "priority": "P1",
+      "matrixLine": "| 138 | Completion pipeline hidden/suppressed states | While a completion gate owns the UI, prompt input and unrelated keybindings should be suppressed according to explicit focus rules. | Prompt suppression covers permissions, elicitation, selectors, onboarding, and modals; no completion gate focus state exists. | MISSING | `runtime/src/tui/components/App.tsx:1760`, `runtime/src/tui/components/App.tsx:2084`, `runtime/src/tui/components/App.tsx:2086`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2588` | No gate-specific focus suppression path exists. | P1 |"
+    },
+    {
+      "row": 139,
+      "scenario": "Startup checks focus gate",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 139 | Startup checks focus gate | Startup recommendation/plugin checks should not steal focus before first prompt interaction. | The gate function exists and tests import it, but no runtime TUI import was found by source search; the file is only referenced by tests. | LEGACY | `runtime/src/tui/screens/replStartupGates.ts:20`, `runtime/src/tui/screens/replStartupGates.ts:26`, `runtime/src/tui/screens/replStartupGates.ts:31`, `runtime/src/tui/screens/replStartupGates.ts:33` | Orphaned startup-gate code is not wired into runtime TUI search results. | P2 |"
+    },
+    {
+      "row": 140,
+      "scenario": "Prompt typing suppression startup helper",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 140 | Prompt typing suppression startup helper | Dialog focus suppression before prompt typing should be part of an active runtime path if startup checks are still a concern. | Helper returns active if prompt input is active or input has text, but search showed only tests for related startup gate usage. | LEGACY | `runtime/src/tui/screens/replInputSuppression.ts:1`, `runtime/src/tui/screens/replInputSuppression.ts:5` | Helper appears isolated from active runtime TUI path. | P3 |"
+    },
+    {
+      "row": 141,
+      "scenario": "Settings Gates tab",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 141 | Settings Gates tab | If settings accepts `defaultTab: \"Gates\"`, a Gates tab should render or the type should not expose it. | Settings type includes `\"Gates\"` and state tracks `gatesOwnsEsc`, but tab construction is behind `false ? ... : []`. | LEGACY | `runtime/src/tui/components/Settings/Settings.tsx:22`, `runtime/src/tui/components/Settings/Settings.tsx:34`, `runtime/src/tui/components/Settings/Settings.tsx:59`, `runtime/src/tui/components/Settings/Settings.tsx:100` | Disabled Gates UI remains in active Settings source. | P2 |"
+    },
+    {
+      "row": 142,
+      "scenario": "Prompt footer tmux/tungsten pill",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 142 | Prompt footer tmux/tungsten pill | Footer should not carry dead pills that can never render. | PromptInput has `hasTungstenSession = false`, `tmuxFooterVisible = false`, and still includes `tmux` in footer item construction. | LEGACY | `runtime/src/tui/components/PromptInput/PromptInput.tsx:626`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:627`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:628`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:780` | Dead footer branch remains. | P3 |"
+    },
+    {
+      "row": 143,
+      "scenario": "Prompt footer bagel/browser pill",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 143 | Prompt footer bagel/browser pill | Footer should not carry dead browser pill code that can never render. | `bagelFooterVisible` reads `useAppState(s => false)` and still contributes to footer item construction. | LEGACY | `runtime/src/tui/components/PromptInput/PromptInput.tsx:629`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:630`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:780` | Dead footer branch remains. | P3 |"
+    },
+    {
+      "row": 144,
+      "scenario": "Help internal-only commands tab",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 144 | Help internal-only commands tab | Disabled internal-only tab code should not remain in active TUI render source unless it is a deliberate AgenC product path. | Help builds `antOnlyCommands` as an empty array and the tab branch is `if (false && antOnlyCommands.length > 0)`. | LEGACY | `runtime/src/tui/components/HelpV2/HelpV2.tsx:57`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:70`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:116`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:119` | Disabled internal-only render path remains. | P3 |"
+    },
+    {
+      "row": 145,
+      "scenario": "Moved-source Ink substrate",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 145 | Moved-source Ink substrate | Active render substrate should be AgenC-owned, typed, and free of moved-source markers. | Core Ink files still carry `@ts-nocheck` and moved-source notes. | LEGACY | `runtime/src/tui/ink.ts:1`, `runtime/src/tui/ink.ts:2`, `runtime/src/tui/ink/ink.tsx:1`, `runtime/src/tui/ink/ink.tsx:2`, `runtime/src/tui/ink/render-node-to-output.ts:1` | Moved-source render substrate remains active. | P2 |"
+    },
+    {
+      "row": 146,
+      "scenario": "Moved-source overlay/modal context",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 146 | Moved-source overlay/modal context | Active overlay and modal context should be AgenC-owned and typed. | Overlay and prompt overlay contexts carry moved-source markers and `@ts-nocheck`. | LEGACY | `runtime/src/tui/context/overlayContext.tsx:1`, `runtime/src/tui/context/overlayContext.tsx:2`, `runtime/src/tui/context/promptOverlayContext.tsx:1`, `runtime/src/tui/context/promptOverlayContext.tsx:2`, `runtime/src/tui/context/modalContext.tsx:1` | Moved-source overlay code remains active. | P2 |"
+    },
+    {
+      "row": 147,
+      "scenario": "Moved-source task/agent rendering components",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 147 | Moved-source task/agent rendering components | Active task/agent rendering should be AgenC-owned and typed. | BackgroundTaskStatus, Spinner, TeamStatus, and TeamsDialog carry moved-source markers and `@ts-nocheck`. | LEGACY | `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:1`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:2`, `runtime/src/tui/components/spinner/Spinner.tsx:1`, `runtime/src/tui/components/spinner/Spinner.tsx:2`, `runtime/src/tui/components/teams/TeamStatus.tsx:1`, `runtime/src/tui/components/teams/TeamsDialog.tsx:1` | Moved-source agent/task UI remains active. | P2 |"
+    },
+    {
+      "row": 148,
+      "scenario": "Moved-source permission rendering components",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 148 | Moved-source permission rendering components | Active permission surfaces should be AgenC-owned and typed. | Permission request components carry moved-source markers and `@ts-nocheck`. | LEGACY | `runtime/src/tui/components/permissions/PermissionRequest.tsx:1`, `runtime/src/tui/components/permissions/PermissionRequest.tsx:2`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:1`, `runtime/src/tui/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.tsx:1` | Moved-source permission UI remains active. | P2 |"
+    },
+    {
+      "row": 149,
+      "scenario": "Deprecated settings reads in TUI surfaces",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 149 | Deprecated settings reads in TUI surfaces | Active React surfaces should not depend on deprecated synchronous settings reads where reactive hooks exist. | Several TUI files import `getSettings_DEPRECATED` in active dialog/settings paths. | LEGACY | `runtime/src/tui/startup/StartupScreen.ts:12`, `runtime/src/tui/startup/StartupScreen.ts:166`, `runtime/src/tui/hooks/useSettingsChange.ts:4`, `runtime/src/tui/components/sandbox/SandboxSettings.tsx:10`, `runtime/src/tui/components/MCPServerMultiselectDialog.tsx:8` | Deprecated settings dependencies remain in active or boot-time TUI surfaces. | P3 |"
+    },
+    {
+      "row": 150,
+      "scenario": "Deprecated command source strings in trust/skills",
+      "originalStatus": "LEGACY",
+      "priority": "P3",
+      "matrixLine": "| 150 | Deprecated command source strings in trust/skills | Active TUI should not keep deprecated command-source identifiers except as migration-only data handling. | Trust and Skills surfaces still branch on `commands_DEPRECATED`. | LEGACY | `runtime/src/tui/components/TrustDialog/TrustDialog.tsx:285`, `runtime/src/tui/components/skills/SkillsMenu.tsx:47`, `runtime/src/tui/components/skills/SkillsMenu.tsx:242` | Deprecated command-source rendering conditions remain. | P3 |"
+    },
+    {
+      "row": 151,
+      "scenario": "Donor analytics/event names in visible interaction code",
+      "originalStatus": "LEGACY",
+      "priority": "P2",
+      "matrixLine": "| 151 | Donor analytics/event names in visible interaction code | Active AgenC TUI interaction code should not retain donor-prefixed analytics identifiers where AgenC-owned naming is expected. | Active UI paths log `tengu_*` event names in prompt, provider, MCP, and spinner/agent surfaces. | LEGACY | `runtime/src/tui/components/PromptInput/PromptInput.tsx:1550`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1394`, `runtime/src/tui/components/ProviderManager.tsx:2446`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:100`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:143` | Donor-prefixed telemetry identifiers remain in active TUI code paths. | P2 |"
+    }
+  ]
+}

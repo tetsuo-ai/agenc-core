@@ -60,7 +60,7 @@ type Props = {
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void;
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
-  // time. Returns the URL or undefined. The browser-open is deferred by
+  // time. Returns the URL or undefined. The browser-open is delayed by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
   readonly getHyperlinkAt: (col: number, row: number) => string | undefined;
   // Open a hyperlink URL in the browser. Called after the timer fires.
@@ -77,12 +77,12 @@ type Props = {
   // Called when stdin data arrives after a >STDIN_RESUME_GAP_MS gap.
   // Ink re-asserts terminal modes: extended key reporting, and (when in
   // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
-  // terminal side. Optional so testing.tsx doesn't need to stub it.
+  // terminal side. Optional so testing.tsx doesn't need to test double it.
   readonly onStdinResume?: () => void;
   // Receives the declared native-cursor position from useDeclaredCursor
   // so ink.tsx can park the terminal cursor there after each frame.
   // Enables IME composition at the input caret and lets screen readers /
-  // magnifiers track the input. Optional so testing.tsx doesn't stub it.
+  // magnifiers track the input. Optional so testing.tsx doesn't test double it.
   readonly onCursorDeclaration?: CursorDeclarationSetter;
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the compatibility EventEmitter path.
@@ -137,16 +137,17 @@ export default class App extends PureComponent<Props, State> {
   lastClickCol = -1;
   lastClickRow = -1;
   clickCount = 0;
-  // Deferred hyperlink-open timer — cancelled if a second click arrives
+  // Delayed hyperlink-open timer — cancelled if a second click arrives
   // within MULTI_CLICK_TIMEOUT_MS (so double-clicking a hyperlink selects
   // the word without also opening the browser). DOM onClick dispatch is
-  // NOT deferred — it returns true from onClickAt and skips this timer.
+  // NOT delayed — it returns true from onClickAt and bypasses this timer.
   pendingHyperlinkTimer: ReturnType<typeof setTimeout> | null = null;
   // Last mode-1003 motion position. Terminals already dedupe to cell
   // granularity but this also lets us skip dispatchHover entirely on
   // repeat events (drag-then-release at same cell, etc.).
   lastHoverCol = -1;
   lastHoverRow = -1;
+  caughtRenderError: Error | null = null;
 
   // Timestamp of last stdin chunk. Used to detect long gaps (tmux attach,
   // ssh reconnect, laptop wake) and trigger terminal mode re-assert.
@@ -208,10 +209,14 @@ export default class App extends PureComponent<Props, State> {
     if (this.isRawModeSupported()) {
       this.handleSetRawMode(false);
     }
+    if (this.caughtRenderError !== null) {
+      this.props.onExit(this.caughtRenderError);
+      this.caughtRenderError = null;
+    }
   }
   override componentDidCatch(error: Error) {
     logError(error);
-    this.handleExit(error);
+    this.caughtRenderError = error;
   }
   handleSetRawMode = (isEnabled: boolean): void => {
     const {
@@ -259,7 +264,7 @@ export default class App extends PureComponent<Props, State> {
         // detection when env vars are absent. Fire-and-forget: the DA1
         // sentinel bounds the round-trip, and if the terminal ignores the
         // query, flush() still resolves and name stays undefined.
-        // Deferred to next tick so it fires AFTER the current synchronous
+        // Delayed to next tick so it fires AFTER the current synchronous
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {

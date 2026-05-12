@@ -4,7 +4,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { builtInCommandNames, type Command, type CommandResultDisplay, INTERNAL_ONLY_COMMANDS } from '../../../commands.js';
+import { builtInCommandNames, type Command, type CommandResultDisplay } from '../../../commands.js';
 import { useIsInsideModal } from '../../context/modalContext';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Link, Text } from '../../ink.js';
@@ -54,29 +54,18 @@ export function HelpV2(t0) {
   useKeybinding("help:dismiss", close, t2);
   const exitState = useExitOnCtrlCDWithKeybindings(close);
   const dismissShortcut = useShortcutDisplay("help:dismiss", "Help", "esc");
-  let antOnlyCommands;
   let builtinCommands;
   let t3;
   if ($[3] !== commands) {
     const builtinNames = builtInCommandNames();
     builtinCommands = commands.filter(cmd => builtinNames.has(cmd.name) && !cmd.isHidden);
-    let t4;
-    if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-      t4 = [];
-      $[7] = t4;
-    } else {
-      t4 = $[7];
-    }
-    antOnlyCommands = t4;
     t3 = commands.filter(cmd_2 => !builtinNames.has(cmd_2.name) && !cmd_2.isHidden);
     $[3] = commands;
-    $[4] = antOnlyCommands;
-    $[5] = builtinCommands;
-    $[6] = t3;
+    $[4] = builtinCommands;
+    $[5] = t3;
   } else {
-    antOnlyCommands = $[4];
-    builtinCommands = $[5];
-    t3 = $[6];
+    builtinCommands = $[4];
+    t3 = $[5];
   }
   const customCommands = t3;
   let t4;
@@ -87,7 +76,7 @@ export function HelpV2(t0) {
     t4 = $[8];
   }
   let tabs;
-  if ($[9] !== antOnlyCommands || $[10] !== builtinCommands || $[11] !== close || $[12] !== columns || $[13] !== customCommands || $[14] !== maxHeight) {
+  if ($[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight) {
     tabs = [t4];
     let t5;
     if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight) {
@@ -113,26 +102,11 @@ export function HelpV2(t0) {
       t6 = $[25];
     }
     tabs.push(t6);
-    if (false && antOnlyCommands.length > 0) {
-    let t7;
-      if ($[26] !== antOnlyCommands || $[27] !== close || $[28] !== columns || $[29] !== maxHeight) {
-        t7 = <Tab key="internal-only" title="[internal-only]"><Commands commands={antOnlyCommands} maxHeight={maxHeight} columns={columns} title="Browse internal-only commands:" onCancel={close} /></Tab>;
-        $[26] = antOnlyCommands;
-        $[27] = close;
-        $[28] = columns;
-        $[29] = maxHeight;
-        $[30] = t7;
-      } else {
-        t7 = $[30];
-      }
-      tabs.push(t7);
-    }
-    $[9] = antOnlyCommands;
-    $[10] = builtinCommands;
-    $[11] = close;
-    $[12] = columns;
-    $[13] = customCommands;
-    $[14] = maxHeight;
+    $[9] = builtinCommands;
+    $[10] = close;
+    $[11] = columns;
+    $[12] = customCommands;
+    $[13] = maxHeight;
     $[15] = tabs;
   } else {
     tabs = $[15];
@@ -140,7 +114,7 @@ export function HelpV2(t0) {
   const t5 = insideModal ? undefined : maxHeight;
   let t6;
   if ($[31] !== tabs) {
-    t6 = <Tabs title={false ? "/help" : `AgenC v${MACRO.VERSION}`} color="professionalBlue" defaultTab="general">{tabs}</Tabs>;
+    t6 = <Tabs title={`AgenC v${MACRO.VERSION}`} color="professionalBlue" defaultTab="general">{tabs}</Tabs>;
     $[31] = tabs;
     $[32] = t6;
   } else {

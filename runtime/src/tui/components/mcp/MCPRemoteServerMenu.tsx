@@ -39,6 +39,11 @@ type Props = {
   }) => void;
   borderless?: boolean;
 };
+
+export function clampMcpCallbackInputColumns(terminalColumns: number): number {
+  return Math.max(0, terminalColumns - 8);
+}
+
 export function MCPRemoteServerMenu({
   server,
   serverToolsCount,
@@ -97,7 +102,7 @@ export function MCPRemoteServerMenu({
     try {
       const result = await reconnectMcpServer(server.name);
       const success = result.client.type === 'connected';
-      logEvent('tengu_agencai_mcp_auth_completed', {
+      logEvent('agenc_agencai_mcp_auth_completed', {
         success
       });
       if (success) {
@@ -108,7 +113,7 @@ export function MCPRemoteServerMenu({
         onComplete?.('Authentication successful, but server reconnection failed. You may need to manually restart AgenC for the changes to take effect.');
       }
     } catch (err) {
-      logEvent('tengu_agencai_mcp_auth_completed', {
+      logEvent('agenc_agencai_mcp_auth_completed', {
         success: false
       });
       onComplete?.(handleReconnectError(err, server.name));
@@ -140,7 +145,7 @@ export function MCPRemoteServerMenu({
         }
       };
     });
-    logEvent('tengu_agencai_mcp_clear_auth_completed', {});
+    logEvent('agenc_agencai_mcp_clear_auth_completed', {});
     onComplete?.(`Disconnected from ${server.name}.`);
     setIsAgenCAIClearingAuth(false);
     setAgenCAIClearAuthUrl(null);
@@ -230,19 +235,19 @@ export function MCPRemoteServerMenu({
     }
     setAgenCAIAuthUrl(authUrl);
     setIsAgenCAIAuthenticating(true);
-    logEvent('tengu_agencai_mcp_auth_started', {});
+    logEvent('agenc_agencai_mcp_auth_started', {});
     await openBrowser(authUrl);
   }, [server.config]);
   const handleAgenCAIClearAuth = React.useCallback(() => {
     setIsAgenCAIClearingAuth(true);
-    logEvent('tengu_agencai_mcp_clear_auth_started', {});
+    logEvent('agenc_agencai_mcp_clear_auth_started', {});
   }, []);
   const handleToggleEnabled = React.useCallback(async () => {
     const wasEnabled = server.client.type !== 'disabled';
     try {
       await toggleMcpServer(server.name);
       if (server.config.type === 'agencai-proxy') {
-        logEvent('tengu_agencai_mcp_toggle', {
+        logEvent('agenc_agencai_mcp_toggle', {
           new_state: (wasEnabled ? 'disabled' : 'enabled') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
       }
@@ -274,7 +279,7 @@ export function MCPRemoteServerMenu({
             setManualCallbackSubmit(() => submit);
           }
         });
-        logEvent('tengu_mcp_auth_config_authenticate', {
+        logEvent('agenc_mcp_auth_config_authenticate', {
           wasAuthenticated: server.isAuthenticated
         });
         const result_0 = await reconnectMcpServer(server.name);
@@ -306,7 +311,7 @@ export function MCPRemoteServerMenu({
     if (server.config) {
       // First revoke the authentication tokens and clear all auth state
       await revokeServerTokens(server.name, server.config);
-      logEvent('tengu_mcp_auth_config_clear', {});
+      logEvent('agenc_mcp_auth_config_clear', {});
 
       // Disconnect the client and clear the cache
       await clearServerCache(server.name, {
@@ -372,7 +377,7 @@ export function MCPRemoteServerMenu({
               <TextInput value={callbackUrlInput} onChange={setCallbackUrlInput} onSubmit={(value: string) => {
             manualCallbackSubmit(value.trim());
             setCallbackUrlInput('');
-          }} cursorOffset={callbackUrlCursorOffset} onChangeCursorOffset={setCallbackUrlCursorOffset} columns={terminalColumns - 8} />
+          }} cursorOffset={callbackUrlCursorOffset} onChangeCursorOffset={setCallbackUrlCursorOffset} columns={clampMcpCallbackInputColumns(terminalColumns)} />
             </Box>
           </Box>}
         <Box marginLeft={3}>
@@ -606,7 +611,7 @@ export function MCPRemoteServerMenu({
               try {
                 const result_1 = await reconnectMcpServer(server.name);
                 if (server.config.type === 'agencai-proxy') {
-                  logEvent('tengu_agencai_mcp_reconnect', {
+                  logEvent('agenc_agencai_mcp_reconnect', {
                     success: result_1.client.type === 'connected'
                   });
                 }
@@ -616,7 +621,7 @@ export function MCPRemoteServerMenu({
                 onComplete?.(message_0);
               } catch (err_2) {
                 if (server.config.type === 'agencai-proxy') {
-                  logEvent('tengu_agencai_mcp_reconnect', {
+                  logEvent('agenc_agencai_mcp_reconnect', {
                     success: false
                   });
                 }

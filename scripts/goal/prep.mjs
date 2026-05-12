@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { findItem, checkDependencies, statusName, STATUS, setItemStatus, repoRoot, mainCheckoutRoot, worktreePath, worktreeBase, findGitWorktreeEntry } from "./checklist-utils.mjs";
+import { startCompletionPipelineGate } from "./pipeline-events.mjs";
 
 function usage() {
   process.stderr.write(
@@ -37,6 +38,16 @@ const id = args.find((a) => !a.startsWith("--"));
 const force = args.includes("--force");
 const dryRun = args.includes("--dry-run");
 if (!id) usage();
+
+const completionPrepGate = startCompletionPipelineGate("prep", {
+  pipelineId: id,
+  message: `Preparing ${id}`,
+});
+process.once("exit", (code) => {
+  if (code !== 0) {
+    completionPrepGate.failed(`prep exited ${code}`);
+  }
+});
 
 // D-* are decisions, not work items. The goal harness can only execute work.
 if (/^D-/.test(id)) {
@@ -167,6 +178,8 @@ if (!dryRun) {
 const phaseLabel = item.phase ? `Phase ${item.phase}${item.phaseTitle ? ` — ${item.phaseTitle}` : ""}` : "";
 const depsLabel = item.dependsOn.length > 0 ? item.dependsOn.join(", ") : "none";
 const doneLabel = item.doneCriteria ? item.doneCriteria : "(see item body)";
+
+completionPrepGate.succeeded(`prepared ${id}`);
 
 process.stdout.write(`AgenC port-checklist work item ${id}.
 

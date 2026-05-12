@@ -1,0 +1,20 @@
+{
+  "rowId": "todo-row-141",
+  "reviewer": "Russell reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Remove disabled Settings Gates tab type/state/render branches or implement an active tab; this row removes the disabled legacy branch."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "No defaultTab value can select Gates.",
+      "Esc handling no longer tracks an impossible Gates owner."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

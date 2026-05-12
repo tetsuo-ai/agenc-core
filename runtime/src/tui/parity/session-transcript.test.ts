@@ -864,7 +864,7 @@ describe("AgenC TUI session transcript", () => {
     expect(blocks[1]?.text).toBe("<tool-error></tool-error>");
   });
 
-  test("formatStructuredToolResult falls back to a single text block for unknown tools", () => {
+  test("formatStructuredToolResult falls back to a single text block for unrecognized tools", () => {
     const blocks = formatStructuredToolResult("WeirdTool", "tool_call_completed", {
       result: { foo: 1, bar: "baz" },
     });
@@ -963,6 +963,56 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.messages).toHaveLength(1);
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("Hook threw an error");
+    });
+
+    test("renders daemon connection warnings when the explicit cause is present", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "daemon-reconnect",
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "daemon_connection_state",
+              message: "daemon disconnected, reconnecting",
+            },
+          },
+        },
+      ]);
+
+      expect(JSON.stringify(transcript.messages)).toContain(
+        "daemon disconnected, reconnecting",
+      );
+    });
+
+    test("renders background agent status events as visible status rows", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "agent-start",
+          msg: {
+            type: "background_agent_status",
+            payload: { status: "starting", message: "spawning" },
+          },
+        },
+        {
+          id: "agent-wait",
+          msg: {
+            type: "background_agent_status",
+            payload: { status: "awaiting_permission" },
+          },
+        },
+        {
+          id: "agent-failed",
+          msg: {
+            type: "background_agent_status",
+            payload: { status: "failed", message: "tool denied" },
+          },
+        },
+      ]);
+
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("Background agent starting");
+      expect(allText).toContain("Background agent waiting on user");
+      expect(allText).toContain("Background agent failed");
     });
 
     test("suppresses warnings with no cause field (post-#50 allow-list policy)", () => {
@@ -1077,7 +1127,7 @@ describe("AgenC TUI session transcript", () => {
 
     test("turn_aborted with no buffered text emits only the warning (no empty assistant row)", () => {
       // Edge case: ESC pressed before any model token streamed. The
-      // preservation logic must skip the empty-string push so the
+      // preservation logic must avoid the empty-string push so the
       // transcript doesn't get an empty assistant row.
       const transcript = adaptTranscriptEvents([
         {
@@ -1153,16 +1203,7 @@ describe("AgenC TUI session transcript", () => {
       ]);
     });
 
-    test("orphan tool_call_completed (no matching start) is dropped (#59)", () => {
-      // Phase 5 #59: previously, a tool_call_completed event with no
-      // matching tool_call_started or tool_use opener still emitted
-      // a tool_result row in the transcript and a tool message in
-      // the wire payload. Wire-format validators downstream (the
-      // openai chat-completions normalizeMessagesForAPI orphan
-      // filter) would then drop the message, but the user transcript
-      // still showed a phantom result. The guard now drops the
-      // orphan at the transcript layer — `openTools.has` returns
-      // false for an unknown callId, so pushToolResult no-ops.
+    test("out-of-order tool_call_completed renders a visible recovery row", () => {
       const transcript = adaptTranscriptEvents([
         {
           id: "user",
@@ -1180,11 +1221,231 @@ describe("AgenC TUI session transcript", () => {
           },
         },
       ]);
-      // Expect: just the user message. No phantom tool_result row.
-      expect(transcript.messages).toHaveLength(1);
+      expect(transcript.messages).toHaveLength(2);
       expect(transcript.messages[0]).toMatchObject({ type: "user" });
       const allText = JSON.stringify(transcript.messages);
-      expect(allText).not.toContain("phantom result");
+      expect(allText).toContain("Recovered tool result without matching start");
+      expect(allText).toContain("phantom result");
+    });
+
+    test("out-of-order tool_call_completed tombstones a later delayed start", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "orphan",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "phantom-call-2",
+              result: "already finished",
+              isError: false,
+            },
+          },
+        },
+        {
+          id: "late-start",
+          msg: {
+            type: "tool_call_started",
+            payload: {
+              callId: "phantom-call-2",
+              toolName: "Bash",
+              args: "{\"command\":\"echo late\"}",
+            },
+          },
+        },
+      ]);
+
+      expect(transcript.inProgressToolUseIDs.size).toBe(0);
+      expect(JSON.stringify(transcript.messages)).toContain("Recovered tool result without matching start");
+      expect(JSON.stringify(transcript.messages)).not.toContain("echo late");
+    });
+
+    test("raw tool_result events use the same recovery and tombstone path", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "legacy-result",
+          type: "tool_result",
+          toolCall: { id: "legacy-call" },
+          result: "legacy result",
+        },
+        {
+          id: "late-start",
+          msg: {
+            type: "tool_call_started",
+            payload: {
+              callId: "legacy-call",
+              toolName: "Bash",
+              args: "{\"command\":\"echo reopened\"}",
+            },
+          },
+        },
+      ]);
+
+      expect(transcript.inProgressToolUseIDs.size).toBe(0);
+      expect(JSON.stringify(transcript.messages)).toContain("legacy result");
+      expect(JSON.stringify(transcript.messages)).not.toContain("echo reopened");
+    });
+
+    test("suppressed collab tool calls still avoid duplicate generic result rows", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "spawn-start",
+          msg: {
+            type: "tool_call_started",
+            payload: {
+              callId: "agent-call",
+              toolName: "spawn_agent",
+              args: "{}",
+            },
+          },
+        },
+        {
+          id: "spawn-result",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "agent-call",
+              result: "raw collab result",
+              isError: false,
+            },
+          },
+        },
+      ]);
+
+      expect(JSON.stringify(transcript.messages)).not.toContain("raw collab result");
+    });
+
+    test("buffers tool input deltas until their start event arrives", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "delta-1",
+          msg: {
+            type: "tool_input_delta",
+            payload: { index: 2, partial_json: "{\"query\":" },
+          },
+        },
+        {
+          id: "delta-2",
+          msg: {
+            type: "tool_input_delta",
+            payload: { index: 2, partial_json: "\"abc\"}" },
+          },
+        },
+        {
+          id: "start",
+          msg: {
+            type: "tool_input_block_start",
+            payload: {
+              index: 2,
+              callId: "tool-2",
+              toolName: "Grep",
+            },
+          },
+        },
+      ]);
+
+      expect(transcript.streamingToolUses).toEqual([
+        expect.objectContaining({
+          index: 2,
+          unparsedToolInput: "{\"query\":\"abc\"}",
+        }),
+      ]);
+    });
+
+    test("clears buffered tool input deltas at turn boundaries", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "stale-delta",
+          msg: {
+            type: "tool_input_delta",
+            payload: { index: 2, partial_json: "{\"stale\":true}" },
+          },
+        },
+        {
+          id: "turn",
+          msg: { type: "turn_started", payload: { turnId: "next-turn" } },
+        },
+        {
+          id: "start",
+          msg: {
+            type: "tool_input_block_start",
+            payload: {
+              index: 2,
+              callId: "tool-2",
+              toolName: "Grep",
+            },
+          },
+        },
+      ]);
+
+      expect(transcript.streamingToolUses).toEqual([
+        expect.objectContaining({
+          index: 2,
+          unparsedToolInput: "",
+        }),
+      ]);
+    });
+
+    test("clears buffered tool input deltas when a turn is aborted", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "stale-delta",
+          msg: {
+            type: "tool_input_delta",
+            payload: { index: 2, partial_json: "{\"stale\":true}" },
+          },
+        },
+        {
+          id: "abort",
+          msg: { type: "turn_aborted", payload: { reason: "cancelled" } },
+        },
+        {
+          id: "start",
+          msg: {
+            type: "tool_input_block_start",
+            payload: {
+              index: 2,
+              callId: "tool-2",
+              toolName: "Grep",
+            },
+          },
+        },
+      ]);
+
+      expect(transcript.streamingToolUses).toEqual([
+        expect.objectContaining({
+          index: 2,
+          unparsedToolInput: "",
+        }),
+      ]);
+    });
+
+    test("renders supervisor subagent notifications as structured status rows", async () => {
+      const { formatSubagentNotification } = await import("../../agents/status.js");
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "subagent",
+          msg: {
+            type: "agent_message",
+            payload: {
+              message: formatSubagentNotification({
+                agentPath: "019e1e2f-efc6-74c0-86a3-eefa1c5c98c2",
+                status: {
+                  status: "completed",
+                  turnId: "turn",
+                  endedAtMs: 1,
+                  lastMessage: "finished audit",
+                },
+              }),
+            },
+          },
+        },
+      ]);
+
+      expect(transcript.messages[0]).toMatchObject({
+        subtype: "collab_agent",
+        state: "success",
+      });
+      expect(JSON.stringify(transcript.messages)).toContain("finished audit");
     });
 
     test("user-actionable causes still surface to the transcript", () => {

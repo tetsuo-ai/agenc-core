@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 
 import { formatVimModeIndicator } from './utils.js'
 
@@ -14,5 +15,20 @@ describe('PromptInputFooterLeftSide vim mode indicator', () => {
 
   test('omits vim mode when inactive', () => {
     expect(formatVimModeIndicator(undefined)).toBeNull()
+  })
+
+  test('does not retain impossible footer pills', () => {
+    const leftSide = readFileSync(
+      new URL('./PromptInputFooterLeftSide.tsx', import.meta.url),
+      'utf8',
+    )
+    const promptInput = readFileSync(
+      new URL('./PromptInput.tsx', import.meta.url),
+      'utf8',
+    )
+
+    expect(leftSide).not.toContain('TungstenPill')
+    expect(leftSide).not.toContain('hasTmuxSession')
+    expect(promptInput).not.toContain('tmuxSelected')
   })
 })

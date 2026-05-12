@@ -1,11 +1,11 @@
-import { BASH_TOOL_NAME } from '../../../../tools/BashTool/toolName';
-import { extractOutputRedirections } from '../../../../utils/bash/commands'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecisionReason } from '../../../../utils/permissions/PermissionResult'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { OptionWithDescription } from '../../CustomSelect/select';
-import { generateShellSuggestionsLabel } from '../shellPermissionHelpers';
+import { BASH_TOOL_NAME } from '../../../../tools/BashTool/toolName.js';
+import { extractOutputRedirections } from '../../../../utils/bash/commands.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isClassifierPermissionsEnabled } from '../../../../utils/permissions/bashClassifier.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionDecisionReason } from '../../../../utils/permissions/PermissionResult.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { OptionWithDescription } from '../../CustomSelect/select.js';
+import { generateShellSuggestionsLabel } from '../shellPermissionHelpers.js';
 export type BashToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-classifier-reviewed' | 'no';
 
 /**
@@ -112,7 +112,8 @@ export function bashToolUseOptions({
     // Skip when the editable prefix option is already shown — they serve the
     // same role and having two identical-looking "don't ask again" inputs is confusing.
     const editablePrefixShown = options.some(o => o.value === 'yes-prefix-edited');
-    if ("external" === 'ant' && !editablePrefixShown && isClassifierPermissionsEnabled() && onClassifierDescriptionChange && !initialClassifierDescriptionEmpty && !descriptionAlreadyExists(classifierDescription ?? '', existingAllowDescriptions) && decisionReason?.type !== 'classifier') {
+    const classifierReviewEnabled = false;
+    if (classifierReviewEnabled && !editablePrefixShown && isClassifierPermissionsEnabled() && onClassifierDescriptionChange && !initialClassifierDescriptionEmpty && !descriptionAlreadyExists(classifierDescription ?? '', existingAllowDescriptions) && decisionReason?.type !== 'classifier') {
       options.push({
         type: 'input',
         label: 'Yes, and don\u2019t ask again for',

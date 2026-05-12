@@ -5,6 +5,10 @@ vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
+vi.mock('../../utils/settings/settings.js', () => ({
+  getInitialSettings: () => ({}),
+}))
+
 const ENV_KEYS = [
   'AGENC_USE_OPENAI',
   'AGENC_USE_GEMINI',

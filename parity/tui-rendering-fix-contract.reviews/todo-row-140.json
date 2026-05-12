@@ -1,0 +1,20 @@
+{
+  "rowId": "todo-row-140",
+  "reviewer": "Russell reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Confirm replInputSuppression has no runtime TUI import references, then remove the orphan helper and its test-only coverage."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "A repository scan finds no replInputSuppression runtime import after deletion.",
+      "The prior test-only import is removed with the orphan helper."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

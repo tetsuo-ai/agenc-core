@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { randomUUID } from 'crypto';
 import figures from 'figures';
@@ -21,10 +19,10 @@ import { truncateToWidth } from '../../../utils/format.js'; // upstream-import: 
 import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { IT2_COMMAND, isInsideTmuxSync } from '../../../utils/swarm/backends/detection.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getLeaderPaneId, IT2_COMMAND, isInsideTmuxSync } from '../../../utils/swarm/backends/detection.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ensureBackendsRegistered, getBackendByType, getCachedBackend } from '../../../utils/swarm/backends/registry.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { PaneBackendType } from '../../../utils/swarm/backends/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSwarmSocketName, TMUX_COMMAND } from '../../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSwarmSocketName, SWARM_SESSION_NAME, SWARM_VIEW_WINDOW_NAME, TMUX_COMMAND } from '../../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam, setMemberMode, setMultipleMemberModes } from '../../../utils/swarm/teamHelpers.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { listTasks, type Task, unassignTeammateTasks } from '../../../utils/tasks.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../utils/teamDiscovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -632,13 +630,46 @@ async function toggleTeammateVisibility(teammate: TeammateStatus, teamName: stri
  * Hide a teammate pane using the backend abstraction.
  * Only available for ant users (gated for dead code elimination in external builds)
  */
-async function hideTeammate(teammate: TeammateStatus, teamName: string): Promise<void> {}
+async function hideTeammate(teammate: TeammateStatus, teamName: string): Promise<void> {
+  if (!teammate.tmuxPaneId || !teammate.backendType) return;
+  await ensureBackendsRegistered();
+  const backend = getBackendByType(teammate.backendType);
+  if (!backend.supportsHideShow) return;
+  const hidden = await backend.hidePane(teammate.tmuxPaneId, !isInsideTmuxSync());
+  if (!hidden) return;
+  addHiddenPaneId(teamName, teammate.tmuxPaneId);
+  logForDebugging(`[TeamsDialog] Hidden teammate ${teammate.name} (${teammate.tmuxPaneId})`);
+}
+
+export function resolveTeammateShowTargetPane(teammatePaneId: string): string | null {
+  const targetPane = isInsideTmuxSync()
+    ? getLeaderPaneId()
+    : `${SWARM_SESSION_NAME}:${SWARM_VIEW_WINDOW_NAME}`;
+  if (!targetPane) return null;
+  if (targetPane === teammatePaneId) return null;
+  return targetPane;
+}
 
 /**
  * Show a previously hidden teammate pane using the backend abstraction.
  * Only available for ant users (gated for dead code elimination in external builds)
  */
-async function showTeammate(teammate: TeammateStatus, teamName: string): Promise<void> {}
+async function showTeammate(teammate: TeammateStatus, teamName: string): Promise<void> {
+  if (!teammate.tmuxPaneId || !teammate.backendType) return;
+  await ensureBackendsRegistered();
+  const backend = getBackendByType(teammate.backendType);
+  if (!backend.supportsHideShow) return;
+  const targetPane = resolveTeammateShowTargetPane(teammate.tmuxPaneId);
+  if (!targetPane) return;
+  const shown = await backend.showPane(
+    teammate.tmuxPaneId,
+    targetPane,
+    !isInsideTmuxSync(),
+  );
+  if (!shown) return;
+  removeHiddenPaneId(teamName, teammate.tmuxPaneId);
+  logForDebugging(`[TeamsDialog] Shown teammate ${teammate.name} (${teammate.tmuxPaneId})`);
+}
 
 /**
  * Send a mode change message to a single teammate

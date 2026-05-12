@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { createElement, type ReactNode } from 'react'
 import { ThemeProvider } from './components/design-system/ThemeProvider.js'
 import inkRender, {

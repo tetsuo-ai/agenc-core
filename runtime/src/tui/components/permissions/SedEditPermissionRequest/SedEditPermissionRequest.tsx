@@ -1,15 +1,15 @@
 import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
-import React, { Suspense, use, useMemo } from 'react';
+import { Suspense, use } from 'react';
 import { FileEditToolDiff } from '../../diff/FileEditToolDiff.js';
 import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isENOENT } from '../../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { detectEncodingForResolvedPath } from '../../../../utils/fileRead.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../../../ink.js';
-import { BashTool } from '../../../../tools/BashTool/BashTool';
-import { applySedSubstitution, type SedEditInfo } from '../../../../tools/BashTool/sedEditParser';
-import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
+import { BashTool } from '../../../../tools/BashTool/BashTool.js';
+import { applySedSubstitution, type SedEditInfo } from '../../../../tools/BashTool/sedEditParser.js';
+import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 type SedEditPermissionRequestProps = PermissionRequestProps & {
   sedInfo: SedEditInfo;
@@ -18,7 +18,7 @@ type FileReadResult = {
   oldContent: string;
   fileExists: boolean;
 };
-export function SedEditPermissionRequest(t0) {
+export function SedEditPermissionRequest(t0: SedEditPermissionRequestProps) {
   const $ = _c(9);
   let props;
   let sedInfo;
@@ -54,7 +54,7 @@ export function SedEditPermissionRequest(t0) {
   } else {
     t1 = $[4];
   }
-  const contentPromise = t1;
+  const contentPromise = t1 as Promise<FileReadResult>;
   let t2;
   if ($[5] !== contentPromise || $[6] !== props || $[7] !== sedInfo) {
     t2 = <Suspense fallback={null}><SedEditPermissionRequestInner sedInfo={sedInfo} contentPromise={contentPromise} {...props} /></Suspense>;
@@ -67,7 +67,7 @@ export function SedEditPermissionRequest(t0) {
   }
   return t2;
 }
-function _temp(e) {
+function _temp(e: unknown): FileReadResult {
   if (!isENOENT(e)) {
     throw e;
   }
@@ -76,7 +76,7 @@ function _temp(e) {
     fileExists: false
   };
 }
-function SedEditPermissionRequestInner(t0) {
+function SedEditPermissionRequestInner(t0: SedEditPermissionRequestProps & { contentPromise: Promise<FileReadResult> }) {
   const $ = _c(35);
   let contentPromise;
   let props;
@@ -102,7 +102,7 @@ function SedEditPermissionRequestInner(t0) {
   const {
     oldContent,
     fileExists
-  } = use(contentPromise);
+  } = use(contentPromise as Promise<FileReadResult>);
   let t1;
   if ($[4] !== oldContent || $[5] !== sedInfo) {
     t1 = applySedSubstitution(oldContent, sedInfo);
@@ -118,7 +118,7 @@ function SedEditPermissionRequestInner(t0) {
     if (oldContent === newContent) {
       let t3;
       if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-        t3 = [];
+        t3 = [] as Array<{ old_string: string; new_string: string; replace_all: boolean }>;
         $[7] = t3;
       } else {
         t3 = $[7];
@@ -153,7 +153,7 @@ function SedEditPermissionRequestInner(t0) {
   const noChangesMessage = t3;
   let t4;
   if ($[11] !== filePath || $[12] !== newContent) {
-    t4 = input => {
+      t4 = (input: unknown) => {
       const parsed = BashTool.inputSchema.parse(input);
       return {
         ...parsed,

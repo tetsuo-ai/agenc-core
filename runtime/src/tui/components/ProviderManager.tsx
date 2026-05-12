@@ -173,7 +173,7 @@ const GITHUB_PROVIDER_ID = '__github_models__'
 const GITHUB_PROVIDER_LABEL = 'GitHub Models'
 const GITHUB_PROVIDER_DEFAULT_MODEL = 'github:copilot'
 const GITHUB_PROVIDER_DEFAULT_BASE_URL = 'https://models.github.ai/inference'
-const CODEX_OAUTH_PROVIDER_NAME = 'Codex OAuth'
+const CODEX_OAUTH_PROVIDER_NAME = 'ChatGPT OAuth'
 const CODEX_OAUTH_PROVIDER_MODEL = 'codexplan'
 
 type GithubCredentialSource = 'stored' | 'env' | 'none'
@@ -370,7 +370,7 @@ function CodexOAuthSetup({
     return (
       <Box flexDirection="column" gap={1}>
         <Text color="error" bold>
-          Codex OAuth failed
+          ChatGPT OAuth failed
         </Text>
         <Text>{status.message}</Text>
         <Text dimColor>Press Enter or Esc to go back.</Text>
@@ -393,12 +393,12 @@ function CodexOAuthSetup({
   return (
     <Box flexDirection="column" gap={1}>
       <Text color="remember" bold>
-        Codex OAuth
+        ChatGPT OAuth
       </Text>
       <Text>
         Sign in with your ChatGPT account in the browser. AgenC will store
-        the resulting Codex credentials securely and switch this session to the
-        new Codex login when setup completes.
+        the resulting ChatGPT credentials securely and switch this session to the
+        new ChatGPT login when setup completes.
       </Text>
       {status.state === 'starting' ? (
         <Text dimColor>Starting local callback and preparing your browser...</Text>
@@ -431,7 +431,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
   const initialIsGithubActive = isEnvTruthy(process.env.AGENC_USE_GITHUB)
   const initialHasGithubCredential = initialGithubCredentialSource !== 'none'
 
-  // Deferred initialization: useState initializers run synchronously during
+  // Delayed initialization: useState initializers run synchronously during
   // render, so getProviderProfiles() and getActiveProviderProfile() would block
   // the UI on first mount (sync file I/O). Use empty initial values and load
   // asynchronously in useEffect with queueMicrotask to keep UI responsive.
@@ -472,7 +472,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
   })
   const [atomicChatSelection, setAtomicChatSelection] =
     React.useState<AtomicChatSelectionState>({ state: 'idle' })
-  // Deferred initialization: useState initializers run synchronously during
+  // Delayed initialization: useState initializers run synchronously during
   // render, so getProviderProfiles() and getActiveProviderProfile() would block
   // the UI (sync file I/O). Defer to queueMicrotask after first render.
   // In test environment, skip defer to avoid timing issues with mocks.
@@ -549,8 +549,8 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
         ? [
             {
               value: 'logout-codex-oauth',
-              label: 'Log out Codex OAuth',
-              description: 'Clear securely stored Codex OAuth credentials',
+              label: 'Log out ChatGPT OAuth',
+              description: 'Clear securely stored ChatGPT OAuth credentials',
             },
           ]
         : []),
@@ -768,7 +768,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
 
     const storedCredentials = await readAgencCredentialsAsync()
     if (!storedCredentials) {
-      return 'stored Codex OAuth credentials could not be loaded'
+      return 'stored ChatGPT OAuth credentials could not be loaded'
     }
 
     const storedEnv = buildCodexOAuthProfileEnv({
@@ -777,7 +777,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
       idToken: storedCredentials.idToken,
     })
     if (!storedEnv) {
-      return 'stored Codex OAuth credentials are missing a ChatGPT account id'
+      return 'stored ChatGPT OAuth credentials are missing a ChatGPT account id'
     }
 
     return applySavedProfileToCurrentSession({
@@ -1358,9 +1358,9 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
         ? [
             {
               value: 'codex-oauth',
-              label: 'Codex OAuth',
+              label: 'ChatGPT OAuth',
               description:
-                'Sign in with ChatGPT in your browser and store Codex credentials securely',
+                'Sign in with ChatGPT in your browser and store ChatGPT credentials securely',
             },
           ]
         : []),
@@ -1632,7 +1632,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                 if (!cleared.success) {
                   setErrorMessage(
                     cleared.warning ??
-                      'Could not clear Codex OAuth credentials.',
+                      'Could not clear ChatGPT OAuth credentials.',
                   )
                   break
                 }
@@ -1648,7 +1648,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                   const result = deleteProviderProfile(codexProfile.id)
                   if (!result.removed) {
                     setErrorMessage(
-                      'Codex OAuth credentials were cleared, but the Codex profile could not be removed.',
+                      'ChatGPT OAuth credentials were cleared, but the ChatGPT profile could not be removed.',
                     )
                     refreshProfiles()
                     break
@@ -1663,8 +1663,8 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                 refreshProfiles()
                 setStatusMessage(
                   settingsOverrideError
-                    ? `Codex OAuth logged out. Warning: could not clear startup provider override (${settingsOverrideError}).`
-                    : 'Codex OAuth logged out.',
+                    ? `ChatGPT OAuth logged out. Warning: could not clear startup provider override (${settingsOverrideError}).`
+                    : 'ChatGPT OAuth logged out.',
                 )
                 break
               }
@@ -1780,7 +1780,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
 
             if (!saved) {
               setErrorMessage(
-                'Codex OAuth login finished, but the provider profile could not be saved.',
+                'ChatGPT OAuth login finished, but the provider profile could not be saved.',
               )
               returnToMenu()
               return
@@ -1792,7 +1792,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                 : saved
             if (!active) {
               setErrorMessage(
-                'Codex OAuth login finished, but the provider could not be set as the startup provider.',
+                'ChatGPT OAuth login finished, but the provider could not be set as the startup provider.',
               )
               returnToMenu()
               return
@@ -1812,7 +1812,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
                 : null,
             ].filter((warning): warning is string => Boolean(warning))
             const message = buildCodexOAuthActivationMessage({
-              prefix: 'Codex OAuth configured',
+              prefix: 'ChatGPT OAuth configured',
               activationWarning,
               warnings,
             })
@@ -1886,7 +1886,7 @@ export function ProviderManager({ mode, onDone }: Props): React.ReactNode {
               if (!cleared.success) {
                 setErrorMessage(
                   cleared.warning ??
-                    'Provider deleted, but Codex OAuth credentials could not be cleared.',
+                    'Provider deleted, but ChatGPT OAuth credentials could not be cleared.',
                 )
               } else {
                 setStoredCodexOAuthProfileId(undefined)

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 /**
  * Portal for content that floats above the prompt so it escapes
@@ -21,7 +19,7 @@ import { c as _c } from "react-compiler-runtime";
  * Split into data/setter context pairs so writers never re-render on
  * their own writes — the setter contexts are stable.
  */
-import React, { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
+import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 // Keep the overlay shape aligned with PromptInput's suggestion row.
 import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js';
 export type PromptOverlayData = {
@@ -34,13 +32,13 @@ const DataContext = createContext<PromptOverlayData | null>(null);
 const SetContext = createContext<Setter<PromptOverlayData> | null>(null);
 const DialogContext = createContext<ReactNode>(null);
 const SetDialogContext = createContext<Setter<ReactNode> | null>(null);
-export function PromptOverlayProvider(t0) {
+export function PromptOverlayProvider(t0: { children: ReactNode }) {
   const $ = _c(6);
   const {
     children
   } = t0;
-  const [data, setData] = useState(null);
-  const [dialog, setDialog] = useState(null);
+  const [data, setData] = useState<PromptOverlayData | null>(null);
+  const [dialog, setDialog] = useState<ReactNode>(null);
   let t1;
   if ($[0] !== children || $[1] !== dialog) {
     t1 = <DialogContext.Provider value={dialog}>{children}</DialogContext.Provider>;
@@ -72,7 +70,7 @@ export function usePromptOverlayDialog() {
  * Register suggestion data for the floating overlay. Clears on unmount.
  * No-op outside the provider (non-fullscreen renders inline instead).
  */
-export function useSetPromptOverlay(data) {
+export function useSetPromptOverlay(data: PromptOverlayData) {
   const $ = _c(8);
   const set = useContext(SetContext);
   let t0;
@@ -118,7 +116,7 @@ export function useSetPromptOverlay(data) {
  * Register a dialog node to float above the prompt. Clears on unmount.
  * No-op outside the provider (non-fullscreen renders inline instead).
  */
-export function useSetPromptOverlayDialog(node) {
+export function useSetPromptOverlayDialog(node: ReactNode) {
   const $ = _c(8);
   const set = useContext(SetDialogContext);
   let t0;

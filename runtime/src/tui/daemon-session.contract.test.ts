@@ -1201,6 +1201,7 @@ describe("AgenC TUI daemon session adapter", () => {
         type: "warning",
         payload: {
           message: AGENC_DAEMON_RECONNECTING_MESSAGE,
+          cause: "daemon_connection_state",
           status: "reconnecting",
         },
       },
@@ -1230,6 +1231,7 @@ describe("AgenC TUI daemon session adapter", () => {
         type: "warning",
         payload: {
           message: AGENC_DAEMON_RECONNECTING_MESSAGE,
+          cause: "daemon_connection_state",
           status: "disconnected",
         },
       },

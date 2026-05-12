@@ -123,3 +123,13 @@ test('ghostty main-screen rewrite falls back to incremental diff for larger chan
   expect(stdout).toContain('updated')
   expect(stdout).toContain('abcd')
 })
+
+test('preservePreviousOutput keeps the current shutdown API name', () => {
+  const { stylePool, charPool, hyperlinkPool, log } = createHarness()
+  const prev = frameFromLines(stylePool, charPool, hyperlinkPool, ['done'])
+
+  const diff = log.preservePreviousOutput(prev)
+
+  expect(Array.isArray(diff)).toBe(true)
+  expect('renderPreviousOutput_DEPRECATED' in log).toBe(false)
+})

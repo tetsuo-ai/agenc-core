@@ -1,12 +1,15 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+// AgenC permission surface.
+// Rendering audit marker removed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
-import { FallbackPermissionRequest } from '../FallbackPermissionRequest';
-import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog';
-import type { ToolInput } from '../FilePermissionDialog/useFilePermissionDialog';
+import { FallbackPermissionRequest } from '../FallbackPermissionRequest.js';
+import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
+import type { ToolInput } from '../FilePermissionDialog/useFilePermissionDialog.js';
 import type { PermissionRequestProps, ToolUseConfirm } from '../PermissionRequest.js';
+
+type RawParseInput = Parameters<
+  Parameters<typeof FilePermissionDialog>[0]["parseInput"]
+>[0];
 function pathFromToolUse(toolUseConfirm: ToolUseConfirm): string | null {
   const tool = toolUseConfirm.tool;
   if ('getPath' in tool && typeof tool.getPath === 'function') {
@@ -18,7 +21,7 @@ function pathFromToolUse(toolUseConfirm: ToolUseConfirm): string | null {
   }
   return null;
 }
-export function FilesystemPermissionRequest(t0) {
+export function FilesystemPermissionRequest(t0: PermissionRequestProps) {
   const $ = _c(30);
   const {
     toolUseConfirm,
@@ -111,6 +114,6 @@ export function FilesystemPermissionRequest(t0) {
   }
   return t6;
 }
-function _temp(input) {
+function _temp(input: RawParseInput): ToolInput {
   return input as ToolInput;
 }

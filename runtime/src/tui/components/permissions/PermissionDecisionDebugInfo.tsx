@@ -2,7 +2,6 @@ import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import chalk from 'chalk';
 import figures from 'figures';
-import React, { useMemo } from 'react';
 import { Ansi, Box, color, Text, useTheme } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import type { PermissionMode } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -11,7 +10,7 @@ import type { PermissionDecision, PermissionDecisionReason } from '../../../util
 import { extractRules } from '../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { detectUnreachableRules } from '../../../utils/permissions/shadowedRuleDetection.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { detectUnreachableRules, type UnreachableRule } from '../../../utils/permissions/shadowedRuleDetection.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSettingSourceDisplayNameLowercase } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type PermissionDecisionInfoItemProps = {
@@ -46,7 +45,7 @@ function decisionReasonDisplayString(decisionReason: PermissionDecisionReason & 
       return '';
   }
 }
-function PermissionDecisionInfoItem(t0) {
+function PermissionDecisionInfoItem(t0: PermissionDecisionInfoItemProps) {
   const $ = _c(10);
   const {
     title,
@@ -59,7 +58,7 @@ function PermissionDecisionInfoItem(t0) {
       switch (decisionReason.type) {
         case "subcommandResults":
           {
-            return <Box flexDirection="column">{Array.from(decisionReason.reasons.entries()).map(t2 => {
+            return <Box flexDirection="column">{Array.from(decisionReason.reasons.entries()).map((t2) => {
                 const [subcommand, result] = t2;
                 const icon = result.behavior === "allow" ? color("success", theme)(figures.tick) : color("error", theme)(figures.cross);
                 return <Box flexDirection="column" key={subcommand}><Text>{icon} {subcommand}</Text>{result.decisionReason !== undefined && result.decisionReason.type !== "subcommandResults" && <Text><Text dimColor={true}>{"  "}⎿{"  "}</Text><Ansi>{decisionReasonDisplayString(result.decisionReason)}</Ansi></Text>}{result.behavior === "ask" && <SuggestedRules suggestions={result.suggestions} />}</Box>;
@@ -105,7 +104,7 @@ function PermissionDecisionInfoItem(t0) {
   }
   return t4;
 }
-function SuggestedRules(t0) {
+function SuggestedRules(t0: { suggestions: PermissionUpdate[] | undefined }) {
   const $ = _c(18);
   const {
     suggestions
@@ -180,7 +179,7 @@ function SuggestedRules(t0) {
   }
   return t7;
 }
-function _temp(rule) {
+function _temp(rule: ReturnType<typeof extractRules>[number]) {
   return chalk.bold(permissionRuleValueToString(rule));
 }
 type Props = {
@@ -207,7 +206,7 @@ function extractMode(updates: PermissionUpdate[] | undefined): PermissionMode | 
   const update = updates.findLast(u => u.type === 'setMode');
   return update?.type === 'setMode' ? update.mode : undefined;
 }
-function SuggestionDisplay(t0) {
+function SuggestionDisplay(t0: { suggestions: PermissionUpdate[] | undefined; width: number }) {
   const $ = _c(22);
   const {
     suggestions,
@@ -333,13 +332,13 @@ function SuggestionDisplay(t0) {
   }
   return t1;
 }
-function _temp3(dir, index_0) {
+function _temp3(dir: string, index_0: number) {
   return <Text key={index_0}>{figures.bullet} {dir}</Text>;
 }
-function _temp2(rule, index) {
+function _temp2(rule: ReturnType<typeof extractRules>[number], index: number) {
   return <Text key={index}>{figures.bullet} {permissionRuleValueToString(rule)}</Text>;
 }
-export function PermissionDecisionDebugInfo(t0) {
+export function PermissionDecisionDebugInfo(t0: Props) {
   const $ = _c(25);
   const {
     permissionResult,
@@ -363,7 +362,7 @@ export function PermissionDecisionDebugInfo(t0) {
       if (toolName) {
         let t2;
         if ($[4] !== toolName) {
-          t2 = u_0 => u_0.rule.ruleValue.toolName === toolName;
+          t2 = (u_0: UnreachableRule) => u_0.rule.ruleValue.toolName === toolName;
           $[4] = toolName;
           $[5] = t2;
         } else {
@@ -398,10 +397,11 @@ export function PermissionDecisionDebugInfo(t0) {
     t3 = $[8];
   }
   let t4;
-  if ($[9] !== permissionResult.behavior || $[10] !== permissionResult.message) {
-    t4 = permissionResult.behavior !== "allow" && <Box flexDirection="row"><Box justifyContent="flex-end" minWidth={10}><Text dimColor={true}>Message </Text></Box><Text>{permissionResult.message}</Text></Box>;
+  const permissionMessage = "message" in permissionResult ? permissionResult.message : undefined;
+  if ($[9] !== permissionResult.behavior || $[10] !== permissionMessage) {
+    t4 = permissionResult.behavior !== "allow" && <Box flexDirection="row"><Box justifyContent="flex-end" minWidth={10}><Text dimColor={true}>Message </Text></Box><Text>{permissionMessage}</Text></Box>;
     $[9] = permissionResult.behavior;
-    $[10] = permissionResult.message;
+    $[10] = permissionMessage;
     $[11] = t4;
   } else {
     t4 = $[11];
@@ -451,9 +451,9 @@ export function PermissionDecisionDebugInfo(t0) {
   }
   return t9;
 }
-function _temp5(u_1, i) {
+function _temp5(u_1: UnreachableRule, i: number) {
   return <Box key={i} flexDirection="column" marginLeft={2}><Text color="warning">{permissionRuleValueToString(u_1.rule.ruleValue)}</Text><Text dimColor={true}>{"  "}{u_1.reason}</Text><Text dimColor={true}>{"  "}Fix: {u_1.fix}</Text></Box>;
 }
-function _temp4(s) {
+function _temp4(s: { toolPermissionContext: unknown }) {
   return s.toolPermissionContext;
 }

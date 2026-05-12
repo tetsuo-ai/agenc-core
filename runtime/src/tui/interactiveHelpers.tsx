@@ -11,7 +11,7 @@ import { initializeTelemetryAfterTrust } from '../entrypoints/init.js';
 import { isSynchronizedOutputSupported } from './ink/terminal.js';
 import type { RenderOptions, Root, TextProps } from './ink.js';
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js';
-import { startDeferredPrefetches } from './main.js';
+import { startDelayedPrefetches } from './main.js';
 import { checkGate_CACHED_OR_BLOCKING, initializeGrowthBook, resetGrowthBook } from '../services/analytics/growthbook.js';
 import { isQualifiedForGrove } from '../services/api/grove.js';
 import { handleMcpjsonServerApprovals } from '../services/mcpServerApproval.js';
@@ -94,11 +94,11 @@ export function showSetupDialog<T = void>(root: Root, renderer: (done: (result: 
 
 /**
  * Render the main UI into the root and wait for it to exit.
- * Handles the common epilogue: start deferred prefetches, wait for exit, graceful shutdown.
+ * Handles the common epilogue: start delayed prefetches, wait for exit, graceful shutdown.
  */
 export async function renderAndRun(root: Root, element: React.ReactNode): Promise<void> {
   root.render(element);
-  startDeferredPrefetches();
+  startDelayedPrefetches();
   await root.waitUntilExit();
   await gracefulShutdown(0);
 }
@@ -268,7 +268,7 @@ export async function showSetupScreens(root: Root, permissionMode: PermissionMod
       // Skip the dialog when channels are blocked (tengu_harbor off or no
       // OAuth) — accepting then immediately seeing "not available" in
       // ChannelsNotice is worse than no dialog. Append entries anyway so
-      // ChannelsNotice renders the blocked branch with the dev entries
+      // ChannelsNotice renders the restricted branch with the dev entries
       // named. dev:true here is for the flag label in ChannelsNotice
       // (hasNonDev check); the allowlist bypass it also grants is moot
       // since the gate blocks upstream.
@@ -364,7 +364,7 @@ export function getRenderContext(exitOnCtrlC: boolean): {
               desiredHeight: flicker.desiredHeight,
               actualHeight: flicker.availableHeight,
               reason: flicker.reason
-            } as unknown as Record<string, boolean | number | undefined>);
+            } as any as Record<string, boolean | number | undefined>);
           }
           lastFlickerTime = now;
         }

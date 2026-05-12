@@ -1,12 +1,11 @@
 import { c as _c } from "react-compiler-runtime";
 import { basename, relative } from 'path';
-import React from 'react';
 import { Box, Text } from '../ink.js';
 import { getCwd } from '../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isSupportedVSCodeTerminal } from '../../utils/ide.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Select } from './CustomSelect/select';
-import { Pane } from './design-system/Pane';
-import type { PermissionOption, PermissionOptionWithLabel } from './permissions/FilePermissionDialog/permissionOptions';
+import { Select } from './CustomSelect/select.js';
+import { Pane } from './design-system/Pane.js';
+import type { PermissionOption, PermissionOptionWithLabel } from './permissions/FilePermissionDialog/permissionOptions.js';
 type Props<A> = {
   filePath: string;
   input: A;
@@ -22,7 +21,7 @@ type Props<A> = {
   yesInputMode: boolean;
   noInputMode: boolean;
 };
-export function ShowInIDEPrompt(t0) {
+export function ShowInIDEPrompt<A>(t0: Props<A>) {
   const $ = _c(36);
   const {
     onChange,
@@ -80,7 +79,7 @@ export function ShowInIDEPrompt(t0) {
   }
   let t6;
   if ($[9] !== acceptFeedback || $[10] !== input || $[11] !== onChange || $[12] !== options || $[13] !== rejectFeedback) {
-    t6 = value => {
+    t6 = (value: string) => {
       const selected = options.find(opt => opt.value === value);
       if (selected) {
         if (selected.option.type === "reject") {
@@ -118,7 +117,7 @@ export function ShowInIDEPrompt(t0) {
   }
   let t8;
   if ($[18] !== setFocusedOption) {
-    t8 = value_0 => setFocusedOption(value_0);
+    t8 = (value_0: string) => setFocusedOption(value_0);
     $[18] = setFocusedOption;
     $[19] = t8;
   } else {

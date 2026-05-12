@@ -1,17 +1,17 @@
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../../../../services/analytics/index'
-import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata'
-import type { ToolPermissionContext } from '../../../../tools/Tool'
+} from '../../../../services/analytics/index.js'
+import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata.js'
+import type { ToolPermissionContext } from '../../../../tools/Tool.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,
   FILE_EDIT_TOOL_NAME,
   GLOBAL_AGENC_FOLDER_PERMISSION_PATTERN,
-} from '../../../../tools/FileEditTool/constants'
-import { env } from '../../../../utils/env' // upstream-import: keep target is owned by another Z-PURGE item
-import { generateSuggestions } from '../../../../utils/permissions/filesystem' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../../tools/FileEditTool/constants.js'
+import { env } from '../../../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { generateSuggestions } from '../../../../utils/permissions/filesystem.js' // upstream-import: keep target is owned by another Z-PURGE item
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 import {
   type CompletionType,
   logUnaryEvent,
@@ -20,7 +20,7 @@ import type { ToolUseConfirm } from '../PermissionRequest.js'
 import type {
   FileOperationType,
   PermissionOption,
-} from './permissionOptions'
+} from './permissionOptions.js'
 
 function logPermissionEvent(
   event: 'accept' | 'reject',

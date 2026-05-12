@@ -1,0 +1,19 @@
+{
+  "rowId": "todo-row-011",
+  "reviewer": "Hilbert reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Clamp modal context rows and modal maxHeight to non-negative values on tiny terminals while preserving bottom chrome ownership."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "terminalRows is 0, 1, 2, or exactly MODAL_TRANSCRIPT_PEEK and does not produce a negative modal viewport."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

@@ -121,6 +121,12 @@ const ALLOW_FILE_LINE_PATTERNS = [
     line: /\b(?:Anthropic|OpenAI|Codex\w*|codex\w*|claude\w*)\b|CODEX_|CHATGPT_|\.codex|chatgpt\.com\/backend-api\/codex|codex_responses/, // branding-scan: allow scanner allow-list regex
   },
   {
+    // The local TUI validation skill invokes these historical npm script
+    // names directly; keep the exception scoped to package-script wiring.
+    file: /(^|\/)(?:runtime\/)?package\.json$/,
+    line: /"(?:validate:openclaude-footer-live-parity|validate:tui-openclaude-core-parity|test:tui-yolo-openclaude-parity)"/, // branding-scan: allow validator compatibility names
+  },
+  {
     // Text input internals use a caret utility type, not as an
     // editor/product reference.
     file: /(^|\/)runtime\/src\/tui\/(?:hooks\/(?:useTextInput|useSearchInput|useVimInput)|components\/TextInput(?:\.test)?)\.(?:ts|tsx)$/,

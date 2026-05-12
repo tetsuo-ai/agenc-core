@@ -1,0 +1,21 @@
+{
+  "rowId": "todo-row-149",
+  "reviewer": "Russell reviewer subagent",
+  "reviewedAt": "2026-05-12T23:24:24.282Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "Replace deprecated TUI settings reads with current settings accessors in active boot/dialog surfaces."
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Startup settings fallback still handles missing settings.",
+      "Dialog settings loads keep existing values.",
+      "No audited TUI file still imports getSettings_DEPRECATED."
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": []
+}

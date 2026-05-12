@@ -15,6 +15,60 @@ export type ActiveLocalAgentTask = {
   };
 };
 
+export function normalizeLocalAgentStatus(status: unknown): string {
+  if (typeof status !== "string" || status.trim().length === 0) {
+    return "idle";
+  }
+  const value = status.trim().toLowerCase().replaceAll("_", "-");
+  switch (value) {
+    case "pending":
+    case "starting":
+      return "starting";
+    case "running":
+      return "running";
+    case "idle":
+      return "idle";
+    case "awaiting-user":
+    case "awaiting-permission":
+    case "waiting-on-user":
+    case "blocked":
+      return "waiting on user";
+    case "completing":
+      return "completing";
+    case "failing":
+      return "failing";
+    case "failed":
+    case "errored":
+      return "failed";
+    case "completed":
+    case "complete":
+      return "completed";
+    case "cancelled":
+    case "canceled":
+    case "killed":
+      return "cancelled";
+    default:
+      return value;
+  }
+}
+
+export function isActiveLocalAgentStatus(status: unknown): boolean {
+  switch (normalizeLocalAgentStatus(status)) {
+    case "starting":
+    case "running":
+    case "waiting on user":
+    case "completing":
+    case "failing":
+      return true;
+    case "idle":
+    case "failed":
+    case "completed":
+    case "cancelled":
+    default:
+      return false;
+  }
+}
+
 export function getActiveLocalAgentTasks(
   tasks: Record<string, unknown> | undefined,
 ): ActiveLocalAgentTask[] {
@@ -24,8 +78,7 @@ export function getActiveLocalAgentTasks(
         typeof task === "object" &&
         task !== null &&
         (task as ActiveLocalAgentTask).type === "local_agent" &&
-        ((task as ActiveLocalAgentTask).status === "pending" ||
-          (task as ActiveLocalAgentTask).status === "running"),
+        isActiveLocalAgentStatus((task as ActiveLocalAgentTask).status),
     )
     .sort((left, right) =>
       formatLocalAgentName(left).localeCompare(formatLocalAgentName(right)),
@@ -50,12 +103,15 @@ export function formatRunningAgentSummary(
   agents: readonly ActiveLocalAgentTask[],
 ): string {
   const count = agents.length;
-  const names = agents.slice(0, 3).map(formatLocalAgentName);
+  const names = agents.slice(0, 3).map((agent) => {
+    const status = normalizeLocalAgentStatus(agent.status);
+    return `${formatLocalAgentName(agent)} ${status}`;
+  });
   const more = count > names.length ? ` +${count - names.length}` : "";
   const tokenCount = agents.reduce((total, agent) => {
     const value = agent.progress?.tokenCount;
     return total + (typeof value === "number" && Number.isFinite(value) ? value : 0);
   }, 0);
   const tokenSuffix = tokenCount > 0 ? ` · ${formatNumber(tokenCount)} tokens` : "";
-  return `${count} ${count === 1 ? "agent" : "agents"} running: ${names.join(", ")}${more}${tokenSuffix}`;
+  return `${count} ${count === 1 ? "agent" : "agents"}: ${names.join(", ")}${more}${tokenSuffix}`;
 }

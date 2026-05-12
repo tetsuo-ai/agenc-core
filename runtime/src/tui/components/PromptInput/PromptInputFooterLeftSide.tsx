@@ -57,7 +57,6 @@ type Props = {
   showMemoryTypeSelector?: boolean;
   tasksSelected: boolean;
   teamsSelected: boolean;
-  tmuxSelected: boolean;
   teammateFooterIndex?: number;
   isPasting?: boolean;
   isSearching: boolean;
@@ -138,7 +137,6 @@ export function PromptInputFooterLeftSide(t0) {
     isLoading,
     tasksSelected,
     teamsSelected,
-    tmuxSelected,
     teammateFooterIndex,
     isPasting,
     isSearching,
@@ -196,8 +194,8 @@ export function PromptInputFooterLeftSide(t0) {
   const t3 = showVim && vimModeIndicator ? <Text dimColor={true} key="vim-mode">{vimModeIndicator}</Text> : null;
   const t4 = !suppressHint && !showVim;
   let t5;
-  if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== tmuxSelected || $[21] !== toolPermissionContext) {
-    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} tmuxSelected={tmuxSelected} exitPending={exitMessage.show} onOpenTasksDialog={onOpenTasksDialog} />;
+  if ($[13] !== isLoading || $[14] !== mode || $[15] !== onOpenTasksDialog || $[16] !== t4 || $[17] !== tasksSelected || $[18] !== teammateFooterIndex || $[19] !== teamsSelected || $[20] !== toolPermissionContext) {
+    t5 = <ModeIndicator mode={mode} toolPermissionContext={toolPermissionContext} showHint={t4} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} exitPending={exitMessage.show} onOpenTasksDialog={onOpenTasksDialog} />;
     $[13] = isLoading;
     $[14] = mode;
     $[15] = onOpenTasksDialog;
@@ -205,11 +203,10 @@ export function PromptInputFooterLeftSide(t0) {
     $[17] = tasksSelected;
     $[18] = teammateFooterIndex;
     $[19] = teamsSelected;
-    $[20] = tmuxSelected;
-    $[21] = toolPermissionContext;
-    $[22] = t5;
+    $[20] = toolPermissionContext;
+    $[21] = t5;
   } else {
-    t5 = $[22];
+    t5 = $[21];
   }
   let t6;
   if ($[23] !== t2 || $[24] !== t3 || $[25] !== t5) {
@@ -230,7 +227,6 @@ type ModeIndicatorProps = {
   isLoading: boolean;
   tasksSelected: boolean;
   teamsSelected: boolean;
-  tmuxSelected: boolean;
   teammateFooterIndex?: number;
   exitPending?: boolean;
   onOpenTasksDialog?: (taskId?: string) => void;
@@ -242,7 +238,6 @@ function ModeIndicator({
   isLoading,
   tasksSelected,
   teamsSelected,
-  tmuxSelected,
   teammateFooterIndex,
   exitPending,
   onOpenTasksDialog
@@ -262,7 +257,6 @@ function ModeIndicator({
   const expandedView = useAppState(s_3 => s_3.expandedView);
   const showSpinnerTree = expandedView === 'teammates';
   const prStatus = usePrStatus(isLoading, isPrStatusEnabled());
-  const hasTmuxSession = false;
   const nextTickAt = useSyncExternalStore((feature('PROACTIVE') || feature('KAIROS')) ? subscribeToPromptInputProactiveChanges : NO_OP_SUBSCRIBE, (feature('PROACTIVE') || feature('KAIROS')) ? getPromptInputProactiveNextTickAt : NULL, NULL);
   const hasSelection = useHasSelection();
   const selGetState = useSelection().getState;
@@ -330,7 +324,7 @@ function ModeIndicator({
   // BackgroundTaskStatus is NOT in parts — it renders as a Box sibling so
   // its click-target Box isn't nested inside the <Text wrap="truncate">
   // wrapper (reconciler throws on Box-in-Text).
-  ...(hasTmuxSession ? [<TungstenPill key="tmux" selected={tmuxSelected} />] : []), ...(isAgentSwarmsEnabled() && hasTeams ? [<TeamStatus key="teams" teamsSelected={teamsSelected} showHint={showHint && !hasBackgroundTasks} />] : []), ...(shouldShowPrStatus ? [<PrBadge key="pr-status" number={prStatus.number!} url={prStatus.url!} reviewState={prStatus.reviewState!} />] : [])];
+  ...(isAgentSwarmsEnabled() && hasTeams ? [<TeamStatus key="teams" teamsSelected={teamsSelected} showHint={showHint && !hasBackgroundTasks} />] : []), ...(shouldShowPrStatus ? [<PrBadge key="pr-status" number={prStatus.number!} url={prStatus.url!} reviewState={prStatus.reviewState!} />] : [])];
 
   // Check if any in-process teammates exist (for hint text cycling)
   const hasAnyInProcessTeammates = Object.values(tasks).some(t_2 => t_2.type === 'in_process_teammate' && t_2.status === 'running');

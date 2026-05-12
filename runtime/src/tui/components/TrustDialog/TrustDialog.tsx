@@ -131,7 +131,7 @@ export function TrustDialog(t0) {
   if ($[13] !== hasAnyBashExecution) {
     t12 = () => {
       const isHomeDir = homedir() === getCwd();
-      logEvent("tengu_trust_dialog_shown", {
+      logEvent("agenc_trust_dialog_shown", {
         isHomeDir,
         hasMcpServers,
         hasHooks,
@@ -160,7 +160,7 @@ export function TrustDialog(t0) {
         return;
       }
       const isHomeDir_0 = homedir() === getCwd();
-      logEvent("tengu_trust_dialog_accept", {
+      logEvent("agenc_trust_dialog_accept", {
         isHomeDir: isHomeDir_0,
         hasMcpServers,
         hasHooks,
@@ -282,7 +282,7 @@ function _temp3(tool_0) {
   return tool_0 === BASH_TOOL_NAME || tool_0.startsWith(BASH_TOOL_NAME + "(");
 }
 function _temp2(command) {
-  return command.type === "prompt" && command.loadedFrom === "commands_DEPRECATED" && (command.source === "projectSettings" || command.source === "localSettings") && command.allowedTools?.some(_temp);
+  return command.type === "prompt" && command.loadedFrom === "skills" && (command.source === "projectSettings" || command.source === "localSettings") && command.allowedTools?.some(_temp);
 }
 function _temp(tool) {
   return tool === BASH_TOOL_NAME || tool.startsWith(BASH_TOOL_NAME + "(");

@@ -1,12 +1,12 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import figures from 'figures';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext';
 import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
+import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
 import { Box, Text } from '../ink.js';
@@ -22,6 +22,17 @@ import { useAppState } from '../state/AppState.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
+
+export function calculateModalViewport(
+  terminalRows: number,
+  columns: number,
+): { readonly rows: number; readonly columns: number; readonly maxHeight: number } {
+  return {
+    rows: Math.max(0, terminalRows - MODAL_TRANSCRIPT_PEEK - 1),
+    columns: Math.max(0, columns - 4),
+    maxHeight: Math.max(0, terminalRows - MODAL_TRANSCRIPT_PEEK),
+  };
+}
 
 /** Context for scroll-derived chrome (sticky header, pill). StickyTracker
  *  in VirtualMessageList writes via this instead of threading a callback
@@ -422,12 +433,13 @@ export function FullscreenLayout(t0) {
       t17 = $[32];
     }
     let t18;
+    const modalViewport = calculateModalViewport(terminalRows, columns);
     if ($[33] !== columns || $[34] !== modal || $[35] !== modalScrollRef || $[36] !== terminalRows) {
       t18 = modal != null && <ModalContext value={{
-        rows: terminalRows - MODAL_TRANSCRIPT_PEEK - 1,
-        columns: columns - 4,
+        rows: modalViewport.rows,
+        columns: modalViewport.columns,
         scrollRef: modalScrollRef ?? null
-      }}><Box position="absolute" bottom={0} left={0} right={0} maxHeight={terminalRows - MODAL_TRANSCRIPT_PEEK} flexDirection="column" overflow="hidden" opaque={true}><Box flexShrink={0}><Text color="permission">{"\u2594".repeat(columns)}</Text></Box><Box flexDirection="column" paddingX={2} flexShrink={0} overflow="hidden">{modal}</Box></Box></ModalContext>;
+      }}><Box position="absolute" bottom={0} left={0} right={0} maxHeight={modalViewport.maxHeight} flexDirection="column" overflow="hidden" opaque={true}><Box flexShrink={0}><Text color="permission">{"\u2594".repeat(Math.max(0, columns))}</Text></Box><Box flexDirection="column" paddingX={2} flexShrink={0} overflow="hidden">{modal}</Box></Box></ModalContext>;
       $[33] = columns;
       $[34] = modal;
       $[35] = modalScrollRef;
@@ -556,7 +568,7 @@ function NewMessagesPill(t0) {
   }
   let t5;
   if ($[4] !== t3 || $[5] !== t4) {
-    t5 = <Text backgroundColor={t3} dimColor={true}>{" "}{t4}{" "}{figures.arrowDown}{" "}</Text>;
+    t5 = <Text backgroundColor={t3} dimColor={true}>{" "}{t4}{" "}{selectAgenCTuiGlyphs().arrowDown}{" "}</Text>;
     $[4] = t3;
     $[5] = t4;
     $[6] = t5;
@@ -608,7 +620,7 @@ function StickyPromptHeader(t0) {
   }
   let t4;
   if ($[2] !== text) {
-    t4 = <Text color="subtle" wrap="truncate-end">{figures.pointer} {text}</Text>;
+    t4 = <Text color="subtle" wrap="truncate-end">{selectAgenCTuiGlyphs().pointer} {text}</Text>;
     $[2] = text;
     $[3] = t4;
   } else {
