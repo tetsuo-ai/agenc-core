@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import { statSync } from 'fs'
-import { lstat, readdir, readFile, realpath, stat } from 'fs/promises'
+import { readdir, readFile, realpath, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
@@ -158,7 +158,7 @@ export function parseSlashCommandToolsFromFrontmatter(
  */
 async function getFileIdentity(filePath: string): Promise<string | null> {
   try {
-    const stats = await lstat(filePath, { bigint: true })
+    const stats = await stat(filePath, { bigint: true })
     // Some filesystems (NFS, FUSE, network mounts) report dev=0 and ino=0
     // for all files, which would cause every file to look like a duplicate.
     // Return null to skip deduplication for these unreliable identities.
