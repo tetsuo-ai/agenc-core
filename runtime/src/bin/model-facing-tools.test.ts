@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,8 @@ import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
 import { backgroundTaskLifecycle } from "../tasks/index.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
+import { collectSkillsSnapshot } from "../commands/skills.js";
+import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
 import {
@@ -144,6 +146,16 @@ function fakeSession(): Session {
     nextInternalSubId: () => "event-1",
     eventLog: { emit: (event: unknown) => event },
   } as unknown as Session;
+}
+
+async function writeTestSkill(
+  root: string,
+  name: string,
+  body = `---\nname: ${name}\ndescription: ${name} description\n---\n# ${name}\nUse ${name}.\n`,
+): Promise<void> {
+  const dir = join(root, name);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "SKILL.md"), body);
 }
 
 function withProvider(session: Session, provider: LLMProvider): Session {
@@ -1680,6 +1692,53 @@ describe("model-facing tools", () => {
         skillName: "demo-skill",
       }),
     );
+  });
+
+  it("reports the same available skills as /skills when Skill cannot resolve a name", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-skill-tool-home-"));
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skill-tool-ws-"));
+    const home = await mkdtemp(join(tmpdir(), "agenc-skill-tool-user-"));
+    const legacyUserSkillRoot = ".codex"; // branding-scan: allow legacy user skill root compatibility
+    try {
+      await writeTestSkill(join(home, ".agents", "skills"), "shared-visible");
+      await writeTestSkill(join(home, legacyUserSkillRoot, "skills"), "legacy-visible");
+      const localServices = createLocalSkillsServices({
+        agencHome,
+        workspaceRoot,
+        env: { HOME: home },
+      });
+      const session = fakeSession();
+      (session as { config?: unknown }).config = {};
+      (session.services as {
+        skillsManager: typeof localServices.skillsManager;
+        pluginsManager: typeof localServices.pluginsManager;
+      }).skillsManager = localServices.skillsManager;
+      (session.services as {
+        pluginsManager: typeof localServices.pluginsManager;
+      }).pluginsManager = localServices.pluginsManager;
+
+      const slashSnapshot = await collectSkillsSnapshot(session);
+      const tools = createModelFacingTools({
+        workspaceRoot,
+        getSession: () => session,
+      });
+      const skill = tools.find((tool) => tool.name === "Skill")!;
+      const missing = await skill.execute({ skill: "missing-skill" });
+
+      expect(missing.isError).toBe(true);
+      expect(JSON.parse(missing.content).available).toEqual(
+        slashSnapshot.availableSkills.map((entry) => entry.name),
+      );
+
+      const loaded = await skill.execute({ skill: "legacy-visible" });
+      expect(loaded.isError).toBeUndefined();
+      expect(loaded.content).toContain("<command-name>legacy-visible</command-name>");
+      expect(loaded.content).toContain("Use legacy-visible.");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("rejects model-disabled skills", async () => {

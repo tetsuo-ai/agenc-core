@@ -168,6 +168,10 @@ const SKILL_LISTING_DEFAULT_CHAR_BUDGET = 8_000;
 const SKILL_LISTING_DESC_MAX_CHARS = 250;
 const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
+const COMPAT_USER_SKILL_DIRS = [
+  ".claude", // branding-scan: allow legacy user skill root compatibility
+  ".codex", // branding-scan: allow legacy user skill root compatibility
+] as const;
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -232,9 +236,9 @@ function projectDirsUpToHome(
   const homeResolved = home ? resolve(home) : null;
   let current = resolve(workspaceRoot);
   while (true) {
+    if (homeResolved !== null && current === homeResolved) break;
     dirs.push(join(current, ".agents", subdir));
     dirs.push(join(current, ".agenc", subdir));
-    if (homeResolved !== null && current === homeResolved) break;
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
@@ -242,9 +246,9 @@ function projectDirsUpToHome(
   return dirs;
 }
 
-export async function discoverSkillRoots(
+function localSkillRootCandidates(
   options: LocalSkillsServiceOptions,
-): Promise<readonly SkillRoot[]> {
+): SkillRoot[] {
   const home = options.env?.HOME ?? homedir();
   const defaultAgencHome = home ? join(home, ".agenc") : "";
   const agencHome = normalizeExistingCandidate(options.agencHome);
@@ -286,7 +290,21 @@ export async function discoverSkillRoots(
     kind: "commands",
   });
 
-  if (defaultAgencHome.length > 0) {
+  if (home.length > 0) {
+    roots.push({
+      path: join(home, ".agents", "skills"),
+      scope: "user",
+      source: "userSettings",
+      loadedFrom: "skills",
+      kind: "skills",
+    });
+    roots.push({
+      path: join(home, ".agents", "commands"),
+      scope: "user",
+      source: "userSettings",
+      loadedFrom: "commands_DEPRECATED",
+      kind: "commands",
+    });
     roots.push({
       path: join(defaultAgencHome, "skills"),
       scope: "user",
@@ -294,6 +312,22 @@ export async function discoverSkillRoots(
       loadedFrom: "skills",
       kind: "skills",
     });
+    roots.push({
+      path: join(defaultAgencHome, "commands"),
+      scope: "user",
+      source: "userSettings",
+      loadedFrom: "commands_DEPRECATED",
+      kind: "commands",
+    });
+    for (const dir of COMPAT_USER_SKILL_DIRS) {
+      roots.push({
+        path: join(home, dir, "skills"),
+        scope: "user",
+        source: "userSettings",
+        loadedFrom: "skills",
+        kind: "skills",
+      });
+    }
   }
   const managedHome = options.env?.AGENC_MANAGED_HOME;
   if (managedHome && managedHome.length > 0) {
@@ -305,6 +339,16 @@ export async function discoverSkillRoots(
       kind: "skills",
     });
   }
+
+  return roots;
+}
+
+export async function discoverSkillRoots(
+  options: LocalSkillsServiceOptions,
+): Promise<readonly SkillRoot[]> {
+  const agencHome = normalizeExistingCandidate(options.agencHome);
+  const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
+  const roots = localSkillRootCandidates(options);
 
   const pluginRoots = await discoverLoadedPluginSkillRoots({
     agencHome,
@@ -336,20 +380,10 @@ export async function discoverSkillRoots(
 export async function discoverSkillWatchRoots(
   options: LocalSkillsServiceOptions,
 ): Promise<readonly string[]> {
-  const home = options.env?.HOME ?? homedir();
-  const defaultAgencHome = home ? join(home, ".agenc") : "";
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
-  const managedHome = options.env?.AGENC_MANAGED_HOME;
   const roots = [
-    ...projectDirsUpToHome(workspaceRoot, "skills", home),
-    ...projectDirsUpToHome(workspaceRoot, "commands", home),
-    join(agencHome, "skills"),
-    join(agencHome, "commands"),
-    ...(defaultAgencHome.length > 0 ? [join(defaultAgencHome, "skills")] : []),
-    ...(managedHome && managedHome.length > 0
-      ? [join(managedHome, ".agenc", "skills")]
-      : []),
+    ...localSkillRootCandidates(options).map((root) => root.path),
     ...(await discoverLoadedPluginSkillRoots({
       agencHome,
       workspaceRoot,

@@ -71,7 +71,6 @@ const FOREGROUND_529_RETRY_SOURCES = new Set<QuerySource>([
   'hook_agent',
   'hook_prompt',
   'verification_agent',
-  'side_question',
   // Security classifiers — must complete for auto-mode correctness.
   // yoloClassifier.ts uses 'auto_mode' (not 'yolo_classifier' — that's
   // type-only). bash_classifier is internal-only; feature-gate so the string

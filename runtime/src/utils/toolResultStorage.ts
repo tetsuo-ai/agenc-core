@@ -941,7 +941,7 @@ export async function enforceToolResultBudget(
  * for new replacements. The caller (query.ts) owns the persistence gate
  * — it passes a callback only for querySources that read records back on
  * resume (repl_main_thread*, agent:*); ephemeral runForkedAgent callers
- * (agentSummary, sessionMemory, /btw, compact) pass undefined.
+ * (agentSummary, sessionMemory, compact) pass undefined.
  *
  * @returns messages with replacements applied, or the input array unchanged
  *   when the feature is off or no replacement occurred.

@@ -96,7 +96,6 @@ function createDefaultGlobalConfig(): Record<string, unknown> {
     tipsHistory: {},
     memoryUsageCount: 0,
     promptQueueUseCount: 0,
-    btwUseCount: 0,
     todoFeatureEnabled: true,
     showExpandedTodos: false,
     messageIdleNotifThresholdMs: 60000,

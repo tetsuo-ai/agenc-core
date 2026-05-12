@@ -38,7 +38,6 @@ import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../bootstrap/state.js';
 import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../../ink.js';
-import { getGlobalConfig } from '../../../utils/config.js';
 export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
@@ -202,9 +201,6 @@ function SpinnerWithVerbInner({
     }
   }
 
-  // Stale read of the refs for showBtwTip below — we're off the 50ms clock
-  // so this only updates when props/app state change, which is sufficient for
-  // a coarse 30s threshold.
   const elapsedSnapshot = pauseStartTimeRef.current !== null ? pauseStartTimeRef.current - loadingStartTimeRef.current - totalPausedMsRef.current : Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current;
 
   // Leader token count for TeammateSpinnerTree — read raw (non-animated) from
@@ -258,8 +254,7 @@ function SpinnerWithVerbInner({
   let contextTipsActive = false;
   const tipsEnabled = settings.spinnerTipsEnabled !== false;
   const showClearTip = tipsEnabled && elapsedSnapshot > 1_800_000;
-  const showBtwTip = tipsEnabled && elapsedSnapshot > 30_000 && !getGlobalConfig().btwUseCount;
-  const effectiveTip = contextTipsActive ? undefined : showClearTip && !nextTask ? 'Use /clear to start fresh when switching topics and free up context' : showBtwTip && !nextTask ? "Use /btw to ask a quick side question without interrupting AgenC's current work" : spinnerTip;
+  const effectiveTip = contextTipsActive ? undefined : showClearTip && !nextTask ? 'Use /clear to start fresh when switching topics and free up context' : spinnerTip;
 
   // Budget text (internal-only) — shown above the tip line
   let budgetText: string | null = null;

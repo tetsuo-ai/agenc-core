@@ -35,7 +35,7 @@ const INTERACTIVE_BROWSER_RE =
 const WEB_SEARCH_CUE_RE =
   /\b(?:official docs?|documentation|docs?|website|web search|search the web|latest|news|current status|current state|up[- ]to[- ]date)\b/i;
 const X_SEARCH_CUE_RE =
-  /(?:\bon x\b|\bfrom x\b|\bx posts?\b|\bx handles?\b|\bx threads?\b|\btwitter\b|\btweets?\b|\bposts?\s+on\s+x\b|\bwhat are people saying\b|\bsentiment\b|\bhandle(?:s)?\b|\bthread(?:s)?\b)/i;
+  /(?:\bon x\b|\bfrom x\b|\bx posts?\b|\bx handles?\b|\bx threads?\b|(?:^|\W)(?:twitter|tweets?)\b|\bposts?\s+on\s+x\b|\bwhat are people saying\b|\bsentiment\b|\bhandle(?:s)?\b|\bthread(?:s)?\b)/i;
 const FILE_SEARCH_CUE_RE =
   /\b(?:collection|collections|knowledge base|knowledgebase|uploaded (?:docs?|documents?|files?)|internal (?:docs?|documents?|policies?|knowledge)|my (?:docs?|documents?|files)|our (?:docs?|documents?|files)|from (?:the )?(?:collection|collections|knowledge base|uploaded|internal) (?:docs?|documents?|files))\b/i;
 const CODE_EXECUTION_CUE_RE =

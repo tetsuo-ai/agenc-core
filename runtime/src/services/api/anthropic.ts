@@ -1073,8 +1073,8 @@ async function* queryModel(
   const betas = getMergedBetas(options.model, { isAgenticQuery })
 
   // Always send the advisor beta header when advisor is enabled, so
-  // non-agentic queries (compact, side_question, extract_memories, etc.)
-  // can parse advisor server_tool_use blocks already in the conversation history.
+  // non-agentic queries (compact, extract_memories, etc.) can parse advisor
+  // server_tool_use blocks already in the conversation history.
   if (isAdvisorEnabled()) {
     betas.push(ADVISOR_BETA_HEADER)
   }
