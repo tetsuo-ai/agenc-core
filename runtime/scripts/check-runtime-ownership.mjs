@@ -629,9 +629,13 @@ const ownerFabricationAllowlist = ownerHeuristicEntries
     ),
   )
   .map(({ path }) => path);
+const declaredFabricationSeams = manifest.fabricatedContextSeams.map(
+  (seam) => seam.path,
+);
 const newFabricationSites = findNewFabricationSites(
   sourceAnalysis,
   unique([
+    ...declaredFabricationSeams,
     ...manifest.checkConfig.allowlistedFabricationSeams,
     ...ownerFabricationAllowlist,
   ]),

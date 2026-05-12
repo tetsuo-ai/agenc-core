@@ -66,8 +66,20 @@ owners.
 ## Fabricated-Context Seams
 
 Owner-owned context fabrication is declared directly on the owner records in
-the machine-readable contract below. The old non-owner seams named during the
-Phase 0 cutover have been removed from the live tree.
+the machine-readable contract below. Non-owner context fabrication must be
+declared here until the owning tranche removes or absorbs it. The current live
+seams are:
+
+- `runtime/src/tools/AgentTool/runAgent.ts`
+  Builds isolated subagent contexts through `createSubagentContext(...)` for
+  the moved AgentTool runner.
+- `runtime/src/utils/forkedAgent.ts`
+  Owns the shared `createSubagentContext(...)` helper and forked-agent cache
+  sharing loop.
+- `runtime/src/utils/hooks/execAgentHook.ts`
+  Builds an isolated hook-agent `ToolUseContext` for agent-backed hooks.
+- `runtime/src/utils/swarm/inProcessRunner.ts`
+  Builds an isolated compaction context inside the in-process teammate loop.
 
 ## Legacy Runtime-Owner Files
 
@@ -207,7 +219,45 @@ JSON together.
     }
   ],
   "compatibilityOnlySurfaces": [],
-  "fabricatedContextSeams": [],
+  "fabricatedContextSeams": [
+    {
+      "id": "agent_tool_subagent_context",
+      "path": "runtime/src/tools/AgentTool/runAgent.ts",
+      "ownedSurface": "AgentTool runner subagent context construction",
+      "disposition": "transitional moved AgentTool path; must stay explicit until subagent runtime ownership is absorbed",
+      "expectedHeuristics": [
+        "create_subagent_context_call"
+      ]
+    },
+    {
+      "id": "forked_agent_context_helper",
+      "path": "runtime/src/utils/forkedAgent.ts",
+      "ownedSurface": "shared subagent context helper and forked-agent cache-sharing loop",
+      "disposition": "canonical helper for isolated subagent ToolUseContext creation; callers must use this instead of ad-hoc context object literals",
+      "expectedHeuristics": [
+        "create_subagent_context_call",
+        "declares_create_subagent_context"
+      ]
+    },
+    {
+      "id": "hook_agent_context",
+      "path": "runtime/src/utils/hooks/execAgentHook.ts",
+      "ownedSurface": "agent-backed hook execution context",
+      "disposition": "isolates stop-hook agents from the parent context while preserving structured-output enforcement",
+      "expectedHeuristics": [
+        "tool_use_context_object_literal"
+      ]
+    },
+    {
+      "id": "in_process_teammate_compaction_context",
+      "path": "runtime/src/utils/swarm/inProcessRunner.ts",
+      "ownedSurface": "in-process teammate compaction context isolation",
+      "disposition": "isolates teammate auto-compaction from the leader UI context while preserving teammate loop state",
+      "expectedHeuristics": [
+        "tool_use_context_object_literal"
+      ]
+    }
+  ],
   "legacyRuntimeOwnerFiles": [],
   "allowedNonRuntimeConsumers": [],
   "ownershipRules": [
