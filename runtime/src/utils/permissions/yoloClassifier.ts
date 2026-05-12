@@ -2,6 +2,7 @@
 import { feature } from 'bun:bundle'
 import type provider from '@anthropic-ai/sdk'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages.js'
+import { readFileSync } from 'fs'
 import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { z } from 'zod/v4'
@@ -48,6 +49,19 @@ import { getAgenCTempDir } from './filesystem.js'
 // At build time, the bundler inlines .txt files as string literals. At test
 // time, require() returns {default: string} — txtRequire normalizes both.
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
+function installTextRequireForTests(): void {
+  if (process.env.VITEST !== 'true') return
+  const cjsRequire = require as NodeJS.Require
+  cjsRequire.extensions['.txt'] ??= (
+    mod: NodeJS.Module,
+    filename: string,
+  ) => {
+    mod.exports = readFileSync(filename, 'utf8')
+  }
+}
+
+installTextRequireForTests()
+
 function txtRequire(mod: string | { default: string }): string {
   return typeof mod === 'string' ? mod : mod.default
 }

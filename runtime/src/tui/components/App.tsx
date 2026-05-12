@@ -20,6 +20,7 @@ import { SpinnerWithVerb } from "./spinner/Spinner.js";
 import type { SpinnerMode } from "./spinner/types.js";
 import { parseSlashCommand, dispatchSlashCommand } from "../../commands/dispatcher.js";
 import { buildDefaultRegistry, registeredLegacyCommandSurfaceSpecs, executeLegacyCommandSurfaceForTui } from "../../commands/registry.js";
+import { setGlobalCommandRegistry } from "../../commands/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
@@ -1307,7 +1308,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const mcpClients = mcpSurface.clients;
   const availableTools = useMemo(() => [...tools, ...mcpSurface.tools], [tools, mcpSurface.tools]);
   const refreshAvailableTools = useCallback(() => [...tools, ...readMcpSurfaceSnapshot(props.session).tools], [props.session, tools]);
-  const commands = useMemo(() => listTuiCommandList(), []);
+  const commandRegistry = useMemo(() => buildDefaultRegistry(), []);
+  useEffect(() => {
+    setGlobalCommandRegistry(commandRegistry);
+    return () => {
+      setGlobalCommandRegistry(null);
+    };
+  }, [commandRegistry]);
+  const commands = listTuiCommandList(commandRegistry);
   const agents = useMemo(() => listAgentRoleDefinitions(), []);
 
   // Tool-use context builder. Declared above submit so the slash-command
@@ -1472,7 +1480,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           } catch {
             // best-effort echo; don't block dispatch on telemetry
           }
-          const registry = buildDefaultRegistry();
           // Build a renderResult helper used by both legacy and
           // built-in dispatch paths. Returns true if the result was a
           // "prompt" that needs to be forwarded to the model so the
@@ -1605,21 +1612,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             return;
           }
 
-          // Fall back to the SlashCommand-shape dispatcher for built-ins.
-          const found = registry.find(parsed.name);
-          if (found && typeof (found as {
-            execute?: unknown;
-          }).execute === "function") {
-            const outcome = await dispatchSlashCommand(parsed, {
-              session: props.session,
-              argsRaw: parsed.argsRaw,
-              cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd(),
-              home: process.env.HOME ?? "",
-              ...(props.session.services?.configStore ? {
-                configStore: props.session.services.configStore
-              } : {}),
-              commandRegistry: registry
-            }, registry);
+          // Fall back to the SlashCommand-shape dispatcher for built-ins and
+          // user-invocable skill slash commands. Unknown names intentionally
+          // go through the dispatcher so the TUI behaves like the daemon/CLI
+          // slash path instead of silently forwarding raw `/name` text to the
+          // model.
+          const outcome = await dispatchSlashCommand(parsed, {
+            session: props.session,
+            argsRaw: parsed.argsRaw,
+            cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd(),
+            home: process.env.HOME ?? "",
+            ...(props.session.services?.configStore ? {
+              configStore: props.session.services.configStore
+            } : {}),
+            commandRegistry
+          }, commandRegistry);
+          if (outcome.result.kind !== "skip") {
             const dispatched_0 = renderResult(outcome.result as never);
             if (!dispatched_0.forwardedToModel) {
               setPendingSubmission(false);
@@ -1658,7 +1666,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       // waiting for a turn that will never start.
       setPendingSubmission(false);
     }
-  }, [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult]);
+  }, [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult, commandRegistry]);
   // When the daemon shows any sign of activity, drop the optimistic
   // pending-submission flag. We don't gate this only on isStreaming
   // (turn_started) because the daemon sometimes skips that event and

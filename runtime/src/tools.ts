@@ -15,22 +15,23 @@ import {
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
+import { CronCreateTool } from './tools/ScheduleCronTool/CronCreateTool.js'
+import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
+import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
+import { MonitorTool as RuntimeMonitorTool } from './tools/MonitorTool/MonitorTool.js'
+import * as coordinatorMode from './coordinator/coordinatorMode.js'
 // Dead code elimination: conditional import for internal-only tools
 /* eslint-disable @typescript-eslint/no-require-imports */
 const SleepTool =
   feature('PROACTIVE') || feature('KAIROS')
     ? require('./tools/SleepTool/SleepTool.js').SleepTool
     : null
-const cronTools = [
-  require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
-  require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
-  require('./tools/ScheduleCronTool/CronListTool.js').CronListTool,
-]
+const cronTools = [CronCreateTool, CronDeleteTool, CronListTool]
 const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
   ? require('./tools/RemoteTriggerTool/RemoteTriggerTool.js').RemoteTriggerTool
   : null
 const MonitorTool = feature('MONITOR_TOOL')
-  ? require('./tools/MonitorTool/MonitorTool.js').MonitorTool
+  ? RuntimeMonitorTool
   : null
 const SendUserFileTool = feature('KAIROS')
   ? require('./tools/SendUserFileTool/SendUserFileTool.js').SendUserFileTool
@@ -101,7 +102,7 @@ const WebBrowserTool = feature('WEB_BROWSER_TOOL')
   ? require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool
   : null
 const coordinatorModeModule = feature('COORDINATOR_MODE')
-  ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
+  ? coordinatorMode
   : null
 const SnipTool = feature('HISTORY_SNIP')
   ? require('./tools/SnipTool/SnipTool.js').SnipTool

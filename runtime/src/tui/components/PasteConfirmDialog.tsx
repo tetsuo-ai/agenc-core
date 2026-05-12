@@ -38,7 +38,7 @@ export function PasteConfirmDialog({ command, onDecide }: Props): React.ReactEle
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor="yellow"
+      borderColor="warning"
       paddingX={1}
       marginTop={1}
     >

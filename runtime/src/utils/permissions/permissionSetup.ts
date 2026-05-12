@@ -30,10 +30,10 @@ import {
 import { parseToolListFromCLI } from './toolListParser.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
 import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
+import * as autoModeState from './autoModeState.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('./autoModeState.js') as typeof import('./autoModeState.js'))
+  ? autoModeState
   : null
 
 import { resolve } from 'path'
@@ -53,7 +53,6 @@ import {
 } from '../../services/analytics/index.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
-/* eslint-enable @typescript-eslint/no-require-imports */
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
 import {

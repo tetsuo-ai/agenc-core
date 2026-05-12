@@ -27,6 +27,7 @@ import { enqueuePendingNotification } from '../../../../utils/messageQueueManage
 import { createUserMessage } from '../../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getMainLoopModel, getRuntimeMainLoopModel } from '../../../../utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
 import { createPromptRuleContent, isClassifierPermissionsEnabled, PROMPT_PREFIX } from '../../../../utils/permissions/bashClassifier'; // upstream-import: keep target is owned by another Z-PURGE item
+import * as autoModeState from '../../../../utils/permissions/autoModeState';
 import { type PermissionMode, toExternalPermissionMode } from '../../../../utils/permissions/PermissionMode'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoModeGateEnabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../../utils/permissions/permissionSetup'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -41,8 +42,6 @@ import { PermissionDialog } from '../PermissionDialog';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-
 // ---- donor-purge stubs ----
 // These symbols used to come from modules deleted in the api.anthropic.com
 // purge. They are stubbed here as no-ops so the surrounding moved-source
@@ -50,9 +49,8 @@ import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
 // the equivalent backend.
 const launchUltraplan = (..._args: unknown[]): null => null;
 // ---- end donor-purge stubs ----
-const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? require('../../../../utils/permissions/autoModeState') as typeof import('../../../../utils/permissions/autoModeState') : null;
+const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? autoModeState : null;
 import type { Base64ImageSource, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-/* eslint-enable @typescript-eslint/no-require-imports */
 import type { PastedContent } from '../../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ImageDimensions } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { maybeResizeAndDownsampleImageBlock } from '../../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item

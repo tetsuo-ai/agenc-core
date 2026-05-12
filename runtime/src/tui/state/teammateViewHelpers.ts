@@ -5,13 +5,6 @@ import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentT
 // Inlined from framework.ts — importing creates a cycle through
 // BackgroundTasksDialog. Keep in sync with PANEL_GRACE_MS there.
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const BackgroundTasksDialog = (_props: unknown): null => null;
-// ---- end donor-purge stubs ----
 const PANEL_GRACE_MS = 30_000
 
 import type { AppState } from './AppState.js'

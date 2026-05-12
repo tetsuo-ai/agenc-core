@@ -145,6 +145,7 @@ vi.mock("../ink.js", async () => {
     Text: ({ children }: { children?: React.ReactNode }) =>
       React.createElement("ink-text", null, children),
     useApp: () => ({ exit: providerProbe.inkExit }),
+    useInput: () => {},
     useTerminalFocus: () => true,
     useTerminalTitle: () => {},
   };
@@ -224,7 +225,9 @@ vi.mock("../../utils/envUtils.js", () => ({
 }));
 
 vi.mock("../../utils/fullscreen.js", () => ({
+  isFullscreenEnvEnabled: () => false,
   isMouseClicksDisabled: () => true,
+  isMouseTrackingEnabled: () => false,
 }));
 
 vi.mock("../../utils/log.js", () => ({
@@ -262,10 +265,19 @@ vi.mock("../state/AppState.js", async () => {
     }) => {
       providerProbe.appStateProps.push({ initialState, onChangeAppState });
       const [state, setState] = React.useState(
-        initialState ?? {
+        {
           mainLoopModel: null,
           mainLoopModelForSession: null,
           toolPermissionContext: defaultPermissionContext,
+          activeOverlays: new Set<string>(),
+          notifications: {
+            current: null,
+            queue: [],
+          },
+          elicitation: {
+            queue: [],
+          },
+          ...(initialState ?? {}),
         },
       );
       return React.createElement(
@@ -1321,7 +1333,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         await onSubmit!("ordinary message", helpers);
 
         expect(submit).toHaveBeenCalledTimes(1);
-        expect(submit).toHaveBeenCalledWith("ordinary message");
+        expect(submit).toHaveBeenCalledWith("ordinary message", {
+          displayUserMessage: "ordinary message",
+        });
       },
     );
   });

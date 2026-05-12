@@ -67,6 +67,7 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
+import * as autoModeState from './permissions/autoModeState.js'
 // Donor-purge: ../services/skillSearch/* was deleted; type aliased as opaque.
 type DiscoverySignal = any
 // Conditional require for DCE. All skill-search string literals that would
@@ -82,7 +83,7 @@ const skillSearchModules: any = feature('EXPERIMENTAL_SKILL_SEARCH')
     }
   : null
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('./permissions/autoModeState.js') as typeof import('./permissions/autoModeState.js'))
+  ? autoModeState
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {

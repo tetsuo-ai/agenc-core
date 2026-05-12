@@ -30,11 +30,11 @@ import { stat } from "node:fs/promises";
 import * as path from "node:path";
 
 import type {
+  CommandRegistry,
   SlashCommand,
   SlashCommandContext,
   SlashCommandResult,
 } from "./types.js";
-import type { CommandRegistry } from "./registry.js";
 
 /** Result of parsing raw user input. */
 export interface ParsedSlashCommand {
