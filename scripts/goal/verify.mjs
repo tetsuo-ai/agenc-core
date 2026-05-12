@@ -8638,7 +8638,7 @@ function assertGapMcpDonorMirrorTierResolved() {
     "scripts/goal/checklist-utils.test.mjs",
     "parity/GAP-TOOLS-04-parity.json",
     "parity/OB-04-parity.json",
-    "AUDIT-FUNCTIONAL-GAPS-2026-05-07.md",
+    "RUNTIME-STABILIZATION-GOALS-2026-05-12.md",
   ];
   const staleReferencePatterns = [
     "runtime/src/commands/mcp/addCommand.ts",
