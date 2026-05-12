@@ -179,7 +179,7 @@ export async function clearConversation({
         },
         // Reset MCP state to default to trigger re-initialization.
         // Preserve pluginReconnectKey so /clear doesn't cause a no-op
-        // (it's only bumped by /reload-plugins).
+        // (it's only bumped by plugin refresh).
         mcp: {
           clients: [],
           tools: [],

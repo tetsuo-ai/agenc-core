@@ -56,6 +56,7 @@ import {
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
+import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { resolveAgentProvider } from '../../services/api/agentRouting.js'
@@ -84,6 +85,14 @@ import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
+
+function formatSkillLoadingMetadata(skillName: string): string {
+  return [
+    `<${COMMAND_MESSAGE_TAG}>${skillName}</${COMMAND_MESSAGE_TAG}>`,
+    `<${COMMAND_NAME_TAG}>${skillName}</${COMMAND_NAME_TAG}>`,
+    '<skill-format>true</skill-format>',
+  ].join('\n')
+}
 /**
  * Initialize agent-specific MCP servers
  * Agents can define their own MCP servers in their frontmatter that are additive
@@ -626,10 +635,7 @@ export async function* runAgent({
       validSkills.push({ skillName, skill })
     }
 
-    // Load all skill contents concurrently and add to initial messages
-    const { formatSkillLoadingMetadata } = await import(
-      '../../tui/input/processSlashCommand.js'
-    )
+    // Load all skill contents concurrently and add to initial messages.
     const loaded = await Promise.all(
       validSkills.map(async ({ skillName, skill }) => ({
         skillName,
@@ -643,10 +649,7 @@ export async function* runAgent({
       )
 
       // Add command-message metadata so the UI shows which skill is loading
-      const metadata = formatSkillLoadingMetadata(
-        skillName,
-        skill.progressMessage,
-      )
+      const metadata = formatSkillLoadingMetadata(skillName)
 
       initialMessages.push(
         createUserMessage({

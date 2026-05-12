@@ -2,10 +2,7 @@ import type * as React from "react";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import {
-  buildDefaultRegistry,
-  registeredLegacyCommandSurfaceSpecs,
-} from "./commands/registry.js";
+import { buildDefaultRegistry } from "./commands/registry.js";
 import type {
   CommandRegistry as SlashCommandRegistry,
   SlashCommand,
@@ -280,248 +277,6 @@ export function isCommandEnabled(cmd: CommandBase): boolean {
 
 let projectedCommandCache: Command[] | null = null;
 
-type LazyCommandModule = {
-  readonly default?: unknown;
-  readonly [key: string]: unknown;
-};
-
-type LazyCommandParams = {
-  readonly name: string;
-  readonly description: string | (() => string);
-  readonly type: "local" | "local-jsx" | "prompt";
-  readonly modulePath: string;
-  readonly exportName?: string;
-  readonly aliases?: readonly string[];
-  readonly argumentHint?: string;
-  readonly immediate?: boolean | (() => boolean);
-  readonly supportsNonInteractive?: boolean;
-  readonly isHidden?: boolean | (() => boolean);
-  readonly isEnabled?: () => boolean;
-  readonly userInvocable?: boolean;
-  readonly availability?: readonly string[];
-  readonly allowedTools?: readonly string[];
-  readonly contentLength?: number;
-  readonly argNames?: readonly string[];
-  readonly model?: string;
-  readonly progressMessage?: string;
-  readonly source?: string;
-  readonly disableNonInteractive?: boolean;
-  readonly disableModelInvocation?: boolean;
-  readonly hasUserSpecifiedDescription?: boolean;
-  readonly whenToUse?: string;
-  readonly context?: string;
-  readonly agent?: string;
-  readonly effort?: string;
-  readonly shell?: "bash" | "powershell";
-  readonly factory?: boolean;
-};
-
-function readLazyDynamic<T>(value: T | (() => T)): T {
-  return typeof value === "function" ? (value as () => T)() : value;
-}
-
-function defineLazyDynamic<T extends object, K extends PropertyKey, V>(
-  target: T,
-  key: K,
-  value: V | (() => V) | undefined,
-): void {
-  if (value === undefined) return;
-  if (typeof value === "function") {
-    Object.defineProperty(target, key, {
-      enumerable: true,
-      configurable: true,
-      get: value as () => V,
-    });
-  } else {
-    Object.defineProperty(target, key, {
-      enumerable: true,
-      configurable: true,
-      value,
-    });
-  }
-}
-
-function withLazyDynamicMetadata<T extends CommandBase>(
-  command: T,
-  params: LazyCommandParams,
-): T {
-  Object.defineProperty(command, "description", {
-    enumerable: true,
-    configurable: true,
-    get: () => readLazyDynamic(params.description),
-  });
-  defineLazyDynamic(command, "immediate", params.immediate);
-  defineLazyDynamic(command, "isHidden", params.isHidden);
-  return command;
-}
-
-// Literal-import map for legacy command modules. Variable specifiers
-// (e.g. `import(params.modulePath)` where modulePath is a string field)
-// are silently externalized by tsup, leaving the bundled artifact to
-// crash with "Cannot find module" at runtime. Parallel map to
-// LEGACY_COMMAND_LOADERS in commands/registry.ts — that one is keyed by
-// modulePath relative to runtime/src/commands/, this one is keyed by
-// tuiModulePath relative to runtime/src/.
-const LEGACY_TUI_COMMAND_LOADERS: Record<string, () => Promise<LazyCommandModule>> = {
-  "./commands/agents/index.js": () => import("./commands/agents/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/branch/index.js": () => import("./commands/branch/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/color/index.js": () => import("./commands/color/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/commit.js": () => import("./commands/commit.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/export/index.js": () => import("./commands/export/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/heapdump/index.js": () => import("./commands/heapdump/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/ide/index.js": () => import("./commands/ide/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/install.js": () => import("./commands/install.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/knowledge/index.js": () => import("./commands/knowledge/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/memory/index.js": () => import("./commands/memory/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/pr_comments/index.js": () => import("./commands/pr_comments/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/rename/index.js": () => import("./commands/rename/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/review.js": () => import("./commands/review.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/rewind/index.js": () => import("./commands/rewind/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/sandbox-toggle/index.js": () => import("./commands/sandbox-toggle/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/tasks/index.js": () => import("./commands/tasks/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/terminalSetup/index.js": () => import("./commands/terminalSetup/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/theme/index.js": () => import("./commands/theme/index.js") as unknown as Promise<LazyCommandModule>,
-  "./commands/vim/index.js": () => import("./commands/vim/index.js") as unknown as Promise<LazyCommandModule>,
-};
-
-async function loadLegacyCommand(params: LazyCommandParams): Promise<Command> {
-  const loader = LEGACY_TUI_COMMAND_LOADERS[params.modulePath];
-  if (loader === undefined) {
-    throw new Error(
-      `/${params.name} modulePath ${params.modulePath} is not registered in LEGACY_TUI_COMMAND_LOADERS — add it to the literal-import map in commands.ts`,
-    );
-  }
-  const loaded = await loader();
-  const exported = params.exportName === undefined
-    ? loaded.default
-    : loaded[params.exportName];
-  const command = params.factory && typeof exported === "function"
-    ? exported()
-    : exported;
-  if (command === undefined || command === null) {
-    throw new Error(`/${params.name} did not export a command descriptor`);
-  }
-  return command as Command;
-}
-
-function lazyCommand(params: LazyCommandParams): Command {
-  const base = {
-    name: params.name,
-    description: typeof params.description === "function" ? "" : params.description,
-    ...(params.aliases !== undefined ? { aliases: [...params.aliases] } : {}),
-    ...(params.argumentHint !== undefined ? { argumentHint: params.argumentHint } : {}),
-    ...(params.supportsNonInteractive !== undefined
-      ? { supportsNonInteractive: params.supportsNonInteractive }
-      : {}),
-    ...(params.isEnabled !== undefined ? { isEnabled: params.isEnabled } : {}),
-    ...(params.userInvocable !== undefined
-      ? { userInvocable: params.userInvocable }
-      : {}),
-    ...(params.availability !== undefined
-      ? { availability: [...params.availability] }
-      : {}),
-  };
-
-  if (params.type === "prompt") {
-    return withLazyDynamicMetadata({
-      ...base,
-      type: "prompt",
-      progressMessage: params.progressMessage ?? "running",
-      contentLength: params.contentLength ?? 0,
-      ...(params.argNames !== undefined ? { argNames: [...params.argNames] } : {}),
-      ...(params.allowedTools !== undefined
-        ? { allowedTools: [...params.allowedTools] }
-        : {}),
-      ...(params.model !== undefined ? { model: params.model } : {}),
-      source: params.source ?? "builtin",
-      ...(params.disableNonInteractive !== undefined
-        ? { disableNonInteractive: params.disableNonInteractive }
-        : {}),
-      ...(params.disableModelInvocation !== undefined
-        ? { disableModelInvocation: params.disableModelInvocation }
-        : {}),
-      ...(params.hasUserSpecifiedDescription !== undefined
-        ? { hasUserSpecifiedDescription: params.hasUserSpecifiedDescription }
-        : {}),
-      ...(params.whenToUse !== undefined ? { whenToUse: params.whenToUse } : {}),
-      ...(params.context !== undefined ? { context: params.context } : {}),
-      ...(params.agent !== undefined ? { agent: params.agent } : {}),
-      ...(params.effort !== undefined ? { effort: params.effort } : {}),
-      ...(params.shell !== undefined ? { shell: params.shell } : {}),
-      getPromptForCommand: async (args, context) => {
-        const command = await loadLegacyCommand(params);
-        if (command.type !== "prompt") {
-          throw new Error(`/${params.name} did not load a prompt command`);
-        }
-        const promptCommand = command as Extract<Command, { type: "prompt" }>;
-        if (promptCommand.getPromptForCommand === undefined) {
-          throw new Error(`/${params.name} loaded a prompt command without a prompt handler`);
-        }
-        return promptCommand.getPromptForCommand(args, context);
-      },
-    }, params);
-  }
-
-  if (params.type === "local") {
-    return withLazyDynamicMetadata({
-      ...base,
-      type: "local",
-      supportsNonInteractive: params.supportsNonInteractive ?? false,
-      load: async () => {
-        const command = await loadLegacyCommand(params);
-        if (command.type !== "local") {
-          throw new Error(`/${params.name} did not load a local command`);
-        }
-        return command.load();
-      },
-    }, params);
-  }
-
-  return withLazyDynamicMetadata({
-    ...base,
-    type: "local-jsx",
-    load: async () => {
-      const command = await loadLegacyCommand(params);
-      if (command.type !== "local-jsx") {
-        throw new Error(`/${params.name} did not load a local JSX command`);
-      }
-      return command.load();
-    },
-  }, params);
-}
-
-const installLocalCommand: Command = {
-  type: "local-jsx",
-  name: "install",
-  description: "Install AgenC native build",
-  argumentHint: "[options]",
-  load: async () => {
-    const { install } = await import("./commands/install.js");
-    return {
-      call: async (onDone, context, args) => {
-        const argv = args.trim().length > 0 ? args.trim().split(/\s+/) : [];
-        await install.call(onDone, context, argv);
-        return null;
-      },
-    };
-  },
-};
-
-let legacyCommandOverrideMapCache: Map<string, Command> | null = null;
-
-function legacyCommandOverrideMap(): Map<string, Command> {
-  if (legacyCommandOverrideMapCache === null) {
-    const overrides = registeredLegacyCommandSurfaceSpecs.map(spec =>
-      spec.name === "install"
-        ? installLocalCommand
-        : lazyCommand({ ...spec, modulePath: spec.tuiModulePath }),
-    );
-    legacyCommandOverrideMapCache = new Map(
-      overrides.map(command => [command.name, command]),
-    );
-  }
-  return legacyCommandOverrideMapCache;
-}
 const commandProviders = new Set<
   (cwd: string) => Promise<readonly Command[]> | readonly Command[]
 >();
@@ -531,15 +286,11 @@ const localSkillServicesByRoot = new Map<
 >();
 
 function builtInCommands(registry?: SlashCommandRegistry): readonly Command[] {
-  const projectedCommands = registry === undefined
+  return registry === undefined
     ? (projectedCommandCache ??= buildDefaultRegistry().list().map(command =>
         projectSlashCommand(command),
       ))
     : registry.list().map(command => projectSlashCommand(command, registry));
-  const legacyOverrides = legacyCommandOverrideMap();
-  return projectedCommands.map(
-    command => legacyOverrides.get(command.name) ?? command,
-  );
 }
 
 export function registerCommandProvider(
@@ -787,20 +538,20 @@ const REMOTE_SAFE_COMMAND_NAMES = new Set([
   "exit",
   "clear",
   "help",
-  "plan",
-  "keybindings",
-  "copy",
   "status",
-  "cost",
-  "usage",
+  "model",
+  "model-provider",
+  "provider",
 ]);
 
 const BRIDGE_SAFE_COMMAND_NAMES = new Set([
-  "compact",
   "clear",
-  "cost",
-  "release-notes",
-  "files",
+  "diff",
+  "help",
+  "model",
+  "model-provider",
+  "provider",
+  "status",
 ]);
 
 function commandsForNames(names: ReadonlySet<string>): Set<Command> {

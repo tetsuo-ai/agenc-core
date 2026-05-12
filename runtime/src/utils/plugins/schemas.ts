@@ -443,7 +443,7 @@ const PluginManifestCommandsSchema = lazySchema(() =>
       z
         .record(z.string(), CommandMetadataSchema())
         .describe(
-          'Object mapping of command names to their metadata and source files. Command name becomes the slash command name (e.g., "about" → "/plugin:about")',
+          'Object mapping of command names to their metadata and source files.',
         ),
     ]),
   }),

@@ -1734,7 +1734,7 @@ async function* queryLoop(
     // covers those. If all task types move to 'next', this branch could go.
     //
     // Slash commands are excluded from mid-turn drain — they must go through
-    // processSlashCommand after the turn ends (via useQueueProcessor), not be
+    // prompt input dispatch after the turn ends (via useQueueProcessor), not be
     // sent to the model as text. Bash-mode commands are already excluded by
     // INLINE_NOTIFICATION_MODES in getQueuedCommandAttachments.
     //

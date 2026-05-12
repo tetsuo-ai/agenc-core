@@ -347,14 +347,14 @@ export function BrowseMarketplace({
     // Handle installation results
     if (failureCount === 0) {
       // All succeeded
-      const message = `✓ Installed ${successCount_0} ${plural(successCount_0, 'plugin')}. ` + `Run /reload-plugins to activate.`;
+      const message = `✓ Installed ${successCount_0} ${plural(successCount_0, 'plugin')}. ` + `Restart AgenC to activate.`;
       setResult(message);
     } else if (successCount_0 === 0) {
       // All failed - show error with reasons
       setError(`Failed to install: ${formatFailureDetails(newFailedPlugins, true)}`);
     } else {
       // Mixed results - show partial success
-      const message_0 = `✓ Installed ${successCount_0} of ${successCount_0 + failureCount} plugins. ` + `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` + `Run /reload-plugins to activate successfully installed plugins.`;
+      const message_0 = `✓ Installed ${successCount_0} of ${successCount_0 + failureCount} plugins. ` + `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` + `Restart AgenC to activate successfully installed plugins.`;
       setResult(message_0);
     }
 
@@ -555,10 +555,10 @@ export function BrowseMarketplace({
     return <PluginOptionsFlow plugin={plugin_5} pluginId={pluginId_2} onDone={(outcome, detail) => {
       switch (outcome) {
         case 'configured':
-          finish(`✓ Installed and configured ${plugin_5.name}. Run /reload-plugins to apply.`);
+          finish(`✓ Installed and configured ${plugin_5.name}. Restart AgenC to apply.`);
           break;
         case 'skipped':
-          finish(`✓ Installed ${plugin_5.name}. Run /reload-plugins to apply.`);
+          finish(`✓ Installed ${plugin_5.name}. Restart AgenC to apply.`);
           break;
         case 'error':
           finish(`Installed but failed to save config: ${detail}`);

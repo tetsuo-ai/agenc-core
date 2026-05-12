@@ -170,11 +170,11 @@ export function clearPluginHookCache(): void {
  * Remove hooks from plugins no longer in the enabled set, without adding
  * hooks from newly-enabled plugins. Called from clearAllCaches() so
  * uninstalled/disabled plugins stop firing hooks immediately (gh-36995),
- * while newly-enabled plugins wait for /reload-plugins — consistent with
+ * while newly-enabled plugins wait for restart — consistent with
  * how commands/agents/MCP behave.
  *
  * The full swap (clear + register all) still happens via loadPluginHooks(),
- * which /reload-plugins awaits.
+ * which session plugin refresh awaits.
  */
 export async function pruneRemovedPluginHooks(): Promise<void> {
   // Early return when nothing to prune — avoids seeding the loadAllPluginsCacheOnly

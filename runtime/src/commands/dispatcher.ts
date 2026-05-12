@@ -17,11 +17,8 @@
  *     emits (the dispatcher does not persist a transcript directly; the
  *     caller consumes the `TraceRecord` from `DispatchOutcome`).
  *
- * Port notes: parse + unknown-command fallback logic is ported from
- * agenc `src/utils/slashCommandParsing.ts` and the selection path
- * in `runtime/src/tui/input/processSlashCommand.tsx`. React/JSX,
- * MCP settle polling, plugin marketplace, and fork-agent paths are
- * intentionally dropped — AgenC uses raw-text command execution.
+ * Port notes: parse + unknown-command fallback logic is kept here so the
+ * TUI, daemon wrapper, and tests use one dispatch path.
  *
  * @module
  */
@@ -156,9 +153,6 @@ export async function dispatchSlashCommand(
   const command = registry.find(parsed.name);
 
   if (!command) {
-    const skillOutcome = await dispatchSkillSlashCommand(parsed, ctx);
-    if (skillOutcome !== null) return skillOutcome;
-
     const hint = await buildMistypedPathHint(ctx.cwd, parsed.name);
     if (hint !== null) {
       return {
@@ -302,13 +296,11 @@ async function buildMistypedPathHint(
  * process.
  *
  * Commands NOT on this list MUST prompt the user before the bridge
- * forwards them (e.g. `/exit`, `/compact`, `/permissions`, `/config`,
- * `/resume`, `/fork`, `/init`, `/plan`).
+ * forwards them (e.g. `/exit`, `/compact`, `/permissions`, `/config`).
  */
 const BRIDGE_SAFE: ReadonlySet<string> = new Set([
   "status",
   "help",
-  "context",
   "model",
   "model-provider",
   "provider",
@@ -323,86 +315,9 @@ const BRIDGE_SAFE: ReadonlySet<string> = new Set([
  */
 // Kept alongside BRIDGE_SAFE to document the contract. Do not export as
 // a negation — checks MUST go through `isBridgeSafeCommand`.
-// (status / help / context / model / provider / clear / diff) are safe;
-// everything else (exit / compact / permissions / config / resume / fork
-// / init / plan) requires user confirmation at the bridge.
+// (status / help / model / provider / clear / diff) are safe; everything
+// else in the minimal surface requires user confirmation at the bridge.
 
 export function isBridgeSafeCommand(name: string): boolean {
   return BRIDGE_SAFE.has(name);
-}
-
-async function dispatchSkillSlashCommand(
-  parsed: ParsedSlashCommand,
-  ctx: SlashCommandContext,
-): Promise<DispatchOutcome | null> {
-  const manager = ctx.session.services?.skillsManager;
-  if (!manager || typeof manager.resolveSkill !== "function") return null;
-
-  const skill = await manager.resolveSkill(parsed.name);
-  if (skill === null) return null;
-
-  if (skill.userInvocable === false) {
-    const message = `/${skill.name} is not user-invocable; ask the model to use this instead`;
-    return {
-      result: { kind: "error", message },
-      immediate: false,
-      trace: {
-        name: skill.name,
-        aliasUsed: parsed.name,
-        argsRaw: parsed.argsRaw,
-        sensitive: false,
-        immediate: false,
-        isMcp: parsed.isMcp,
-        resultKind: "error",
-      },
-    };
-  }
-
-  const rendered = await manager.renderSkill?.({
-    name: skill.name,
-    args: parsed.argsRaw,
-    sessionId: ctx.session.conversationId,
-  });
-  if (!rendered) {
-    return {
-      result: {
-        kind: "error",
-        message: `Failed to load skill: /${skill.name}`,
-      },
-      immediate: false,
-      trace: {
-        name: skill.name,
-        aliasUsed: parsed.name,
-        argsRaw: parsed.argsRaw,
-        sensitive: false,
-        immediate: false,
-        isMcp: parsed.isMcp,
-        resultKind: "error",
-      },
-    };
-  }
-
-  manager.recordInvokedSkill?.({
-    skillName: rendered.skill.name,
-    skillPath: rendered.skill.path,
-    content: rendered.content,
-    invokedAt: Date.now(),
-  });
-
-  return {
-    result: {
-      kind: "prompt",
-      content: `<command-name>${rendered.skill.name}</command-name>\n${rendered.content}`,
-    },
-    immediate: false,
-    trace: {
-      name: rendered.skill.name,
-      aliasUsed: parsed.name,
-      argsRaw: parsed.argsRaw,
-      sensitive: false,
-      immediate: false,
-      isMcp: parsed.isMcp,
-      resultKind: "prompt",
-    },
-  };
 }

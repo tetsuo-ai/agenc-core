@@ -78,7 +78,7 @@ import { setAutoModeActive } from '../../../utils/permissions/autoModeState.js';
 import { cyclePermissionMode, getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js';
 import { transitionPermissionMode } from '../../../utils/permissions/permissionSetup.js';
 import { getPlatform } from '../../../utils/platform.js';
-import type { ProcessUserInputContext } from '../../input/processUserInput.js';
+import type { PromptInputContext } from '../../input/inputContext.js';
 import { editPromptInEditor } from '../../../utils/promptEditor.js';
 import { hasAutoModeOptIn, updateSettingsForSource } from '../../../utils/settings/settings.js';
 import { findSlashCommandPositions } from '../../../utils/suggestions/commandSuggestions.js';
@@ -459,7 +459,7 @@ type Props = {
   showBashesDialog: string | boolean;
   setShowBashesDialog: (show: string | boolean) => void;
   onExit: () => void;
-  getToolUseContext: (messages: Message[], newMessages: Message[], abortController: AbortController, mainLoopModel: string) => ProcessUserInputContext;
+  getToolUseContext: (messages: Message[], newMessages: Message[], abortController: AbortController, mainLoopModel: string) => PromptInputContext;
   onSubmit: (input: string, helpers: PromptInputHelpers, speculationAccept?: {
     state: ActiveSpeculationState;
     speculationSessionTimeSavedMs: number;
@@ -1341,14 +1341,14 @@ function PromptInput({
     // text. Run the shell command locally via processBashCommand and
     // surface stdout/stderr in the transcript via user_message events.
     // Bash output is synthetic local data; we never call onSubmitProp,
-    // and processUserInput is bypassed because its prompt-side imports
+    // and the old monolithic input processor is bypassed because its prompt-side imports
     // drag in subsystems we don't need here.
     if (mode === 'bash') {
       const trimmedBash = inputParam.trim();
       if (trimmedBash === '') {
         return;
       }
-      const ctx = getToolUseContext(messages, [], new AbortController(), mainLoopModel) as ProcessUserInputContext & {
+      const ctx = getToolUseContext(messages, [], new AbortController(), mainLoopModel) as PromptInputContext & {
         session?: { emit?: (event: unknown) => void; nextInternalSubId?: () => string };
         setToolJSX?: (jsx: unknown) => void;
       };
@@ -1370,8 +1370,8 @@ function PromptInput({
       // UserBashOutputMessage extracts <bash-stdout>/<bash-stderr>.
       emitTranscriptText(`<bash-input>${trimmedBash}</bash-input>`);
       try {
-        // Call processBashCommand directly. processUserInput would also
-        // route mode:'bash' here but its static imports (ultraplan,
+        // Call processBashCommand directly. The retired input processor also
+        // routed mode:'bash' here but its static imports (ultraplan,
         // hooks, etc.) drag in unused subsystems that fail to resolve
         // when the composer is the sole live importer.
         const { processBashCommand } = await import('../../input/processBashCommand.js');

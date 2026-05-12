@@ -62,7 +62,7 @@ export const loadPluginOptions = memoize(
     // NOTE: storage.read() spawns `security find-generic-password` on macOS
     // (~50-100ms, synchronous). Mitigated by the memoize above (per-pluginId,
     // session-lifetime) + keychain's own 30s TTL cache — so one blocking spawn
-    // per session per plugin-with-options. /reload-plugins clears the memoize
+    // per session per plugin-with-options. session plugin refresh clears the memoize
     // and the next hook/MCP-load after that eats a fresh spawn.
     const storage = getSecureStorage()
     const sensitive =

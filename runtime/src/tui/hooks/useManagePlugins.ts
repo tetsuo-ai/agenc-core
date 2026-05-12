@@ -34,11 +34,11 @@ import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js' // upstream
  *
  * On mount: loads all plugins, runs delisting enforcement, surfaces flagged-
  * plugin notifications, populates AppState.plugins. This is the initial
- * Layer-3 load — subsequent refresh goes through /reload-plugins.
+ * Layer-3 load — subsequent refresh goes through session plugin refresh.
  *
- * On needsRefresh: shows a notification directing the user to /reload-plugins.
+ * On needsRefresh: shows a notification directing the user to restart AgenC.
  * Does NOT auto-refresh. All Layer-3 swap (commands, agents, hooks, MCP)
- * goes through refreshActivePlugins() via /reload-plugins for one consistent
+ * goes through refreshActivePlugins() via plugin refresh for one consistent
  * mental model. See Outline: declarative-settings-hXHBMDIf4b PR 5c.
  */
 export function useManagePlugins({
@@ -56,7 +56,7 @@ export function useManagePlugins({
   const { addNotification } = useNotifications()
 
   // Initial plugin load. Runs once on mount. NOT used for refresh — all
-  // post-mount refresh goes through /reload-plugins → refreshActivePlugins().
+  // post-mount refresh goes through session plugin refresh → refreshActivePlugins().
   // Unlike refreshActivePlugins, this also runs delisting enforcement and
   // flagged-plugin notifications (session-start concerns), and does NOT bump
   // mcp.pluginReconnectKey (MCP effects fire on their own mount).
@@ -305,20 +305,20 @@ export function useManagePlugins({
   }, [enabled])
 
   // Plugin state changed on disk (background reconcile, /plugin menu,
-  // external settings edit). Show a notification; user runs /reload-plugins
+  // external settings edit). Show a notification; user restarts AgenC
   // to apply. The previous auto-refresh here had a stale-cache bug (only
   // cleared loadAllPlugins, downstream memoized loaders returned old data)
-  // and was incomplete (no MCP, no agentDefinitions). /reload-plugins
+  // and was incomplete (no MCP, no agentDefinitions). plugin refresh
   // handles all of that correctly via refreshActivePlugins().
   useEffect(() => {
     if (!enabled || !needsRefresh) return
     addNotification({
       key: 'plugin-reload-pending',
-      text: 'Plugins changed. Run /reload-plugins to activate.',
+      text: 'Plugins changed. Restart AgenC to activate.',
       color: 'suggestion',
       priority: 'low',
     })
-    // Do NOT auto-refresh. Do NOT reset needsRefresh — /reload-plugins
+    // Do NOT auto-refresh. Do NOT reset needsRefresh — plugin refresh
     // consumes it via refreshActivePlugins().
   }, [enabled, needsRefresh, addNotification])
 

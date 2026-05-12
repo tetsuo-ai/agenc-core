@@ -7,14 +7,14 @@
  * - Layer 3: active components (AppState) — this file
  *
  * Called from:
- * - /reload-plugins command (interactive, user-initiated)
+ * - session plugin refresh
  * - print.ts refreshPluginState() (headless, auto before first query with SYNC_PLUGIN_INSTALL)
  * - performBackgroundPluginInstallations() (background, auto after new marketplace install)
  *
  * NOT called from:
  * - useManagePlugins needsRefresh effect — interactive mode shows a notification;
- *   user explicitly runs /reload-plugins (PR 5c)
- * - /plugin menu — sets needsRefresh, user runs /reload-plugins (PR 5b)
+ *   user explicitly restarts AgenC (PR 5c)
+ * - /plugin menu — sets needsRefresh, user restarts AgenC (PR 5b)
  */
 
 import { getOriginalCwd } from '../../bootstrap/state.js'
@@ -79,7 +79,7 @@ export async function refreshActivePlugins(
 ): Promise<RefreshActivePluginsResult> {
   logForDebugging('refreshActivePlugins: clearing all plugin caches')
   clearAllCaches()
-  // Orphan exclusions are session-frozen by default, but /reload-plugins is
+  // Orphan exclusions are session-frozen by default, but session plugin refresh is
   // an explicit "disk changed, re-read it" signal — recompute them too.
   clearPluginCacheExclusions()
 

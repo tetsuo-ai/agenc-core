@@ -141,7 +141,7 @@ export function useManageMCPConnections(
 ) {
   const store = useAppStateStore()
   const _authVersion = useAppState((s: AppState) => s.authVersion)
-  // Incremented by /reload-plugins (refreshActivePlugins) to pick up newly
+  // Incremented by plugin refresh (refreshActivePlugins) to pick up newly
   // enabled plugin MCP servers. getAgenCCodeMcpConfigs() reads loadAllPlugins()
   // which has been cleared by refreshActivePlugins, so the effects below see
   // fresh plugin data on re-run.
@@ -761,7 +761,7 @@ export function useManageMCPConnections(
   )
 
   // Initialize all servers to pending state if they don't exist in appState.
-  // Re-runs on session change (/clear) and on /reload-plugins (pluginReconnectKey).
+  // Re-runs on session change (/clear) and on plugin refresh (pluginReconnectKey).
   // On plugin reload, also disconnects stale plugin MCP servers (scope 'dynamic')
   // that no longer appear in configs — prevents ghost tools from disabled plugins.
   // Skip agenc.tech dedup here to avoid blocking on the network fetch; the connect

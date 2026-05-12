@@ -532,7 +532,7 @@ export function getCommandsByMaxPriority(
 
 /**
  * Returns true if the command is a slash command that should be routed through
- * processSlashCommand rather than sent to the model as text.
+ * prompt input dispatch rather than sent to the model as text.
  *
  * Commands with `skipSlashCommands` (e.g. bridge/CCR messages) are NOT treated
  * as slash commands — their text is meant for the model.

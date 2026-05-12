@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { SkillTool } from '../../tools/SkillTool/SkillTool.js'
 import {
@@ -9,7 +9,7 @@ import {
 describe('getSchemaValidationErrorOverride', () => {
   test('returns actionable missing-skill error for SkillTool', () => {
     expect(getSchemaValidationErrorOverride(SkillTool, {})).toBe(
-      'Missing skill name. Pass the slash command name as the skill parameter (e.g., skill: "commit" for /commit, skill: "review-pr" for /review-pr).',
+      'Missing skill name. Pass the skill name as the skill parameter (e.g., skill: "commit" or skill: "review-pr").',
     )
   })
 
@@ -27,7 +27,7 @@ describe('getSchemaValidationErrorOverride', () => {
 
   test('uses the actionable override for structured toolUseResult too', () => {
     expect(getSchemaValidationToolUseResult(SkillTool, {} as never)).toBe(
-      'InputValidationError: Missing skill name. Pass the slash command name as the skill parameter (e.g., skill: "commit" for /commit, skill: "review-pr" for /review-pr).',
+      'InputValidationError: Missing skill name. Pass the skill name as the skill parameter (e.g., skill: "commit" or skill: "review-pr").',
     )
   })
 })

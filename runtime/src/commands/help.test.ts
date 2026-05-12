@@ -11,7 +11,6 @@ import {
   type SlashCommand,
   type SlashCommandContext,
 } from "./types.js";
-import { registerCommandProvider, type Command } from "../commands.js";
 
 function makeCtx(overrides: Partial<SlashCommandContext> = {}): SlashCommandContext {
   return {
@@ -33,7 +32,7 @@ describe("helpCommand", () => {
     if (res.kind === "text") expect(res.text).toBe("registry pending");
   });
 
-  it("formats commands grouped by category with aliases", () => {
+  it("formats visible commands by the minimal categories", () => {
     const cmds: SlashCommand[] = [
       {
         name: "zeta",
@@ -46,26 +45,25 @@ describe("helpCommand", () => {
         execute: async () => ({ kind: "skip" }),
       },
       {
-        name: "alpha",
-        aliases: ["a"],
-        description: "first letter",
-        execute: async () => ({ kind: "skip" }),
-      },
-      {
         name: "config",
         description: "configure AgenC",
         execute: async () => ({ kind: "skip" }),
       },
       {
-        name: "doctor",
-        isEnabled: () => false,
-        description: "disabled",
+        name: "diff",
+        description: "show diff",
         execute: async () => ({ kind: "skip" }),
       },
       {
-        name: "middle",
+        name: "hidden",
         userInvocable: false,
         description: "hidden",
+        execute: async () => ({ kind: "skip" }),
+      },
+      {
+        name: "disabled",
+        isEnabled: () => false,
+        description: "disabled",
         execute: async () => ({ kind: "skip" }),
       },
     ];
@@ -73,24 +71,19 @@ describe("helpCommand", () => {
       list: () => cmds,
       find: (n) => cmds.find((c) => c.name === n),
     };
+
     const text = formatHelp(reg);
+
     expect(text).toContain("Getting Started:");
     expect(text).toContain("Configuration:");
+    expect(text).toContain("Context & Files:");
     expect(text).toContain("Other Commands:");
-    expect(text).toMatch(/\/status - show status/);
-    expect(text).toMatch(/\/config - configure AgenC/);
-    expect(text).toMatch(/\/alpha, \/a/);
-    expect(text).toMatch(/\/zeta/);
-    expect(text).not.toMatch(/\/middle/); // hidden
-    expect(text).not.toMatch(/\/doctor/); // disabled
-    const idxStatus = text.indexOf("Getting Started:");
-    const idxConfig = text.indexOf("Configuration:");
-    const idxOther = text.indexOf("Other Commands:");
-    expect(idxStatus).toBeLessThan(idxConfig);
-    expect(idxConfig).toBeLessThan(idxOther);
-    const idxAlpha = text.indexOf("/alpha");
-    const idxZeta = text.indexOf("/zeta");
-    expect(idxAlpha).toBeLessThan(idxZeta);
+    expect(text).toContain("/status - show status");
+    expect(text).toContain("/config - configure AgenC");
+    expect(text).toContain("/diff - show diff");
+    expect(text).toContain("/zeta - last letter");
+    expect(text).not.toContain("/hidden");
+    expect(text).not.toContain("/disabled");
   });
 
   it("deduplicates commands by canonical name before formatting", () => {
@@ -121,33 +114,6 @@ describe("helpCommand", () => {
     expect(formatHelp(reg)).toMatch(/No slash commands/);
   });
 
-  it("formatHelp produces stable ordering across registry order changes", () => {
-    const a: SlashCommand = {
-      name: "a",
-      description: "a desc",
-      execute: async () => ({ kind: "skip" }),
-    };
-    const b: SlashCommand = {
-      name: "b",
-      description: "b desc",
-      execute: async () => ({ kind: "skip" }),
-    };
-    const usage: SlashCommand = {
-      name: "usage",
-      description: "usage desc",
-      execute: async () => ({ kind: "skip" }),
-    };
-    const left: CommandRegistry = {
-      list: () => [b, usage, a],
-      find: () => undefined,
-    };
-    const right: CommandRegistry = {
-      list: () => [a, b, usage],
-      find: () => undefined,
-    };
-    expect(formatHelp(left)).toBe(formatHelp(right));
-  });
-
   it("surfaces canonical /model-provider and alias /provider together", () => {
     const cmds: SlashCommand[] = [
       {
@@ -161,16 +127,21 @@ describe("helpCommand", () => {
     expect(formatHelp(reg)).toContain("/model-provider, /provider");
   });
 
-  it("exposes grouped commands for slash palettes and text help", () => {
+  it("groups only retained built-in categories before custom commands", () => {
     const cmds: SlashCommand[] = [
-      {
-        name: "usage",
-        description: "usage",
-        execute: async () => ({ kind: "skip" }),
-      },
       {
         name: "help",
         description: "help",
+        execute: async () => ({ kind: "skip" }),
+      },
+      {
+        name: "skills",
+        description: "skills",
+        execute: async () => ({ kind: "skip" }),
+      },
+      {
+        name: "clear",
+        description: "clear",
         execute: async () => ({ kind: "skip" }),
       },
       {
@@ -182,63 +153,39 @@ describe("helpCommand", () => {
     const reg: CommandRegistry = { list: () => cmds, find: () => undefined };
     expect(groupHelpCommands(reg.list()).map((group) => group.title)).toEqual([
       "Getting Started",
-      "Diagnostics",
+      "Configuration",
+      "Session",
       "Other Commands",
     ]);
   });
 
-  it("lists /files with visible default registry commands", () => {
-    const previousUserType = process.env.USER_TYPE;
-    try {
-      delete process.env.USER_TYPE;
-      const registry = buildDefaultRegistry();
-      const visibleNames = registry
-        .list()
-        .filter(
-          (command) =>
-            command.userInvocable !== false && command.isEnabled?.() !== false,
-        )
-        .map((command) => command.name);
-      const text = formatHelp(registry);
-      expect(visibleNames).toContain("files");
-      expect(text).toContain("Context & Files:");
-      expect(countCanonicalCommandLines(text, "files")).toBe(1);
-    } finally {
-      if (previousUserType === undefined) {
-        delete process.env.USER_TYPE;
-      } else {
-        process.env.USER_TYPE = previousUserType;
-      }
-    }
+  it("default help lists only the minimal slash registry", () => {
+    const registry = buildDefaultRegistry();
+    const text = formatHelp(registry);
+
+    expect(countCanonicalCommandLines(text, "help")).toBe(1);
+    expect(countCanonicalCommandLines(text, "diff")).toBe(1);
+    expect(text).not.toContain("/reload-plugins");
+    expect(text).not.toContain("/agents");
+    expect(text).not.toContain("/files");
+    expect(text).not.toContain("Diagnostics:");
   });
 
-  it("helpCommand includes custom commands from the full command surface", async () => {
-    const unregister = registerCommandProvider(() => [
-      promptCommand({
-        name: "project-skill",
-        description: "Project skill",
-        source: "plugin",
-      }),
-    ]);
-    try {
-      setGlobalCommandRegistry(buildDefaultRegistry());
-      const res = await helpCommand.execute(makeCtx({ cwd: "/tmp/project" }));
-      expect(res.kind).toBe("text");
-      if (res.kind === "text") {
-        expect(res.text).toContain("Custom Commands:");
-        expect(res.text).toContain("/project-skill - Project skill (plugin)");
-        expect(res.text).toContain("Getting Started:");
-        expect(res.text).toContain("/help - Show help and available commands");
-      }
-    } finally {
-      unregister();
+  it("helpCommand does not expand project skills into slash help", async () => {
+    setGlobalCommandRegistry(buildDefaultRegistry());
+    const res = await helpCommand.execute(makeCtx({ cwd: "/tmp/project" }));
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toContain("Getting Started:");
+      expect(res.text).toContain("/help - Show help and available commands");
+      expect(res.text).not.toContain("Custom Commands:");
     }
   });
 
   it("formats custom commands separately when built-in names are supplied", () => {
     const text = formatHelpCommands(
       [
-        { name: "usage", description: "usage" },
+        { name: "help", description: "help" },
         {
           name: "team-skill",
           description: "Team skill",
@@ -246,26 +193,14 @@ describe("helpCommand", () => {
           source: "bundled",
         },
       ],
-      { builtInCommandNames: new Set(["usage"]) },
+      { builtInCommandNames: new Set(["help"]) },
     );
-    expect(text).toContain("Diagnostics:");
-    expect(text).toContain("/usage - usage");
+    expect(text).toContain("Getting Started:");
+    expect(text).toContain("/help - help");
     expect(text).toContain("Custom Commands:");
     expect(text).toContain("/team-skill - Team skill (bundled)");
   });
 });
-
-function promptCommand(overrides: Partial<Command> = {}): Command {
-  return {
-    type: "prompt",
-    name: "skill-alpha",
-    description: "Alpha skill",
-    progressMessage: "running",
-    contentLength: 10,
-    getPromptForCommand: async () => [],
-    ...overrides,
-  } as Command;
-}
 
 function countCanonicalCommandLines(text: string, name: string): number {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

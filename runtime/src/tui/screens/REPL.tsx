@@ -180,7 +180,7 @@ import { resumeAgentBackground } from '../../tools/AgentTool/resumeAgent.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { useAppState, useSetAppState, useAppStateStore } from '../state/AppState.js';
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-import type { ProcessUserInputContext } from '../input/processUserInput.js';
+import type { PromptInputContext } from '../input/inputContext.js';
 import type { PastedContent } from '../../utils/config.js';
 import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../../utils/plans.js';
 import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../../utils/sessionStorage.js';
@@ -948,7 +948,7 @@ export function REPL({
   }, []);
 
   // Reset timing refs inline when isQueryActive transitions false→true.
-  // queryGuard.reserve() (in executeUserInput) fires BEFORE processUserInput's
+  // queryGuard.reserve() fires before the first async input-processing step, but
   // first await, but the ref reset in onQuery's try block runs AFTER. During
   // that gap, React renders the spinner with loadingStartTimeRef=0, computing
   // elapsedTimeMs = Date.now() - 0 ≈ 56 years. This inline reset runs on the
@@ -1219,7 +1219,7 @@ export function REPL({
     } else if (next.length > prev.length && userMessagePendingRef.current) {
       // Grew while the submitted user message hasn't landed yet. If the
       // added messages don't include it (bridge status, hook results,
-      // scheduled tasks landing async during processUserInputBase), bump
+      // scheduled tasks landing async during input processing), bump
       // baseline so the placeholder stays visible. Once the user message
       // lands, stop tracking — later additions (assistant stream) should
       // not re-show the placeholder.
@@ -2003,7 +2003,7 @@ export function REPL({
   const bashToolsProcessedIdx = useRef(0);
   // Session-scoped skill discovery tracking (feeds was_discovered on
   // tengu_skill_tool_invocation). Must persist across getToolUseContext
-  // rebuilds within a session: turn-0 discovery writes via processUserInput
+  // rebuilds within a session: turn-0 discovery writes before onQuery builds
   // before onQuery builds its own context, and discovery on turn N must
   // still attribute a SkillTool call on turn N+k. Cleared in clearConversation.
   const discoveredSkillNamesRef = useRef(new Set<string>());
@@ -2436,7 +2436,7 @@ export function REPL({
       reject
     }]);
   }), []);
-  const getToolUseContext = useCallback((messages: MessageType[], newMessages: MessageType[], abortController: AbortController, mainLoopModel: string): ProcessUserInputContext => {
+  const getToolUseContext = useCallback((messages: MessageType[], newMessages: MessageType[], abortController: AbortController, mainLoopModel: string): PromptInputContext => {
     // Read mutable values fresh from the store rather than closure-capturing
     // useAppState() snapshots. Same values today (closure is refreshed by the
     // render between turns); decouples freshness from React's render cycle for
@@ -3331,7 +3331,7 @@ export function REPL({
           const jsx = await mod.call(onDone, context, commandArgs);
 
           // Skip if onDone already fired — prevents stuck isLocalJSXCommand
-          // (see processSlashCommand.tsx local-jsx case for full mechanism).
+          // (the local JSX command path can finish before returning JSX).
           if (jsx && !doneWasCalled) {
             // shouldHidePromptInput: false keeps Notifications mounted
             // so the onDone result isn't lost
@@ -4556,7 +4556,7 @@ export function REPL({
   // displayedMessages. userInputOnProcessing stays set for the whole turn
   // (cleared in resetLoadingState); this length check hides it once
   // displayedMessages grows past the baseline captured at submit time.
-  // Covers both gaps: before setMessages is called (processUserInput), and
+  // Covers both gaps: before setMessages is called, and
   // while deferredMessages lags behind messages. Suppressed when viewing an
   // agent — displayedMessages is a different array there, and onAgentSubmit
   // doesn't use the placeholder anyway.

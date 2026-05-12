@@ -595,7 +595,7 @@ export function formatCommandInputTags(
 /**
  * Builds the breadcrumb trail the SDK set_model control handler injects
  * so the model can see mid-conversation switches. Same shape the CLI's
- * /model command produces via processSlashCommand.
+ * /model command produces via the slash dispatcher.
  */
 export function createModelSwitchBreadcrumbs(
   modelArg: string,

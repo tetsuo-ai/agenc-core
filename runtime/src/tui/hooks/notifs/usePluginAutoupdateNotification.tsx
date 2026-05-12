@@ -11,7 +11,7 @@ import { onPluginsAutoUpdated } from '../../../utils/plugins/pluginAutoupdate.js
 
 /**
  * Hook that displays a notification when plugins have been auto-updated.
- * The notification tells the user to run /reload-plugins to apply the updates.
+ * The notification tells the user to restart AgenC to apply the updates.
  */
 export function usePluginAutoupdateNotification() {
   const $ = _c(7);
@@ -61,7 +61,7 @@ export function usePluginAutoupdateNotification() {
       const displayNames = pluginNames.length <= 2 ? pluginNames.join(" and ") : `${pluginNames.length} plugins`;
       addNotification({
         key: "plugin-autoupdate-restart",
-        jsx: <><Text color="success">{pluginNames.length === 1 ? "Plugin" : "Plugins"} updated:{" "}{displayNames}</Text><Text dimColor={true}> · Run /reload-plugins to apply</Text></>,
+        jsx: <><Text color="success">{pluginNames.length === 1 ? "Plugin" : "Plugins"} updated:{" "}{displayNames}</Text><Text dimColor={true}> · Restart AgenC to apply</Text></>,
         priority: "low",
         timeoutMs: 10000
       });

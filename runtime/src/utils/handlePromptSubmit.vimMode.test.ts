@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
-  processUserInput: vi.fn(async () => ({
+  processPromptInput: vi.fn(async () => ({
     messages: [],
     shouldQuery: false,
   })),
@@ -15,8 +15,8 @@ vi.mock('src/utils/debug.js', () => ({
   logForDebugging: () => {},
 }))
 
-vi.mock('../tui/input/processUserInput.js', () => ({
-  processUserInput: mocks.processUserInput,
+vi.mock('../tui/input/processPromptInput.js', () => ({
+  processPromptInput: mocks.processPromptInput,
 }))
 
 describe('handlePromptSubmit vim routing state', () => {
@@ -66,7 +66,7 @@ describe('handlePromptSubmit vim routing state', () => {
     })
 
     expect(reserve).toHaveBeenCalled()
-    expect(mocks.processUserInput).toHaveBeenCalledWith(
+    expect(mocks.processPromptInput).toHaveBeenCalledWith(
       expect.objectContaining({
         input: 'alpha',
         mode: 'prompt',

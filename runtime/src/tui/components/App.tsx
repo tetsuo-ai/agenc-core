@@ -19,7 +19,7 @@ import { isFullscreenEnvEnabled, isMouseTrackingEnabled } from "../../utils/full
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
 import type { SpinnerMode } from "./spinner/types.js";
 import { parseSlashCommand, dispatchSlashCommand } from "../../commands/dispatcher.js";
-import { buildDefaultRegistry, registeredLegacyCommandSurfaceSpecs, executeLegacyCommandSurfaceForTui } from "../../commands/registry.js";
+import { buildDefaultRegistry } from "../../commands/registry.js";
 import { setGlobalCommandRegistry } from "../../commands/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
@@ -1343,24 +1343,11 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     tools: availableTools,
     setToolJSX,
     mcpClients,
-    // local-jsx commands mutate React-side
-    // app state via these hooks. Without them, those commands throw a
-    // TypeError on first access ("context.setAppState is not a
-    // function"), the slash dispatcher's outer try/catch swallows the
-    // exception, falls back to `props.session.submit(value)`, and forwards
-    // the raw slash command text to the model. The proper fix is to provide
-    // the state hooks the local-jsx surface contract promises.
     setAppState,
-    // The daemon-backed TUI does not own a local message array (the
-    // daemon does), so legacy local-jsx setMessages calls are a no-op
-    // here. Provided so callers don't TypeError on the field access.
     setMessages: () => {},
   }) as any, [appStateStore, commands, availableTools, mcpClients, props.session, refreshAvailableTools, toolPermissionContext, setToolJSX, setAppState]);
 
-  // Transient-message helper. local-jsx commands
-  // pass a status string to onDone — without this, that string was
-  // silently dropped. Mount a bordered overlay with the message and
-  // auto-clear after ~3 seconds so the user can keep typing.
+  // Transient-message helper for local slash-command results.
   const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
   const showTransientResult = useCallback((text: string, opts?: {
     display?: string;
@@ -1434,15 +1421,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // otherwise be forwarded to the model as plain text and the model
     // would respond with generic prose instead of running the command.
     //
-    // Three command shapes route through here:
-    //   1. SlashCommand-shape (execute(ctx)) — built-in local commands.
-    //      Result.kind = "text" / "error" rendered in a bordered overlay.
-    //   2. local-jsx — registered via legacy specs. Loads the module, calls call(),
-    //      mounts the returned JSX dialog via setToolJSX. The dialog's
-    //      onDone unmounts.
-    //   3. prompt — /commit, /review, /pr-comments. Renders the prompt
-    //      template via getPromptForCommand and resubmits the resulting
-    //      text to the model as a fresh user turn.
+    // Slash commands route through the canonical registry. Unknown names go
+    // through the dispatcher so the TUI matches the daemon/CLI slash path.
     if (text_0.startsWith("/") && text_0.length > 1) {
       try {
         const parsed = parseSlashCommand(text_0);
@@ -1510,8 +1490,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
               return { forwardedToModel: false };
             }
             if (result.kind === "prompt") {
-              // Slash command produced a follow-up prompt for the model
-              // (e.g. `/plan <description>`). Forward it through the
+              // Slash command produced a follow-up prompt for the model.
+              // Forward it through the
               // normal submit path so the user prompt gets echoed and
               // the daemon turn starts.
               void props.session.submit?.(result.content);
@@ -1536,77 +1516,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             };
           };
 
-          // Check legacy specs first — they cover local-jsx and prompt
-          // shapes that dispatchSlashCommand can't handle correctly
-          // because executeLegacyCommandSurface returns errors for
-          // those types in headless mode.
-          const parsedNameLower = parsed.name.toLowerCase();
-          const legacySpec = registeredLegacyCommandSurfaceSpecs.find(spec => {
-            if (spec.name.toLowerCase() === parsedNameLower) return true;
-            if (Array.isArray(spec.aliases)) {
-              for (const alias of spec.aliases) {
-                if (typeof alias === "string" && alias.toLowerCase() === parsedNameLower) {
-                  return true;
-                }
-              }
-            }
-            return false;
-          });
-          if (legacySpec !== undefined) {
-            const tuiHandlers = {
-              mountJsx: (jsx: unknown, opts_0?: {
-                shouldHidePromptInput?: boolean;
-              }) => {
-                setToolJSX({
-                  jsx: jsx as never,
-                  shouldHidePromptInput: opts_0?.shouldHidePromptInput ?? true
-                });
-              },
-              unmountJsx: () => {
-                setToolJSX(null);
-              },
-              submitPromptToModel: async (content: string) => {
-                try {
-                  await props.session.submit?.(content);
-                } catch (err_0) {
-                  // The daemon can return JSON-RPC error responses for
-                  // every request (agent evicted, session closed, turn
-                  // already in flight, etc.). The promise rejection
-                  // would otherwise propagate up to the React onSubmit
-                  // handler and become an unhandledRejection — which
-                  // crashes the Node 25 process under
-                  // --unhandled-rejections=throw. Surface as a UI-level
-                  // notice instead so the operator sees what failed and
-                  // the TUI keeps running.
-                  const message = err_0 instanceof Error ? err_0.message : String(err_0);
-                  showTransientResult(message, {
-                    display: "error"
-                  });
-                }
-              },
-              notifyResult: (resultText: string, resultOpts?: {
-                display?: string;
-              }) => {
-                showTransientResult(resultText, resultOpts);
-              },
-              toolUseContext: getToolUseContext(transcriptMessagesRef.current as unknown[], [], new AbortController())
-            };
-            const result_0 = await executeLegacyCommandSurfaceForTui(legacySpec, parsed.argsRaw, tuiHandlers.toolUseContext, tuiHandlers);
-            const dispatched = renderResult(result_0 as never);
-            // Slash command was handled locally and didn't forward to
-            // the model — clear the optimistic pending-submission flag
-            // so the spinner doesn't stay stuck on "Processing…".
-            if (!dispatched.forwardedToModel) {
-              setPendingSubmission(false);
-            }
-            return;
-          }
-
-          // Fall back to the SlashCommand-shape dispatcher for built-ins and
-          // user-invocable skill slash commands. Unknown names intentionally
-          // go through the dispatcher so the TUI behaves like the daemon/CLI
-          // slash path instead of silently forwarding raw `/name` text to the
-          // model.
           const outcome = await dispatchSlashCommand(parsed, {
             session: props.session,
             argsRaw: parsed.argsRaw,
@@ -1656,7 +1565,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       // waiting for a turn that will never start.
       setPendingSubmission(false);
     }
-  }, [pastedContents, props.session, setToolJSX, getToolUseContext, showTransientResult, commandRegistry]);
+  }, [pastedContents, props.session, setToolJSX, showTransientResult, commandRegistry]);
   // When the daemon shows any sign of activity, drop the optimistic
   // pending-submission flag. We don't gate this only on isStreaming
   // (turn_started) because the daemon sometimes skips that event and
@@ -1692,8 +1601,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // and (b) fire/clear it when ESC fires or the turn naturally ends.
   // We do NOT auto-abort when streaming ends — the user pressing ESC
   // after a turn finished is a no-op, which is correct behavior. The
-  // signal is also handed to local-jsx command contexts so command
-  // implementations can cooperatively cancel.
+  // signal is also handed to command contexts so command implementations can
+  // cooperatively cancel.
   const [turnAbortController, setTurnAbortController] = useState<AbortController | null>(null);
   useEffect(() => {
     if (transcript.isStreaming) {

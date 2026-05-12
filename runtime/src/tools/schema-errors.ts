@@ -114,7 +114,6 @@ function formatValidationPath(path: string): string {
  * description without the full parameter schema.
  */
 const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "SkillTool",
   "skill",
   "Skill",
 ]);
@@ -123,9 +122,9 @@ const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Per-tool override for a schema-validation error message. Returns
  * `null` when the default `formatSchemaValidationError` prose is fine.
  *
- * Matches AgenC's schema-validation override scope (today, only
- * SkillTool's missing-`skill` case). Additional overrides can be
- * added here as new tools gain specific bad-input guidance.
+ * Matches AgenC's schema-validation override scope for the canonical
+ * `Skill` tool's missing-`skill` case. Additional overrides can be added here
+ * as new tools gain specific bad-input guidance.
  */
 export function getSchemaValidationErrorOverride(
   tool: Tool,
@@ -136,9 +135,8 @@ export function getSchemaValidationErrorOverride(
   const skill = (input as { skill?: unknown }).skill;
   if (skill === undefined || skill === null) {
     return (
-      "Missing skill name. Pass the slash command name as the skill " +
-      'parameter (e.g., skill: "commit" for /commit, skill: "review-pr" ' +
-      "for /review-pr)."
+      "Missing skill name. Pass the skill name as the skill parameter " +
+      '(e.g., skill: "commit" or skill: "review-pr").'
     );
   }
   return null;

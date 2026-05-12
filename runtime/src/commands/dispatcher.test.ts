@@ -235,7 +235,6 @@ describe("isBridgeSafeCommand", () => {
     for (const name of [
       "status",
       "help",
-      "context",
       "model",
       "model-provider",
       "provider",
@@ -252,6 +251,7 @@ describe("isBridgeSafeCommand", () => {
       "compact",
       "permissions",
       "config",
+      "context",
       "resume",
       "fork",
       "init",
@@ -319,7 +319,7 @@ describe("dispatchSlashCommand", () => {
     });
   });
 
-  it("dispatches unknown slash commands as user-invocable skills", async () => {
+  it("does not expand unknown slash commands as skills", async () => {
     const out = await dispatchSlashCommand(
       { name: "review-pr", argsRaw: "123", isMcp: false },
       stubCtx({
@@ -358,27 +358,28 @@ describe("dispatchSlashCommand", () => {
     );
 
     expect(out.result).toEqual({
-      kind: "prompt",
-      content: "<command-name>review-pr</command-name>\nReview PR 123",
+      kind: "error",
+      message: "Unknown command: /review-pr",
     });
     expect(out.trace.name).toBe("review-pr");
   });
 
-  it("rejects model-only skills from slash dispatch", async () => {
+  it("does not probe model-only skills from slash dispatch", async () => {
+    const resolveSkill = vi.fn(async () => ({
+      name: "hidden",
+      description: "Hidden",
+      path: "/skills/hidden/SKILL.md",
+      root: "/skills/hidden",
+      scope: "project",
+      userInvocable: false,
+    }));
     const out = await dispatchSlashCommand(
       { name: "hidden", argsRaw: "", isMcp: false },
       stubCtx({
         session: {
           services: {
             skillsManager: {
-              resolveSkill: async () => ({
-                name: "hidden",
-                description: "Hidden",
-                path: "/skills/hidden/SKILL.md",
-                root: "/skills/hidden",
-                scope: "project",
-                userInvocable: false,
-              }),
+              resolveSkill,
               skillsForConfig: async () => ({ invokedSkills: [] }),
             },
           },
@@ -387,10 +388,11 @@ describe("dispatchSlashCommand", () => {
       registry,
     );
 
-    expect(out.result.kind).toBe("error");
-    if (out.result.kind === "error") {
-      expect(out.result.message).toContain("not user-invocable");
-    }
+    expect(out.result).toEqual({
+      kind: "error",
+      message: "Unknown command: /hidden",
+    });
+    expect(resolveSkill).not.toHaveBeenCalled();
   });
 
   it("returns { kind: 'skip' } when the cwd has a file matching the unknown name", async () => {

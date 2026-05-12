@@ -585,7 +585,7 @@ export async function installPluginFromMarketplace({
 
     return {
       success: true,
-      message: `✓ Installed ${entry.name}${result.depNote}. Run /reload-plugins to activate.`,
+      message: `✓ Installed ${entry.name}${result.depNote}. Restart AgenC to activate.`,
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)

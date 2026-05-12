@@ -1,5 +1,4 @@
 import type { Tool } from '../Tool.js'
-import { AgentTool } from '../AgentTool/AgentTool.js'
 import {
   CanonicalBashTool,
   CanonicalFileEditTool,
@@ -36,6 +35,5 @@ export function getReplPrimitiveTools(): readonly Tool[] {
     CanonicalGrepTool,
     CanonicalBashTool,
     CanonicalNotebookEditTool,
-    AgentTool,
   ])
 }

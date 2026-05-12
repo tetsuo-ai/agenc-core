@@ -11,7 +11,7 @@
  * `--glob '!<dir>/**'` patterns for their parent directories. The cache
  * is warmed in main.tsx AFTER cleanupOrphanedPluginVersionsInBackground
  * settles disk state. Once populated, the exclusion list is frozen for
- * the session unless /reload-plugins is called; subsequent disk mutations
+ * the session unless plugin refresh is called; subsequent disk mutations
  * (autoupdate, concurrent sessions) don't affect it.
  */
 
@@ -22,7 +22,7 @@ import { getPluginsDirectory } from './pluginDirectories.js'
 // Inlined from cacheUtils.ts to avoid a circular dep through commands.js.
 const ORPHANED_AT_FILENAME = '.orphaned_at'
 
-/** Session-scoped cache. Frozen once computed — only cleared by explicit /reload-plugins. */
+/** Session-scoped cache. Frozen once computed — only cleared by explicit plugin refresh. */
 let cachedExclusions: string[] | null = null
 
 /**

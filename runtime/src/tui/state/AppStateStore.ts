@@ -176,7 +176,7 @@ export type AppState = DeepImmutable<{
     commands: Command[]
     resources: Record<string, ServerResource[]>
     /**
-     * Incremented by /reload-plugins to trigger MCP effects to re-run
+     * Incremented by session plugin refresh to trigger MCP effects to re-run
      * and pick up newly-enabled plugin MCP servers. Effects read this
      * as a dependency; the value itself is not consumed.
      */
@@ -209,7 +209,7 @@ export type AppState = DeepImmutable<{
     /**
      * Set to true when plugin state on disk has changed (background reconcile,
      * /plugin menu install, external settings edit) and active components are
-     * stale. In interactive mode, user runs /reload-plugins to consume. In
+     * stale. In interactive mode, user restarts AgenC to consume. In
      * headless mode, refreshPluginState() auto-consumes via refreshActivePlugins().
      */
     needsRefresh: boolean

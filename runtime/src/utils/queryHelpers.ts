@@ -33,7 +33,7 @@ import type {
   inputSchema as permissionToolInputSchema,
   outputSchema as permissionToolOutputSchema,
 } from './permissions/PermissionPromptToolResultSchema.js'
-import type { ProcessUserInputContext } from '../tui/input/processUserInput.js'
+import type { PromptInputContext } from '../tui/input/processPromptInput.js'
 import { recordTranscript } from './sessionStorage.js'
 
 export type PermissionPromptTool = Tool<
@@ -227,7 +227,7 @@ export async function* handleOrphanedPermission(
   orphanedPermission: OrphanedPermission,
   tools: Tools,
   mutableMessages: Message[],
-  processUserInputContext: ProcessUserInputContext,
+  promptInputContext: PromptInputContext,
 ): AsyncGenerator<SDKMessage, void, unknown> {
   const persistSession = !isSessionPersistenceDisabled()
   const { permissionResult, assistantMessage } = orphanedPermission
@@ -326,7 +326,7 @@ export async function* handleOrphanedPermission(
     [finalToolUseBlock],
     [assistantMessage],
     canUseTool,
-    processUserInputContext,
+    promptInputContext,
   )) {
     if (update.message) {
       mutableMessages.push(update.message)

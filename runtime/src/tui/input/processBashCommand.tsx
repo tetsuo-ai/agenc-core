@@ -18,7 +18,7 @@ import { isPowerShellToolEnabled } from '../../utils/shell/shellToolUtils.js';
 import { processToolResultBlock } from '../../utils/toolResultStorage.js';
 import { escapeXml } from '../../utils/xml.js';
 import { consumeSuspectedPaste } from './burst-detector.js';
-import type { ProcessUserInputContext } from './processUserInput.js';
+import type { PromptInputContext } from './inputContext.js';
 
 function canonicalShellOut(data: unknown): {
   stdout: string;
@@ -63,7 +63,7 @@ function awaitPasteConfirmation(command: string, setToolJSX: SetToolJSXFn): Prom
   });
 }
 
-export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: ProcessUserInputContext, setToolJSX: SetToolJSXFn): Promise<{
+export async function processBashCommand(inputString: string, precedingInputBlocks: ContentBlockParam[], attachmentMessages: AttachmentMessage[], context: PromptInputContext, setToolJSX: SetToolJSXFn): Promise<{
   messages: (UserMessage | AttachmentMessage | SystemMessage)[];
   shouldQuery: boolean;
 }> {
@@ -113,7 +113,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     shouldHidePromptInput: false
   });
   try {
-    const bashModeContext: ProcessUserInputContext = {
+    const bashModeContext: PromptInputContext = {
       ...context,
       // Follow-up: Clean up this workaround
       setToolJSX: _ => {

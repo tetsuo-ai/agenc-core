@@ -26,8 +26,10 @@ import { fileHistoryEnabled, fileHistoryMakeSnapshot } from './fileHistory.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { enqueue } from './messageQueueManager.js'
 import { resolveSkillModelOverride } from './model/model.js'
-import type { ProcessUserInputContext } from '../tui/input/processUserInput.js'
-import { processUserInput } from '../tui/input/processUserInput.js'
+import {
+  processPromptInput,
+  type PromptInputContext,
+} from '../tui/input/processPromptInput.js'
 import type { VimRoutingState } from '../tui/input/processTextPrompt.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
@@ -58,7 +60,7 @@ type BaseExecutionParams = {
     newMessages: Message[],
     abortController: AbortController,
     mainLoopModel: string,
-  ) => ProcessUserInputContext
+  ) => PromptInputContext
   setUserInputOnProcessing: (prompt?: string) => void
   setAbortController: (abortController: AbortController | null) => void
   onQuery: (
@@ -302,7 +304,7 @@ export async function handlePromptSubmit(
       const jsx = await impl.call(onDone, context, commandArgs)
 
       // Skip if onDone already fired — prevents stuck isLocalJSXCommand
-      // (see processSlashCommand.tsx local-jsx case for full mechanism).
+      // (see the registry slash dispatch path for the full mechanism).
       if (jsx && !doneWasCalled) {
         setToolJSX({
           jsx,
@@ -338,7 +340,7 @@ export async function handlePromptSubmit(
     }
 
     // Enqueue with string value + raw pastedContents. Images will be resized
-    // at execution time when processUserInput runs (not baked in here).
+    // at execution time when processPromptInput runs (not baked in here).
     enqueue({
       value: finalInput.trim(),
       preExpansionValue: input.trim(),
@@ -361,7 +363,7 @@ export async function handlePromptSubmit(
 
   // Construct a QueuedCommand from the direct user input so both paths
   // go through the same executeUserInput loop. This ensures images get
-  // resized via processUserInput regardless of how the command arrives.
+  // resized via processPromptInput regardless of how the command arrives.
   const cmd: QueuedCommand = {
     value: finalInput,
     preExpansionValue: input,
@@ -427,17 +429,17 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
   const abortController = createAbortController()
   setAbortController(abortController)
 
-  function makeContext(): ProcessUserInputContext {
+  function makeContext(): PromptInputContext {
     return getToolUseContext(messages, [], abortController, mainLoopModel)
   }
 
-  // Wrap in try-finally so the guard is released even if processUserInput
+  // Wrap in try-finally so the guard is released even if processPromptInput
   // throws or onQuery is skipped. onQuery's finally calls queryGuard.end(),
   // which transitions running→idle; cancelReservation() below is a no-op in
   // that case (only acts on dispatching state).
   try {
-    // Reserve the guard BEFORE processUserInput — processBashCommand awaits
-    // BashTool.call() and processSlashCommand awaits getMessagesForSlashCommand,
+    // Reserve the guard BEFORE processPromptInput — processBashCommand awaits
+    // BashTool.call() and local slash commands may await execution,
     // so the guard must be active during those awaits to ensure concurrent
     // handlePromptSubmit calls queue (via the isActive check above) instead
     // of starting a second executeUserInput. This call is a no-op if the
@@ -469,7 +471,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
         ? firstWorkload
         : undefined
 
-    // Wrap the entire turn (processUserInput loop + onQuery) in an
+    // Wrap the entire turn (processPromptInput loop + onQuery) in an
     // AsyncLocalStorage context. This is the ONLY way to correctly
     // propagate workload across await boundaries: void-detached bg agents
     // (executeForkedSlashCommand, AgentTool) capture the ALS context at
@@ -481,7 +483,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       for (let i = 0; i < commands.length; i++) {
         const cmd = commands[i]!
         const isFirst = i === 0
-        const result = await processUserInput({
+        const result = await processPromptInput({
           input: cmd.value,
           preExpansionInput: cmd.preExpansionValue,
           mode: cmd.mode,
@@ -504,7 +506,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           vimRoutingState: isFirst ? vimRoutingState : undefined,
         })
         // Stamp origin here rather than threading another arg through
-        // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.
+        // processPromptInput → processPromptInputBase → processTextPrompt → createUserMessage.
         // Derive origin from mode for task-notifications — mirrors the origin
         // derivation at messages.ts (case 'queued_command'); intentionally
         // does NOT mirror its isMeta:true so idle-dequeued notifications stay
@@ -604,13 +606,13 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       }
     }) // end runWithWorkload — ALS context naturally scoped, no finally needed
   } finally {
-    // Safety net: release the guard reservation if processUserInput threw
+    // Safety net: release the guard reservation if processPromptInput threw
     // or onQuery was skipped. No-op if onQuery already ran (guard is idle
     // via end(), or running — cancelReservation only acts on dispatching).
     // This is the single source of truth for releasing the reservation;
     // useQueueProcessor no longer needs its own .finally().
     queryGuard.cancelReservation()
-    // Safety net: clear the placeholder if processUserInput produced no
+    // Safety net: clear the placeholder if processPromptInput produced no
     // messages or threw — otherwise it would stay visible until the next
     // turn's resetLoadingState. Harmless when onQuery ran: setMessages grew
     // displayedMessages past the baseline, so REPL.tsx already hid it.

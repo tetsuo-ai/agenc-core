@@ -55,16 +55,14 @@ const CUSTOM_COMMANDS_TITLE = "Custom Commands";
 const HELP_CATEGORIES: readonly HelpCategory[] = [
   {
     title: "Getting Started",
-    commands: ["help", "init", "keybindings", "status"],
+    commands: ["help", "status"],
   },
   {
     title: "Configuration",
     commands: [
       "config",
-      "effort",
       "hooks",
       "mcp",
-      "memory",
       "model",
       "model-provider",
       "permissions",
@@ -73,31 +71,11 @@ const HELP_CATEGORIES: readonly HelpCategory[] = [
   },
   {
     title: "Session",
-    commands: ["clear", "compact", "exit", "fork", "plan", "resume"],
+    commands: ["clear", "compact", "exit"],
   },
   {
     title: "Context & Files",
-    commands: [
-      "context",
-      "copy",
-      "diff",
-      "enter-worktree",
-      "exit-worktree",
-      "files",
-      "wiki",
-    ],
-  },
-  {
-    title: "Diagnostics",
-    commands: [
-      "cache-stats",
-      "cost",
-      "doctor",
-      "release-notes",
-      "reload-plugins",
-      "stats",
-      "usage",
-    ],
+    commands: ["diff"],
   },
 ];
 
@@ -258,15 +236,16 @@ async function loadHelpCommandSurface(
   readonly commands: readonly HelpCommand[];
   readonly builtInCommandNames?: ReadonlySet<string>;
 }> {
-  try {
-    const commandSurface = await import("../commands.js");
-    return {
-      commands: await commandSurface.getCommands(cwd),
-      builtInCommandNames: commandSurface.builtInCommandNames(),
-    };
-  } catch {
-    return { commands: fallbackRegistry.list() };
-  }
+  void cwd;
+  return {
+    commands: fallbackRegistry.list(),
+    builtInCommandNames: new Set(
+      fallbackRegistry.list().flatMap(command => [
+        command.name,
+        ...(command.aliases ?? []),
+      ]),
+    ),
+  };
 }
 
 export const helpCommand: SlashCommand = {

@@ -89,7 +89,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
 
 /*
  * BLOCKED FOR ASYNC AGENTS:
- * - AgentTool: Blocked to prevent recursion
+ * - spawn_agent: Blocked to prevent recursion
  * - TaskOutputTool: Blocked to prevent recursion
  * - ExitPlanModeTool: Plan mode is a main thread abstraction.
  * - TaskStopTool: Requires access to main thread task state.

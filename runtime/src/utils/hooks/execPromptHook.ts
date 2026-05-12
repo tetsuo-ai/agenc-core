@@ -38,7 +38,7 @@ export async function execPromptHook(
       `Hooks: Processing prompt hook with prompt: ${processedPrompt}`,
     )
 
-    // Create user message directly - no need for processUserInput which would
+    // Create user message directly - no need for prompt input dispatch, which would
     // trigger UserPromptSubmit hooks and cause infinite recursion
     const userMessage = createUserMessage({ content: processedPrompt })
 

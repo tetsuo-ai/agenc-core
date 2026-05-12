@@ -1,6 +1,5 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -14,6 +13,8 @@ import {
   findCommand,
   getCommandName,
   isBridgeSafeCommand,
+  isCommandEnabled,
+  type LocalCommandResult,
   type LocalJSXCommandContext,
 } from '../../commands.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
@@ -51,23 +52,22 @@ import {
 import { storeImages } from '../../utils/imageStore.js'
 import {
   createCommandInputMessage,
+  createSyntheticUserCaveatMessage,
   createSystemMessage,
   createUserMessage,
+  prepareUserContent,
 } from '../../utils/messages.js'
+import { escapeXml } from '../../utils/xml.js'
 import { queryCheckpoint } from '../../utils/queryProfiler.js'
 import { parseSlashCommand } from '../slash/slash-command-parsing.js'
-import {
-  hasUltraplanKeyword,
-  replaceUltraplanKeyword,
-} from '../../utils/ultraplan/keyword.js'
 import {
   finalizeVimInputForRouting,
   processTextPrompt,
   type VimRoutingState,
 } from './processTextPrompt.js'
-export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
+export type PromptInputContext = ToolUseContext & LocalJSXCommandContext
 
-export type ProcessUserInputBaseResult = {
+export type PromptInputResult = {
   messages: (
     | UserMessage
     | AssistantMessage
@@ -88,7 +88,7 @@ export type ProcessUserInputBaseResult = {
   submitNextInput?: boolean
 }
 
-export async function processUserInput({
+export async function processPromptInput({
   input,
   preExpansionInput,
   mode,
@@ -117,7 +117,7 @@ export async function processUserInput({
   preExpansionInput?: string
   mode: PromptInputMode
   setToolJSX: SetToolJSXFn
-  context: ProcessUserInputContext
+  context: PromptInputContext
   pastedContents?: Record<number, PastedContent>
   ideSelection?: IDESelection
   messages?: Message[]
@@ -145,7 +145,7 @@ export async function processUserInput({
   isMeta?: boolean
   skipAttachments?: boolean
   vimRoutingState?: VimRoutingState
-}): Promise<ProcessUserInputBaseResult> {
+}): Promise<PromptInputResult> {
   const routedInput =
     typeof input === 'string'
       ? finalizeVimInputForRouting(input, vimRoutingState)
@@ -158,11 +158,11 @@ export async function processUserInput({
     setUserInputOnProcessing?.(inputString)
   }
 
-  queryCheckpoint('query_process_user_input_base_start')
+  queryCheckpoint('query_process_prompt_input_base_start')
 
   const appState = context.getAppState()
 
-  const result = await processUserInputBase(
+  const result = await processPromptInputBase(
     routedInput,
     mode,
     setToolJSX,
@@ -181,7 +181,7 @@ export async function processUserInput({
     skipAttachments,
     preExpansionInput,
   )
-  queryCheckpoint('query_process_user_input_base_end')
+  queryCheckpoint('query_process_prompt_input_base_end')
 
   if (!result.shouldQuery) {
     return result
@@ -285,8 +285,92 @@ export async function processUserInput({
   return result
 }
 
+function localCommandResultToPromptInputResult(
+  inputString: string,
+  precedingInputBlocks: ContentBlockParam[],
+  attachmentMessages: AttachmentMessage[],
+  uuid: string | undefined,
+  result: LocalCommandResult,
+): PromptInputResult {
+  if (result.type === 'skip') {
+    return { messages: [], shouldQuery: false }
+  }
+
+  const text =
+    result.type === 'compact' ? result.displayText ?? '' : result.value
+  if (!text) {
+    return { messages: [], shouldQuery: false }
+  }
+
+  return {
+    messages: [
+      createSyntheticUserCaveatMessage(),
+      createUserMessage({
+        content: prepareUserContent({ inputString, precedingInputBlocks }),
+        uuid,
+      }),
+      ...attachmentMessages,
+      createUserMessage({
+        content: `<local-command-stdout>${escapeXml(text)}</local-command-stdout>`,
+      }),
+    ],
+    shouldQuery: false,
+    resultText: text,
+  }
+}
+
+async function processRegistrySlashInput(
+  inputString: string,
+  precedingInputBlocks: ContentBlockParam[],
+  attachmentMessages: AttachmentMessage[],
+  context: PromptInputContext,
+  uuid?: string,
+): Promise<PromptInputResult> {
+  const parsed = parseSlashCommand(inputString)
+  if (!parsed) {
+    return localCommandResultToPromptInputResult(
+      inputString,
+      precedingInputBlocks,
+      attachmentMessages,
+      uuid,
+      { type: 'text', value: 'Commands are in the form `/command [args]`' },
+    )
+  }
+
+  const command = findCommand(parsed.commandName, context.options.commands)
+  if (!command || command.type !== 'local') {
+    return localCommandResultToPromptInputResult(
+      inputString,
+      precedingInputBlocks,
+      attachmentMessages,
+      uuid,
+      { type: 'text', value: `Unknown command: /${parsed.commandName}` },
+    )
+  }
+
+  if (command.userInvocable === false || !isCommandEnabled(command)) {
+    return localCommandResultToPromptInputResult(
+      inputString,
+      precedingInputBlocks,
+      attachmentMessages,
+      uuid,
+      { type: 'text', value: `/${getCommandName(command)} is not available` },
+    )
+  }
+
+  const local = await command.load()
+  const result = await local.call(parsed.args, context)
+  return localCommandResultToPromptInputResult(
+    inputString,
+    precedingInputBlocks,
+    attachmentMessages,
+    uuid,
+    result,
+  )
+}
+
 function emitUserPromptSubmitHookWarning(
-  context: ProcessUserInputContext,
+  context: PromptInputContext,
   err: unknown,
   idx: number,
 ): void {
@@ -322,11 +406,11 @@ function applyTruncation(content: string): string {
   return content
 }
 
-async function processUserInputBase(
+async function processPromptInputBase(
   input: string | Array<ContentBlockParam>,
   mode: PromptInputMode,
   setToolJSX: SetToolJSXFn,
-  context: ProcessUserInputContext,
+  context: PromptInputContext,
   pastedContents?: Record<number, PastedContent>,
   ideSelection?: IDESelection,
   messages?: Message[],
@@ -340,7 +424,7 @@ async function processUserInputBase(
   isMeta?: boolean,
   skipAttachments?: boolean,
   preExpansionInput?: string,
-): Promise<ProcessUserInputBaseResult> {
+): Promise<PromptInputResult> {
   let inputString: string | null = null
   let precedingInputBlocks: ContentBlockParam[] = []
 
@@ -496,47 +580,13 @@ async function processUserInputBase(
     // pre-#19134. A mobile user typing "/shrug" shouldn't see "Unknown skill".
   }
 
-  // Ultraplan keyword — route through /ultraplan. Detect on the
-  // pre-expansion input so pasted content containing the word cannot
-  // trigger a CCR session; replace with "plan" in the expanded input so
-  // the CCR prompt receives paste contents and stays grammatical. See
-  // keyword.ts for the quote/path exclusions. Interactive prompt mode +
-  // non-slash-prefixed only:
-  // headless/print mode filters local-jsx commands out of context.options,
-  // so routing to /ultraplan there yields "Unknown skill" — and there's no
-  // rainbow animation in print mode anyway.
-  // Runs before attachment extraction so this path matches the slash-command
-  // path below (no await between setUserInputOnProcessing and setAppState —
-  // React batches both into one render, no flash).
-  if (
-    feature('ULTRAPLAN') &&
-    mode === 'prompt' &&
-    !context.options.isNonInteractiveSession &&
-    inputString !== null &&
-    !effectiveSkipSlash &&
-    !inputString.startsWith('/') &&
-    !context.getAppState().ultraplanSessionUrl &&
-    !context.getAppState().ultraplanLaunching &&
-    hasUltraplanKeyword(preExpansionInput ?? inputString)
-  ) {
-    logEvent('agenc_ultraplan_keyword', {})
-    const rewritten = replaceUltraplanKeyword(inputString).trim()
-    const { processSlashCommand } = await import('./processSlashCommand.js')
-    const slashResult = await processSlashCommand(
-      `/ultraplan ${rewritten}`,
-      precedingInputBlocks,
-      imageContentBlocks,
-      [],
-      context,
-      setToolJSX,
-      uuid,
-      isAlreadyProcessing,
-      canUseTool,
-    )
-    return addImageMetadataMessage(slashResult, imageMetadataTexts)
-  }
+  void preExpansionInput
+  void imageContentBlocks
+  void isAlreadyProcessing
+  void canUseTool
 
-  // For slash commands, attachments will be extracted within getMessagesForSlashCommand
+  // For slash commands, attachments are not extracted. Slash execution is
+  // limited to the minimal local registry and no longer expands skills.
   const shouldExtractAttachments =
     !skipAttachments &&
     inputString !== null &&
@@ -584,19 +634,16 @@ async function processUserInputBase(
     !effectiveSkipSlash &&
     inputString.startsWith('/')
   ) {
-    const { processSlashCommand } = await import('./processSlashCommand.js')
-    const slashResult = await processSlashCommand(
-      inputString,
-      precedingInputBlocks,
-      imageContentBlocks,
-      attachmentMessages,
-      context,
-      setToolJSX,
-      uuid,
-      isAlreadyProcessing,
-      canUseTool,
+    return addImageMetadataMessage(
+      await processRegistrySlashInput(
+        inputString,
+        precedingInputBlocks,
+        attachmentMessages,
+        context,
+        uuid,
+      ),
+      imageMetadataTexts,
     )
-    return addImageMetadataMessage(slashResult, imageMetadataTexts)
   }
 
   // Log agent mention queries for analysis
@@ -623,7 +670,7 @@ async function processUserInputBase(
   }
 
   // Regular user prompt. For string input, normalizedInput is already the
-  // vim-finalized value passed into this base processor by processUserInput.
+  // vim-finalized value passed into this base processor by processPromptInput.
   const promptInput = normalizedInput
   return addImageMetadataMessage(
     processTextPrompt(
@@ -641,9 +688,9 @@ async function processUserInputBase(
 
 // Adds image metadata texts as isMeta message to result
 function addImageMetadataMessage(
-  result: ProcessUserInputBaseResult,
+  result: PromptInputResult,
   imageMetadataTexts: string[],
-): ProcessUserInputBaseResult {
+): PromptInputResult {
   if (imageMetadataTexts.length > 0) {
     result.messages.push(
       createUserMessage({

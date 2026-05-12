@@ -55,7 +55,7 @@ function updateMarketplaceStatus(
  * reconciled:
  * - New installs → auto-refresh plugins (fixes "plugin-not-found" errors
  *   from the initial cache-only load on fresh homespace/cleared cache)
- * - Updates only → set needsRefresh, show notification for /reload-plugins
+ * - Updates only → set needsRefresh, show notification for plugin refresh
  */
 export async function performBackgroundPluginInstallations(
   setAppState: SetAppState,
@@ -146,7 +146,7 @@ export async function performBackgroundPluginInstallations(
         await refreshActivePlugins(setAppState)
       } catch (refreshError) {
         // If auto-refresh fails, fall back to needsRefresh notification so
-        // the user can manually run /reload-plugins to recover.
+        // the user can manually restart AgenC to recover.
         logError(refreshError)
         logForDebugging(
           `Auto-refresh failed, falling back to needsRefresh: ${refreshError}`,
@@ -164,7 +164,7 @@ export async function performBackgroundPluginInstallations(
         })
       }
     } else if (result.updated.length > 0) {
-      // Existing marketplaces updated — notify user to run /reload-plugins.
+      // Existing marketplaces updated — notify user to restart AgenC.
       // Updates are less urgent and the user should choose when to apply them.
       clearMarketplacesCache()
       clearPluginCache(

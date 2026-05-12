@@ -116,10 +116,6 @@ export async function safeExecute(
 export interface CommandRegistry {
   list(): readonly SlashCommand[];
   find(nameOrAlias: string): SlashCommand | undefined;
-  replaceDynamicCommands?(
-    source: string,
-    commands: readonly SlashCommand[],
-  ): void;
 }
 
 let globalRegistry: CommandRegistry | null = null;

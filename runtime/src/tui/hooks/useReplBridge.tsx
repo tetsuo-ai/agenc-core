@@ -207,9 +207,8 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
                 value: content,
                 mode: 'prompt' as const,
                 uuid,
-                // skipSlashCommands stays true as defense-in-depth —
-                // processUserInputBase overrides it internally when bridgeOrigin
-                // is set AND the resolved command passes isBridgeSafeCommand.
+                // skipSlashCommands stays true as defense-in-depth. Bridge
+                // handling only resolves commands that pass isBridgeSafeCommand.
                 // This keeps exit-word suppression and immediate-command blocks
                 // intact for any code path that checks skipSlashCommands directly.
                 skipSlashCommands: true,

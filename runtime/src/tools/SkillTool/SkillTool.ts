@@ -1,6 +1,10 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
+import type {
+  ContentBlockParam,
+  TextBlockParam,
+  ToolResultBlockParam,
+} from '@anthropic-ai/sdk/resources/index.mjs'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { dirname } from 'path'
 import { getProjectRoot } from 'src/bootstrap/state.js'
@@ -40,7 +44,7 @@ import {
   clearInvokedSkillsForAgent,
   getSessionId,
 } from '../../bootstrap/state.js'
-import { COMMAND_MESSAGE_TAG } from '../../constants/xml.js'
+import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -58,6 +62,12 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { createUserMessage, normalizeMessages } from '../../utils/messages.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import { resolveSkillModelOverride } from '../../utils/model/model.js'
+import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
+import {
+  isRestrictedToPluginOnly,
+  isSourceAdminTrusted,
+} from '../../utils/settings/pluginOnlyPolicy.js'
+import { registerSkillHooks } from '../../utils/hooks/registerSkillHooks.js'
 import { recordSkillUsage } from '../../utils/suggestions/skillUsageTracking.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { runAgent } from '../AgentTool/runAgent.js'
@@ -91,6 +101,63 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
   if (mcpSkills.length === 0) return getCommands(getProjectRoot())
   const localCommands = await getCommands(getProjectRoot())
   return uniqBy([...localCommands, ...mcpSkills], 'name')
+}
+
+function formatSkillLoadingMetadata(skillName: string): string {
+  return [
+    `<${COMMAND_MESSAGE_TAG}>${skillName}</${COMMAND_MESSAGE_TAG}>`,
+    `<${COMMAND_NAME_TAG}>${skillName}</${COMMAND_NAME_TAG}>`,
+    '<skill-format>true</skill-format>',
+  ].join('\n')
+}
+
+async function processInlineSkillCommand(
+  command: Command & { type: 'prompt' },
+  args: string,
+  context: ToolUseContext,
+) {
+  const result: ContentBlockParam[] = await command.getPromptForCommand(
+    args,
+    context,
+  )
+
+  const hooksAllowedForThisSkill =
+    !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
+  if (command.hooks && hooksAllowedForThisSkill) {
+    registerSkillHooks(
+      context.setAppState,
+      getSessionId(),
+      command.hooks,
+      command.name,
+      command.skillRoot,
+    )
+  }
+
+  const skillPath = command.source
+    ? `${command.source}:${command.name}`
+    : command.name
+  const skillContent = result
+    .filter((block): block is TextBlockParam => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n')
+  addInvokedSkill(
+    command.name,
+    skillPath,
+    skillContent,
+    getAgentContext()?.agentId ?? null,
+  )
+
+  return {
+    messages: [
+      createUserMessage({ content: formatSkillLoadingMetadata(command.name) }),
+      createUserMessage({ content: result, isMeta: true }),
+    ],
+    shouldQuery: true,
+    allowedTools: parseToolListFromCLI(command.allowedTools ?? []),
+    model: command.model,
+    effort: command.effort,
+    command,
+  }
 }
 
 // Re-export Progress from centralized types to break import cycles
@@ -330,7 +397,7 @@ export type Output = z.input<OutputSchema>
 
 export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
   name: SKILL_TOOL_NAME,
-  searchHint: 'invoke a slash-command skill',
+  searchHint: 'invoke a named skill',
   maxResultSizeChars: 100_000,
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -356,8 +423,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       return {
         result: false,
         message:
-          'Missing skill name. Pass the slash command name as the skill parameter ' +
-          '(e.g., skill: "commit" for /commit, skill: "review-pr" for /review-pr).',
+          'Missing skill name. Pass the skill name as the skill parameter ' +
+          '(e.g., skill: "commit" or skill: "review-pr").',
         errorCode: 1,
       }
     }
@@ -641,14 +708,13 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       )
     }
 
-    // Process the skill with optional args
-    const { processPromptSlashCommand } = await import(
-      '../../tui/input/processSlashCommand.js'
-    )
-    const processedCommand = await processPromptSlashCommand(
-      commandName,
-      args || '', // Pass args if provided
-      commands,
+    if (command?.type !== 'prompt') {
+      throw new Error(`Unknown skill: ${commandName}`)
+    }
+
+    const processedCommand = await processInlineSkillCommand(
+      command,
+      args || '',
       context,
     )
 
@@ -769,9 +835,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     )
 
     // Note: addInvokedSkill and registerSkillHooks are called inside
-    // processPromptSlashCommand (via getMessagesForPromptSlashCommand), so
-    // calling them again here would double-register hooks and rebuild
-    // skillContent redundantly.
+    // processInlineSkillCommand, so calling them again here would
+    // double-register hooks and rebuild skillContent redundantly.
 
     // Return success with newMessages and contextModifier
     return {
@@ -1092,8 +1157,7 @@ async function executeRemoteSkill(
   // Register with compaction-preservation state. Use the cached file path so
   // post-compact restoration knows where the content came from. Must use
   // finalContent (not raw content) so the base directory header and
-  // ${AGENC_SKILL_DIR} substitutions survive compaction — matches how local
-  // skills store their already-transformed content via processSlashCommand.
+  // ${AGENC_SKILL_DIR} substitutions survive compaction.
   addInvokedSkill(
     commandName,
     skillPath,

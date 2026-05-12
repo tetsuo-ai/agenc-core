@@ -175,7 +175,7 @@ export const getPrompt = memoize(async (_cwd: string): Promise<string> => {
 
 When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
 
-When users reference a "slash command" or "/<something>" (e.g., "/commit", "/review-pr"), they are referring to a skill. Use this tool to invoke it.
+When users reference a skill by a slash-looking name (e.g., "/commit" or "/review-pr"), use the skill name without the leading slash.
 
 How to invoke:
 - Use this tool with the skill name and optional arguments

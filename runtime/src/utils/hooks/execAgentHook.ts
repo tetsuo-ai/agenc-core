@@ -63,7 +63,7 @@ export async function execAgentHook(
       `Hooks: Processing agent hook with prompt: ${processedPrompt}`,
     )
 
-    // Create user message directly - no need for processUserInput which would
+    // Create user message directly - no need for prompt input dispatch, which would
     // trigger UserPromptSubmit hooks and cause infinite recursion
     const userMessage = createUserMessage({ content: processedPrompt })
     const agentMessages = [userMessage]

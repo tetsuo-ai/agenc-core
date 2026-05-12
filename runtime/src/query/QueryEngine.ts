@@ -69,9 +69,9 @@ import {
 } from '../utils/model/model.js'
 import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
 import {
-  type ProcessUserInputContext,
-  processUserInput,
-} from '../tui/input/processUserInput.js'
+  type PromptInputContext,
+  processPromptInput,
+} from '../tui/input/processPromptInput.js'
 import { fetchSystemPromptParts } from '../utils/queryContext.js'
 import { setCwd } from '../utils/Shell.js'
 import {
@@ -194,7 +194,7 @@ export class QueryEngine {
   private readFileState: FileStateCache
   // Turn-scoped skill discovery tracking (feeds was_discovered on
   // tengu_skill_tool_invocation). Must persist across the two
-  // processUserInputContext rebuilds inside submitMessage, but is cleared
+  // promptInputContext rebuilds inside submitMessage, but is cleared
   // at the start of each submitMessage to avoid unbounded growth across
   // many turns in SDK mode.
   private discoveredSkillNames = new Set<string>()
@@ -335,13 +335,13 @@ export class QueryEngine {
       registerStructuredOutputEnforcement(setAppState, getSessionId())
     }
 
-    let processUserInputContext: ProcessUserInputContext = {
+    let promptInputContext: PromptInputContext = {
       messages: this.mutableMessages,
       // Slash commands that mutate the message array (e.g. /force-snip)
       // call setMessages(fn).  In interactive mode this writes back to
       // AppState; in print mode we write back to mutableMessages so the
       // rest of the query loop (push at :389, snapshot at :392) sees
-      // the result.  The second processUserInputContext below (after
+      // the result.  The second promptInputContext below (after
       // slash-command processing) keeps the no-op — nothing else calls
       // setMessages past that point.
       setMessages: fn => {
@@ -404,7 +404,7 @@ export class QueryEngine {
         orphanedPermission,
         tools,
         this.mutableMessages,
-        processUserInputContext,
+        promptInputContext,
       )) {
         yield message
       }
@@ -416,12 +416,12 @@ export class QueryEngine {
       allowedTools,
       model: modelFromUserInput,
       resultText,
-    } = await processUserInput({
+    } = await processPromptInput({
       input: prompt,
       mode: 'prompt',
       setToolJSX: () => {},
       context: {
-        ...processUserInputContext,
+        ...promptInputContext,
         messages: this.mutableMessages,
       },
       messages: this.mutableMessages,
@@ -492,7 +492,7 @@ export class QueryEngine {
 
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
-    processUserInputContext = {
+    promptInputContext = {
       messages,
       setMessages: () => {},
       onChangeAPIKey: () => {},
@@ -524,8 +524,8 @@ export class QueryEngine {
       discoveredSkillNames: this.discoveredSkillNames,
       setInProgressToolUseIDs: () => {},
       setResponseLength: () => {},
-      updateFileHistoryState: processUserInputContext.updateFileHistoryState,
-      updateAttributionState: processUserInputContext.updateAttributionState,
+      updateFileHistoryState: promptInputContext.updateFileHistoryState,
+      updateAttributionState: promptInputContext.updateAttributionState,
       setSDKStatus,
     }
 
@@ -533,7 +533,7 @@ export class QueryEngine {
     // Cache-only: headless/SDK/CCR startup must not block on network for
     // ref-tracked plugins. CCR populates the cache via AGENC_SYNC_PLUGIN_INSTALL
     // (headlessPluginInstall) or AGENC_PLUGIN_SEED_DIR before this runs;
-    // SDK callers that need fresh source can call /reload-plugins.
+    // SDK callers that need fresh source can call plugin refresh.
     const [skills, { enabled: enabledPlugins }] = await Promise.all([
       getSlashCommandToolSkills(getCwd()),
       loadAllPluginsCacheOnly(),
@@ -681,7 +681,7 @@ export class QueryEngine {
       userContext,
       systemContext,
       canUseTool: wrappedCanUseTool,
-      toolUseContext: processUserInputContext,
+      toolUseContext: promptInputContext,
       fallbackModel,
       querySource: 'sdk',
       maxTurns,

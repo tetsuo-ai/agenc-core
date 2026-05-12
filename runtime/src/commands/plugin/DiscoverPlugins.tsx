@@ -260,12 +260,12 @@ export function DiscoverPlugins({
 
     // Handle installation results
     if (failureCount === 0) {
-      const message = `✓ Installed ${successCount_0} ${plural(successCount_0, 'plugin')}. ` + `Run /reload-plugins to activate.`;
+      const message = `✓ Installed ${successCount_0} ${plural(successCount_0, 'plugin')}. ` + `Restart AgenC to activate.`;
       setResult(message);
     } else if (successCount_0 === 0) {
       setError(`Failed to install: ${formatFailureDetails(newFailedPlugins, true)}`);
     } else {
-      const message_0 = `✓ Installed ${successCount_0} of ${successCount_0 + failureCount} plugins. ` + `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` + `Run /reload-plugins to activate successfully installed plugins.`;
+      const message_0 = `✓ Installed ${successCount_0} of ${successCount_0 + failureCount} plugins. ` + `Failed: ${formatFailureDetails(newFailedPlugins, false)}. ` + `Restart AgenC to activate successfully installed plugins.`;
       setResult(message_0);
     }
     if (successCount_0 > 0) {
@@ -480,10 +480,10 @@ export function DiscoverPlugins({
     return <PluginOptionsFlow plugin={plugin_4} pluginId={pluginId_0} onDone={(outcome, detail) => {
       switch (outcome) {
         case 'configured':
-          finish(`✓ Installed and configured ${plugin_4.name}. Run /reload-plugins to apply.`);
+          finish(`✓ Installed and configured ${plugin_4.name}. Restart AgenC to apply.`);
           break;
         case 'skipped':
-          finish(`✓ Installed ${plugin_4.name}. Run /reload-plugins to apply.`);
+          finish(`✓ Installed ${plugin_4.name}. Restart AgenC to apply.`);
           break;
         case 'error':
           finish(`Installed but failed to save config: ${detail}`);
