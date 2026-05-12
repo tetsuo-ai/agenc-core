@@ -22,7 +22,6 @@
  * @module
  */
 
-import { feature } from "bun:bundle";
 import type {
   CommandRegistry as CommandRegistryInterface,
   SlashCommand,
@@ -395,133 +394,14 @@ function readOptional<T>(read: () => T, fallback: T): T {
   }
 }
 
-const loadBootstrapState = memoizedModule(
-  () => require("../bootstrap/state.js") as typeof import("../bootstrap/state.js"),
-);
-const loadMemoryPaths = memoizedModule(
-  () => require("../memory/paths.js") as typeof import("../memory/paths.js"),
-);
-const loadGrowthbook = memoizedModule(
-  () => require("../services/analytics/growthbook.js") as typeof import("../services/analytics/growthbook.js"),
-);
-const loadPolicyLimits = memoizedModule(
-  () => require("../services/policyLimits/index.js") as typeof import("../services/policyLimits/index.js"),
-);
-const loadAuth = memoizedModule(
-  () => require("../utils/auth.js") as typeof import("../utils/auth.js"),
-);
 const loadEnv = memoizedModule(
   () => require("../utils/env.js") as typeof import("../utils/env.js"),
 );
-const loadFastMode = memoizedModule(
-  () => require("../utils/fastMode.js") as typeof import("../utils/fastMode.js"),
-);
-const loadImmediateCommand = memoizedModule(
-  () => require("../utils/immediateCommand.js") as typeof import("../utils/immediateCommand.js"),
-);
-const loadPrivacyLevel = memoizedModule(
-  () => require("../utils/privacyLevel.js") as typeof import("../utils/privacyLevel.js"),
-);
-const loadVoiceModeEnabled = memoizedModule(
-  () => require("../tui/voice/voiceModeEnabled.js") as typeof import("../tui/voice/voiceModeEnabled.js"),
-);
-function getIsNonInteractiveSession(): boolean {
-  return readOptional(() => loadBootstrapState().getIsNonInteractiveSession(), false);
-}
-
-function getIsRemoteMode(): boolean {
-  return readOptional(() => loadBootstrapState().getIsRemoteMode(), false);
-}
-
-function isAutoMemoryEnabled(): boolean {
-  return readOptional(() => loadMemoryPaths().isAutoMemoryEnabled(), false);
-}
-
-function getFeatureValue_CACHED_MAY_BE_STALE<T>(name: string, fallback: T): T {
-  return readOptional(
-    () => loadGrowthbook().getFeatureValue_CACHED_MAY_BE_STALE(name, fallback),
-    fallback,
-  );
-}
-
-function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name: string): boolean {
-  return readOptional(
-    () => loadGrowthbook().checkStatsigFeatureGate_CACHED_MAY_BE_STALE(name),
-    false,
-  );
-}
-
-function isPolicyAllowed(policy: Parameters<
-  typeof import("../services/policyLimits/index.js").isPolicyAllowed
->[0]): boolean {
-  return readOptional(() => loadPolicyLimits().isPolicyAllowed(policy), false);
-}
-
-function getSubscriptionType(): ReturnType<
-  typeof import("../utils/auth.js").getSubscriptionType
-> {
-  return readOptional(() => loadAuth().getSubscriptionType(), null);
-}
-
-function hasProviderApiKeyAuth(): boolean {
-  return readOptional(() => loadAuth().hasAnthropicApiKeyAuth(), false);
-}
-
-function isAgenCAISubscriber(): boolean {
-  return readOptional(() => loadAuth().isAgenCAISubscriber(), false);
-}
-
-function isConsumerSubscriber(): boolean {
-  return readOptional(() => loadAuth().isConsumerSubscriber(), false);
-}
-
-function isOverageProvisioningAllowed(): boolean {
-  return readOptional(() => loadAuth().isOverageProvisioningAllowed(), false);
-}
 
 function isEnvTruthy(envVar: string | boolean | undefined): boolean {
   if (!envVar) return false;
   if (typeof envVar === "boolean") return envVar;
   return ["1", "true", "yes", "on"].includes(envVar.toLowerCase().trim());
-}
-
-function fastModeModelDisplay(): string {
-  return readOptional(() => loadFastMode().FAST_MODE_MODEL_DISPLAY, "Opus 4.6");
-}
-
-function isFastModeEnabled(): boolean {
-  return readOptional(() => loadFastMode().isFastModeEnabled(), false);
-}
-
-function shouldInferenceConfigCommandBeImmediate(): boolean {
-  return readOptional(
-    () => loadImmediateCommand().shouldInferenceConfigCommandBeImmediate(),
-    process.env.USER_TYPE === "ant",
-  );
-}
-
-function isEssentialTrafficOnly(): boolean {
-  return readOptional(() => loadPrivacyLevel().isEssentialTrafficOnly(), false);
-}
-
-function isVoiceGrowthBookEnabled(): boolean {
-  return readOptional(() => loadVoiceModeEnabled().isVoiceGrowthBookEnabled(), false);
-}
-
-function isVoiceModeEnabled(): boolean {
-  return readOptional(() => loadVoiceModeEnabled().isVoiceModeEnabled(), false);
-}
-
-function isDesktopSupportedPlatform(): boolean {
-  return process.platform === "darwin" ||
-    (process.platform === "win32" && process.arch === "x64");
-}
-
-function isExtraUsageAllowed(): boolean {
-  if (isEnvTruthy(process.env.DISABLE_EXTRA_USAGE_COMMAND)) {
-    return false;
-  }
-  return isOverageProvisioningAllowed();
 }
 
 function sandboxDescription(): string {
@@ -534,9 +414,6 @@ const NATIVE_CSIU_TERMINALS: Record<string, string> = {
   "iTerm.app": "iTerm2",
   WezTerm: "WezTerm",
 };
-
-const BUILD_USER_TYPE = "external" as string;
-
 function terminalSetupDescription(): string {
   return readOptional(() => loadEnv().env.terminal, null) === "Apple_Terminal"
     ? "Enable Option+Enter key binding for newlines and visual bell"

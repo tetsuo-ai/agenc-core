@@ -5,25 +5,16 @@
  * (axios, crypto, auth utils) remains tree-shakeable from non-bridge builds.
  */
 
-import { feature } from 'bun:bundle'
 import { stat } from 'fs/promises'
 
 import type { ValidationResult } from '../Tool.js'
 
 import { getCwd } from '../../utils/cwd.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode } from '../../utils/errors.js'
 import { IMAGE_EXTENSION_REGEX } from '../../utils/imagePaste.js'
 import { expandPath } from '../../utils/path.js'
 
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const uploadBriefAttachment = async (..._args: unknown[]): Promise<undefined> => undefined;
-// ---- end donor-purge stubs ----
 export type ResolvedAttachment = {
   path: string
   size: number
@@ -70,7 +61,7 @@ export async function validateAttachmentPaths(
 
 export async function resolveAttachments(
   rawPaths: string[],
-  uploadCtx: { replBridgeEnabled: boolean; signal?: AbortSignal },
+  _uploadCtx: { replBridgeEnabled: boolean; signal?: AbortSignal },
 ): Promise<ResolvedAttachment[]> {
   // Stat serially (local, fast) to keep ordering deterministic, then upload
   // in parallel (network, slow). Upload failures resolve undefined — the

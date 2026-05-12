@@ -18,10 +18,9 @@ import { CtrlOToExpand } from '../CtrlOToExpand';
 import { useSelectedMessageBg } from '../messageActions';
 import { PrBadge } from '../PrBadge';
 import { ToolUseLoader } from '../ToolUseLoader';
+import * as teamMemCollapsedModule from './teamMemCollapsed';
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemCollapsed = feature('TEAMMEM') ? require('./teamMemCollapsed') as typeof import('./teamMemCollapsed') : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
+const teamMemCollapsed = feature('TEAMMEM') ? teamMemCollapsedModule : null;
 
 // Hold each ⤿ hint for a minimum duration so fast-completing tool calls
 // (bash commands, file reads, search patterns) are actually readable instead

@@ -401,7 +401,6 @@ export async function getAWSClientProxyConfig(): Promise<object> {
   }
 
   const [{ NodeHttpHandler }, { defaultProvider }] = await Promise.all([
-    // @ts-expect-error -- optional AWS SDK dep imported lazily; declaration not installed.
     import('@smithy/node-http-handler'),
     // @ts-expect-error -- optional AWS SDK dep imported lazily; declaration not installed.
     import('@aws-sdk/credential-provider-node'),

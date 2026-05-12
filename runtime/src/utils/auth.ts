@@ -1,8 +1,5 @@
 import chalk from 'chalk'
 import { exec } from 'child_process'
-// @ts-expect-error -- execa is referenced by absorbed shell-helper paths; the module
-// is missing from node_modules during the donor-purge phase. Other utils files
-// (authPortable, doctorDiagnostic, etc.) still carry the same baseline error.
 import { execa } from 'execa'
 import { mkdir, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'

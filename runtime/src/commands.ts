@@ -7,6 +7,7 @@ import {
   registeredLegacyCommandSurfaceSpecs,
 } from "./commands/registry.js";
 import type {
+  CommandRegistry as SlashCommandRegistry,
   SlashCommand,
   SlashCommandAppStateBridge,
   SlashCommandContext,
@@ -224,7 +225,10 @@ function localResultFromSlashResult(result: SlashCommandResult): LocalCommandRes
   }
 }
 
-export function projectSlashCommand(cmd: SlashCommand): Command {
+export function projectSlashCommand(
+  cmd: SlashCommand,
+  registry?: SlashCommandRegistry,
+): Command {
   return {
     type: "local",
     name: cmd.name,
@@ -257,7 +261,7 @@ export function projectSlashCommand(cmd: SlashCommand): Command {
           const outcome = await dispatchSlashCommand(
             { name: cmd.name, argsRaw: args, isMcp: false },
             ctx,
-            buildDefaultRegistry(),
+            registry ?? buildDefaultRegistry(),
           );
           return localResultFromSlashResult(outcome.result);
         },
@@ -526,10 +530,14 @@ const localSkillServicesByRoot = new Map<
   ReturnType<typeof createLocalSkillsServices>
 >();
 
-function builtInCommands(): readonly Command[] {
-  projectedCommandCache ??= buildDefaultRegistry().list().map(projectSlashCommand);
+function builtInCommands(registry?: SlashCommandRegistry): readonly Command[] {
+  const projectedCommands = registry === undefined
+    ? (projectedCommandCache ??= buildDefaultRegistry().list().map(command =>
+        projectSlashCommand(command),
+      ))
+    : registry.list().map(command => projectSlashCommand(command, registry));
   const legacyOverrides = legacyCommandOverrideMap();
-  return projectedCommandCache.map(
+  return projectedCommands.map(
     command => legacyOverrides.get(command.name) ?? command,
   );
 }
@@ -682,12 +690,12 @@ async function loadProductionCommandSources(
   ];
 }
 
-export function getCommandsSync(): Command[] {
-  return [...builtInCommands()];
+export function getCommandsSync(registry?: SlashCommandRegistry): Command[] {
+  return [...builtInCommands(registry)];
 }
 
-export function listTuiCommandList(): readonly Command[] {
-  return getCommandsSync().filter(
+export function listTuiCommandList(registry?: SlashCommandRegistry): readonly Command[] {
+  return getCommandsSync(registry).filter(
     cmd => cmd.userInvocable !== false && cmd.isHidden !== true && isCommandEnabled(cmd),
   );
 }

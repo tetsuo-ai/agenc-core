@@ -6,7 +6,10 @@ import {
 } from "./types.js";
 import type { AgenCConfig, LspServerConfigInput, McpServerConfig } from "../config/schema.js";
 import type { Command } from "../commands.js";
-import { refreshActivePlugins } from "../plugins/registration/manager.js";
+import {
+  clearPluginRegistrationCaches,
+  refreshActivePlugins,
+} from "../plugins/registration/manager.js";
 
 export interface ActivePluginRefreshResult {
   readonly enabled_count: number;
@@ -59,8 +62,7 @@ export function setRemoteSettingsSyncForTesting(
 
 async function clearRuntimeCommandCaches(ctx: SlashCommandContext): Promise<void> {
   ctx.session.services.skillsManager.clearSkillCaches?.();
-  const commands = await import("../commands.js");
-  commands.clearCommandMemoizationCaches();
+  clearPluginRegistrationCaches();
 }
 
 function isEnvTruthy(value: string | undefined): boolean {
