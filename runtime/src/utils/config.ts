@@ -300,8 +300,8 @@ export type GlobalConfig = {
     [tipId: string]: number // Key is tipId, value is the numStartups when tip was last shown
   }
 
-  // /buddy companion soul — bones regenerated from userId on read. See src/buddy/.
-  // Donor-purge stub: ../tui/buddy/types.js was deleted; keep as opaque shape.
+  // Companion settings are kept as opaque persisted values while the
+  // retired UI surface is absent from the runtime command set.
   companion?: unknown
   companionMuted?: boolean
 
@@ -386,9 +386,6 @@ export type GlobalConfig = {
 
   // Queue usage tracking
   promptQueueUseCount: number // Number of times use has used the prompt queue
-
-  // Btw usage tracking
-  btwUseCount: number // Number of times user has used /btw
 
   // Plan mode usage tracking
   lastPlanModeUse?: number // Timestamp of last plan mode usage
@@ -660,7 +657,6 @@ function createDefaultGlobalConfig(): GlobalConfig {
     tipsHistory: {},
     memoryUsageCount: 0,
     promptQueueUseCount: 0,
-    btwUseCount: 0,
     todoFeatureEnabled: true,
     showExpandedTodos: false,
     messageIdleNotifThresholdMs: 60000,

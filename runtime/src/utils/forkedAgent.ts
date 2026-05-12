@@ -68,8 +68,8 @@ export type CacheSafeParams = {
 }
 
 // Slot written by handleStopHooks after each turn so post-turn forks
-// (promptSuggestion, postTurnSummary, /btw) can share the main loop's
-// prompt cache without each caller threading params through.
+// can share the main loop's prompt cache without each caller threading
+// params through.
 let lastCacheSafeParams: CacheSafeParams | null = null
 
 export function saveCacheSafeParams(params: CacheSafeParams | null): void {

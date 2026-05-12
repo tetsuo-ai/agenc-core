@@ -491,6 +491,11 @@ export async function bootstrapSession(
   //    starts the watcher/skills listener and the real
   //    `McpConnectionManager::new()` AFTER the SessionConfigured dispatch.
   await patchedServices.skillsWatcher?.start?.();
+  await dispatchBootstrapSessionStart(session, {
+    source: opts.initialState.pendingSessionStartSource ?? "startup",
+    sessionConfigured: sessionConfiguredPayload,
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+  });
   if (opts.onAfterSessionConfigured) {
     await opts.onAfterSessionConfigured(session);
   }
@@ -517,4 +522,42 @@ export async function bootstrapSession(
   }
 
   return session;
+}
+
+async function dispatchBootstrapSessionStart(
+  session: Session,
+  opts: {
+    readonly source: "startup" | "resume" | "clear";
+    readonly sessionConfigured?: BootstrapSessionConfiguredPayload;
+    readonly signal?: AbortSignal;
+  },
+): Promise<void> {
+  const processSessionStart = session.services.hooks?.processSessionStart;
+  if (typeof processSessionStart !== "function") return;
+  const permissionMode = (
+    session.sessionConfiguration as {
+      readonly permissionContext?: { readonly mode?: string };
+    }
+  ).permissionContext?.mode ?? "default";
+  const messages = await processSessionStart(
+    {
+      hook_event_name: "SessionStart",
+      source: opts.source,
+      session_id: session.conversationId,
+      transcript_path: opts.sessionConfigured?.rolloutPath ?? null,
+      cwd: opts.sessionConfigured?.cwd ?? session.sessionConfiguration.cwd,
+      model:
+        opts.sessionConfigured?.model ??
+        session.sessionConfiguration.collaborationMode?.model ??
+        "unknown",
+      permission_mode: permissionMode,
+    },
+    { signal: opts.signal },
+  );
+  for (const msg of messages) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: msg as never,
+    });
+  }
 }

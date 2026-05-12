@@ -1254,8 +1254,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   );
   // Refs for things the slash-command submit handler needs to read live
   // without re-creating its stable useCallback closure on every render.
-  // transcriptMessagesRef gives /rename, /export, /copy, /diff, /btw a
-  // real conversation history (commands like /rename call
+  // transcriptMessagesRef gives local command handlers a
+  // real conversation history (some command handlers call
   // getMessagesAfterCompactBoundary(context.messages); an empty array
   // would crash them mid-flow).
   const transcriptMessagesRef = useRef<readonly unknown[]>(transcript.messages);
@@ -1313,10 +1313,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // Tool-use context builder. Declared above submit so the slash-command
   // interceptor can read it without TDZ on first render. Also handed to
   // PromptInput further down so non-slash flows keep their existing
-  // wiring. The `messages` parameter is passed through so commands like
-  // /rename, /export, /copy, /diff, /btw — which read context.messages —
-  // see real conversation history rather than the empty array the old
-  // call site passed.
+  // wiring. The `messages` parameter is passed through so command handlers
+  // that read context.messages see real conversation history rather than
+  // the empty array the old call site passed.
   const getToolUseContext = useCallback((messages: unknown[], _newMessages: unknown[], abortController: AbortController) => ({
     abortController: props.session.abortController ?? abortController ?? new AbortController(),
     cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
@@ -1337,18 +1336,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     tools: availableTools,
     setToolJSX,
     mcpClients,
-    // local-jsx commands like /buddy, /color, /rename mutate React-side
+    // local-jsx commands mutate React-side
     // app state via these hooks. Without them, those commands throw a
     // TypeError on first access ("context.setAppState is not a
     // function"), the slash dispatcher's outer try/catch swallows the
-    // exception, falls back to `props.session.submit(value)` which sends
-    // the raw `/buddy` text to the bridge wrapper — that wrapper's
-    // dispatch path runs without tuiHandlers and returns
-    // `{kind: "error", message: "/buddy requires the interactive TUI
-    // command surface."}` which the session-transcript reducer then
-    // JSON.stringifies into the visible transcript. The proper fix is
-    // to provide the state hooks the local-jsx surface contract
-    // promises.
+    // exception, falls back to `props.session.submit(value)`, and forwards
+    // the raw slash command text to the model. The proper fix is to provide
+    // the state hooks the local-jsx surface contract promises.
     setAppState,
     // The daemon-backed TUI does not own a local message array (the
     // daemon does), so legacy local-jsx setMessages calls are a no-op
@@ -1356,7 +1350,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     setMessages: () => {},
   }) as any, [appStateStore, commands, availableTools, mcpClients, props.session, refreshAvailableTools, toolPermissionContext, setToolJSX, setAppState]);
 
-  // Transient-message helper. local-jsx commands (e.g. /color, /rename)
+  // Transient-message helper. local-jsx commands
   // pass a status string to onDone — without this, that string was
   // silently dropped. Mount a bordered overlay with the message and
   // auto-clear after ~3 seconds so the user can keep typing.
@@ -1434,12 +1428,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // would respond with generic prose instead of running the command.
     //
     // Three command shapes route through here:
-    //   1. SlashCommand-shape (execute(ctx)) — built-ins like /skills,
-    //      /usage, /cost, /version, /effort, /wiki, /help, /status.
+    //   1. SlashCommand-shape (execute(ctx)) — built-in local commands.
     //      Result.kind = "text" / "error" rendered in a bordered overlay.
-    //   2. local-jsx — registered via legacy specs (/agents, /branch,
-    //      /buddy, /color, /export, /ide, /login, /logout, /rename,
-    //      /tasks, /sandbox, etc.). Loads the module, calls call(),
+    //   2. local-jsx — registered via legacy specs. Loads the module, calls call(),
     //      mounts the returned JSX dialog via setToolJSX. The dialog's
     //      onDone unmounts.
     //   3. prompt — /commit, /review, /pr-comments. Renders the prompt

@@ -41,7 +41,7 @@ type Props = {
   /** Absolute-positioned content anchored at the bottom-right of the
    *  ScrollBox area, floating over scrollback. Rendered inside the flexGrow
    *  region (not the bottom slot) so the overflowY:hidden cap doesn't clip
-   *  it. Fullscreen only — used for the companion speech bubble. */
+   *  it. Fullscreen only. */
   bottomFloat?: ReactNode;
   /** Slash-command dialog content. Rendered in an absolute-positioned
    *  bottom-anchored pane (▔ divider, paddingX=2) that paints over the

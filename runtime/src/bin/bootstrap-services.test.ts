@@ -37,10 +37,54 @@ import {
   waitForInitialization,
 } from "../services/lsp/manager.js";
 import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
+import { bootstrapSession } from "../session/bootstrap.js";
 
 afterEach(() => {
   policyLimitsMocks.configurePolicyLimitsService.mockReset();
 });
+
+function mockPolicyLimits(): void {
+  policyLimitsMocks.configurePolicyLimitsService.mockReturnValue({
+    initializePolicyLimitsLoadingPromise: vi.fn(),
+    loadPolicyLimits: vi.fn(async () => {}),
+    stopBackgroundPolling: vi.fn(),
+  } as never);
+}
+
+function sessionStartEchoCommand(): string {
+  return [
+    "node -e \"let s='';",
+    "process.stdin.on('data', c => s += c);",
+    "process.stdin.on('end', () => {",
+    "const x = JSON.parse(s);",
+    "process.stdout.write('source=' + x.source + ';model=' + x.model + ';mode=' + x.permission_mode);",
+    "});\"",
+  ].join(" ");
+}
+
+function sessionStartStopCommand(): string {
+  return [
+    "node -e \"process.stdout.write(JSON.stringify({",
+    "continue: false,",
+    "stopReason: 'pause startup',",
+    "hookSpecificOutput: {",
+    "hookEventName: 'SessionStart',",
+    "additionalContext: 'startup context'",
+    "}",
+    "}));\"",
+  ].join(" ");
+}
+
+function drainSessionEvents(session: {
+  readonly txEvent: { tryRecv(): unknown };
+}): unknown[] {
+  const events: unknown[] = [];
+  while (true) {
+    const next = session.txEvent.tryRecv();
+    if (next === null || next === undefined) return events;
+    events.push(next);
+  }
+}
 
 describe("loadBootstrapHooks", () => {
   test("installs the built-in auto-fix post hook once across reloads", () => {
@@ -102,6 +146,192 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
+  });
+});
+
+describe("SessionStart bootstrap hooks", () => {
+  async function bootstrapWithHooks(opts: {
+    readonly hooks: NonNullable<ReturnType<typeof defaultConfig>["hooks"]>;
+    readonly resume?: boolean;
+  }) {
+    mockPolicyLimits();
+    const home = mkdtempSync(join(tmpdir(), "agenc-sessionstart-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-sessionstart-ws-"));
+    const config = {
+      ...defaultConfig(),
+      agentRoles: [],
+      hooks: opts.hooks,
+    };
+    const sessionConfiguration = {
+      cwd: workspace,
+      approvalPolicy: { value: "never" },
+      sandboxPolicy: { value: "read_only" },
+      fileSystemSandboxPolicy: {
+        allowWrite: [],
+        denyWrite: [],
+        allowRead: [],
+        denyRead: [],
+      },
+      networkSandboxPolicy: {
+        allowlist: [],
+        denylist: [],
+        allowManagedDomainsOnly: false,
+      },
+      windowsSandboxLevel: "none",
+      collaborationMode: { model: "test-model" },
+      dynamicTools: [],
+      sessionSource: "cli_main",
+      permissionContext: { mode: "default" },
+    };
+    const handle = buildBootstrapSessionServices({
+      provider: {
+        name: "anthropic",
+        chat: async () => ({
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        }),
+        chatStream: async () => ({
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        }),
+        healthCheck: async () => true,
+      },
+      providerName: "anthropic",
+      registry: { tools: [] } as never,
+      mcpManager: {} as never,
+      unifiedExecManager: {} as never,
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
+      configStore: {
+        current: () => config,
+        subscribe: () => () => {},
+      } as never,
+      toolApprovals: {
+        get: () => undefined,
+        set: () => {},
+        clear: () => {},
+        withCachedApproval: async (request: {
+          fetchDecision: () => Promise<unknown>;
+        }) => request.fetchDecision(),
+      } as never,
+      networkApproval: {
+        clearSessionHosts: () => {},
+        requestNetworkApproval: async () => ({ kind: "approved" }),
+        requestDeferredApproval: async () => ({ kind: "approved" }),
+      } as never,
+      modelsManager: {} as never,
+      agencHome: home,
+      workspaceRoot: workspace,
+      env: { HOME: home, SHELL: "/bin/sh" },
+      conversationId: "session-sessionstart",
+      model: "test-model",
+      sessionConfiguration: sessionConfiguration as never,
+    });
+    const session = await bootstrapSession({
+      conversationId: "session-sessionstart",
+      initialState: {
+        sessionConfiguration: sessionConfiguration as never,
+        history: [],
+        ...(opts.resume ? { pendingSessionStartSource: "resume" as const } : {}),
+      },
+      features: config.features,
+      services: handle.services,
+      jsRepl: { id: "repl-sessionstart" },
+      config,
+      modelInfo: {
+        slug: "test-model",
+        effectiveContextWindowPercent: 100,
+        contextWindow: 1024,
+        supportedReasoningLevels: [],
+        defaultReasoningSummary: "auto",
+        truncationPolicy: "off",
+        usedFallbackModelMetadata: false,
+      },
+      enablePrewarm: false,
+      sessionConfigured: {
+        sessionId: "session-sessionstart",
+        model: "test-model",
+        modelProviderId: "anthropic",
+        cwd: workspace,
+        historyLogId: 0,
+        historyEntryCount: 0,
+        initialMessages: [],
+      },
+    });
+    return { handle, home, workspace, session };
+  }
+
+  test("dispatches SessionStart once with live startup context", async () => {
+    const env = await bootstrapWithHooks({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "startup",
+            hooks: [{ type: "command", command: sessionStartEchoCommand() }],
+          },
+        ],
+      },
+    });
+    try {
+      const events = drainSessionEvents(env.session as never);
+      const sessionStartContexts = events.filter((event) =>
+        (event as { msg?: { type?: string } }).msg?.type === "hook_additional_context"
+      );
+      expect(sessionStartContexts).toHaveLength(1);
+      expect(sessionStartContexts[0]).toMatchObject({
+        msg: {
+          type: "hook_additional_context",
+          hookEvent: "SessionStart",
+          content: ["source=startup;model=test-model;mode=default"],
+        },
+      });
+    } finally {
+      await env.handle.shutdown();
+      rmSync(env.home, { recursive: true, force: true });
+      rmSync(env.workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("uses resume source and surfaces stopped-continuation output without aborting bootstrap", async () => {
+    const env = await bootstrapWithHooks({
+      resume: true,
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "resume",
+            hooks: [{ type: "command", command: sessionStartStopCommand() }],
+          },
+        ],
+      },
+    });
+    try {
+      const events = drainSessionEvents(env.session as never);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: expect.objectContaining({
+            type: "hook_stopped_continuation",
+            hookEvent: "SessionStart",
+            message: "pause startup",
+          }),
+        }),
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: expect.objectContaining({
+            type: "hook_additional_context",
+            hookEvent: "SessionStart",
+            content: ["startup context"],
+          }),
+        }),
+      );
+    } finally {
+      await env.handle.shutdown();
+      rmSync(env.home, { recursive: true, force: true });
+      rmSync(env.workspace, { recursive: true, force: true });
+    }
   });
 });
 

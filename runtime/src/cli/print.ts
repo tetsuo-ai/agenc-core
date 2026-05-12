@@ -151,8 +151,6 @@ import {
 import { createAbortController } from 'src/utils/abortController.js'
 import { createCombinedAbortSignal } from 'src/utils/combinedAbortSignal.js'
 import { generateSessionTitle } from 'src/utils/sessionTitle.js'
-import { buildSideQuestionFallbackParams } from 'src/utils/queryContext.js'
-import { runSideQuestion } from 'src/utils/sideQuestion.js'
 import {
   processSessionStartHooks,
   processSetupHooks,
@@ -3807,66 +3805,6 @@ function runHeadlessStreaming(
               // own body and returns null, saveAiGeneratedTitle is wrapped
               // above. Propagate (not swallow) so unexpected failures are
               // visible to the SDK caller (hostComms.ts catches and logs).
-              sendControlResponseError(message, errorMessage(e))
-            }
-          })()
-        } else if (message.request.subtype === 'side_question') {
-          // Same fire-and-forget pattern as generate_session_title above —
-          // the forked agent's API roundtrip must not block the stdin loop.
-          //
-          // The snapshot captured by stopHooks (for querySource === 'sdk')
-          // holds the exact systemPrompt/userContext/systemContext/messages
-          // sent on the last main-thread turn. Reusing them gives a byte-
-          // identical prefix → prompt cache hit.
-          //
-          // Fallback (resume before first turn completes — no snapshot yet):
-          // rebuild from scratch. buildSideQuestionFallbackParams mirrors
-          // QueryEngine.ts:ask()'s system prompt assembly (including
-          // --system-prompt / --append-system-prompt) so the rebuilt prefix
-          // matches in the common case. May still miss the cache for
-          // coordinator mode or memory-mechanics extras — acceptable, the
-          // alternative is the side question failing entirely.
-          const { question } = message.request
-          void (async () => {
-            try {
-              const saved = getLastCacheSafeParams()
-              const cacheSafeParams = saved
-                ? {
-                    ...saved,
-                    // If the last turn was interrupted, the snapshot holds an
-                    // already-aborted controller; createChildAbortController in
-                    // createSubagentContext would propagate it and the fork
-                    // would die before sending a request. The controller is
-                    // not part of the cache key — swapping in a fresh one is
-                    // safe. Same guard as generate_session_title above.
-                    toolUseContext: {
-                      ...saved.toolUseContext,
-                      abortController: createAbortController(),
-                    },
-                  }
-                : await buildSideQuestionFallbackParams({
-                    tools: buildAllTools(getAppState()),
-                    commands: currentCommands,
-                    mcpClients: [
-                      ...getAppState().mcp.clients,
-                      ...sdkClients,
-                      ...dynamicMcpState.clients,
-                    ],
-                    messages: mutableMessages,
-                    readFileState,
-                    getAppState,
-                    setAppState,
-                    customSystemPrompt: options.systemPrompt,
-                    appendSystemPrompt: options.appendSystemPrompt,
-                    thinkingConfig: options.thinkingConfig,
-                    agents: currentAgents,
-                  })
-              const result = await runSideQuestion({
-                question,
-                cacheSafeParams,
-              })
-              sendControlResponseSuccess(message, { response: result.response })
-            } catch (e) {
               sendControlResponseError(message, errorMessage(e))
             }
           })()

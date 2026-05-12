@@ -11,9 +11,8 @@ import { basename } from 'path';
 import { MessageResponse } from '../MessageResponse';
 import { FilePathLink } from '../FilePathLink';
 import { openPath } from '../../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
-/* eslint-disable @typescript-eslint/no-require-imports */
-const teamMemSaved = feature('TEAMMEM') ? require('./teamMemSaved') as typeof import('./teamMemSaved') : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
+import * as teamMemSavedModule from './teamMemSaved';
+const teamMemSaved = feature('TEAMMEM') ? teamMemSavedModule : null;
 import { TURN_COMPLETION_VERBS } from '../../../constants/turnCompletionVerbs.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemThinkingMessage, SystemMemorySavedMessage } from '../../../types/message';

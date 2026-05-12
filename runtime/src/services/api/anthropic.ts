@@ -101,12 +101,13 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../agencAiLimits.js' // branding-scan: allow existing upstream provider-limit module path
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
-/* eslint-disable @typescript-eslint/no-require-imports */
+import * as autoModeState from '../../utils/permissions/autoModeState.js'
+import { feature } from 'bun:bundle'
+
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('../../utils/permissions/autoModeState.js') as typeof import('../../utils/permissions/autoModeState.js'))
+  ? autoModeState
   : null
 
-import { feature } from 'bun:bundle'
 import type { ClientOptions } from '@anthropic-ai/sdk'
 import {
   APIConnectionTimeoutError,
@@ -1072,8 +1073,8 @@ async function* queryModel(
   const betas = getMergedBetas(options.model, { isAgenticQuery })
 
   // Always send the advisor beta header when advisor is enabled, so
-  // non-agentic queries (compact, side_question, extract_memories, etc.)
-  // can parse advisor server_tool_use blocks already in the conversation history.
+  // non-agentic queries (compact, extract_memories, etc.) can parse advisor
+  // server_tool_use blocks already in the conversation history.
   if (isAdvisorEnabled()) {
     betas.push(ADVISOR_BETA_HEADER)
   }

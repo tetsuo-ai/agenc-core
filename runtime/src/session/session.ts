@@ -157,7 +157,11 @@ import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
-import type { SessionStartSource as HookSessionStartSource } from "../llm/hooks/types.js";
+import type {
+  SessionStartHookInput,
+  SessionStartSource as HookSessionStartSource,
+} from "../llm/hooks/types.js";
+import type { HookResultMessage } from "../types/message.js";
 import type {
   McpElicitationRequestEvent,
   McpElicitationRequest,
@@ -570,6 +574,10 @@ export interface AgentIdentityManager {
 export interface Hooks {
   startupWarnings(): ReadonlyArray<string>;
   readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
+  processSessionStart?(
+    input: SessionStartHookInput,
+    opts?: { readonly signal?: AbortSignal },
+  ): Promise<HookResultMessage[]>;
   executePreCompact(...args: unknown[]): Promise<unknown>;
   executePostCompact(...args: unknown[]): Promise<unknown>;
   executeStop(...args: unknown[]): Promise<unknown>;

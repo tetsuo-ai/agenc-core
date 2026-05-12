@@ -94,16 +94,6 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(memory?.description).toBe("Edit AgenC memory files");
   });
 
-  it("uses the interactive local JSX descriptor for /btw", () => {
-    const btw = listTuiCommandList().find((cmd) => cmd.name === "btw");
-    expect(btw).toBeDefined();
-    expect(btw?.type).toBe("local-jsx");
-    expect(btw?.immediate).toBe(true);
-    expect(btw?.description).toBe(
-      "Ask a quick side question without interrupting the main conversation",
-    );
-  });
-
   it("projects registered legacy command surfaces to executable descriptors", () => {
     const commands = new Map(getCommandsSync().map((cmd) => [cmd.name, cmd]));
     for (const name of registeredLegacyCommandSurfaceNames()) {
@@ -167,12 +157,6 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(commit.contentLength).toBe(0);
     expect(commit.progressMessage).toBe("creating commit");
     expect(commit.source).toBe("builtin");
-
-    const btwSource = (await import("./btw/index.js")).default;
-    const btw = command("btw");
-    expect(btw.type).toBe(btwSource.type);
-    expect(btw.argumentHint).toBe(btwSource.argumentHint);
-    expect(btw.immediate).toBe(btwSource.immediate);
 
     const knowledgeSource = (await import("./knowledge/index.js")).default;
     const knowledge = command("knowledge") as Extract<Command, { type: "local" }>;

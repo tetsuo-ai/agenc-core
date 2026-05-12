@@ -87,8 +87,8 @@ export async function* handleStopHooks(
     toolUseContext,
     querySource,
   }
-  // side_question SDK control_request both read this snapshot, and neither
-  // depends on prompt suggestions being enabled.
+  // SDK control requests read this snapshot and do not depend on prompt
+  // suggestions being enabled.
   if (querySource === 'repl_main_thread' || querySource === 'sdk') {
     saveCacheSafeParams(createCacheSafeParams(stopHookContext))
   }

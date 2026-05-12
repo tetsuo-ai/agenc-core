@@ -140,7 +140,7 @@ export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPat
   { pattern: /\b(npm|yarn|pnpm|bun)\s+publish\b/, label: "npm publish" },
   { pattern: /\bcargo\s+publish\b/, label: "cargo publish" },
   { pattern: /\bgem\s+push\b/, label: "gem push" },
-  { pattern: /\btwine\s+upload\b/, label: "twine upload" },
+  { pattern: /(^|\s)twine\s+upload\b/, label: "twine upload" },
   // Privilege escalation (top-level, not bare references in docs)
   { pattern: /(^|[;&|]\s*)sudo\b/, label: "sudo" },
   { pattern: /(^|[;&|]\s*)(su|doas|pkexec)\b(\s|$)/, label: "su/doas/pkexec" },

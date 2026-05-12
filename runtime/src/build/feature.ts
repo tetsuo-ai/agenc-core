@@ -18,7 +18,6 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
 
   COORDINATOR_MODE: true,
   BUILTIN_EXPLORE_PLAN_AGENTS: true,
-  BUDDY: true,
   MONITOR_TOOL: true,
   TEAMMEM: true,
   MESSAGE_ACTIONS: true,

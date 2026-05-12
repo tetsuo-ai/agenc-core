@@ -67,6 +67,7 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
+import * as autoModeState from './permissions/autoModeState.js'
 // Donor-purge: ../services/skillSearch/* was deleted; type aliased as opaque.
 type DiscoverySignal = any
 // Conditional require for DCE. All skill-search string literals that would
@@ -82,7 +83,7 @@ const skillSearchModules: any = feature('EXPERIMENTAL_SKILL_SEARCH')
     }
   : null
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? (require('./permissions/autoModeState.js') as typeof import('./permissions/autoModeState.js'))
+  ? autoModeState
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
@@ -239,9 +240,6 @@ import {
 import { isInProcessTeammate } from './teammateContext.js'
 import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
 import { unassignTeammateTasks } from './tasks.js'
-// Buddy feature removed — stubs return safe "no companion" values.
-const getCompanionIntroAttachment = (..._args: unknown[]): unknown[] => []
-const isBuddyEnabled = (): boolean => false
 
 export const TODO_REMINDER_CONFIG = {
   TURNS_SINCE_WRITE: 10,
@@ -853,13 +851,6 @@ export async function getAttachments(
         ),
       ),
     ),
-    ...(isBuddyEnabled()
-        ? [
-            maybe('companion_intro', () =>
-              Promise.resolve(getCompanionIntroAttachment(messages)),
-          ),
-        ]
-      : []),
     maybe('changed_files', () => getChangedFiles(context)),
     maybe('nested_memory', () => getNestedMemoryAttachments(context)),
     // relevant_memories moved to async prefetch (startRelevantMemoryPrefetch)

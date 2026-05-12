@@ -99,7 +99,6 @@ export type FooterItem =
   | 'bagel'
   | 'teams'
   | 'bridge'
-  | 'companion'
 
 export type AppState = DeepImmutable<{
   settings: SettingsJson
@@ -118,8 +117,7 @@ export type AppState = DeepImmutable<{
   coordinatorTaskIndex: number
   viewSelectionMode: 'none' | 'selecting-agent' | 'viewing-agent'
   // Which footer pill is focused (arrow-key navigation below the prompt).
-  // Lives in AppState so pill components rendered outside PromptInput
-  // (CompanionSprite in REPL.tsx) can read their own focused state.
+  // Lives in AppState so prompt-adjacent panels can read their focused state.
   footerSelection: FooterItem | null
   toolPermissionContext: ToolPermissionContext
   spinnerTip?: string
@@ -180,10 +178,6 @@ export type AppState = DeepImmutable<{
   foregroundedTaskId?: string
   // Task ID of in-process teammate whose transcript is being viewed (undefined = leader's view)
   viewingAgentTaskId?: string
-  // Latest companion reaction from the friend observer (src/buddy/observer.ts)
-  companionReaction?: string
-  // Timestamp of last /buddy pet — CompanionSprite renders hearts while recent
-  companionPetAt?: number
   // Follow-up (ashwin): see if we can use utility-types DeepReadonly for this
   mcp: {
     clients: MCPServerConnection[]

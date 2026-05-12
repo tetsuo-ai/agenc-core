@@ -291,10 +291,8 @@ describe("buildDefaultRegistry()", () => {
     expect(reg.has("exit-worktree")).toBe(true);
   });
 
-  it("includes the post-T13 command surfaces", () => {
+  it("includes the current runtime command surfaces", () => {
     const reg = buildDefaultRegistry();
-    expect(reg.has("btw")).toBe(true);
-    expect(reg.find("btw")?.immediate).toBe(true);
     expect(reg.has("copy")).toBe(true);
     expect(reg.has("mcp")).toBe(true);
     expect(reg.has("memory")).toBe(true);
@@ -309,13 +307,11 @@ describe("buildDefaultRegistry()", () => {
     // were intentionally removed in the cleanup pass — they're gated to
     // build-flavors AgenC's distribution doesn't ship. The remaining
     // legacy commands all map to executable modules.
-    expect(names).toContain("btw");
-    expect(names).toContain("buddy");
     for (const name of names) {
       expect(reg.has(name)).toBe(true);
     }
-    expect(reg.has("remote-control")).toBe(true);
-    expect(reg.has("rc")).toBe(true);
+    expect(reg.has("remote-control")).toBe(false);
+    expect(reg.has("rc")).toBe(false);
     expect(reg.has("terminal-setup")).toBe(true);
   });
 
@@ -418,11 +414,11 @@ describe("buildDefaultRegistry()", () => {
 
   it("documents that JSX-only legacy surfaces require the interactive TUI", async () => {
     const reg = buildDefaultRegistry();
-    const command = reg.find("btw");
+    const command = reg.find("agents");
     expect(command).toBeDefined();
 
     const result = await command?.execute({
-      argsRaw: "question",
+      argsRaw: "",
       cwd: "/tmp",
       home: "/tmp",
       session: {} as never,
@@ -430,7 +426,7 @@ describe("buildDefaultRegistry()", () => {
 
     expect(result).toEqual({
       kind: "error",
-      message: "/btw requires the interactive TUI command surface.",
+      message: "/agents requires the interactive TUI command surface.",
     });
   });
 

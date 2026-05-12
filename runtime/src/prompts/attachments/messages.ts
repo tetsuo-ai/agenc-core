@@ -13,7 +13,7 @@
  *
  * AgenC branding substitutions use AgenC instruction filenames,
  * product names, and model-facing tool names. Unsupported
- * AgenC product surfaces (buddy, bagel, teammate swarms, IDE/LSP)
+ * AgenC product surfaces (companion UI, bagel, teammate swarms, IDE/LSP)
  * do not render here until AgenC ships the matching producer/runtime
  * feature.
  *

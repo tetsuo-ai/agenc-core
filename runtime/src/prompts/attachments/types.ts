@@ -4,7 +4,7 @@
  * Hand-port of the `Attachment` discriminated union from AgenC's
  * `src/utils/attachments.ts:441-718`, restricted to the subset of variants
  * that have an AgenC analog. Variants tied to features AgenC doesn't ship
- * (`ultrathink_effort`, `bagel_console_errors`, `buddy_intro`,
+ * (`ultrathink_effort`, `bagel_console_errors`, `companion_intro`,
  * `ide_selection`, `structured_output`) are intentionally absent — when AgenC
  * adds the underlying feature, the variant lands here alongside its
  * producer. Provider-neutral usage/budget notices are upstream runtime

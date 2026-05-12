@@ -50,6 +50,9 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
+const legacyUserSkillRootA = ".claude"; // branding-scan: allow legacy user skill root compatibility
+const legacyUserSkillRootB = ".codex"; // branding-scan: allow legacy user skill root compatibility
+
 describe("local skills loader", () => {
   it("discovers AgenC, agent, user, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
@@ -61,6 +64,8 @@ describe("local skills loader", () => {
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "agenc-project-skill");
     writeSkill(join(agencHome, "skills"), "home-skill");
     writeSkill(join(defaultAgencHome, "skills"), "default-home-skill");
+    writeSkill(join(home, legacyUserSkillRootA, "skills"), "legacy-compat-one");
+    writeSkill(join(home, legacyUserSkillRootB, "skills"), "legacy-compat-two");
     writeSkill(join(agencHome, "plugins", "demo", "skills"), "plugin-skill");
 
     const snapshot = await loadLocalSkillsSnapshot({
@@ -73,6 +78,8 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).toEqual(
       expect.arrayContaining([
         "agenc-project-skill",
+        "legacy-compat-one",
+        "legacy-compat-two",
         "default-home-skill",
         "home-skill",
         "plugin-skill",
@@ -84,6 +91,72 @@ describe("local skills loader", () => {
     expect(snapshot.pluginSkillRoots).toEqual([
       join(agencHome, "plugins", "demo", "skills"),
     ]);
+  });
+
+  it("uses one root policy for compatibility discovery, rendering, watches, and manual cache clears", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const home = tmpRoot("skills-user");
+    const workspaceRoot = tmpRoot("skills-workspace");
+
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "project-agent");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "project-agenc");
+    writeSkill(join(home, ".agents", "skills"), "user-agent");
+    writeSkill(join(home, ".agenc", "skills"), "user-agenc");
+    writeSkill(join(home, legacyUserSkillRootA, "skills"), "legacy-compat-one");
+    writeSkill(join(home, legacyUserSkillRootB, "skills"), "legacy-compat-two");
+
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      env: { HOME: home },
+    });
+    const available = await services.skillsManager.skillsForConfig({}, null);
+    const names = available.availableSkills?.map((skill) => skill.name) ?? [];
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "project-agent",
+        "project-agenc",
+        "user-agent",
+        "user-agenc",
+        "legacy-compat-one",
+        "legacy-compat-two",
+      ]),
+    );
+
+    for (const name of [
+      "project-agent",
+      "project-agenc",
+      "user-agent",
+      "user-agenc",
+      "legacy-compat-one",
+      "legacy-compat-two",
+    ]) {
+      await expect(services.skillsManager.renderSkill?.({ name, args: "ok" }))
+        .resolves.toMatchObject({
+          skill: expect.objectContaining({ name }),
+          content: expect.stringContaining(`Use ${name}.`),
+        });
+    }
+
+    await expect(discoverSkillWatchRoots({
+      agencHome,
+      workspaceRoot,
+      env: { HOME: home },
+    })).resolves.toEqual(expect.arrayContaining([
+      join(home, ".agents", "skills"),
+      join(home, ".agenc", "skills"),
+      join(home, legacyUserSkillRootA, "skills"),
+      join(home, legacyUserSkillRootB, "skills"),
+    ]));
+
+    await expect(services.skillsManager.resolveSkill?.("late-compat"))
+      .resolves.toBeNull();
+    writeSkill(join(home, legacyUserSkillRootA, "skills"), "late-compat");
+    await expect(services.skillsManager.resolveSkill?.("late-compat"))
+      .resolves.toBeNull();
+    services.skillsManager.clearSkillCaches?.();
+    await expect(services.skillsManager.resolveSkill?.("late-compat"))
+      .resolves.toMatchObject({ name: "late-compat" });
   });
 
   it("uses nested directory names and ignores root-level skills/SKILL.md", async () => {
