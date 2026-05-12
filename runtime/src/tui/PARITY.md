@@ -8,12 +8,13 @@ handler skips `pushToolUse` for tool names in `COLLAB_V2_TOOL_NAMES`
 `followup_task`). Those tools emit their own structured collab event
 pairs (`collab_agent_spawn_begin/end`, `collab_waiting_begin/end`,
 `collab_close_begin/end`, `collab_agent_interaction_begin/end`) which
-the transcript already routes to `pushToolUse(..., "Task", ...)` rows.
+the transcript routes to structured `collab_agent` system rows via
+`makeCollabAgentMessage(...)`.
 
 Without the suppression, the transcript pushes BOTH a raw
 `spawn_agent({"message":"...","task_name":"..."})` row AND a structured
-"Task" row for every spawn, producing duplicate-looking entries that
-hide the task name behind the longer `message` field in the JSON
+agent lifecycle row for every spawn, producing duplicate-looking entries
+that hide the agent name behind the longer `message` field in the JSON
 truncation.
 
 - Upstream donor: `codex-rs/tui/src/chatwidget.rs` line 6510-6549

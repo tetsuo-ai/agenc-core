@@ -118,6 +118,9 @@ export function SystemTextMessage(t0) {
     }
     return t4;
   }
+  if (message.subtype === "collab_agent") {
+    return <CollabAgentSystemMessage message={message} addMargin={addMargin} />;
+  }
   if (message.subtype === "thinking") {
     return null;
   }
@@ -503,6 +506,50 @@ function SystemTextMessageInner(t0) {
   }
   return t7;
 }
+
+function CollabAgentSystemMessage({
+  message,
+  addMargin,
+}: {
+  message: SystemMessage;
+  addMargin: boolean;
+}): React.ReactNode {
+  const bg = useSelectedMessageBg();
+  const { columns } = useTerminalSize();
+  const marginTop = addMargin ? 1 : 0;
+  const state = message.state;
+  const color =
+    state === "success"
+      ? "success"
+      : state === "error"
+        ? "error"
+        : state === "running"
+          ? "cyan_FOR_SUBAGENTS_ONLY"
+          : undefined;
+  const details = Array.isArray(message.details) ? message.details : [];
+  const width = Math.max(20, columns - 10);
+  return (
+    <Box flexDirection="row" marginTop={marginTop} backgroundColor={bg} width="100%">
+      <Box minWidth={2}>
+        <Text color={color} dimColor={state === "info"}>
+          {BLACK_CIRCLE}
+        </Text>
+      </Box>
+      <Box flexDirection="column" width={width}>
+        <Text color={color} bold={state === "running"}>
+          {String(message.title ?? message.content ?? "Agent activity")}
+        </Text>
+        {details.map((detail: string, index: number) => (
+          <Text key={`${index}:${detail}`} dimColor={true} wrap="wrap">
+            {"⎿  "}
+            {detail}
+          </Text>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
 function TurnDurationMessage(t0) {
   const $ = _c(17);
   const {

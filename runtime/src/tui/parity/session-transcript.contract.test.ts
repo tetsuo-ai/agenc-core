@@ -75,7 +75,7 @@ describe("tool-call correlation contract", () => {
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
   });
 
-  test("collab-spawn-begin-callid-required: spawn_begin without callId emits no Task tool-use", () => {
+  test("collab-spawn-begin-callid-required: spawn_begin without callId emits no collab row", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "spawn",
@@ -91,7 +91,7 @@ describe("tool-call correlation contract", () => {
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
   });
 
-  test("collab-spawn-begin-callid-required: spawn_begin with callId still emits Task tool-use", () => {
+  test("collab-spawn-begin-callid-required: spawn_begin with callId emits a running collab row", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "spawn",
@@ -102,8 +102,11 @@ describe("tool-call correlation contract", () => {
       },
     ]);
 
-    expect([...transcript.toolNames]).toEqual(["Task"]);
+    expect([...transcript.toolNames]).toEqual([]);
     expect(transcript.inProgressToolUseIDs.has("agent-7")).toBe(true);
+    expect(transcript.messages).toMatchObject([
+      { type: "system", subtype: "collab_agent", title: "Spawning agent", state: "running" },
+    ]);
   });
 
   test("collab-end-callid-required: spawn_begin+spawn_end without callId emits zero messages", () => {
@@ -137,7 +140,75 @@ describe("tool-call correlation contract", () => {
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
   });
 
-  test("collab-end-callid-required: spawn_begin+spawn_end with callId correlates on the same id", () => {
+  test("collab-wait-begin/end renders visible waiting rows and clears spinner state", () => {
+    const waiting = adaptTranscriptEvents([
+      {
+        id: "wait-begin",
+        msg: {
+          type: "collab_waiting_begin",
+          payload: {
+            callId: "wait-1",
+            senderThreadId: "main",
+            receiverThreadIds: ["thread-a", "thread-b"],
+            receiverAgents: [
+              { threadId: "thread-a", agentNickname: "audit" },
+              { threadId: "thread-b", agentNickname: "ui" },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(waiting.inProgressToolUseIDs.has("wait-1")).toBe(true);
+    expect(waiting.messages).toMatchObject([
+      { type: "system", subtype: "collab_agent", title: "Waiting for 2 agents", state: "running" },
+    ]);
+
+    const completed = adaptTranscriptEvents([
+      {
+        id: "wait-begin",
+        msg: {
+          type: "collab_waiting_begin",
+          payload: {
+            callId: "wait-1",
+            senderThreadId: "main",
+            receiverThreadIds: ["thread-a", "thread-b"],
+            receiverAgents: [
+              { threadId: "thread-a", agentNickname: "audit" },
+              { threadId: "thread-b", agentNickname: "ui" },
+            ],
+          },
+        },
+      },
+      {
+        id: "wait-end",
+        msg: {
+          type: "collab_waiting_end",
+          payload: {
+            callId: "wait-1",
+            senderThreadId: "main",
+            statuses: {},
+            agentStatuses: [
+              { threadId: "thread-a", agentNickname: "audit", status: { status: "completed", lastMessage: "done" } },
+              { threadId: "thread-b", agentNickname: "ui", status: { status: "running" } },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(completed.inProgressToolUseIDs.size).toBe(0);
+    expect(completed.messages).toMatchObject([
+      { type: "system", subtype: "collab_agent", title: "Waiting for 2 agents", state: "running" },
+      { type: "system", subtype: "collab_agent", title: "Finished waiting", state: "success" },
+    ]);
+    expect(completed.messages[1]?.details).toEqual([
+      "audit: Completed - done",
+      "ui: Running",
+    ]);
+  });
+
+  test("collab-end-callid-required: spawn_begin+spawn_end with callId clears spinner state and renders status rows", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "spawn-begin",
@@ -150,16 +221,20 @@ describe("tool-call correlation contract", () => {
         id: "spawn-end",
         msg: {
           type: "collab_agent_spawn_end",
-          payload: { callId: "agent-9", status: { status: "completed" } },
+          payload: {
+            callId: "agent-9",
+            newThreadId: "thread-9",
+            newAgentNickname: "reviewer",
+            status: { status: "completed" },
+          },
         },
       },
     ]);
 
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
-    expect(transcript.messages.map((m) => m.type)).toEqual(["assistant", "user"]);
-    const toolUse = transcript.messages[0]?.message.content as Array<{ id?: string }>;
-    const toolResult = transcript.messages[1]?.message.content as Array<{ tool_use_id?: string }>;
-    expect(toolUse?.[0]?.id).toBe("agent-9");
-    expect(toolResult?.[0]?.tool_use_id).toBe("agent-9");
+    expect(transcript.messages).toMatchObject([
+      { type: "system", subtype: "collab_agent", title: "Spawning agent", state: "running" },
+      { type: "system", subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
+    ]);
   });
 });

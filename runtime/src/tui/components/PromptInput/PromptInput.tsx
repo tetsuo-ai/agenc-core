@@ -44,7 +44,7 @@ import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from '../../s
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
 import { getRunningTeammatesSorted } from '../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
-import { isPanelAgentTask, type LocalAgentTaskState } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
+import { type LocalAgentTaskState } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { isBackgroundTask } from '../../../tasks/types.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from '../../../tools/AgentTool/agentColorManager.js';
 import type { AgentDefinition } from '../../../tools/AgentTool/loadAgentsDir.js';
@@ -105,6 +105,7 @@ import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
+import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
 import { ConfiguredPromptTextInput } from './ConfiguredPromptTextInput.js';
@@ -127,7 +128,6 @@ import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
 // purge. They are stubbed here as no-ops so the surrounding moved-source
 // code paths degrade silently. Real implementations land when AgenC ships
 // the equivalent backend.
-const BackgroundTasksDialog = (_props: unknown): null => null;
 const BridgeDialog = (_props: unknown): null => null;
 // ---- end donor-purge stubs ----
 type PromptSuggestionHookProps = {
@@ -574,8 +574,8 @@ function PromptInput({
   // otherwise bridge becomes an invisible selection stop.
   const bridgeFooterVisible = replBridgeConnected && (replBridgeExplicit || replBridgeReconnecting);
   // Tmux pill (internal-only) — visible when there's an active tungsten session
-  const hasTungstenSession = useAppState(s => "external" === 'ant' && s.tungstenActiveSession !== undefined);
-  const tmuxFooterVisible = "external" === 'ant' && hasTungstenSession;
+  const hasTungstenSession = false;
+  const tmuxFooterVisible = false;
   // WebBrowser pill — visible when a browser is open
   const bagelFooterVisible = useAppState(s => false);
   const teamContext = useAppState(s => s.teamContext);
@@ -663,7 +663,7 @@ function PromptInput({
   // exist. When only local_agent tasks are running (coordinator/fork mode), the
   // pill is absent, so the -1 sentinel would leave nothing visually selected.
   // In that case, skip -1 and treat 0 as the minimum selectable index.
-  const hasBgTaskPill = useMemo(() => Object.values(tasks).some(t => isBackgroundTask(t) && !("external" === 'ant' && isPanelAgentTask(t))), [tasks]);
+  const hasBgTaskPill = useMemo(() => Object.values(tasks).some(t => isBackgroundTask(t)), [tasks]);
   const minCoordinatorIndex = hasBgTaskPill ? -1 : 0;
   // Clamp index when tasks complete and the list shrinks beneath the cursor
   useEffect(() => {
@@ -726,7 +726,7 @@ function PromptInput({
   // Panel shows retained-completed agents too (getVisibleAgentTasks), so the
   // pill must stay navigable whenever the panel has rows — not just when
   // something is running.
-  const tasksFooterVisible = (runningTaskCount > 0 || "external" === 'ant' && coordinatorTaskCount > 0) && !shouldHideTasksFooter(tasks, showSpinnerTree);
+  const tasksFooterVisible = runningTaskCount > 0 && !shouldHideTasksFooter(tasks, showSpinnerTree);
   const teamsFooterVisible = cachedTeams.length > 0;
   const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', tmuxFooterVisible && 'tmux', bagelFooterVisible && 'bagel', teamsFooterVisible && 'teams', bridgeFooterVisible && 'bridge'].filter(Boolean) as FooterItem[], [tasksFooterVisible, tmuxFooterVisible, bagelFooterVisible, teamsFooterVisible, bridgeFooterVisible]);
 
@@ -2089,20 +2089,10 @@ function PromptInput({
   useKeybindings({
     'footer:up': () => {
       // ↑ scrolls within the coordinator task list before leaving the pill
-      if (tasksSelected && "external" === 'ant' && coordinatorTaskCount > 0 && coordinatorTaskIndex > minCoordinatorIndex) {
-        setCoordinatorTaskIndex(prev => prev - 1);
-        return;
-      }
       navigateFooter(-1, true);
     },
     'footer:down': () => {
       // ↓ scrolls within the coordinator task list, never leaves the pill
-      if (tasksSelected && "external" === 'ant' && coordinatorTaskCount > 0) {
-        if (coordinatorTaskIndex < coordinatorTaskCount - 1) {
-          setCoordinatorTaskIndex(prev => prev + 1);
-        }
-        return;
-      }
       if (tasksSelected && !isTeammateMode) {
         setShowBashesDialog(true);
         selectFooterItem(null);
@@ -2141,28 +2131,12 @@ function PromptInput({
               const teammate = inProcessTeammates[teammateFooterIndex - 1];
               if (teammate) enterTeammateView(teammate.id, setAppState);
             }
-          } else if (coordinatorTaskIndex === 0 && coordinatorTaskCount > 0) {
-            exitTeammateView(setAppState);
           } else {
-            const selectedTaskId = getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1]?.id;
-            if (selectedTaskId) {
-              enterTeammateView(selectedTaskId, setAppState);
-            } else {
-              setShowBashesDialog(true);
-              selectFooterItem(null);
-            }
+            setShowBashesDialog(true);
+            selectFooterItem(null);
           }
           break;
         case 'tmux':
-          if ("external" === 'ant') {
-            setAppState(prev => prev.tungstenPanelAutoHidden ? {
-              ...prev,
-              tungstenPanelAutoHidden: false
-            } : {
-              ...prev,
-              tungstenPanelVisible: !(prev.tungstenPanelVisible ?? true)
-            });
-          }
           break;
         case 'bagel':
           break;

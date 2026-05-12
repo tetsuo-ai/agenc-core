@@ -122,7 +122,7 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
  * rows via `collab_agent_spawn_*`, `collab_agent_interaction_*`,
  * `collab_waiting_*`, and `collab_close_*` events. The raw
  * `tool_call_started`/`tool_call_completed` rows for these names are
- * suppressed so the transcript shows a single structured "Task" row
+ * suppressed so the transcript shows a single structured collab-agent row
  * per call (matching upstream's `CollabAgentToolCall` ThreadItem
  * routing, where the generic function-call ThreadItem variant is
  * never produced for these tools).
@@ -367,6 +367,25 @@ export function makeSystemMessage(
   };
 }
 
+export type CollabAgentMessageState = "running" | "success" | "error" | "info";
+
+export function makeCollabAgentMessage(
+  title: string,
+  details: readonly string[] = [],
+  state: CollabAgentMessageState = "info",
+): any {
+  return {
+    ...makeSystemMessage(
+      [title, ...details.map((detail) => `  ${detail}`)].join("\n"),
+      state === "error" ? "error" : "info",
+    ),
+    subtype: "collab_agent",
+    title,
+    details,
+    state,
+  };
+}
+
 function eventKey(event: SessionTranscriptEvent): string {
   if ("seq" in event && typeof event.seq === "number") return `seq:${event.seq}`;
   if ("id" in event && typeof event.id === "string") return `id:${event.id}`;
@@ -478,6 +497,164 @@ function formatAgentStatus(status: unknown): string {
     return status.status;
   }
   return stringResult(status);
+}
+
+interface CollabAgentDisplay {
+  threadId: string;
+  agentNickname?: string;
+  agentRole?: string;
+  agentRoleDisplayName?: string;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
+function compactWhitespace(value: string): string {
+  return value.trim().split(/\s+/).join(" ");
+}
+
+function truncatePreview(value: string, max = 180): string {
+  const compact = compactWhitespace(value);
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function shortThreadId(threadId: string): string {
+  const compact = threadId.trim();
+  if (compact.length <= 12) return compact || "agent";
+  return `${compact.slice(0, 8)}…`;
+}
+
+function updateCollabAgent(
+  agents: Map<string, CollabAgentDisplay>,
+  threadId: unknown,
+  metadata: Partial<CollabAgentDisplay> = {},
+): void {
+  const id = nonEmptyString(threadId);
+  if (!id) return;
+  const previous = agents.get(id);
+  const next: CollabAgentDisplay = {
+    threadId: id,
+    ...(previous ?? {}),
+  };
+  for (const key of ["agentNickname", "agentRole", "agentRoleDisplayName"] as const) {
+    const value = nonEmptyString(metadata[key]);
+    if (value !== undefined) {
+      next[key] = value;
+    }
+  }
+  agents.set(id, next);
+}
+
+function updateCollabAgentFromPayload(
+  agents: Map<string, CollabAgentDisplay>,
+  payload: Record<string, unknown>,
+  threadKey: string,
+  keys: {
+    readonly nickname?: string;
+    readonly role?: string;
+    readonly roleDisplayName?: string;
+  },
+): void {
+  updateCollabAgent(agents, payload[threadKey], {
+    agentNickname: keys.nickname ? nonEmptyString(payload[keys.nickname]) : undefined,
+    agentRole: keys.role ? nonEmptyString(payload[keys.role]) : undefined,
+    agentRoleDisplayName: keys.roleDisplayName
+      ? nonEmptyString(payload[keys.roleDisplayName])
+      : undefined,
+  });
+}
+
+function updateCollabAgentFromRef(
+  agents: Map<string, CollabAgentDisplay>,
+  value: unknown,
+): void {
+  if (!value || typeof value !== "object") return;
+  const ref = value as Record<string, unknown>;
+  updateCollabAgent(agents, ref.threadId, {
+    agentNickname: nonEmptyString(ref.agentNickname),
+    agentRole: nonEmptyString(ref.agentRole),
+    agentRoleDisplayName: nonEmptyString(ref.agentRoleDisplayName),
+  });
+}
+
+function collabAgentLabel(
+  agents: Map<string, CollabAgentDisplay>,
+  threadId: unknown,
+): string {
+  const id = nonEmptyString(threadId);
+  if (!id) return "agent";
+  const metadata = agents.get(id);
+  return (
+    metadata?.agentNickname ??
+    metadata?.agentRoleDisplayName ??
+    metadata?.agentRole ??
+    shortThreadId(id)
+  );
+}
+
+function promptDetail(prompt: unknown): string | null {
+  const value = nonEmptyString(prompt);
+  return value ? truncatePreview(value) : null;
+}
+
+function spawnRequestDetail(payload: Record<string, unknown>): string | null {
+  const model = nonEmptyString(payload.model);
+  const effort = nonEmptyString(payload.reasoningEffort);
+  const parts = [
+    model ? `model ${model}` : null,
+    effort ? `effort ${effort}` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function collabStatusState(status: unknown): CollabAgentMessageState {
+  if (!status || typeof status !== "object") return "info";
+  switch ((status as { status?: unknown }).status) {
+    case "completed":
+      return "success";
+    case "errored":
+    case "not_found":
+      return "error";
+    case "running":
+    case "pending_init":
+    case "interrupted":
+      return "running";
+    default:
+      return "info";
+  }
+}
+
+function collabStatusSummary(status: unknown): string {
+  if (!status || typeof status !== "object") return String(status ?? "unknown");
+  const value = status as Record<string, unknown>;
+  switch (value.status) {
+    case "pending_init":
+      return "Pending init";
+    case "running":
+      return "Running";
+    case "interrupted": {
+      const reason = nonEmptyString(value.reason);
+      return reason ? `Interrupted - ${truncatePreview(reason, 120)}` : "Interrupted";
+    }
+    case "completed": {
+      const message = nonEmptyString(value.lastMessage);
+      return message ? `Completed - ${truncatePreview(message, 160)}` : "Completed";
+    }
+    case "errored": {
+      const error = nonEmptyString(value.error);
+      return error ? `Error - ${truncatePreview(error, 160)}` : "Error";
+    }
+    case "shutdown":
+      return "Shutdown";
+    case "not_found":
+      return "Not found";
+    default:
+      return formatAgentStatus(status);
+  }
 }
 
 function formatElicitationSummary(type: string, payload: Record<string, unknown>): string {
@@ -822,6 +999,7 @@ export function adaptTranscriptEvents(
   const openTools = new Set<string>();
   const toolNames = new Set<string>();
   const runningToolNames = new Map<string, string>();
+  const collabAgents = new Map<string, CollabAgentDisplay>();
   const streamingToolUses: StreamingToolUse[] = [];
   let streamingText = "";
   let realtimeStreamingText = "";
@@ -853,6 +1031,7 @@ export function adaptTranscriptEvents(
         openTools.clear();
         toolNames.clear();
         runningToolNames.clear();
+        collabAgents.clear();
         streamingToolUses.length = 0;
         streamingText = "";
         realtimeStreamingText = "";
@@ -869,6 +1048,7 @@ export function adaptTranscriptEvents(
         openTools.clear();
         toolNames.clear();
         runningToolNames.clear();
+        collabAgents.clear();
         streamingToolUses.length = 0;
         streamingText = "";
         realtimeStreamingText = "";
@@ -1131,7 +1311,7 @@ export function adaptTranscriptEvents(
         // Collab v2 agent tools emit their own
         // `collab_agent_spawn_*`, `collab_agent_interaction_*`,
         // `collab_waiting_*`, and `collab_close_*` events that the
-        // transcript renders as structured "Task" rows. Skipping the
+        // transcript renders as structured collab-agent rows. Skipping the
         // raw `tool_call_started`/`tool_call_completed` row here keeps
         // a single row per spawn/wait/close/send-input call instead of
         // duplicating the structured row with a generic
@@ -1327,23 +1507,219 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        pushToolUse(out, openTools, toolNames, callId, "Task", {
-          description: payload.newAgentNickname ?? payload.agentRole ?? "agent",
-          prompt: payload.prompt,
-          subagent_type: payload.agentRole,
-          model: payload.model,
-        });
+        openTools.add(callId);
+        const details = [
+          promptDetail(payload.prompt),
+          spawnRequestDetail(payload),
+        ].filter((detail): detail is string => detail !== null);
+        out.push(makeCollabAgentMessage("Spawning agent", details, "running"));
         break;
       }
-      case "collab_agent_spawn_end":
-      case "collab_agent_interaction_end":
-      case "collab_waiting_end":
-      case "collab_close_end":
+      case "collab_agent_spawn_end": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.delete(callId);
+        updateCollabAgentFromPayload(collabAgents, payload, "newThreadId", {
+          nickname: "newAgentNickname",
+          role: "newAgentRole",
+          roleDisplayName: "newAgentRoleDisplayName",
+        });
+        const label = collabAgentLabel(collabAgents, payload.newThreadId);
+        const status = payload.status;
+        const details = [
+          promptDetail(payload.prompt),
+          spawnRequestDetail(payload),
+          `status: ${collabStatusSummary(status)}`,
+        ].filter((detail): detail is string => detail !== null);
+        out.push(
+          makeCollabAgentMessage(
+            label === "agent" ? "Agent spawn failed" : `Spawned ${label}`,
+            details,
+            collabStatusState(status),
+          ),
+        );
+        break;
+      }
+      case "collab_agent_interaction_begin": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.add(callId);
+        const label = collabAgentLabel(collabAgents, payload.receiverThreadId);
+        const detail = promptDetail(payload.prompt);
+        out.push(
+          makeCollabAgentMessage(
+            `Sending input to ${label}`,
+            detail ? [detail] : [],
+            "running",
+          ),
+        );
+        break;
+      }
+      case "collab_agent_interaction_end": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.delete(callId);
+        updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
+          nickname: "receiverAgentNickname",
+          role: "receiverAgentRole",
+          roleDisplayName: "receiverAgentRoleDisplayName",
+        });
+        const label = collabAgentLabel(collabAgents, payload.receiverThreadId);
+        const status = payload.status;
+        const details = [
+          promptDetail(payload.prompt),
+          `status: ${collabStatusSummary(status)}`,
+        ].filter((detail): detail is string => detail !== null);
+        out.push(
+          makeCollabAgentMessage(
+            `Sent input to ${label}`,
+            details,
+            collabStatusState(status),
+          ),
+        );
+        break;
+      }
+      case "collab_waiting_begin": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.add(callId);
+        if (Array.isArray(payload.receiverAgents)) {
+          for (const agent of payload.receiverAgents) {
+            updateCollabAgentFromRef(collabAgents, agent);
+          }
+        }
+        const ids = Array.isArray(payload.receiverThreadIds)
+          ? payload.receiverThreadIds.filter((id) => typeof id === "string")
+          : [];
+        const labels = ids.map((id) => collabAgentLabel(collabAgents, id));
+        const title =
+          labels.length === 1
+            ? `Waiting for ${labels[0]}`
+            : labels.length > 1
+              ? `Waiting for ${labels.length} agents`
+              : "Waiting for agents";
+        out.push(makeCollabAgentMessage(title, labels.length > 1 ? labels : [], "running"));
+        break;
+      }
+      case "collab_waiting_end": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.delete(callId);
+        const details: string[] = [];
+        let finalState: CollabAgentMessageState = "success";
+        const noteStatus = (status: unknown): void => {
+          if (collabStatusState(status) === "error") finalState = "error";
+        };
+        const entries = Array.isArray(payload.agentStatuses)
+          ? payload.agentStatuses
+          : [];
+        for (const entry of entries) {
+          updateCollabAgentFromRef(collabAgents, entry);
+          if (entry && typeof entry === "object") {
+            const threadId = (entry as Record<string, unknown>).threadId;
+            const status = (entry as Record<string, unknown>).status;
+            noteStatus(status);
+            details.push(
+              `${collabAgentLabel(collabAgents, threadId)}: ${collabStatusSummary(status)}`,
+            );
+          }
+        }
+        if (details.length === 0 && payload.statuses && typeof payload.statuses === "object") {
+          for (const [threadId, status] of Object.entries(payload.statuses)) {
+            noteStatus(status);
+            details.push(
+              `${collabAgentLabel(collabAgents, threadId)}: ${collabStatusSummary(status)}`,
+            );
+          }
+        }
+        out.push(
+          makeCollabAgentMessage(
+            "Finished waiting",
+            details.length > 0 ? details : ["No agents completed yet"],
+            finalState,
+          ),
+        );
+        break;
+      }
+      case "collab_close_begin": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.add(callId);
+        updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
+          nickname: "receiverAgentNickname",
+          role: "receiverAgentRole",
+          roleDisplayName: "receiverAgentRoleDisplayName",
+        });
+        out.push(
+          makeCollabAgentMessage(
+            `Closing ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
+            [],
+            "running",
+          ),
+        );
+        break;
+      }
+      case "collab_close_end": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.delete(callId);
+        updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
+          nickname: "receiverAgentNickname",
+          role: "receiverAgentRole",
+          roleDisplayName: "receiverAgentRoleDisplayName",
+        });
+        out.push(
+          makeCollabAgentMessage(
+            `Closed ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
+            [`previous status: ${collabStatusSummary(payload.status)}`],
+            collabStatusState(payload.status) === "error" ? "error" : "success",
+          ),
+        );
+        break;
+      }
+      case "collab_resume_begin": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        openTools.add(callId);
+        updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
+          nickname: "receiverAgentNickname",
+          role: "receiverAgentRole",
+          roleDisplayName: "receiverAgentRoleDisplayName",
+        });
+        out.push(
+          makeCollabAgentMessage(
+            `Resuming ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
+            [],
+            "running",
+          ),
+        );
+        break;
+      }
       case "collab_resume_end": {
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
-        pushToolResult(out, openTools, callId, formatAgentStatus(payload.status ?? payload.statuses));
+        openTools.delete(callId);
+        updateCollabAgentFromPayload(collabAgents, payload, "receiverThreadId", {
+          nickname: "receiverAgentNickname",
+          role: "receiverAgentRole",
+          roleDisplayName: "receiverAgentRoleDisplayName",
+        });
+        out.push(
+          makeCollabAgentMessage(
+            `Resumed ${collabAgentLabel(collabAgents, payload.receiverThreadId)}`,
+            [`status: ${collabStatusSummary(payload.status)}`],
+            collabStatusState(payload.status),
+          ),
+        );
         break;
       }
       case "plan_started":

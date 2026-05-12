@@ -1,5 +1,6 @@
 import type { ToolResult } from "../../tools/types.js";
 import type { ThreadId } from "../registry.js";
+import { isFinal, toAgentStatusJson } from "../status.js";
 import {
   callIdFromArgs,
   currentAgentContext,
@@ -13,6 +14,14 @@ import {
 } from "./common.js";
 
 export type MessageDeliveryMode = "queue_only" | "trigger_turn";
+
+function terminalStatusLabel(status: Parameters<typeof toAgentStatusJson>[0]): string {
+  const statusJson = toAgentStatusJson(status);
+  if (typeof statusJson === "string") return statusJson;
+  if ("completed" in statusJson) return "completed";
+  if ("errored" in statusJson) return "errored";
+  return "terminal";
+}
 
 export async function handleMessageStringTool(
   args: Record<string, unknown>,
@@ -50,6 +59,7 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return json({ error: "target agent is missing an agent_path" }, true);
   }
+  const liveStatus = live?.status?.value;
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
     payload: {
@@ -59,6 +69,25 @@ export async function handleMessageStringTool(
       prompt: message,
     },
   });
+  if (liveStatus && isFinal(liveStatus)) {
+    emit(sessionOrError, {
+      type: "collab_agent_interaction_end",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        receiverThreadId: agentId,
+        ...receiverMetadataFor(sessionOrError, agentId, opts),
+        prompt: message,
+        status: liveStatus,
+      },
+    });
+    return json(
+      {
+        error: `target agent ${receiverAgentPath} is ${terminalStatusLabel(liveStatus)} and cannot accept new messages`,
+      },
+      true,
+    );
+  }
   let deliveryError: unknown;
   try {
     await control.sendInterAgentCommunication(agentId, {

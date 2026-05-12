@@ -92,6 +92,7 @@ import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js';
 import { CancelRequestHandler } from '../hooks/useCancelRequest.js';
 import { useBackgroundTaskNavigation } from '../hooks/useBackgroundTaskNavigation.js';
+import { BackgroundTasksDialog } from '../components/tasks/BackgroundTasksDialog.js';
 import { useSwarmInitialization } from '../hooks/useSwarmInitialization.js';
 import { useTeammateViewAutoExit } from '../hooks/useTeammateViewAutoExit.js';
 import { errorMessage } from '../../utils/errors.js';
@@ -110,7 +111,6 @@ import { logError } from '../../utils/log.js';
 // the equivalent backend.
 const launchUltraplan = (..._args: unknown[]): null => null;
 const teleportToRemote = async (..._args: unknown[]): Promise<null> => null;
-const BackgroundTasksDialog = (_props: unknown): null => null;
 // ---- end donor-purge stubs ----
 const useFrustrationDetection: typeof import('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection = "external" === 'ant' ? require('../components/FeedbackSurvey/useFrustrationDetection.js').useFrustrationDetection : () => ({
   state: 'closed',

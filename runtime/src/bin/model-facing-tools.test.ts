@@ -7,7 +7,7 @@ import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
-import { backgroundTaskLifecycle } from "../tasks/index.js";
+import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { collectSkillsSnapshot } from "../commands/skills.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
@@ -1834,6 +1834,11 @@ describe("model-facing tools", () => {
         "timeout_ms must be a number",
       );
     }
+    for (const targets of ["task_1", {}, []]) {
+      const invalidTargets = await wait.execute({ targets });
+      expect(invalidTargets.isError).toBe(true);
+      expect(JSON.parse(invalidTargets.content).error).toMatch(/targets must/);
+    }
 
     const invalidRole = await spawnAgent.execute({
       message: "inspect",
@@ -2023,6 +2028,69 @@ describe("model-facing tools", () => {
 
     expect(byName.has("TaskOutput")).toBe(true);
     expect(join).toHaveBeenCalledTimes(1);
+  });
+
+  it("mirrors spawned V2 agents into AppState tasks for TUI spinners and task UI", async () => {
+    const session = fakeSession();
+    let appState: unknown = { tasks: {} };
+    (
+      session as Session & {
+        appStateBridge?: {
+          setAppState(updater: (prev: unknown) => unknown): void;
+        };
+      }
+    ).appStateBridge = {
+      setAppState(updater) {
+        appState = updater(appState);
+      },
+    };
+    const live = {
+      agentId: "thread-visible-1",
+      agentPath: "/root/visible_task",
+      nickname: "Visible",
+      role: { name: "worker" },
+      status: {
+        value: {
+          status: "running" as const,
+          turnId: "turn-visible-1",
+          startedAtMs: 1,
+        },
+      },
+    };
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live,
+        join: vi.fn(() => new Promise(() => {})),
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "inspect visible task",
+      task_name: "visible_task",
+      fork_turns: "none",
+    });
+
+    expect(result.isError).not.toBe(true);
+    const task = (
+      appState as {
+        tasks: Record<string, unknown>;
+      }
+    ).tasks["thread-visible-1"];
+    expect(task).toMatchObject({
+      id: "thread-visible-1",
+      type: "local_agent",
+      status: "running",
+      description: "inspect visible task",
+      agentId: "thread-visible-1",
+      prompt: "inspect visible task",
+      isBackgrounded: true,
+    });
+    expect(isBackgroundTask(task)).toBe(true);
   });
 
   it("launches spawn_agent with a workspace markdown role from the canonical role registry", async () => {
@@ -2298,6 +2366,146 @@ describe("model-facing tools", () => {
       ).toEqual({ status: "shutdown" });
     } finally {
       _clearAgentControlCacheForTesting();
+    }
+  });
+
+  it("wait_agent waits against actual descendant agent statuses", async () => {
+    const session = fakeSession();
+    const emitted: unknown[] = [];
+    (session as unknown as { emit: typeof session.emit }).emit = (event) => {
+      emitted.push(event);
+    };
+    const completedStatus = {
+      status: "completed" as const,
+      turnId: "turn-1",
+      endedAtMs: 1,
+      lastMessage: "done",
+    };
+    const control = {
+      listAgents: vi.fn(() => [
+        {
+          agentName: "/root",
+          agentStatus: { status: "pending_init" as const },
+          lastTaskMessage: "Main thread",
+        },
+        {
+          agentName: "/root/worker",
+          agentStatus: completedStatus,
+          lastTaskMessage: "inspect",
+        },
+      ]),
+      getLive: vi.fn(() => undefined),
+      resolveAgentReference: vi.fn(() => "agent-1"),
+      subscribeStatus: vi.fn(async () => ({
+        value: completedStatus,
+        unsubscribe: vi.fn(),
+      })),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const wait = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "wait_agent")!;
+
+      const result = await wait.execute({});
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({
+        message: "Wait completed.",
+        timed_out: false,
+        statuses: {
+          "/root/worker": { completed: "done" },
+        },
+      });
+      expect(control.listAgents).toHaveBeenCalledWith({ pathPrefix: "/root" });
+      expect(control.subscribeStatus).toHaveBeenCalledWith("agent-1");
+      expect(
+        emitted.map((event) => (event as { msg: { type: string } }).msg.type),
+      ).toEqual(["collab_waiting_begin", "collab_waiting_end"]);
+      expect(
+        (emitted[1] as { msg: { payload: { statuses: unknown } } }).msg.payload.statuses,
+      ).toEqual({ "/root/worker": completedStatus });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
+  it("rejects messages to terminal live agents instead of reporting false delivery", async () => {
+    const session = fakeSession();
+    const emitted: unknown[] = [];
+    (session as unknown as { emit: typeof session.emit }).emit = (event) => {
+      emitted.push(event);
+    };
+    const completedStatus = {
+      status: "completed" as const,
+      turnId: "turn-1",
+      endedAtMs: 1,
+      lastMessage: "done",
+    };
+    const sendInterAgentCommunication = vi.fn();
+    const control = {
+      getLive: vi.fn((threadId: string) =>
+        threadId === "agent-1"
+          ? {
+              agentId: "agent-1",
+              agentPath: "/root/task_1",
+              nickname: "TaskOne",
+              role: { name: "worker" },
+              status: { value: completedStatus },
+              metadata: {
+                agentId: "agent-1",
+                agentPath: "/root/task_1",
+                agentNickname: "TaskOne",
+                agentRole: "worker",
+              },
+            }
+          : undefined,
+      ),
+      getAgentMetadata: vi.fn(() => ({
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentNickname: "TaskOne",
+        agentRole: "worker",
+      })),
+      resolveAgentReference: vi.fn(() => "agent-1"),
+      sendInterAgentCommunication,
+      getStatus: vi.fn(async () => completedStatus),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const followup = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "followup_task")!;
+
+      const result = await followup.execute({
+        target: "/root/task_1",
+        message: "report now",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe(
+        "target agent /root/task_1 is completed and cannot accept new messages",
+      );
+      expect(sendInterAgentCommunication).not.toHaveBeenCalled();
+      expect(
+        emitted.map((event) => (event as { msg: { type: string } }).msg.type),
+      ).toEqual([
+        "collab_agent_interaction_begin",
+        "collab_agent_interaction_end",
+      ]);
+      expect(
+        (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload.status,
+      ).toEqual(completedStatus);
+    } finally {
+      _clearAgentControlCacheForTesting(session);
     }
   });
 

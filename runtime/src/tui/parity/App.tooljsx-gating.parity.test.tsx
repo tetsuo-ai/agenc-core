@@ -102,7 +102,7 @@ describe("R3 toolJSX gating reaches the Messages animation gate", () => {
       /<Messages\b[\s\S]{0,2000}toolUseConfirmQueue\s*=\s*\{\s*toolUseConfirmQueue(?:\s+as\s+\w+(?:\[\])?)?\s*\}/,
     );
     expect(source).toMatch(
-      /toolUseConfirmQueue\s*=[\s\S]{0,200}buildToolUseConfirmQueue\s*\(\s*permissionRequests\s*,\s*tools\s*\)/,
+      /toolUseConfirmQueue\s*=[\s\S]{0,200}buildToolUseConfirmQueue\s*\(\s*permissionRequests\s*,\s*availableTools\s*\)/,
     );
   });
 });

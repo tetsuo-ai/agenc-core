@@ -55,6 +55,7 @@ export interface RegisterAgentThreadTaskOptions {
   readonly toolUseId?: string;
   readonly description?: string;
   readonly onStop?: (thread: AgentThreadTaskHandle, reason: string) => Promise<void> | void;
+  readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
   readonly summary?: {
     readonly cacheSafeParams?: CacheSafeParams;
     readonly intervalMs?: number;
@@ -82,7 +83,11 @@ export function registerAgentThreadTask(
     unsubscribeSummaryCacheSafeParams?.();
     unsubscribeSummaryCacheSafeParams = null;
   };
-  const task = lifecycle.register({
+  const notifySnapshot = (snapshot: BackgroundTaskSnapshot): BackgroundTaskSnapshot => {
+    opts.onSnapshot?.(snapshot);
+    return snapshot;
+  };
+  const task = notifySnapshot(lifecycle.register({
     id: threadId,
     type: "local_agent",
     description,
@@ -115,7 +120,7 @@ export function registerAgentThreadTask(
         thread.live.abortController.abort(reason);
       }
     },
-  });
+  }));
 
   const startSummary = (cacheSafeParams: CacheSafeParams): void => {
     if (summaryHandle !== null) return;
@@ -165,7 +170,8 @@ export function registerAgentThreadTask(
   const unsubscribe =
     typeof thread.live.status.subscribe === "function"
       ? thread.live.status.subscribe((status) => {
-          mapAgentStatus(lifecycle, threadId, status);
+          const snapshot = mapAgentStatus(lifecycle, threadId, status);
+          if (snapshot !== undefined) notifySnapshot(snapshot);
           if (isTerminalAgentStatus(status)) stopSummary();
         })
       : () => {};
@@ -224,10 +230,12 @@ export function registerAgentThreadTask(
         unsubscribe();
         return { error: error instanceof Error ? error.message : String(error) };
       },
+      onSnapshot: notifySnapshot,
     });
   }
 
-  mapAgentStatus(lifecycle, threadId, thread.live.status.value);
+  const snapshot = mapAgentStatus(lifecycle, threadId, thread.live.status.value);
+  if (snapshot !== undefined) notifySnapshot(snapshot);
   if (isTerminalAgentStatus(thread.live.status.value)) stopSummary();
   return task;
 }
@@ -256,31 +264,27 @@ function mapAgentStatus(
   lifecycle: BackgroundTaskLifecycle,
   taskId: string,
   status: AgentStatus,
-): void {
+): BackgroundTaskSnapshot | undefined {
   try {
     switch (status.status) {
       case "pending_init":
-        return;
+        return undefined;
       case "running":
-        lifecycle.markRunning(taskId, { turnId: status.turnId });
-        return;
+        return lifecycle.markRunning(taskId, { turnId: status.turnId });
       case "interrupted":
-        lifecycle.appendOutput(taskId, `\n[agent interrupted: ${status.reason}]\n`);
-        return;
+        return lifecycle.appendOutput(taskId, `\n[agent interrupted: ${status.reason}]\n`);
       case "completed":
-        lifecycle.complete(taskId, status.lastMessage);
-        return;
+        return lifecycle.complete(taskId, status.lastMessage);
       case "errored":
-        lifecycle.fail(taskId, status.error);
-        return;
+        return lifecycle.fail(taskId, status.error);
       case "shutdown":
         void lifecycle.stop(taskId, "agent shutdown").catch(() => {});
-        return;
+        return undefined;
       case "not_found":
-        lifecycle.fail(taskId, "agent not found");
-        return;
+        return lifecycle.fail(taskId, "agent not found");
     }
   } catch {
     // The lifecycle may already be terminal when a late AgentStatus arrives.
+    return undefined;
   }
 }

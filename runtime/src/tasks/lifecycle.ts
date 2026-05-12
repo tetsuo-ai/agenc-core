@@ -103,6 +103,7 @@ export interface BindTaskPromiseOptions<T> {
     readonly error?: string;
     readonly metadata?: Readonly<Record<string, unknown>>;
   } | void;
+  readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
 }
 
 interface MutableTaskRecord {
@@ -362,14 +363,27 @@ export class BackgroundTaskLifecycle {
         const mapped = options.onFulfilled?.(value);
         const status = mapped?.status ?? "completed";
         if (status === "failed") {
-          this.fail(taskId, mapped?.error ?? "task failed", mapped?.output, mapped?.metadata);
+          const snapshot = this.fail(
+            taskId,
+            mapped?.error ?? "task failed",
+            mapped?.output,
+            mapped?.metadata,
+          );
+          options.onSnapshot?.(snapshot);
           return;
         }
-        this.complete(taskId, mapped?.output, mapped?.metadata);
+        const snapshot = this.complete(taskId, mapped?.output, mapped?.metadata);
+        options.onSnapshot?.(snapshot);
       },
       (error) => {
         const mapped = options.onRejected?.(error);
-        this.fail(taskId, mapped?.error ?? error, mapped?.output, mapped?.metadata);
+        const snapshot = this.fail(
+          taskId,
+          mapped?.error ?? error,
+          mapped?.output,
+          mapped?.metadata,
+        );
+        options.onSnapshot?.(snapshot);
       },
     );
   }

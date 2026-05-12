@@ -393,7 +393,7 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
-  test("maps tool calls and AgenC agent events to renderable tool rows", () => {
+  test("maps tool calls and AgenC agent events to renderable transcript rows", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "tool-start",
@@ -428,19 +428,25 @@ describe("AgenC TUI session transcript", () => {
           payload: {
             callId: "agent-1",
             senderThreadId: "main",
+            newThreadId: "agent-thread-1",
+            newAgentNickname: "reviewer",
             status: { status: "completed" },
           },
         },
       },
     ]);
 
-    expect([...transcript.toolNames]).toEqual(["Bash", "Task"]);
+    expect([...transcript.toolNames]).toEqual(["Bash"]);
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
     expect(transcript.messages.map((message) => message.type)).toEqual([
       "assistant",
       "user",
-      "assistant",
-      "user",
+      "system",
+      "system",
+    ]);
+    expect(transcript.messages.slice(2)).toMatchObject([
+      { subtype: "collab_agent", title: "Spawning agent", state: "running" },
+      { subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
     ]);
   });
 
@@ -1043,13 +1049,7 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.messages[1]).toMatchObject({ type: "system" });
     });
 
-    test("collab_agent lifecycle emits a single tool_result, not one per *_end event (#58)", () => {
-      // Phase 5 #58: a normal subagent lifecycle goes spawn_begin →
-      // spawn_end → interaction_end → close_end. The prior code
-      // called pushToolResult for each *_end variant, producing 2-3
-      // duplicate tool_result rows in the transcript for a single
-      // call. The fix guards on `openTools.has(callId)` so only the
-      // first *_end emits a row; subsequent ones become no-ops.
+    test("collab_agent lifecycle emits structured system rows instead of duplicate tool_result rows (#58)", () => {
       const transcript = adaptTranscriptEvents([
         {
           id: "spawn",
@@ -1070,6 +1070,7 @@ describe("AgenC TUI session transcript", () => {
             type: "collab_agent_spawn_end",
             payload: {
               callId: "agent-1",
+              newThreadId: "thread-1",
               status: { status: "completed" },
             },
           },
@@ -1080,6 +1081,7 @@ describe("AgenC TUI session transcript", () => {
             type: "collab_agent_interaction_end",
             payload: {
               callId: "agent-1",
+              receiverThreadId: "thread-1",
               status: { status: "completed" },
             },
           },
@@ -1090,21 +1092,20 @@ describe("AgenC TUI session transcript", () => {
             type: "collab_close_end",
             payload: {
               callId: "agent-1",
+              receiverThreadId: "thread-1",
               status: { status: "completed" },
             },
           },
         },
       ]);
-      // Expect: 1 tool_use (spawn) + 1 tool_result (first *_end).
-      // Without the guard, three tool_result rows would appear.
-      const toolResults = (transcript.messages as Array<Record<string, unknown>>)
-        .filter((m) => (m as { type?: string }).type === "user");
-      // tool_result messages are emitted as `user` role with toolUseResult content.
-      const resultsForAgent1 = toolResults.filter((m) => {
-        const text = JSON.stringify(m);
-        return text.includes("agent-1");
-      });
-      expect(resultsForAgent1).toHaveLength(1);
+      expect(transcript.inProgressToolUseIDs.size).toBe(0);
+      expect(transcript.messages.filter((m) => m.type === "user")).toHaveLength(0);
+      expect(transcript.messages).toMatchObject([
+        { type: "system", subtype: "collab_agent", title: "Spawning agent" },
+        { type: "system", subtype: "collab_agent", title: "Spawned thread-1" },
+        { type: "system", subtype: "collab_agent", title: "Sent input to thread-1" },
+        { type: "system", subtype: "collab_agent", title: "Closed thread-1" },
+      ]);
     });
 
     test("orphan tool_call_completed (no matching start) is dropped (#59)", () => {

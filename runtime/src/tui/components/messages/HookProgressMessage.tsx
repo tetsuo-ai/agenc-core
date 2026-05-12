@@ -73,7 +73,16 @@ export function HookProgressMessage(t0) {
       }
       return t6;
     }
-    return null;
+    const hookLabel = inProgressHookCount === 1 ? " hook…" : " hooks…";
+    return (
+      <MessageResponse>
+        <Box flexDirection="row">
+          <Text dimColor={true}>Running </Text>
+          <Text dimColor={true} bold={true}>{hookEvent}</Text>
+          <Text dimColor={true}>{hookLabel}</Text>
+        </Box>
+      </MessageResponse>
+    );
   }
   if (resolvedHookCount === inProgressHookCount) {
     return null;

@@ -7,7 +7,6 @@
 import figures from 'figures';
 import type { TaskStatus } from '../../../tasks/Task.js';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
-import { isPanelAgentTask } from '../../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../types/utils.js';
 import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -89,8 +88,7 @@ export function describeTeammateActivity(t: DeepImmutable<InProcessTeammateTaskS
  * teammate (teammates are shown in the spinner tree instead).
  *
  * Uses the same task filtering as BackgroundTaskStatus: `isBackgroundTask()`
- * plus exclusion of panel-managed agent tasks for ants (those are shown
- * by CoordinatorTaskPanel).
+ * plus the task-tree collapse policy used by the prompt footer.
  */
 export function shouldHideTasksFooter(tasks: {
   [taskId: string]: TaskState;
@@ -98,7 +96,7 @@ export function shouldHideTasksFooter(tasks: {
   if (!showSpinnerTree) return false;
   let hasVisibleTask = false;
   for (const t of Object.values(tasks) as TaskState[]) {
-    if (!isBackgroundTask(t) || "external" === 'ant' && isPanelAgentTask(t)) {
+    if (!isBackgroundTask(t)) {
       continue;
     }
     hasVisibleTask = true;

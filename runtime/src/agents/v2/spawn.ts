@@ -12,6 +12,7 @@ import {
   backgroundTaskLifecycle,
   registerAgentThreadTask,
 } from "../../tasks/index.js";
+import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-bridge.js";
 import {
   callIdFromArgs,
   currentAgentContext,
@@ -392,6 +393,18 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       registerAgentThreadTask(backgroundTaskLifecycle, thread, {
         toolUseId: callId,
         description: prompt,
+        onSnapshot: (snapshot) => {
+          syncBackgroundTaskSnapshotToAppState(
+            (
+              session as unknown as {
+                readonly appStateBridge?: {
+                  readonly setAppState?: (updater: (prev: unknown) => unknown) => void;
+                };
+              }
+            ).appStateBridge,
+            snapshot,
+          );
+        },
       });
     } catch (error) {
       if (
