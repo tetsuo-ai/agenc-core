@@ -1,14 +1,22 @@
-import type { AgentDefinition } from "../tools/AgentTool/loadAgentsDir.js";
 import type { AgentRole } from "./role.js";
-import { listAgentRoles } from "./role.js";
+import { listAgentRoles, loadMarkdownAgentRoles } from "./role.js";
 
-function projectAgentRole(role: AgentRole): AgentDefinition {
+export type AgentRoleDefinition = {
+  agentType: string;
+  whenToUse: string;
+  tools?: string[];
+  source: "built-in";
+  baseDir: "built-in";
+  getSystemPrompt: () => string;
+};
+
+function projectAgentRole(role: AgentRole): AgentRoleDefinition {
   const description = role.config.description ?? role.name;
   const systemPrompt = role.config.systemPrompt ?? "";
   const tools = role.config.allowlist
     ? Array.from(role.config.allowlist)
     : undefined;
-  const definition: AgentDefinition = {
+  const definition: AgentRoleDefinition = {
     agentType: role.name,
     whenToUse: description,
     source: "built-in",
@@ -19,6 +27,7 @@ function projectAgentRole(role: AgentRole): AgentDefinition {
   return definition;
 }
 
-export function listAgentRoleDefinitions(): readonly AgentDefinition[] {
+export function listAgentRoleDefinitions(): readonly AgentRoleDefinition[] {
+  loadMarkdownAgentRoles();
   return listAgentRoles().map(projectAgentRole);
 }

@@ -33,7 +33,18 @@
  * @module
  */
 
-import { readFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import type { Dirent } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import yaml from "js-yaml";
 import type { AgentRegistry } from "./registry.js";
 import { normalizeAgenCKeyAliases, normalizeRawConfig } from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
@@ -274,6 +285,7 @@ const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
 
 const registry = new Map<string, AgentRole>();
 for (const role of BUILT_INS) registry.set(role.name, role);
+const loadedMarkdownRoleCwds = new Set<string>();
 
 export function registerAgentRole(role: AgentRole): void {
   registry.set(role.name, freezeRole(role));
@@ -310,8 +322,20 @@ export function defaultAgentNicknameCandidates(): ReadonlyArray<string> {
 }
 
 export function _resetAgentRolesForTesting(): void {
+  loadedMarkdownRoleCwds.clear();
   registry.clear();
   for (const role of BUILT_INS) registry.set(role.name, role);
+}
+
+export function loadMarkdownAgentRoles(cwd = process.cwd()): void {
+  const key = resolve(cwd);
+  if (loadedMarkdownRoleCwds.has(key)) return;
+
+  for (const file of readMarkdownAgentRoleFiles(key)) {
+    const role = markdownAgentRoleFromFile(file);
+    if (role) registerAgentRole(role);
+  }
+  loadedMarkdownRoleCwds.add(key);
 }
 
 export function resolveAgentRole(name: string | undefined): AgentRole {
@@ -639,6 +663,176 @@ function deriveRoleRuntimeHints(
   return derived;
 }
 
+type MarkdownAgentRoleFile = {
+  readonly filePath: string;
+  readonly frontmatter: Record<string, unknown>;
+  readonly content: string;
+};
+
+function readMarkdownAgentRoleFiles(cwd: string): MarkdownAgentRoleFile[] {
+  const out: MarkdownAgentRoleFile[] = [];
+  const seenFiles = new Set<string>();
+  for (const dir of markdownAgentRoleDirs(cwd)) {
+    for (const filePath of collectMarkdownFiles(dir)) {
+      const identity = fileIdentity(filePath) ?? filePath;
+      if (seenFiles.has(identity)) continue;
+      seenFiles.add(identity);
+      try {
+        const { frontmatter, content } = parseMarkdownAgentRole(
+          normalizeExternalText(readFileSync(filePath, "utf8")),
+        );
+        out.push({ filePath, frontmatter, content });
+      } catch {
+        continue;
+      }
+    }
+  }
+  return out;
+}
+
+function markdownAgentRoleDirs(cwd: string): string[] {
+  const dirs: string[] = [];
+  const userRoot = process.env.AGENC_CONFIG_DIR ?? join(homedir(), ".agenc");
+  dirs.push(join(userRoot, "agents"));
+
+  const projectDirs: string[] = [];
+  let current = resolve(cwd);
+  const home = resolve(homedir());
+  while (true) {
+    projectDirs.push(join(current, ".agenc", "agents"));
+    if (current === home || current === dirname(current)) break;
+    if (existsSync(join(current, ".git"))) break;
+    current = dirname(current);
+  }
+  dirs.push(...projectDirs.reverse());
+
+  const managed = process.env.AGENC_MANAGED_AGENTS_DIR;
+  if (managed && managed.trim().length > 0) dirs.push(managed);
+
+  return dirs;
+}
+
+function collectMarkdownFiles(
+  dir: string,
+  visitedDirs = new Set<string>(),
+): string[] {
+  let dirStats: ReturnType<typeof statSync>;
+  try {
+    dirStats = statSync(dir, { bigint: true });
+  } catch {
+    return [];
+  }
+  if (!dirStats.isDirectory()) return [];
+
+  const dirKey =
+    dirStats.dev === 0n && dirStats.ino === 0n
+      ? realpathSync(dir)
+      : `${dirStats.dev}:${dirStats.ino}`;
+  if (visitedDirs.has(dirKey)) return [];
+  visitedDirs.add(dirKey);
+
+  let entries: Dirent<string>[];
+  try {
+    entries = readdirSync(dir, { encoding: "utf8", withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    try {
+      const stats = entry.isSymbolicLink()
+        ? statSync(fullPath)
+        : lstatSync(fullPath);
+      if (stats.isDirectory()) {
+        files.push(...collectMarkdownFiles(fullPath, visitedDirs));
+      } else if (stats.isFile() && entry.name.endsWith(".md")) {
+        files.push(fullPath);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return files.sort();
+}
+
+function fileIdentity(filePath: string): string | null {
+  try {
+    const stats = statSync(filePath, { bigint: true });
+    if (stats.dev === 0n && stats.ino === 0n) return null;
+    return `${stats.dev}:${stats.ino}`;
+  } catch {
+    try {
+      return realpathSync(filePath);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function parseMarkdownAgentRole(raw: string): {
+  readonly frontmatter: Record<string, unknown>;
+  readonly content: string;
+} {
+  if (!raw.startsWith("---")) {
+    return { frontmatter: {}, content: raw };
+  }
+  const end = raw.indexOf("\n---", 3);
+  if (end === -1) {
+    return { frontmatter: {}, content: raw };
+  }
+  const frontmatterRaw = raw.slice(3, end);
+  const contentStart = raw.indexOf("\n", end + 4);
+  const content = contentStart === -1 ? "" : raw.slice(contentStart + 1);
+  const parsed = yaml.load(frontmatterRaw);
+  return {
+    frontmatter: isPlainObject(parsed) ? parsed : {},
+    content,
+  };
+}
+
+function markdownAgentRoleFromFile(
+  file: MarkdownAgentRoleFile,
+): AgentRole | null {
+  const name = nonEmptyString(file.frontmatter.name);
+  const description = nonEmptyString(file.frontmatter.description);
+  if (!name || !description) return null;
+
+  const tools = parseMarkdownToolList(file.frontmatter.tools);
+  const reasoningEffort = asAgentReasoningEffort(
+    file.frontmatter.effort ??
+      file.frontmatter.reasoning_effort ??
+      file.frontmatter.model_reasoning_effort,
+  );
+  const background =
+    file.frontmatter.background === true ||
+    file.frontmatter.background === "true";
+
+  return {
+    name,
+    config: {
+      description: description.replace(/\\n/g, "\n"),
+      systemPrompt: file.content.trim(),
+      ...(tools !== undefined ? { allowlist: tools } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(background ? { background: true } : {}),
+    },
+  };
+}
+
+function parseMarkdownToolList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const raw = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const tools = raw
+    .filter((item): item is string => typeof item === "string")
+    .flatMap((item) => item.split(/[,\s]+/))
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (tools.includes("*")) return undefined;
+  return tools.length > 0 ? tools : undefined;
+}
+
 function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
   if (role.config.configBundle) {
     return cloneRecord(role.config.configBundle);
@@ -752,6 +946,12 @@ function cloneRecord<T extends Record<string, unknown>>(value: T): T {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
 function asPositiveInteger(value: unknown): number | undefined {

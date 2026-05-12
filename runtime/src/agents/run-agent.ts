@@ -1,8 +1,7 @@
 /**
  * runAgent — drive one subagent's run-turn loop.
  *
- * Hand-port of the donor AgentTool runner (987 LOC)
- * subset. Responsibilities:
+ * Hand-port of the donor subagent runner subset. Responsibilities:
  *
  *   1. Build a child Session from the parent + fork context.
  *   2. Initialize MCP servers (30s wait, cancellable — I-50).
@@ -521,7 +520,7 @@ function wrapProviderForAgentSummary(
   };
 }
 
-interface AgentToolUseContext {
+interface AgentRunContext {
   readonly abortController: AbortController;
   readonly agentId?: string;
   readonly sessionId: string;
@@ -598,11 +597,11 @@ type SessionSurface = {
   readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
 };
 
-function buildAgentToolUseContext(
+function buildAgentRunContext(
   session: Session,
   ctx: TurnContext,
   opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
-): AgentToolUseContext {
+): AgentRunContext {
   const model = toAgentModelContext(ctx);
   const providerOverride = buildAgentProviderOverride(session, model.model);
   const surface = readAgentSessionSurface(session);
@@ -705,7 +704,7 @@ function toAgentRuntimeTools(tools: readonly LLMTool[]): AgentRuntimeTool[] {
 function buildAgentProviderOverride(
   session: Session,
   fallbackModel: string,
-): AgentToolUseContext["options"]["providerOverride"] | undefined {
+): AgentRunContext["options"]["providerOverride"] | undefined {
   const provider = session.services.provider;
   const options = readProviderFactoryOptions(provider);
   const model = firstNonEmpty(options.model, fallbackModel);
@@ -769,7 +768,7 @@ function createAgentSummaryCacheSafeParams(opts: {
   readonly abortController: AbortController;
 }): CacheSafeParams {
   const requestOptions = opts.providerRequest.options;
-  const toolUseContext = buildAgentToolUseContext(
+  const toolUseContext = buildAgentRunContext(
     opts.childSession,
     opts.turnContext,
     { querySource: "agent_summary" },

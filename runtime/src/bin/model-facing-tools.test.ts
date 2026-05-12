@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,7 @@ import {
   clearSessionReadState,
   getSessionReadSnapshot,
 } from "../tools/system/filesystem.js";
+import { _resetAgentRolesForTesting } from "../agents/role.js";
 
 const { delegateMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
@@ -254,6 +255,7 @@ describe("model-facing tools", () => {
   afterEach(async () => {
     await shutdownLspServerManager();
     _resetLspManagerForTesting();
+    _resetAgentRolesForTesting();
   });
 
   it("registers the requested product tools and omits raw system HTTP tools", () => {
@@ -1962,6 +1964,76 @@ describe("model-facing tools", () => {
 
     expect(byName.has("TaskOutput")).toBe(true);
     expect(join).toHaveBeenCalledTimes(1);
+  });
+
+  it("launches spawn_agent with a workspace markdown role from the canonical role registry", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-spawn-role-"));
+    const agentsDir = join(workspaceRoot, ".agenc", "agents");
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, "reviewer.md"),
+      [
+        "---",
+        "name: project-reviewer",
+        "description: Review project diffs",
+        "---",
+        "Review the active diff before returning.",
+      ].join("\n"),
+    );
+
+    const session = fakeSession();
+    (session.config as { cwd?: string }).cwd = workspaceRoot;
+    (
+      session.sessionConfiguration as { cwd?: string }
+    ).cwd = workspaceRoot;
+    const joinThread = vi.fn(async () => ({
+      threadId: "thread-custom",
+      durationMs: 1,
+      outcome: "completed",
+      finalMessage: "done",
+    }));
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-custom",
+          agentPath: "/root/custom_task",
+          nickname: "Custom",
+          role: { name: "project-reviewer" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-custom",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: joinThread,
+      },
+    });
+
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot,
+        getSession: () => session,
+      });
+      const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
+        message: "inspect",
+        task_name: "custom_task",
+        agent_type: "project-reviewer",
+        fork_turns: "none",
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(delegateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: "project-reviewer",
+          taskPrompt: "inspect",
+        }),
+      );
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("lets TaskOutput and TaskStop use the spawn_agent returned task_name", async () => {

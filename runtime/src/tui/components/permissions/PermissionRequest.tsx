@@ -10,7 +10,6 @@ import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { AnyObject, Tool, ToolUseContext } from '../../../tools/Tool.js';
 import { AskUserQuestionTool } from '../../../tools/ask-user-question/tui-tool.js';
 import { PowerShellTool } from '../../../tools/PowerShellTool/PowerShellTool.js';
-import { SkillTool } from '../../../tools/SkillTool/SkillTool.js';
 import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
 import { MonitorTool as MonitorToolImpl } from '../../../tools/MonitorTool/MonitorTool.js';
 import type { AssistantMessage } from '../../../types/message.js';
@@ -63,6 +62,8 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return BashPermissionRequest;
     case 'NotebookEdit':
       return NotebookEditPermissionRequest;
+    case 'Skill':
+      return SkillPermissionRequest;
     case 'Glob':
     case 'Grep':
     case 'FileRead':
@@ -79,8 +80,6 @@ function permissionComponentForTool(tool: Tool): React.ComponentType<PermissionR
       return ExitPlanModePermissionRequest;
     case EnterPlanModeTool:
       return EnterPlanModePermissionRequest;
-    case SkillTool:
-      return SkillPermissionRequest;
     case AskUserQuestionTool:
       return AskUserQuestionPermissionRequest;
     case WorkflowTool:

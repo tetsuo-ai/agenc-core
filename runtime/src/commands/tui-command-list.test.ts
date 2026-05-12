@@ -94,14 +94,10 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(memory?.description).toBe("Edit AgenC memory files");
   });
 
-  it("uses the interactive local JSX descriptor for /btw", () => {
-    const btw = listTuiCommandList().find((cmd) => cmd.name === "btw");
-    expect(btw).toBeDefined();
-    expect(btw?.type).toBe("local-jsx");
-    expect(btw?.immediate).toBe(true);
-    expect(btw?.description).toBe(
-      "Ask a quick side question without interrupting the main conversation",
-    );
+  it("does not include removed side-question commands", () => {
+    const names = listTuiCommandList().map((cmd) => cmd.name);
+    expect(names).not.toContain("btw");
+    expect(names).not.toContain("buddy");
   });
 
   it("projects registered legacy command surfaces to executable descriptors", () => {
@@ -168,11 +164,11 @@ describe("listTuiCommandList (TUI slash-command wiring)", () => {
     expect(commit.progressMessage).toBe("creating commit");
     expect(commit.source).toBe("builtin");
 
-    const btwSource = (await import("./btw/index.js")).default;
-    const btw = command("btw");
-    expect(btw.type).toBe(btwSource.type);
-    expect(btw.argumentHint).toBe(btwSource.argumentHint);
-    expect(btw.immediate).toBe(btwSource.immediate);
+    const renameSource = (await import("./rename/index.js")).default;
+    const rename = command("rename");
+    expect(rename.type).toBe(renameSource.type);
+    expect(rename.argumentHint).toBe(renameSource.argumentHint);
+    expect(rename.immediate).toBe(renameSource.immediate);
 
     const knowledgeSource = (await import("./knowledge/index.js")).default;
     const knowledge = command("knowledge") as Extract<Command, { type: "local" }>;

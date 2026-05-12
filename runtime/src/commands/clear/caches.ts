@@ -130,7 +130,7 @@ export function clearSessionCaches(
   void import('src/tools/AgentTool/loadAgentsDir.js').then(
     ({ clearAgentDefinitionsCache }) => clearAgentDefinitionsCache(),
   )
-  // Clear SkillTool prompt cache (accumulates per project root)
+  // Clear skill prompt cache (accumulates per project root)
   void import('../../tools/SkillTool/prompt.js').then(({ clearPromptCache }) =>
     clearPromptCache(),
   )

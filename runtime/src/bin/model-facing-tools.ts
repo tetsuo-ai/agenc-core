@@ -64,6 +64,7 @@ import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import { ensureAgentControl } from "./delegate-tool.js";
 import { createMultiAgentV2Tools } from "../agents/v2/index.js";
+import { loadMarkdownAgentRoles } from "../agents/role.js";
 import { createTaskTools } from "../tools/tasks/index.js";
 import { createStructuredOutputTool } from "./structured-output-tool.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
@@ -947,7 +948,9 @@ function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
   return session;
 }
 
-function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
+function createMultiAgentV2RuntimeTools(opts: ModelFacingToolOptions): readonly Tool[] {
+  loadMarkdownAgentRoles(opts.workspaceRoot);
+
   const emit = (session: Session, msg: Parameters<Session["emit"]>[0]["msg"]): void => {
     session.emit({
       id: session.nextInternalSubId(),
@@ -1323,7 +1326,7 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
   ];
 }
 
-function createSkillTool(opts: ModelFacingToolOptions): Tool {
+function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "Skill",
     description:
@@ -2468,9 +2471,9 @@ export function createModelFacingTools(
   opts: ModelFacingToolOptions,
 ): readonly Tool[] {
   return [
-    ...createAgentTools(opts),
+    ...createMultiAgentV2RuntimeTools(opts),
     ...createMcpResourceTools(opts),
-    createSkillTool(opts),
+    createSkillInvocationRuntimeTool(opts),
     ...createWebTools(opts),
     createNotebookReadTool(opts),
     createNotebookEditTool(opts),
