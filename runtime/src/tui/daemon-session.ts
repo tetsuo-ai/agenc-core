@@ -774,13 +774,6 @@ function nextRealtimeEventId(method: string, threadId: JsonValue | undefined): s
 function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
   const status = params.status;
   const turnId = stringParam(params.turnId, stringParam(params.eventId, "status"));
-  if (status === "running") {
-    return {
-      id: stringParam(params.eventId, turnId),
-      type: "turn_started",
-      payload: { turnId },
-    };
-  }
   if (status === "error") {
     return {
       id: stringParam(params.eventId, turnId),
@@ -793,11 +786,12 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
   }
   return {
     id: stringParam(params.eventId, turnId),
-    type: "turn_complete",
+    type: "background_agent_status",
     payload: {
       turnId,
+      status,
       ...(typeof params.message === "string"
-        ? { lastAgentMessage: params.message }
+        ? { message: params.message }
         : {}),
     },
   };

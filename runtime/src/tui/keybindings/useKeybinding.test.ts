@@ -1,11 +1,16 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { parseBindings } from "./parser.js";
+import { DEFAULT_BINDINGS } from "./defaultBindings.js";
 import { getBindingDisplayText, resolveKeyWithChordState } from "./resolver.js";
 import type { Key } from "../ink.js";
 
 vi.mock("../ink.js", () => ({
   useInput: () => {},
+}));
+
+vi.mock("bun:bundle", () => ({
+  feature: () => false,
 }));
 
 vi.mock("./KeybindingContext.js", () => ({
@@ -83,5 +88,29 @@ describe("useKeybinding exports and resolver contract", () => {
         started.pending,
       ),
     ).toEqual({ type: "match", action: "chat:killAgents" });
+  });
+
+  test("maps footer PTY keys for coordinator row navigation and dismissal", () => {
+    const bindings = parseBindings(DEFAULT_BINDINGS);
+
+    expect(
+      resolveKeyWithChordState(
+        "x",
+        key(),
+        ["Footer", "Chat", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "footer:close" });
+
+    expect(
+      resolveKeyWithChordState(
+        "",
+        key({ return: true }),
+        ["Footer", "Chat", "Global"],
+        bindings,
+        null,
+      ),
+    ).toEqual({ type: "match", action: "footer:openSelected" });
   });
 });

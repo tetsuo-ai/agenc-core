@@ -81,7 +81,7 @@ describe("prompt suggestion service ownership", () => {
     expect(existsSync(promptSuggestionService)).toBe(true);
     const expected = new Map([
       ["runtime/src/query/stopHooks.ts", "runtime/src/services/PromptSuggestion/promptSuggestion.ts"],
-      ["runtime/src/tui/screens/REPL.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
+      ["runtime/src/tui/components/PromptInput/PromptInput.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
       ["runtime/src/tasks/LocalShellTask/LocalShellTask.tsx", "runtime/src/services/PromptSuggestion/speculation.ts"],
     ]);

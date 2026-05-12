@@ -7,6 +7,7 @@ type QueuedCommandFixture = {
   value: string
   mode: string
   isMeta?: boolean
+  pastedContents?: Record<number, unknown>
 }
 
 const queueFixture = vi.hoisted(() => ({
@@ -47,7 +48,8 @@ vi.mock('../../../utils/messages.js', () => ({
 }))
 
 vi.mock('../../../utils/messageQueueManager.js', () => ({
-  isQueuedCommandEditable: (cmd: { mode?: string }) => cmd.mode === 'prompt',
+  isQueuedCommandEditable: (cmd: { mode?: string }) =>
+    cmd.mode === 'prompt' || cmd.mode === 'bash',
   isQueuedCommandVisible: (cmd: { isMeta?: boolean }) => cmd.isMeta !== true,
 }))
 
@@ -66,8 +68,48 @@ describe('PromptInputQueuedCommands', () => {
 
     const output = await renderToString(<PromptInputQueuedCommands />, 100)
 
-    expect(output).toContain('1 message queued for next turn')
+    expect(output).toContain('1 input queued for next turn')
     expect(output).toContain('Use another library')
+  })
+
+  it('shows queued bash commands as next-turn input', async () => {
+    queueFixture.commands = [
+      {
+        value: 'echo queued',
+        mode: 'bash',
+      },
+    ]
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+
+    expect(output).toContain('1 input queued for next turn')
+    expect(output).toContain('echo queued')
+  })
+
+  it('renders an image-only queued prompt as next-turn input without fake text', async () => {
+    queueFixture.commands = [
+      {
+        value: '',
+        mode: 'prompt',
+        pastedContents: {
+          0: {
+            id: 0,
+            type: 'image',
+            content: 'base64-image',
+            mediaType: 'image/png',
+            filename: 'pasted.png',
+          },
+        },
+      },
+    ]
+    const { PromptInputQueuedCommands } = await import('./PromptInputQueuedCommands.js')
+
+    const output = await renderToString(<PromptInputQueuedCommands />, 100)
+
+    expect(output).toContain('1 input queued for next turn')
+    expect(output).not.toContain('[image]')
+    expect(output).not.toContain('undefined')
   })
 
   it('hides idle notifications from the queue preview', async () => {

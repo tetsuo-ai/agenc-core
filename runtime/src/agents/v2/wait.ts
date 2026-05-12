@@ -262,6 +262,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         senderThreadId: current.threadId,
         callId: waitCallId,
         statuses: waitResult.rawStatuses,
+        timedOut: waitResult.timedOut,
         agentStatuses: targets.map((target) => ({
           threadId: target.threadId,
           status:
@@ -275,7 +276,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
         targets.length === 0
           ? "No agents to wait for."
           : waitResult.timedOut
-            ? "Wait timed out."
+            ? "Wait call timed out; agents may still be running."
             : "Wait completed.",
       timed_out: waitResult.timedOut,
       statuses: waitResult.statuses,

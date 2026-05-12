@@ -1,19 +1,17 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import type { Command } from '../../commands.js';
 import { Box } from '../ink.js';
-import type { Screen } from '../screens/REPL';
-import type { Tools } from '../../tools/Tool';
-import type { RenderableMessage } from '../../types/message';
-import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsFromCollapsedGroup, hasAnyToolInProgress } from '../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { hasThinkingContent, Message } from './Message';
-import { MessageModel } from './MessageModel';
+import type { Screen } from '../types/screen.js';
+import type { Tools } from '../../tools/Tool.js';
+import type { RenderableMessage } from '../../types/message.js';
+import { getDisplayMessageFromCollapsed, getToolSearchOrReadInfo, getToolUseIdsFromCollapsedGroup, hasAnyToolInProgress } from '../../utils/collapseReadSearch.js';
+import { type buildMessageLookups, EMPTY_STRING_SET, getProgressMessagesFromLookup, getSiblingToolUseIDsFromLookup, getToolUseID } from '../../utils/messages.js';
+import { hasThinkingContent, Message } from './Message.js';
+import { MessageModel } from './MessageModel.js';
 import { shouldRenderStatically } from './Messages.js';
-import { MessageTimestamp } from './MessageTimestamp';
-import { OffscreenFreeze } from './OffscreenFreeze';
+import { MessageTimestamp } from './MessageTimestamp.js';
+import { OffscreenFreeze } from './OffscreenFreeze.js';
 export type Props = {
   message: RenderableMessage;
   /** Whether the previous message in renderableMessages is also a user message. */
@@ -92,7 +90,7 @@ export function hasContentAfterIndex(messages: RenderableMessage[], index: numbe
   }
   return false;
 }
-function MessageRowImpl(t0) {
+function MessageRowImpl(t0: Props): React.ReactNode {
   const $ = _c(64);
   const {
     message: msg,
@@ -174,7 +172,7 @@ function MessageRowImpl(t0) {
       if ($[23] !== inProgressToolUseIDs || $[24] !== msg.messages) {
         let t6;
         if ($[26] !== inProgressToolUseIDs) {
-          t6 = m => {
+          t6 = (m: any) => {
             const content = m.message.content[0];
             return content?.type === "tool_use" && inProgressToolUseIDs.has(content.id);
           };
@@ -292,12 +290,12 @@ function MessageRowImpl(t0) {
  * Checks if a message is "streaming" - i.e., its content may still be changing.
  * Exported for testing.
  */
-function _temp(c) {
+function _temp(c: any) {
   return c.type === "text";
 }
 export function isMessageStreaming(msg: RenderableMessage, streamingToolUseIDs: Set<string>): boolean {
   if (msg.type === 'grouped_tool_use') {
-    return msg.messages.some(m => {
+    return msg.messages.some((m: any) => {
       const content = m.message.content[0];
       return content?.type === 'tool_use' && streamingToolUseIDs.has(content.id);
     });
@@ -316,7 +314,7 @@ export function isMessageStreaming(msg: RenderableMessage, streamingToolUseIDs: 
  */
 export function allToolsResolved(msg: RenderableMessage, resolvedToolUseIDs: Set<string>): boolean {
   if (msg.type === 'grouped_tool_use') {
-    return msg.messages.every(m => {
+    return msg.messages.every((m: any) => {
       const content = m.message.content[0];
       return content?.type === 'tool_use' && resolvedToolUseIDs.has(content.id);
     });

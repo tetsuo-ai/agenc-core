@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { randomUUID } from "node:crypto";
 import { useEffect, useMemo, useReducer } from "react";
 
@@ -36,7 +34,7 @@ export interface AdaptedTranscript {
   readonly currentTurnId: string | null;
   /**
    * Mid-stream tool input accumulator that mirrors the upstream
-   * `streamingToolUses` state from `screens/REPL.tsx:853`.
+   * `streamingToolUses` state from the live TUI transcript surface.
    * Each entry tracks an `input_json_delta`-driven tool-use block
    * whose JSON arguments are still arriving. Consumed by the upstream
    * `<Messages>` component (`components/Messages.tsx:222`) to render
@@ -51,7 +49,7 @@ export interface AdaptedTranscript {
    * `assistant_thinking_*` event family emitted by `phases/stream-model.ts`.
    * Consumed by `<Messages>` (`components/Messages.tsx:122`) which renders
    * `<AssistantThinkingMessage>` while `isStreaming` or up to 30 s after
-   * `streamingEndedAt` per the donor visibility rule. `null` when no
+   * `streamingEndedAt` per the streaming visibility rule. `null` when no
    * thinking block is open and no recent block is within the visibility
    * window.
    */
@@ -1069,7 +1067,7 @@ export function adaptTranscriptEvents(
         streamingText = "";
         currentTurnId =
           typeof payload.turnId === "string" ? payload.turnId : currentTurnId;
-        // Mirrors upstream REPL.tsx:1609 / :2940 setStreamingToolUses([]) on
+        // Clear streaming tool state when a new turn boundary arrives.
         // a new turn boundary — any partially-streamed tool inputs from the
         // previous turn are abandoned because they will never receive a
         // matching completion event in this turn.
@@ -1124,7 +1122,7 @@ export function adaptTranscriptEvents(
         streamingText = "";
         streamingThinking = null;
         isStreaming = false;
-        // Mirrors upstream REPL.tsx:1609 setStreamingToolUses([]) on
+        // Clear streaming tool state on cancellation.
         // stream cancellation — any partially-streamed tool inputs are
         // abandoned because their completion events will never arrive
         // for this turn.
@@ -1611,7 +1609,8 @@ export function adaptTranscriptEvents(
         if (callId === null) break;
         openTools.delete(callId);
         const details: string[] = [];
-        let finalState: CollabAgentMessageState = "success";
+        const timedOut = payload.timedOut === true || payload.timed_out === true;
+        let finalState: CollabAgentMessageState = timedOut ? "info" : "success";
         const noteStatus = (status: unknown): void => {
           if (collabStatusState(status) === "error") finalState = "error";
         };
@@ -1639,8 +1638,10 @@ export function adaptTranscriptEvents(
         }
         out.push(
           makeCollabAgentMessage(
-            "Finished waiting",
-            details.length > 0 ? details : ["No agents completed yet"],
+            timedOut ? "Wait call timed out" : "Finished waiting",
+            details.length > 0
+              ? details
+              : [timedOut ? "Agents may still be running" : "No agents completed yet"],
             finalState,
           ),
         );

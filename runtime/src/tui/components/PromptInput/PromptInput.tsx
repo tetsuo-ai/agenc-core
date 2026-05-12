@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import chalk from 'chalk';
 import * as path from 'path';
@@ -12,7 +10,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { type AppState, useAppState, useAppStateStore, useSetAppState } from '../../state/AppState.js';
 import type { FooterItem } from '../../state/AppStateStore.js';
 import { getCwd } from '../../../utils/cwd.js';
-import { isQueuedCommandEditable, popAllEditable } from '../../../utils/messageQueueManager.js';
+import { enqueue, isQueuedCommandEditable, popAllEditable } from '../../../utils/messageQueueManager.js';
 import stripAnsi from 'strip-ansi';
 import { type Command, hasCommand } from '../../../commands.js';
 import { useIsModalOverlayActive } from '../../context/overlayContext.js';
@@ -122,14 +120,6 @@ import { useShowFastIconHint } from './useShowFastIconHint.js';
 import { useSwarmBanner } from './useSwarmBanner.js';
 import { isNonSpacePrintable, isVimModeEnabled } from './utils.js';
 
-
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const BridgeDialog = (_props: unknown): null => null;
-// ---- end donor-purge stubs ----
 type PromptSuggestionHookProps = {
   inputValue: string;
   isAssistantResponding: boolean;
@@ -485,6 +475,73 @@ type Props = {
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
 const PROMPT_FOOTER_LINES = 5;
 const MIN_INPUT_VIEWPORT_LINES = 3;
+
+export type BusyInputSubmissionPolicyArgs = {
+  isLoading: boolean;
+  mode: PromptInputMode;
+  input: string;
+  addNotification: (notification: {
+    key: string;
+    text: string;
+    priority: 'immediate';
+    timeoutMs: number;
+  }) => void;
+  setInput: (value: string) => void;
+  setCursorOffset: (offset: number) => void;
+  clearBuffer: () => void;
+  resetHistory: () => void;
+  onModeChange: (mode: PromptInputMode) => void;
+};
+
+export function applyBusyInputSubmissionPolicy({
+  isLoading,
+  mode,
+  input,
+  addNotification,
+  setInput,
+  setCursorOffset,
+  clearBuffer,
+  resetHistory,
+  onModeChange,
+}: BusyInputSubmissionPolicyArgs): boolean {
+  if (!isLoading) return false;
+  if (mode === 'bash') {
+    const trimmedBash = input.trim();
+    if (trimmedBash === '') {
+      return true;
+    }
+    enqueue({
+      value: trimmedBash,
+      preExpansionValue: `!${trimmedBash}`,
+      mode: 'bash'
+    });
+    addNotification({
+      key: 'busy-bash-queued',
+      text: 'Bash command queued for next turn',
+      priority: 'immediate',
+      timeoutMs: 3000
+    });
+    setInput('');
+    setCursorOffset(0);
+    clearBuffer();
+    resetHistory();
+    onModeChange('prompt');
+    return true;
+  }
+
+  if (mode !== 'prompt') {
+    addNotification({
+      key: 'busy-mode-preserved',
+      text: `${mode} input is available after the current turn finishes`,
+      priority: 'immediate',
+      timeoutMs: 3000
+    });
+    return true;
+  }
+
+  return false;
+}
+
 function PromptInput({
   debug,
   ideSelection,
@@ -566,13 +623,6 @@ function PromptInput({
   const store = useAppStateStore();
   const setAppState = useSetAppState();
   const tasks = useAppState(s => s.tasks);
-  const replBridgeConnected = useAppState(s => s.replBridgeConnected);
-  const replBridgeExplicit = useAppState(s => s.replBridgeExplicit);
-  const replBridgeReconnecting = useAppState(s => s.replBridgeReconnecting);
-  // Must match BridgeStatusIndicator's render condition (PromptInputFooter.tsx) —
-  // the pill returns null for implicit-and-not-reconnecting, so nav must too,
-  // otherwise bridge becomes an invisible selection stop.
-  const bridgeFooterVisible = replBridgeConnected && (replBridgeExplicit || replBridgeReconnecting);
   // Tmux pill (internal-only) — visible when there's an active tungsten session
   const hasTungstenSession = false;
   const tmuxFooterVisible = false;
@@ -589,7 +639,7 @@ function PromptInput({
   // Brief mode: BriefSpinner/BriefIdleStatus own the 2-row footprint above
   // the input. Dropping marginTop here lets the spinner sit flush against
   // the input bar. viewingAgentTaskId mirrors the gate on both (Spinner.tsx,
-  // REPL.tsx) — teammate view falls back to SpinnerWithVerbInner which has
+  // the live TUI shell) — teammate view falls back to SpinnerWithVerbInner which has
   // its own marginTop, so the gap stays even without ours.
   const briefOwnsGap = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
@@ -644,7 +694,6 @@ function PromptInput({
   // (arrow, escape, backspace, paste, space) disarms without inserting.
   const pendingSpaceAfterPillRef = useRef(false);
   const [showTeamsDialog, setShowTeamsDialog] = useState(false);
-  const [showBridgeDialog, setShowBridgeDialog] = useState(false);
   const [teammateFooterIndex, setTeammateFooterIndex] = useState(0);
   // -1 sentinel: tasks pill is selected but no specific agent row is selected yet.
   // First ↓ selects the pill, second ↓ moves to row 0. Prevents double-select
@@ -728,7 +777,7 @@ function PromptInput({
   // something is running.
   const tasksFooterVisible = runningTaskCount > 0 && !shouldHideTasksFooter(tasks, showSpinnerTree);
   const teamsFooterVisible = cachedTeams.length > 0;
-  const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', tmuxFooterVisible && 'tmux', bagelFooterVisible && 'bagel', teamsFooterVisible && 'teams', bridgeFooterVisible && 'bridge'].filter(Boolean) as FooterItem[], [tasksFooterVisible, tmuxFooterVisible, bagelFooterVisible, teamsFooterVisible, bridgeFooterVisible]);
+  const footerItems = useMemo(() => [tasksFooterVisible && 'tasks', tmuxFooterVisible && 'tmux', bagelFooterVisible && 'bagel', teamsFooterVisible && 'teams'].filter(Boolean) as FooterItem[], [tasksFooterVisible, tmuxFooterVisible, bagelFooterVisible, teamsFooterVisible]);
 
   // Effective selection: null if the selected pill stopped rendering (bridge
   // disconnected, task finished). The derivation makes the UI correct
@@ -748,7 +797,6 @@ function PromptInput({
   const tmuxSelected = footerItemSelected === 'tmux';
   const bagelSelected = footerItemSelected === 'bagel';
   const teamsSelected = footerItemSelected === 'teams';
-  const bridgeSelected = footerItemSelected === 'bridge';
   function selectFooterItem(item: FooterItem | null): void {
     setAppState(prev => prev.footerSelection === item ? prev : {
       ...prev,
@@ -763,6 +811,22 @@ function PromptInput({
   // delta: +1 = down/right, -1 = up/left. Returns true if nav happened
   // (including deselecting at the start), false if at a boundary.
   function navigateFooter(delta: 1 | -1, exitAtStart = false): boolean {
+    if (tasksSelected && !isTeammateMode && coordinatorTaskCount > 0) {
+      if (delta > 0) {
+        setCoordinatorTaskIndex(i => Math.min(coordinatorTaskCount - 1, i + 1));
+        return true;
+      }
+      if (coordinatorTaskIndex > minCoordinatorIndex) {
+        setCoordinatorTaskIndex(i => Math.max(minCoordinatorIndex, i - 1));
+        return true;
+      }
+      if (exitAtStart) {
+        selectFooterItem(null);
+        return true;
+      }
+      return false;
+    }
+
     const idx = footerItemSelected ? footerItems.indexOf(footerItemSelected) : -1;
     const next = footerItems[idx + delta];
     if (next) {
@@ -1336,6 +1400,20 @@ function PromptInput({
       return;
     }
 
+    if (applyBusyInputSubmissionPolicy({
+      isLoading,
+      mode,
+      input: inputParam,
+      addNotification,
+      setInput: trackAndSetInput,
+      setCursorOffset,
+      clearBuffer,
+      resetHistory,
+      onModeChange
+    })) {
+      return;
+    }
+
     // Bash mode (round-2 MD-NEW4): without this branch the `!` composer
     // banner was a lie — the input was forwarded to the model as plain
     // text. Run the shell command locally via processBashCommand and
@@ -1417,7 +1495,7 @@ function PromptInput({
         keys: []
       }
     });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification]);
   const {
     suggestions,
     selectedSuggestion,
@@ -2092,8 +2170,9 @@ function PromptInput({
       navigateFooter(-1, true);
     },
     'footer:down': () => {
-      // ↓ scrolls within the coordinator task list, never leaves the pill
-      if (tasksSelected && !isTeammateMode) {
+      // Non-agent background tasks have no coordinator rows; keep ↓ as the
+      // shortcut into the full task dialog in that case.
+      if (tasksSelected && !isTeammateMode && coordinatorTaskCount === 0) {
         setShowBashesDialog(true);
         selectFooterItem(null);
         return;
@@ -2131,6 +2210,11 @@ function PromptInput({
               const teammate = inProcessTeammates[teammateFooterIndex - 1];
               if (teammate) enterTeammateView(teammate.id, setAppState);
             }
+          } else if (coordinatorTaskIndex === 0) {
+            exitTeammateView(setAppState);
+          } else if (coordinatorTaskIndex >= 1) {
+            const task = getVisibleAgentTasks(tasks)[coordinatorTaskIndex - 1];
+            if (task) enterTeammateView(task.id, setAppState);
           } else {
             setShowBashesDialog(true);
             selectFooterItem(null);
@@ -2142,10 +2226,6 @@ function PromptInput({
           break;
         case 'teams':
           setShowTeamsDialog(true);
-          selectFooterItem(null);
-          break;
-        case 'bridge':
-          setShowBridgeDialog(true);
           selectFooterItem(null);
           break;
       }
@@ -2296,7 +2376,7 @@ function PromptInput({
   const textInputColumns = columns - 3;
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
-  // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
+  // <AlternateScreen>, so this is dormant in the normal main-screen TUI.
   // localCol/localRow are relative to the onClick Box's top-left; the Box
   // tightly wraps the text input so they map directly to (column, line)
   // branding-scan: allow TextCursor is the text-caret utility name.
@@ -2478,12 +2558,6 @@ function PromptInput({
   if (thinkingToggleElement) {
     return thinkingToggleElement;
   }
-  if (showBridgeDialog) {
-    return <BridgeDialog onDone={() => {
-      setShowBridgeDialog(false);
-      selectFooterItem(null);
-    }} />;
-  }
   const baseProps: BaseTextInputProps = {
     multiline: true,
     onSubmit,
@@ -2592,7 +2666,7 @@ function PromptInput({
           slash command picker / @-mention list) needs the same row,
           which the suggestions branch in PromptInputFooter handles
           via its own early return. */}
-      <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} bridgeSelected={bridgeSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
+      <PromptInputFooter apiKeyStatus={apiKeyStatus} debug={debug} exitMessage={exitMessage} vimMode={isVimModeEnabled() ? vimMode : undefined} mode={mode} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={setIsAutoUpdating} suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} toolPermissionContext={effectiveToolPermissionContext} helpOpen={helpOpen} suppressHint={false} isLoading={isLoading} tasksSelected={tasksSelected} teamsSelected={teamsSelected} tmuxSelected={tmuxSelected} teammateFooterIndex={teammateFooterIndex} ideSelection={ideSelection} mcpClients={mcpClients} isPasting={isPasting} isInputWrapped={isInputWrapped} messages={messages} isSearching={isSearchingHistory} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined} />
       {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ?
     // position=absolute takes zero layout height so the spinner

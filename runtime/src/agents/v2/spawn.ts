@@ -16,13 +16,11 @@ import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-brid
 import {
   callIdFromArgs,
   currentAgentContext,
-  currentAgentDepth,
   emit,
   getSessionOrError,
   hideSpawnAgentMetadata,
   json,
   recordAgentCounter,
-  resolveSessionMaxAgentDepth,
   strictArgs,
   stringValue,
   toolMetadata,
@@ -336,12 +334,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
-    const childDepth = currentAgentDepth(session, current, opts) + 1;
-    const maxDepth = resolveSessionMaxAgentDepth(session);
-    if (childDepth > maxDepth) {
-      return failSpawn("Agent depth limit reached. Solve the task yourself.");
-    }
-
     let thread: AgentThread | undefined;
     try {
       const outcome = await delegate({

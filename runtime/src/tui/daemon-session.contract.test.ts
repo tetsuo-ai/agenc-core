@@ -1158,13 +1158,13 @@ describe("AgenC TUI daemon session adapter", () => {
       },
       {
         id: "turn_1",
-        type: "turn_started",
-        payload: { turnId: "turn_1" },
+        type: "background_agent_status",
+        payload: { turnId: "turn_1", status: "running" },
       },
       {
         id: "turn_1_done",
-        type: "turn_complete",
-        payload: { turnId: "turn_1", lastAgentMessage: "done" },
+        type: "background_agent_status",
+        payload: { turnId: "turn_1", status: "idle", message: "done" },
       },
       { id: "raw_1", type: "custom", payload: { ok: true } },
     ]);

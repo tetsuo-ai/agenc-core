@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 /**
  * Setup utilities for integrating KeybindingProvider into the app.
@@ -66,7 +64,7 @@ export function formatKeybindingWarningSummary(warnings: readonly KeybindingWarn
  * ```tsx
  * <AppStateProvider>
  *   <KeybindingSetup>
- *     <REPL ... />
+ *     <AgenCTuiApp ... />
  *   </KeybindingSetup>
  * </AppStateProvider>
  * ```
@@ -82,7 +80,10 @@ export function formatKeybindingWarningSummary(warnings: readonly KeybindingWarn
  * Display keybinding warnings to the user via notifications.
  * Shows a brief message pointing to /doctor for details.
  */
-function useKeybindingWarnings(warnings, isReload) {
+function useKeybindingWarnings(
+  warnings: readonly KeybindingWarning[],
+  isReload: boolean,
+): void {
   const $ = _c(9);
   const {
     addNotification,
@@ -264,7 +265,11 @@ export function createChordInputHandler({
         }
       }
     }
-    const contexts = [...handlerContexts, ...activeContexts, "Global"];
+    const contexts: KeybindingContextName[] = [
+      ...handlerContexts,
+      ...activeContexts,
+      "Global",
+    ];
     const wasInChord = pendingChordRef.current !== null;
     const result = resolveKeyWithChordState(input, key, contexts, bindings, pendingChordRef.current);
     bb23: switch (result.type) {
@@ -311,7 +316,7 @@ export function createChordInputHandler({
   };
 }
 
-function ChordInterceptor(t0) {
+function ChordInterceptor(t0: ChordInputHandlerOptions): null {
   const $ = _c(6);
   const {
     bindings,

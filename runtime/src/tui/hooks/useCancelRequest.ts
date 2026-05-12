@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * CancelRequestHandler component for handling cancel/escape keybinding.
  *
@@ -22,7 +20,7 @@ import { useIsOverlayActive } from '../context/overlayContext'
 import { useCommandQueue } from './useCommandQueue'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
-import type { Screen } from '../screens/REPL'
+import type { Screen } from '../types/screen.js'
 import { exitTeammateView } from '../state/teammateViewHelpers'
 import {
   killAllRunningAgentTasks,
@@ -33,8 +31,8 @@ import {
   clearCommandQueue,
   enqueuePendingNotification,
   hasCommandsInQueue,
-} from '../../utils/messageQueueManager.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/messageQueueManager.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 
 /** Time window in ms during which a second press kills all background agents. */
 const KILL_AGENTS_CONFIRM_WINDOW_MS = 3000
@@ -85,6 +83,11 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const { addNotification, removeNotification } = useNotifications()
   const lastKillAgentsPressRef = useRef<number>(0)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
+  const hasRunningAgents = useAppState(s =>
+    Object.values(s.tasks ?? {}).some(
+      t => t.type === 'local_agent' && t.status === 'running',
+    ),
+  )
 
   const handleCancel = useCallback(() => {
     const cancelProps = {
@@ -111,6 +114,21 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       }
     }
 
+    if (hasRunningAgents) {
+      const shortcut = getShortcutDisplay(
+        'chat:killAgents',
+        'Chat',
+        'ctrl+x ctrl+k',
+      )
+      addNotification({
+        key: 'agents-running-cancel-hint',
+        text: `Background agents are still running. Press ${shortcut} twice to stop them`,
+        priority: 'immediate',
+        timeoutMs: 3000,
+      })
+      return
+    }
+
     // Fallback: nothing to cancel or pop (shouldn't reach here if isActive is correct)
     logEvent('tengu_cancel', cancelProps)
     setToolUseConfirmQueue(() => [])
@@ -121,6 +139,8 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     setToolUseConfirmQueue,
     onCancel,
     streamMode,
+    hasRunningAgents,
+    addNotification,
   ])
 
   // Determine if this handler should be active
@@ -151,7 +171,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // input, and to useBackgroundTaskNavigation when viewing a teammate
   const isEscapeActive =
     isContextActive &&
-    (canCancelRunningTask || hasQueuedCommands) &&
+    (canCancelRunningTask || hasQueuedCommands || hasRunningAgents) &&
     !isInSpecialModeWithEmptyInput &&
     !isViewingTeammate
 

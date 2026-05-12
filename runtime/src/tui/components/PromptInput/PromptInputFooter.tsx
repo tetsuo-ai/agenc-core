@@ -1,6 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, type ReactNode, useMemo, useRef } from 'react';
 
@@ -10,7 +7,7 @@ import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
-import { Box, Text } from '../../ink.js';
+import { Box } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import { useAppState } from '../../state/AppState.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
@@ -25,14 +22,6 @@ import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem } from './PromptInputFooterSuggestions.js';
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js';
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const isBridgeEnabled = (): boolean => false;
-const getBridgeStatus = (..._args: unknown[]): null => null;
-// ---- end donor-purge stubs ----
 type Props = {
   apiKeyStatus: VerificationStatus;
   debug: boolean;
@@ -56,7 +45,6 @@ type Props = {
   isLoading: boolean;
   tasksSelected: boolean;
   teamsSelected: boolean;
-  bridgeSelected: boolean;
   tmuxSelected: boolean;
   teammateFooterIndex?: number;
   ideSelection: IDESelection | undefined;
@@ -90,7 +78,6 @@ function PromptInputFooter({
   isLoading,
   tasksSelected,
   teamsSelected,
-  bridgeSelected,
   tmuxSelected,
   teammateFooterIndex,
   ideSelection,
@@ -154,47 +141,9 @@ function PromptInputFooter({
         </Box>
         <Box flexShrink={1} gap={1}>
           {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} messages={messages} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
-          <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
         </Box>
       </Box>
       <CoordinatorTaskPanel />
     </>;
 }
 export default memo(PromptInputFooter);
-type BridgeStatusProps = {
-  bridgeSelected: boolean;
-};
-function BridgeStatusIndicator({
-  bridgeSelected
-}: BridgeStatusProps): React.ReactNode {
-  if (!feature('BRIDGE_MODE')) return null;
-
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  const enabled = useAppState(s => s.replBridgeEnabled);
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  const connected = useAppState(s_0 => s_0.replBridgeConnected);
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  const sessionActive = useAppState(s_1 => s_1.replBridgeSessionActive);
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  const reconnecting = useAppState(s_2 => s_2.replBridgeReconnecting);
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  const explicit = useAppState(s_3 => s_3.replBridgeExplicit);
-
-  // Failed state is surfaced via notification (useReplBridge), not a footer pill.
-  if (!isBridgeEnabled() || !enabled) return null;
-  const status = getBridgeStatus({
-    error: undefined,
-    connected,
-    sessionActive,
-    reconnecting
-  });
-
-  // For implicit (config-driven) remote, only show the reconnecting state
-  if (!explicit && status.label !== 'Remote Control reconnecting') {
-    return null;
-  }
-  return <Text color={bridgeSelected ? 'background' : status.color} inverse={bridgeSelected} wrap="truncate">
-      {status.label}
-      {bridgeSelected && <Text dimColor> · Enter to view</Text>}
-    </Text>;
-}

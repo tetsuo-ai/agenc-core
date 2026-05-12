@@ -1,4 +1,3 @@
-// @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { UUID } from 'crypto'
 import type React from 'react'
@@ -279,8 +278,8 @@ export type EditablePromptInputMode = Exclude<
  * Queue priority levels. Same semantics in both normal and proactive mode.
  *
  *  - `now`   — Interrupt and send immediately. Aborts any in-flight tool
- *              call (equivalent to Esc + send). Consumers (print.ts,
- *              REPL.tsx) subscribe to queue changes and abort when they
+ *              call (equivalent to Esc + send). Interactive consumers
+ *              subscribe to queue changes and abort when they
  *              see a 'now' command.
  *  - `next`  — Mid-turn drain. Let the current tool call finish, then
  *              send this message between the tool result and the next API

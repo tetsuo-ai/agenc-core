@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Component that registers global keybinding handlers.
  *
@@ -10,12 +8,12 @@ import { feature } from 'bun:bundle';
 import { useCallback } from 'react';
 import instances from '../ink/instances.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
-import type { Screen } from '../screens/REPL';
+import type { Screen } from '../types/screen.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTerminalPanel } from '../../utils/terminalPanel.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../utils/array.js';
+import { getTerminalPanel } from '../../utils/terminalPanel.js';
 type Props = {
   screen: Screen;
   setScreen: React.Dispatch<React.SetStateAction<Screen>>;

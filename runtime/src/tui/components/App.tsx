@@ -1,6 +1,4 @@
 import { c as _c } from "react-compiler-runtime";
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../context/stats.js";
@@ -49,6 +47,7 @@ import { listTuiCommandList } from "../../commands.js";
 import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
 import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
+import type { PromptInputContext } from "../input/inputContext.js";
 import type { Command } from "../../commands.js";
 import type { QueuedCommand, VimMode } from "../../types/textInputTypes.js";
 import { installCompactProgressControls, type AgenCTuiProps } from "../session-types.js";
@@ -81,12 +80,15 @@ type LiveSubmitOptions = {
   readonly pastedContentsOverride?: Record<number, any>;
 };
 
-function isMainThreadPromptCommand(command: QueuedCommand): boolean {
-  return command.agentId === undefined && command.mode === "prompt";
+function isMainThreadRunnableCommand(command: QueuedCommand): boolean {
+  return (
+    command.agentId === undefined &&
+    (command.mode === "prompt" || command.mode === "bash")
+  );
 }
 
-function dequeueNextMainThreadPromptCommand(): QueuedCommand | undefined {
-  const next = peek(isMainThreadPromptCommand);
+function dequeueNextMainThreadRunnableCommand(): QueuedCommand | undefined {
+  const next = peek(isMainThreadRunnableCommand);
   if (next === undefined) return undefined;
   return dequeue(command => command === next);
 }
@@ -99,6 +101,45 @@ function queuedCommandInputText(command: QueuedCommand): string {
     }
     return "[image]";
   }).filter(Boolean).join("\n");
+}
+
+function extractUserMessageText(message: unknown): string | null {
+  if (!message || typeof message !== "object") return null;
+  const maybeMessage = message as {
+    type?: unknown;
+    message?: { content?: unknown };
+  };
+  if (maybeMessage.type !== "user") return null;
+  const content = maybeMessage.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const text = content
+      .filter(
+        (block): block is { readonly type: "text"; readonly text: string } =>
+          block &&
+          typeof block === "object" &&
+          (block as { type?: unknown }).type === "text" &&
+          typeof (block as { text?: unknown }).text === "string",
+      )
+      .map(block => block.text)
+      .join("\n");
+    return text.length > 0 ? text : null;
+  }
+  return null;
+}
+
+export function enqueueSlashPromptResult(
+  content: string,
+  scheduleQueueDrain: () => void,
+): boolean {
+  if (content.trim().length === 0) return false;
+  enqueue({
+    value: content,
+    preExpansionValue: content,
+    mode: "prompt",
+  });
+  scheduleQueueDrain();
+  return true;
 }
 
 export type UserPending = {
@@ -1145,7 +1186,7 @@ const TITLE_ANIMATION_INTERVAL_MS = 960;
 
 /**
  * Ports upstream `src/ink/hooks/use-terminal-title.ts` and the terminal-title
- * leaf from `src/screens/REPL.tsx` onto the live AgenC TUI shell.
+ * leaf onto the live AgenC TUI shell.
  *
  * Shape difference from upstream:
  *   - AgenC does not yet carry upstream session rename or generated-title
@@ -1223,9 +1264,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const pauseStartTimeRef = useRef<number | null>(null);
   const responseLengthRef = useRef<number>(0);
   // Reset timing on isStreaming false→true. Tracks previous via a ref so the
-  // reset runs in the same render the spinner first appears (mirrors
-  // REPL.tsx:951-955 — without the inline reset, the first spinner render
-  // sees loadingStartTimeRef=0 and computes a 56-year elapsed time).
+  // reset runs in the same render the spinner first appears. Without the
+  // inline reset, the first spinner render after submit sees
+  // loadingStartTimeRef=0 and computes a 56-year elapsed time.
   const wasStreamingRef = useRef<boolean>(false);
   const [input, setInput] = useState(props.initialComposerText ?? "");
   const [mode, setMode] = useState<any>("prompt");
@@ -1416,6 +1457,63 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }
     };
   }, []);
+  const runQueuedBashCommand = useCallback(async (command: string) => {
+    const trimmedBash = command.trim();
+    if (trimmedBash.length === 0) return;
+    const ctx = getToolUseContext(
+      transcriptMessagesRef.current as unknown[],
+      [],
+      new AbortController(),
+    ) as PromptInputContext & {
+      session?: {
+        emit?: (event: unknown) => void;
+        nextInternalSubId?: () => string;
+      };
+      setToolJSX?: (jsx: unknown) => void;
+    };
+    const session = ctx.session;
+    const emit =
+      typeof session?.emit === "function" ? session.emit.bind(session) : undefined;
+    const nextId =
+      typeof session?.nextInternalSubId === "function"
+        ? session.nextInternalSubId.bind(session)
+        : (() => `bash-${Date.now()}`);
+    const emitTranscriptText = (text: string) => {
+      emit?.({
+        id: nextId(),
+        msg: {
+          type: "user_message",
+          payload: { displayText: text, message: text }
+        }
+      });
+    };
+
+    emitTranscriptText(`<bash-input>${trimmedBash}</bash-input>`);
+    try {
+      const { processBashCommand } = await import("../input/processBashCommand.js");
+      const result = await processBashCommand(
+        trimmedBash,
+        [],
+        [],
+        ctx,
+        ctx.setToolJSX ?? (() => {}),
+      );
+      for (const message_0 of result.messages) {
+        const text_1 = extractUserMessageText(message_0);
+        if (text_1 === null) continue;
+        if (
+          !text_1.startsWith("<bash-stdout") &&
+          !text_1.startsWith("<bash-stderr")
+        ) {
+          continue;
+        }
+        emitTranscriptText(text_1);
+      }
+    } catch (err_1) {
+      const message_1 = err_1 instanceof Error ? err_1.message : String(err_1);
+      emitTranscriptText(`<bash-stderr>${message_1}</bash-stderr>`);
+    }
+  }, [getToolUseContext]);
   const submit = useCallback(async (value: string, options?: LiveSubmitOptions) => {
     const text_0 = value.trim();
     const activePastedContents = options?.pastedContentsOverride ?? pastedContents;
@@ -1458,8 +1556,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // can find it. The daemon-backed AgenCTuiApp dispatch path used to
     // skip this, so the picker said "No history yet" right after a
     // submit and Up-arrow on an empty composer was a no-op (flagged
-    // by the power-chainer + returning-user personas). REPL.tsx
-    // (legacy moved-source) already does this; mirror it here for
+    // by the power-chainer + returning-user personas). Keep it here for
     // the live mount path.
     if (!options?.fromQueue && text_0.length > 0) {
       try {
@@ -1512,7 +1609,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           } catch {
             // best-effort echo; don't block dispatch on telemetry
           }
-          // Build a renderResult helper used by both legacy and
+          // Build a renderResult helper used by both structured and
           // built-in dispatch paths. Returns true if the result was a
           // "prompt" that needs to be forwarded to the model so the
           // caller can decide whether to keep pendingSubmission set
@@ -1553,12 +1650,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             }
             if (result.kind === "prompt") {
               // Slash command produced a follow-up prompt for the model.
-              // Forward it through the
-              // normal submit path so the user prompt gets echoed and
-              // the daemon turn starts.
-              void props.session.submit?.(result.content);
+              // Queue it through the same next-turn path used by busy input
+              // so `nextInput`/prompt results are visible and never bypass
+              // ordering gates.
+              enqueueSlashPromptResult(result.content, () => {
+                setQueueDrainTick(tick => tick + 1);
+              });
               return {
-                forwardedToModel: true
+                forwardedToModel: false
               };
             }
             const display = result.kind === "text" || result.kind === "compact" ? result.text : result.kind === "error" ? `Error: ${result.message}` : null;
@@ -1660,17 +1759,22 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     if (effectiveInputBusy) return;
     if (permissionRequests.length > 0 || elicitation.prompt !== null || isMessageSelectorVisible || onboarding.active) return;
     if (queuedCommands.length === 0) return;
-    const command = dequeueNextMainThreadPromptCommand();
+    const command = dequeueNextMainThreadRunnableCommand();
     if (command === undefined) return;
     queueDrainActiveRef.current = true;
-    void submit(queuedCommandInputText(command), {
-      fromQueue: true,
-      ...(command.pastedContents !== undefined ? { pastedContentsOverride: command.pastedContents } : {}),
-    }).finally(() => {
+    const queuedText = queuedCommandInputText(command);
+    const run =
+      command.mode === "bash"
+        ? runQueuedBashCommand(queuedText)
+        : submit(queuedText, {
+            fromQueue: true,
+            ...(command.pastedContents !== undefined ? { pastedContentsOverride: command.pastedContents } : {}),
+          });
+    void run.finally(() => {
       queueDrainActiveRef.current = false;
       setQueueDrainTick(tick => tick + 1);
     });
-  }, [effectiveInputBusy, permissionRequests.length, elicitation.prompt, isMessageSelectorVisible, onboarding.active, queuedCommands, submit]);
+  }, [effectiveInputBusy, permissionRequests.length, elicitation.prompt, isMessageSelectorVisible, onboarding.active, queuedCommands, submit, runQueuedBashCommand]);
   const toolUseConfirmQueue = useMemo(() => buildToolUseConfirmQueue(permissionRequests, availableTools), [permissionRequests, availableTools]);
 
   // Per-turn AbortController. CancelRequestHandler reads
@@ -1703,9 +1807,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     void props.session.cancelActiveTurn?.("interrupted");
   }, [turnAbortController, props.session]);
   const handleAgentsKilledNoOp = useCallback(() => {
-    // App.tsx (daemon-mode shell) does not currently track local
-    // background agents the way REPL.tsx does. Background agents in
-    // daemon mode are owned by the daemon and torn down via
+    // App.tsx does not currently track local background agents directly.
+    // In daemon mode they are owned by the daemon and torn down via
     // cancelActiveTurn cascade (control.interrupt cascades to
     // descendants). This callback is a hook for future per-agent
     // notifications surfaced from the TUI side.
@@ -1963,7 +2066,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           {toolJSX.jsx}
         </Box> : null}
       {/* flexGrow spacer pushes streaming content to the top of the scroll
-          viewport in fullscreen mode (matches upstream REPL.tsx pattern). */}
+          viewport in fullscreen mode. */}
       {fullscreen ? <Box flexGrow={1} /> : null}
       {showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} /> : null}
       {fullscreen ? <PromptInputQueuedCommands /> : null}
@@ -1971,7 +2074,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
 
   // PermissionOverlay + ElicitationOverlay live in `overlay` slot — rendered
   // inside ScrollBox after messages so users can scroll up to see context
-  // while approving/answering. Matches upstream REPL.tsx FullscreenLayout
+  // while approving/answering. Matches the fullscreen layout
   // overlay={toolPermissionOverlay} pattern.
   const overlayContent = <>
       <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} />

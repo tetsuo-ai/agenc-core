@@ -360,7 +360,6 @@
     "src/tui/ink/components/ScrollBox.tsx",
     "src/tui/keybindings/template.ts",
     "src/tui/screens/Doctor.tsx",
-    "src/tui/screens/REPL.tsx",
     "src/tui/session-transcript.ts",
     "src/tui/startup/StartupScreen.ts",
     "src/tui/startup/StatusLine.tsx",

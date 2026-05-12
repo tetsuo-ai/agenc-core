@@ -450,6 +450,51 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
+  test("renders wait_agent timeout as still-running status instead of a failure", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "wait-start",
+        msg: {
+          type: "collab_waiting_begin",
+          payload: {
+            callId: "wait-1",
+            receiverThreadIds: ["thread-1"],
+          },
+        },
+      },
+      {
+        id: "wait-end",
+        msg: {
+          type: "collab_waiting_end",
+          payload: {
+            callId: "wait-1",
+            timedOut: true,
+            agentStatuses: [
+              {
+                threadId: "thread-1",
+                status: { status: "running", turnId: "turn-1" },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.messages).toMatchObject([
+      {
+        subtype: "collab_agent",
+        title: "Waiting for thread-1",
+        state: "running",
+      },
+      {
+        subtype: "collab_agent",
+        title: "Wait call timed out",
+        state: "info",
+        details: ["thread-1: Running"],
+      },
+    ]);
+  });
+
   test("tool_progress events are no longer captured into a runningToolProgress map and streamingToolUses is the live-tool contract", () => {
     const transcript = adaptTranscriptEvents([
       {

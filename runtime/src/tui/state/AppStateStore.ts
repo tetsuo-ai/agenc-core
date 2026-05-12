@@ -89,7 +89,6 @@ export type FooterItem =
   | 'tmux'
   | 'bagel'
   | 'teams'
-  | 'bridge'
 
 export type AppState = DeepImmutable<{
   settings: SettingsJson

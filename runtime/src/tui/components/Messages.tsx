@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import chalk from 'chalk';
@@ -17,7 +15,7 @@ import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
 import { Box, Text } from '../ink.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
-import type { Screen } from '../screens/REPL.js';
+import type { Screen } from '../types/screen.js';
 import type { Tools } from '../../tools/Tool.js';
 import { findToolByName } from '../../tools/Tool.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
@@ -36,7 +34,6 @@ import { plural } from '../../utils/stringUtils.js';
 import { renderableSearchText } from '../history/transcriptSearch.js';
 import { Divider } from './design-system/Divider.js';
 import type { UnseenDivider } from './FullscreenLayout.js';
-import { LogoV2 } from './LogoV2/LogoV2.js';
 import { StreamingMarkdown } from './markdown/Markdown.js';
 import { hasContentAfterIndex, MessageRow } from './MessageRow.js';
 import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from './messageActions.js';
@@ -63,7 +60,9 @@ import {
 // and pegs CPU at 100%. Memo on agentDefinitions so a new messages array
 // doesn't invalidate the logo subtree. LogoV2/StatusNotices internally
 // subscribe to useAppState/useSettings for their own updates.
-const LogoHeader = React.memo(function LogoHeader(t0) {
+const LogoHeader = React.memo(function LogoHeader(t0: {
+  readonly agentDefinitions?: AgentDefinitionsResult;
+}) {
   const $ = _c(3);
   const {
     agentDefinitions
@@ -298,7 +297,7 @@ const MessagesImpl = ({
           }
         }
       } else if (msg?.type === 'user') {
-        const hasToolResult = msg.message.content.some(block => block.type === 'tool_result');
+        const hasToolResult = msg.message.content.some((block: any) => block.type === 'tool_result');
         if (!hasToolResult) {
           // Reached a previous user turn so don't show stale thinking from before
           return 'no-thinking';
@@ -351,7 +350,7 @@ const MessagesImpl = ({
   const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.AGENC_DISABLE_VIRTUAL_SCROLL), []);
   // Virtual scroll replaces the transcript cap: everything is scrollable and
   // memory is bounded by the mounted-item count, not the total. scrollRef is
-  // only passed when isFullscreenEnvEnabled() is true (REPL.tsx gates it),
+  // only passed when isFullscreenEnvEnabled() is true (AgenCTuiApp gates it),
   // so scrollRef's presence is the signal.
   const virtualScrollRuntimeGate = scrollRef != null && !disableVirtualScroll;
   const shouldTruncate = isTranscriptMode && !showAllInTranscript && !virtualScrollRuntimeGate;
@@ -545,7 +544,7 @@ const MessagesImpl = ({
     // extractSearchText, prefer that — it's precise (tool-owned)
     // vs renderableSearchText's field-name heuristic.
     if (msg_9.type === 'user' && msg_9.toolUseResult && Array.isArray(msg_9.message.content)) {
-      const tr = msg_9.message.content.find(b_1 => b_1.type === 'tool_result');
+      const tr = msg_9.message.content.find((b_1: any) => b_1.type === 'tool_result');
       if (tr && 'tool_use_id' in tr) {
         const tu = lookups_0.toolUseByToolUseID.get(tr.tool_use_id);
         const tool_0 = tu && findToolByName(tools, tu.name);
@@ -707,7 +706,7 @@ export function shouldRenderStatically(message: RenderableMessage, streamingTool
       }
     case 'grouped_tool_use':
       {
-        const allResolved = message.messages.every(msg => {
+        const allResolved = message.messages.every((msg: any) => {
           const content = msg.message.content[0];
           return content?.type === 'tool_use' && lookups.resolvedToolUseIDs.has(content.id);
         });
@@ -720,4 +719,5 @@ export function shouldRenderStatically(message: RenderableMessage, streamingTool
         return false;
       }
   }
+  return true;
 }

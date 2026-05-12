@@ -1,11 +1,9 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useSyncExternalStore } from 'react'
-import type { QueuedCommand } from '../../types/textInputTypes'
+import type { QueuedCommand } from '../../types/textInputTypes.js'
 import {
   getCommandQueueSnapshot,
   subscribeToCommandQueue,
-} from '../../utils/messageQueueManager.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/messageQueueManager.js'
 
 /**
  * React hook to subscribe to the unified command queue.

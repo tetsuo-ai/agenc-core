@@ -49,6 +49,12 @@ const providerProbe = {
     setCursorOffset(offset: number): void;
   }) => Promise<void>>,
   promptProps: [] as Array<Record<string, unknown>>,
+  processBashCommand: typeof vi.fn === "function"
+    ? vi.fn(async () => ({
+        messages: [],
+        shouldQuery: false,
+      }))
+    : async () => ({ messages: [], shouldQuery: false }),
   onChangeAppState: typeof vi.fn === "function" ? vi.fn() : () => {},
   inkExit: typeof vi.fn === "function" ? vi.fn() : () => {},
   logEvent: typeof vi.fn === "function" ? vi.fn() : () => {},
@@ -238,6 +244,10 @@ vi.mock("../../utils/log.js", () => ({
   logError: () => {},
 }));
 
+vi.mock("../input/processBashCommand.js", () => ({
+  processBashCommand: providerProbe.processBashCommand,
+}));
+
 vi.mock("../state/AppState.js", async () => {
   const React = await import("react");
   const defaultPermissionContext = {
@@ -422,6 +432,10 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       mcpClients,
       getToolUseContext,
       isLoading,
+      pastedContents,
+      setPastedContents,
+      mode,
+      onModeChange,
     }: {
       input: string;
       onSubmit: (input: string, helpers: {
@@ -437,6 +451,10 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       mcpClients?: unknown;
       getToolUseContext?: unknown;
       isLoading?: boolean;
+      pastedContents?: unknown;
+      setPastedContents?: unknown;
+      mode?: unknown;
+      onModeChange?: unknown;
     }) => {
       providerProbe.promptSubmits.push(onSubmit);
       providerProbe.promptProps.push({
@@ -449,6 +467,10 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         mcpClients,
         getToolUseContext,
         isLoading,
+        pastedContents,
+        setPastedContents,
+        mode,
+        onModeChange,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -514,6 +536,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.inkExit.mockClear?.();
   providerProbe.logEvent.mockClear?.();
   providerProbe.fileHistoryRewind.mockReset?.();
+  providerProbe.processBashCommand.mockClear?.();
   mockTotalCost = 0;
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
@@ -1403,6 +1426,172 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(queuedHelpers.setCursorOffset).toHaveBeenCalledWith(0);
         },
       );
+    } finally {
+      resetCommandQueue();
+    }
+  });
+
+  test("queues image-only submissions while the live session is busy", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { getCommandQueue, resetCommandQueue } = await import("../../utils/messageQueueManager.js");
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      activeTurn: {
+        unsafePeek: () => ({ turnId: "busy-turn" }),
+      },
+      submit,
+    };
+    const queuedHelpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    resetShellSurfaceProbe();
+    resetCommandQueue();
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+        async () => {
+          const promptProps = providerProbe.promptProps.at(-1)!;
+          (promptProps.setPastedContents as (next: Record<number, unknown>) => void)({
+            0: {
+              id: 0,
+              type: "image",
+              content: "base64-image",
+              mediaType: "image/png",
+              filename: "pasted.png",
+            },
+          });
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          const onSubmit = providerProbe.promptSubmits.at(-1);
+          expect(onSubmit).toBeDefined();
+          await onSubmit!("", queuedHelpers);
+
+          expect(submit).not.toHaveBeenCalled();
+          expect(getCommandQueue()).toMatchObject([
+            {
+              value: "",
+              mode: "prompt",
+              pastedContents: {
+                0: expect.objectContaining({ type: "image" }),
+              },
+            },
+          ]);
+          expect(queuedHelpers.clearBuffer).toHaveBeenCalledTimes(1);
+          expect(queuedHelpers.resetHistory).toHaveBeenCalledTimes(1);
+        },
+      );
+    } finally {
+      resetCommandQueue();
+    }
+  });
+
+  test("drains queued bash commands without forwarding them to the model", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { enqueue, getCommandQueue, resetCommandQueue } = await import("../../utils/messageQueueManager.js");
+    const submit = vi.fn(async () => {});
+    const emit = vi.fn();
+    let id = 0;
+    const session = {
+      ...createSession(),
+      submit,
+      emit,
+      nextInternalSubId: () => `bash-id-${++id}`,
+    };
+    resetShellSurfaceProbe();
+    resetCommandQueue();
+    providerProbe.processBashCommand.mockResolvedValueOnce({
+      messages: [
+        {
+          type: "user",
+          message: {
+            content: "<bash-stdout>queued ok</bash-stdout><bash-stderr></bash-stderr>",
+          },
+        },
+      ],
+      shouldQuery: false,
+    });
+    enqueue({
+      value: "echo queued",
+      preExpansionValue: "!echo queued",
+      mode: "bash",
+    });
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 75));
+
+          expect(providerProbe.processBashCommand).toHaveBeenCalledWith(
+            "echo queued",
+            [],
+            [],
+            expect.any(Object),
+            expect.any(Function),
+          );
+          expect(submit).not.toHaveBeenCalled();
+          expect(getCommandQueue()).toEqual([]);
+          expect(emit).toHaveBeenCalledWith(
+            expect.objectContaining({
+              msg: expect.objectContaining({
+                type: "user_message",
+                payload: expect.objectContaining({
+                  message: "<bash-input>echo queued</bash-input>",
+                }),
+              }),
+            }),
+          );
+          expect(emit).toHaveBeenCalledWith(
+            expect.objectContaining({
+              msg: expect.objectContaining({
+                type: "user_message",
+                payload: expect.objectContaining({
+                  message: "<bash-stdout>queued ok</bash-stdout><bash-stderr></bash-stderr>",
+                }),
+              }),
+            }),
+          );
+        },
+      );
+    } finally {
+      resetCommandQueue();
+    }
+  });
+
+  test("queues slash command prompt results for next-turn drain", async () => {
+    const { enqueueSlashPromptResult } = await import("./App.js");
+    const { getCommandQueue, resetCommandQueue } = await import("../../utils/messageQueueManager.js");
+    const scheduleQueueDrain = vi.fn();
+    resetCommandQueue();
+
+    try {
+      expect(
+        enqueueSlashPromptResult(
+          "review queued prompt result",
+          scheduleQueueDrain,
+        ),
+      ).toBe(true);
+
+      expect(getCommandQueue()).toMatchObject([
+        {
+          value: "review queued prompt result",
+          preExpansionValue: "review queued prompt result",
+          mode: "prompt",
+        },
+      ]);
+      expect(scheduleQueueDrain).toHaveBeenCalledTimes(1);
     } finally {
       resetCommandQueue();
     }

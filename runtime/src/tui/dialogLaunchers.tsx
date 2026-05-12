@@ -8,19 +8,11 @@
  */
 import React from 'react';
 import type { AssistantSession } from './assistant/sessionDiscovery.js';
-import type { StatsStore } from './context/stats.js';
 import type { Root } from './ink.js';
-import { renderAndRun, showSetupDialog } from './interactiveHelpers.js';
-import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js';
-import type { AppState } from './state/AppStateStore.js';
+import { showSetupDialog } from './interactiveHelpers.js';
 import type { AgentMemoryScope } from '../tools/AgentTool/agentMemory.js';
 import type { TeleportRemoteResponse } from '../utils/conversationRecovery.js';
-import type { FpsMetrics } from '../utils/fpsTracker.js';
 import type { ValidationError } from '../utils/settings/validation.js';
-
-// Type-only access to ResumeConversation's Props via the module type.
-// No runtime cost - erased at compile time.
-type ResumeConversationProps = React.ComponentProps<typeof import('./history/ResumeConversation.js').ResumeConversation>;
 
 /**
  * Site ~3173: SnapshotUpdateDialog (agent memory snapshot update prompt).
@@ -97,26 +89,4 @@ export async function launchTeleportRepoMismatchDialog(root: Root, props: {
     TeleportRepoMismatchDialog
   } = await import('./components/TeleportRepoMismatchDialog.js');
   return showSetupDialog<string | null>(root, done => <TeleportRepoMismatchDialog targetRepo={props.targetRepo} initialPaths={props.initialPaths} onSelectPath={done} onCancel={() => done(null)} />);
-}
-
-/**
- * Site ~4903: ResumeConversation mount (interactive session picker).
- * Uses renderAndRun, NOT showSetupDialog. Wraps in <App><KeybindingSetup>.
- * Preserves original Promise.all parallelism between getWorktreePaths and imports.
- */
-export async function launchResumeChooser(root: Root, appProps: {
-  getFpsMetrics: () => FpsMetrics | undefined;
-  stats: StatsStore;
-  initialState: AppState;
-}, worktreePathsPromise: Promise<string[]>, resumeProps: Omit<ResumeConversationProps, 'worktreePaths'>): Promise<void> {
-  const [worktreePaths, {
-    ResumeConversation
-  }, {
-    App
-  }] = await Promise.all([worktreePathsPromise, import('./history/ResumeConversation.js'), import('./components/App.js')]);
-  await renderAndRun(root, <App getFpsMetrics={appProps.getFpsMetrics} stats={appProps.stats} initialState={appProps.initialState}>
-      <KeybindingSetup>
-        <ResumeConversation {...resumeProps} worktreePaths={worktreePaths} />
-      </KeybindingSetup>
-    </App>);
 }

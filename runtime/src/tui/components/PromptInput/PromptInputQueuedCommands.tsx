@@ -82,10 +82,12 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
 
   // createUserMessage mints a fresh UUID per call; without memoization, streaming
   // re-renders defeat Message's areMessagePropsEqual (compares uuid) → flicker.
-  const queuedPromptCount = useMemo(
+  const queuedInputCount = useMemo(
     () =>
       queuedCommands.filter(
-        cmd => isQueuedCommandEditable(cmd) && cmd.mode === 'prompt',
+        cmd =>
+          isQueuedCommandEditable(cmd) &&
+          (cmd.mode === 'prompt' || cmd.mode === 'bash'),
       ).length,
     [queuedCommands],
   );
@@ -117,9 +119,9 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
     return null;
   }
   return <Box marginTop={1} flexDirection="column">
-      {queuedPromptCount > 0 && <Box marginLeft={2} marginBottom={1}>
+      {queuedInputCount > 0 && <Box marginLeft={2} marginBottom={1}>
           <Text dimColor>
-            {queuedPromptCount === 1 ? '1 message queued for next turn' : `${queuedPromptCount} messages queued for next turn`}
+            {queuedInputCount === 1 ? '1 input queued for next turn' : `${queuedInputCount} inputs queued for next turn`}
           </Text>
         </Box>}
       {messages.map((message, i) => <QueuedMessageProvider key={i} isFirst={i === 0} useBriefLayout={useBriefLayout}>

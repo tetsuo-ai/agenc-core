@@ -593,13 +593,12 @@ describe("startup marketplace sync", () => {
     expect(state.plugins.needsRefresh).toBe(true);
   });
 
-  it("keeps the live REPL startup import on the AgenC-owned marketplace path", async () => {
-    const repl = await readFile(join(process.cwd(), "src/tui/screens/REPL.tsx"), "utf8");
+  it("keeps the live TUI startup on the AgenC-owned app shell", async () => {
+    const main = await readFile(join(process.cwd(), "src/tui/main.tsx"), "utf8");
 
-    expect(repl).toContain("src/plugins/marketplace/startup_checks.js");
-    expect(repl).not.toContain("src/utils/plugins/performStartupChecks.js");
-    expect(repl).toContain("trustAccepted: checkHasTrustDialogAccepted()");
-    expect(repl).toContain("config: getGlobalConfig()");
+    expect(main).toContain('import { AgenCTuiApp } from "./components/App.js"');
+    expect(main).not.toContain("./screens/REPL");
+    expect(main).not.toContain("performStartupChecks");
   });
 
   it("uses the existing curated snapshot when refresh mechanisms fail", async () => {

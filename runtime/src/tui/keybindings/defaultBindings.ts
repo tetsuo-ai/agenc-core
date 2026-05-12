@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
 import { satisfies } from '../../utils/semver.js'
 import { isRunningWithBun } from '../../utils/bundledMode.js'
@@ -15,6 +13,9 @@ import type { KeybindingBlock } from './types.js'
 // - Windows: alt+v (ctrl+v is system paste)
 // - Other platforms: ctrl+v
 const IMAGE_PASTE_KEY = getPlatform() === 'windows' ? 'alt+v' : 'ctrl+v'
+const RUNTIME_VERSION = isRunningWithBun()
+  ? (process.versions.bun ?? '0.0.0')
+  : process.versions.node
 
 // Modifier-only chords (like shift+tab) may fail on Windows Terminal without VT mode
 // See: https://github.com/microsoft/terminal/issues/879#issuecomment-618801651
@@ -23,8 +24,8 @@ const IMAGE_PASTE_KEY = getPlatform() === 'windows' ? 'alt+v' : 'ctrl+v'
 const SUPPORTS_TERMINAL_VT_MODE =
   getPlatform() !== 'windows' ||
   (isRunningWithBun()
-    ? satisfies(process.versions.bun, '>=1.2.23')
-    : satisfies(process.versions.node, '>=22.17.0 <23.0.0 || >=24.2.0'))
+    ? satisfies(RUNTIME_VERSION, '>=1.2.23')
+    : satisfies(RUNTIME_VERSION, '>=22.17.0 <23.0.0 || >=24.2.0'))
 
 // Platform-specific mode cycle shortcut:
 // - Windows without VT mode: meta+m (shift+tab doesn't work reliably)
@@ -236,6 +237,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       right: 'footer:next',
       left: 'footer:previous',
       enter: 'footer:openSelected',
+      x: 'footer:close',
       escape: 'footer:clearSelection',
     },
   },
