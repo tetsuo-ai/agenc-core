@@ -336,6 +336,12 @@ function approvalAnswer(command: string): "yes" | "no" | null {
   return null;
 }
 
+function onboardingSlashCommandError(raw: string): string | null {
+  const input = raw.trim();
+  if (!input.startsWith("/") || input.length <= 1) return null;
+  return "Onboarding input is active; slash commands unlock after setup. Press Ctrl-C twice to exit.";
+}
+
 function captureApiKeyPaste(
   state: FirstRunOnboardingState,
   raw: string,
@@ -607,6 +613,14 @@ export async function submitFirstRunOnboardingInput(
   raw: string,
   context: FirstRunOnboardingContext,
 ): Promise<FirstRunOnboardingSubmitResult> {
+  const slashError = onboardingSlashCommandError(raw);
+  if (slashError !== null) {
+    return {
+      state: { ...state, error: slashError },
+      completed: false,
+    };
+  }
+
   switch (state.currentStepId) {
     case "preflight":
       {
@@ -953,6 +967,10 @@ function detailLinesForStep(
       return [
         `Workspace: ${context.cwd ?? process.cwd()}`,
         `AgenC home: ${context.agencHome ?? "not configured"}`,
+        ...(context.permissionMode === "bypassPermissions"
+          ? ["--yolo is active for tool approval; first-run setup still needs these choices."]
+          : []),
+        "Onboarding input only; slash commands unlock after setup.",
         "Type next to continue.",
       ];
     case "theme":

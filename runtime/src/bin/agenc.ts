@@ -169,7 +169,10 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
-import { resolveStartupSelection } from "./startup-selection.js";
+import {
+  readStartupCliFlags,
+  resolveStartupSelection,
+} from "./startup-selection.js";
 import {
   isProjectTrustedSync,
   resolveProjectTrustRootSync,
@@ -1913,6 +1916,7 @@ async function loadProjectTrustPrompt(): Promise<
   (opts: {
     readonly workspaceRoot: string;
     readonly riskSources?: readonly string[];
+    readonly bypassPermissionsRequested?: boolean;
     readonly stdin?: NodeJS.ReadStream;
     readonly stdout?: NodeJS.WriteStream;
     readonly stderr?: NodeJS.WriteStream;
@@ -1923,6 +1927,7 @@ async function loadProjectTrustPrompt(): Promise<
     readonly renderProjectTrustPrompt: (opts: {
       readonly workspaceRoot: string;
       readonly riskSources?: readonly string[];
+      readonly bypassPermissionsRequested?: boolean;
       readonly stdin?: NodeJS.ReadStream;
       readonly stdout?: NodeJS.WriteStream;
       readonly stderr?: NodeJS.WriteStream;
@@ -1975,6 +1980,7 @@ export async function runProjectTrustPreflightForTui(
     env,
     argv: options.argv ?? process.argv,
   });
+  const startupCliFlags = readStartupCliFlags(options.argv ?? process.argv);
   const rawWorkspace =
     options.useEnvWorkspace === false
       ? options.cwd ?? process.cwd()
@@ -2022,6 +2028,9 @@ export async function runProjectTrustPreflightForTui(
   const accepted = await renderProjectTrustPrompt({
     workspaceRoot: projectRoot,
     riskSources,
+    bypassPermissionsRequested:
+      startupCliFlags.allowDangerouslySkipPermissions === true ||
+      startupCliFlags.permissionMode === "bypassPermissions",
     stdin,
     stdout,
     stderr,

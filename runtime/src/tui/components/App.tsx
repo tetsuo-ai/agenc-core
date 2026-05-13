@@ -72,6 +72,7 @@ import {
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
+const EMPTY_ONBOARDING_COMMANDS: Command[] = [];
 const mcpSurfaceObjectIds = new WeakMap<object, number>();
 let nextMcpSurfaceObjectId = 1;
 export type McpFieldParseResult = {
@@ -2114,8 +2115,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     return <Box flexDirection="column" width="100%">
         <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
         <Onboarding state={onboarding.state} steps={onboarding.steps} currentStep={onboarding.currentStep} context={onboardingContext} />
-        <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
+      <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
         if (await onboarding.submit(value_0)) {
+          setInput("");
           helpers.clearBuffer();
           helpers.resetHistory();
           helpers.setCursorOffset(0);

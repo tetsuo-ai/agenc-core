@@ -590,6 +590,22 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.currentStepId).toBe("terminal-setup");
     expect(result.state.error).toContain("Type done");
   });
+
+  test("reports onboarding-only input for slash commands", async () => {
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    const state = createInitialFirstRunOnboardingState(context);
+
+    const result = await submitFirstRunOnboardingInput(
+      state,
+      "/help",
+      context,
+    );
+
+    expect(result.completed).toBe(false);
+    expect(result.state.currentStepId).toBe("preflight");
+    expect(result.state.error).toContain("slash commands unlock after setup");
+  });
 });
 
 describe("project onboarding counterpart steps", () => {

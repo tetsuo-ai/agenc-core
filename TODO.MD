@@ -63,11 +63,36 @@ Likely code to inspect:
 
 ### TUI-002 - First-run onboarding and trust prompts are hard to escape or complete
 
-- [ ] Make `--yolo` either bypass trust/onboarding when intended or clearly explain why it cannot.
-- [ ] Fix trust prompt keyboard handling so advertised `y/n` input works reliably.
-- [ ] Fix onboarding composer text retention where entries become `1next` or `dark1next`.
-- [ ] Make `/help` and `/exit` work during onboarding, or show an explicit onboarding-only input state.
-- [ ] Fix repeated Ctrl-C behavior so the second press exits reliably.
+- [x] Make `--yolo` either bypass trust/onboarding when intended or clearly explain why it cannot.
+- [x] Fix trust prompt keyboard handling so advertised `y/n` input works reliably.
+- [x] Fix onboarding composer text retention where entries become `1next` or `dark1next`.
+- [x] Make `/help` and `/exit` work during onboarding, or show an explicit onboarding-only input state.
+- [x] Fix repeated Ctrl-C behavior so the second press exits reliably.
+
+Fixed in:
+
+- `runtime/src/bin/agenc.ts`
+- `runtime/src/bin/tui-trust-prompt.tsx`
+- `runtime/src/permissions/trust/TrustDialog.tsx`
+- `runtime/src/onboarding/Onboarding.tsx`
+- `runtime/src/tui/components/App.tsx`
+- `runtime/src/tui/ink/parse-keypress.ts`
+- `runtime/src/tui/ink/parse-keypress.test.ts`
+- `runtime/src/onboarding/onboarding.test.tsx`
+- `runtime/src/bin/project-trust-preflight.test.ts`
+
+Verification:
+
+- Reproduced pre-fix `agenc --yolo` trust prompt ignoring `y` + Enter in a fresh `/tmp` home.
+- Reproduced pre-fix onboarding composer retention after `next`, where the following input could appear as stale merged text.
+- Reproduced pre-fix repeated Ctrl-C failing to exit onboarding.
+- Verified post-fix trust prompt explains why `--yolo` still requires project trust, and accepts `y` + Enter in one input burst.
+- Verified post-fix first-run onboarding explains that `--yolo` applies to tool approval while setup still needs first-run choices.
+- Verified post-fix onboarding shows an onboarding-only slash-command state and returns that guidance for `/help`.
+- Verified post-fix onboarding clears the composer after submitted steps and double Ctrl-C exits from a fresh `/tmp` TUI.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/onboarding/onboarding.test.tsx src/bin/project-trust-preflight.test.ts src/tui/ink/parse-keypress.test.ts` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

@@ -349,6 +349,42 @@ describe("project trust preflight", () => {
     }
   });
 
+  it("tells the interactive trust prompt when bypass permissions were requested", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));
+    const env = makeEnv(home, workspace);
+    const stdio = makeTtyStdio();
+    const renderPrompt = vi.fn(async () => true);
+
+    try {
+      await expect(
+        runProjectTrustPreflightForTui({
+          env,
+          argv: ["node", "agenc", "--yolo"],
+          cwd: workspace,
+          stdin: stdio.stdin,
+          stdout: stdio.stdout,
+          stderr: stdio.stderr,
+          renderPrompt,
+        }),
+      ).resolves.toMatchObject({
+        accepted: true,
+        projectRoot: workspace,
+        prompted: true,
+      });
+
+      expect(renderPrompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceRoot: workspace,
+          bypassPermissionsRequested: true,
+        }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("prompts for interactive agent start trust before daemon readiness", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-trust-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-trust-ws-"));

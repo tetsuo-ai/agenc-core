@@ -6,6 +6,7 @@ import { render as renderInk } from "../tui/ink.js";
 export interface RenderProjectTrustPromptOptions {
   readonly workspaceRoot: string;
   readonly riskSources?: readonly string[];
+  readonly bypassPermissionsRequested?: boolean;
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
   readonly stderr?: NodeJS.WriteStream;
@@ -14,6 +15,7 @@ export interface RenderProjectTrustPromptOptions {
 function ProjectTrustPromptApp(props: {
   readonly workspaceRoot: string;
   readonly riskSources?: readonly string[];
+  readonly bypassPermissionsRequested?: boolean;
   readonly finish: (accepted: boolean) => void;
 }): React.ReactElement {
   const accept = useCallback(() => props.finish(true), [props]);
@@ -22,6 +24,7 @@ function ProjectTrustPromptApp(props: {
     <TrustDialog
       workspaceRoot={props.workspaceRoot}
       riskSources={props.riskSources}
+      bypassPermissionsRequested={props.bypassPermissionsRequested}
       onAccept={accept}
       onReject={reject}
     />
@@ -39,6 +42,7 @@ export async function renderProjectTrustPrompt(
     <ProjectTrustPromptApp
       workspaceRoot={options.workspaceRoot}
       riskSources={options.riskSources}
+      bypassPermissionsRequested={options.bypassPermissionsRequested}
       finish={(value) => {
         settle?.(value);
       }}

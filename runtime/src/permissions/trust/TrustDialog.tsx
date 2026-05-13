@@ -1,9 +1,10 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import useInput from "../../tui/ink/hooks/use-input.js";
 
 export interface TrustDialogProps {
   readonly workspaceRoot: string;
   readonly riskSources?: readonly string[];
+  readonly bypassPermissionsRequested?: boolean;
   readonly onAccept: () => void | Promise<void>;
   readonly onReject: () => void | Promise<void>;
 }
@@ -17,11 +18,19 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
   // destructive action; it just sits waiting for an actual choice.
   const [choice, setChoice] = useState<TrustChoice | null>(null);
   const [pending, setPending] = useState(false);
+  const choiceRef = useRef<TrustChoice | null>(null);
+  const pendingRef = useRef(false);
+
+  const setSelectedChoice = useCallback((next: TrustChoice | null) => {
+    choiceRef.current = next;
+    setChoice(next);
+  }, []);
 
   const submit = useCallback(
-    async (next: TrustChoice | null = choice) => {
-      if (pending) return;
+    async (next: TrustChoice | null = choiceRef.current) => {
+      if (pendingRef.current) return;
       if (next === null) return;
+      pendingRef.current = true;
       setPending(true);
       try {
         if (next === "trust") {
@@ -30,30 +39,31 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
           await props.onReject();
         }
       } finally {
+        pendingRef.current = false;
         setPending(false);
       }
     },
-    [choice, pending, props],
+    [props],
   );
 
   useInput((input, key) => {
     if (pending) return;
     if (key.upArrow || key.downArrow || key.tab) {
-      setChoice((current) => {
-        if (current === null) return "trust";
-        return current === "trust" ? "exit" : "trust";
-      });
+      const current = choiceRef.current;
+      setSelectedChoice(
+        current === null ? "trust" : current === "trust" ? "exit" : "trust",
+      );
       return;
     }
     // Single-letter shortcuts so the user can pick directly without
     // first navigating: `y` selects trust, `n` selects exit. The
     // user still has to press Enter afterwards to commit.
     if (input === "y" || input === "Y") {
-      setChoice("trust");
+      setSelectedChoice("trust");
       return;
     }
     if (input === "n" || input === "N") {
-      setChoice("exit");
+      setSelectedChoice("exit");
       return;
     }
     if (key.return) {
@@ -97,6 +107,13 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
       null,
       "AgenC can read files, edit files, and run commands in trusted projects.",
     ),
+    props.bypassPermissionsRequested
+      ? h(
+          "ink-text",
+          { textStyles: { dimColor: true } },
+          "--yolo skips tool approval after trust; project trust still requires confirmation.",
+        )
+      : null,
     props.riskSources && props.riskSources.length > 0
       ? h(
           "ink-box",

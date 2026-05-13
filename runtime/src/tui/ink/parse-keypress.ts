@@ -289,7 +289,9 @@ export function parseMultipleKeypresses(
         const mouse = parseMouseEvent(resynthesized)
         keys.push(mouse ?? parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        for (const value of splitTextKeypressToken(token.value)) {
+          keys.push(parseKeypress(value))
+        }
       }
     }
   }
@@ -310,6 +312,27 @@ export function parseMultipleKeypresses(
   }
 
   return [keys, newState]
+}
+
+function splitTextKeypressToken(value: string): readonly string[] {
+  const parts: string[] = []
+  let textStart = 0
+
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0x20 && code !== 0x7f) continue
+    if (index > textStart) {
+      parts.push(value.slice(textStart, index))
+    }
+    parts.push(value[index]!)
+    textStart = index + 1
+  }
+
+  if (textStart < value.length) {
+    parts.push(value.slice(textStart))
+  }
+
+  return parts
 }
 
 const keyName: Record<string, string> = {
