@@ -453,6 +453,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setVimMode,
       mcpClients,
       getToolUseContext,
+      onInputChange,
       isLoading,
       pastedContents,
       setPastedContents,
@@ -472,6 +473,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setVimMode?: unknown;
       mcpClients?: unknown;
       getToolUseContext?: unknown;
+      onInputChange?: (input: string) => void;
       isLoading?: boolean;
       pastedContents?: unknown;
       setPastedContents?: unknown;
@@ -488,6 +490,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         setVimMode,
         mcpClients,
         getToolUseContext,
+        onInputChange,
         isLoading,
         pastedContents,
         setPastedContents,
@@ -934,6 +937,50 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
         resolveSubmit();
         await run;
+      },
+    );
+  });
+
+  test("keeps transcript command props stable while typing after a prior assistant turn", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "prior-turn",
+          type: "turn_complete",
+          payload: {
+            turnId: "prior-turn",
+            lastAgentMessage: "Previous response",
+          },
+        },
+      ],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        const firstMessageProps = providerProbe.messageProps.at(-1);
+        const onInputChange = providerProbe.promptProps.at(-1)?.onInputChange as
+          | ((input: string) => void)
+          | undefined;
+        expect(firstMessageProps).toBeDefined();
+        expect(onInputChange).toBeDefined();
+
+        onInputChange!("typing should not repaint transcript commands");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.promptProps.at(-1)?.input).toBe(
+          "typing should not repaint transcript commands",
+        );
+        expect(providerProbe.messageProps.at(-1)?.commands).toBe(
+          firstMessageProps?.commands,
+        );
       },
     );
   });

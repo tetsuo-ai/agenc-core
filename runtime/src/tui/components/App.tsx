@@ -1462,7 +1462,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       setGlobalCommandRegistry(null);
     };
   }, [commandRegistry]);
-  const commands = listTuiCommandList(commandRegistry);
+  const commands = useMemo(() => listTuiCommandList(commandRegistry), [commandRegistry]);
   const agents = useMemo(() => listAgentRoleDefinitions(), []);
   const appTasks = useAppState(s => s.tasks);
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
