@@ -471,8 +471,21 @@ Likely code to inspect:
 
 ### TUI-013 - Invalid slash commands show random spinner verbs
 
-- [ ] Replace random spinner verbs for immediate command errors with deterministic command feedback.
-- [ ] Ensure `Unknown command` appears without misleading transitional states.
+- [x] Replace random spinner verbs for immediate command errors with deterministic command feedback.
+- [x] Ensure `Unknown command` appears without misleading transitional states.
+
+Fixed in:
+
+- `runtime/src/tui/components/App.tsx`
+- `runtime/src/tui/components/App.render.test.tsx`
+
+Verification:
+
+- Reproduced from `/tmp/agenc-tui-013-repro-E4sx3Z` with `agenc --yolo`: submitting `/zzzzz` briefly rendered a random model-request spinner verb (`Soldering...`) before `Error: Unknown command: /zzzzz`.
+- Verified post-fix from `/tmp/agenc-tui-013-verify-7V3yZY` with `agenc --yolo`: submitting `/zzzzz` rendered `Error: Unknown command: /zzzzz` directly with no spinner verb frame.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/App.render.test.tsx` passed.
+- `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

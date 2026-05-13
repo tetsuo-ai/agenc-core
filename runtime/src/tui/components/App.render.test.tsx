@@ -711,6 +711,70 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("does not show model spinner while a local slash command error is pending", async () => {
+    const dispatcher = await import("../../commands/dispatcher.js");
+    let resolveDispatch: (outcome: any) => void = () => {};
+    const dispatchPromise = new Promise<any>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    const dispatchSpy = vi
+      .spyOn(dispatcher, "dispatchSlashCommand")
+      .mockReturnValue(dispatchPromise as never);
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      submit: vi.fn(async () => {}),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+        async () => {
+          const onSubmit = providerProbe.promptSubmits.at(-1);
+          expect(onSubmit).toBeDefined();
+
+          const submitPromise = onSubmit!("/zzzzz", {
+            clearBuffer: vi.fn(),
+            resetHistory: vi.fn(),
+            setCursorOffset: vi.fn(),
+          });
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(dispatchSpy).toHaveBeenCalled();
+          expect(providerProbe.promptProps.some(props => props.isLoading === true)).toBe(false);
+
+          resolveDispatch({
+            result: {
+              kind: "error",
+              message: "Unknown command: /zzzzz",
+            },
+            immediate: false,
+            trace: {
+              name: "zzzzz",
+              aliasUsed: "zzzzz",
+              argsRaw: "",
+              sensitive: false,
+              immediate: false,
+              isMcp: false,
+              resultKind: "error",
+            },
+          });
+          await submitPromise;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(session.submit).not.toHaveBeenCalled();
+        },
+      );
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
   test("passes live MCP clients and tools through the App shell", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const failedClient = {
@@ -1091,7 +1155,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           }),
         );
         expect(providerProbe.logEvent).toHaveBeenCalledWith(
-          "tengu_cost_threshold_reached",
+          "agenc_cost_threshold_reached",
           {},
         );
 
@@ -1100,7 +1164,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
         expect(mockGlobalConfig.hasAcknowledgedCostThreshold).toBe(true);
         expect(providerProbe.logEvent).toHaveBeenCalledWith(
-          "tengu_cost_threshold_acknowledged",
+          "agenc_cost_threshold_acknowledged",
           {},
         );
       },
@@ -1125,7 +1189,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(output()).not.toContain("cost-threshold-dialog");
         expect(providerProbe.costThresholdDialogProps).toHaveLength(0);
         expect(providerProbe.logEvent).toHaveBeenCalledWith(
-          "tengu_cost_threshold_reached",
+          "agenc_cost_threshold_reached",
           {},
         );
       },

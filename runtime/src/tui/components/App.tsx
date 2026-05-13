@@ -1352,8 +1352,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // wake-up). Without a local "I just submitted" signal, the user
   // stares at a static UI with no spinner and no confirmation that
   // anything is happening. This local state goes true at the start
-  // of `submit()` and clears on the next isStreaming=true tick (real
-  // turn started) or on submit error (catch wrapper for #61).
+  // of model-bound `submit()` calls and clears on the next
+  // isStreaming=true tick (real turn started) or on submit error
+  // (catch wrapper for #61). Local slash commands skip this state so
+  // immediate command errors don't flash a model-request spinner.
   const [pendingSubmission, setPendingSubmission] = useState(false);
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
   const [vimMode, setVimMode] = useState<VimMode>("INSERT");
@@ -1623,9 +1625,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       transientResultTimerRef.current = null;
       setToolJSX(null);
     }
+    const parsedSlashCommand =
+      text_0.startsWith("/") && text_0.length > 1
+        ? parseSlashCommand(text_0)
+        : null;
+    const startPendingSubmission = () => {
+      setPendingSubmission(true);
+      effectiveInputBusyRef.current = true;
+    };
     setSubmitCount(count => count + 1);
-    setPendingSubmission(true);
-    effectiveInputBusyRef.current = true;
+    if (parsedSlashCommand === null) {
+      startPendingSubmission();
+    }
     setInput("");
     // Persist the submitted prompt so Up-arrow / Ctrl+R history recall
     // can find it. The daemon-backed AgenCTuiApp dispatch path used to
@@ -1657,131 +1668,131 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     //
     // Slash commands route through the canonical registry. Unrecognized names go
     // through the dispatcher so the TUI matches the daemon/CLI slash path.
-    if (text_0.startsWith("/") && text_0.length > 1) {
+    if (parsedSlashCommand !== null) {
       try {
-        const parsed = parseSlashCommand(text_0);
-        if (parsed) {
-          // Echo the slash-command input to the transcript so the user
-          // sees what they typed. Without this the dispatcher
-          // intercepts `/foo` silently and only the result overlay
-          // appears, leaving no audit trail of what the user invoked.
-          // We emit a user_message event directly (instead of routing
-          // through props.session.submit) because submit forwards to
-          // the model — which we explicitly do not want for a slash
-          // command.
-          try {
-            const internalId = typeof props.session.nextInternalSubId === "function" ? props.session.nextInternalSubId() : `slash-echo-${Date.now()}`;
-            props.session.emit?.({
-              id: internalId,
-              msg: {
-                type: "user_message",
-                payload: {
-                  displayText: text_0,
-                  message: text_0
-                }
+        // Echo the slash-command input to the transcript so the user
+        // sees what they typed. Without this the dispatcher
+        // intercepts `/foo` silently and only the result overlay
+        // appears, leaving no audit trail of what the user invoked.
+        // We emit a user_message event directly (instead of routing
+        // through props.session.submit) because submit forwards to
+        // the model — which we explicitly do not want for a slash
+        // command.
+        try {
+          const internalId = typeof props.session.nextInternalSubId === "function" ? props.session.nextInternalSubId() : `slash-echo-${Date.now()}`;
+          props.session.emit?.({
+            id: internalId,
+            msg: {
+              type: "user_message",
+              payload: {
+                displayText: text_0,
+                message: text_0
               }
-            });
-          } catch {
-            // best-effort echo; don't block dispatch on telemetry
+            }
+          });
+        } catch {
+          // best-effort echo; don't block dispatch on telemetry
+        }
+        // Build a renderResult helper used by both structured and
+        // built-in dispatch paths. Returns true if the result was a
+        // "prompt" that needs to be forwarded to the model so the
+        // caller can decide whether to keep pendingSubmission set
+        // (forwarding) or clear it (handled-locally).
+        const renderResult = (result: {
+          kind: "text";
+          text: string;
+        } | {
+          kind: "error";
+          message: string;
+        } | {
+          kind: "skip";
+        } | {
+          kind: "compact";
+          text: string;
+        } | {
+          kind: "prompt";
+          content: string;
+        } | {
+          kind: "exit";
+          code?: number;
+        }): {
+          forwardedToModel: boolean;
+        } => {
+          if (result.kind === "skip") return {
+            forwardedToModel: false
+          };
+          if (result.kind === "exit") {
+            // /exit (and its `/quit` alias) returns kind:"exit" after
+            // calling session.shutdown(). The TUI needs to unmount
+            // the Ink app and let the parent process exit cleanly.
+            // Without this branch, /exit was silently swallowed and
+            // the user had to Ctrl-C twice to escape. `exit` here is
+            // destructured from `useApp()` at the AgenCTuiShell top
+            // level.
+            exit();
+            return { forwardedToModel: false };
           }
-          // Build a renderResult helper used by both structured and
-          // built-in dispatch paths. Returns true if the result was a
-          // "prompt" that needs to be forwarded to the model so the
-          // caller can decide whether to keep pendingSubmission set
-          // (forwarding) or clear it (handled-locally).
-          const renderResult = (result: {
-            kind: "text";
-            text: string;
-          } | {
-            kind: "error";
-            message: string;
-          } | {
-            kind: "skip";
-          } | {
-            kind: "compact";
-            text: string;
-          } | {
-            kind: "prompt";
-            content: string;
-          } | {
-            kind: "exit";
-            code?: number;
-          }): {
-            forwardedToModel: boolean;
-          } => {
-            if (result.kind === "skip") return {
-              forwardedToModel: false
-            };
-            if (result.kind === "exit") {
-              // /exit (and its `/quit` alias) returns kind:"exit" after
-              // calling session.shutdown(). The TUI needs to unmount
-              // the Ink app and let the parent process exit cleanly.
-              // Without this branch, /exit was silently swallowed and
-              // the user had to Ctrl-C twice to escape. `exit` here is
-              // destructured from `useApp()` at the AgenCTuiShell top
-              // level.
-              exit();
-              return { forwardedToModel: false };
-            }
-            if (result.kind === "prompt") {
-              // Slash command produced a next prompt for the model.
-              // Queue it through the same next-turn path used by busy input
-              // so `nextInput`/prompt results are visible and never bypass
-              // ordering gates.
-              enqueueSlashPromptResult(result.content, () => {
-                setQueueDrainTick(tick => tick + 1);
-              });
-              return {
-                forwardedToModel: false
-              };
-            }
-            const display = result.kind === "text" || result.kind === "compact" ? result.text : result.kind === "error" ? `Error: ${result.message}` : null;
-            if (display === null) return {
-              forwardedToModel: false
-            };
-            // Route through showTransientResult so the overlay auto-clears
-            // after ~3s and on the next user input. Prior code called
-            // setToolJSX directly without a clear path, so an error like
-            // `Usage: /model <model-name>` would persist across every
-            // subsequent prompt until another setToolJSX fired.
-            showTransientResult(display, {
-              display: result.kind === "error" ? "error" : undefined
+          if (result.kind === "prompt") {
+            // Slash command produced a next prompt for the model.
+            // Queue it through the same next-turn path used by busy input
+            // so `nextInput`/prompt results are visible and never bypass
+            // ordering gates.
+            enqueueSlashPromptResult(result.content, () => {
+              setQueueDrainTick(tick => tick + 1);
             });
             return {
               forwardedToModel: false
             };
-          };
-
-          const outcome = await dispatchSlashCommand(parsed, {
-            session: props.session,
-            argsRaw: parsed.argsRaw,
-            cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd(),
-            home: process.env.HOME ?? "",
-            agencHome,
-            ...(props.session.services?.configStore ? {
-              configStore: props.session.services.configStore
-            } : {}),
-            appState: {
-              getAppState: () => appStateStore.getState(),
-              setModel,
-              setAppState,
-              setToolJSX,
-              tools: availableTools
-            },
-            commandRegistry
-          }, commandRegistry);
-          if (outcome.result.kind !== "skip" || outcome.command !== undefined) {
-            const dispatched_0 = renderResult(outcome.result as never);
-            if (!dispatched_0.forwardedToModel) {
-              setPendingSubmission(false);
-            }
-            return;
           }
+          const display = result.kind === "text" || result.kind === "compact" ? result.text : result.kind === "error" ? `Error: ${result.message}` : null;
+          if (display === null) return {
+            forwardedToModel: false
+          };
+          // Route through showTransientResult so the overlay auto-clears
+          // after ~3s and on the next user input. Prior code called
+          // setToolJSX directly without a clear path, so an error like
+          // `Usage: /model <model-name>` would persist across every
+          // subsequent prompt until another setToolJSX fired.
+          showTransientResult(display, {
+            display: result.kind === "error" ? "error" : undefined
+          });
+          return {
+            forwardedToModel: false
+          };
+        };
+
+        const outcome = await dispatchSlashCommand(parsedSlashCommand, {
+          session: props.session,
+          argsRaw: parsedSlashCommand.argsRaw,
+          cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd(),
+          home: process.env.HOME ?? "",
+          agencHome,
+          ...(props.session.services?.configStore ? {
+            configStore: props.session.services.configStore
+          } : {}),
+          appState: {
+            getAppState: () => appStateStore.getState(),
+            setModel,
+            setAppState,
+            setToolJSX,
+            tools: availableTools
+          },
+          commandRegistry
+        }, commandRegistry);
+        if (outcome.result.kind !== "skip" || outcome.command !== undefined) {
+          const dispatched_0 = renderResult(outcome.result as never);
+          if (!dispatched_0.forwardedToModel) {
+            setPendingSubmission(false);
+          }
+          return;
         }
       } catch (err) {
         // Fall through to the model on dispatch errors so the user
         // doesn't lose their input.
       }
+    }
+    if (parsedSlashCommand !== null) {
+      startPendingSubmission();
     }
     try {
       // Pass `value` as displayUserMessage so the daemon emits the
