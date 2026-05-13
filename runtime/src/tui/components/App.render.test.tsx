@@ -43,6 +43,7 @@ const providerProbe = {
   messageProps: [] as Array<Record<string, unknown>>,
   messageSelectorProps: [] as Array<Record<string, unknown>>,
   mcpConnectivityProps: [] as Array<Record<string, unknown>>,
+  spinnerProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
     clearBuffer(): void;
     resetHistory(): void;
@@ -477,6 +478,20 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
   };
 });
 
+vi.mock("./spinner/Spinner.js", async () => {
+  const React = await import("react");
+  return {
+    SpinnerWithVerb: (props: Record<string, unknown>) => {
+      providerProbe.spinnerProps.push(props);
+      return React.createElement(
+        "ink-text",
+        null,
+        `spinner:${String(props.mode)}:${String(props.overrideMessage ?? "")}`,
+      );
+    },
+  };
+});
+
 vi.mock("../components/permissions/PermissionRequest.js", async () => {
   const React = await import("react");
   return {
@@ -531,6 +546,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.messageSelectorProps.length = 0;
   providerProbe.messageProps.length = 0;
   providerProbe.mcpConnectivityProps.length = 0;
+  providerProbe.spinnerProps.length = 0;
   providerProbe.promptProps.length = 0;
   providerProbe.promptSubmits.length = 0;
   providerProbe.inkExit.mockClear?.();
@@ -773,6 +789,57 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       dispatchSpy.mockRestore();
     }
+  });
+
+  test("shows spinner while a tool runs after buffered assistant text", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "turn-started",
+          type: "turn_started",
+          payload: { turnId: "turn-with-tool" },
+        },
+        {
+          id: "assistant-delta",
+          type: "agent_message_delta",
+          payload: { delta: "I will inspect that now." },
+        },
+        {
+          id: "tool-started",
+          type: "tool_call_started",
+          payload: {
+            callId: "tool-read-1",
+            toolName: "Read",
+            args: "{}",
+          },
+        },
+      ],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    const output = await renderApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    expect(output).toContain("spinner:tool-use:Running");
+    expect(providerProbe.spinnerProps.at(-1)).toEqual(
+      expect.objectContaining({
+        mode: "tool-use",
+        hasActiveTools: true,
+        overrideMessage: "Running tools",
+      }),
+    );
+    expect(providerProbe.messageProps.at(-1)).toEqual(
+      expect.objectContaining({
+        streamingText: "I will inspect that now.",
+      }),
+    );
   });
 
   test("passes live MCP clients and tools through the App shell", async () => {

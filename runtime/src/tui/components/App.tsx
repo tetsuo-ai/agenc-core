@@ -2117,10 +2117,18 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // model is still working — the user wants feedback during those
   // gaps, not a blank screen.
   //
-  // Streaming text is its own feedback: while text is flowing the user
-  // sees the response itself, so the spinner is suppressed.
+  // Streaming text is its own feedback only while the model is actively
+  // producing text. Once a tool starts, that buffered text is stale; keep the
+  // activity spinner visible so long-running tool work does not look idle.
   const inProgressToolCount = transcript.inProgressToolUseIDs.size;
-  const showSpinner = (isLoading || hasActiveLocalAgents) && permissionRequests.length === 0 && elicitation.prompt === null && !isMessageSelectorVisible && !transcript.streamingText;
+  const hasBufferedStreamingText =
+    transcript.streamingText !== null && transcript.streamingText.length > 0;
+  const showSpinner =
+    (isLoading || hasActiveLocalAgents) &&
+    permissionRequests.length === 0 &&
+    elicitation.prompt === null &&
+    !isMessageSelectorVisible &&
+    (!hasBufferedStreamingText || inProgressToolCount > 0 || hasActiveLocalAgents);
   if (isLoading && !wasStreamingRef.current) {
     loadingStartTimeRef.current = Date.now();
     totalPausedMsRef.current = 0;
@@ -2131,7 +2139,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // Keep responseLengthRef in sync with the streaming buffer so the spinner's
   // token-counter shows current progress.
   responseLengthRef.current = (transcript.streamingText?.length ?? 0) + (transcript.streamingThinking?.thinking?.length ?? 0);
-  const streamMode: SpinnerMode = transcript.streamingThinking?.isStreaming ? "thinking" : transcript.streamingText ? "responding" : inProgressToolCount > 0 ? "tool-use" : "requesting";
+  const streamMode: SpinnerMode =
+    inProgressToolCount > 0
+      ? "tool-use"
+      : transcript.streamingThinking?.isStreaming
+        ? "thinking"
+        : transcript.streamingText
+          ? "responding"
+          : "requesting";
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
@@ -2168,7 +2183,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {/* flexGrow spacer pushes streaming content to the top of the scroll
           viewport in fullscreen mode. */}
       {fullscreen ? <Box flexGrow={1} /> : null}
-      {showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} /> : null}
+      {showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null}
       {fullscreen ? <PromptInputQueuedCommands /> : null}
     </>;
 
