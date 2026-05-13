@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   compareSuggestionsByPriority,
+  hasNameOrAliasPrefixMatch,
   type RankableMeta,
 } from "../../../utils/suggestions/sortBySearchPriority.js";
 
@@ -86,5 +87,21 @@ describe("slash typeahead: exact-match wins index 0", () => {
       "qz",
     );
     expect(order[0]).toBe("bar");
+  });
+
+  it("does not treat description-only fuzzy hits as slash command matches", () => {
+    expect(
+      hasNameOrAliasPrefixMatch(
+        meta("clear", { aliases: ["reset", "new"] }),
+        "history",
+      ),
+    ).toBe(false);
+    expect(hasNameOrAliasPrefixMatch(meta("clear"), "cle")).toBe(true);
+    expect(
+      hasNameOrAliasPrefixMatch(
+        meta("model-provider", { aliases: ["provider"] }),
+        "prov",
+      ),
+    ).toBe(true);
   });
 });

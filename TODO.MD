@@ -274,9 +274,29 @@ Likely code to inspect:
 
 ### TUI-007 - `/history` behaves as a destructive alias for `/clear`
 
-- [ ] Make `/history` show history or remove/rename it.
-- [ ] If the intended behavior is clearing history, require explicit naming and confirmation.
-- [ ] Add a regression test to prevent accidental destructive aliases.
+- [x] Make `/history` show history or remove/rename it.
+- [x] If the intended behavior is clearing history, require explicit naming and confirmation.
+- [x] Add a regression test to prevent accidental destructive aliases.
+
+Fixed in:
+
+- `runtime/src/commands/clear.ts`
+- `runtime/src/commands/clear.test.ts`
+- `runtime/src/commands/tui-command-list.test.ts`
+- `runtime/src/utils/suggestions/commandSuggestions.ts`
+- `runtime/src/utils/suggestions/sortBySearchPriority.ts`
+- `runtime/src/tui/components/PromptInput/slashCommandSuggestions.test.ts`
+- `runtime/src/tui/components/PromptInput/slashTypeaheadExactMatch.test.ts`
+
+Verification:
+
+- Reproduced pre-fix with focused tests: `/history` dispatched through the registry as `/clear`, emptied history, and appeared in built-in command aliases.
+- Removed `history` from `/clear` aliases so direct `/history` now returns `Unknown command: /history`.
+- Tightened slash command suggestions so non-empty slash queries only match command names or aliases by prefix, preventing description-only fuzzy hits like `/history` -> `/clear`.
+- Verified a live fresh `/tmp` TUI run with temp HOME: bare Enter on `/history` submits as unknown and does not clear the session.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/commands/clear.test.ts src/commands/tui-command-list.test.ts src/tui/components/PromptInput/slashTypeaheadExactMatch.test.ts src/tui/components/PromptInput/slashCommandSuggestions.test.ts` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

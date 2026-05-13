@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import clearCommand, { clearSession } from "./clear.js";
+import { buildDefaultRegistry } from "./registry.js";
+import { dispatchSlashCommand, parseSlashCommand } from "./dispatcher.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -52,11 +54,30 @@ function mkctx(session: Session): SlashCommandContext {
 }
 
 describe("clearCommand", () => {
-  it("exposes /reset, /new, and /history aliases and is immediate", () => {
-    expect(clearCommand.aliases).toEqual(
-      expect.arrayContaining(["reset", "new", "history"]),
-    );
+  it("exposes only explicit destructive aliases and is immediate", () => {
+    expect(clearCommand.aliases).toEqual(["reset", "new"]);
     expect(clearCommand.immediate).toBe(true);
+  });
+
+  it("does not treat /history as a destructive clear alias", async () => {
+    vi.clearAllMocks();
+    const history: unknown[] = [{ keep: true }];
+    const session = stubSession({ history });
+    const parsed = parseSlashCommand("/history");
+    expect(parsed).not.toBeNull();
+
+    const outcome = await dispatchSlashCommand(
+      parsed!,
+      mkctx(session),
+      buildDefaultRegistry(),
+    );
+
+    expect(outcome.result).toEqual({
+      kind: "error",
+      message: "Unknown command: /history",
+    });
+    expect(history).toHaveLength(1);
+    expect(clearSystemPromptSections).not.toHaveBeenCalled();
   });
 
   it("empties history, clears prompt sections, and resets sidecars/budget", async () => {

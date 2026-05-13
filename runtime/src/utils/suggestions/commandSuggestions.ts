@@ -7,7 +7,10 @@ import {
 } from '../../commands.js'
 import type { SuggestionItem } from '../../tui/components/PromptInput/PromptInputFooterSuggestions.js'
 import { getSkillUsageScore } from './skillUsageTracking.js'
-import { compareSuggestionsByPriority } from './sortBySearchPriority.js'
+import {
+  compareSuggestionsByPriority,
+  hasNameOrAliasPrefixMatch,
+} from './sortBySearchPriority.js'
 
 // Treat these characters as word separators for command search
 const SEPARATORS = /[:_-]/g
@@ -442,13 +445,20 @@ export function generateCommandSuggestions(
     return { r, name, aliases, usage }
   })
 
-  const sortedResults = withMeta.sort((a, b) =>
-    compareSuggestionsByPriority(
-      { name: a.name, aliases: a.aliases, usage: a.usage, score: a.r.score },
-      { name: b.name, aliases: b.aliases, usage: b.usage, score: b.r.score },
-      query,
-    ),
-  )
+  const sortedResults = withMeta
+    .filter(item =>
+      hasNameOrAliasPrefixMatch(
+        { name: item.name, aliases: item.aliases },
+        query,
+      ),
+    )
+    .sort((a, b) =>
+      compareSuggestionsByPriority(
+        { name: a.name, aliases: a.aliases, usage: a.usage, score: a.r.score },
+        { name: b.name, aliases: b.aliases, usage: b.usage, score: b.r.score },
+        query,
+      ),
+    )
 
   // Map search results to suggestion items
   // Note: We intentionally don't deduplicate here because commands with the same name

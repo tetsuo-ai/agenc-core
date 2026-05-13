@@ -22,6 +22,17 @@ export interface RankableMeta {
   readonly score?: number;
 }
 
+export function hasNameOrAliasPrefixMatch(
+  item: Pick<RankableMeta, "name" | "aliases">,
+  query: string,
+): boolean {
+  if (query === "") return true;
+  return (
+    item.name.startsWith(query) ||
+    item.aliases.some((alias) => alias.startsWith(query))
+  );
+}
+
 export function compareSuggestionsByPriority(
   a: RankableMeta,
   b: RankableMeta,

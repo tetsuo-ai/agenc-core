@@ -117,7 +117,6 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(projected.get("clear")?.aliases).toEqual([
       "reset",
       "new",
-      "history",
     ]);
     expect(projected.get("exit")?.aliases).toEqual(["quit"]);
   });
@@ -136,6 +135,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(names.has("provider")).toBe(true);
     expect(names.has("quit")).toBe(true);
     expect(names.has("reload-plugins")).toBe(false);
+    expect(names.has("history")).toBe(false);
     expect(names.has("agents")).toBe(true);
     expect(names.has("plan")).toBe(true);
   });
