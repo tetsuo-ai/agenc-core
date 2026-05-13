@@ -237,4 +237,50 @@ describe("tool-call correlation contract", () => {
       { type: "system", subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
     ]);
   });
+
+  test("collab-spawn-failure: spawn_end error is visible and clears running state", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "spawn-begin",
+        msg: {
+          type: "collab_agent_spawn_begin",
+          payload: { callId: "agent-fail", prompt: "review" },
+        },
+      },
+      {
+        id: "spawn-end",
+        msg: {
+          type: "collab_agent_spawn_end",
+          payload: {
+            callId: "agent-fail",
+            prompt: "review",
+            status: {
+              status: "errored",
+              turnId: "agent-fail",
+              error: "task_name is required",
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.inProgressToolUseIDs.size).toBe(0);
+    expect(transcript.messages).toMatchObject([
+      {
+        type: "system",
+        subtype: "collab_agent",
+        title: "Spawning agent",
+        state: "running",
+      },
+      {
+        type: "system",
+        subtype: "collab_agent",
+        title: "Agent spawn failed",
+        state: "error",
+      },
+    ]);
+    expect(transcript.messages[1]?.details).toContain(
+      "status: Error - task_name is required",
+    );
+  });
 });

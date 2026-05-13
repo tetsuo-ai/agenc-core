@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AgenCDelegateBackgroundAgentRunner,
+  daemonEventFromUnboundSessionEvent,
   type AgenCBootstrapFunction,
   type AgenCDelegateFunction,
   type AgenCEnsureAgentControlFunction,
@@ -176,6 +177,98 @@ function makeRestorePermissionRunner(
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("bridges collab subagent lifecycle session events into daemon session notifications", () => {
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "spawn-begin",
+        msg: {
+          type: "collab_agent_spawn_begin",
+          payload: {
+            callId: "call-agent",
+            senderThreadId: "root",
+            prompt: "inspect /tmp",
+            model: "qwen3.6-27b-fp8",
+          },
+        },
+      }),
+    ).toEqual({
+      id: "spawn-begin",
+      type: "collab_agent_spawn_begin",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        prompt: "inspect /tmp",
+        model: "qwen3.6-27b-fp8",
+      },
+    });
+
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "spawn-end",
+        msg: {
+          type: "collab_agent_spawn_end",
+          payload: {
+            callId: "call-agent",
+            senderThreadId: "root",
+            status: {
+              status: "errored",
+              turnId: "call-agent",
+              error: "task_name is required",
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      id: "spawn-end",
+      type: "collab_agent_spawn_end",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        status: {
+          status: "errored",
+          turnId: "call-agent",
+          error: "task_name is required",
+        },
+      },
+    });
+
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "bad-spawn",
+        msg: {
+          type: "collab_agent_spawn_begin",
+          payload: { prompt: "missing call id" },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("bridges tool_progress session events for live daemon snapshots", () => {
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "progress-1",
+        msg: {
+          type: "tool_progress",
+          payload: {
+            callId: "tool-1",
+            toolName: "Bash",
+            chunk: "output\n",
+            stream: "stdout",
+          },
+        },
+      }),
+    ).toEqual({
+      id: "progress-1",
+      type: "tool_progress",
+      payload: {
+        callId: "tool-1",
+        toolName: "Bash",
+        chunk: "output\n",
+        stream: "stdout",
+      },
+    });
+  });
+
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionUpdates: ToolPermissionContext[] = [];

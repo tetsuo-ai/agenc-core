@@ -309,10 +309,26 @@ Likely code to inspect:
 
 ### TUI-008 - Prompt-driven subagent workflow stalls at `Triggering...`
 
-- [ ] Show agent lifecycle state when a subagent is requested.
-- [ ] Fix the path where a requested subagent never appears in daemon snapshots.
-- [ ] Surface failures in the transcript instead of leaving `Triggering...`.
-- [ ] Verify both prompt-driven subagent creation and `/agents` creation once `/agents` is registered.
+- [x] Show agent lifecycle state when a subagent is requested.
+- [x] Fix the path where a requested subagent never appears in daemon snapshots.
+- [x] Surface failures in the transcript instead of leaving `Triggering...`.
+- [x] Verify both prompt-driven subagent creation and `/agents` creation once `/agents` is registered.
+
+Fixed in:
+
+- `runtime/src/app-server/background-agent-runner.ts`
+- `runtime/src/app-server/background-agent-runner.contract.test.ts`
+- `runtime/src/bin/bootstrap.ts`
+- `runtime/src/tui/parity/session-transcript.contract.test.ts`
+
+Verification:
+
+- Reproduced from `/tmp/agenc-tui-008-repro-25wLnQ` with `agenc --yolo`: prompt-driven `spawn_agent` / `wait_agent` wrote `collab_agent_spawn_*` and `collab_waiting_*` lifecycle events to rollout, but the attached TUI only showed generic spinner/text while the daemon bridge dropped those session events.
+- Verified post-fix from `/tmp/agenc-tui-008-verify-qfMqk0` with `agenc --yolo`: prompt-driven subagent creation rendered live `Spawning agent`, `Spawned Mainframe`, `Waiting for Mainframe`, and `Finished waiting` rows with status details.
+- Verified `/agents` from the same fresh `/tmp` project opens the agent management list and Enter opens the `Create new agent` wizard.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/app-server/background-agent-runner.contract.test.ts src/tui/parity/session-transcript.contract.test.ts` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

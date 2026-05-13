@@ -2522,6 +2522,9 @@ function toolRequestInputFromPayload(
  *
  *   - elicitation/user-input requests (`request_user_input`,
  *     `mcp_elicitation_request`, `mcp_elicitation_complete`)
+ *   - collab-agent lifecycle events emitted by `spawn_agent`,
+ *     `wait_agent`, `send_message`, and `close_agent`
+ *   - streaming tool progress chunks (`tool_progress`)
  *   - extended-thinking + reasoning-summary streaming events
  *     (`assistant_thinking_block_start`/`delta`/`block_stop`,
  *     `agent_thinking`)
@@ -2530,7 +2533,18 @@ function toolRequestInputFromPayload(
  * are a separate downstream consumer) and forwards a translated event into
  * the same `#emitOrBufferEvent` pipeline that PhaseEvents use.
  */
-function daemonEventFromUnboundSessionEvent(event: {
+const COLLAB_AGENT_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "collab_agent_spawn_begin",
+  "collab_agent_spawn_end",
+  "collab_agent_interaction_begin",
+  "collab_agent_interaction_end",
+  "collab_waiting_begin",
+  "collab_waiting_end",
+  "collab_close_begin",
+  "collab_close_end",
+]);
+
+export function daemonEventFromUnboundSessionEvent(event: {
   readonly id?: unknown;
   readonly msg?: {
     readonly type?: unknown;
@@ -2600,6 +2614,22 @@ function daemonEventFromUnboundSessionEvent(event: {
         elicitationId: payload.elicitationId,
       },
     };
+  }
+  if (
+    typeof type === "string" &&
+    COLLAB_AGENT_SESSION_EVENT_TYPES.has(type) &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string"
+  ) {
+    return { id, type, payload };
+  }
+  if (
+    type === "tool_progress" &&
+    isJsonObject(payload) &&
+    typeof payload.callId === "string" &&
+    typeof payload.toolName === "string"
+  ) {
+    return { id, type, payload };
   }
   // Extended-thinking + reasoning-summary events. These are emitted via
   // `session.emit` from `phases/stream-model.ts` and persisted to the
