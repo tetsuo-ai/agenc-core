@@ -1,6 +1,57 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { formatRenderHealthWarning } from "./App.js";
+import { FpsTracker } from "../../utils/fpsTracker.js";
+
+describe("FpsTracker", () => {
+  test("computes average and 1% low from the same render-duration window", () => {
+    const now = vi.spyOn(performance, "now");
+    now.mockReturnValueOnce(0);
+    now.mockReturnValueOnce(10_000);
+
+    try {
+      const tracker = new FpsTracker();
+      tracker.record(6.25);
+      tracker.record(6.25);
+
+      expect(tracker.getMetrics()).toEqual({
+        averageFps: 160,
+        low1PctFps: 160,
+        sampleCount: 2,
+      });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  test("never reports one-percent-low FPS above average FPS", () => {
+    const tracker = new FpsTracker();
+    for (let i = 0; i < 99; i += 1) {
+      tracker.record(5);
+    }
+    tracker.record(100);
+
+    const metrics = tracker.getMetrics();
+
+    expect(metrics?.averageFps).toBeCloseTo(168.07, 2);
+    expect(metrics?.low1PctFps).toBe(10);
+    expect(metrics?.low1PctFps).toBeLessThanOrEqual(metrics?.averageFps ?? 0);
+    expect(metrics?.sampleCount).toBe(100);
+  });
+
+  test("ignores invalid render duration samples", () => {
+    const tracker = new FpsTracker();
+    tracker.record(0);
+    tracker.record(Number.NaN);
+    tracker.record(10);
+
+    expect(tracker.getMetrics()).toEqual({
+      averageFps: 100,
+      low1PctFps: 100,
+      sampleCount: 1,
+    });
+  });
+});
 
 describe("TUI render health warning", () => {
   test("renders nothing when metrics are absent or healthy", () => {
@@ -9,11 +60,21 @@ describe("TUI render health warning", () => {
   });
 
   test("warns when average FPS or one-percent-low FPS crosses the threshold", () => {
-    expect(formatRenderHealthWarning({ averageFps: 19.8, low1PctFps: 20 })).toContain(
+    expect(formatRenderHealthWarning({ averageFps: 19.8, low1PctFps: 20, sampleCount: 20 })).toContain(
       "average 19.8 FPS",
     );
-    expect(formatRenderHealthWarning({ averageFps: 30, low1PctFps: 11.5 })).toContain(
+    expect(formatRenderHealthWarning({ averageFps: 30, low1PctFps: 11.5, sampleCount: 20 })).toContain(
       "1% low 11.5 FPS",
     );
+  });
+
+  test("does not render impossible one-percent-low FPS above average FPS", () => {
+    expect(formatRenderHealthWarning({ averageFps: 3.8, low1PctFps: 160.2, sampleCount: 20 })).toBe(
+      "Render health: average 3.8 FPS, 1% low 3.8 FPS",
+    );
+  });
+
+  test("suppresses warnings until the sample window is large enough", () => {
+    expect(formatRenderHealthWarning({ averageFps: 3.8, low1PctFps: 2.5, sampleCount: 2 })).toBeNull();
   });
 });

@@ -412,9 +412,23 @@ Likely code to inspect:
 
 ### TUI-011 - Render health warning reports impossible/noisy FPS metrics
 
-- [ ] Fix FPS math so 1 percent low cannot appear higher than average for the same sample window.
-- [ ] Reduce prominence/noise of render-health warnings unless the metric is reliable and actionable.
-- [ ] Add tests for FPS aggregation and display formatting.
+- [x] Fix FPS math so 1 percent low cannot appear higher than average for the same sample window.
+- [x] Reduce prominence/noise of render-health warnings unless the metric is reliable and actionable.
+- [x] Add tests for FPS aggregation and display formatting.
+
+Fixed in:
+
+- `runtime/src/utils/fpsTracker.ts`
+- `runtime/src/tui/components/App.tsx`
+- `runtime/src/tui/components/renderHealth.test.ts`
+
+Verification:
+
+- Reproduced from fresh `/tmp` TUI sessions before the fix: render-health warnings could show average FPS near `1.3` to `3.8` while reporting `1% low` values above `160 FPS`, which is internally impossible for a same-window low-percentile metric.
+- Verified post-fix from `/tmp/agenc-tui-011-verify-BoapiZ` with `agenc --yolo`: startup no longer showed an impossible render-health warning from the initial sparse samples.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/renderHealth.test.ts` passed.
+- `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

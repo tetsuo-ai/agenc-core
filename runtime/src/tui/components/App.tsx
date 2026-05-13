@@ -880,7 +880,9 @@ const DEFAULT_FPS_METRICS_GETTER = () => undefined;
 export function formatRenderHealthWarning(metrics: FpsMetrics | undefined): string | null {
   if (metrics === undefined) return null;
   const averageFps = Number.isFinite(metrics.averageFps) ? metrics.averageFps : 0;
-  const low1PctFps = Number.isFinite(metrics.low1PctFps) ? metrics.low1PctFps : 0;
+  const rawLow1PctFps = Number.isFinite(metrics.low1PctFps) ? metrics.low1PctFps : 0;
+  const low1PctFps = Math.min(rawLow1PctFps, averageFps);
+  if (metrics.sampleCount !== undefined && metrics.sampleCount < 10) return null;
   if (averageFps >= 20 && low1PctFps >= 12) return null;
   return `Render health: average ${averageFps.toFixed(1)} FPS, 1% low ${low1PctFps.toFixed(1)} FPS`;
 }
