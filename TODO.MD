@@ -375,10 +375,23 @@ Likely code to inspect:
 
 ### TUI-010 - Slash palette selected row duplicates description and background leaks through
 
-- [ ] Remove duplicate selected-row description rendering, or render description in exactly one place.
-- [ ] Make slash palette rows and expanded description rows full-width and opaque.
-- [ ] Fix black/background fill so the overlay covers the full intended panel width, including empty cells.
-- [ ] Add a screenshot or snapshot check for selected slash command rendering.
+- [x] Remove duplicate selected-row description rendering, or render description in exactly one place.
+- [x] Make slash palette rows and expanded description rows full-width and opaque.
+- [x] Fix black/background fill so the overlay covers the full intended panel width, including empty cells.
+- [x] Add a screenshot or snapshot check for selected slash command rendering.
+
+Fixed in:
+
+- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
+- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx`
+
+Verification:
+
+- Reproduced from `/tmp/agenc-tui-010-repro-j8fuOA` with `agenc --yolo`: `/clear` rendered `Clear session history and caches` inline and again on the next selected-description row; the command header clipped to `navigate ↑↓ · ru`.
+- Verified post-fix from `/tmp/agenc-tui-010-verify-MMHuyv` with `agenc --yolo`: `/clear` rendered one selected row only, the duplicate description row was gone, and the header rendered `navigate ↑↓ · run ↵`.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx` passed.
+- `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

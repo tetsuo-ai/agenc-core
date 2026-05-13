@@ -31,6 +31,30 @@ const SELECTED_PREFIX = `${figures.pointer} `
 const UNSELECTED_PREFIX = '  '
 const PREFIX_WIDTH = stringWidth(SELECTED_PREFIX)
 
+function padToWidth(text: string, width: number): string {
+  const textWidth = stringWidth(text)
+  if (textWidth >= width) return text
+  return text + ' '.repeat(width - textWidth)
+}
+
+function getRightAlignedRowParts(
+  left: string,
+  right: string,
+  width: number,
+): { left: string; gap: string; right: string } {
+  const rightWidth = Math.max(0, width - stringWidth(left) - 1)
+  const truncatedRight = truncateToWidth(right, rightWidth)
+  const gapWidth = Math.max(
+    1,
+    width - stringWidth(left) - stringWidth(truncatedRight),
+  )
+  return {
+    left,
+    gap: ' '.repeat(gapWidth),
+    right: truncatedRight,
+  }
+}
+
 function getIcon(itemId: string): string {
   if (itemId.startsWith('file-')) return '+'
   if (itemId.startsWith('mcp-resource-')) return '◇'
@@ -50,16 +74,17 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   item,
   maxColumnWidth,
   isSelected,
+  width,
 }: {
   item: SuggestionItem
   maxColumnWidth?: number
   isSelected: boolean
+  width: number
 }): ReactNode {
-  const columns = useTerminalSize().columns
   const selectionPrefix = isSelected ? SELECTED_PREFIX : UNSELECTED_PREFIX
-  const rowBackgroundColor: keyof Theme | undefined = isSelected
+  const rowBackgroundColor: keyof Theme = isSelected
     ? 'userMessageBackground'
-    : undefined
+    : 'clawd_background'
   const textColor: keyof Theme | undefined = isSelected
     ? 'text'
     : item.color
@@ -82,7 +107,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
         ? Math.min(20, stringWidth(item.description))
         : 0
       const maxPathLength =
-        columns -
+        width -
         PREFIX_WIDTH -
         iconWidth -
         paddingWidth -
@@ -96,7 +121,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     }
 
     const availableWidth =
-      columns -
+      width -
       PREFIX_WIDTH -
       iconWidth -
       stringWidth(displayText) -
@@ -113,7 +138,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       lineContent = `${selectionPrefix}${icon} ${displayText}`
     }
   } else {
-    const maxNameWidth = Math.floor(columns * 0.4)
+    const maxNameWidth = Math.floor(width * 0.4)
     const displayTextWidth = Math.min(
       maxColumnWidth ?? stringWidth(item.displayText) + 5,
       maxNameWidth,
@@ -132,7 +157,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     const tagWidth = stringWidth(tagText)
     const descriptionWidth = Math.max(
       0,
-      columns - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
+      width - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
     )
     const truncatedDescription = item.description
       ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
@@ -140,10 +165,13 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     lineContent = `${paddedDisplayText}${tagText}${truncatedDescription}`
   }
 
+  lineContent = padToWidth(truncateToWidth(lineContent, width), width)
+
   return (
     <Box width="100%" opaque={true} backgroundColor={rowBackgroundColor}>
       <Text
         color={textColor}
+        backgroundColor={rowBackgroundColor}
         dimColor={!isSelected}
         bold={isSelected}
         wrap="truncate"
@@ -195,10 +223,17 @@ export function PromptInputFooterSuggestions({
   const hiddenAfter = suggestions.length - endIndex
   const hiddenBefore = startIndex
 
-  const width = Math.max(32, columns - 4)
+  const width = Math.max(32, columns - (overlay ? 8 : 10))
+  const contentWidth = Math.max(1, width - 4)
   const headerHint = suggestions.length === 1
     ? '1 match'
     : `${suggestions.length} matches`
+  const titleRow = getRightAlignedRowParts('SLASH COMMANDS', headerHint, contentWidth)
+  const commandHintRow = getRightAlignedRowParts(
+    'command',
+    'navigate ↑↓ · run ↵',
+    contentWidth,
+  )
 
   return (
     <Box
@@ -211,18 +246,27 @@ export function PromptInputFooterSuggestions({
       paddingX={1}
       backgroundColor="clawd_background"
     >
-      <Box justifyContent="space-between" width="100%">
-        <Text color="inactive" bold>
-          SLASH COMMANDS
-        </Text>
-        <Text color="inactive">{headerHint}</Text>
+      <Box
+        width="100%"
+        opaque={true}
+        backgroundColor="clawd_background"
+      >
+        <Text color="inactive" bold>{titleRow.left}</Text>
+        <Text color="inactive">{titleRow.gap}{titleRow.right}</Text>
       </Box>
-      <Box justifyContent="space-between" width="100%">
-        <Text color="promptBorder">command</Text>
-        <Text color="inactive">navigate ↑↓ · run ↵</Text>
+      <Box
+        width="100%"
+        opaque={true}
+        backgroundColor="clawd_background"
+      >
+        <Text color="promptBorder">{commandHintRow.left}</Text>
+        <Text color="inactive">
+          {commandHintRow.gap}
+          {commandHintRow.right}
+        </Text>
       </Box>
       {hiddenBefore > 0 ? (
-        <Box>
+        <Box width="100%" opaque={true} backgroundColor="clawd_background">
           <Text dimColor>↑ {hiddenBefore} more above</Text>
         </Box>
       ) : null}
@@ -237,23 +281,19 @@ export function PromptInputFooterSuggestions({
               item={item}
               maxColumnWidth={maxColumnWidth}
               isSelected={isSelected}
+              width={contentWidth}
             />
-            {isSelected && item.description ? (
-              <Box paddingLeft={PREFIX_WIDTH + 2}>
-                <Text color="inactive" wrap="wrap">
-                  {item.description.replace(/\s+/g, ' ')}
-                </Text>
-              </Box>
-            ) : null}
           </Box>
         )
       })}
       {hiddenAfter > 0 ? (
-        <Box>
+        <Box width="100%" opaque={true} backgroundColor="clawd_background">
           <Text dimColor>↓ {hiddenAfter} more below</Text>
         </Box>
       ) : null}
-      <Text color="inactive">type to filter · esc closes</Text>
+      <Box width="100%" opaque={true} backgroundColor="clawd_background">
+        <Text color="inactive">type to filter · esc closes</Text>
+      </Box>
     </Box>
   )
 }

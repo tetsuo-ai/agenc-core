@@ -37,10 +37,8 @@ describe('PromptInputFooterSuggestions', () => {
     expect(output).toContain('  /help')
   })
 
-  it('expands the full description under the selected slash-command row', async () => {
-    const longDescription =
-      'Run diagnostics across MCP, auth, sandbox, plugins, and the daemon; ' +
-      'reports degraded subsystems with remediation steps for each issue.'
+  it('renders the selected slash-command description exactly once', async () => {
+    const description = 'Clear session history and caches'
     const suggestions: SuggestionItem[] = [
       {
         id: 'command-help',
@@ -48,9 +46,9 @@ describe('PromptInputFooterSuggestions', () => {
         description: 'Show help',
       },
       {
-        id: 'command-doctor',
-        displayText: '/doctor',
-        description: longDescription,
+        id: 'command-clear',
+        displayText: '/clear',
+        description,
       },
     ]
 
@@ -62,18 +60,33 @@ describe('PromptInputFooterSuggestions', () => {
       80,
     )
 
-    // The selected row exposes the tail of the description that the
-    // single-line layout would have truncated.
-    expect(output).toContain('plugins')
-    expect(output).toContain('remediation')
-
-    // The non-selected row stays single-line: no expanded line should
-    // appear immediately below /help.
     const lines = output.split('\n')
-    const helpLineIdx = lines.findIndex(line => line.includes('/help'))
-    expect(helpLineIdx).toBeGreaterThanOrEqual(0)
-    const nextLine = lines[helpLineIdx + 1] ?? ''
-    expect(nextLine.includes('Show help')).toBe(false)
+    const selectedRows = lines.filter(line => line.includes(description))
+    expect(selectedRows).toHaveLength(1)
+    expect(selectedRows[0]).toContain(`${figures.pointer} /clear`)
+
+    const selectedLineWidth = selectedRows[0]?.length ?? 0
+    expect(selectedLineWidth).toBeGreaterThan(60)
+  })
+
+  it('keeps the command header run hint visible at standard terminal width', async () => {
+    const suggestions: SuggestionItem[] = [
+      {
+        id: 'command-help',
+        displayText: '/help',
+        description: 'Show help',
+      },
+    ]
+
+    const output = await renderToString(
+      <PromptInputFooterSuggestions
+        suggestions={suggestions}
+        selectedSuggestion={0}
+      />,
+      80,
+    )
+
+    expect(output).toContain('run ↵')
   })
 
   it('omits the expanded line when the selected row has no description', async () => {
