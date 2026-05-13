@@ -150,11 +150,32 @@ Likely code to inspect:
 
 ### TUI-004 - `/plan` and `/agents` are implemented but unavailable in the TUI
 
-- [ ] Register `/plan` in the active TUI slash command registry.
-- [ ] Register `/agents` in the active TUI slash command registry.
-- [ ] Verify `/plan` can enter plan flow from the TUI.
-- [ ] Verify `/agents` opens agent management or creation UX from the TUI.
-- [ ] Add a parity check so implemented commands do not silently fall out of the active registry.
+- [x] Register `/plan` in the active TUI slash command registry.
+- [x] Register `/agents` in the active TUI slash command registry.
+- [x] Verify `/plan` can enter plan flow from the TUI.
+- [x] Verify `/agents` opens agent management or creation UX from the TUI.
+- [x] Add a parity check so implemented commands do not silently fall out of the active registry.
+
+Fixed in:
+
+- `runtime/src/commands/agent-management.tsx`
+- `runtime/src/commands/registry.ts`
+- `runtime/src/commands/types.ts`
+- `runtime/src/tui/components/App.tsx`
+- `runtime/src/app-server-client/index.test.ts`
+- `runtime/src/commands/registry.test.ts`
+- `runtime/src/commands/tui-command-list.test.ts`
+- `runtime/src/commands/command-surface.test.ts`
+- `runtime/src/commands/help.test.ts`
+
+Verification:
+
+- Reproduced pre-fix `/plan` and `/agents` as unknown slash commands from the TUI registry.
+- Verified post-fix from `/tmp/agenc-tui-004-verify2` with isolated `AGENC_HOME` and `agenc --yolo`: `/plan` appears in slash typeahead, returns `Enabled plan mode`, and switches the footer to `MODE plan`.
+- Verified post-fix `/agents` appears in slash typeahead, opens the agent management menu, and Enter opens the `Create new agent` wizard without forwarding `/agents` to the model.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/app-server-client/index.test.ts src/commands/registry.test.ts src/commands/tui-command-list.test.ts src/commands/command-surface.test.ts src/commands/help.test.ts src/commands/plan.test.ts` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

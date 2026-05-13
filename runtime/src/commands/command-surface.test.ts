@@ -27,6 +27,8 @@ const MINIMAL_NAMES = [
   "model",
   "model-provider",
   "permissions",
+  "plan",
+  "agents",
   "config",
   "hooks",
   "skills",
@@ -93,15 +95,15 @@ describe("AgenC command surface compatibility", () => {
     );
   });
 
-  it("does not expose removed slash commands through built-in names", () => {
+  it("exposes retained slash commands through built-in names", () => {
     const names = builtInCommandNames();
 
     expect(names.has("help")).toBe(true);
     expect(names.has("provider")).toBe(true);
-    expect(names.has("agents")).toBe(false);
+    expect(names.has("agents")).toBe(true);
+    expect(names.has("plan")).toBe(true);
     expect(names.has("files")).toBe(false);
     expect(names.has("reload-plugins")).toBe(false);
-    expect(names.has("plan")).toBe(false);
   });
 
   it("keeps remote and bridge allowlists on the minimal command set", () => {

@@ -3,6 +3,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+vi.mock("bun:bundle", () => ({
+  feature: () => false,
+}));
+
+vi.mock("../tui/components/agents/AgentsMenu.js", async () => {
+  const React = await import("react");
+  return {
+    AgentsMenu: () => React.createElement("mock-agents-menu"),
+  };
+});
+
 import {
   dispatchSlashCommand,
   parseSlashCommand,
@@ -254,6 +265,67 @@ describe("app-server-client daemon helpers", () => {
           kind: "text",
           text: expect.stringContaining("available: none"),
         },
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("dispatches daemon-only TUI plan and agents commands", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-plan-agents-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-plan-agents-cwd-"));
+    try {
+      const context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd,
+        conversationId: "agenc-tui-plan-agents-test",
+        permissionMode: "default",
+      });
+      const registry = buildDefaultRegistry();
+      let toolJSX: unknown = null;
+      const run = async (input: string) => {
+        const parsed = parseSlashCommand(input);
+        expect(parsed).not.toBeNull();
+        return dispatchSlashCommand(
+          parsed!,
+          {
+            session: context.baseSession as SlashCommandContext["session"],
+            argsRaw: parsed!.argsRaw,
+            cwd,
+            home: agencHome,
+            agencHome,
+            configStore: context.configStore as SlashCommandContext["configStore"],
+            commandRegistry: registry,
+            appState: {
+              getAppState: () => ({
+                toolPermissionContext:
+                  context.baseSession.services.permissionModeRegistry.current(),
+                mcp: { commands: [] },
+              }),
+              setToolJSX: (next) => {
+                toolJSX = next;
+              },
+              tools: [],
+            },
+          },
+          registry,
+        );
+      };
+
+      await expect(run("/plan")).resolves.toMatchObject({
+        result: { kind: "text", text: "Enabled plan mode" },
+      });
+      expect(context.baseSession.services.permissionModeRegistry.current().mode).toBe(
+        "plan",
+      );
+
+      await expect(run("/agents")).resolves.toMatchObject({
+        result: { kind: "skip" },
+      });
+      expect(toolJSX).toMatchObject({
+        isLocalJSXCommand: true,
+        jsx: expect.anything(),
       });
     } finally {
       rmSync(agencHome, { recursive: true, force: true });

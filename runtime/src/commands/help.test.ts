@@ -165,8 +165,9 @@ describe("helpCommand", () => {
 
     expect(countCanonicalCommandLines(text, "help")).toBe(1);
     expect(countCanonicalCommandLines(text, "diff")).toBe(1);
+    expect(countCanonicalCommandLines(text, "plan")).toBe(1);
+    expect(countCanonicalCommandLines(text, "agents")).toBe(1);
     expect(text).not.toContain("/reload-plugins");
-    expect(text).not.toContain("/agents");
     expect(text).not.toContain("/files");
     expect(text).not.toContain("Diagnostics:");
   });

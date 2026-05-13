@@ -18,10 +18,12 @@ import clearCommand from "./clear.js";
 import permissionsCommand from "./permissions.js";
 import configCommand from "./config.js";
 import hooksCommand from "./hooks.js";
+import planCommand from "./plan.js";
 import modelCommand from "./model.js";
 import providerCommand from "./provider.js";
 import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
+import agentsCommand from "./agent-management.js";
 import { compactCommand } from "./session-compact.js";
 
 /**
@@ -107,8 +109,8 @@ export class CommandRegistry implements CommandRegistryInterface {
  * Build the default user-invocable slash registry.
  *
  * Presentation order matches the runtime stabilization minimal surface:
- * /help, /status, /model, /provider, /permissions, /config, /hooks, /skills,
- * /mcp, /clear, /compact, /diff, /exit.
+ * /help, /status, /model, /provider, /permissions, /plan, /agents, /config,
+ * /hooks, /skills, /mcp, /clear, /compact, /diff, /exit.
  */
 export function buildDefaultRegistry(): CommandRegistry {
   return CommandRegistry.fromCommands([
@@ -117,6 +119,8 @@ export function buildDefaultRegistry(): CommandRegistry {
     modelCommand,
     providerCommand,
     permissionsCommand,
+    planCommand,
+    agentsCommand,
     configCommand,
     hooksCommand,
     skillsCommand,

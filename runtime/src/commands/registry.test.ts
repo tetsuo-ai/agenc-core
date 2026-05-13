@@ -13,6 +13,8 @@ const MINIMAL_REGISTRY_NAMES = [
   "model",
   "model-provider",
   "permissions",
+  "plan",
+  "agents",
   "config",
   "hooks",
   "skills",
@@ -24,7 +26,6 @@ const MINIMAL_REGISTRY_NAMES = [
 ] as const;
 
 const REMOVED_TUI_COMMANDS = [
-  "agents",
   "branch",
   "cache-stats",
   "commit",
@@ -43,7 +44,6 @@ const REMOVED_TUI_COMMANDS = [
   "keybindings",
   "knowledge",
   "memory",
-  "plan",
   "plugin",
   "pr-comments",
   "release-notes",

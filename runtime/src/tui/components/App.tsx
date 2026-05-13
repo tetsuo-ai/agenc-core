@@ -1760,11 +1760,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             appState: {
               getAppState: () => appStateStore.getState(),
               setModel,
-              setAppState
+              setAppState,
+              setToolJSX,
+              tools: availableTools
             },
             commandRegistry
           }, commandRegistry);
-          if (outcome.result.kind !== "skip") {
+          if (outcome.result.kind !== "skip" || outcome.command !== undefined) {
             const dispatched_0 = renderResult(outcome.result as never);
             if (!dispatched_0.forwardedToModel) {
               setPendingSubmission(false);

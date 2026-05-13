@@ -18,6 +18,8 @@ const MINIMAL_TUI_NAMES = [
   "model",
   "model-provider",
   "permissions",
+  "plan",
+  "agents",
   "config",
   "hooks",
   "skills",
@@ -29,7 +31,6 @@ const MINIMAL_TUI_NAMES = [
 ] as const;
 
 const REMOVED_TUI_NAMES = [
-  "agents",
   "commit",
   "context",
   "copy",
@@ -41,7 +42,6 @@ const REMOVED_TUI_NAMES = [
   "init",
   "keybindings",
   "memory",
-  "plan",
   "plugin",
   "release-notes",
   "reload-plugins",
@@ -112,7 +112,8 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(names.has("provider")).toBe(true);
     expect(names.has("quit")).toBe(true);
     expect(names.has("reload-plugins")).toBe(false);
-    expect(names.has("agents")).toBe(false);
+    expect(names.has("agents")).toBe(true);
+    expect(names.has("plan")).toBe(true);
   });
 
   it("remote-mode filtering cannot reintroduce removed commands", () => {

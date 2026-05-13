@@ -33,6 +33,10 @@ export interface SlashCommandAppStateBridge {
   readonly setModel?: (model: string) => void;
   /** Update the live TUI app state for commands that refresh runtime surfaces. */
   readonly setAppState?: (updater: (prev: unknown) => unknown) => void;
+  /** Render or clear a TUI-local JSX command surface. */
+  readonly setToolJSX?: (jsx: unknown) => void;
+  /** Base tool list available to TUI-local command surfaces. */
+  readonly tools?: readonly unknown[];
 }
 
 /**
