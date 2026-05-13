@@ -43,6 +43,7 @@ const providerProbe = {
   messageProps: [] as Array<Record<string, unknown>>,
   messageSelectorProps: [] as Array<Record<string, unknown>>,
   mcpConnectivityProps: [] as Array<Record<string, unknown>>,
+  fullscreenLayoutProps: [] as Array<Record<string, React.ReactNode>>,
   spinnerProps: [] as Array<Record<string, unknown>>,
   promptSubmits: [] as Array<(input: string, helpers: {
     clearBuffer(): void;
@@ -409,6 +410,26 @@ vi.mock("./ExitFlow.js", async () => {
   };
 });
 
+vi.mock("./FullscreenLayout.js", async () => {
+  const React = await import("react");
+  return {
+    FullscreenLayout: (props: {
+      scrollable?: React.ReactNode;
+      bottom?: React.ReactNode;
+      overlay?: React.ReactNode;
+    }) => {
+      providerProbe.fullscreenLayoutProps.push(props);
+      return React.createElement(
+        React.Fragment,
+        null,
+        props.scrollable,
+        props.bottom,
+        props.overlay,
+      );
+    },
+  };
+});
+
 vi.mock("./dialogs/CostThresholdDialog.js", async () => {
   const React = await import("react");
   return {
@@ -546,6 +567,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.messageSelectorProps.length = 0;
   providerProbe.messageProps.length = 0;
   providerProbe.mcpConnectivityProps.length = 0;
+  providerProbe.fullscreenLayoutProps.length = 0;
   providerProbe.spinnerProps.length = 0;
   providerProbe.promptProps.length = 0;
   providerProbe.promptSubmits.length = 0;
@@ -557,6 +579,22 @@ function resetShellSurfaceProbe(): void {
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
   mockGlobalConfig = {};
+}
+
+function containsElementNamed(node: React.ReactNode, name: string): boolean {
+  if (node === null || node === undefined || typeof node === "boolean") return false;
+  if (Array.isArray(node)) {
+    return node.some((child) => containsElementNamed(child, name));
+  }
+  if (!React.isValidElement(node)) return false;
+  const type = node.type as { displayName?: string; name?: string } | string;
+  if (typeof type !== "string" && (type.displayName === name || type.name === name)) {
+    return true;
+  }
+  return containsElementNamed(
+    (node.props as { readonly children?: React.ReactNode }).children,
+    name,
+  );
 }
 
 let installElicitationResolvers: any;
@@ -828,6 +866,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
 
     expect(output).toContain("spinner:tool-use:Running");
+    const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
+    expect(layoutProps).toBeDefined();
+    expect(containsElementNamed(layoutProps?.bottom, "SpinnerWithVerb")).toBe(true);
+    expect(containsElementNamed(layoutProps?.scrollable, "SpinnerWithVerb")).toBe(false);
     expect(providerProbe.spinnerProps.at(-1)).toEqual(
       expect.objectContaining({
         mode: "tool-use",
@@ -839,6 +881,60 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         streamingText: "I will inspect that now.",
       }),
+    );
+  });
+
+  test("pins the pending-submit spinner after a prior assistant turn", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    let resolveSubmit: () => void = () => {};
+    const submitPromise = new Promise<void>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "prior-turn",
+          type: "turn_complete",
+          payload: {
+            turnId: "prior-turn",
+            lastAgentMessage: "Previous response",
+          },
+        },
+      ],
+      submit: vi.fn(() => submitPromise),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async ({ output }) => {
+        const onSubmit = providerProbe.promptSubmits.at(-1);
+        expect(onSubmit).toBeDefined();
+
+        const run = onSubmit!("second prompt", {
+          clearBuffer: vi.fn(),
+          resetHistory: vi.fn(),
+          setCursorOffset: vi.fn(),
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        const frame = output();
+        expect(frame).toContain("spinner:requesting");
+        const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
+        expect(layoutProps).toBeDefined();
+        expect(containsElementNamed(layoutProps?.bottom, "SpinnerWithVerb")).toBe(true);
+        expect(containsElementNamed(layoutProps?.scrollable, "SpinnerWithVerb")).toBe(false);
+        expect(providerProbe.promptProps.at(-1)?.isLoading).toBe(true);
+
+        resolveSubmit();
+        await run;
+      },
     );
   });
 

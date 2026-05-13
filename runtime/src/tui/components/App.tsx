@@ -2147,6 +2147,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         : transcript.streamingText
           ? "responding"
           : "requesting";
+  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
@@ -2183,7 +2184,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {/* flexGrow spacer pushes streaming content to the top of the scroll
           viewport in fullscreen mode. */}
       {fullscreen ? <Box flexGrow={1} /> : null}
-      {showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null}
       {fullscreen ? <PromptInputQueuedCommands /> : null}
     </>;
 
@@ -2214,6 +2214,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     await submitViaElicitationPrompt(elicitation, submit, value_1, helpers_0);
   }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} /> : null;
   const bottomContent = <Box flexDirection="column" flexGrow={1}>
+      {spinnerElement}
       {selectorNotice !== null ? <Text color="warning" wrap="truncate">{selectorNotice}</Text> : null}
       {promptInputElement}
     </Box>;
