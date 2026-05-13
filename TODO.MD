@@ -443,8 +443,23 @@ Likely code to inspect:
 
 ### TUI-012 - Slash palette header hint is clipped
 
-- [ ] Fix right-side header hint clipping.
-- [ ] Verify narrow and wide terminal widths.
+- [x] Fix right-side header hint clipping.
+- [x] Verify narrow and wide terminal widths.
+
+Fixed in:
+
+- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
+- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx`
+
+Verification:
+
+- Reproduced before the slash palette row cleanup: the header hint rendered as `navigate ↑↓ · ru` at standard width.
+- Verified post-fix in static rendering at `48`, `80`, and `120` columns: each output contains the full `navigate ↑↓ · run ↵` hint.
+- Verified post-fix from `/tmp/agenc-tui-012-narrow-sVqShO` with `agenc --yolo` at 48 columns: slash palette showed the full `navigate ↑↓ · run ↵` hint.
+- Verified post-fix from `/tmp/agenc-tui-012-wide-MHNtvb` with `agenc --yolo` at 120 columns: slash palette showed the full `navigate ↑↓ · run ↵` hint.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx` passed.
+- `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

@@ -69,25 +69,28 @@ describe('PromptInputFooterSuggestions', () => {
     expect(selectedLineWidth).toBeGreaterThan(60)
   })
 
-  it('keeps the command header run hint visible at standard terminal width', async () => {
-    const suggestions: SuggestionItem[] = [
-      {
-        id: 'command-help',
-        displayText: '/help',
-        description: 'Show help',
-      },
-    ]
+  it.each([48, 80, 120])(
+    'keeps the command header run hint visible at %i columns',
+    async columns => {
+      const suggestions: SuggestionItem[] = [
+        {
+          id: 'command-help',
+          displayText: '/help',
+          description: 'Show help',
+        },
+      ]
 
-    const output = await renderToString(
-      <PromptInputFooterSuggestions
-        suggestions={suggestions}
-        selectedSuggestion={0}
-      />,
-      80,
-    )
+      const output = await renderToString(
+        <PromptInputFooterSuggestions
+          suggestions={suggestions}
+          selectedSuggestion={0}
+        />,
+        columns,
+      )
 
-    expect(output).toContain('run ↵')
-  })
+      expect(output).toContain('navigate ↑↓ · run ↵')
+    },
+  )
 
   it('omits the expanded line when the selected row has no description', async () => {
     const suggestions: SuggestionItem[] = [
