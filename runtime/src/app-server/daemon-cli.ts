@@ -210,20 +210,33 @@ export function resolveAgenCDaemonWebSocketListenOptions(
     AGENC_DAEMON_WEBSOCKET_DEFAULT_PATH;
   return {
     host,
-    port: parseAgenCDaemonWebSocketPort(env[AGENC_DAEMON_WEBSOCKET_PORT_ENV]),
+    port: resolveAgenCDaemonWebSocketPort(env),
     path,
   };
 }
 
-function parseAgenCDaemonWebSocketPort(value: string | undefined): number {
-  if (value === undefined || value.trim() === "") {
-    return AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT;
+function resolveAgenCDaemonWebSocketPort(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const configured = env[AGENC_DAEMON_WEBSOCKET_PORT_ENV]?.trim();
+  if (configured !== undefined && configured.length > 0) {
+    return parseAgenCDaemonWebSocketPort(configured);
   }
-  const trimmed = value.trim();
-  const port = Number.parseInt(trimmed, 10);
+
+  // The fixed portal endpoint is only safe for the default daemon home. Test
+  // and isolated homes must not collide with the user's long-lived daemon.
+  if ((env.AGENC_HOME?.trim() ?? "").length > 0) {
+    return 0;
+  }
+
+  return AGENC_DAEMON_WEBSOCKET_DEFAULT_PORT;
+}
+
+function parseAgenCDaemonWebSocketPort(value: string): number {
+  const port = Number.parseInt(value, 10);
   if (
     !Number.isInteger(port) ||
-    String(port) !== trimmed ||
+    String(port) !== value ||
     port < 0 ||
     port > 65_535
   ) {

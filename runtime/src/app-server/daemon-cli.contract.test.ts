@@ -460,6 +460,12 @@ describe("AgenC daemon CLI", () => {
     });
     expect(
       resolveAgenCDaemonWebSocketListenOptions({
+        AGENC_HOME: "/tmp/agenc-isolated-home",
+      }).port,
+    ).toBe(0);
+    expect(
+      resolveAgenCDaemonWebSocketListenOptions({
+        AGENC_HOME: "/tmp/agenc-isolated-home",
         [AGENC_DAEMON_WEBSOCKET_PORT_ENV]: "0",
       }).port,
     ).toBe(0);
@@ -472,6 +478,46 @@ describe("AgenC daemon CLI", () => {
     );
     expect(validateAgenCDaemonWebSocketOrigin("https://agenc.tech")).toBe(true);
     expect(validateAgenCDaemonWebSocketOrigin("http://192.0.2.1")).toBe(false);
+  });
+
+  it("lets multiple configured daemon homes run without websocket port collisions", async () => {
+    const firstHome = await tempAgencHome();
+    const secondHome = await tempAgencHome();
+    const firstHost = createHost(firstHome);
+    const secondHost = createHost(secondHome);
+    delete firstHost.env[AGENC_DAEMON_WEBSOCKET_PORT_ENV];
+    delete secondHost.env[AGENC_DAEMON_WEBSOCKET_PORT_ENV];
+    const firstIo = createIo();
+    const secondIo = createIo();
+    const firstSignalProcess = createSignalProcess();
+    const secondSignalProcess = createSignalProcess();
+
+    const firstRunning = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host: firstHost, io: firstIo, signalProcess: firstSignalProcess },
+    );
+    const secondRunning = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host: secondHost, io: secondIo, signalProcess: secondSignalProcess },
+    );
+
+    try {
+      await expect(
+        waitForPid(resolveAgenCDaemonPidPath(firstHost.env, firstHost.userHome)),
+      ).resolves.toBe(4100);
+      await expect(
+        waitForPid(resolveAgenCDaemonPidPath(secondHost.env, secondHost.userHome)),
+      ).resolves.toBe(4100);
+      const firstUrl = await waitForDaemonWebSocketUrl(firstIo);
+      const secondUrl = await waitForDaemonWebSocketUrl(secondIo);
+      expect(firstUrl).not.toBe(secondUrl);
+    } finally {
+      firstSignalProcess.emit("SIGTERM");
+      secondSignalProcess.emit("SIGTERM");
+      await Promise.allSettled([firstRunning, secondRunning]);
+      await rm(firstHome, { recursive: true, force: true });
+      await rm(secondHome, { recursive: true, force: true });
+    }
   });
 
   it("creates a private daemon cookie and reuses it", async () => {
