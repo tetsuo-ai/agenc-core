@@ -499,9 +499,23 @@ Likely code to inspect:
 
 ### TUI-014 - Permission prompt copy and wrapping are awkward
 
-- [ ] Improve permission option labels for non-shell tools.
-- [ ] Avoid wording such as `FileRead commands`.
-- [ ] Ensure long paths wrap cleanly without harming selection readability.
+- [x] Improve permission option labels for non-shell tools.
+- [x] Avoid wording such as `FileRead commands`.
+- [x] Ensure long paths wrap cleanly without harming selection readability.
+
+Fixed in:
+
+- `runtime/src/tui/tool-rendering.tsx`
+- `runtime/src/tui/components/permissions/FallbackPermissionRequest.tsx`
+- `runtime/src/tools/tool-rendering-extra.test.tsx`
+
+Verification:
+
+- Reproduced from `/tmp/agenc-tui-014-repro-uBgUnu` with real `agenc`: asking the model to `FileRead` `/tmp/agenc-tui-014-target-marPxB/secret.txt` rendered the generic permission row `Yes, and don't ask again for FileRead commands in /tmp/agenc-tui-014-repro-uBgUnu`.
+- Verified post-fix from `/tmp/agenc-tui-014-verify-GubVqt` with real `agenc`: the same FileRead flow rendered the file-specific `Read file` dialog and the option `Yes, allow reading from agenc-tui-014-target-verify-FQOgxs/ during this session`; no `FileRead commands` wording or full cwd row appeared.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tools/tool-rendering-extra.test.tsx` passed.
+- `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

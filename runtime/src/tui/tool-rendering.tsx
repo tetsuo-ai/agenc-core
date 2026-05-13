@@ -344,11 +344,38 @@ function resultText(value: unknown): string {
   return shortJson(value);
 }
 
+function filePathFromInput(input: unknown): string {
+  const record = objectFromUnknown(input);
+  const filePath = record.file_path ?? record.path;
+  return typeof filePath === "string" ? filePath : "";
+}
+
 export function createTuiTool(name: string): any {
   if (name === "AskUserQuestion") {
     return AskUserQuestionTool;
   }
-  return {
+  const fileReadOverrides =
+    name === "FileRead"
+      ? {
+          getPath(input: unknown) {
+            return filePathFromInput(input);
+          },
+          getActivityDescription(input: unknown) {
+            const filePath = filePathFromInput(input);
+            return filePath.length > 0 ? `Reading ${filePath}` : "Reading file";
+          },
+          isReadOnly() {
+            return true;
+          },
+          renderToolUseMessage(input: unknown) {
+            return filePathFromInput(input) || "file";
+          },
+          userFacingName() {
+            return "Read";
+          },
+        }
+      : {};
+  const fallbackTool = {
     name,
     aliases: [],
     maxResultSizeChars: Infinity,
@@ -458,6 +485,10 @@ export function createTuiTool(name: string): any {
         content: resultTextForTuiTool(content),
       };
     },
+  };
+  return {
+    ...fallbackTool,
+    ...fileReadOverrides,
   };
 }
 

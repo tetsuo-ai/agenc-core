@@ -49,6 +49,21 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     expect(tools.name).toBe("FileRead");
   });
 
+  test("FileRead TUI shim exposes read identity and path for permission routing", () => {
+    const tool = createTuiTool("FileRead");
+    const input = { file_path: "/tmp/agenc-permission-read/notes.txt" };
+
+    expect(tool.userFacingName(input)).toBe("Read");
+    expect(tool.isReadOnly(input)).toBe(true);
+    expect(tool.getPath(input)).toBe("/tmp/agenc-permission-read/notes.txt");
+    expect(tool.renderToolUseMessage(input)).toBe(
+      "/tmp/agenc-permission-read/notes.txt",
+    );
+    expect(tool.getActivityDescription(input)).toBe(
+      "Reading /tmp/agenc-permission-read/notes.txt",
+    );
+  });
+
   test("the pre-seed list does not include the legacy 'Read' name (canonicalization fix)", async () => {
     const mod = await import("../tui/tool-rendering.js");
     const tools = mod.createTuiTools([]);

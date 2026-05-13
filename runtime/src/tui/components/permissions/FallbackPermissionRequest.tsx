@@ -2,7 +2,6 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useMemo } from 'react';
-import { getOriginalCwd } from '../../../bootstrap/state';
 import { Box, Text, useTheme } from '../../ink.js';
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata';
 import { env } from '../../../utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -140,14 +139,6 @@ export function FallbackPermissionRequest(t0) {
     t4 = $[12];
   }
   const handleCancel = t4;
-  let t5;
-  if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-    t5 = getOriginalCwd();
-    $[13] = t5;
-  } else {
-    t5 = $[13];
-  }
-  const originalCwd = t5;
   let t6;
   if ($[14] === Symbol.for("react.memo_cache_sentinel")) {
     t6 = shouldShowAlwaysAllowOptions();
@@ -174,17 +165,10 @@ export function FallbackPermissionRequest(t0) {
     result = [t7];
     if (showAlwaysAllowOptions) {
       const t8 = <Text bold={true}>{userFacingName}</Text>;
-      let t9;
-      if ($[18] === Symbol.for("react.memo_cache_sentinel")) {
-        t9 = <Text bold={true}>{originalCwd}</Text>;
-        $[18] = t9;
-      } else {
-        t9 = $[18];
-      }
       let t10;
       if ($[19] !== t8) {
         t10 = {
-          label: <Text>Yes, and don't ask again for {t8}{" "}commands in {t9}</Text>,
+          label: <Text>Yes, and don't ask again for {t8}{" "}requests</Text>,
           value: "yes-dont-ask-again"
         };
         $[19] = t8;
