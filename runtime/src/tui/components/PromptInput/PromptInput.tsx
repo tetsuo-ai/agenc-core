@@ -2246,7 +2246,7 @@ function PromptInput({
     context: 'Footer',
     isActive: !!footerItemSelected && !isModalOverlayActive
   });
-  useInput((char, key) => {
+  useInput((char, key, event) => {
     // Skip all input handling when a full-screen dialog is open. These dialogs
     // render via early return, but hooks run unconditionally — so without this
     // guard, Escape inside a dialog leaks to the double-press message-selector.
@@ -2313,6 +2313,7 @@ function PromptInput({
       // Close help menu if open
       if (helpOpen) {
         setHelpOpen(false);
+        event.stopImmediatePropagation();
         return;
       }
 
@@ -2335,6 +2336,8 @@ function PromptInput({
     }
     if (key.return && helpOpen) {
       setHelpOpen(false);
+      event.stopImmediatePropagation();
+      return;
     }
   });
   const swarmBanner = useSwarmBanner();

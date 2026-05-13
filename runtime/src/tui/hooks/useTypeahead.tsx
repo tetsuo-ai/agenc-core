@@ -37,6 +37,7 @@ import {
   HAS_AT_SYMBOL_RE,
   HASH_CHANNEL_RE,
 } from './typeaheadTokens.js';
+import { consumeAutocompleteEnterKey } from './typeaheadKeyHandling.js';
 // Re-export the pure utilities so existing call sites keep their imports.
 export { extractCompletionToken, extractSearchToken } from './typeaheadTokens.js';
 
@@ -1337,8 +1338,7 @@ export function useTypeahead({
     // Handle selection and execution via return/enter
     // Shift+Enter and Meta+Enter insert newlines (handled by useTextInput),
     // so don't accept the suggestion for those.
-    if (e.key === 'return' && !e.shift && !e.meta) {
-      e.preventDefault();
+    if (consumeAutocompleteEnterKey(e, suggestions.length)) {
       handleEnter();
     }
   };

@@ -344,9 +344,24 @@ Likely code to inspect:
 
 ### TUI-009 - Slash palette can trap focus and Enter inserts blank composer lines
 
-- [ ] Fix focus handling when slash suggestions/help is open.
-- [ ] Ensure Enter either runs the selected command or closes the palette according to the displayed hint.
-- [ ] Prevent blank line insertion when the palette owns selection.
+- [x] Fix focus handling when slash suggestions/help is open.
+- [x] Ensure Enter either runs the selected command or closes the palette according to the displayed hint.
+- [x] Prevent blank line insertion when the palette owns selection.
+
+Fixed in:
+
+- `runtime/src/tui/components/PromptInput/PromptInput.tsx`
+- `runtime/src/tui/hooks/typeaheadKeyHandling.ts`
+- `runtime/src/tui/hooks/typeaheadKeyHandling.test.ts`
+- `runtime/src/tui/hooks/useTypeahead.tsx`
+
+Verification:
+
+- Reproduced from `/tmp/agenc-tui-009-repro-6vWbB8` with `agenc --yolo`: slash suggestions owned the visible selection, but Enter handling only called `preventDefault()` on the synthetic keyboard event, leaving the underlying Ink input event free to continue into `TextInput`.
+- Verified post-fix from `/tmp/agenc-tui-009-verify-xmW5l0` with `agenc --yolo`: `/hel` Enter accepted `/help` without leaking a submit, the next Enter ran `/help`, and Enter dismissed the help panel without leaving composer content behind.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/hooks/typeaheadKeyHandling.test.ts` passed.
+- `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 
