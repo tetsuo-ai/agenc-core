@@ -15,4 +15,12 @@ describe("UserToolResultMessage orphan fallback", () => {
       ]),
     ).toBe("first\nsecond");
   });
+
+  test("formats denied orphan results as a user-facing denial", () => {
+    expect(
+      formatOrphanToolResultContent([
+        { type: "text", text: "{\"error\":\"rejected by user\"}" },
+      ]),
+    ).toBe("Permission request denied by user.");
+  });
 });

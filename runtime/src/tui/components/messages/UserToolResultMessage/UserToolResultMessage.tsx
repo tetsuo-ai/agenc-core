@@ -5,6 +5,7 @@ import { Text } from '../../../ink.js';
 import type { Tools } from '../../../../tools/Tool';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../../types/message';
 import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../../tool-result-denial.js';
 import { UserToolCanceledMessage } from './UserToolCanceledMessage';
 import { UserToolErrorMessage } from './UserToolErrorMessage';
 import { UserToolRejectMessage } from './UserToolRejectMessage';
@@ -23,6 +24,7 @@ type Props = {
 };
 
 export function formatOrphanToolResultContent(content: ToolResultBlockParam["content"]): string {
+  if (isPermissionDeniedToolResult(content)) return PERMISSION_DENIED_TOOL_RESULT_MESSAGE;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content

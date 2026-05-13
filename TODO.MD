@@ -193,9 +193,27 @@ Likely code to inspect:
 
 ### TUI-005 - Permission denial leaks raw internal recovery JSON
 
-- [ ] Replace raw recovered tool-result JSON with a user-facing denial message.
-- [ ] Preserve enough debug metadata in logs without showing it in the transcript.
-- [ ] Add a regression test for denied `FileRead` and denied write/tool calls.
+- [x] Replace raw recovered tool-result JSON with a user-facing denial message.
+- [x] Preserve enough debug metadata in logs without showing it in the transcript.
+- [x] Add a regression test for denied `FileRead` and denied write/tool calls.
+
+Fixed in:
+
+- `runtime/src/tui/tool-result-denial.ts`
+- `runtime/src/tui/session-transcript.ts`
+- `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx`
+- `runtime/src/tui/components/messages/UserToolResultMessage/UserToolErrorMessage.tsx`
+- `runtime/src/tui/parity/session-transcript.test.ts`
+- `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx`
+
+Verification:
+
+- Reproduced pre-fix with focused failing tests: denied `FileRead` orphan result and denied write/tool orphan result both rendered raw recovery JSON / `rejected by user`.
+- Verified post-fix transcript recovery and orphan result fallback render `Permission request denied by user.` while leaving the original event payload available in daemon/session logs.
+- Verified a live fresh `/tmp` TUI run with temp HOME: denied a real `FileRead` permission prompt and confirmed the TUI omitted `Recovered tool result without matching start`, raw rejection JSON, and raw `rejected by user`.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/parity/session-transcript.test.ts src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

@@ -1228,6 +1228,48 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).toContain("phantom result");
     });
 
+    test("denied FileRead orphan result renders a user-facing denial", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "file-read-denied",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "call-file-read-denied",
+              result: [{ type: "text", text: "{\"error\":\"rejected by user\"}" }],
+              isError: true,
+            },
+          },
+        },
+      ]);
+
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("Permission request denied by user.");
+      expect(allText).not.toContain("Recovered tool result without matching start");
+      expect(allText).not.toContain("{\\\"error\\\":\\\"rejected by user\\\"}");
+    });
+
+    test("denied write orphan result renders a user-facing denial", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "write-denied",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "call-write-denied",
+              result: { error: "rejected by user" },
+              isError: true,
+            },
+          },
+        },
+      ]);
+
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("Permission request denied by user.");
+      expect(allText).not.toContain("Recovered tool result without matching start");
+      expect(allText).not.toContain("rejected by user");
+    });
+
     test("out-of-order tool_call_completed tombstones a later delayed start", () => {
       const transcript = adaptTranscriptEvents([
         {

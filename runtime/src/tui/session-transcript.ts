@@ -9,6 +9,10 @@ import type {
 } from "../session/transcript-replacement.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { formatRealtimeItemSummary } from "./realtime/state.js";
+import {
+  isPermissionDeniedToolResult,
+  PERMISSION_DENIED_TOOL_RESULT_MESSAGE,
+} from "./tool-result-denial.js";
 
 /**
  * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
@@ -466,6 +470,10 @@ function pushToolResult(
 ): void {
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
+    if (isPermissionDeniedToolResult(result)) {
+      out.push(makeSystemMessage(PERMISSION_DENIED_TOOL_RESULT_MESSAGE, "warning"));
+      return;
+    }
     out.push(
       makeSystemMessage(
         `Recovered tool result without matching start (${callId}): ${stringResult(result)}`,

@@ -7,6 +7,7 @@ import { Text } from '../../../ink.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../../tools/Tool';
 import type { ProgressMessage } from '../../../../types/message';
 import { INTERRUPT_MESSAGE_FOR_TOOL_USE, isClassifierDenial, PLAN_REJECTION_PREFIX, REJECT_MESSAGE_WITH_REASON_PREFIX } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../../tool-result-denial.js';
 import { FallbackToolUseErrorMessage } from '../../FallbackToolUseErrorMessage';
 import { InterruptedByUser } from '../../InterruptedByUser';
 import { MessageResponse } from '../../MessageResponse';
@@ -30,6 +31,9 @@ export function UserToolErrorMessage(t0) {
     verbose,
     isTranscriptMode
   } = t0;
+  if (isPermissionDeniedToolResult(param.content)) {
+    return <MessageResponse height={1}><Text dimColor={true}>{PERMISSION_DENIED_TOOL_RESULT_MESSAGE}</Text></MessageResponse>;
+  }
   if (typeof param.content === "string" && param.content.includes(INTERRUPT_MESSAGE_FOR_TOOL_USE)) {
     let t1;
     if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
