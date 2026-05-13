@@ -49,16 +49,28 @@ export async function applyProviderSwitch(
     return `Provider switch to "${targetProvider}" blocked: unknown provider`;
   }
 
-  const rawState = session.state.unsafePeek() as {
+  const peekState = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const rawState = (typeof peekState === "function"
+    ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+        sessionConfiguration?: {
+          provider?: { slug?: string };
+          collaborationMode?: { model?: string };
+        };
+      })
+    : null);
+  const directConfig = (session as unknown as {
     sessionConfiguration?: {
       provider?: { slug?: string };
       collaborationMode?: { model?: string };
     };
-  };
+  }).sessionConfiguration;
+  const sessionConfig = rawState?.sessionConfiguration ?? directConfig;
   const currentProvider =
-    rawState?.sessionConfiguration?.provider?.slug ?? "unknown";
+    sessionConfig?.provider?.slug ?? "unknown";
   const currentModel =
-    rawState?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
+    sessionConfig?.collaborationMode?.model ?? "unknown";
   const config = session.services.configStore?.current();
   const resolvedModel =
     targetModel?.trim() ||
@@ -78,17 +90,42 @@ export async function applyProviderSwitch(
     }`;
   }
 
+  const sessionShim = session as unknown as {
+    setPendingProviderSwitch?: (spec: {
+      provider: string;
+      model: string;
+    }) => void;
+    abortTerminal?: (reason: string) => void;
+  };
+  if (typeof sessionShim.setPendingProviderSwitch !== "function") {
+    return (
+      "Provider switching from the TUI is not yet supported when running " +
+      "against the daemon. Set `model_provider` in config.toml or use " +
+      "`agenc config set model_provider <name>`."
+    );
+  }
+
   // Use the typed mutator so the I-13 + I-57 staging site has a single
   // well-typed entry point.
-  session.setPendingProviderSwitch({
+  sessionShim.setPendingProviderSwitch({
     provider: normalizedProvider,
     model: resolvedModel,
   });
 
-  const activeTurn = session.activeTurn.unsafePeek();
+  const activeTurnPeek = (session as unknown as {
+    activeTurn?: { unsafePeek?: () => unknown };
+  }).activeTurn?.unsafePeek;
+  const activeTurn =
+    typeof activeTurnPeek === "function"
+      ? activeTurnPeek.call(
+          (session as unknown as { activeTurn?: unknown }).activeTurn,
+        )
+      : null;
   if (activeTurn !== null) {
     // I-13: abort the current turn with reason `provider_switched`.
-    session.abortTerminal("provider_switched");
+    if (typeof sessionShim.abortTerminal === "function") {
+      sessionShim.abortTerminal("provider_switched");
+    }
     return (
       `Provider switch staged: ${currentProvider} → ${normalizedProvider}; ` +
       `model ${currentModel} → ${resolvedModel}. ` +

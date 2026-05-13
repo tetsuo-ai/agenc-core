@@ -1,7 +1,9 @@
 import type { LLMMessage } from "../llm/types.js";
 import type { AgenCConfig } from "../config/schema.js";
+import type { ConfigStore } from "../config/store.js";
 import type { Event } from "../session/event-log.js";
 import type { HistoryReplacedEvent } from "../session/transcript-replacement.js";
+import type { SessionServices } from "../session/session.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
@@ -38,6 +40,11 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
   readonly services: {
     readonly permissionModeRegistry: PermissionModeRegistryLike;
+    readonly configStore?: ConfigStore;
+    readonly authManager?: SessionServices["authManager"];
+    readonly mcpManager?: SessionServices["mcpManager"];
+    readonly skillsManager?: SessionServices["skillsManager"];
+    readonly pluginsManager?: SessionServices["pluginsManager"];
     readonly hooks?: {
       readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
     };
@@ -58,6 +65,9 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   readonly activeTurn?: {
     unsafePeek(): { readonly turnId: string } | null;
   } | null;
+  readonly state?: {
+    unsafePeek(): unknown;
+  };
   readonly abortController?: { readonly signal: AbortSignal };
   readonly eventLog?: {
     subscribe(cb: (event: Event) => void): () => void;
@@ -146,6 +156,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly collaborationMode?: { readonly model?: string };
     readonly provider?: { readonly slug?: string };
   };
+  readonly config?: unknown;
   readonly cwd?: string;
   readonly home?: string;
   appStateBridge?: {

@@ -1753,9 +1753,15 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
             argsRaw: parsed.argsRaw,
             cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd ?? process.cwd(),
             home: process.env.HOME ?? "",
+            agencHome,
             ...(props.session.services?.configStore ? {
               configStore: props.session.services.configStore
             } : {}),
+            appState: {
+              getAppState: () => appStateStore.getState(),
+              setModel,
+              setAppState
+            },
             commandRegistry
           }, commandRegistry);
           if (outcome.result.kind !== "skip") {

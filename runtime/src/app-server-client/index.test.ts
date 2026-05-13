@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  dispatchSlashCommand,
+  parseSlashCommand,
+} from "../commands/dispatcher.js";
+import { buildDefaultRegistry } from "../commands/registry.js";
+import type { SlashCommandContext } from "../commands/types.js";
 import {
   createAgenCDaemonOnlyTuiContext,
   findAgenCDaemonAgentBySessionId,
@@ -189,5 +195,69 @@ describe("app-server-client daemon helpers", () => {
       context.baseSession.services.permissionModeRegistry.current();
     expect(permissionContext.mode).toBe("bypassPermissions");
     expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
+  });
+
+  it("dispatches daemon-only TUI slash commands without local session services", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-cwd-"));
+    try {
+      const context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd,
+        conversationId: "agenc-tui-daemon-slash-test",
+        permissionMode: "bypassPermissions",
+      });
+      const registry = buildDefaultRegistry();
+      const run = async (input: string) => {
+        const parsed = parseSlashCommand(input);
+        expect(parsed).not.toBeNull();
+        return dispatchSlashCommand(
+          parsed!,
+          {
+            session: context.baseSession as SlashCommandContext["session"],
+            argsRaw: parsed!.argsRaw,
+            cwd,
+            home: agencHome,
+            agencHome,
+            configStore: context.configStore as SlashCommandContext["configStore"],
+            commandRegistry: registry,
+            appState: {
+              getAppState: () => ({ mcp: { commands: [] } }),
+            },
+          },
+          registry,
+        );
+      };
+
+      await expect(run("/config")).resolves.toMatchObject({
+        result: { kind: "text" },
+      });
+      await expect(run("/settings")).resolves.toMatchObject({
+        result: { kind: "text" },
+      });
+      await expect(run("/provider grok")).resolves.toMatchObject({
+        result: {
+          kind: "text",
+          text: expect.stringContaining(
+            "not yet supported when running against the daemon",
+          ),
+        },
+      });
+      await expect(run("/mcp")).resolves.toMatchObject({
+        result: {
+          kind: "text",
+          text: "MCP servers: none configured.",
+        },
+      });
+      await expect(run("/skills")).resolves.toMatchObject({
+        result: {
+          kind: "text",
+          text: expect.stringContaining("available: none"),
+        },
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

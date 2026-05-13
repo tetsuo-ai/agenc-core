@@ -25,6 +25,11 @@ import { ConfigStore } from "../config/store.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type {
+  McpManager,
+  PluginsManager,
+  SkillsManager,
+} from "../session/session.js";
+import type {
   AgenCBridgeSession,
   ConfigStoreLike,
 } from "../tui/session-types.js";
@@ -190,15 +195,16 @@ export async function createAgenCDaemonOnlyTuiContext(
   };
   const abortController = new AbortController();
   let nextEventId = 0;
+  const sessionConfiguration = {
+    cwd: options.cwd,
+    provider: { slug: config.model_provider },
+    collaborationMode: { model: config.model },
+  };
   const session: AgenCBridgeSession = {
     conversationId: options.conversationId,
     cwd: options.cwd,
     home: agencHome,
-    sessionConfiguration: {
-      cwd: options.cwd,
-      provider: { slug: config.model_provider },
-      collaborationMode: { model: config.model },
-    },
+    sessionConfiguration,
     services: {
       permissionModeRegistry: new PermissionModeRegistry(
         createEmptyToolPermissionContext({
@@ -207,6 +213,21 @@ export async function createAgenCDaemonOnlyTuiContext(
             options.permissionMode === "bypassPermissions",
         }),
       ),
+      configStore,
+      mcpManager: createDaemonOnlyMcpManager(),
+      skillsManager: createDaemonOnlySkillsManager(),
+      pluginsManager: createDaemonOnlyPluginsManager(),
+      authManager: { mode: "local_no_auth" },
+    },
+    config,
+    state: {
+      unsafePeek: () => ({
+        sessionConfiguration,
+        history: [],
+      }),
+    },
+    activeTurn: {
+      unsafePeek: () => null,
     },
     abortController,
     abortTerminal: (reason) => {
@@ -223,5 +244,32 @@ export async function createAgenCDaemonOnlyTuiContext(
     baseSession: session,
     model: config.model,
     workspaceRoot: options.cwd,
+  };
+}
+
+function createDaemonOnlyMcpManager(): McpManager {
+  return {
+    effectiveServers: async () => new Map(),
+    toolPluginProvenance: async () => null,
+    getTools: () => [],
+    getToolsByServer: () => [],
+    getConfiguredServers: () => [],
+  };
+}
+
+function createDaemonOnlySkillsManager(): SkillsManager {
+  return {
+    skillsForConfig: async () => ({
+      invokedSkills: [],
+      availableSkills: [],
+    }),
+  };
+}
+
+function createDaemonOnlyPluginsManager(): PluginsManager {
+  return {
+    pluginsForConfig: async () => ({
+      effectiveSkillRoots: () => [],
+    }),
   };
 }

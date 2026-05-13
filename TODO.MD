@@ -111,12 +111,28 @@ Likely code to inspect:
 
 ### TUI-003 - Slash commands crash because daemon TUI context lacks services
 
-- [ ] Fix `/config`: `ConfigStore not initialised`.
-- [ ] Fix `/settings`: same missing config store path as `/config`.
-- [ ] Fix `/provider grok`: `Cannot read properties of undefined (reading 'unsafePeek')`.
-- [ ] Fix `/mcp`: `Cannot read properties of undefined (reading 'effectiveServers')`.
-- [ ] Fix `/skills`: `Cannot read properties of undefined (reading 'skillsForConfig')`.
-- [ ] Add command execution tests with the same context shape used by daemon-backed TUI sessions.
+- [x] Fix `/config`: `ConfigStore not initialised`.
+- [x] Fix `/settings`: same missing config store path as `/config`.
+- [x] Fix `/provider grok`: `Cannot read properties of undefined (reading 'unsafePeek')`.
+- [x] Fix `/mcp`: `Cannot read properties of undefined (reading 'effectiveServers')`.
+- [x] Fix `/skills`: `Cannot read properties of undefined (reading 'skillsForConfig')`.
+- [x] Add command execution tests with the same context shape used by daemon-backed TUI sessions.
+
+Fixed in:
+
+- `runtime/src/app-server-client/index.ts`
+- `runtime/src/app-server-client/index.test.ts`
+- `runtime/src/commands/provider.ts`
+- `runtime/src/tui/components/App.tsx`
+- `runtime/src/tui/session-types.ts`
+
+Verification:
+
+- Reproduced pre-fix from `/tmp/agenc-tui-003-config` with isolated `AGENC_HOME`: `/config`, `/settings`, `/provider grok`, `/mcp`, and `/skills` each returned the listed service/`unsafePeek` errors.
+- Verified post-fix from `/tmp/agenc-tui-003-verify` with isolated `AGENC_HOME` and `agenc --yolo`: `/config` and `/settings` render config, `/provider grok` returns a daemon-unsupported guidance message instead of crashing, `/mcp` reports no configured servers, and `/skills` reports no available/invoked/plugin-root skills.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/app-server-client/index.test.ts src/commands/provider.test.ts src/commands/mcp.test.ts src/commands/skills.test.ts` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 
