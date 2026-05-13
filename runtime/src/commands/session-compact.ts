@@ -80,6 +80,7 @@ function tryAllocateTurnContext(ctx: SlashCommandContext): {
 export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Compact the current conversation",
+  supportedSurfaces: ["runtime"],
   immediate: true,
   supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>

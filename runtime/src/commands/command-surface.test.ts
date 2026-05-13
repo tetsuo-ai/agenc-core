@@ -152,6 +152,23 @@ describe("AgenC command surface compatibility", () => {
     });
   });
 
+  it("daemon TUI registry rejects runtime-only command dispatch", async () => {
+    const registry = buildDefaultRegistry({ surface: "daemon-tui" });
+    const parsed = parseSlashCommand("/model qwen3.6-27b-fp8");
+    expect(parsed).not.toBeNull();
+
+    const outcome = await dispatchSlashCommand(
+      parsed!,
+      fakeContext("/tmp/project"),
+      registry,
+    );
+
+    expect(outcome.result).toEqual({
+      kind: "error",
+      message: "Unknown command: /model",
+    });
+  });
+
   it("clearCommandMemoizationCaches remains the non-throwing cache reset API", () => {
     expect(() => clearCommandMemoizationCaches()).not.toThrow();
   });

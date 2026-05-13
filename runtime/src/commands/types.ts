@@ -19,6 +19,8 @@
 import type { Session } from "../session/session.js";
 import type { ConfigStore } from "../config/store.js";
 
+export type SlashCommandSurface = "runtime" | "daemon-tui";
+
 /**
  * Optional bridge into the React-side AppState so slash commands can
  * synchronously update reactive UI state (status bar, etc.) without
@@ -81,6 +83,8 @@ export interface SlashCommand {
   readonly name: string;
   readonly aliases?: readonly string[];
   readonly description: string;
+  /** Defaults to every surface. Restrict commands that need runtime-only APIs. */
+  readonly supportedSurfaces?: readonly SlashCommandSurface[];
   /** Defaults to true. Only set when a command is conditionally visible. */
   readonly isEnabled?: () => boolean;
   /** Bypass the turn loop (default false). */

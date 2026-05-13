@@ -234,9 +234,33 @@ Likely code to inspect:
 
 ### TUI-006 - Advertised slash commands are not supported in daemon TUI
 
-- [ ] Decide whether `/model`, `/compact`, and `/hooks` should be daemon-backed or hidden.
-- [ ] Make unsupported commands absent from suggestions/help, or implement them end to end.
-- [ ] Add a command capability source so help, suggestions, and dispatcher agree.
+- [x] Decide whether `/model`, `/compact`, and `/hooks` should be daemon-backed or hidden.
+- [x] Make unsupported commands absent from suggestions/help, or implement them end to end.
+- [x] Add a command capability source so help, suggestions, and dispatcher agree.
+
+Fixed in:
+
+- `runtime/src/commands/types.ts`
+- `runtime/src/commands/registry.ts`
+- `runtime/src/commands/model.ts`
+- `runtime/src/commands/provider.ts`
+- `runtime/src/commands/session-compact.ts`
+- `runtime/src/commands/hooks.ts`
+- `runtime/src/tui/components/App.tsx`
+- `runtime/src/commands/registry.test.ts`
+- `runtime/src/commands/tui-command-list.test.ts`
+- `runtime/src/commands/help.test.ts`
+- `runtime/src/commands/command-surface.test.ts`
+
+Verification:
+
+- Reproduced pre-fix in a fresh `/tmp` TUI with temp HOME: typeahead advertised `/model`, `/compact`, and `/hooks`, then dispatch returned daemon/in-process unsupported messages.
+- Implemented a `SlashCommandSurface` capability source. Runtime registry keeps the full minimal command set; daemon-TUI registry filters runtime-only commands before suggestions, `/help`, and dispatch share it.
+- Marked `/model`, `/model-provider`/`/provider`, `/compact`, and `/hooks` as runtime-only because they require in-process session APIs or hook runtime access.
+- Verified post-fix in a fresh `/tmp` TUI with temp HOME: `/help` omits `/model`, `/model-provider`, `/compact`, and `/hooks`; direct `/model`, `/compact`, and `/hooks` submissions return unknown-command responses from the filtered dispatcher.
+- `npm run test --workspace=@tetsuo-ai/runtime -- src/commands/registry.test.ts src/commands/tui-command-list.test.ts src/commands/help.test.ts src/commands/command-surface.test.ts` passed.
+- `npm run build` passed.
+- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
 
 Evidence:
 

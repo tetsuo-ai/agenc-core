@@ -269,6 +269,7 @@ async function handleHooksCommand(
 const hooksCommand: SlashCommand = {
   name: "hooks",
   description: "Inspect and test AgenC hook configuration",
+  supportedSurfaces: ["runtime"],
   immediate: true,
   execute: (ctx) => safeExecute(() => handleHooksCommand(ctx)),
 };

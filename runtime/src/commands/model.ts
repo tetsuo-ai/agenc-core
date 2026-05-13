@@ -187,6 +187,7 @@ export async function applyModelSwitch(
 export const modelCommand: SlashCommand = {
   name: "model",
   description: "Switch the model for subsequent turns",
+  supportedSurfaces: ["runtime"],
   userInvocable: true,
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>

@@ -25,6 +25,20 @@ const MINIMAL_REGISTRY_NAMES = [
   "exit",
 ] as const;
 
+const DAEMON_TUI_REGISTRY_NAMES = [
+  "help",
+  "status",
+  "permissions",
+  "plan",
+  "agents",
+  "config",
+  "skills",
+  "mcp",
+  "clear",
+  "diff",
+  "exit",
+] as const;
+
 const REMOVED_TUI_COMMANDS = [
   "branch",
   "cache-stats",
@@ -131,6 +145,19 @@ describe("CommandRegistry", () => {
     const names = buildDefaultRegistry().list().map((command) => command.name);
 
     expect(names).toEqual(MINIMAL_REGISTRY_NAMES);
+  });
+
+  it("filters runtime-only commands from the daemon TUI surface", () => {
+    const registry = buildDefaultRegistry({ surface: "daemon-tui" });
+
+    expect(registry.list().map((command) => command.name)).toEqual(
+      DAEMON_TUI_REGISTRY_NAMES,
+    );
+    for (const name of ["model", "model-provider", "provider", "hooks", "compact"]) {
+      expect(registry.has(name), `/${name} should not dispatch in daemon TUI`).toBe(
+        false,
+      );
+    }
   });
 
   it("keeps only expected aliases for retained commands", () => {

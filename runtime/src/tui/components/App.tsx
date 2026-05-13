@@ -1449,7 +1449,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const mcpClients = mcpSurface.clients;
   const availableTools = useMemo(() => [...tools, ...mcpSurface.tools], [tools, mcpSurface.tools]);
   const refreshAvailableTools = useCallback(() => [...tools, ...readMcpSurfaceSnapshot(props.session).tools], [props.session, tools]);
-  const commandRegistry = useMemo(() => buildDefaultRegistry(), []);
+  const commandRegistry = useMemo(() => buildDefaultRegistry({
+    surface: "daemon-tui"
+  }), []);
   useEffect(() => {
     setGlobalCommandRegistry(commandRegistry);
     return () => {

@@ -143,6 +143,7 @@ export const providerCommand: SlashCommand = {
   name: "model-provider",
   aliases: ["provider"],
   description: "Switch the LLM provider for subsequent turns",
+  supportedSurfaces: ["runtime"],
   userInvocable: true,
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>

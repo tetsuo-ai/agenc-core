@@ -9,6 +9,7 @@
 import type {
   CommandRegistry as CommandRegistryInterface,
   SlashCommand,
+  SlashCommandSurface,
 } from "./types.js";
 import helpCommand from "./help.js";
 import statusCommand from "./status.js";
@@ -105,6 +106,18 @@ export class CommandRegistry implements CommandRegistryInterface {
   }
 }
 
+export interface BuildDefaultRegistryOptions {
+  readonly surface?: SlashCommandSurface;
+}
+
+function commandSupportsSurface(
+  command: SlashCommand,
+  surface: SlashCommandSurface | undefined,
+): boolean {
+  if (surface === undefined) return true;
+  return command.supportedSurfaces?.includes(surface) ?? true;
+}
+
 /**
  * Build the default user-invocable slash registry.
  *
@@ -112,7 +125,9 @@ export class CommandRegistry implements CommandRegistryInterface {
  * /help, /status, /model, /provider, /permissions, /plan, /agents, /config,
  * /hooks, /skills, /mcp, /clear, /compact, /diff, /exit.
  */
-export function buildDefaultRegistry(): CommandRegistry {
+export function buildDefaultRegistry(
+  options: BuildDefaultRegistryOptions = {},
+): CommandRegistry {
   return CommandRegistry.fromCommands([
     helpCommand,
     statusCommand,
@@ -129,5 +144,5 @@ export function buildDefaultRegistry(): CommandRegistry {
     compactCommand,
     diffCommand,
     exitCommand,
-  ]);
+  ].filter((command) => commandSupportsSurface(command, options.surface)));
 }

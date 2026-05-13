@@ -30,6 +30,20 @@ const MINIMAL_TUI_NAMES = [
   "exit",
 ] as const;
 
+const DAEMON_TUI_NAMES = [
+  "help",
+  "status",
+  "permissions",
+  "plan",
+  "agents",
+  "config",
+  "skills",
+  "mcp",
+  "clear",
+  "diff",
+  "exit",
+] as const;
+
 const REMOVED_TUI_NAMES = [
   "commit",
   "context",
@@ -80,6 +94,16 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
       .map((cmd) => cmd.name);
 
     expect(listTuiCommandList().map((cmd) => cmd.name)).toEqual(expected);
+  });
+
+  it("lists only daemon-supported commands when passed the daemon TUI registry", () => {
+    const registry = buildDefaultRegistry({ surface: "daemon-tui" });
+    const names = listTuiCommandList(registry).map((cmd) => cmd.name);
+
+    expect(names).toEqual(DAEMON_TUI_NAMES);
+    for (const name of ["model", "model-provider", "hooks", "compact"]) {
+      expect(names).not.toContain(name);
+    }
   });
 
   it("preserves aliases on retained commands", () => {
