@@ -1270,6 +1270,27 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).not.toContain("rejected by user");
     });
 
+    test("orphaned successful FileRead line output is suppressed", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "structured-orphan",
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: "call-structured-orphan",
+              result: [{ type: "text", text: "1→secret\n2→" }],
+              isError: false,
+            },
+          },
+        },
+      ]);
+
+      const allText = JSON.stringify(transcript.messages);
+      expect(transcript.messages).toHaveLength(0);
+      expect(allText).not.toContain("Recovered tool result without matching start");
+      expect(allText).not.toContain("1→secret");
+    });
+
     test("out-of-order tool_call_completed tombstones a later delayed start", () => {
       const transcript = adaptTranscriptEvents([
         {

@@ -595,7 +595,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     typeof params.toolName === "string"
   ) {
     return {
-      id: stringParam(params.eventId, params.requestId),
+      id: stringParam(params.eventId, `tool-request:${params.requestId}`),
       type: "tool_call_started",
       payload: {
         callId: params.requestId,
@@ -606,7 +606,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
   }
   if (method === "event.permission_request" && typeof params.requestId === "string") {
     return {
-      id: stringParam(params.eventId, params.requestId),
+      id: stringParam(params.eventId, `permission-request:${params.requestId}`),
       type: "request_permissions",
       payload: {
         callId: params.requestId,
@@ -628,7 +628,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     Array.isArray(params.questions)
   ) {
     return {
-      id: stringParam(params.eventId, params.requestId),
+      id: stringParam(params.eventId, `user-input-request:${params.requestId}`),
       type: "request_user_input",
       payload: {
         requestId: params.requestId,
@@ -647,7 +647,7 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
     isJsonObject(params.request)
   ) {
     return {
-      id: stringParam(params.eventId, String(params.requestId)),
+      id: stringParam(params.eventId, `mcp-elicitation:${String(params.requestId)}`),
       type: "mcp_elicitation_request",
       payload: {
         requestId: params.requestId,

@@ -43,6 +43,7 @@ const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
 const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
 const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
 const MAX_PATH_LENGTH = 4096;
+const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
 
 export type FileOperationType = "read" | "write" | "create";
 
@@ -628,6 +629,23 @@ function buildSuggestions(
   return suggestions;
 }
 
+function withTransientAllowedRoot(
+  input: Record<string, unknown>,
+  resolvedPath: string,
+): Record<string, unknown> {
+  const existingRoots = Array.isArray(input[SESSION_ALLOWED_ROOTS_ARG])
+    ? input[SESSION_ALLOWED_ROOTS_ARG].filter(
+        (entry): entry is string => typeof entry === "string" && entry.length > 0,
+      )
+    : [];
+  return {
+    ...input,
+    [SESSION_ALLOWED_ROOTS_ARG]: [
+      ...new Set([...existingRoots, dirname(resolvedPath)]),
+    ],
+  };
+}
+
 export function checkToolPathPermission(
   opts: ToolPathPermissionOptions,
 ): PermissionResult {
@@ -673,9 +691,15 @@ export function checkToolPathPermission(
     };
   }
 
+  const updatedInput =
+    decisionReason?.type === "workingDir"
+      ? withTransientAllowedRoot(opts.input, result.resolvedPath)
+      : opts.input;
+
   return {
     behavior: "ask",
     message: `AgenC requested permissions to ${verb} ${opts.path} with ${opts.toolName}, but you haven't granted it yet.`,
+    updatedInput,
     decisionReason,
     suggestions: buildSuggestions(result.resolvedPath, opts.operationType, opts.context),
     blockedPath: result.resolvedPath,

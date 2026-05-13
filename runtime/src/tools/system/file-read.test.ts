@@ -12,6 +12,7 @@ import {
   clearSessionReadState,
   getSessionReadSnapshot,
   hasSessionRead,
+  SESSION_ALLOWED_ROOTS_ARG,
   SESSION_AGENC_HOME_ARG,
 } from "./filesystem.js";
 import {
@@ -587,6 +588,45 @@ describe("FileRead tool", () => {
 
       expect(result.isError).toBeUndefined();
       expect(result.content).toContain("1→approved secret");
+    } finally {
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("outside-path ask carries a transient root for approved execution", async () => {
+    const otherRoot = await mkdtemp(join(tmpdir(), "agenc-file-read-other-"));
+    try {
+      const file = join(otherRoot, "approved-once.txt");
+      await writeFile(file, "approved once\n", "utf8");
+      const permissionContext = createEmptyToolPermissionContext();
+      const evaluatorContext = {
+        getAppState() {
+          return {
+            toolPermissionContext: permissionContext,
+            denialTracking: { consecutiveDenials: 0, totalDenials: 0 },
+            autoModeActive: false,
+          };
+        },
+        session: {},
+      } as ToolEvaluatorContext;
+      const tool = createFileReadTool({ allowedPaths: [root] });
+      const permission = tool.checkPermissions?.(
+        { file_path: file, cwd: root },
+        evaluatorContext,
+      );
+
+      expect(permission?.behavior).toBe("ask");
+      if (!permission || permission.behavior !== "ask") {
+        throw new Error("expected permission ask");
+      }
+      expect(permission.updatedInput?.[SESSION_ALLOWED_ROOTS_ARG]).toContain(
+        otherRoot,
+      );
+
+      const result = await tool.execute(permission.updatedInput ?? {});
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("1→approved once");
     } finally {
       await rm(otherRoot, { recursive: true, force: true });
     }

@@ -1170,6 +1170,48 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("namespaces daemon request event ids when a permission prompt shares the tool request id", () => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents?.((event) => {
+      received.push(event as JsonObject);
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.permission_request",
+      params: {
+        sessionId: "session_1",
+        requestId: "call_1",
+        toolName: "FileRead",
+        permissions: ["tool.use"],
+      },
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.tool_request",
+      params: {
+        sessionId: "session_1",
+        requestId: "call_1",
+        toolName: "FileRead",
+        input: { file_path: "/tmp/secret.txt" },
+      },
+    });
+    unsubscribe?.();
+
+    expect(received.map((event) => event.id)).toEqual([
+      "permission-request:call_1",
+      "tool-request:call_1",
+    ]);
+    expect(new Set(received.map((event) => event.id)).size).toBe(2);
+  });
+
   it("shows a reconnecting notice without dropping the daemon event stream", () => {
     const client = createClient();
     const received: JsonObject[] = [];

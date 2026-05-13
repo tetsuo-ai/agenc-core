@@ -31,6 +31,7 @@
  * @module
  */
 
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import {
@@ -99,6 +100,7 @@ import {
   buildToolRuntimeCallContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
+import { SESSION_ALLOWED_ROOTS_ARG } from "./system/filesystem.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -580,6 +582,21 @@ export class ToolRouter {
         ...(opts.toolAllowlist !== undefined ? { toolAllowlist: opts.toolAllowlist } : {}),
         ...(opts.toolDenylist !== undefined ? { toolDenylist: opts.toolDenylist } : {}),
         dispatch: async (sandbox, dispatchContext) => {
+          const dispatchArgs = dispatchContext.approvalResolved
+            ? withApprovedFilesystemRoot(nameDisplay(invocation.toolName), executionArgs)
+            : executionArgs;
+          const dispatchPayload =
+            dispatchArgs === executionArgs
+              ? executionPayload
+              : buildPayloadForArgs(invocation.payload, dispatchArgs);
+          const dispatchInvocation =
+            dispatchArgs === executionArgs
+              ? executionInvocation
+              : { ...executionInvocation, payload: dispatchPayload };
+          const dispatchRawArgs =
+            dispatchArgs === executionArgs
+              ? executionRawArgs
+              : stringifyToolArgsWithBigInt(dispatchArgs);
           const runtimeAttemptContext = buildToolRuntimeAttemptContext(
             runtimeCallContext,
             {
@@ -590,18 +607,18 @@ export class ToolRouter {
               ...(dispatchContext.additionalPermissions !== undefined
                 ? { additionalPermissions: dispatchContext.additionalPermissions }
                 : {}),
-              rawArgs: executionRawArgs,
-              invocation: executionInvocation,
+              rawArgs: dispatchRawArgs,
+              invocation: dispatchInvocation,
             },
           );
           return executeToolDispatch({
-            rawArgs: executionRawArgs,
+            rawArgs: dispatchRawArgs,
             ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
             currentTurnId: directDispatchTurnId(invocation),
             eventLog: invocation.session.eventLog,
             subId: invocation.callId,
             tool: spec.tool,
-            invocation: executionInvocation,
+            invocation: dispatchInvocation,
             approvalAlreadyResolved: dispatchContext.approvalResolved,
             runtimeAttemptContext,
             ...(opts.permissionAuditLogger !== undefined
@@ -964,6 +981,21 @@ export class ToolRouter {
           void ctx;
         },
         dispatch: async (sandbox, dispatchContext) => {
+          const dispatchArgs = dispatchContext.approvalResolved
+            ? withApprovedFilesystemRoot(toolCall.name, executionArgs)
+            : executionArgs;
+          const dispatchPayload =
+            dispatchArgs === executionArgs
+              ? executionPayload
+              : buildPayloadForArgs(routed.payload, dispatchArgs);
+          const dispatchInvocation =
+            dispatchArgs === executionArgs
+              ? executionInvocation
+              : { ...executionInvocation, payload: dispatchPayload };
+          const dispatchRawArgs =
+            dispatchArgs === executionArgs
+              ? executionRawArgs
+              : stringifyToolArgsWithBigInt(dispatchArgs);
           const runtimeAttemptContext = buildToolRuntimeAttemptContext(
             runtimeCallContext,
             {
@@ -974,14 +1006,14 @@ export class ToolRouter {
               ...(dispatchContext.additionalPermissions !== undefined
                 ? { additionalPermissions: dispatchContext.additionalPermissions }
                 : {}),
-              rawArgs: executionRawArgs,
-              invocation: executionInvocation,
+              rawArgs: dispatchRawArgs,
+              invocation: dispatchInvocation,
             },
           );
-          return executeToolDispatch(rawDispatchOptions(executionRawArgs, {
+          return executeToolDispatch(rawDispatchOptions(dispatchRawArgs, {
             ...withoutPermissionEvaluator(opts),
             tool: spec.tool,
-            invocation: executionInvocation,
+            invocation: dispatchInvocation,
             preHooks: [],
             ...(preHookPermissionDecision !== undefined
               ? { preHookPermissionDecision }
@@ -1151,6 +1183,54 @@ function stringifyToolArgsWithBigInt(args: Record<string, unknown>): string {
   return JSON.stringify(args, (_key, value) =>
     typeof value === "bigint" ? `__bigint__${value.toString()}` : value,
   );
+}
+
+const APPROVED_FILE_PATH_TOOLS = new Set([
+  "FileRead",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+]);
+
+function approvedFilePathForTool(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
+  const filePath = args["file_path"];
+  return typeof filePath === "string" && filePath.trim().length > 0
+    ? filePath
+    : null;
+}
+
+function withApprovedFilesystemRoot(
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const filePath = approvedFilePathForTool(toolName, args);
+  if (filePath === null) return args;
+
+  const cwd =
+    typeof args["cwd"] === "string" && args["cwd"].trim().length > 0
+      ? args["cwd"]
+      : process.cwd();
+  const resolvedPath = isAbsolute(filePath)
+    ? filePath
+    : resolve(cwd, filePath);
+  const approvedRoot = dirname(resolvedPath);
+  const existingRoots = Array.isArray(args[SESSION_ALLOWED_ROOTS_ARG])
+    ? args[SESSION_ALLOWED_ROOTS_ARG].filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.length > 0,
+      )
+    : [];
+  if (existingRoots.includes(approvedRoot)) return args;
+
+  return {
+    ...args,
+    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...existingRoots, approvedRoot])],
+  };
 }
 
 function planFileContextForApproval(

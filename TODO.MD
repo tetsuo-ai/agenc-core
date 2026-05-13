@@ -530,17 +530,26 @@ Likely code to inspect:
 
 ## Verification Checklist
 
-- [ ] `npm run build` or repository equivalent passes.
-- [ ] TUI validation gate passes if TUI files changed.
-- [ ] Real `agenc` from `/tmp` can complete onboarding/trust flow.
-- [ ] Real `agenc --yolo` from `/tmp` behaves according to intended trust/onboarding policy.
-- [ ] `/plan` works in TUI.
-- [ ] `/agents` works in TUI and can start an agent workflow.
-- [ ] Slash command help/suggestions only advertise runnable commands.
-- [ ] Permission deny/allow flows show user-facing messages only.
-- [ ] Slash palette selected row has no duplicate description.
-- [ ] Slash palette background is opaque across the full intended width.
-- [ ] Multiple isolated `AGENC_HOME` sessions can run without daemon port/socket collisions.
+- [x] `npm run build` or repository equivalent passes.
+- [x] TUI validation gate passes if TUI files changed.
+- [x] Real `agenc` from `/tmp` can complete onboarding/trust flow.
+- [x] Real `agenc --yolo` from `/tmp` behaves according to intended trust/onboarding policy.
+- [x] `/plan` works in TUI.
+- [x] `/agents` works in TUI and can start an agent workflow.
+- [x] Slash command help/suggestions only advertise runnable commands.
+- [x] Permission deny/allow flows show user-facing messages only.
+- [x] Slash palette selected row has no duplicate description.
+- [x] Slash palette background is opaque across the full intended width.
+- [x] Multiple isolated `AGENC_HOME` sessions can run without daemon port/socket collisions.
+
+Fixed in:
+
+- Build: `npm run build --workspace=@tetsuo-ai/runtime` passed.
+- TUI gate: `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
+- Live trust/onboarding, `--yolo`, `/plan`, and `/agents`: verified from fresh `/tmp` workspaces with isolated `AGENC_HOME` values.
+- Permission deny/allow: verified denied reads render a user-facing denial, approved outside-path `FileRead` succeeds, and orphaned successful FileRead output no longer leaks a raw recovery row.
+- Slash palette rendering and command surface: covered by targeted TUI parity/unit tests and prior live checks.
+- Isolated daemon homes: verified with repeated fresh `/tmp/agenc-home-*` sessions and targeted daemon/socket coverage.
 
 ## Goal Prompt For The Next Agent
 

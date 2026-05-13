@@ -1239,6 +1239,66 @@ describe("T11 W3-B — permission evaluator integration", () => {
     );
   });
 
+  test("approved outside FileRead executes with the permission ask updated input", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-exec-workspace-"));
+    const outside = await mkdtemp(join(tmpdir(), "agenc-exec-outside-"));
+    try {
+      const file = join(outside, "secret.txt");
+      await writeFile(file, "approved via modal\n", "utf8");
+      const { context } = buildEvaluatorContext("default");
+      const requestApproval = vi.fn(async () => ({
+        behavior: "allow" as const,
+        decisionAtTurnId: "t1",
+      }));
+      const tool = createFileReadTool({ allowedPaths: [workspace] });
+
+      const out = await runToolUse(
+        JSON.stringify({ file_path: file }),
+        {
+          currentTurnId: "t1",
+          tool,
+          invocation: makeInvocation("c1", "FileRead"),
+          canUseTool: hasPermissionsToUseTool,
+          permissionContext: context,
+          requestApproval,
+        },
+      );
+
+      expect(out.isError).toBe(false);
+      expect(out.content).toContain("1→approved via modal");
+      expect(requestApproval).toHaveBeenCalledTimes(1);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("pre-resolved outside FileRead approval executes with the permission ask updated input", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-exec-workspace-"));
+    const outside = await mkdtemp(join(tmpdir(), "agenc-exec-outside-"));
+    try {
+      const file = join(outside, "secret.txt");
+      await writeFile(file, "approved before dispatch\n", "utf8");
+      const { context } = buildEvaluatorContext("default");
+      const tool = createFileReadTool({ allowedPaths: [workspace] });
+
+      const out = await runToolUse(JSON.stringify({ file_path: file }), {
+        currentTurnId: "t1",
+        tool,
+        invocation: makeInvocation("c1", "FileRead"),
+        canUseTool: hasPermissionsToUseTool,
+        permissionContext: context,
+        approvalAlreadyResolved: true,
+      });
+
+      expect(out.isError).toBe(false);
+      expect(out.content).toContain("1→approved before dispatch");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
   test("unlisted unattended tools ask and flow to the approval bridge", async () => {
     const { context } = buildEvaluatorContext("unattended", {
       shouldAvoidPermissionPrompts: true,

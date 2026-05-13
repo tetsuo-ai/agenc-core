@@ -160,6 +160,27 @@ describe("R5 streamingToolUses accumulator (session-transcript)", () => {
     expect(t.streamingToolUses).toEqual([]);
   });
 
+  test("E5.6d completion after streamed block_start pairs without raw recovery text", () => {
+    const t = adaptTranscriptEvents([
+      turnStart(),
+      blockStart("c1", 0, "FileRead"),
+      delta("c1", 0, '{"file_path":"/tmp/secret.txt"}'),
+      {
+        id: "complete-c1",
+        msg: {
+          type: "tool_call_completed",
+          payload: { callId: "c1", isError: false, result: "read-ok" },
+        },
+      },
+    ]);
+
+    const allText = JSON.stringify(t.messages);
+    expect(t.streamingToolUses).toEqual([]);
+    expect(t.inProgressToolUseIDs.size).toBe(0);
+    expect(allText).toContain("read-ok");
+    expect(allText).not.toContain("Recovered tool result without matching start");
+  });
+
   test("E5.7 snapshot identity differs across distinct event sequences (sanity check for accumulator-immutability of element shape)", () => {
     const a = adaptTranscriptEvents([turnStart(), blockStart("c1", 0)]);
     const b = adaptTranscriptEvents([

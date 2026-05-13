@@ -8,6 +8,11 @@ import {
 import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata.js'
 import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { CompletionType } from '../../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { SESSION_ALLOWED_ROOTS_ARG } from '../../../../tools/system/filesystem.js'
+import { getPathsForPermissionCheck } from '../../../../utils/fsOperations.js'
+import { getDirectoryForPath } from '../../../../utils/path.js'
+import { pathInAllowedWorkingPath } from '../../../../utils/permissions/filesystem.js'
+import type { ToolPermissionContext } from '../../../../tools/Tool.js'
 import type { ToolUseConfirm } from '../PermissionRequest.js'
 import {
   type FileOperationType,
@@ -45,6 +50,60 @@ export type UseFilePermissionDialogResult<T> = {
   handleInputModeToggle: (value: string) => void
   yesInputMode: boolean
   noInputMode: boolean
+}
+
+function withTransientAllowedRoot<T extends ToolInput>(
+  input: T,
+  filePath: string,
+  toolPermissionContext: ToolPermissionContext,
+): T {
+  if (filePath.trim().length === 0) return input
+
+  try {
+    if (pathInAllowedWorkingPath(filePath, toolPermissionContext)) {
+      return input
+    }
+  } catch {
+    // If the permission path check cannot resolve the path cleanly, keep
+    // the approval conservative and let tool execution report the error.
+    return input
+  }
+
+  const existingRoots = Array.isArray(input[SESSION_ALLOWED_ROOTS_ARG])
+    ? input[SESSION_ALLOWED_ROOTS_ARG].filter(
+        (entry): entry is string => typeof entry === 'string',
+      )
+    : []
+  const directoryRoots = getPathsForPermissionCheck(
+    getDirectoryForPath(filePath),
+  ).filter((entry): entry is string => entry.trim().length > 0)
+  if (directoryRoots.length === 0) return input
+
+  return {
+    ...input,
+    [SESSION_ALLOWED_ROOTS_ARG]: [
+      ...new Set([...existingRoots, ...directoryRoots]),
+    ],
+  }
+}
+
+function mergeAllowInput<T extends ToolInput>(
+  parsedInput: T,
+  updatedInput: unknown,
+  filePath: string,
+  toolPermissionContext: ToolPermissionContext,
+): T {
+  const mergedInput =
+    updatedInput !== null &&
+    typeof updatedInput === 'object' &&
+    !Array.isArray(updatedInput)
+      ? ({
+          ...(updatedInput as Record<string, unknown>),
+          ...parsedInput,
+        } as T)
+      : parsedInput
+
+  return withTransientAllowedRoot(mergedInput, filePath, toolPermissionContext)
 }
 
 /**
@@ -103,11 +162,20 @@ export function useFilePermissionDialog<T extends ToolInput>({
       // Override the input in toolUseConfirm to pass the parsed input
       const originalOnAllow = toolUseConfirm.onAllow
       toolUseConfirm.onAllow = (
-        _input: unknown,
+        updatedInput: unknown,
         permissionUpdates: PermissionUpdate[],
         feedback?: string,
       ) => {
-        originalOnAllow(input, permissionUpdates, feedback)
+        originalOnAllow(
+          mergeAllowInput(
+            input,
+            updatedInput,
+            filePath,
+            toolPermissionContext,
+          ),
+          permissionUpdates,
+          feedback,
+        )
       }
 
       const handler = PERMISSION_HANDLERS[option.type]
@@ -209,4 +277,9 @@ export function useFilePermissionDialog<T extends ToolInput>({
     yesInputMode,
     noInputMode,
   }
+}
+
+export const __useFilePermissionDialogTest = {
+  mergeAllowInput,
+  withTransientAllowedRoot,
 }

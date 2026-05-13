@@ -53,6 +53,7 @@ import {
   routerFromRegistry,
 } from "../tools/router.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
+import { SESSION_ALLOWED_ROOTS_ARG } from "../tools/system/filesystem.js";
 
 function mkCtx(overrides: Record<string, unknown> = {}): TurnContext {
   return {
@@ -1696,6 +1697,56 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(executed).toBe(1);
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]!.content).toBe("approved plan exit");
+  });
+
+  test("approved filesystem tools carry transient roots into dispatch args", async () => {
+    const outsideRoot = mkdtempSync(join(tmpdir(), "agenc-approved-root-"));
+    tempDirs.push(outsideRoot);
+    const outsideFile = join(outsideRoot, "secret.txt");
+    let executedArgs: Record<string, unknown> | undefined;
+    const tool: Tool = {
+      name: "FileRead",
+      description: "approval-gated read",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async (args) => {
+        executedArgs = args;
+        return { content: "read-ok" };
+      },
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      approvalResolver: {
+        request: async () => ({ kind: "approved" }),
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "approved-read",
+          name: "FileRead",
+          arguments: JSON.stringify({ file_path: outsideFile }),
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as unknown as TurnContext,
+      session,
+    );
+
+    expect(executedArgs?.[SESSION_ALLOWED_ROOTS_ARG]).toEqual([outsideRoot]);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toBe("read-ok");
   });
 
   test("requiresApproval tools do not dispatch when approval is denied", async () => {

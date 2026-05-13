@@ -31,6 +31,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { LLMToolCall } from "../../llm/types.js";
 import {
   getPlan,
@@ -76,7 +77,10 @@ import {
   type PermissionRequestHook,
   type SandboxMode,
 } from "../../tools/orchestrator.js";
-import { SESSION_AGENC_HOME_ARG } from "../../tools/system/filesystem.js";
+import {
+  SESSION_AGENC_HOME_ARG,
+  SESSION_ALLOWED_ROOTS_ARG,
+} from "../../tools/system/filesystem.js";
 import {
   routerFromRegistry as realRouterFromRegistry,
   type ToolRouter as RealToolRouter,
@@ -100,6 +104,54 @@ interface ToolRegistryLike {
     [extra: string]: unknown;
   }>;
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResultLike>;
+}
+
+const APPROVED_FILE_PATH_TOOLS = new Set([
+  "FileRead",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+]);
+
+function approvedFilePathForTool(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
+  const filePath = args["file_path"];
+  return typeof filePath === "string" && filePath.trim().length > 0
+    ? filePath
+    : null;
+}
+
+function withApprovedFilesystemRoot(
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const filePath = approvedFilePathForTool(toolName, args);
+  if (filePath === null) return args;
+
+  const cwd =
+    typeof args["cwd"] === "string" && args["cwd"].trim().length > 0
+      ? args["cwd"]
+      : process.cwd();
+  const resolvedPath = isAbsolute(filePath)
+    ? filePath
+    : resolve(cwd, filePath);
+  const approvedRoot = dirname(resolvedPath);
+  const existingRoots = Array.isArray(args[SESSION_ALLOWED_ROOTS_ARG])
+    ? args[SESSION_ALLOWED_ROOTS_ARG].filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.length > 0,
+      )
+    : [];
+  if (existingRoots.includes(approvedRoot)) return args;
+
+  return {
+    ...args,
+    [SESSION_ALLOWED_ROOTS_ARG]: [...new Set([...existingRoots, approvedRoot])],
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -822,14 +874,6 @@ export class StreamingToolExecutor {
           });
         };
 
-        const dispatchCall: LLMToolCall = {
-          ...tool.toolCall,
-          // Re-stringify so the registry sees the (possibly) hook-
-          // mutated args. JSON.stringify drops the function-valued
-          // injection — we re-attach it via the shim below.
-          arguments: JSON.stringify(effectiveArgs),
-        };
-
         try {
           const approvalArgs = withPlanApprovalPreview(
             tool.toolCall.name,
@@ -894,7 +938,7 @@ export class StreamingToolExecutor {
                 message: `approval required for ${ctx.toolName} but no resolver is wired`,
               });
             },
-            dispatch: async () => {
+            dispatch: async (_sandbox, dispatchContext) => {
               if (tool.cancelBeforeDispatch) {
                 return buildTerminalToolResult({
                   toolCall: tool.toolCall,
@@ -920,6 +964,17 @@ export class StreamingToolExecutor {
                 sessionWithId.conversationId.length > 0
                   ? sessionWithId.conversationId
                   : null;
+              const dispatchArgs = dispatchContext.approvalResolved
+                ? withApprovedFilesystemRoot(tool.toolCall.name, effectiveArgs)
+                : effectiveArgs;
+              const dispatchCall: LLMToolCall = {
+                ...tool.toolCall,
+                // Re-stringify so the registry sees the (possibly)
+                // hook-mutated or approval-augmented args. JSON.stringify
+                // drops the function-valued injection — we re-attach it
+                // via the shim below.
+                arguments: JSON.stringify(dispatchArgs),
+              };
               return dispatchWithInjectedArgs(this.registry, dispatchCall, {
                 __onProgress: onProgress,
                 __abortSignal: this.abortSignal,

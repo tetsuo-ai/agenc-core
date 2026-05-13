@@ -215,6 +215,18 @@ function stringResult(value: unknown): string {
   return value === undefined || value === null ? "" : String(value);
 }
 
+function orphanResultText(value: unknown): string {
+  if (isStructuredContentBlocks(value)) {
+    return value.map((block) => block.text).join("\n");
+  }
+  return stringResult(value);
+}
+
+function isLineNumberedFileReadResult(value: unknown): boolean {
+  const text = orphanResultText(value).trimStart();
+  return /^\d+→/.test(text);
+}
+
 function metadataRecord(payload: Record<string, unknown>): Record<string, unknown> {
   const metadata = payload.metadata;
   return metadata && typeof metadata === "object"
@@ -467,16 +479,31 @@ function pushToolResult(
   callId: string,
   result: unknown,
   isError = false,
+  rawResult: unknown = result,
 ): void {
   if (!openTools.has(callId)) {
     settledToolCallIds.add(callId);
-    if (isPermissionDeniedToolResult(result)) {
+    if (isPermissionDeniedToolResult(rawResult) || isPermissionDeniedToolResult(result)) {
       out.push(makeSystemMessage(PERMISSION_DENIED_TOOL_RESULT_MESSAGE, "warning"));
+      return;
+    }
+    if (!isError && isLineNumberedFileReadResult(rawResult)) {
+      return;
+    }
+    if (isStructuredContentBlocks(rawResult)) {
+      out.push(
+        makeSystemMessage(
+          isError
+            ? `Tool failed before its start event was received (${callId}).`
+            : `Tool completed before its start event was received (${callId}).`,
+          isError ? "error" : "warning",
+        ),
+      );
       return;
     }
     out.push(
       makeSystemMessage(
-        `Recovered tool result without matching start (${callId}): ${stringResult(result)}`,
+        `Recovered tool result without matching start (${callId}): ${stringResult(rawResult)}`,
         isError ? "error" : "warning",
       ),
     );
@@ -485,6 +512,13 @@ function pushToolResult(
   openTools.delete(callId);
   settledToolCallIds.add(callId);
   out.push(makeToolResultMessage(callId, result, isError));
+}
+
+function streamedToolInput(entry: StreamingToolUse): unknown {
+  if (entry.unparsedToolInput.trim().length > 0) {
+    return safeJson(entry.unparsedToolInput);
+  }
+  return entry.contentBlock.input ?? {};
 }
 
 function formatAgentStatus(status: unknown): string {
@@ -1543,6 +1577,22 @@ export function adaptTranscriptEvents(
           typeof payload.isError === "boolean"
             ? payload.isError
             : typeof payload.exitCode === "number" && payload.exitCode !== 0;
+        if (!openTools.has(callId) && !settledToolCallIds.has(callId)) {
+          const streamedToolUse = streamingToolUses.find(
+            (entry) => entry.contentBlock.id === callId,
+          );
+          if (streamedToolUse !== undefined) {
+            pushToolUse(
+              out,
+              openTools,
+              toolNames,
+              callId,
+              streamedToolUse.contentBlock.name,
+              streamedToolInput(streamedToolUse),
+            );
+            runningToolNames.set(callId, streamedToolUse.contentBlock.name);
+          }
+        }
         const toolName =
           runningToolNames.get(callId) ??
           (event.type === "exec_command_end"
@@ -1551,7 +1601,15 @@ export function adaptTranscriptEvents(
               ? "MCP"
               : "tool");
         const result = formatStructuredToolResult(toolName, event.type, payload);
-        pushToolResult(out, openTools, settledToolCallIds, callId, result, isError);
+        pushToolResult(
+          out,
+          openTools,
+          settledToolCallIds,
+          callId,
+          result,
+          isError,
+          payload.result,
+        );
         runningToolNames.delete(callId);
         // Remove the matching streaming-tool-use element so the upstream
         // <Messages> consumer stops rendering a synthetic streaming cell
