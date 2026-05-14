@@ -4,7 +4,11 @@ import { getMcpConfigsByScope } from '../../../services/mcp/config.js';
 import type { ConfigScope } from '../../../services/mcp/types.js';
 import { describeMcpConfigFilePath, getScopeLabel } from '../../../services/mcp/utils.js';
 import type { ValidationError } from '../../../utils/settings/validation.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { Box, Link, Text } from '../../ink.js';
+export function getMcpParsingWarningTreePrefix(env: { readonly AGENC_TUI_GLYPHS?: string } = process.env): string {
+  return `${selectAgenCTuiGlyphs(env).treeLast} `;
+}
 function McpConfigErrorSection(t0) {
   const $ = _c(26);
   const {
@@ -113,11 +117,11 @@ function McpConfigErrorSection(t0) {
 }
 function _temp2(warning, i_0) {
   const serverName_0 = warning.mcpErrorMetadata?.serverName;
-  return <Box key={`warning-${i_0}`}><Text><Text dimColor={true}>└ </Text><Text color="warning">[Warning]</Text><Text dimColor={true}>{" "}{serverName_0 && `[${serverName_0}] `}{warning.path && warning.path !== "" ? `${warning.path}: ` : ""}{warning.message}</Text></Text></Box>;
+  return <Box key={`warning-${i_0}`}><Text><Text dimColor={true}>{getMcpParsingWarningTreePrefix()}</Text><Text color="warning">[Warning]</Text><Text dimColor={true}>{" "}{serverName_0 && `[${serverName_0}] `}{warning.path && warning.path !== "" ? `${warning.path}: ` : ""}{warning.message}</Text></Text></Box>;
 }
 function _temp(error, i) {
   const serverName = error.mcpErrorMetadata?.serverName;
-  return <Box key={`error-${i}`}><Text><Text dimColor={true}>└ </Text><Text color="error">[Error]</Text><Text dimColor={true}>{" "}{serverName && `[${serverName}] `}{error.path && error.path !== "" ? `${error.path}: ` : ""}{error.message}</Text></Text></Box>;
+  return <Box key={`error-${i}`}><Text><Text dimColor={true}>{getMcpParsingWarningTreePrefix()}</Text><Text color="error">[Error]</Text><Text dimColor={true}>{" "}{serverName && `[${serverName}] `}{error.path && error.path !== "" ? `${error.path}: ` : ""}{error.message}</Text></Text></Box>;
 }
 export function McpParsingWarnings() {
   const $ = _c(6);
