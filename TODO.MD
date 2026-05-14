@@ -708,3 +708,774 @@ Remaining partitions:
 | 638 | Main-screen offscreen scrollback recovery | If main-screen virtual scrollback becomes unreachable or frame growth changes the cursor position too much, the writer should reset instead of diffing against an invalid virtual screen. | `LogUpdate` detects offscreen scrollback/full reset cases, tracks viewport state, and emits reset sequences when the diff cannot be reached. | OK | `runtime/src/tui/ink/log-update.ts:375`, `runtime/src/tui/ink/log-update.ts:435`, `runtime/src/tui/ink/log-update.ts:438`, `runtime/src/tui/ink/log-update.ts:489`, `runtime/src/tui/ink/log-update.ts:493`, `runtime/src/tui/ink/log-update.ts:576`, `runtime/src/tui/ink/log-update.ts:736`, `runtime/src/tui/ink/log-update.ts:745` | Main-screen recovery favors correctness over minimal diff. | None |
 | 639 | Wide character at terminal edge | A wide character that would cross the right terminal edge should not corrupt the next row or leave broken half-cells. | `writeCellWithStyleStr` and output cell placement skip or pad wide edge cases. | OK | `runtime/src/tui/ink/log-update.ts:725`, `runtime/src/tui/ink/log-update.ts:777`, `runtime/src/tui/ink/output.ts:759`, `runtime/src/tui/ink/output.ts:781` | Edge-cell handling exists in both output buffer and terminal write paths. | None |
 | 640 | Removed absolute descendants | When an absolute child is removed, stale painted content from that child should be cleared on the next frame. | The renderer skips previous-screen reuse when an absolute descendant was removed and `renderNodeToOutput` tracks pending clears for removed children. | OK | `runtime/src/tui/ink/renderer.ts:118`, `runtime/src/tui/ink/renderer.ts:135`, `runtime/src/tui/ink/render-node-to-output.ts:530`, `runtime/src/tui/ink/render-node-to-output.ts:545` | Removed overlays are covered by full-damage and pending-clear paths. | None |
+
+## Consolidated Active Defect Index
+
+Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
+
+Totals: 223 active rows: 141 BUG, 9 MISSING, 73 LEGACY.
+
+### P1
+
+#### `runtime/src/tui/components/App.tsx`
+
+- #16 BUG: Model streams assistant text with no tool running. Citations: `runtime/src/tui/components/App.tsx:2123`, `runtime/src/tui/components/App.tsx:2126`
+- #17 BUG: Thinking block streaming. Citations: `runtime/src/tui/components/App.tsx:2142`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2126`
+- #24 BUG: Permission and elicitation active simultaneously. Citations: `runtime/src/tui/components/App.tsx:2194`, `runtime/src/tui/components/App.tsx:2195`, `runtime/src/tui/components/App.tsx:2239`
+- #270 BUG: Bottom spinner while assistant text is streaming. Citations: `runtime/src/tui/components/App.tsx:2120`, `runtime/src/tui/components/App.tsx:2123`, `runtime/src/tui/components/App.tsx:2124`, `runtime/src/tui/components/App.tsx:2126`, `runtime/src/tui/components/App.tsx:2131`, `runtime/src/tui/components/App.tsx:2147`, `runtime/src/tui/components/App.tsx:2150`
+- #271 BUG: Bottom spinner while thinking and text coexist. Citations: `runtime/src/tui/components/App.tsx:2124`, `runtime/src/tui/components/App.tsx:2131`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2150`, `runtime/src/tui/components/spinner/Spinner.tsx:153`, `runtime/src/tui/components/spinner/Spinner.tsx:167`
+
+#### `runtime/src/tui/components/FullscreenLayout.tsx`
+
+- #56 BUG: ASCII terminal mode. Citations: `runtime/src/tui/components/FullscreenLayout.tsx:442`, `runtime/src/tui/components/FullscreenLayout.tsx:482`, `runtime/src/tui/components/FullscreenLayout.tsx:493`, `runtime/src/tui/components/App.tsx:1243`
+- #58 LEGACY: Legacy theme token in live chrome. Citations: `runtime/src/tui/components/FullscreenLayout.tsx:480`, `runtime/src/tui/components/FullscreenLayout.tsx:505`
+- #133 BUG: Suggestion overlay background fill. Citations: `runtime/src/tui/components/FullscreenLayout.tsx:658`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:226`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:239`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:243`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:247`
+
+#### `runtime/src/tui/components/PromptInput/PromptInput.tsx`
+
+- #144 BUG: Prompt suggestion render side effects. Citations: `runtime/src/tui/components/PromptInput/PromptInput.tsx:1516`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1522`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1529`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1531`
+
+#### `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
+
+- #139 BUG: Suggestion unicode/ascii fallback. Citations: `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:30`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:58`, `runtime/src/tui/components/PromptInput/permissionModeChrome.ts:18`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2634`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2648`
+- #141 LEGACY: Legacy theme token in suggestion renderer. Citations: `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:87`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:247`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:252`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:260`
+
+#### `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx`
+
+- #117 BUG: Help menu cycle-mode text. Citations: `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:210`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1827`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:395`
+
+#### `runtime/src/tui/components/messages/AssistantTextMessage.tsx`
+
+- #192 MISSING: Rate-limit assistant message. Citations: `runtime/src/tui/components/messages/AssistantTextMessage.tsx:19`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:24`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:70`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:73`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:80`
+- #193 LEGACY: Donor-purge rate-limit stub. Citations: `runtime/src/tui/components/messages/AssistantTextMessage.tsx:19`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:20`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:21`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:24`
+
+#### `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx`
+
+- #211 BUG: Classifier-checking activity row. Citations: `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:55`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:58`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:59`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:240`
+
+#### `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx`
+
+- #413 BUG: Preview question tiny-width crash. Citations: `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:232`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:238`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:99`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:125`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:126`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:130`
+
+#### `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx`
+
+- #387 BUG: File write render blocking. Citations: `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx:56`, `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx:59`, `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx:62`, `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx:131`
+
+#### `runtime/src/tui/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.tsx`
+
+- #400 BUG: Monitor permission analytics call. Citations: `runtime/src/tui/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.tsx:43`, `runtime/src/tui/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.tsx:57`, `runtime/src/tui/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.tsx:84`, `runtime/src/tui/components/permissions/MonitorPermissionRequest/MonitorPermissionRequest.tsx:102`, `runtime/src/tui/components/permissions/utils.ts:5`, `runtime/src/tui/components/permissions/utils.ts:7`, `runtime/src/tui/components/permissions/utils.ts:11`
+
+#### `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx`
+
+- #394 BUG: WebFetch invalid URL rendering. Citations: `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:41`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:48`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:54`
+
+#### `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx`
+
+- #294 MISSING: BackgroundTasksDialog detail and action surface. Citations: `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:11`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:12`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:63`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:68`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:88`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:93`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:104`
+
+#### `runtime/src/tui/dialogLaunchers.tsx`
+
+- #348 MISSING: Snapshot update dialog launcher. Citations: `runtime/src/tui/dialogLaunchers.tsx:18`, `runtime/src/tui/dialogLaunchers.tsx:21`, `runtime/src/tui/dialogLaunchers.tsx:27`, `runtime/src/tui/dialogLaunchers.tsx:29`, `runtime/src/tui/components/agents/SnapshotUpdateDialog.tsx:1`, `runtime/src/tui/components/agents/SnapshotUpdateDialog.tsx:3`
+
+#### `runtime/src/tui/ink/components/App.tsx`
+
+- #597 MISSING: User-visible slow-input backpressure. Citations: `runtime/src/tui/ink/components/App.tsx:327`, `runtime/src/tui/ink/components/App.tsx:350`, `runtime/src/tui/ink/log-update.ts:615`, `runtime/src/tui/ink/log-update.ts:624`, `runtime/src/tui/hooks/useVirtualScroll.ts:489`, `runtime/src/tui/hooks/useVirtualScroll.ts:528`
+
+#### `runtime/src/tui/session-transcript.ts`
+
+- #99 BUG: Out-of-order transcript events generally. Citations: `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1996`
+
+#### `runtime/src/utils/messages.ts`
+
+- #269 BUG: Tool-input spinner mode from daemon transcript. Citations: `runtime/src/utils/messages.ts:3027`, `runtime/src/utils/messages.ts:3028`, `runtime/src/utils/messages.ts:3052`, `runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx:243`, `runtime/src/tui/session-transcript.ts:1511`, `runtime/src/tui/session-transcript.ts:1952`, `runtime/src/tui/components/App.tsx:2142`, `runtime/src/tui/components/App.tsx:2143`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2147`
+
+
+### P2
+
+#### `runtime/src/tasks/stopTask.ts`
+
+- #321 BUG: Stop-task helper versus detail affordances. Citations: `runtime/src/tasks/stopTask.ts:56`, `runtime/src/tasks/stopTask.ts:60`, `runtime/src/tasks/stopTask.ts:73`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:138`, `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx:74`, `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:75`
+
+#### `runtime/src/tui/components/App.tsx`
+
+- #100 MISSING: Ledger updates and token/cost ledger rendering. Citations: `runtime/src/tui/components/App.tsx:1317`, `runtime/src/tui/components/App.tsx:1918`
+
+#### `runtime/src/tui/components/ApproveApiKey.tsx`
+
+- #519 BUG: API key approval provider branding. Citations: `runtime/src/tui/components/ApproveApiKey.tsx:62`, `runtime/src/tui/components/ApproveApiKey.tsx:69`, `runtime/src/tui/components/ApproveApiKey.tsx:112`
+
+#### `runtime/src/tui/components/ConsoleOAuthFlow.tsx`
+
+- #521 BUG: Console OAuth manual paste width. Citations: `runtime/src/tui/components/ConsoleOAuthFlow.tsx:66`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:109`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:498`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:504`
+- #523 LEGACY: Console OAuth migration and donor residue. Citations: `runtime/src/tui/components/ConsoleOAuthFlow.tsx:1`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:2`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:77`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:114`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:116`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:195`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:244`
+
+#### `runtime/src/tui/components/CustomSelect/select-input-option.tsx`
+
+- #449 BUG: Custom select input width. Citations: `runtime/src/tui/components/CustomSelect/select-input-option.tsx:378`, `runtime/src/tui/components/CustomSelect/select-input-option.tsx:382`, `runtime/src/tui/components/CustomSelect/select-input-option.tsx:390`, `runtime/src/tui/components/CustomSelect/select-input-option.tsx:394`
+
+#### `runtime/src/tui/components/FullscreenLayout.tsx`
+
+- #54 BUG: Tiny terminal height. Citations: `runtime/src/tui/components/FullscreenLayout.tsx:26`, `runtime/src/tui/components/FullscreenLayout.tsx:31`, `runtime/src/tui/components/FullscreenLayout.tsx:429`
+- #57 MISSING: No-color terminal mode. Citations: `runtime/src/tui/components/FullscreenLayout.tsx:480`, `runtime/src/tui/components/FullscreenLayout.tsx:482`, `runtime/src/tui/components/FullscreenLayout.tsx:505`
+- #59 LEGACY: Moved-source/upstream markers in live layout. Citations: `runtime/src/tui/components/FullscreenLayout.tsx:1`, `runtime/src/tui/components/FullscreenLayout.tsx:2`, `runtime/src/tui/components/FullscreenLayout.tsx:14`
+
+#### `runtime/src/tui/components/GlobalSearchDialog.tsx`
+
+- #463 BUG: Global search tiny terminal dimensions. Citations: `runtime/src/tui/components/GlobalSearchDialog.tsx:52`, `runtime/src/tui/components/GlobalSearchDialog.tsx:156`, `runtime/src/tui/components/GlobalSearchDialog.tsx:157`, `runtime/src/tui/components/GlobalSearchDialog.tsx:158`, `runtime/src/tui/components/GlobalSearchDialog.tsx:159`
+
+#### `runtime/src/tui/components/HelpV2/HelpV2.tsx`
+
+- #483 BUG: Help tiny-height behavior. Citations: `runtime/src/tui/components/HelpV2/HelpV2.tsx:29`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:32`, `runtime/src/tui/components/HelpV2/Commands.tsx:31`, `runtime/src/tui/components/HelpV2/Commands.tsx:32`
+
+#### `runtime/src/tui/components/LanguagePicker.tsx`
+
+- #472 BUG: Language picker input width. Citations: `runtime/src/tui/components/LanguagePicker.tsx:53`, `runtime/src/tui/components/LanguagePicker.tsx:61`, `runtime/src/tui/components/LanguagePicker.tsx:71`
+
+#### `runtime/src/tui/components/LogSelector.tsx`
+
+- #466 BUG: Log selector empty state. Citations: `runtime/src/tui/components/LogSelector.tsx:1226`, `runtime/src/tui/components/LogSelector.tsx:1227`
+- #468 LEGACY: Log selector deep search code path. Citations: `runtime/src/tui/components/LogSelector.tsx:174`, `runtime/src/tui/components/LogSelector.tsx:448`, `runtime/src/tui/components/LogSelector.tsx:450`, `runtime/src/tui/components/LogSelector.tsx:468`, `runtime/src/tui/components/LogSelector.tsx:478`
+- #469 LEGACY: Log selector agentic search code path. Citations: `runtime/src/tui/components/LogSelector.tsx:194`, `runtime/src/tui/components/LogSelector.tsx:792`, `runtime/src/tui/components/LogSelector.tsx:794`, `runtime/src/tui/components/LogSelector.tsx:1058`, `runtime/src/tui/components/LogSelector.tsx:1348`
+
+#### `runtime/src/tui/components/MCPServerApprovalDialog.tsx`
+
+- #486 LEGACY: MCP approval/import migration residue. Citations: `runtime/src/tui/components/MCPServerApprovalDialog.tsx:1`, `runtime/src/tui/components/MCPServerApprovalDialog.tsx:2`, `runtime/src/tui/components/MCPServerApprovalDialog.tsx:6`, `runtime/src/tui/components/MCPServerDesktopImportDialog.tsx:1`, `runtime/src/tui/components/MCPServerDesktopImportDialog.tsx:2`, `runtime/src/tui/components/MCPServerMultiselectDialog.tsx:1`, `runtime/src/tui/components/MCPServerMultiselectDialog.tsx:2`
+
+#### `runtime/src/tui/components/Message.tsx`
+
+- #223 BUG: Tool-result width on narrow terminals. Citations: `runtime/src/tui/components/Message.tsx:373`, `runtime/src/tui/components/Message.tsx:410`, `runtime/src/tui/components/Message.tsx:413`
+- #231 LEGACY: System and message renderer legacy markers. Citations: `runtime/src/tui/components/Message.tsx:1`, `runtime/src/tui/components/Message.tsx:2`, `runtime/src/tui/components/MessageResponse.tsx:1`, `runtime/src/tui/components/MessageResponse.tsx:2`, `runtime/src/tui/components/messages/UserTextMessage.tsx:1`, `runtime/src/tui/components/messages/AssistantThinkingMessage.tsx:1`, `runtime/src/tui/components/messages/AssistantThinkingMessage.tsx:2`, `runtime/src/tui/components/ToolUseLoader.tsx:1`, `runtime/src/tui/components/ToolUseLoader.tsx:2`, `runtime/src/tui/components/VirtualMessageList.tsx:1`, `runtime/src/tui/components/VirtualMessageList.tsx:2`, `runtime/src/tui/components/markdown/Markdown.tsx:1`, `runtime/src/tui/components/markdown/Markdown.tsx:2`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:1`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:2`, `runtime/src/tui/components/markdown/HighlightedCode.tsx:1`, `runtime/src/tui/components/markdown/HighlightedCode.tsx:2`
+
+#### `runtime/src/tui/components/MessageResponse.tsx`
+
+- #196 BUG: MessageResponse ASCII fallback. Citations: `runtime/src/tui/components/MessageResponse.tsx:24`, `runtime/src/tui/components/MessageResponse.tsx:63`
+
+#### `runtime/src/tui/components/MessageSelector.tsx`
+
+- #457 BUG: Message selector tiny-width truncation. Citations: `runtime/src/tui/components/MessageSelector.tsx:591`, `runtime/src/tui/components/MessageSelector.tsx:667`
+- #458 LEGACY: Message selector migration and donor residue. Citations: `runtime/src/tui/components/MessageSelector.tsx:1`, `runtime/src/tui/components/MessageSelector.tsx:2`, `runtime/src/tui/components/MessageSelector.tsx:4`, `runtime/src/tui/components/MessageSelector.tsx:140`, `runtime/src/tui/components/MessageSelector.tsx:160`, `runtime/src/tui/components/MessageSelector.tsx:180`, `runtime/src/tui/components/MessageSelector.tsx:256`
+
+#### `runtime/src/tui/components/Messages.tsx`
+
+- #169 BUG: Streaming thinking timeout after stop. Citations: `runtime/src/tui/components/Messages.tsx:270`, `runtime/src/tui/components/Messages.tsx:271`, `runtime/src/tui/components/Messages.tsx:274`, `runtime/src/tui/components/Messages.tsx:275`, `runtime/src/tui/components/Messages.tsx:278`
+
+#### `runtime/src/tui/components/Onboarding.tsx`
+
+- #517 BUG: Onboarding width and tiny terminal behavior. Citations: `runtime/src/tui/components/Onboarding.tsx:67`, `runtime/src/tui/components/Onboarding.tsx:150`
+
+#### `runtime/src/tui/components/PasteConfirmDialog.tsx`
+
+- #531 BUG: Paste confirmation overlay focus. Citations: `runtime/src/tui/components/PasteConfirmDialog.tsx:11`, `runtime/src/tui/components/PasteConfirmDialog.tsx:26`, `runtime/src/tui/components/PasteConfirmDialog.tsx:27`, `runtime/src/tui/components/PasteConfirmDialog.tsx:37`
+
+#### `runtime/src/tui/components/PromptInput/PromptInput.tsx`
+
+- #152 BUG: Prompt tiny-height behavior. Citations: `runtime/src/tui/components/PromptInput/PromptInput.tsx:475`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:477`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2377`, `runtime/src/tui/components/FullscreenLayout.tsx:427`, `runtime/src/tui/components/FullscreenLayout.tsx:429`
+
+#### `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
+
+- #135 BUG: Suggestion list title accuracy. Citations: `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:18`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:231`, `runtime/src/tui/hooks/useTypeahead.tsx:285`, `runtime/src/tui/hooks/useTypeahead.tsx:1360`
+- #136 BUG: Suggestion popup tiny-width behavior. Citations: `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:198`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:226`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:242`, `runtime/src/tui/components/FullscreenLayout.tsx:658`
+
+#### `runtime/src/tui/components/QuickOpenDialog.tsx`
+
+- #460 BUG: Quick open tiny terminal dimensions. Citations: `runtime/src/tui/components/QuickOpenDialog.tsx:41`, `runtime/src/tui/components/QuickOpenDialog.tsx:132`, `runtime/src/tui/components/QuickOpenDialog.tsx:133`
+
+#### `runtime/src/tui/components/SessionBackgroundHint.tsx`
+
+- #354 LEGACY: Session background hint disabled branch. Citations: `runtime/src/tui/components/SessionBackgroundHint.tsx:52`, `runtime/src/tui/components/SessionBackgroundHint.tsx:53`, `runtime/src/tui/components/SessionBackgroundHint.tsx:68`, `runtime/src/tui/components/SessionBackgroundHint.tsx:69`, `runtime/src/tui/components/SessionBackgroundHint.tsx:74`, `runtime/src/tui/components/SessionBackgroundHint.tsx:75`, `runtime/src/tui/components/SessionBackgroundHint.tsx:90`, `runtime/src/tui/components/SessionBackgroundHint.tsx:95`
+
+#### `runtime/src/tui/components/Settings/Settings.tsx`
+
+- #474 BUG: Settings Config loading state. Citations: `runtime/src/tui/components/Settings/Settings.tsx:82`, `runtime/src/tui/components/Settings/Config.tsx:206`
+- #475 BUG: Settings layout in modal/tiny height. Citations: `runtime/src/tui/components/Settings/Settings.tsx:36`, `runtime/src/tui/components/Settings/Settings.tsx:38`, `runtime/src/tui/components/Settings/Config.tsx:117`, `runtime/src/tui/components/Settings/Config.tsx:125`
+
+#### `runtime/src/tui/components/SystemAPIErrorMessage.tsx`
+
+- #207 BUG: System API error ASCII fallback. Citations: `runtime/src/tui/components/SystemAPIErrorMessage.tsx:14`, `runtime/src/tui/components/SystemAPIErrorMessage.tsx:21`
+
+#### `runtime/src/tui/components/TagTabs.tsx`
+
+- #453 BUG: Tag tabs narrow/ascii behavior. Citations: `runtime/src/tui/components/TagTabs.tsx:10`, `runtime/src/tui/components/TagTabs.tsx:11`, `runtime/src/tui/components/TagTabs.tsx:17`, `runtime/src/tui/components/TagTabs.tsx:18`, `runtime/src/tui/components/TagTabs.tsx:71`
+
+#### `runtime/src/tui/components/TaskListV2.tsx`
+
+- #301 BUG: TodoV2 tiny-width rendering. Citations: `runtime/src/tui/components/TaskListV2.tsx:282`, `runtime/src/tui/components/TaskListV2.tsx:285`, `runtime/src/tui/components/TaskListV2.tsx:293`, `runtime/src/tui/components/TaskListV2.tsx:296`
+- #303 LEGACY: TodoV2 migration residue. Citations: `runtime/src/tui/components/TaskListV2.tsx:1`, `runtime/src/tui/components/TaskListV2.tsx:2`, `runtime/src/tui/components/TaskListV2.tsx:233`, `runtime/src/tui/components/TaskListV2.tsx:236`
+
+#### `runtime/src/tui/components/TextInput.tsx`
+
+- #155 BUG: Voice cursor ASCII fallback. Citations: `runtime/src/tui/components/TextInput.tsx:48`, `runtime/src/tui/components/TextInput.tsx:49`, `runtime/src/tui/components/TextInput.tsx:121`
+
+#### `runtime/src/tui/components/TrustDialog/TrustDialog.tsx`
+
+- #525 BUG: Trust dialog accepted-state transition. Citations: `runtime/src/tui/components/TrustDialog/TrustDialog.tsx:198`, `runtime/src/tui/components/TrustDialog/TrustDialog.tsx:199`, `runtime/src/tui/components/TrustDialog/TrustDialog.tsx:200`, `runtime/src/tui/components/TrustDialog/TrustDialog.tsx:201`
+
+#### `runtime/src/tui/components/WorktreeExitDialog.tsx`
+
+- #535 BUG: Worktree exit loading state. Citations: `runtime/src/tui/components/WorktreeExitDialog.tsx:33`, `runtime/src/tui/components/WorktreeExitDialog.tsx:38`, `runtime/src/tui/components/WorktreeExitDialog.tsx:41`, `runtime/src/tui/components/WorktreeExitDialog.tsx:52`, `runtime/src/tui/components/WorktreeExitDialog.tsx:94`, `runtime/src/tui/components/WorktreeExitDialog.tsx:95`
+
+#### `runtime/src/tui/components/agents/AgentDetail.tsx`
+
+- #335 BUG: Agent detail long-field width. Citations: `runtime/src/tui/components/agents/AgentDetail.tsx:78`, `runtime/src/tui/components/agents/AgentDetail.tsx:87`, `runtime/src/tui/components/agents/AgentDetail.tsx:102`, `runtime/src/tui/components/agents/AgentDetail.tsx:119`, `runtime/src/tui/components/agents/AgentDetail.tsx:168`, `runtime/src/tui/components/agents/AgentDetail.tsx:176`, `runtime/src/tui/components/agents/AgentDetail.tsx:193`
+
+#### `runtime/src/tui/components/agents/AgentsList.tsx`
+
+- #332 LEGACY: AgentsList legacy subagent wording. Citations: `runtime/src/tui/components/agents/AgentsList.tsx:245`, `runtime/src/tui/components/agents/AgentsList.tsx:246`
+
+#### `runtime/src/tui/components/agents/AgentsMenu.tsx`
+
+- #337 BUG: Agent delete failure visibility. Citations: `runtime/src/tui/components/agents/AgentsMenu.tsx:165`, `runtime/src/tui/components/agents/AgentsMenu.tsx:168`, `runtime/src/tui/components/agents/AgentsMenu.tsx:180`, `runtime/src/tui/components/agents/AgentsMenu.tsx:185`, `runtime/src/tui/components/agents/AgentsMenu.tsx:187`, `runtime/src/tui/components/agents/AgentsMenu.tsx:620`, `runtime/src/tui/components/agents/AgentsMenu.tsx:657`
+
+#### `runtime/src/tui/components/agents/ToolSelector.tsx`
+
+- #346 BUG: ToolSelector large-list and tiny-height behavior. Citations: `runtime/src/tui/components/agents/ToolSelector.tsx:378`, `runtime/src/tui/components/agents/ToolSelector.tsx:384`, `runtime/src/tui/components/agents/ToolSelector.tsx:485`, `runtime/src/tui/components/agents/ToolSelector.tsx:500`, `runtime/src/tui/components/agents/ToolSelector.tsx:504`, `runtime/src/tui/components/agents/ToolSelector.tsx:523`
+
+#### `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/GenerateStep.tsx`
+
+- #344 LEGACY: Agent creation donor analytics and provider residue. Citations: `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/GenerateStep.tsx:1`, `runtime/src/tui/components/agents/generateAgent.ts:187`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStepWrapper.tsx:51`
+
+#### `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/TypeStep.tsx`
+
+- #340 BUG: Agent creation fixed-width input fields. Citations: `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/TypeStep.tsx:75`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/TypeStep.tsx:76`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/PromptStep.tsx:100`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/PromptStep.tsx:101`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/DescriptionStep.tsx:95`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/DescriptionStep.tsx:96`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/GenerateStep.tsx:139`
+
+#### `runtime/src/tui/components/design-system/Dialog.tsx`
+
+- #440 BUG: Shared dialog tiny-height behavior. Citations: `runtime/src/tui/components/design-system/Dialog.tsx:99`, `runtime/src/tui/components/design-system/Dialog.tsx:127`, `runtime/src/tui/components/design-system/Dialog.tsx:132`
+
+#### `runtime/src/tui/components/design-system/FuzzyPicker.tsx`
+
+- #443 BUG: Fuzzy picker tiny-height behavior. Citations: `runtime/src/tui/components/design-system/FuzzyPicker.tsx:65`, `runtime/src/tui/components/design-system/FuzzyPicker.tsx:68`, `runtime/src/tui/components/design-system/FuzzyPicker.tsx:69`, `runtime/src/tui/components/design-system/FuzzyPicker.tsx:94`, `runtime/src/tui/components/design-system/FuzzyPicker.tsx:102`
+
+#### `runtime/src/tui/components/diff/DiffDetailView.tsx`
+
+- #508 BUG: Diff detail scroll/height behavior. Citations: `runtime/src/tui/components/diff/DiffDetailView.tsx:21`, `runtime/src/tui/components/diff/DiffDetailView.tsx:23`, `runtime/src/tui/components/diff/DiffDetailView.tsx:243`, `runtime/src/tui/components/diff/DiffDetailView.tsx:271`
+
+#### `runtime/src/tui/components/diff/DiffFileList.tsx`
+
+- #507 BUG: Diff file list narrow width. Citations: `runtime/src/tui/components/diff/DiffFileList.tsx:20`, `runtime/src/tui/components/diff/DiffFileList.tsx:85`
+
+#### `runtime/src/tui/components/markdown/MarkdownTable.tsx`
+
+- #229 BUG: Markdown table ASCII fallback. Citations: `runtime/src/tui/components/markdown/MarkdownTable.tsx:211`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:220`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:230`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:231`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:232`, `runtime/src/tui/components/markdown/MarkdownTable.tsx:247`
+
+#### `runtime/src/tui/components/mcp/ElicitationDialog.tsx`
+
+- #500 BUG: MCP elicitation expanded accordion height. Citations: `runtime/src/tui/components/mcp/ElicitationDialog.tsx:758`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:761`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:762`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:763`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:767`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:769`
+- #501 BUG: MCP elicitation text input width. Citations: `runtime/src/tui/components/mcp/ElicitationDialog.tsx:260`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:927`
+
+#### `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx`
+
+- #489 BUG: MCP remote manual callback width. Citations: `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:43`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:44`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:377`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:380`
+
+#### `runtime/src/tui/components/messages/AssistantTextMessage.tsx`
+
+- #194 LEGACY: Donor model naming in assistant errors. Citations: `runtime/src/tui/components/messages/AssistantTextMessage.tsx:174`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:178`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:185`
+
+#### `runtime/src/tui/components/messages/AssistantThinkingMessage.tsx`
+
+- #198 BUG: Thinking glyph ASCII fallback. Citations: `runtime/src/tui/components/messages/AssistantThinkingMessage.tsx:46`, `runtime/src/tui/components/messages/AssistantThinkingMessage.tsx:64`, `runtime/src/tui/components/messages/AssistantRedactedThinkingMessage.tsx:16`
+
+#### `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx`
+
+- #209 BUG: Assistant tool-use missing tool recovery. Citations: `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:63`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:67`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:68`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:90`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:91`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:92`
+- #210 BUG: Assistant tool-use invalid input recovery. Citations: `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:72`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:73`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:162`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:167`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:179`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:180`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:305`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:307`
+
+#### `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx`
+
+- #219 BUG: Collapsed read/search ASCII fallback. Citations: `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx:237`, `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx:242`, `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx:458`, `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx:467`, `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx:477`
+
+#### `runtime/src/tui/components/messages/SystemTextMessage.tsx`
+
+- #201 BUG: Stop-hook summary success rendering. Citations: `runtime/src/tui/components/messages/SystemTextMessage.tsx:295`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:296`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:297`
+- #203 BUG: Generic system tiny-width rendering. Citations: `runtime/src/tui/components/messages/SystemTextMessage.tsx:453`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:468`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:489`
+- #204 BUG: Bridge status width. Citations: `runtime/src/tui/components/messages/SystemTextMessage.tsx:827`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:867`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:876`
+- #205 BUG: Collab-agent tiny-width rendering. Citations: `runtime/src/tui/components/messages/SystemTextMessage.tsx:510`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:518`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:530`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:538`
+
+#### `runtime/src/tui/components/messages/UserPromptMessage.tsx`
+
+- #184 LEGACY: User prompt legacy feature naming. Citations: `runtime/src/tui/components/messages/UserPromptMessage.tsx:61`
+
+#### `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx`
+
+- #222 BUG: Tool-result success fallback with missing or invalid output. Citations: `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx:53`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx:61`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx:79`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx:86`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx:87`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx:105`
+
+#### `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx`
+
+- #410 BUG: AskUserQuestion malformed input. Citations: `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx:86`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx:96`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx:612`
+
+#### `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx`
+
+- #414 BUG: Preview question notes input width. Citations: `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:283`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:288`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:292`
+
+#### `runtime/src/tui/components/permissions/BashPermissionRequest/bashToolUseOptions.tsx`
+
+- #380 LEGACY: Bash classifier-reviewed option. Citations: `runtime/src/tui/components/permissions/BashPermissionRequest/bashToolUseOptions.tsx:9`, `runtime/src/tui/components/permissions/BashPermissionRequest/bashToolUseOptions.tsx:114`, `runtime/src/tui/components/permissions/BashPermissionRequest/bashToolUseOptions.tsx:115`, `runtime/src/tui/components/permissions/BashPermissionRequest/bashToolUseOptions.tsx:116`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:364`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:379`
+
+#### `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx`
+
+- #426 BUG: Computer use app allowlist interactivity. Citations: `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:224`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:251`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:283`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:290`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:345`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:386`
+- #428 LEGACY: Computer use donor dependency residue. Citations: `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:1`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:2`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:4`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:5`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:6`
+
+#### `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx`
+
+- #407 LEGACY: Ultraplan exit option. Citations: `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:46`, `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:51`, `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:290`, `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:299`, `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:306`, `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:740`, `runtime/src/tui/components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx:742`
+
+#### `runtime/src/tui/components/permissions/FilePermissionDialog/useFilePermissionDialog.ts`
+
+- #386 BUG: File permission callback mutation. Citations: `runtime/src/tui/components/permissions/FilePermissionDialog/useFilePermissionDialog.ts:162`, `runtime/src/tui/components/permissions/FilePermissionDialog/useFilePermissionDialog.ts:164`, `runtime/src/tui/components/permissions/FilePermissionDialog/useFilePermissionDialog.ts:169`, `runtime/src/tui/components/permissions/FilePermissionDialog/useFilePermissionDialog.ts:181`
+
+#### `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWriteToolDiff.tsx`
+
+- #388 BUG: File write tiny-width diff. Citations: `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWriteToolDiff.tsx:24`, `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWriteToolDiff.tsx:26`, `runtime/src/tui/components/permissions/FileWritePermissionRequest/FileWriteToolDiff.tsx:65`
+
+#### `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx`
+
+- #390 BUG: Notebook input parse failure. Citations: `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx:156`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx:157`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx:159`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx:160`
+- #391 BUG: Notebook permission width. Citations: `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx:121`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx:124`
+
+#### `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx`
+
+- #392 BUG: Notebook loading and read-error display. Citations: `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx:37`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx:40`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx:48`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx:49`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx:58`, `runtime/src/tui/components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx:62`
+
+#### `runtime/src/tui/components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx`
+
+- #382 BUG: Sed edit loading state. Citations: `runtime/src/tui/components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx:41`, `runtime/src/tui/components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx:51`, `runtime/src/tui/components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx:60`
+
+#### `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx`
+
+- #397 BUG: Skill missing input display. Citations: `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:304`, `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:350`, `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:362`, `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:370`, `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:371`
+
+#### `runtime/src/tui/components/permissions/rules/AddWorkspaceDirectory.tsx`
+
+- #434 BUG: Add workspace directory input width. Citations: `runtime/src/tui/components/permissions/rules/AddWorkspaceDirectory.tsx:99`, `runtime/src/tui/components/permissions/rules/AddWorkspaceDirectory.tsx:101`
+
+#### `runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx`
+
+- #432 BUG: Permission rule input tiny width. Citations: `runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx:39`, `runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx:42`, `runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx:99`, `runtime/src/tui/components/permissions/rules/PermissionRuleInput.tsx:100`
+
+#### `runtime/src/tui/components/permissions/rules/RecentDenialsTab.tsx`
+
+- #437 BUG: Recent denials live updates. Citations: `runtime/src/tui/components/permissions/rules/RecentDenialsTab.tsx:45`, `runtime/src/tui/components/permissions/rules/RecentDenialsTab.tsx:204`, `runtime/src/tui/components/permissions/rules/RecentDenialsTab.tsx:205`
+
+#### `runtime/src/tui/components/spinner/Spinner.tsx`
+
+- #272 BUG: Long spinner verb and task subject width. Citations: `runtime/src/tui/components/spinner/Spinner.tsx:185`, `runtime/src/tui/components/spinner/Spinner.tsx:192`, `runtime/src/tui/components/spinner/Spinner.tsx:194`, `runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx:178`, `runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx:183`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:218`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:284`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:302`
+- #277 BUG: Brief spinner and brief idle narrow-width layout. Citations: `runtime/src/tui/components/spinner/Spinner.tsx:403`, `runtime/src/tui/components/spinner/Spinner.tsx:414`, `runtime/src/tui/components/spinner/Spinner.tsx:415`, `runtime/src/tui/components/spinner/Spinner.tsx:431`, `runtime/src/tui/components/spinner/Spinner.tsx:484`, `runtime/src/tui/components/spinner/Spinner.tsx:495`, `runtime/src/tui/components/spinner/Spinner.tsx:506`
+
+#### `runtime/src/tui/components/spinner/SpinnerGlyph.tsx`
+
+- #280 LEGACY: Spinner moved-source markers. Citations: `runtime/src/tui/components/spinner/SpinnerGlyph.tsx:1`, `runtime/src/tui/components/spinner/SpinnerGlyph.tsx:2`, `runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx:1`, `runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx:2`, `runtime/src/tui/components/spinner/TeammateSpinnerTree.tsx:1`, `runtime/src/tui/components/spinner/TeammateSpinnerTree.tsx:2`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:1`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:2`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:1`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:2`, `runtime/src/tui/components/spinner/ShimmerChar.tsx:1`, `runtime/src/tui/components/spinner/ShimmerChar.tsx:2`
+
+#### `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx`
+
+- #275 BUG: Teammate row tiny-width layout. Citations: `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:143`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:146`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:149`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:158`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:159`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:166`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:169`
+- #276 BUG: Teammate preview width. Citations: `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:34`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:58`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:65`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:228`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:230`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:231`
+
+#### `runtime/src/tui/components/spinner/TeammateSpinnerTree.tsx`
+
+- #274 BUG: Spinner-tree ASCII fallback. Citations: `runtime/src/tui/components/spinner/TeammateSpinnerTree.tsx:71`, `runtime/src/tui/components/spinner/TeammateSpinnerTree.tsx:232`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:85`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:203`, `runtime/src/tui/components/AgentProgressLine.tsx:41`, `runtime/src/tui/components/AgentProgressLine.tsx:116`
+
+#### `runtime/src/tui/components/spinner/agentActivity.ts`
+
+- #278 BUG: Pending or starting local-agent cancellation affordance. Citations: `runtime/src/tui/components/spinner/agentActivity.ts:24`, `runtime/src/tui/components/spinner/agentActivity.ts:25`, `runtime/src/tui/components/spinner/agentActivity.ts:55`, `runtime/src/tui/components/spinner/agentActivity.ts:57`, `runtime/src/tui/hooks/useCancelRequest.ts:88`, `runtime/src/tui/hooks/useCancelRequest.ts:90`, `runtime/src/tui/hooks/useCancelRequest.ts:198`, `runtime/src/tui/hooks/useCancelRequest.ts:199`, `runtime/src/tui/hooks/useCancelRequest.ts:252`, `runtime/src/tui/hooks/useCancelRequest.ts:253`
+
+#### `runtime/src/tui/components/spinner/utils.ts`
+
+- #273 BUG: Spinner glyph and ellipsis ASCII fallback. Citations: `runtime/src/tui/components/spinner/utils.ts:4`, `runtime/src/tui/components/spinner/utils.ts:6`, `runtime/src/tui/components/spinner/utils.ts:9`, `runtime/src/tui/components/spinner/utils.ts:10`, `runtime/src/tui/components/spinner/SpinnerGlyph.tsx:10`, `runtime/src/tui/components/spinner/SpinnerGlyph.tsx:42`, `runtime/src/tui/components/spinner/Spinner.tsx:194`, `runtime/src/tui/components/spinner/Spinner.tsx:365`, `runtime/src/tui/components/spinner/Spinner.tsx:482`
+
+#### `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx`
+
+- #316 BUG: Async local-agent pending stop, width, and glyph behavior. Citations: `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx:74`, `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx:76`, `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx:99`, `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx:160`, `runtime/src/tui/components/tasks/AsyncAgentDetailDialog.tsx:170`
+
+#### `runtime/src/tui/components/tasks/BackgroundTask.tsx`
+
+- #310 LEGACY: Dropped donor task cases in compact renderer. Citations: `runtime/src/tui/components/tasks/BackgroundTask.tsx:219`, `runtime/src/tui/components/tasks/BackgroundTask.tsx:262`, `runtime/src/tui/components/tasks/BackgroundTask.tsx:296`, `runtime/src/tasks/types.ts:11`, `runtime/src/tasks/types.ts:12`, `runtime/src/tasks/types.ts:28`, `runtime/src/tasks/types.ts:29`, `runtime/src/tasks/types.ts:30`, `runtime/src/tasks/types.ts:31`
+
+#### `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx`
+
+- #286 BUG: Teammate footer tiny-width handling. Citations: `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:113`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:143`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:166`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:174`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:181`
+
+#### `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx`
+
+- #295 BUG: BackgroundTasksDialog completion, failure, and cancellation visibility. Citations: `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:65`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:66`, `runtime/src/tasks/types.ts:291`, `runtime/src/tasks/types.ts:292`, `runtime/src/tasks/types.ts:293`, `runtime/src/tasks/types.ts:295`
+- #296 BUG: BackgroundTasksDialog long row content. Citations: `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:15`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:19`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:22`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:52`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:55`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:93`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:97`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:98`
+- #297 LEGACY: BackgroundTasksDialog migration residue. Citations: `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:1`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:35`, `runtime/src/tui/components/tasks/BackgroundTasksDialog.tsx:37`
+
+#### `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx`
+
+- #318 BUG: In-process teammate pending stop, width, and glyph behavior. Citations: `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:75`, `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:79`, `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:109`, `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:110`, `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:198`, `runtime/src/tui/components/tasks/InProcessTeammateDetailDialog.tsx:209`
+
+#### `runtime/src/tui/components/tasks/ShellDetailDialog.tsx`
+
+- #320 BUG: Shell detail runtime, pending stop, and tiny-width behavior. Citations: `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:138`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:140`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:199`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:200`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:206`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:353`, `runtime/src/tui/components/tasks/ShellDetailDialog.tsx:364`
+
+#### `runtime/src/tui/components/teams/TeamsDialog.tsx`
+
+- #326 BUG: TeamsDialog action failure visibility. Citations: `runtime/src/tui/components/teams/TeamsDialog.tsx:153`, `runtime/src/tui/components/teams/TeamsDialog.tsx:159`, `runtime/src/tui/components/teams/TeamsDialog.tsx:558`, `runtime/src/tui/components/teams/TeamsDialog.tsx:565`, `runtime/src/tui/components/teams/TeamsDialog.tsx:605`, `runtime/src/tui/components/teams/TeamsDialog.tsx:614`, `runtime/src/tui/components/teams/TeamsDialog.tsx:633`, `runtime/src/tui/components/teams/TeamsDialog.tsx:639`, `runtime/src/tui/components/teams/TeamsDialog.tsx:657`, `runtime/src/tui/components/teams/TeamsDialog.tsx:669`
+- #327 BUG: TeamsDialog footer, task rows, and prompt width. Citations: `runtime/src/tui/components/teams/TeamsDialog.tsx:277`, `runtime/src/tui/components/teams/TeamsDialog.tsx:503`, `runtime/src/tui/components/teams/TeamsDialog.tsx:524`, `runtime/src/tui/components/teams/TeamsDialog.tsx:542`
+- #328 MISSING: TeamsDialog teammate task loading and error state. Citations: `runtime/src/tui/components/teams/TeamsDialog.tsx:388`, `runtime/src/tui/components/teams/TeamsDialog.tsx:394`, `runtime/src/tui/components/teams/TeamsDialog.tsx:397`, `runtime/src/tui/components/teams/TeamsDialog.tsx:400`, `runtime/src/tui/components/teams/TeamsDialog.tsx:404`, `runtime/src/tui/components/teams/TeamsDialog.tsx:493`, `runtime/src/tui/components/teams/TeamsDialog.tsx:495`
+
+#### `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts`
+
+- #292 LEGACY: Background-task navigation migration bridge. Citations: `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts:1`, `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts:2`, `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts:5`, `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts:244`, `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts:247`, `runtime/src/tui/hooks/useBackgroundTaskNavigation.ts:248`
+
+#### `runtime/src/tui/hooks/useCanUseTool.tsx`
+
+- #377 LEGACY: Permission hook migration residue. Citations: `runtime/src/tui/hooks/useCanUseTool.tsx:1`, `runtime/src/tui/hooks/useCanUseTool.tsx:2`, `runtime/src/tui/hooks/useCanUseTool.tsx:5`, `runtime/src/tui/hooks/useCanUseTool.tsx:173`, `runtime/src/tui/hooks/useCanUseTool.tsx:174`
+
+#### `runtime/src/tui/hooks/useTaskListWatcher.ts`
+
+- #305 BUG: Task-mode watcher error visibility. Citations: `runtime/src/tui/hooks/useTaskListWatcher.ts:100`, `runtime/src/tui/hooks/useTaskListWatcher.ts:101`, `runtime/src/tui/hooks/useTaskListWatcher.ts:116`, `runtime/src/tui/hooks/useTaskListWatcher.ts:118`, `runtime/src/tui/hooks/useTaskListWatcher.ts:122`, `runtime/src/tui/hooks/useTaskListWatcher.ts:153`, `runtime/src/tui/hooks/useTaskListWatcher.ts:157`, `runtime/src/tui/hooks/useTaskListWatcher.ts:160`
+
+#### `runtime/src/tui/hooks/useTypeahead.tsx`
+
+- #142 LEGACY: Legacy moved-source markers in PromptInput partition. Citations: `runtime/src/tui/hooks/useTypeahead.tsx:1`, `runtime/src/tui/hooks/useTypeahead.tsx:2`, `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:1`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:1`, `runtime/src/tui/components/TextInput.tsx:1`, `runtime/src/tui/components/VimTextInput.tsx:1`
+- #143 LEGACY: Legacy donor event/feature names in prompt partition. Citations: `runtime/src/tui/hooks/useTypeahead.tsx:202`, `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:146`, `runtime/src/tui/components/PromptInput/Notifications.tsx:149`
+- #159 BUG: Prompt overlay stale suggestions under modal. Citations: `runtime/src/tui/hooks/useTypeahead.tsx:1239`, `runtime/src/tui/hooks/useTypeahead.tsx:1241`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:119`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:125`, `runtime/src/tui/components/FullscreenLayout.tsx:652`
+
+
+### P3
+
+#### `runtime/src/permissions/mode-display.ts`
+
+- #421 BUG: Permission mode chrome ASCII fallback. Citations: `runtime/src/permissions/mode-display.ts:18`, `runtime/src/permissions/mode-display.ts:28`, `runtime/src/permissions/mode-display.ts:34`, `runtime/src/permissions/mode-display.ts:40`, `runtime/src/permissions/mode-display.ts:52`, `runtime/src/permissions/mode-display.ts:58`, `runtime/src/tui/components/PromptInput/permissionModeChrome.ts:15`, `runtime/src/tui/components/PromptInput/permissionModeChrome.ts:18`, `runtime/src/tui/components/PromptInput/permissionModeChrome.ts:32`
+
+#### `runtime/src/tasks/pillLabel.ts`
+
+- #287 BUG: Background footer Unicode and ASCII terminal mode. Citations: `runtime/src/tasks/pillLabel.ts:15`, `runtime/src/tasks/pillLabel.ts:16`, `runtime/src/tasks/pillLabel.ts:61`, `runtime/src/tasks/pillLabel.ts:63`, `runtime/src/tasks/pillLabel.ts:69`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:174`, `runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx:217`
+
+#### `runtime/src/tui/components/App.tsx`
+
+- #60 LEGACY: Upstream provenance comments in live transcript/root files. Citations: `runtime/src/tui/components/App.tsx:1248`, `runtime/src/tui/session-transcript.ts:40`, `runtime/src/tui/session-transcript.ts:821`, `runtime/src/tui/session-transcript.ts:1477`
+- #282 BUG: Cancel analytics stream mode. Citations: `runtime/src/tui/components/App.tsx:2142`, `runtime/src/tui/components/App.tsx:2143`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2147`, `runtime/src/tui/components/App.tsx:2233`, `runtime/src/tui/components/App.tsx:2238`, `runtime/src/tui/hooks/useCancelRequest.ts:94`, `runtime/src/tui/hooks/useCancelRequest.ts:98`, `runtime/src/tui/hooks/useCancelRequest.ts:105`
+
+#### `runtime/src/tui/components/AutoModeOptInDialog.tsx`
+
+- #424 LEGACY: Auto mode opt-in migration residue. Citations: `runtime/src/tui/components/AutoModeOptInDialog.tsx:1`, `runtime/src/tui/components/AutoModeOptInDialog.tsx:2`
+
+#### `runtime/src/tui/components/AutoUpdater.tsx`
+
+- #539 BUG: Auto updater ascii/no-unicode rendering. Citations: `runtime/src/tui/components/AutoUpdater.tsx:187`, `runtime/src/tui/components/NativeAutoUpdater.tsx:181`, `runtime/src/tui/components/NativeAutoUpdater.tsx:185`
+
+#### `runtime/src/tui/components/AutoUpdaterWrapper.tsx`
+
+- #541 LEGACY: Auto updater wrapper migration residue. Citations: `runtime/src/tui/components/AutoUpdaterWrapper.tsx:1`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:2`
+
+#### `runtime/src/tui/components/ConsoleOAuthFlow.tsx`
+
+- #522 BUG: Console OAuth timeout cleanup. Citations: `runtime/src/tui/components/ConsoleOAuthFlow.tsx:170`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:173`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:222`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:315`, `runtime/src/tui/components/ConsoleOAuthFlow.tsx:316`
+
+#### `runtime/src/tui/components/CustomSelect/select-input-option.tsx`
+
+- #450 BUG: Custom select attachment hints. Citations: `runtime/src/tui/components/CustomSelect/select-input-option.tsx:454`
+
+#### `runtime/src/tui/components/CustomSelect/select.tsx`
+
+- #451 LEGACY: Custom select migration residue. Citations: `runtime/src/tui/components/CustomSelect/select.tsx:1`, `runtime/src/tui/components/CustomSelect/select.tsx:2`
+
+#### `runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx`
+
+- #529 LEGACY: Desktop upsell migration residue. Citations: `runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx:1`, `runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx:22`
+
+#### `runtime/src/tui/components/GlobalSearchDialog.tsx`
+
+- #464 LEGACY: Global search migration and unicode residue. Citations: `runtime/src/tui/components/GlobalSearchDialog.tsx:1`, `runtime/src/tui/components/GlobalSearchDialog.tsx:2`, `runtime/src/tui/components/GlobalSearchDialog.tsx:164`, `runtime/src/tui/components/GlobalSearchDialog.tsx:181`, `runtime/src/tui/components/GlobalSearchDialog.tsx:195`, `runtime/src/tui/components/GlobalSearchDialog.tsx:221`, `runtime/src/tui/components/GlobalSearchDialog.tsx:249`
+
+#### `runtime/src/tui/components/IdeOnboardingDialog.tsx`
+
+- #527 LEGACY: IDE onboarding migration/ascii residue. Citations: `runtime/src/tui/components/IdeOnboardingDialog.tsx:1`, `runtime/src/tui/components/IdeOnboardingDialog.tsx:2`, `runtime/src/tui/components/IdeOnboardingDialog.tsx:112`
+
+#### `runtime/src/tui/components/IdleReturnDialog.tsx`
+
+- #533 LEGACY: Idle return migration residue. Citations: `runtime/src/tui/components/IdleReturnDialog.tsx:1`, `runtime/src/tui/components/IdleReturnDialog.tsx:2`
+
+#### `runtime/src/tui/components/LogSelector.tsx`
+
+- #470 BUG: Log selector active search indicator. Citations: `runtime/src/tui/components/LogSelector.tsx:305`, `runtime/src/tui/components/LogSelector.tsx:1414`
+- #471 BUG: Log selector ascii/no-unicode rendering. Citations: `runtime/src/tui/components/LogSelector.tsx:69`, `runtime/src/tui/components/LogSelector.tsx:70`, `runtime/src/tui/components/LogSelector.tsx:71`, `runtime/src/tui/components/LogSelector.tsx:1312`, `runtime/src/tui/components/LogSelector.tsx:1348`, `runtime/src/tui/components/LogSelector.tsx:1414`
+
+#### `runtime/src/tui/components/Message.tsx`
+
+- #232 LEGACY: Upstream/provider type residues in message rendering. Citations: `runtime/src/tui/components/Message.tsx:5`, `runtime/src/tui/components/Message.tsx:6`, `runtime/src/tui/components/messages/AssistantTextMessage.tsx:2`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:2`, `runtime/src/tui/components/messages/UserTextMessage.tsx:5`, `runtime/src/tui/components/messages/UserPromptMessage.tsx:2`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx:2`, `runtime/src/tui/components/messages/UserToolResultMessage/UserToolErrorMessage.tsx:3`, `runtime/src/utils/groupToolUses.ts:1`, `runtime/src/utils/groupToolUses.ts:2`
+
+#### `runtime/src/tui/components/MessageSelector.tsx`
+
+- #456 BUG: Message selector async metadata ordering. Citations: `runtime/src/tui/components/MessageSelector.tsx:287`, `runtime/src/tui/components/MessageSelector.tsx:314`
+
+#### `runtime/src/tui/components/NativeAutoUpdater.tsx`
+
+- #540 LEGACY: Native auto updater dead external branch. Citations: `runtime/src/tui/components/NativeAutoUpdater.tsx:187`
+
+#### `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx`
+
+- #158 LEGACY: Footer coordinator hint dead path. Citations: `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:360`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:401`
+
+#### `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts`
+
+- #151 BUG: Long input truncation lifecycle. Citations: `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:26`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:30`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:39`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:42`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:54`
+
+#### `runtime/src/tui/components/QuickOpenDialog.tsx`
+
+- #461 LEGACY: Quick open unicode and donor residue. Citations: `runtime/src/tui/components/QuickOpenDialog.tsx:1`, `runtime/src/tui/components/QuickOpenDialog.tsx:2`, `runtime/src/tui/components/QuickOpenDialog.tsx:138`, `runtime/src/tui/components/QuickOpenDialog.tsx:155`, `runtime/src/tui/components/QuickOpenDialog.tsx:202`, `runtime/src/tui/components/QuickOpenDialog.tsx:212`
+
+#### `runtime/src/tui/components/ScrollKeybindingHandler.tsx`
+
+- #575 LEGACY: Scroll keybinding handler migration residue. Citations: `runtime/src/tui/components/ScrollKeybindingHandler.tsx:1`, `runtime/src/tui/components/ScrollKeybindingHandler.tsx:2`
+
+#### `runtime/src/tui/components/SearchBox.tsx`
+
+- #446 BUG: Search box ascii/no-unicode rendering. Citations: `runtime/src/tui/components/SearchBox.tsx:1`, `runtime/src/tui/components/SearchBox.tsx:2`, `runtime/src/tui/components/SearchBox.tsx:28`
+
+#### `runtime/src/tui/components/SessionBackgroundHint.tsx`
+
+- #355 LEGACY: Session background hint migration residue. Citations: `runtime/src/tui/components/SessionBackgroundHint.tsx:1`, `runtime/src/tui/components/SessionBackgroundHint.tsx:2`
+
+#### `runtime/src/tui/components/Settings/Config.tsx`
+
+- #477 BUG: Settings Config ascii/no-unicode rendering. Citations: `runtime/src/tui/components/Settings/Config.tsx:1729`, `runtime/src/tui/components/Settings/Config.tsx:1735`, `runtime/src/tui/components/Settings/Config.tsx:1744`, `runtime/src/tui/components/Settings/Config.tsx:1782`, `runtime/src/tui/components/Settings/Config.tsx:1790`, `runtime/src/tui/components/Settings/Config.tsx:1797`
+
+#### `runtime/src/tui/components/Settings/Settings.tsx`
+
+- #481 LEGACY: Settings/help migration and donor residue. Citations: `runtime/src/tui/components/Settings/Settings.tsx:1`, `runtime/src/tui/components/Settings/Settings.tsx:2`, `runtime/src/tui/components/Settings/Config.tsx:1167`, `runtime/src/tui/components/Settings/Config.tsx:1182`, `runtime/src/tui/components/Settings/Config.tsx:1428`, `runtime/src/tui/components/Settings/Config.tsx:1617`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:1`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:2`
+
+#### `runtime/src/tui/components/Settings/Status.tsx`
+
+- #479 BUG: Settings Status diagnostics loading. Citations: `runtime/src/tui/components/Settings/Status.tsx:154`, `runtime/src/tui/components/Settings/Status.tsx:211`
+
+#### `runtime/src/tui/components/TaskListV2.tsx`
+
+- #302 BUG: TodoV2 ASCII fallback. Citations: `runtime/src/tui/components/TaskListV2.tsx:188`, `runtime/src/tui/components/TaskListV2.tsx:357`
+
+#### `runtime/src/tui/components/agents/AgentNavigationFooter.tsx`
+
+- #333 BUG: Agent navigation footer ASCII fallback. Citations: `runtime/src/tui/components/agents/AgentNavigationFooter.tsx:13`, `runtime/src/tui/components/agents/AgentNavigationFooter.tsx:18`, `runtime/src/tui/components/agents/AgentsMenu.tsx:668`
+
+#### `runtime/src/tui/components/agents/AgentsMenu.tsx`
+
+- #352 LEGACY: Agent menu migration residue. Citations: `runtime/src/tui/components/agents/AgentsMenu.tsx:1`, `runtime/src/tui/components/agents/AgentsMenu.tsx:2`, `runtime/src/tui/components/agents/AgentsMenu.tsx:7`, `runtime/src/tui/components/agents/AgentsMenu.tsx:16`, `runtime/src/tui/components/agents/AgentsMenu.tsx:17`, `runtime/src/tui/components/agents/AgentEditor.tsx:12`, `runtime/src/tui/components/agents/AgentDetail.tsx:12`, `runtime/src/tui/components/agents/ToolSelector.tsx:20`, `runtime/src/tui/components/agents/ModelSelector.tsx:4`, `runtime/src/tui/components/agents/ColorPicker.tsx:7`
+
+#### `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx`
+
+- #342 BUG: Agent confirmation preview terminal conditions. Citations: `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx:94`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx:103`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx:224`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx:238`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx:357`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx:361`
+
+#### `runtime/src/tui/components/design-system/Dialog.tsx`
+
+- #441 LEGACY: Shared dialog migration residue. Citations: `runtime/src/tui/components/design-system/Dialog.tsx:1`, `runtime/src/tui/components/design-system/Dialog.tsx:2`
+
+#### `runtime/src/tui/components/design-system/FuzzyPicker.tsx`
+
+- #444 BUG: Fuzzy picker ascii/no-unicode rendering. Citations: `runtime/src/tui/components/design-system/FuzzyPicker.tsx:70`, `runtime/src/tui/components/design-system/FuzzyPicker.tsx:209`
+
+#### `runtime/src/tui/components/diff/DiffDialog.tsx`
+
+- #510 BUG: Diff ascii/no-unicode rendering. Citations: `runtime/src/tui/components/diff/DiffDialog.tsx:265`, `runtime/src/tui/components/diff/DiffDialog.tsx:268`, `runtime/src/tui/components/diff/DiffDialog.tsx:333`, `runtime/src/tui/components/diff/DiffFileList.tsx:89`, `runtime/src/tui/components/diff/DiffFileList.tsx:129`, `runtime/src/tui/components/diff/DiffDetailView.tsx:263`
+- #511 LEGACY: Diff migration residue. Citations: `runtime/src/tui/components/diff/DiffDialog.tsx:1`, `runtime/src/tui/components/diff/DiffDialog.tsx:2`
+
+#### `runtime/src/tui/components/mcp/ElicitationDialog.tsx`
+
+- #503 BUG: MCP elicitation ascii/no-unicode rendering. Citations: `runtime/src/tui/components/mcp/ElicitationDialog.tsx:39`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:796`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:813`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:832`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:840`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:916`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:970`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:972`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:1110`, `runtime/src/tui/components/mcp/ElicitationDialog.tsx:1112`
+
+#### `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx`
+
+- #490 BUG: MCP remote ascii/no-unicode rendering. Citations: `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:353`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:467`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:550`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:554`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:562`, `runtime/src/tui/components/mcp/MCPRemoteServerMenu.tsx:647`
+
+#### `runtime/src/tui/components/mcp/MCPToolDetailView.tsx`
+
+- #493 BUG: MCP tool detail loading. Citations: `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:25`, `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:70`, `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:86`, `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:88`, `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:170`
+- #494 BUG: MCP tool detail ascii/no-unicode rendering. Citations: `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:178`, `runtime/src/tui/components/mcp/MCPToolDetailView.tsx:182`
+
+#### `runtime/src/tui/components/mcp/McpParsingWarnings.tsx`
+
+- #496 BUG: MCP parsing warning ascii rendering. Citations: `runtime/src/tui/components/mcp/McpParsingWarnings.tsx:116`, `runtime/src/tui/components/mcp/McpParsingWarnings.tsx:120`
+
+#### `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx`
+
+- #234 BUG: Tool and collapsed message unicode punctuation. Citations: `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:240`, `runtime/src/tui/components/messages/HookProgressMessage.tsx:76`, `runtime/src/tui/components/messages/CollapsedReadSearchContent.tsx:458`, `runtime/src/utils/collapseReadSearch.ts:133`, `runtime/src/utils/collapseReadSearch.ts:1069`
+
+#### `runtime/src/tui/components/messages/AttachmentMessage.tsx`
+
+- #188 BUG: Selected-lines attachment ASCII fallback. Citations: `runtime/src/tui/components/messages/AttachmentMessage.tsx:159`, `runtime/src/tui/components/messages/AttachmentMessage.tsx:161`
+- #189 LEGACY: Task status dead branch. Citations: `runtime/src/tui/components/messages/AttachmentMessage.tsx:362`, `runtime/src/tui/components/messages/AttachmentMessage.tsx:367`, `runtime/src/tui/components/messages/AttachmentMessage.tsx:397`
+
+#### `runtime/src/tui/components/messages/HookProgressMessage.tsx`
+
+- #214 BUG: Hook progress wording while running. Citations: `runtime/src/tui/components/messages/HookProgressMessage.tsx:23`, `runtime/src/tui/components/messages/HookProgressMessage.tsx:34`, `runtime/src/tui/components/messages/HookProgressMessage.tsx:37`, `runtime/src/tui/components/messages/HookProgressMessage.tsx:38`, `runtime/src/tui/components/messages/HookProgressMessage.tsx:55`, `runtime/src/tui/components/messages/HookProgressMessage.tsx:58`
+
+#### `runtime/src/tui/components/messages/PlanApprovalMessage.tsx`
+
+- #408 BUG: Plan approval message ASCII fallback. Citations: `runtime/src/tui/components/messages/PlanApprovalMessage.tsx:75`, `runtime/src/tui/components/messages/PlanApprovalMessage.tsx:100`
+
+#### `runtime/src/tui/components/messages/SystemTextMessage.tsx`
+
+- #202 LEGACY: Stop-hook timing dead code. Citations: `runtime/src/tui/components/messages/SystemTextMessage.tsx:301`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:302`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:433`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:434`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:437`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:438`
+- #233 LEGACY: Color-token legacy naming for agent rows. Citations: `runtime/src/tui/components/messages/SystemTextMessage.tsx:521`, `runtime/src/tui/components/messages/SystemTextMessage.tsx:527`, `runtime/src/tui/components/messages/TaskAssignmentMessage.tsx:19`, `runtime/src/tui/components/messages/TaskAssignmentMessage.tsx:44`
+
+#### `runtime/src/tui/components/messages/UserPromptMessage.tsx`
+
+- #185 BUG: User prompt ASCII fallback. Citations: `runtime/src/tui/components/messages/UserPromptMessage.tsx:69`
+
+#### `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx`
+
+- #415 BUG: AskUserQuestion ASCII fallback. Citations: `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:23`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:28`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx:148`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:272`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:278`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx:317`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/QuestionNavigationBar.tsx:102`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/QuestionNavigationBar.tsx:116`, `runtime/src/tui/components/permissions/AskUserQuestionPermissionRequest/QuestionNavigationBar.tsx:138`
+
+#### `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx`
+
+- #381 BUG: Bash permission footer ASCII fallback. Citations: `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:473`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:476`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:477`
+
+#### `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx`
+
+- #427 BUG: Computer use ASCII fallback. Citations: `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:66`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:79`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:137`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:146`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:338`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:345`, `runtime/src/tui/components/permissions/ComputerUseApproval/ComputerUseApproval.tsx:429`
+
+#### `runtime/src/tui/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.tsx`
+
+- #404 BUG: Enter plan mode ASCII fallback. Citations: `runtime/src/tui/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.tsx:60`, `runtime/src/tui/components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.tsx:61`
+
+#### `runtime/src/tui/components/permissions/PermissionExplanation.tsx`
+
+- #418 BUG: Permission explanation abort ownership. Citations: `runtime/src/tui/components/permissions/PermissionExplanation.tsx:77`, `runtime/src/tui/components/permissions/PermissionExplanation.tsx:83`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:153`, `runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx:450`
+
+#### `runtime/src/tui/components/permissions/PermissionPrompt.tsx`
+
+- #375 BUG: Shared permission prompt ASCII fallback. Citations: `runtime/src/tui/components/permissions/PermissionPrompt.tsx:306`, `runtime/src/tui/components/permissions/PermissionPrompt.tsx:309`
+
+#### `runtime/src/tui/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.tsx`
+
+- #384 LEGACY: PowerShell migration residue. Citations: `runtime/src/tui/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.tsx:1`, `runtime/src/tui/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.tsx:2`
+
+#### `runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx`
+
+- #402 BUG: Sandbox reject feedback label. Citations: `runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx:46`, `runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx:48`, `runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx:92`, `runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx:93`, `runtime/src/tui/components/permissions/SandboxPermissionRequest.tsx:145`
+
+#### `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx`
+
+- #399 LEGACY: Skill migration residue. Citations: `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:1`, `runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx:2`
+
+#### `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx`
+
+- #395 BUG: WebFetch reject feedback label. Citations: `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:104`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:106`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:148`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:151`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:230`
+- #396 LEGACY: WebFetch migration residue. Citations: `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:1`, `runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx:2`
+
+#### `runtime/src/tui/components/permissions/WorkerBadge.tsx`
+
+- #372 BUG: Worker badge terminal compatibility. Citations: `runtime/src/tui/components/permissions/WorkerBadge.tsx:42`, `runtime/src/tui/components/permissions/PermissionRequestTitle.tsx:32`
+
+#### `runtime/src/tui/components/permissions/WorkerPendingPermission.tsx`
+
+- #371 LEGACY: Worker pending permission component. Citations: `runtime/src/tui/components/permissions/WorkerPendingPermission.tsx:18`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:122`, `runtime/src/tui/components/messages/AssistantToolUseMessage.tsx:240`
+
+#### `runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx`
+
+- #433 MISSING: Permission rule non-Bash descriptions. Citations: `runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx:14`, `runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx:58`, `runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx:60`, `runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx:70`, `runtime/src/tui/components/permissions/rules/PermissionRuleDescription.tsx:71`
+
+#### `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx`
+
+- #430 BUG: Permission rule list keyboard search capture. Citations: `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:676`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:684`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:687`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:692`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:693`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:695`
+- #431 BUG: Permission rule list ASCII fallback. Citations: `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:606`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:1131`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:1133`
+- #438 LEGACY: Permission rule management migration residue. Citations: `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:1`, `runtime/src/tui/components/permissions/rules/PermissionRuleList.tsx:2`, `runtime/src/tui/components/permissions/rules/AddWorkspaceDirectory.tsx:1`, `runtime/src/tui/components/permissions/rules/AddWorkspaceDirectory.tsx:2`
+
+#### `runtime/src/tui/components/spinner/FlashingChar.tsx`
+
+- #281 LEGACY: Dead spinner primitive. Citations: `runtime/src/tui/components/spinner/FlashingChar.tsx:12`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:136`, `runtime/src/tui/components/spinner/ShimmerChar.tsx:14`
+
+#### `runtime/src/tui/components/spinner/Spinner.tsx`
+
+- #279 LEGACY: Spinner local-agent color token naming. Citations: `runtime/src/tui/components/spinner/Spinner.tsx:462`, `runtime/src/tui/components/spinner/Spinner.tsx:463`
+
+#### `runtime/src/tui/components/tasks/BackgroundTask.tsx`
+
+- #309 LEGACY: Orphaned compact background-task row renderer. Citations: `runtime/src/tui/components/tasks/BackgroundTask.tsx:10`, `runtime/src/tui/components/tasks/BackgroundTask.tsx:11`, `runtime/src/tui/components/tasks/BackgroundTask.tsx:17`, `runtime/src/tui/components/tasks/ShellProgress.tsx:34`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2512`, `runtime/src/tui/components/spinner/Spinner.tsx:297`
+
+#### `runtime/src/tui/components/tasks/DreamDetailDialog.tsx`
+
+- #312 LEGACY: Dream detail dialog for dropped donor task. Citations: `runtime/src/tui/components/tasks/DreamDetailDialog.tsx:8`, `runtime/src/tui/components/tasks/DreamDetailDialog.tsx:22`, `runtime/src/tui/components/tasks/DreamDetailDialog.tsx:104`, `runtime/src/tui/components/tasks/DreamDetailDialog.tsx:160`, `runtime/src/tasks/types.ts:11`, `runtime/src/tasks/types.ts:12`, `runtime/src/tasks/types.ts:28`, `runtime/src/tasks/types.ts:31`
+
+#### `runtime/src/tui/components/tasks/MonitorMcpDetailDialog.tsx`
+
+- #311 LEGACY: Monitor MCP placeholder detail dialog. Citations: `runtime/src/tui/components/tasks/MonitorMcpDetailDialog.tsx:1`, `runtime/src/tui/components/tasks/MonitorMcpDetailDialog.tsx:3`, `runtime/src/tui/components/tasks/MonitorMcpDetailDialog.tsx:5`, `runtime/src/tui/components/tasks/MonitorMcpDetailDialog.tsx:11`, `runtime/src/tui/components/tasks/MonitorMcpDetailDialog.tsx:16`, `runtime/src/tasks/types.ts:28`, `runtime/src/tasks/types.ts:30`
+
+#### `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx`
+
+- #314 BUG: Remote progress Unicode and ASCII terminal mode. Citations: `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx:5`, `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx:108`, `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx:118`, `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx:139`, `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx:155`, `runtime/src/tui/components/tasks/RemoteSessionProgress.tsx:211`
+
+#### `runtime/src/tui/components/tasks/taskStatusUtils.tsx`
+
+- #307 LEGACY: Shared task utility migration residue. Citations: `runtime/src/tui/components/tasks/taskStatusUtils.tsx:1`, `runtime/src/tui/components/tasks/taskStatusUtils.tsx:2`
+
+#### `runtime/src/tui/components/teams/TeamsDialog.tsx`
+
+- #329 LEGACY: TeamsDialog migration residue. Citations: `runtime/src/tui/components/teams/TeamsDialog.tsx:17`, `runtime/src/tui/components/teams/TeamsDialog.tsx:18`, `runtime/src/tui/components/teams/TeamsDialog.tsx:19`, `runtime/src/tui/components/teams/TeamsDialog.tsx:20`, `runtime/src/tui/components/teams/TeamsDialog.tsx:21`, `runtime/src/tui/components/teams/TeamsDialog.tsx:22`, `runtime/src/tui/components/teams/TeamsDialog.tsx:23`, `runtime/src/tui/components/teams/TeamsDialog.tsx:25`, `runtime/src/tui/components/teams/TeamsDialog.tsx:26`, `runtime/src/tui/components/teams/TeamsDialog.tsx:27`, `runtime/src/tui/components/teams/TeamsDialog.tsx:28`, `runtime/src/tui/components/teams/TeamsDialog.tsx:29`
+
+#### `runtime/src/tui/components/wizard/WizardNavigationFooter.tsx`
+
+- #350 BUG: Wizard navigation footer ASCII fallback. Citations: `runtime/src/tui/components/wizard/WizardNavigationFooter.tsx:11`, `runtime/src/tui/components/wizard/WizardNavigationFooter.tsx:12`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/LocationStep.tsx:42`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/MethodStep.tsx:35`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ToolsStep.tsx:43`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ModelStep.tsx:35`, `runtime/src/tui/components/agents/new-agent-creation/wizard-steps/ColorStep.tsx:67`
+
+#### `runtime/src/tui/components/wizard/index.ts`
+
+- #351 LEGACY: Wizard module migration barrel. Citations: `runtime/src/tui/components/wizard/index.ts:1`, `runtime/src/tui/components/wizard/index.ts:2`, `runtime/src/tui/components/wizard/index.ts:3`, `runtime/src/tui/components/wizard/index.ts:4`, `runtime/src/tui/components/wizard/index.ts:5`, `runtime/src/tui/components/wizard/index.ts:6`
+
+#### `runtime/src/tui/hooks/toolPermission/permissionLogging.ts`
+
+- #376 LEGACY: Permission telemetry donor branding. Citations: `runtime/src/tui/hooks/toolPermission/permissionLogging.ts:117`, `runtime/src/tui/hooks/toolPermission/permissionLogging.ts:128`, `runtime/src/tui/hooks/toolPermission/permissionLogging.ts:137`, `runtime/src/tui/hooks/toolPermission/permissionLogging.ts:168`, `runtime/src/tui/components/permissions/hooks.ts:132`, `runtime/src/tui/components/permissions/hooks.ts:142`, `runtime/src/tui/components/permissions/hooks.ts:150`, `runtime/src/tui/components/permissions/hooks.ts:169`
+
+#### `runtime/src/tui/hooks/useCommandKeybindings.tsx`
+
+- #621 LEGACY: Command keybindings migration residue. Citations: `runtime/src/tui/hooks/useCommandKeybindings.tsx:1`, `runtime/src/tui/hooks/useCommandKeybindings.tsx:2`, `runtime/src/tui/hooks/useCommandKeybindings.tsx:18`
+
+#### `runtime/src/tui/hooks/useGlobalKeybindings.tsx`
+
+- #622 LEGACY: Global keybinding donor analytics residue. Citations: `runtime/src/tui/hooks/useGlobalKeybindings.tsx:52`, `runtime/src/tui/hooks/useGlobalKeybindings.tsx:119`, `runtime/src/tui/hooks/useGlobalKeybindings.tsx:136`, `runtime/src/tui/hooks/useGlobalKeybindings.tsx:145`, `runtime/src/tui/hooks/useGlobalKeybindings.tsx:169`, `runtime/src/tui/hooks/useGlobalKeybindings.tsx:212`
+
+#### `runtime/src/tui/hooks/useTasksV2.ts`
+
+- #322 LEGACY: Task hook migration residue. Citations: `runtime/src/tui/hooks/useTasksV2.ts:1`, `runtime/src/tui/hooks/useTasksV2.ts:2`
+
+#### `runtime/src/tui/ink/components/App.tsx`
+
+- #571 LEGACY: Ink internal App migration residue. Citations: `runtime/src/tui/ink/components/App.tsx:1`, `runtime/src/tui/ink/components/App.tsx:2`
+
+#### `runtime/src/tui/ink/components/ScrollBox.tsx`
+
+- #572 LEGACY: ScrollBox migration residue. Citations: `runtime/src/tui/ink/components/ScrollBox.tsx:1`, `runtime/src/tui/ink/components/ScrollBox.tsx:2`
+
+#### `runtime/src/tui/ink/components/TerminalFocusContext.tsx`
+
+- #574 LEGACY: Terminal focus context migration residue. Citations: `runtime/src/tui/ink/components/TerminalFocusContext.tsx:1`, `runtime/src/tui/ink/components/TerminalFocusContext.tsx:2`
+
+#### `runtime/src/tui/ink/log-update.ts`
+
+- #569 LEGACY: Main diff writer migration residue. Citations: `runtime/src/tui/ink/log-update.ts:1`, `runtime/src/tui/ink/log-update.ts:2`
+
+#### `runtime/src/tui/ink/render-to-screen.ts`
+
+- #568 LEGACY: Search side-render migration residue. Citations: `runtime/src/tui/ink/render-to-screen.ts:1`, `runtime/src/tui/ink/render-to-screen.ts:2`
+
+#### `runtime/src/tui/ink/stringWidth.ts`
+
+- #576 LEGACY: Width/wrap helpers migration residue. Citations: `runtime/src/tui/ink/stringWidth.ts:1`, `runtime/src/tui/ink/stringWidth.ts:2`, `runtime/src/tui/ink/wrapAnsi.ts:1`, `runtime/src/tui/ink/wrapAnsi.ts:2`
+- #629 BUG: Non-Bun complex-script width. Citations: `runtime/src/tui/ink/stringWidth.ts:207`, `runtime/src/tui/ink/stringWidth.ts:224`
+
+#### `runtime/src/tui/ink/terminal.ts`
+
+- #570 LEGACY: Terminal capability module migration residue. Citations: `runtime/src/tui/ink/terminal.ts:1`, `runtime/src/tui/ink/terminal.ts:2`
+
+#### `runtime/src/tui/ink/wrap-text.ts`
+
+- #630 BUG: Truncation marker ASCII rendering. Citations: `runtime/src/tui/ink/wrap-text.ts:6`, `runtime/src/tui/ink/wrap-text.ts:21`, `runtime/src/tui/ink/wrap-text.ts:27`, `runtime/src/tui/ink/wrap-text.ts:33`, `runtime/src/tui/ink/wrap-text.ts:37`
+
+#### `runtime/src/tui/keybindings/KeybindingContext.tsx`
+
+- #573 LEGACY: Keybinding context migration residue. Citations: `runtime/src/tui/keybindings/KeybindingContext.tsx:1`, `runtime/src/tui/keybindings/KeybindingContext.tsx:2`
+
+#### `runtime/src/tui/keybindings/KeybindingProviderSetup.tsx`
+
+- #615 BUG: Keybinding warning ASCII rendering. Citations: `runtime/src/tui/keybindings/KeybindingProviderSetup.tsx:103`
+
+#### `runtime/src/tui/keybindings/parser.ts`
+
+- #623 BUG: Keybinding display arrows. Citations: `runtime/src/tui/keybindings/parser.ts:105`, `runtime/src/tui/keybindings/parser.ts:126`
+- #624 MISSING: Global ASCII capability mode. Citations: `runtime/src/tui/keybindings/parser.ts:105`, `runtime/src/tui/keybindings/parser.ts:126`, `runtime/src/tui/keybindings/KeybindingProviderSetup.tsx:103`, `runtime/src/tui/ink/wrap-text.ts:6`, `runtime/src/tui/ink/wrap-text.ts:37`
+
+#### `runtime/src/tui/realtime/RealtimePanel.tsx`
+
+- #514 BUG: Realtime narrow-width status. Citations: `runtime/src/tui/realtime/RealtimePanel.tsx:25`, `runtime/src/tui/realtime/RealtimePanel.tsx:37`, `runtime/src/tui/realtime/RealtimePanel.tsx:47`, `runtime/src/tui/realtime/RealtimePanel.tsx:52`
+- #515 LEGACY: Realtime parity residue. Citations: `runtime/src/tui/realtime/RealtimePanel.tsx:10`, `runtime/src/tui/realtime/useRealtimeState.ts:6`
