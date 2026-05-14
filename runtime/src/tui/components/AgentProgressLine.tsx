@@ -1,7 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import { Box, Text } from '../ink.js';
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { formatNumber } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getSpinnerEllipsis } from './spinner/utils.js';
 type Props = {
   agentType: string;
   description?: string;
@@ -38,13 +40,14 @@ export function AgentProgressLine(t0: Props) {
   } = t0;
   const isAsync = t1 === undefined ? false : t1;
   const hideType = t2 === undefined ? false : t2;
-  const treeChar = isLast ? "\u2514\u2500" : "\u251C\u2500";
+  const glyphs = selectAgenCTuiGlyphs();
+  const treeChar = isLast ? glyphs.treeLast : glyphs.treeBranch;
   const isBackgrounded = isAsync && isResolved;
   let t3;
   if ($[0] !== isBackgrounded || $[1] !== isResolved || $[2] !== lastToolInfo || $[3] !== taskDescription) {
     t3 = () => {
       if (!isResolved) {
-        return lastToolInfo || "Initializing\u2026";
+        return lastToolInfo || `Initializing${getSpinnerEllipsis()}`;
       }
       if (isBackgrounded) {
         return taskDescription ?? "Running in the background";
@@ -113,7 +116,7 @@ export function AgentProgressLine(t0: Props) {
   }
   let t10;
   if ($[25] !== getStatusText || $[26] !== isBackgrounded || $[27] !== isLast) {
-    t10 = !isBackgrounded && <Box paddingLeft={3} flexDirection="row"><Text dimColor={true}>{isLast ? "   \u23BF  " : "\u2502  \u23BF  "}</Text><Text dimColor={true}>{getStatusText()}</Text></Box>;
+    t10 = !isBackgrounded && <Box paddingLeft={3} flexDirection="row"><Text dimColor={true}>{isLast ? `   ${glyphs.responseGutter}  ` : `${glyphs.treeContinuation}  ${glyphs.responseGutter}  `}</Text><Text dimColor={true}>{getStatusText()}</Text></Box>;
     $[25] = getStatusText;
     $[26] = isBackgrounded;
     $[27] = isLast;

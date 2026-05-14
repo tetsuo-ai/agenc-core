@@ -10,11 +10,13 @@ import { useElapsedTime } from '../../hooks/useElapsedTime.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text } from '../../ink.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
 import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js';
 import { formatDuration, formatNumber, truncateToWidth } from '../../../utils/format.js';
 import { toInkColor } from '../../../utils/ink.js';
 import { TEAMMATE_SELECT_HINT } from './teammateSelectHint.js';
+import { getSpinnerEllipsis } from './utils.js';
 type Props = {
   teammate: InProcessTeammateTaskState;
   isLast: boolean;
@@ -47,7 +49,7 @@ function getMessagePreview(messages: InProcessTeammateTaskState['messages']): st
       if ('type' in block && block.type === 'tool_use' && 'name' in block) {
         // Try to show meaningful info from tool input
         const input = 'input' in block ? block.input as Record<string, unknown> : null;
-        let toolLine = `Using ${block.name}…`;
+        let toolLine = `Using ${block.name}${getSpinnerEllipsis()}`;
         if (input) {
           // Look for common descriptive fields
           const desc = input.description as string | undefined || input.prompt as string | undefined || input.command as string | undefined || input.query as string | undefined || input.pattern as string | undefined;
@@ -82,7 +84,8 @@ export function TeammateSpinnerLine({
   const [randomVerb] = useState(() => teammate.spinnerVerb ?? sample(getSpinnerVerbs()));
   const [pastTenseVerb] = useState(() => teammate.pastTenseVerb ?? sample(TURN_COMPLETION_VERBS));
   const isHighlighted = isSelected || isForegrounded;
-  const treeChar = isHighlighted ? isLast ? '╘═' : '╞═' : isLast ? '└─' : '├─';
+  const glyphs = selectAgenCTuiGlyphs();
+  const treeChar = isHighlighted ? isLast ? glyphs.treeSelectedLast : glyphs.treeSelectedBranch : isLast ? glyphs.treeLast : glyphs.treeBranch;
   const nameColor = toInkColor(teammate.identity.color);
   const {
     columns
@@ -192,7 +195,7 @@ export function TeammateSpinnerLine({
       return null;
     }
     return <Text dimColor>
-        {activityText?.endsWith('…') ? activityText : `${activityText}…`}
+        {activityText?.endsWith(getSpinnerEllipsis()) ? activityText : `${activityText}${getSpinnerEllipsis()}`}
       </Text>;
   };
 
@@ -200,7 +203,7 @@ export function TeammateSpinnerLine({
   const previewLines = showPreview ? getMessagePreview(teammate.messages) : [];
 
   // Tree continuation character for preview lines
-  const previewTreeChar = isLast ? '   ' : '│  ';
+  const previewTreeChar = isLast ? '   ' : `${glyphs.treeContinuation}  `;
   return <Box flexDirection="column">
       <Box paddingLeft={3}>
         {/* Selection indicator: pointer when selected, otherwise space */}

@@ -22,6 +22,13 @@ export interface AgenCTuiGlyphs {
   readonly thinkingPrefix: string;
   readonly titleAnimationFrames: readonly string[];
   readonly titleStaticPrefix: string;
+  readonly treeBranch: string;
+  readonly treeContinuation: string;
+  readonly treeLast: string;
+  readonly treeRoot: string;
+  readonly treeSelectedBranch: string;
+  readonly treeSelectedLast: string;
+  readonly treeSelectedRoot: string;
   readonly voiceCursorBars: string;
 }
 
@@ -45,6 +52,13 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   thinkingPrefix: "",
   titleAnimationFrames: ["*", "+"],
   titleStaticPrefix: "*",
+  treeBranch: "|-",
+  treeContinuation: "|",
+  treeLast: "`-",
+  treeRoot: ".-",
+  treeSelectedBranch: "|>",
+  treeSelectedLast: "`>",
+  treeSelectedRoot: ".>",
   voiceCursorBars: " .:-=+*#@",
 };
 
@@ -68,6 +82,13 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   thinkingPrefix: "∴",
   titleAnimationFrames: ["⠂", "⠐"],
   titleStaticPrefix: "✳",
+  treeBranch: "├─",
+  treeContinuation: "│",
+  treeLast: "└─",
+  treeRoot: "┌─",
+  treeSelectedBranch: "╞═",
+  treeSelectedLast: "╘═",
+  treeSelectedRoot: "╒═",
   voiceCursorBars: " ▁▂▃▄▅▆▇█",
 };
 

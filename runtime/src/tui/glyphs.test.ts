@@ -25,6 +25,10 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).thinkingPrefix).toBe("∴");
     expect(selectAgenCTuiGlyphs({}).redactedThinkingPrefix).toBe("✻");
     expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
+    expect(selectAgenCTuiGlyphs({}).treeBranch).toBe("├─");
+    expect(selectAgenCTuiGlyphs({}).treeContinuation).toBe("│");
+    expect(selectAgenCTuiGlyphs({}).treeLast).toBe("└─");
+    expect(selectAgenCTuiGlyphs({}).treeSelectedBranch).toBe("╞═");
     expect(selectAgenCTuiGlyphs({}).voiceCursorBars).toBe(" ▁▂▃▄▅▆▇█");
   });
 
@@ -52,6 +56,13 @@ describe("AgenC TUI glyph selection", () => {
       thinkingPrefix: "",
       titleAnimationFrames: ["*", "+"],
       titleStaticPrefix: "*",
+      treeBranch: "|-",
+      treeContinuation: "|",
+      treeLast: "`-",
+      treeRoot: ".-",
+      treeSelectedBranch: "|>",
+      treeSelectedLast: "`>",
+      treeSelectedRoot: ".>",
       voiceCursorBars: " .:-=+*#@",
     });
   });
