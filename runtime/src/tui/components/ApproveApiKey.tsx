@@ -7,6 +7,11 @@ type Props = {
   customApiKeyTruncated: string;
   onDone(approved: boolean): void;
 };
+
+export function getApiKeyApprovalPreview(customApiKeyTruncated: string): string {
+  return `...${customApiKeyTruncated}`;
+}
+
 export function ApproveApiKey(t0: Props) {
   const $ = _c(17);
   const {
@@ -59,14 +64,14 @@ export function ApproveApiKey(t0: Props) {
   }
   let t3;
   if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = <Text bold={true}>ANTHROPIC_API_KEY</Text>;
+    t3 = <Text bold={true}>API key</Text>;
     $[5] = t3;
   } else {
     t3 = $[5];
   }
   let t4;
   if ($[6] !== customApiKeyTruncated) {
-    t4 = <Text>{t3}<Text>: sk-ant-...{customApiKeyTruncated}</Text></Text>;
+    t4 = <Text>{t3}<Text>: {getApiKeyApprovalPreview(customApiKeyTruncated)}</Text></Text>;
     $[6] = customApiKeyTruncated;
     $[7] = t4;
   } else {
