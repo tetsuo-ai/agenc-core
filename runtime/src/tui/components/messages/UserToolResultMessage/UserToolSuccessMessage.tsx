@@ -22,6 +22,39 @@ type Props = {
   width: number | string;
   isTranscriptMode?: boolean;
 };
+
+export function isToolUseResultMissing(toolUseResult: unknown): boolean {
+  return toolUseResult === undefined || toolUseResult === null;
+}
+
+function formatRecoveredToolResultContent(content: unknown): string | null {
+  if (typeof content === 'string') {
+    return extractTag(content, 'persisted-output') ?? content;
+  }
+  if (Array.isArray(content)) {
+    return content.map(block => {
+      if (typeof block === 'string') return block;
+      if (block && typeof block === 'object' && 'text' in block && typeof block.text === 'string') {
+        return block.text;
+      }
+      return JSON.stringify(block);
+    }).join('\n');
+  }
+  if (content === undefined || content === null) {
+    return null;
+  }
+  return String(content);
+}
+
+export function getToolResultFallbackContent(messageContent: unknown): string | null {
+  if (!Array.isArray(messageContent)) return null;
+  const toolResultBlock = messageContent.find(block => block && typeof block === 'object' && 'type' in block && block.type === 'tool_result');
+  if (!toolResultBlock || !('content' in toolResultBlock)) {
+    return null;
+  }
+  return formatRecoveredToolResultContent(toolResultBlock.content);
+}
+
 export function UserToolSuccessMessage({
   message,
   lookups,
@@ -50,16 +83,9 @@ export function UserToolSuccessMessage({
     deleteClassifierApproval(toolUseID);
   }, [toolUseID]);
 
-  const fallbackContent = React.useMemo(() => {
-    if (!Array.isArray(message.message.content)) return null;
-    const toolResultBlock = message.message.content.find(block => block.type === 'tool_result');
-    if (!toolResultBlock || typeof toolResultBlock.content !== 'string') {
-      return null;
-    }
-    return extractTag(toolResultBlock.content, 'persisted-output') ?? toolResultBlock.content;
-  }, [message.message.content]);
-  if (!message.toolUseResult || !tool) {
-    return fallbackContent ? <Box flexDirection="column">
+  const fallbackContent = React.useMemo(() => getToolResultFallbackContent(message.message.content), [message.message.content]);
+  if (isToolUseResultMissing(message.toolUseResult) || !tool) {
+    return fallbackContent !== null ? <Box flexDirection="column">
           <Box flexDirection="column" width={width}>
             <Text>{fallbackContent}</Text>
             {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
@@ -85,7 +111,7 @@ export function UserToolSuccessMessage({
   // Validate against outputSchema before rendering — mirrors CollapsedReadSearchContent.
   const parsedOutput = tool.outputSchema?.safeParse(message.toolUseResult);
   if (parsedOutput && !parsedOutput.success) {
-    return fallbackContent ? <Box flexDirection="column">
+    return fallbackContent !== null ? <Box flexDirection="column">
           <Box flexDirection="column" width={width}>
             <Text>{fallbackContent}</Text>
             {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
