@@ -13,10 +13,10 @@ import { Box, Text } from '../../ink.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
 import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js';
-import { formatDuration, formatNumber, truncateToWidth } from '../../../utils/format.js';
+import { formatDuration, formatNumber } from '../../../utils/format.js';
 import { toInkColor } from '../../../utils/ink.js';
 import { TEAMMATE_SELECT_HINT } from './teammateSelectHint.js';
-import { getSpinnerEllipsis } from './utils.js';
+import { getSpinnerEllipsis, truncateSpinnerText } from './utils.js';
 type Props = {
   teammate: InProcessTeammateTaskState;
   isLast: boolean;
@@ -26,14 +26,23 @@ type Props = {
   showPreview?: boolean;
 };
 
+export function computeTeammateActivityMaxWidth(columns: number, basePrefix: number, nameWidth: number, extrasCost: number): number {
+  return Math.max(0, Math.floor(columns) - basePrefix - nameWidth - extrasCost - 1);
+}
+
+export function computeTeammatePreviewTextWidth(columns: number): number {
+  return Math.max(0, Math.floor(columns) - 8);
+}
+
 /**
  * Extract the last 3 lines of content from a teammate's conversation.
  * Shows recent activity from any message type (user or assistant).
  */
-function getMessagePreview(messages: InProcessTeammateTaskState['messages']): string[] {
+export function getMessagePreview(messages: InProcessTeammateTaskState['messages'], maxLineLength = 80): string[] {
   if (!messages?.length) return [];
+  const previewWidth = Math.max(0, Math.floor(maxLineLength));
+  if (previewWidth === 0) return [];
   const allLines: string[] = [];
-  const maxLineLength = 80;
 
   // Collect lines from recent messages (newest first)
   for (let i = messages.length - 1; i >= 0 && allLines.length < 3; i--) {
@@ -57,14 +66,14 @@ function getMessagePreview(messages: InProcessTeammateTaskState['messages']): st
             toolLine = desc.split('\n')[0] ?? toolLine;
           }
         }
-        allLines.push(truncateToWidth(toolLine, maxLineLength));
+        allLines.push(truncateSpinnerText(toolLine, previewWidth));
       } else if ('type' in block && block.type === 'text' && 'text' in block) {
         const textLines = (block.text as string).split('\n').filter(l => l.trim());
         // Take from end of text (most recent lines)
         for (let j = textLines.length - 1; j >= 0 && allLines.length < 3; j--) {
           const line = textLines[j];
           if (!line) continue;
-          allLines.push(truncateToWidth(line, maxLineLength));
+          allLines.push(truncateSpinnerText(line, previewWidth));
         }
       }
     }
@@ -159,18 +168,24 @@ export function TeammateSpinnerLine({
 
   // Activity text gets remaining space
   const extrasCost = (showStats ? statsWidth : 0) + (showSelectHint ? selectHintWidth : 0) + (showViewHint ? viewHintWidth : 0);
-  const activityMaxWidth = Math.max(minActivityWidth, availableForActivity - extrasCost - 1);
+  const activityMaxWidth = computeTeammateActivityMaxWidth(columns, basePrefix, nameWidth, extrasCost);
+  const truncateActivity = (value: string | undefined): string => {
+    if (!value || activityMaxWidth <= 0) return '';
+    const suffix = getSpinnerEllipsis();
+    const displayValue = value.endsWith(suffix) ? value : `${value}${suffix}`;
+    return truncateSpinnerText(displayValue, activityMaxWidth);
+  };
 
   // Format the activity text for active teammates, rolling up search/read ops
   const activityText = (() => {
     const activities = teammate.progress?.recentActivities;
     if (activities && activities.length > 0) {
       const summary = summarizeRecentActivities(activities);
-      if (summary) return truncateToWidth(summary, activityMaxWidth);
+      if (summary) return truncateActivity(summary);
     }
     const desc = teammate.progress?.lastActivity?.activityDescription;
-    if (desc) return truncateToWidth(desc, activityMaxWidth);
-    return randomVerb;
+    if (desc) return truncateActivity(desc);
+    return truncateActivity(randomVerb);
   })();
 
   // Status rendering logic
@@ -194,13 +209,14 @@ export function TeammateSpinnerLine({
     if (isHighlighted) {
       return null;
     }
-    return <Text dimColor>
-        {activityText?.endsWith(getSpinnerEllipsis()) ? activityText : `${activityText}${getSpinnerEllipsis()}`}
-      </Text>;
+    if (!activityText) {
+      return null;
+    }
+    return <Text dimColor>{activityText}</Text>;
   };
 
   // Get preview lines if enabled
-  const previewLines = showPreview ? getMessagePreview(teammate.messages) : [];
+  const previewLines = showPreview ? getMessagePreview(teammate.messages, computeTeammatePreviewTextWidth(columns)) : [];
 
   // Tree continuation character for preview lines
   const previewTreeChar = isLast ? '   ' : `${glyphs.treeContinuation}  `;
