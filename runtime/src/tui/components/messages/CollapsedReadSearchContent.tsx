@@ -4,6 +4,7 @@ import { basename } from 'path';
 import React, { useRef } from 'react';
 import { useMinDisplayTime } from '../../hooks/useMinDisplayTime';
 import { Ansi, Box, Text, useTheme } from '../../ink.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { findToolByName, type Tools } from '../../../tools/Tool';
 import { getReplPrimitiveTools } from '../../../tools/REPLTool/primitiveTools';
 import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../../types/message';
@@ -22,7 +23,7 @@ import * as teamMemCollapsedModule from './teamMemCollapsed';
 
 const teamMemCollapsed = feature('TEAMMEM') ? teamMemCollapsedModule : null;
 
-// Hold each ⤿ hint for a minimum duration so fast-completing tool calls
+// Hold each hint for a minimum duration so fast-completing tool calls
 // (bash commands, file reads, search patterns) are actually readable instead
 // of flickering past in a single frame.
 const MIN_HINT_DISPLAY_MS = 700;
@@ -159,6 +160,10 @@ export function CollapsedReadSearchContent({
     messages: groupMessages
   } = message;
   const [theme] = useTheme();
+  const glyphs = selectAgenCTuiGlyphs();
+  const responseGutter = `  ${glyphs.responseGutter}  `;
+  const nestedResponseGutter = `     ${glyphs.responseGutter} `;
+  const responseGutterWidth = responseGutter.length;
   const toolUseIds = getToolUseIdsFromCollapsedGroup(message);
   const anyError = toolUseIds.some(id => lookups.erroredToolUseIDs.has(id));
   const hasMemoryOps = memorySearchCount > 0 || memoryReadCount > 0 || memoryWriteCount > 0;
@@ -181,7 +186,7 @@ export function CollapsedReadSearchContent({
   const searchCount = maxSearchCountRef.current;
   const listCount = maxListCountRef.current;
   const mcpCallCount = maxMcpCountRef.current;
-  // Subtract commands surfaced as "Committed …" / "Created PR …" so the
+  // Subtract commands surfaced as committed/PR actions so the
   // same command isn't counted twice. gitOpBashCount is read live (no max-ref
   // needed — it's 0 until results arrive, then only grows).
   const gitOpBashCount = message.gitOpBashCount ?? 0;
@@ -234,18 +239,18 @@ export function CollapsedReadSearchContent({
       })}
         {message.hookInfos && message.hookInfos.length > 0 && <>
             <Text dimColor>
-              {'  ⎿  '}Ran {message.hookCount} PreToolUse{' '}
+              {responseGutter}Ran {message.hookCount} PreToolUse{' '}
               {message.hookCount === 1 ? 'hook' : 'hooks'} (
               {formatSecondsShort(message.hookTotalMs ?? 0)})
             </Text>
             {message.hookInfos.map((info, idx) => <Text key={`hook-${idx}`} dimColor>
-                {'     ⎿ '}
+                {nestedResponseGutter}
                 {info.command} ({formatSecondsShort(info.durationMs ?? 0)})
               </Text>)}
           </>}
         {message.relevantMemories?.map(m => <Box key={m.path} flexDirection="column" marginTop={1}>
             <Text dimColor>
-              {'  ⎿  '}Recalled {basename(m.path)}
+              {responseGutter}Recalled {basename(m.path)}
             </Text>
             <Box paddingLeft={5}>
               <Text>
@@ -286,7 +291,7 @@ export function CollapsedReadSearchContent({
     }
     if (elapsed !== undefined && elapsed >= 2) {
       const time = formatDuration(elapsed * 1000);
-      shellProgressSuffix = lines > 0 ? ` (${time} · ${lines} ${lines === 1 ? 'line' : 'lines'})` : ` (${time})`;
+      shellProgressSuffix = lines > 0 ? ` (${time} ${glyphs.separator} ${lines} ${lines === 1 ? 'line' : 'lines'})` : ` (${time})`;
     }
   }
 
@@ -455,16 +460,16 @@ export function CollapsedReadSearchContent({
           isActiveGroup,
           hasPrecedingParts: hasPrecedingNonMem || memParts.length > 0
         }) : null}
-          {isActiveGroup && <Text key="ellipsis">…</Text>} <CtrlOToExpand />
+          {isActiveGroup && <Text key="ellipsis">{glyphs.ellipsis}</Text>} <CtrlOToExpand />
         </Text>
       </Box>
       {isActiveGroup && displayedHint !== undefined &&
-    // Row layout: 5-wide gutter for ⎿, then a flex column for the text.
+    // Row layout: fixed-width response gutter, then a flex column for the text.
     // Ink's wrap stays inside the right column so continuation lines
-    // indent under ⎿. MAX_HINT_CHARS in commandAsHint caps total at ~5 lines.
+    // indent under the gutter. MAX_HINT_CHARS in commandAsHint caps total at ~5 lines.
     <Box flexDirection="row">
-          <Box width={5} flexShrink={0}>
-            <Text dimColor>{'  ⎿  '}</Text>
+          <Box width={responseGutterWidth} flexShrink={0}>
+            <Text dimColor>{responseGutter}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
             {displayedHint.split('\n').map((line, i, arr) => <Text key={`hint-${i}`} dimColor>
@@ -474,7 +479,7 @@ export function CollapsedReadSearchContent({
           </Box>
         </Box>}
       {message.hookTotalMs !== undefined && message.hookTotalMs > 0 && <Text dimColor>
-          {'  ⎿  '}Ran {message.hookCount} PreToolUse{' '}
+          {responseGutter}Ran {message.hookCount} PreToolUse{' '}
           {message.hookCount === 1 ? 'hook' : 'hooks'} (
           {formatSecondsShort(message.hookTotalMs)})
         </Text>}
