@@ -1,10 +1,17 @@
 // @ts-nocheck
 import * as React from "react";
 
-import { isBackgroundTask, type TaskState } from "../../../tasks/types.js";
+import { killAsyncAgent } from "../../../tasks/LocalAgentTask/LocalAgentTask.js";
+import { killTask } from "../../../tasks/LocalShellTask/killShellTasks.js";
+import { requestTeammateShutdown } from "../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js";
+import {
+  isBackgroundTask,
+  isStoppableTaskStatus,
+  type TaskState,
+} from "../../../tasks/types.js";
 import { formatNumber } from "../../../utils/format.js";
 import { Box, Text, useInput } from "../../ink.js";
-import { useAppState } from "../../state/AppState.js";
+import { useAppState, useSetAppState } from "../../state/AppState.js";
 
 type Props = {
   onDone?: () => void;
@@ -58,24 +65,139 @@ function taskDetail(task: TaskState): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+function taskActionLabel(task: TaskState): string {
+  if (!isStoppableTaskStatus(task.status)) {
+    return "View output";
+  }
+  switch (task.type) {
+    case "local_bash":
+    case "local_agent":
+    case "in_process_teammate":
+      return "Stop";
+    case "remote_agent":
+      return "Stop unavailable";
+    default:
+      return "View output";
+  }
+}
+
+function stopTask(task: TaskState, setAppState: ReturnType<typeof useSetAppState>): void {
+  if (!isStoppableTaskStatus(task.status)) {
+    return;
+  }
+  switch (task.type) {
+    case "local_bash":
+      killTask(task.id, setAppState);
+      break;
+    case "local_agent":
+      killAsyncAgent(task.id, setAppState);
+      break;
+    case "in_process_teammate":
+      requestTeammateShutdown(task.id, setAppState);
+      break;
+    case "remote_agent":
+      break;
+  }
+}
+
+function setAppStateFromContext(toolUseContext: unknown): ReturnType<typeof useSetAppState> | null {
+  if (
+    typeof toolUseContext === "object" &&
+    toolUseContext !== null &&
+    "setAppState" in toolUseContext &&
+    typeof toolUseContext.setAppState === "function"
+  ) {
+    return toolUseContext.setAppState as ReturnType<typeof useSetAppState>;
+  }
+  return null;
+}
+
 export function BackgroundTasksDialog({
   onDone,
   initialDetailTaskId,
+  toolUseContext,
 }: Props): React.ReactNode {
   const tasks = useAppState((state) =>
     Object.values(state.tasks ?? {}).filter(isBackgroundTask),
   );
+  const appStateSetter = useSetAppState();
+  const setAppState = setAppStateFromContext(toolUseContext) ?? appStateSetter;
+  const sorted = React.useMemo(() => {
+    return [...tasks].sort((left, right) => {
+      const leftRunning = left.status === "running" || left.status === "pending";
+      const rightRunning = right.status === "running" || right.status === "pending";
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1;
+      return (right.startTime ?? 0) - (left.startTime ?? 0);
+    });
+  }, [tasks]);
+  const taskIdsSignature = sorted.map((task) => task.id).join("\0");
+  const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(
+    () => initialDetailTaskId ?? sorted[0]?.id ?? null,
+  );
+  const [showDetail, setShowDetail] = React.useState(
+    () => Boolean(initialDetailTaskId),
+  );
+  React.useEffect(() => {
+    if (initialDetailTaskId && sorted.some((task) => task.id === initialDetailTaskId)) {
+      setSelectedTaskId(initialDetailTaskId);
+      setShowDetail(true);
+      return;
+    }
+    setSelectedTaskId((current) =>
+      current && sorted.some((task) => task.id === current)
+        ? current
+        : sorted[0]?.id ?? null,
+    );
+  }, [initialDetailTaskId, taskIdsSignature]);
+
+  const selectedIndex = Math.max(
+    0,
+    sorted.findIndex((task) => task.id === selectedTaskId),
+  );
+  const selectedTask = sorted[selectedIndex] ?? null;
+  const selectRelative = React.useCallback(
+    (delta: number) => {
+      if (sorted.length === 0) {
+        return;
+      }
+      const nextIndex = (selectedIndex + delta + sorted.length) % sorted.length;
+      setSelectedTaskId(sorted[nextIndex]!.id);
+    },
+    [selectedIndex, sorted],
+  );
+  const stopSelectedTask = React.useCallback(() => {
+    if (selectedTask) {
+      stopTask(selectedTask, setAppState);
+    }
+  }, [selectedTask, setAppState]);
+
   useInput((input, key) => {
     if (key.escape || input === "q") {
       onDone?.();
+      return;
     }
-  });
-
-  const sorted = [...tasks].sort((left, right) => {
-    const leftRunning = left.status === "running" || left.status === "pending";
-    const rightRunning = right.status === "running" || right.status === "pending";
-    if (leftRunning !== rightRunning) return leftRunning ? -1 : 1;
-    return (right.startTime ?? 0) - (left.startTime ?? 0);
+    if (sorted.length === 0) {
+      return;
+    }
+    if (key.upArrow || input === "k") {
+      selectRelative(-1);
+      return;
+    }
+    if (key.downArrow || input === "j") {
+      selectRelative(1);
+      return;
+    }
+    if (key.return || key.rightArrow || input === "l") {
+      setShowDetail(true);
+      return;
+    }
+    if (showDetail && (key.leftArrow || input === "b" || input === "h")) {
+      setShowDetail(false);
+      return;
+    }
+    if (input === "x") {
+      stopSelectedTask();
+    }
   });
 
   return (
@@ -83,14 +205,43 @@ export function BackgroundTasksDialog({
       <Text bold={true}>Background tasks</Text>
       {sorted.length === 0 ? (
         <Text dimColor={true}>No background tasks</Text>
+      ) : showDetail && selectedTask ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={taskStatusColor(selectedTask.status)} bold={true}>
+            Task details
+          </Text>
+          <Text>
+            {selectedTask.status} · {selectedTask.type} · {taskTitle(selectedTask)}
+          </Text>
+          <Text dimColor={true}>id: {selectedTask.id}</Text>
+          {taskDetail(selectedTask) ? (
+            <Text dimColor={true}>{taskDetail(selectedTask)}</Text>
+          ) : null}
+          {"command" in selectedTask && selectedTask.command ? (
+            <Text dimColor={true}>command: {selectedTask.command}</Text>
+          ) : null}
+          {"prompt" in selectedTask && selectedTask.prompt ? (
+            <Text dimColor={true}>prompt: {selectedTask.prompt}</Text>
+          ) : null}
+          <Text dimColor={true}>view output: {selectedTask.outputFile}</Text>
+          <Box marginTop={1}>
+            <Text dimColor={true}>
+              ←/b back · ↑/↓ select · {taskActionLabel(selectedTask) === "Stop" ? "x stop · " : ""}
+              Esc/q closes
+            </Text>
+          </Box>
+          {taskActionLabel(selectedTask) === "Stop unavailable" ? (
+            <Text dimColor={true}>Remote task stop is not available from this session.</Text>
+          ) : null}
+        </Box>
       ) : (
         sorted.map((task) => {
-          const selected = initialDetailTaskId === task.id;
+          const selected = selectedTaskId === task.id;
           const detail = taskDetail(task);
           const color = taskStatusColor(task.status);
           return (
             <Box key={task.id} flexDirection="column" marginTop={1}>
-              <Text color={color} bold={selected}>
+              <Text color={selected ? "suggestion" : color} bold={selected}>
                 {selected ? "› " : "  "}
                 {task.status} · {task.type} · {taskTitle(task)}
               </Text>
@@ -101,9 +252,10 @@ export function BackgroundTasksDialog({
         })
       )}
       <Box marginTop={1}>
-        <Text dimColor={true}>Esc/q closes</Text>
+        <Text dimColor={true}>
+          {sorted.length === 0 ? "Esc/q closes" : "↑/↓ select · Enter opens details · x stops · Esc/q closes"}
+        </Text>
       </Box>
     </Box>
   );
 }
-
