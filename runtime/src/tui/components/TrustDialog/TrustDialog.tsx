@@ -126,10 +126,19 @@ export function TrustDialog(t0) {
   const hasSkillsBash = t11;
   const hasAnyBashExecution = bashSettingSources.length > 0 || hasSlashCommandBash || hasSkillsBash;
   const hasTrustDialogAccepted = checkHasTrustDialogAccepted();
+  React.useEffect(() => {
+    if (!hasTrustDialogAccepted) {
+      return;
+    }
+    onDone();
+  }, [hasTrustDialogAccepted, onDone]);
   let t12;
   let t13;
   if ($[13] !== hasAnyBashExecution) {
     t12 = () => {
+      if (checkHasTrustDialogAccepted()) {
+        return;
+      }
       const isHomeDir = homedir() === getCwd();
       logEvent("agenc_trust_dialog_shown", {
         isHomeDir,
@@ -197,7 +206,6 @@ export function TrustDialog(t0) {
   }
   useKeybinding("confirm:no", _temp7, t15);
   if (hasTrustDialogAccepted) {
-    setTimeout(onDone);
     return null;
   }
   let t16;

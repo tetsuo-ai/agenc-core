@@ -11,4 +11,10 @@ describe("TrustDialog command sources", () => {
     expect(source).not.toContain("commands_DEPRECATED");
     expect(source).toContain('command.loadedFrom === "skills"');
   });
+
+  test("does not schedule accepted-state completion during render", () => {
+    expect(source).not.toContain("setTimeout(onDone)");
+    expect(source).toContain("if (!hasTrustDialogAccepted)");
+    expect(source).toContain("onDone();");
+  });
 });
