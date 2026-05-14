@@ -1,20 +1,20 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { resolve as resolvePath } from 'path';
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { useRegisterOverlay } from '../context/overlayContext';
 import { useTerminalSize } from '../hooks/useTerminalSize';
+import { stringWidth } from '../ink/stringWidth.js';
 import { Text } from '../ink.js';
 import { logEvent } from '../../services/analytics/index';
-import { getCwd } from '../../utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openFileInExternalEditor } from '../../utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncatePathMiddle, truncateToWidth } from '../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { highlightMatch } from '../../utils/highlightMatch'; // upstream-import: keep target is owned by another Z-PURGE item
-import { relativePath } from '../../utils/permissions/filesystem'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileInRange } from '../../utils/readFileInRange'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ripGrepStream } from '../../utils/ripgrep'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd';
+import { openFileInExternalEditor } from '../../utils/editor';
+import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
+import { highlightMatch } from '../../utils/highlightMatch';
+import { relativePath } from '../../utils/permissions/filesystem';
+import { readFileInRange } from '../../utils/readFileInRange';
+import { ripGrepStream } from '../../utils/ripgrep';
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {
@@ -33,12 +33,42 @@ const PREVIEW_CONTEXT_LINES = 4;
 const MAX_MATCHES_PER_FILE = 10;
 const MAX_TOTAL_MATCHES = 500;
 
+export function computeGlobalSearchLayout(columns: number, rows: number) {
+  const safeColumns = Math.max(1, Math.floor(columns || 0));
+  const safeRows = Math.max(1, Math.floor(rows || 0));
+  const previewOnRight = safeColumns >= 140;
+  const visibleResults = Math.min(VISIBLE_RESULTS, Math.max(4, safeRows - 14));
+  const listWidth = previewOnRight ? Math.max(1, Math.floor(Math.max(1, safeColumns - 10) * 0.5)) : Math.max(1, safeColumns - 8);
+  const maxPathWidth = Math.max(1, Math.min(Math.floor(listWidth * 0.4), Math.max(1, listWidth - 2)));
+  const maxTextWidth = Math.max(1, listWidth - maxPathWidth - 4);
+  const previewWidth = previewOnRight ? Math.max(1, safeColumns - listWidth - 14) : Math.max(1, safeColumns - 6);
+  return {
+    previewOnRight,
+    visibleResults,
+    listWidth,
+    maxPathWidth,
+    maxTextWidth,
+    previewWidth
+  };
+}
+
+function renderMatchText(m: Match, query: string, listWidth: number, maxPathWidth: number, maxTextWidth: number, isFocused: boolean): React.ReactNode {
+  const lineSuffix = `:${m.line}`;
+  const pathBudget = Math.max(1, Math.min(maxPathWidth, listWidth - lineSuffix.length - 1));
+  const prefix = truncateToWidth(`${truncatePathMiddle(m.file, pathBudget)}${lineSuffix}`, listWidth);
+  const textWidth = Math.max(0, Math.min(maxTextWidth, listWidth - stringWidth(prefix) - 1));
+  return <Text color={isFocused ? "suggestion" : undefined}>
+      <Text dimColor={true}>{prefix}</Text>
+      {textWidth > 0 && <> {highlightMatch(truncateToWidth(m.text.trimStart(), textWidth), query)}</>}
+    </Text>;
+}
+
 /**
  * Global Search dialog (ctrl+shift+f / cmd+shift+f).
  * Debounced ripgrep search across the workspace.
  */
 export function GlobalSearchDialog(t0) {
-  const $ = _c(40);
+  const $ = _c(41);
   const {
     onDone,
     onInsert
@@ -48,8 +78,14 @@ export function GlobalSearchDialog(t0) {
     columns,
     rows
   } = useTerminalSize();
-  const previewOnRight = columns >= 140;
-  const visibleResults = Math.min(VISIBLE_RESULTS, Math.max(4, rows - 14));
+  const {
+    previewOnRight,
+    visibleResults,
+    listWidth,
+    maxPathWidth,
+    maxTextWidth,
+    previewWidth
+  } = computeGlobalSearchLayout(columns, rows);
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = [];
@@ -153,15 +189,11 @@ export function GlobalSearchDialog(t0) {
     t6 = $[6];
   }
   const handleQueryChange = t6;
-  const listWidth = previewOnRight ? Math.floor((columns - 10) * 0.5) : columns - 8;
-  const maxPathWidth = Math.max(20, Math.floor(listWidth * 0.4));
-  const maxTextWidth = Math.max(20, listWidth - maxPathWidth - 4);
-  const previewWidth = previewOnRight ? Math.max(40, columns - listWidth - 14) : columns - 6;
   let t7;
   if ($[7] !== matches.length || $[8] !== onDone) {
     t7 = m_3 => {
       const opened = openFileInExternalEditor(resolvePath(getCwd(), m_3.file), m_3.line);
-      logEvent("tengu_global_search_select", {
+      logEvent("agenc_global_search_select", {
         result_count: matches.length,
         opened_editor: opened
       });
@@ -178,7 +210,7 @@ export function GlobalSearchDialog(t0) {
   if ($[10] !== matches.length || $[11] !== onDone || $[12] !== onInsert) {
     t8 = (m_4, mention) => {
       onInsert(mention ? `@${m_4.file}#L${m_4.line} ` : `${m_4.file}:${m_4.line} `);
-      logEvent("tengu_global_search_insert", {
+      logEvent("agenc_global_search_insert", {
         result_count: matches.length,
         mention
       });
@@ -192,7 +224,7 @@ export function GlobalSearchDialog(t0) {
     t8 = $[13];
   }
   const handleInsert = t8;
-  const matchLabel = matches.length > 0 ? `${matches.length}${truncated ? "+" : ""} matches${isSearching ? "\u2026" : ""}` : " ";
+  const matchLabel = matches.length > 0 ? `${matches.length}${truncated ? "+" : ""} matches${isSearching ? "..." : ""}` : " ";
   const t9 = previewOnRight ? "right" : "bottom";
   let t10;
   if ($[14] !== handleInsert) {
@@ -218,49 +250,50 @@ export function GlobalSearchDialog(t0) {
   }
   let t12;
   if ($[18] !== isSearching) {
-    t12 = q_0 => isSearching ? "Searching\u2026" : q_0 ? "No matches" : "Type to search\u2026";
+    t12 = q_0 => isSearching ? "Searching..." : q_0 ? "No matches" : "Type to search...";
     $[18] = isSearching;
     $[19] = t12;
   } else {
     t12 = $[19];
   }
   let t13;
-  if ($[20] !== maxPathWidth || $[21] !== maxTextWidth || $[22] !== query) {
-    t13 = (m_7, isFocused) => <Text color={isFocused ? "suggestion" : undefined}><Text dimColor={true}>{truncatePathMiddle(m_7.file, maxPathWidth)}:{m_7.line}</Text>{" "}{highlightMatch(truncateToWidth(m_7.text.trimStart(), maxTextWidth), query)}</Text>;
-    $[20] = maxPathWidth;
-    $[21] = maxTextWidth;
-    $[22] = query;
-    $[23] = t13;
+  if ($[20] !== listWidth || $[21] !== maxPathWidth || $[22] !== maxTextWidth || $[23] !== query) {
+    t13 = (m_7, isFocused) => renderMatchText(m_7, query, listWidth, maxPathWidth, maxTextWidth, isFocused);
+    $[20] = listWidth;
+    $[21] = maxPathWidth;
+    $[22] = maxTextWidth;
+    $[23] = query;
+    $[24] = t13;
   } else {
-    t13 = $[23];
+    t13 = $[24];
   }
   let t14;
-  if ($[24] !== preview || $[25] !== previewWidth || $[26] !== query) {
-    t14 = m_8 => preview?.file === m_8.file && preview.line === m_8.line ? <><Text dimColor={true}>{truncatePathMiddle(m_8.file, previewWidth)}:{m_8.line}</Text>{preview.content.split("\n").map((line_0, i) => <Text key={i}>{highlightMatch(truncateToWidth(line_0, previewWidth), query)}</Text>)}</> : <LoadingState message={"Loading\u2026"} dimColor={true} />;
-    $[24] = preview;
-    $[25] = previewWidth;
-    $[26] = query;
-    $[27] = t14;
+  if ($[25] !== preview || $[26] !== previewWidth || $[27] !== query) {
+    t14 = m_8 => preview?.file === m_8.file && preview.line === m_8.line ? <><Text dimColor={true}>{truncatePathMiddle(m_8.file, previewWidth)}:{m_8.line}</Text>{preview.content.split("\n").map((line_0, i) => <Text key={i}>{highlightMatch(truncateToWidth(line_0, previewWidth), query)}</Text>)}</> : <LoadingState message={"Loading..."} dimColor={true} />;
+    $[25] = preview;
+    $[26] = previewWidth;
+    $[27] = query;
+    $[28] = t14;
   } else {
-    t14 = $[27];
+    t14 = $[28];
   }
   let t15;
-  if ($[28] !== handleOpen || $[29] !== matchLabel || $[30] !== matches || $[31] !== onDone || $[32] !== t10 || $[33] !== t11 || $[34] !== t12 || $[35] !== t13 || $[36] !== t14 || $[37] !== t9 || $[38] !== visibleResults) {
-    t15 = <FuzzyPicker title="Global Search" placeholder={"Type to search\u2026"} items={matches} getKey={matchKey} visibleCount={visibleResults} direction="up" previewPosition={t9} onQueryChange={handleQueryChange} onFocus={setFocused} onSelect={handleOpen} onTab={t10} onShiftTab={t11} onCancel={onDone} emptyMessage={t12} matchLabel={matchLabel} selectAction="open in editor" renderItem={t13} renderPreview={t14} />;
-    $[28] = handleOpen;
-    $[29] = matchLabel;
-    $[30] = matches;
-    $[31] = onDone;
-    $[32] = t10;
-    $[33] = t11;
-    $[34] = t12;
-    $[35] = t13;
-    $[36] = t14;
-    $[37] = t9;
-    $[38] = visibleResults;
-    $[39] = t15;
+  if ($[29] !== handleOpen || $[30] !== matchLabel || $[31] !== matches || $[32] !== onDone || $[33] !== t10 || $[34] !== t11 || $[35] !== t12 || $[36] !== t13 || $[37] !== t14 || $[38] !== t9 || $[39] !== visibleResults) {
+    t15 = <FuzzyPicker title="Global Search" placeholder={"Type to search..."} items={matches} getKey={matchKey} visibleCount={visibleResults} direction="up" previewPosition={t9} onQueryChange={handleQueryChange} onFocus={setFocused} onSelect={handleOpen} onTab={t10} onShiftTab={t11} onCancel={onDone} emptyMessage={t12} matchLabel={matchLabel} selectAction="open in editor" renderItem={t13} renderPreview={t14} />;
+    $[29] = handleOpen;
+    $[30] = matchLabel;
+    $[31] = matches;
+    $[32] = onDone;
+    $[33] = t10;
+    $[34] = t11;
+    $[35] = t12;
+    $[36] = t13;
+    $[37] = t14;
+    $[38] = t9;
+    $[39] = visibleResults;
+    $[40] = t15;
   } else {
-    t15 = $[39];
+    t15 = $[40];
   }
   return t15;
 }
