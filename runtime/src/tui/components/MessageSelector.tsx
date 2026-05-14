@@ -1,36 +1,42 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import type { ContentBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { randomUUID, type UUID } from 'crypto';
 import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState } from '../state/AppState.js';
-import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
+import { logError } from '../../utils/log.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../../types/message';
-import { stripDisplayTags } from '../../utils/displayTags.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { stripDisplayTags } from '../../utils/displayTags.js';
+import { createUserMessage, extractTag, isEmptyMessageText, isSyntheticMessage, isToolUseResultMessage } from '../../utils/messages.js';
 import { type OptionWithDescription, Select } from './CustomSelect/select';
 import { Spinner } from './spinner/Spinner.js';
 import { selectableUserMessagesFilter } from './message-selector-filter.js';
 export { selectableUserMessagesFilter } from './message-selector-filter.js';
-function isTextBlock(block: ContentBlockParam): block is TextBlockParam {
-  return block.type === 'text';
+type MessageSelectorTextBlock = {
+  type: 'text';
+  text: string;
+};
+function isTextBlock(block: unknown): block is MessageSelectorTextBlock {
+  return typeof block === 'object' && block !== null && (block as {
+    type?: unknown;
+  }).type === 'text' && typeof (block as {
+    text?: unknown;
+  }).text === 'string';
 }
 import * as path from 'path';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { FileEditOutput } from '../../tools/FileEditTool/types.js';
 import type { Output as FileWriteToolOutput } from '../../tools/FileWriteTool/FileWriteTool.js';
-import { COMMAND_MESSAGE_TAG } from '../../constants/xml'; // upstream-import: keep target is owned by another Z-PURGE item
-import { count } from '../../utils/array'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatRelativeTimeAgo, truncate } from '../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../utils/theme'; // upstream-import: keep target is owned by another Z-PURGE item
+import { COMMAND_MESSAGE_TAG } from '../../constants/xml';
+import { count } from '../../utils/array';
+import { formatRelativeTimeAgo, truncate } from '../../utils/format';
+import type { Theme } from '../../utils/theme';
 import { Divider } from './design-system/Divider';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {
@@ -47,6 +53,11 @@ type Props = {
   preselectedMessage?: UserMessage;
 };
 const MAX_VISIBLE_MESSAGES = 7;
+export function computeMessageOptionTextWidth(columns: number, paddingRight?: number): number {
+  const safeColumns = Math.max(1, Math.floor(columns || 0));
+  const safePadding = Math.max(0, Math.floor(paddingRight || 0));
+  return Math.max(1, safeColumns - safePadding);
+}
 export function MessageSelector({
   messages,
   onPreRestore,
@@ -137,7 +148,7 @@ export function MessageSelector({
 
   // Log when selector is opened
   useEffect(() => {
-    logEvent('tengu_message_selector_opened', {});
+    logEvent('agenc_message_selector_opened', {});
   }, []);
 
   // Helper to restore conversation without confirmation
@@ -157,7 +168,7 @@ export function MessageSelector({
   async function handleSelect(message_0: UserMessage) {
     const index = messages.indexOf(message_0);
     const indexFromEnd = messages.length - 1 - index;
-    logEvent('tengu_message_selector_selected', {
+    logEvent('agenc_message_selector_selected', {
       index_from_end: indexFromEnd,
       message_type: message_0.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       is_current_prompt: false
@@ -177,7 +188,7 @@ export function MessageSelector({
     setDiffStatsForRestore(diffStats);
   }
   async function onSelectRestoreOption(option: RestoreOption) {
-    logEvent('tengu_message_selector_restore_option_selected', {
+    logEvent('agenc_message_selector_restore_option_selected', {
       option: option as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
     if (!messageToRestore) {
@@ -253,7 +264,7 @@ export function MessageSelector({
       setMessageToRestore(undefined);
       return;
     }
-    logEvent('tengu_message_selector_cancelled', {});
+    logEvent('agenc_message_selector_cancelled', {});
     onClose();
   }, [onClose, messageToRestore, preselectedMessage]);
   const moveUp = useCallback(() => setSelectedIndex(prev => Math.max(0, prev - 1)), []);
@@ -664,7 +675,7 @@ function UserMessageOption(t0) {
       T0 = Text;
       t1 = color;
       t2 = dimColor;
-      t3 = paddingRight ? truncate(messageText, columns - paddingRight, true) : messageText.slice(0, 500).split("\n").slice(0, 4).join("\n");
+      t3 = paddingRight ? truncate(messageText, computeMessageOptionTextWidth(columns, paddingRight), true) : messageText.slice(0, 500).split("\n").slice(0, 4).join("\n");
     }
     $[3] = color;
     $[4] = columns;
