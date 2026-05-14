@@ -184,7 +184,7 @@ export async function generateAgent(
     throw new Error('Invalid agent configuration generated')
   }
 
-  logEvent('tengu_agent_definition_generated', {
+  logEvent('agenc_agent_definition_generated', {
     agent_identifier:
       parsed.identifier as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })

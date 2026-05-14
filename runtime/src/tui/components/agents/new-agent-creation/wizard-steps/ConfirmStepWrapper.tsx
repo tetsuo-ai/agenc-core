@@ -48,7 +48,7 @@ export function ConfirmStepWrapper({
         });
         await editFileInEditor(filePath);
       }
-      logEvent('tengu_agent_created', {
+      logEvent('agenc_agent_created', {
         agent_type: wizardData.finalAgent.agentType,
         generation_method: wizardData.wasGenerated ? 'generated' : 'manual',
         source: wizardData.location!,
