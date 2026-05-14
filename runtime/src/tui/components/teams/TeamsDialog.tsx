@@ -1,21 +1,21 @@
 import { c as _c } from "react-compiler-runtime";
 import { randomUUID } from 'crypto';
-import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useInterval } from 'usehooks-ts';
 import { useRegisterOverlay } from '../../context/overlayContext';
-import { stringWidth } from '../../ink/stringWidth.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow dialog navigation
 import { Box, Text, useInput } from '../../ink.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { type AppState, useAppState, useSetAppState } from '../../state/AppState.js';
 import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManager.js';
 import { logForDebugging } from 'src/utils/debug.js';
+import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncateToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -29,6 +29,11 @@ import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../.
 import { createModeSetRequestMessage, sendShutdownRequestToMailbox, writeToMailbox } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Dialog } from '../design-system/Dialog';
 import ThemedText from '../design-system/ThemedText';
+import {
+  getTeamListFooterText,
+  getTeammateDetailFooterText,
+  getTeamsDialogPromptPreview,
+} from './TeamsDialog.layout.js';
 type Props = {
   initialTeams?: TeamSummary[];
   onDone: () => void;
@@ -41,6 +46,45 @@ type DialogLevel = {
   teamName: string;
   memberName: string;
 };
+type TeamsDialogNotice = {
+  kind: 'error' | 'info';
+  message: string;
+};
+type TeamActionResult = {
+  ok: true;
+  message?: string;
+} | {
+  ok: false;
+  message: string;
+};
+type TeammateTasksLoadState = {
+  status: 'loading';
+  tasks: Task[];
+} | {
+  status: 'loaded';
+  tasks: Task[];
+} | {
+  status: 'error';
+  tasks: Task[];
+  message: string;
+};
+
+function ok(message?: string): TeamActionResult {
+  return { ok: true, message };
+}
+
+function fail(message: string): TeamActionResult {
+  return { ok: false, message };
+}
+
+function ActionNotice({
+  notice
+}: {
+  notice: TeamsDialogNotice | null;
+}): React.ReactNode {
+  if (!notice) return null;
+  return <Box marginTop={1}><Text color={notice.kind === 'error' ? 'error' : 'background'}>{notice.message}</Text></Box>;
+}
 
 /**
  * Dialog for viewing teammates in the current team
@@ -63,6 +107,7 @@ export function TeamsDialog({
   });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [actionNotice, setActionNotice] = useState<TeamsDialogNotice | null>(null);
 
   // initialTeams is now always provided from PromptInput (derived from teamContext)
   // No filesystem I/O needed here
@@ -114,6 +159,7 @@ export function TeamsDialog({
   useInput((input, key) => {
     // Handle left arrow to go back
     if (key.leftArrow) {
+      setActionNotice(null);
       if (dialogLevel.type === 'teammateDetail') {
         goBackToList();
       }
@@ -122,6 +168,7 @@ export function TeamsDialog({
 
     // Handle up/down navigation
     if (key.upArrow || key.downArrow) {
+      setActionNotice(null);
       const maxIndex = getMaxIndex();
       if (key.upArrow) {
         setSelectedIndex(prev => Math.max(0, prev - 1));
@@ -133,6 +180,7 @@ export function TeamsDialog({
 
     // Handle Enter to drill down or view output
     if (key.return) {
+      setActionNotice(null);
       if (dialogLevel.type === 'teammateList' && teammateStatuses[selectedIndex]) {
         setDialogLevel({
           type: 'teammateDetail',
@@ -141,64 +189,131 @@ export function TeamsDialog({
         });
       } else if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
         // View output - switch to tmux pane
-        void viewTeammateOutput(currentTeammate.tmuxPaneId, currentTeammate.backendType);
-        onDone();
+        void viewTeammateOutput(currentTeammate.tmuxPaneId, currentTeammate.backendType).then(result => {
+          if (!result.ok) {
+            setActionNotice({
+              kind: 'error',
+              message: result.message
+            });
+            return;
+          }
+          onDone();
+        });
       }
       return;
     }
 
     // Handle 'k' to kill teammate
     if (input === 'k') {
+      setActionNotice(null);
       if (dialogLevel.type === 'teammateList' && teammateStatuses[selectedIndex]) {
-        void killTeammate(teammateStatuses[selectedIndex].tmuxPaneId, teammateStatuses[selectedIndex].backendType, dialogLevel.teamName, teammateStatuses[selectedIndex].agentId, teammateStatuses[selectedIndex].name, setAppState).then(() => {
+        void killTeammate(teammateStatuses[selectedIndex].tmuxPaneId, teammateStatuses[selectedIndex].backendType, dialogLevel.teamName, teammateStatuses[selectedIndex].agentId, teammateStatuses[selectedIndex].name, setAppState).then(result => {
+          if (!result.ok) {
+            setActionNotice({
+              kind: 'error',
+              message: result.message
+            });
+            return;
+          }
           setRefreshKey(k => k + 1);
           // Adjust selection if needed
           setSelectedIndex(prev => Math.max(0, Math.min(prev, teammateStatuses.length - 2)));
         });
       } else if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
-        void killTeammate(currentTeammate.tmuxPaneId, currentTeammate.backendType, dialogLevel.teamName, currentTeammate.agentId, currentTeammate.name, setAppState);
-        goBackToList();
+        void killTeammate(currentTeammate.tmuxPaneId, currentTeammate.backendType, dialogLevel.teamName, currentTeammate.agentId, currentTeammate.name, setAppState).then(result => {
+          if (!result.ok) {
+            setActionNotice({
+              kind: 'error',
+              message: result.message
+            });
+            return;
+          }
+          goBackToList();
+          setRefreshKey(k => k + 1);
+        });
       }
       return;
     }
 
     // Handle 's' for shutdown of selected teammate
     if (input === 's') {
+      setActionNotice(null);
       if (dialogLevel.type === 'teammateList' && teammateStatuses[selectedIndex]) {
         const teammate = teammateStatuses[selectedIndex];
-        void sendShutdownRequestToMailbox(teammate.name, dialogLevel.teamName, 'Graceful shutdown requested by team lead');
+        void requestTeammateShutdown(teammate.name, dialogLevel.teamName).then(result => {
+          if (!result.ok) {
+            setActionNotice({
+              kind: 'error',
+              message: result.message
+            });
+          }
+        });
       } else if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
-        void sendShutdownRequestToMailbox(currentTeammate.name, dialogLevel.teamName, 'Graceful shutdown requested by team lead');
-        goBackToList();
+        void requestTeammateShutdown(currentTeammate.name, dialogLevel.teamName).then(result => {
+          if (!result.ok) {
+            setActionNotice({
+              kind: 'error',
+              message: result.message
+            });
+            return;
+          }
+          goBackToList();
+        });
       }
       return;
     }
 
     // Handle 'h' to hide/show individual teammate (only for backends that support it)
     if (input === 'h') {
+      setActionNotice(null);
       const backend = getCachedBackend();
       const teammate = dialogLevel.type === 'teammateList' ? teammateStatuses[selectedIndex] : dialogLevel.type === 'teammateDetail' ? currentTeammate : null;
       if (teammate && backend?.supportsHideShow) {
-        void toggleTeammateVisibility(teammate, dialogLevel.teamName).then(() => {
+        void toggleTeammateVisibility(teammate, dialogLevel.teamName).then(result => {
+          if (!result.ok) {
+            setActionNotice({
+              kind: 'error',
+              message: result.message
+            });
+            return;
+          }
           // Force refresh of teammate statuses
           setRefreshKey(k => k + 1);
+          if (dialogLevel.type === 'teammateDetail') {
+            goBackToList();
+          }
         });
-        if (dialogLevel.type === 'teammateDetail') {
-          goBackToList();
-        }
+      } else if (teammate) {
+        setActionNotice({
+          kind: 'error',
+          message: `Cannot hide or show @${teammate.name}: current backend does not support pane visibility.`
+        });
       }
       return;
     }
 
     // Handle 'H' to hide/show all teammates (only for backends that support it)
     if (input === 'H' && dialogLevel.type === 'teammateList') {
+      setActionNotice(null);
       const backend = getCachedBackend();
       if (backend?.supportsHideShow && teammateStatuses.length > 0) {
         // If any are visible, hide all. Otherwise, show all.
         const anyVisible = teammateStatuses.some(t => !t.isHidden);
-        void Promise.all(teammateStatuses.map(t => anyVisible ? hideTeammate(t, dialogLevel.teamName) : showTeammate(t, dialogLevel.teamName))).then(() => {
+        void Promise.all(teammateStatuses.map(t => anyVisible ? hideTeammate(t, dialogLevel.teamName) : showTeammate(t, dialogLevel.teamName))).then(results => {
+          const failed = results.find(result => !result.ok);
+          if (failed) {
+            setActionNotice({
+              kind: 'error',
+              message: failed.message
+            });
+          }
           // Force refresh of teammate statuses
           setRefreshKey(k => k + 1);
+        });
+      } else if (teammateStatuses.length > 0) {
+        setActionNotice({
+          kind: 'error',
+          message: 'Cannot hide or show all teammates: current backend does not support pane visibility.'
         });
       }
       return;
@@ -206,9 +321,17 @@ export function TeamsDialog({
 
     // Handle 'p' to prune (kill) all idle teammates
     if (input === 'p' && dialogLevel.type === 'teammateList') {
+      setActionNotice(null);
       const idleTeammates = teammateStatuses.filter(t => t.status === 'idle');
       if (idleTeammates.length > 0) {
-        void Promise.all(idleTeammates.map(t => killTeammate(t.tmuxPaneId, t.backendType, dialogLevel.teamName, t.agentId, t.name, setAppState))).then(() => {
+        void Promise.all(idleTeammates.map(t => killTeammate(t.tmuxPaneId, t.backendType, dialogLevel.teamName, t.agentId, t.name, setAppState))).then(results => {
+          const failed = results.find(result => !result.ok);
+          if (failed) {
+            setActionNotice({
+              kind: 'error',
+              message: failed.message
+            });
+          }
           setRefreshKey(k => k + 1);
           setSelectedIndex(prev => Math.max(0, Math.min(prev, teammateStatuses.length - idleTeammates.length - 1)));
         });
@@ -227,10 +350,10 @@ export function TeamsDialog({
 
   // Render based on dialog level
   if (dialogLevel.type === 'teammateList') {
-    return <TeamDetailView teamName={dialogLevel.teamName} teammates={teammateStatuses} selectedIndex={selectedIndex} onCancel={onDone} />;
+    return <TeamDetailView teamName={dialogLevel.teamName} teammates={teammateStatuses} selectedIndex={selectedIndex} onCancel={onDone} actionNotice={actionNotice} />;
   }
   if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
-    return <TeammateDetailView teammate={currentTeammate} teamName={dialogLevel.teamName} onCancel={goBackToList} />;
+    return <TeammateDetailView teammate={currentTeammate} teamName={dialogLevel.teamName} onCancel={goBackToList} actionNotice={actionNotice} />;
   }
   return null;
 }
@@ -239,57 +362,32 @@ type TeamDetailViewProps = {
   teammates: TeammateStatus[];
   selectedIndex: number;
   onCancel: () => void;
+  actionNotice: TeamsDialogNotice | null;
 };
 function TeamDetailView(t0) {
-  const $ = _c(13);
   const {
     teamName,
     teammates,
     selectedIndex,
-    onCancel
+    onCancel,
+    actionNotice
   } = t0;
+  const glyphs = selectAgenCTuiGlyphs();
+  const {
+    columns
+  } = useTerminalSize();
   const subtitle = `${teammates.length} ${teammates.length === 1 ? "teammate" : "teammates"}`;
   const supportsHideShow = getCachedBackend()?.supportsHideShow ?? false;
   const cycleModeShortcut = useShortcutDisplay("confirm:cycleMode", "Confirmation", "shift+tab");
   const t1 = `Team ${teamName}`;
-  let t2;
-  if ($[0] !== selectedIndex || $[1] !== teammates) {
-    t2 = teammates.length === 0 ? <Text dimColor={true}>No teammates</Text> : <Box flexDirection="column">{teammates.map((teammate, index) => <TeammateListItem key={teammate.agentId} teammate={teammate} isSelected={index === selectedIndex} />)}</Box>;
-    $[0] = selectedIndex;
-    $[1] = teammates;
-    $[2] = t2;
-  } else {
-    t2 = $[2];
-  }
-  let t3;
-  if ($[3] !== onCancel || $[4] !== subtitle || $[5] !== t1 || $[6] !== t2) {
-    t3 = <Dialog title={t1} subtitle={subtitle} onCancel={onCancel} color="background" hideInputGuide={true}>{t2}</Dialog>;
-    $[3] = onCancel;
-    $[4] = subtitle;
-    $[5] = t1;
-    $[6] = t2;
-    $[7] = t3;
-  } else {
-    t3 = $[7];
-  }
-  let t4;
-  if ($[8] !== cycleModeShortcut) {
-    t4 = <Box marginLeft={1}><Text dimColor={true}>{figures.arrowUp}/{figures.arrowDown} select · Enter view · k kill · s shutdown · p prune idle{supportsHideShow && " \xB7 h hide/show \xB7 H hide/show all"}{" \xB7 "}{cycleModeShortcut} sync cycle modes for all · Esc close</Text></Box>;
-    $[8] = cycleModeShortcut;
-    $[9] = t4;
-  } else {
-    t4 = $[9];
-  }
-  let t5;
-  if ($[10] !== t3 || $[11] !== t4) {
-    t5 = <>{t3}{t4}</>;
-    $[10] = t3;
-    $[11] = t4;
-    $[12] = t5;
-  } else {
-    t5 = $[12];
-  }
-  return t5;
+  const footerText = getTeamListFooterText({
+    glyphs,
+    supportsHideShow,
+    cycleModeShortcut,
+    columns
+  });
+  const content = <Box flexDirection="column">{teammates.length === 0 ? <Text dimColor={true}>No teammates</Text> : <Box flexDirection="column">{teammates.map((teammate, index) => <TeammateListItem key={teammate.agentId} teammate={teammate} isSelected={index === selectedIndex} />)}</Box>}<ActionNotice notice={actionNotice} /></Box>;
+  return <><Dialog title={t1} subtitle={subtitle} onCancel={onCancel} color="background" hideInputGuide={true}>{content}</Dialog><Box marginLeft={1}><Text dimColor={true}>{footerText}</Text></Box></>;
 }
 type TeammateListItemProps = {
   teammate: TeammateStatus;
@@ -301,6 +399,7 @@ function TeammateListItem(t0) {
     teammate,
     isSelected
   } = t0;
+  const glyphs = selectAgenCTuiGlyphs();
   const isIdle = teammate.status === "idle";
   const shouldDim = isIdle && !isSelected;
   let modeSymbol;
@@ -318,7 +417,7 @@ function TeammateListItem(t0) {
   }
   const modeColor = t1;
   const t2 = isSelected ? "suggestion" : undefined;
-  const t3 = isSelected ? figures.pointer + " " : "  ";
+  const t3 = isSelected ? `${glyphs.pointer} ` : "  ";
   let t4;
   if ($[3] !== teammate.isHidden) {
     t4 = teammate.isHidden && <Text dimColor={true}>[hidden] </Text>;
@@ -373,204 +472,120 @@ type TeammateDetailViewProps = {
   teammate: TeammateStatus;
   teamName: string;
   onCancel: () => void;
+  actionNotice: TeamsDialogNotice | null;
 };
 function TeammateDetailView(t0) {
-  const $ = _c(39);
   const {
     teammate,
     teamName,
-    onCancel
+    onCancel,
+    actionNotice
   } = t0;
+  const glyphs = selectAgenCTuiGlyphs();
+  const {
+    columns
+  } = useTerminalSize();
   const [promptExpanded, setPromptExpanded] = useState(false);
   const cycleModeShortcut = useShortcutDisplay("confirm:cycleMode", "Confirmation", "shift+tab");
+  const supportsHideShow = getCachedBackend()?.supportsHideShow ?? false;
   const themeColor = teammate.color ? AGENT_COLOR_TO_THEME_COLOR[teammate.color as keyof typeof AGENT_COLOR_TO_THEME_COLOR] : undefined;
-  let t1;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = [];
-    $[0] = t1;
-  } else {
-    t1 = $[0];
-  }
-  const [teammateTasks, setTeammateTasks] = useState(t1);
-  let t2;
-  let t3;
-  if ($[1] !== teamName || $[2] !== teammate.agentId || $[3] !== teammate.name) {
-    t2 = () => {
-      let cancelled = false;
-      listTasks(teamName).then(allTasks => {
-        if (cancelled) {
-          return;
-        }
-        setTeammateTasks(allTasks.filter(task => task.owner === teammate.agentId || task.owner === teammate.name));
+  const [tasksState, setTasksState] = useState<TeammateTasksLoadState>({
+    status: 'loading',
+    tasks: []
+  });
+  useEffect(() => {
+    let cancelled = false;
+    setTasksState({
+      status: 'loading',
+      tasks: []
+    });
+    listTasks(teamName).then(allTasks => {
+      if (cancelled) return;
+      setTasksState({
+        status: 'loaded',
+        tasks: allTasks.filter(task => task.owner === teammate.agentId || task.owner === teammate.name)
       });
-      return () => {
-        cancelled = true;
-      };
+    }).catch(error => {
+      if (cancelled) return;
+      setTasksState({
+        status: 'error',
+        tasks: [],
+        message: `Unable to load tasks: ${errorMessage(error)}`
+      });
+    });
+    return () => {
+      cancelled = true;
     };
-    t3 = [teamName, teammate.agentId, teammate.name];
-    $[1] = teamName;
-    $[2] = teammate.agentId;
-    $[3] = teammate.name;
-    $[4] = t2;
-    $[5] = t3;
-  } else {
-    t2 = $[4];
-    t3 = $[5];
-  }
-  useEffect(t2, t3);
-  let t4;
-  if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = input => {
-      if (input === "p") {
-        setPromptExpanded(_temp);
-      }
-    };
-    $[6] = t4;
-  } else {
-    t4 = $[6];
-  }
-  useInput(t4);
+  }, [teamName, teammate.agentId, teammate.name]);
+  useInput(input => {
+    if (input === "p") {
+      setPromptExpanded(prev => !prev);
+    }
+  });
   const workingPath = teammate.worktreePath || teammate.cwd;
-  let subtitleParts;
-  if ($[7] !== teammate.model || $[8] !== teammate.worktreePath || $[9] !== workingPath) {
-    subtitleParts = [];
-    if (teammate.model) {
-      subtitleParts.push(teammate.model);
-    }
-    if (workingPath) {
-      subtitleParts.push(teammate.worktreePath ? `worktree: ${workingPath}` : workingPath);
-    }
-    $[7] = teammate.model;
-    $[8] = teammate.worktreePath;
-    $[9] = workingPath;
-    $[10] = subtitleParts;
-  } else {
-    subtitleParts = $[10];
+  const subtitleParts = [];
+  if (teammate.model) {
+    subtitleParts.push(teammate.model);
   }
-  const subtitle = subtitleParts.join(" \xB7 ") || undefined;
-  let modeSymbol;
-  let t5;
-  if ($[11] !== teammate.mode) {
-    const mode = teammate.mode ? permissionModeFromString(teammate.mode) : "default";
-    modeSymbol = permissionModeSymbol(mode);
-    t5 = getModeColor(mode);
-    $[11] = teammate.mode;
-    $[12] = modeSymbol;
-    $[13] = t5;
-  } else {
-    modeSymbol = $[12];
-    t5 = $[13];
+  if (workingPath) {
+    subtitleParts.push(teammate.worktreePath ? `worktree: ${workingPath}` : workingPath);
   }
-  const modeColor = t5;
-  let t6;
-  if ($[14] !== modeColor || $[15] !== modeSymbol) {
-    t6 = modeSymbol && <Text color={modeColor}>{modeSymbol} </Text>;
-    $[14] = modeColor;
-    $[15] = modeSymbol;
-    $[16] = t6;
-  } else {
-    t6 = $[16];
-  }
-  let t7;
-  if ($[17] !== teammate.name || $[18] !== themeColor) {
-    t7 = themeColor ? <ThemedText color={themeColor}>{`@${teammate.name}`}</ThemedText> : `@${teammate.name}`;
-    $[17] = teammate.name;
-    $[18] = themeColor;
-    $[19] = t7;
-  } else {
-    t7 = $[19];
-  }
-  let t8;
-  if ($[20] !== t6 || $[21] !== t7) {
-    t8 = <>{t6}{t7}</>;
-    $[20] = t6;
-    $[21] = t7;
-    $[22] = t8;
-  } else {
-    t8 = $[22];
-  }
-  const title = t8;
-  let t9;
-  if ($[23] !== teammateTasks) {
-    t9 = teammateTasks.length > 0 && <Box flexDirection="column"><Text bold={true}>Tasks</Text>{teammateTasks.map(_temp2)}</Box>;
-    $[23] = teammateTasks;
-    $[24] = t9;
-  } else {
-    t9 = $[24];
-  }
-  let t10;
-  if ($[25] !== promptExpanded || $[26] !== teammate.prompt) {
-    t10 = teammate.prompt && <Box flexDirection="column"><Text bold={true}>Prompt</Text><Text>{promptExpanded ? teammate.prompt : truncateToWidth(teammate.prompt, 80)}{stringWidth(teammate.prompt) > 80 && !promptExpanded && <Text dimColor={true}> (p to expand)</Text>}</Text></Box>;
-    $[25] = promptExpanded;
-    $[26] = teammate.prompt;
-    $[27] = t10;
-  } else {
-    t10 = $[27];
-  }
-  let t11;
-  if ($[28] !== onCancel || $[29] !== subtitle || $[30] !== t10 || $[31] !== t9 || $[32] !== title) {
-    t11 = <Dialog title={title} subtitle={subtitle} onCancel={onCancel} color="background" hideInputGuide={true}>{t9}{t10}</Dialog>;
-    $[28] = onCancel;
-    $[29] = subtitle;
-    $[30] = t10;
-    $[31] = t9;
-    $[32] = title;
-    $[33] = t11;
-  } else {
-    t11 = $[33];
-  }
-  let t12;
-  if ($[34] !== cycleModeShortcut) {
-    t12 = <Box marginLeft={1}><Text dimColor={true}>{figures.arrowLeft} back · Esc close · k kill · s shutdown{getCachedBackend()?.supportsHideShow && " \xB7 h hide/show"}{" \xB7 "}{cycleModeShortcut} cycle mode</Text></Box>;
-    $[34] = cycleModeShortcut;
-    $[35] = t12;
-  } else {
-    t12 = $[35];
-  }
-  let t13;
-  if ($[36] !== t11 || $[37] !== t12) {
-    t13 = <>{t11}{t12}</>;
-    $[36] = t11;
-    $[37] = t12;
-    $[38] = t13;
-  } else {
-    t13 = $[38];
-  }
-  return t13;
+  const subtitle = subtitleParts.join(` ${glyphs.separator} `) || undefined;
+  const mode = teammate.mode ? permissionModeFromString(teammate.mode) : "default";
+  const modeSymbol = permissionModeSymbol(mode);
+  const modeColor = getModeColor(mode);
+  const agentName = themeColor ? <ThemedText color={themeColor}>{`@${teammate.name}`}</ThemedText> : `@${teammate.name}`;
+  const title = <>{modeSymbol && <Text color={modeColor}>{modeSymbol} </Text>}{agentName}</>;
+  const promptPreview = getTeamsDialogPromptPreview(teammate.prompt, columns, promptExpanded, glyphs.ellipsis);
+  const footerText = getTeammateDetailFooterText({
+    glyphs,
+    supportsHideShow,
+    cycleModeShortcut,
+    columns
+  });
+  const tasks = <Box flexDirection="column"><Text bold={true}>Tasks</Text>{tasksState.status === 'loading' ? <Text dimColor={true}>Loading tasks...</Text> : tasksState.status === 'error' ? <Text color="error">{tasksState.message}</Text> : tasksState.tasks.length === 0 ? <Text dimColor={true}>No tasks</Text> : tasksState.tasks.map(renderTeammateTaskRow)}</Box>;
+  const prompt = teammate.prompt && <Box flexDirection="column"><Text bold={true}>Prompt</Text><Text>{promptPreview.text}{promptPreview.showExpandHint && <Text dimColor={true}> (p to expand)</Text>}</Text></Box>;
+
+  return <><Dialog title={title} subtitle={subtitle} onCancel={onCancel} color="background" hideInputGuide={true}>{tasks}{prompt}<ActionNotice notice={actionNotice} /></Dialog><Box marginLeft={1}><Text dimColor={true}>{footerText}</Text></Box></>;
 }
-function _temp2(task_0) {
-  return <Text key={task_0.id} color={task_0.status === "completed" ? "success" : undefined}>{task_0.status === "completed" ? figures.tick : "\u25FC"}{" "}{task_0.subject}</Text>;
+function renderTeammateTaskRow(task: Task): React.ReactNode {
+  const statusText = task.status === "completed" ? "done" : task.status;
+  return <Text key={task.id} color={task.status === "completed" ? "success" : undefined}>{statusText} {task.subject}</Text>;
 }
-function _temp(prev) {
-  return !prev;
-}
-async function killTeammate(paneId: string, backendType: PaneBackendType | undefined, teamName: string, teammateId: string, teammateName: string, setAppState: (f: (prev: AppState) => AppState) => void): Promise<void> {
+async function killTeammate(paneId: string, backendType: PaneBackendType | undefined, teamName: string, teammateId: string, teammateName: string, setAppState: (f: (prev: AppState) => AppState) => void): Promise<TeamActionResult> {
   // Kill the pane using the backend that created it (handles -s / -L flags correctly).
-  // Wrapped in try/catch so cleanup (removeMemberFromTeam, unassignTeammateTasks,
-  // setAppState) always runs — matches useInboxPoller.ts error isolation.
-  if (backendType) {
-    try {
-      // Use ensureBackendsRegistered (not detectAndGetBackend) — this process may
-      // be a teammate that never ran detection, but we only need class imports
-      // here, not subprocess probes that could throw in a different environment.
-      await ensureBackendsRegistered();
-      await getBackendByType(backendType).killPane(paneId, !isInsideTmuxSync());
-    } catch (error) {
-      logForDebugging(`[TeamsDialog] Failed to kill pane ${paneId}: ${error}`);
-    }
-  } else {
+  if (!backendType) {
     // backendType undefined: old team files predating this field, or in-process.
-    // Old tmux-file case is a migration gap — the pane is orphaned. In-process
-    // teammates have no pane to kill, so this is correct for them.
     logForDebugging(`[TeamsDialog] Skipping pane kill for ${paneId}: no backendType recorded`);
+    return fail(`Cannot kill @${teammateName}: missing pane backend metadata.`);
   }
+
+  try {
+    // Use ensureBackendsRegistered (not detectAndGetBackend) — this process may
+    // be a teammate that never ran detection, but we only need class imports
+    // here, not subprocess probes that could throw in a different environment.
+    await ensureBackendsRegistered();
+    await getBackendByType(backendType).killPane(paneId, !isInsideTmuxSync());
+  } catch (error) {
+    const message = `Cannot kill @${teammateName}: ${errorMessage(error)}`;
+    logForDebugging(`[TeamsDialog] Failed to kill pane ${paneId}: ${message}`);
+    return fail(message);
+  }
+
   // Remove from team config file
-  removeMemberFromTeam(teamName, paneId);
+  if (!removeMemberFromTeam(teamName, paneId)) {
+    return fail(`Killed @${teammateName}, but could not remove it from team ${teamName}.`);
+  }
 
   // Unassign tasks and build notification message
-  const {
-    notificationMessage
-  } = await unassignTeammateTasks(teamName, teammateId, teammateName, 'terminated');
+  let notificationMessage;
+  try {
+    ({
+      notificationMessage
+    } = await unassignTeammateTasks(teamName, teammateId, teammateName, 'terminated'));
+  } catch (error) {
+    return fail(`Killed @${teammateName}, but task cleanup failed: ${errorMessage(error)}`);
+  }
 
   // Update AppState to keep status line in sync and notify the lead
   setAppState(prev => {
@@ -601,44 +616,71 @@ async function killTeammate(paneId: string, backendType: PaneBackendType | undef
     };
   });
   logForDebugging(`[TeamsDialog] Removed ${teammateId} from teamContext`);
+  return ok(`Killed @${teammateName}.`);
 }
-async function viewTeammateOutput(paneId: string, backendType: PaneBackendType | undefined): Promise<void> {
+async function viewTeammateOutput(paneId: string, backendType: PaneBackendType | undefined): Promise<TeamActionResult> {
+  let result;
   if (backendType === 'iterm2') {
     // -s is required to target a specific session (ITermBackend.ts:216-217)
-    await execFileNoThrow(IT2_COMMAND, ['session', 'focus', '-s', paneId]);
+    result = await execFileNoThrow(IT2_COMMAND, ['session', 'focus', '-s', paneId]);
   } else {
     // External-tmux teammates live on the swarm socket — without -L, this
     // targets the default server and silently no-ops. Mirrors runTmuxInSwarm
     // in TmuxBackend.ts:85-89.
     const args = isInsideTmuxSync() ? ['select-pane', '-t', paneId] : ['-L', getSwarmSocketName(), 'select-pane', '-t', paneId];
-    await execFileNoThrow(TMUX_COMMAND, args);
+    result = await execFileNoThrow(TMUX_COMMAND, args);
+  }
+  if (result.code !== 0) {
+    return fail(`Cannot view teammate output: ${result.error || result.stderr || `exit code ${result.code}`}`);
+  }
+  return ok();
+}
+
+async function requestTeammateShutdown(teammateName: string, teamName: string): Promise<TeamActionResult> {
+  try {
+    await sendShutdownRequestToMailbox(teammateName, teamName, 'Graceful shutdown requested by team lead');
+    return ok(`Shutdown requested for @${teammateName}.`);
+  } catch (error) {
+    return fail(`Cannot request shutdown for @${teammateName}: ${errorMessage(error)}`);
   }
 }
 
 /**
  * Toggle visibility of a teammate pane (hide if visible, show if hidden)
  */
-async function toggleTeammateVisibility(teammate: TeammateStatus, teamName: string): Promise<void> {
+async function toggleTeammateVisibility(teammate: TeammateStatus, teamName: string): Promise<TeamActionResult> {
   if (teammate.isHidden) {
-    await showTeammate(teammate, teamName);
-  } else {
-    await hideTeammate(teammate, teamName);
+    return showTeammate(teammate, teamName);
   }
+  return hideTeammate(teammate, teamName);
 }
 
 /**
  * Hide a teammate pane using the backend abstraction.
  * Only available for ant users (gated for dead code elimination in external builds)
  */
-async function hideTeammate(teammate: TeammateStatus, teamName: string): Promise<void> {
-  if (!teammate.tmuxPaneId || !teammate.backendType) return;
-  await ensureBackendsRegistered();
-  const backend = getBackendByType(teammate.backendType);
-  if (!backend.supportsHideShow) return;
-  const hidden = await backend.hidePane(teammate.tmuxPaneId, !isInsideTmuxSync());
-  if (!hidden) return;
-  addHiddenPaneId(teamName, teammate.tmuxPaneId);
+async function hideTeammate(teammate: TeammateStatus, teamName: string): Promise<TeamActionResult> {
+  if (!teammate.tmuxPaneId || !teammate.backendType) {
+    return fail(`Cannot hide @${teammate.name}: missing pane metadata.`);
+  }
+  try {
+    await ensureBackendsRegistered();
+    const backend = getBackendByType(teammate.backendType);
+    if (!backend.supportsHideShow) {
+      return fail(`Cannot hide @${teammate.name}: backend does not support pane visibility.`);
+    }
+    const hidden = await backend.hidePane(teammate.tmuxPaneId, !isInsideTmuxSync());
+    if (!hidden) {
+      return fail(`Cannot hide @${teammate.name}: backend refused the hide request.`);
+    }
+    if (!addHiddenPaneId(teamName, teammate.tmuxPaneId)) {
+      return fail(`Hidden @${teammate.name}, but could not record hidden state for team ${teamName}.`);
+    }
+  } catch (error) {
+    return fail(`Cannot hide @${teammate.name}: ${errorMessage(error)}`);
+  }
   logForDebugging(`[TeamsDialog] Hidden teammate ${teammate.name} (${teammate.tmuxPaneId})`);
+  return ok(`Hidden @${teammate.name}.`);
 }
 
 export function resolveTeammateShowTargetPane(teammatePaneId: string): string | null {
@@ -654,21 +696,36 @@ export function resolveTeammateShowTargetPane(teammatePaneId: string): string | 
  * Show a previously hidden teammate pane using the backend abstraction.
  * Only available for ant users (gated for dead code elimination in external builds)
  */
-async function showTeammate(teammate: TeammateStatus, teamName: string): Promise<void> {
-  if (!teammate.tmuxPaneId || !teammate.backendType) return;
-  await ensureBackendsRegistered();
-  const backend = getBackendByType(teammate.backendType);
-  if (!backend.supportsHideShow) return;
-  const targetPane = resolveTeammateShowTargetPane(teammate.tmuxPaneId);
-  if (!targetPane) return;
-  const shown = await backend.showPane(
-    teammate.tmuxPaneId,
-    targetPane,
-    !isInsideTmuxSync(),
-  );
-  if (!shown) return;
-  removeHiddenPaneId(teamName, teammate.tmuxPaneId);
+async function showTeammate(teammate: TeammateStatus, teamName: string): Promise<TeamActionResult> {
+  if (!teammate.tmuxPaneId || !teammate.backendType) {
+    return fail(`Cannot show @${teammate.name}: missing pane metadata.`);
+  }
+  try {
+    await ensureBackendsRegistered();
+    const backend = getBackendByType(teammate.backendType);
+    if (!backend.supportsHideShow) {
+      return fail(`Cannot show @${teammate.name}: backend does not support pane visibility.`);
+    }
+    const targetPane = resolveTeammateShowTargetPane(teammate.tmuxPaneId);
+    if (!targetPane) {
+      return fail(`Cannot show @${teammate.name}: no valid target pane is available.`);
+    }
+    const shown = await backend.showPane(
+      teammate.tmuxPaneId,
+      targetPane,
+      !isInsideTmuxSync(),
+    );
+    if (!shown) {
+      return fail(`Cannot show @${teammate.name}: backend refused the show request.`);
+    }
+    if (!removeHiddenPaneId(teamName, teammate.tmuxPaneId)) {
+      return fail(`Shown @${teammate.name}, but could not update hidden state for team ${teamName}.`);
+    }
+  } catch (error) {
+    return fail(`Cannot show @${teammate.name}: ${errorMessage(error)}`);
+  }
   logForDebugging(`[TeamsDialog] Shown teammate ${teammate.name} (${teammate.tmuxPaneId})`);
+  return ok(`Shown @${teammate.name}.`);
 }
 
 /**
