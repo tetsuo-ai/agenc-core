@@ -281,7 +281,7 @@ export const LocalAgentTask: Task = {
 export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
   let killed = false;
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.status !== 'running') {
+    if (task.status !== 'pending' && task.status !== 'running') {
       return task;
     }
     killed = true;
@@ -303,12 +303,12 @@ export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
 }
 
 /**
- * Kill all running agent tasks.
+ * Kill all pending or running agent tasks.
  * Used by ESC cancellation in coordinator mode to stop all subagents.
  */
 export function killAllRunningAgentTasks(tasks: Record<string, TaskState>, setAppState: SetAppState): void {
   for (const [taskId, task] of Object.entries(tasks)) {
-    if (task.type === 'local_agent' && task.status === 'running') {
+    if (task.type === 'local_agent' && (task.status === 'pending' || task.status === 'running')) {
       killAsyncAgent(taskId, setAppState);
     }
   }

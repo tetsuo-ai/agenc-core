@@ -110,6 +110,13 @@ function runningAgent(id = 'agent_1'): Record<string, unknown> {
   }
 }
 
+function pendingAgent(id = 'agent_1'): Record<string, unknown> {
+  return {
+    ...runningAgent(id),
+    status: 'pending',
+  }
+}
+
 async function renderHandler(): Promise<void> {
   const { CancelRequestHandler } = await import('./useCancelRequest.js')
   await renderToString(
@@ -158,7 +165,28 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
     expect(fixture.notifications.addNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         key: 'agents-running-cancel-hint',
-        text: 'Background agents are still running. Press ctrl+x ctrl+k twice to stop them',
+        text: 'Background agents are active. Press ctrl+x ctrl+k twice to stop them',
+      }),
+    )
+  })
+
+  test('Escape is active while a local agent is starting', async () => {
+    fixture.state.tasks = {
+      agent_1: pendingAgent(),
+    }
+
+    await renderHandler()
+
+    const cancel = fixture.handlers.get('chat:cancel')
+    expect(cancel?.isActive).toBe(true)
+
+    cancel?.handler()
+
+    expect(fixture.onCancel).not.toHaveBeenCalled()
+    expect(fixture.notifications.addNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'agents-running-cancel-hint',
+        text: 'Background agents are active. Press ctrl+x ctrl+k twice to stop them',
       }),
     )
   })
@@ -202,5 +230,30 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
       }),
     )
     expect(fixture.onAgentsKilled).toHaveBeenCalledTimes(1)
+  })
+
+  test('the kill-agents chord can stop starting local agents', async () => {
+    fixture.state.tasks = {
+      agent_1: pendingAgent(),
+    }
+
+    await renderHandler()
+
+    const killAgents = fixture.handlers.get('chat:killAgents')
+    killAgents?.handler()
+    killAgents?.handler()
+
+    expect(fixture.notifications.addNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'kill-agents-none',
+      }),
+    )
+    expect(fixture.killAllRunningAgentTasks).toHaveBeenCalledWith(
+      fixture.state.tasks,
+      expect.any(Function),
+    )
+    expect(fixture.onAgentsKilled).toHaveBeenCalledWith([
+      { taskId: 'agent_1', description: 'inspect status bar' },
+    ])
   })
 })

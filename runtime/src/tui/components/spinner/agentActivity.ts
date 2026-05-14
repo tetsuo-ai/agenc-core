@@ -69,6 +69,16 @@ export function isActiveLocalAgentStatus(status: unknown): boolean {
   }
 }
 
+export function isStoppableLocalAgentStatus(status: unknown): boolean {
+  switch (normalizeLocalAgentStatus(status)) {
+    case "starting":
+    case "running":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export function getActiveLocalAgentTasks(
   tasks: Record<string, unknown> | undefined,
 ): ActiveLocalAgentTask[] {

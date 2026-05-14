@@ -27,6 +27,7 @@ import {
   markAgentsNotified,
 } from '../../tasks/LocalAgentTask/LocalAgentTask'
 import type { PromptInputMode, VimMode } from '../../types/textInputTypes'
+import { isStoppableLocalAgentStatus } from '../components/spinner/agentActivity.js'
 import {
   clearCommandQueue,
   enqueuePendingNotification,
@@ -85,9 +86,9 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const { addNotification, removeNotification } = useNotifications()
   const lastKillAgentsPressRef = useRef<number>(0)
   const viewSelectionMode = useAppState(s => s.viewSelectionMode)
-  const hasRunningAgents = useAppState(s =>
+  const hasStoppableAgents = useAppState(s =>
     Object.values(s.tasks ?? {}).some(
-      t => t.type === 'local_agent' && t.status === 'running',
+      t => t.type === 'local_agent' && isStoppableLocalAgentStatus(t.status),
     ),
   )
 
@@ -116,7 +117,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       }
     }
 
-    if (hasRunningAgents) {
+    if (hasStoppableAgents) {
       const shortcut = getShortcutDisplay(
         'chat:killAgents',
         'Chat',
@@ -124,7 +125,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
       )
       addNotification({
         key: 'agents-running-cancel-hint',
-        text: `Background agents are still running. Press ${shortcut} twice to stop them`,
+        text: `Background agents are active. Press ${shortcut} twice to stop them`,
         priority: 'immediate',
         timeoutMs: 3000,
       })
@@ -141,7 +142,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     setToolUseConfirmQueue,
     onCancel,
     streamMode,
-    hasRunningAgents,
+    hasStoppableAgents,
     addNotification,
   ])
 
@@ -173,7 +174,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // input, and to useBackgroundTaskNavigation when viewing a teammate
   const isEscapeActive =
     isContextActive &&
-    (canCancelRunningTask || hasQueuedCommands || hasRunningAgents) &&
+    (canCancelRunningTask || hasQueuedCommands || hasStoppableAgents) &&
     !isInSpecialModeWithEmptyInput &&
     !isViewingTeammate
 
@@ -196,7 +197,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const killAllAgentsAndNotify = useCallback((): boolean => {
     const tasks = store.getState().tasks
     const running = Object.entries(tasks).filter(
-      ([, t]) => t.type === 'local_agent' && t.status === 'running',
+      ([, t]) => t.type === 'local_agent' && isStoppableLocalAgentStatus(t.status),
     )
     if (running.length === 0) return false
     killAllRunningAgentTasks(tasks, setAppState)
@@ -249,13 +250,13 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // agents. Reads tasks from the store directly to avoid stale closures.
   const handleKillAgents = useCallback(() => {
     const tasks = store.getState().tasks
-    const hasRunningAgents = Object.values(tasks).some(
-      t => t.type === 'local_agent' && t.status === 'running',
+    const hasStoppableAgents = Object.values(tasks).some(
+      t => t.type === 'local_agent' && isStoppableLocalAgentStatus(t.status),
     )
-    if (!hasRunningAgents) {
+    if (!hasStoppableAgents) {
       addNotification({
         key: 'kill-agents-none',
-        text: 'No background agents running',
+        text: 'No background agents to stop',
         priority: 'immediate',
         timeoutMs: 2000,
       })

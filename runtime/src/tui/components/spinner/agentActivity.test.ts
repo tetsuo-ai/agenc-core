@@ -5,6 +5,7 @@ import {
   formatRunningAgentSummary,
   getActiveLocalAgentTasks,
   isActiveLocalAgentStatus,
+  isStoppableLocalAgentStatus,
   normalizeLocalAgentStatus,
 } from "./agentActivity.js";
 
@@ -39,6 +40,17 @@ describe("agent spinner activity helpers", () => {
       true,
       true,
       true,
+    ]);
+  });
+
+  test("marks only starting and running local agents as directly stoppable", () => {
+    expect(["pending", "starting", "running", "blocked", "completing", "failed"].map(isStoppableLocalAgentStatus)).toEqual([
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
     ]);
   });
 
