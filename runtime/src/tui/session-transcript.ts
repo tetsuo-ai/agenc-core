@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { useEffect, useMemo, useReducer } from "react";
 
 import type { LLMMessage, StreamingToolUse } from "../llm/types.js";
+import {
+  DEFAULT_MODEL_COSTS,
+  computeUsdCostWithResolution,
+  formatTokenCount,
+  formatUsdCost,
+  type ModelUsage,
+} from "../session/cost.js";
 import type { Event } from "../session/event-log.js";
 import type {
   HistoryReplacedEvent,
@@ -601,6 +608,81 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : 0;
+}
+
+function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsage {
+  const inputTokens = nonNegativeInteger(payload.promptTokens);
+  const outputTokens = nonNegativeInteger(payload.completionTokens);
+  const cachedInputTokens = nonNegativeInteger(payload.cachedInputTokens);
+  const cacheCreationInputTokens = nonNegativeInteger(payload.cacheCreationInputTokens);
+  const reasoningOutputTokens = nonNegativeInteger(payload.reasoningOutputTokens);
+  const webSearchRequests = nonNegativeInteger(payload.webSearchRequests);
+  const totalTokens =
+    nonNegativeInteger(payload.totalTokens) ||
+    inputTokens +
+      outputTokens +
+      cachedInputTokens +
+      cacheCreationInputTokens +
+      reasoningOutputTokens;
+
+  return {
+    model: nonEmptyString(payload.model) ?? "unknown",
+    ...(nonEmptyString(payload.provider)
+      ? { provider: nonEmptyString(payload.provider) }
+      : {}),
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    cacheCreationInputTokens,
+    reasoningOutputTokens,
+    webSearchRequests,
+    totalTokens,
+    turns: 1,
+  };
+}
+
+function formatTokenCountUpdate(payload: Record<string, unknown>): string {
+  const usage = usageFromTokenCountPayload(payload);
+  const cost = computeUsdCostWithResolution(usage, DEFAULT_MODEL_COSTS);
+  const modelLabel =
+    usage.model === "unknown"
+      ? null
+      : usage.provider
+        ? `${usage.provider}/${usage.model}`
+        : usage.model;
+  const details = [
+    `${formatTokenCount(usage.inputTokens)} in`,
+    `${formatTokenCount(usage.outputTokens)} out`,
+    `${formatTokenCount(usage.totalTokens)} total`,
+  ];
+  if (usage.cachedInputTokens > 0) {
+    details.push(`${formatTokenCount(usage.cachedInputTokens)} cache read`);
+  }
+  if (usage.cacheCreationInputTokens > 0) {
+    details.push(`${formatTokenCount(usage.cacheCreationInputTokens)} cache write`);
+  }
+  if (usage.reasoningOutputTokens > 0) {
+    details.push(`${formatTokenCount(usage.reasoningOutputTokens)} reasoning`);
+  }
+  if (usage.webSearchRequests > 0) {
+    details.push(`${formatTokenCount(usage.webSearchRequests)} web search`);
+  }
+  details.push(
+    cost.known
+      ? formatUsdCost(cost.costUsd)
+      : `${formatUsdCost(cost.costUsd)} est.`,
+  );
+  if (modelLabel !== null) {
+    details.push(modelLabel);
+  }
+
+  return `Token ledger update: ${details.join(" · ")}`;
 }
 
 function compactWhitespace(value: string): string {
@@ -1699,6 +1781,9 @@ export function adaptTranscriptEvents(
       }
       case "context_compacted":
         out.push(makeSystemMessage("Context compacted", "info"));
+        break;
+      case "token_count":
+        out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info"));
         break;
       case "warning": {
         // Allow-list of warning causes that surface to the user's

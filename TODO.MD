@@ -132,7 +132,7 @@ Remaining partitions:
 | 97 | Duplicate transcript events | Duplicate events should not double-render. | Reducer dedupes by seq, id, or JSON fallback; adapter also has `seen`. | OK | `runtime/src/tui/session-transcript.ts:404`, `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1995` | JSON fallback may be unstable for non-serializable events. | P3 |
 | 98 | Transcript reset event appended mid-session | Reset should discard previous events immediately. | Reducer replaces events with reset event when reset arrives. | OK | `runtime/src/tui/session-transcript.ts:1987`, `runtime/src/tui/session-transcript.ts:1990` | Correct boot/recovery behavior. | None |
 | 99 | Out-of-order transcript events generally | Event order must be robust, especially for lifecycle events arriving late or replayed. | Sequenced transcript events are normalized before adaptation, reset replay rebuilds from the ordered stream, and completed/aborted turns clear active turn state only when the event belongs to that turn. | OK | `runtime/src/tui/session-transcript.ts:414`, `runtime/src/tui/session-transcript.ts:1199`, `runtime/src/tui/session-transcript.ts:2039`, `runtime/src/tui/parity/session-transcript.test.ts:132`, `runtime/src/tui/parity/session-transcript.test.ts:236`, `runtime/src/tui/parity/session-transcript.test.ts:290` | Focused coverage proves late `turn_started`/`turn_complete` ordering, direct adapter reset ordering, delayed reset replay, and preservation of unsequenced streaming delta order. | P1 |
-| 100 | Ledger updates and token/cost ledger rendering | Supervisor or ledger updates should have a visible, ordered render path if emitted by the runtime. | Root shell only wires `useCostSummary` and cost threshold modal; no audited root transcript case handles ledger-specific events. | MISSING | `runtime/src/tui/components/App.tsx:1317`, `runtime/src/tui/components/App.tsx:1918` | No ledger event render path found in this module partition. | P2 |
+| 100 | Ledger updates and token/cost ledger rendering | Supervisor or ledger updates should have a visible, ordered render path if emitted by the runtime. | Root shell still wires cumulative cost summary, and `token_count` events now adapt into ordered transcript system rows with input/output/total/cache/reasoning/search tokens, estimated cost, and provider/model before `App` renders them through `Messages`. | OK | `runtime/src/tui/components/App.tsx:1329`, `runtime/src/tui/components/App.tsx:2185`, `runtime/src/tui/session-transcript.ts:620`, `runtime/src/tui/session-transcript.ts:650`, `runtime/src/tui/session-transcript.ts:676`, `runtime/src/tui/session-transcript.ts:1785`, `runtime/src/tui/parity/session-transcript.test.ts:106`, `runtime/src/tui/parity/session-transcript.test.ts:141` | Focused transcript coverage verifies a sequenced token ledger row remains ordered between user and assistant messages. | None |
 
 ## Part 2 - PromptInput, Slash, And Typeahead Rendering
 
@@ -713,13 +713,9 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 152 active rows: 86 BUG, 5 MISSING, 61 LEGACY.
+Totals: 151 active rows: 86 BUG, 4 MISSING, 61 LEGACY.
 
 ### P2
-
-#### `runtime/src/tui/components/App.tsx`
-
-- #100 MISSING: Ledger updates and token/cost ledger rendering. Citations: `runtime/src/tui/components/App.tsx:1317`, `runtime/src/tui/components/App.tsx:1918`
 
 #### `runtime/src/tui/components/FullscreenLayout.tsx`
 

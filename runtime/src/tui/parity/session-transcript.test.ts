@@ -103,6 +103,53 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
+  test("renders token_count ledger updates in transcript order", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "user",
+        seq: 1,
+        msg: { type: "user_message", payload: { message: "hello" } },
+      },
+      {
+        id: "usage",
+        seq: 2,
+        msg: {
+          type: "token_count",
+          payload: {
+            promptTokens: 1200,
+            completionTokens: 450,
+            totalTokens: 1650,
+            cachedInputTokens: 300,
+            cacheCreationInputTokens: 50,
+            reasoningOutputTokens: 25,
+            webSearchRequests: 1,
+            model: "gpt-5.4",
+            provider: "openai",
+          },
+        },
+      },
+      {
+        id: "assistant",
+        seq: 3,
+        msg: {
+          type: "turn_complete",
+          payload: { turnId: "t1", lastAgentMessage: "done" },
+        },
+      },
+    ]);
+
+    expect(transcript.messages.map((message) => message.type)).toEqual([
+      "user",
+      "system",
+      "assistant",
+    ]);
+    expect(transcript.messages[1]).toMatchObject({
+      type: "system",
+      content:
+        "Token ledger update: 1.2K in · 450 out · 1.6K total · 300 cache read · 50 cache write · 25 reasoning · 1 web search · $0.019 · openai/gpt-5.4",
+    });
+  });
+
   test("finalizes streamed text at turn completion", () => {
     const transcript = adaptTranscriptEvents([
       {
