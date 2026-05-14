@@ -48,6 +48,7 @@ import { useSearchInput } from '../../hooks/useSearchInput';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { calculateSettingsConfigMaxVisible, calculateSettingsContentHeight } from './layout.js';
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -121,8 +122,8 @@ export function Config({
   // pane height across all tabs — prevents layout jank when switching).
   // Reserve ~10 rows for chrome (search box, gaps, footer, scroll hints).
   // Fallback calc for standalone rendering (tests).
-  const paneCap = contentHeight ?? Math.min(Math.floor(rows * 0.8), 30);
-  const maxVisible = Math.max(5, paneCap - 10);
+  const paneCap = contentHeight ?? calculateSettingsContentHeight(rows, insideModal);
+  const maxVisible = calculateSettingsConfigMaxVisible(paneCap);
   const mainLoopModel = useAppState(s => s.mainLoopModel);
   const verbose = useAppState(s_0 => s_0.verbose);
   const thinkingEnabled = useAppState(s_1 => s_1.thinkingEnabled);

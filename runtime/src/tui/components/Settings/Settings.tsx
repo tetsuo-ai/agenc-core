@@ -13,6 +13,8 @@ import { Tabs, Tab } from '../design-system/Tabs';
 import { Status, buildDiagnostics } from './Status';
 import { Config } from './Config';
 import { Usage } from './Usage';
+import { calculateSettingsContentHeight } from './layout.js';
+import { SettingsConfigLoadingState } from './LoadingState.js';
 import type { LocalJSXCommandContext, CommandResultDisplay } from '../../../commands.js';
 type Props = {
   onClose: (result?: string, options?: {
@@ -35,7 +37,7 @@ export function Settings(t0) {
   const {
     rows
   } = useModalOrTerminalSize(useTerminalSize());
-  const contentHeight = insideModal ? rows + 1 : Math.max(15, Math.min(Math.floor(rows * 0.8), 30));
+  const contentHeight = calculateSettingsContentHeight(rows, insideModal);
   const [diagnosticsPromise] = useState(_temp2);
   useExitOnCtrlCDWithKeybindings();
   let t1;
@@ -79,7 +81,7 @@ export function Settings(t0) {
   }
   let t5;
   if ($[8] !== contentHeight || $[9] !== context || $[10] !== onClose) {
-    t5 = <Tab key="config" title="Config"><Suspense fallback={null}><Config context={context} onClose={onClose} setTabsHidden={setTabsHidden} onIsSearchModeChange={setConfigOwnsEsc} contentHeight={contentHeight} /></Suspense></Tab>;
+    t5 = <Tab key="config" title="Config"><Suspense fallback={<SettingsConfigLoadingState />}><Config context={context} onClose={onClose} setTabsHidden={setTabsHidden} onIsSearchModeChange={setConfigOwnsEsc} contentHeight={contentHeight} /></Suspense></Tab>;
     $[8] = contentHeight;
     $[9] = context;
     $[10] = onClose;
