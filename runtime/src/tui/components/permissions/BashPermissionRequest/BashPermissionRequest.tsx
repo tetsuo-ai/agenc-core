@@ -30,6 +30,7 @@ import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
 import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest.js';
 import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js';
 import { logUnaryPermissionEvent } from '../utils.js';
+import { getBashPermissionFooterText } from './bashPermissionFooter.js';
 import { bashToolUseOptions } from './bashToolUseOptions.js';
 const CHECKING_TEXT = 'Attempting to auto-approve\u2026';
 
@@ -379,6 +380,13 @@ function BashPermissionRequestInner({
             {'"'}
           </Text>}
       </Text> : toolUseConfirm.classifierCheckInProgress ? <ClassifierCheckingSubtitle /> : classifierWasChecking ? <Text dimColor>Requires manual approval</Text> : undefined : undefined;
+  const footerText = getBashPermissionFooterText({
+    focusedOption,
+    yesInputMode,
+    noInputMode,
+    explainerEnabled: explainerState.enabled,
+    explainerVisible: explainerState.visible
+  });
   return <PermissionDialog workerBadge={workerBadge} title={sandboxingEnabled_0 && !isSandboxed_0 ? 'Bash command (unsandboxed)' : 'Bash command'} subtitle={classifierSubtitle}>
       <Box flexDirection="column" paddingX={2} paddingY={1}>
         <Text dimColor={explainerState.visible}>
@@ -416,11 +424,7 @@ function BashPermissionRequestInner({
         })) : options : options} isDisabled={feature('BASH_CLASSIFIER') ? toolUseConfirm.classifierAutoApproved : false} inlineDescriptions onChange={onSelect} onCancel={() => handleReject()} onFocus={handleFocus} onInputModeToggle={handleInputModeToggle} />
           </Box>
           <Box justifyContent="space-between" marginTop={1}>
-            <Text dimColor>
-              Esc to cancel
-              {(focusedOption === 'yes' && !yesInputMode || focusedOption === 'no' && !noInputMode) && ' · Tab to amend'}
-              {explainerState.enabled && ` · ctrl+e to ${explainerState.visible ? 'hide' : 'explain'}`}
-            </Text>
+            <Text dimColor>{footerText}</Text>
             {toolUseContext.options.debug && <Text dimColor>Ctrl+d to show debug info</Text>}
           </Box>
         </>}
