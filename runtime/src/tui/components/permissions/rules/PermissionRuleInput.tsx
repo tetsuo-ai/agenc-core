@@ -16,6 +16,12 @@ export type PermissionRuleInputProps = {
   onSubmit: (ruleValue: PermissionRuleValue, ruleBehavior: PermissionBehavior) => void;
   ruleBehavior: PermissionBehavior;
 };
+export function getPermissionRuleInputColumns(columns: number): number {
+  const safeColumns = Number.isFinite(columns)
+    ? Math.max(0, Math.trunc(columns))
+    : 0;
+  return Math.max(1, safeColumns - 6);
+}
 export function PermissionRuleInput(t0) {
   const $ = _c(24);
   const {
@@ -39,7 +45,7 @@ export function PermissionRuleInput(t0) {
   const {
     columns
   } = useTerminalSize();
-  const textInputColumns = columns - 6;
+  const textInputColumns = getPermissionRuleInputColumns(columns);
   let t2;
   if ($[1] !== onSubmit || $[2] !== ruleBehavior) {
     t2 = value => {

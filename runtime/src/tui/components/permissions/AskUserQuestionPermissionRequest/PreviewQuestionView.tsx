@@ -34,6 +34,13 @@ type Props = {
   onFinishPlanInterview: () => void;
 };
 
+export function getPreviewQuestionNotesInputColumns(previewMaxWidth: number): number {
+  const safeWidth = Number.isFinite(previewMaxWidth)
+    ? Math.max(0, Math.trunc(previewMaxWidth))
+    : 0;
+  return Math.max(1, safeWidth - 8);
+}
+
 /**
  * A side-by-side question view for questions with preview content.
  * Displays a vertical option list on the left with a preview panel on the right.
@@ -236,6 +243,7 @@ export function PreviewQuestionView({
     columns
   } = useTerminalSize();
   const previewMaxWidth = Math.max(4, columns - LEFT_PANEL_WIDTH - GAP);
+  const notesInputColumns = getPreviewQuestionNotesInputColumns(previewMaxWidth);
 
   // Lines used within the content area that aren't preview content:
   // 1: marginTop on side-by-side box
@@ -289,7 +297,7 @@ export function PreviewQuestionView({
                 onUpdateQuestionState(questionText, {
                   textInputValue: value
                 }, false);
-              }} onSubmit={handleNotesExit} onExit={handleNotesExit} focus={true} showCursor={true} columns={60} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} /> : <Text dimColor italic>
+              }} onSubmit={handleNotesExit} onExit={handleNotesExit} focus={true} showCursor={true} columns={notesInputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} /> : <Text dimColor italic>
                     {notesValue || 'press n to add notes'}
                   </Text>}
               </Box>

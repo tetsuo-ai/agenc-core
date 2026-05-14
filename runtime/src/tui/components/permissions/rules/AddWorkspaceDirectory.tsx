@@ -9,6 +9,7 @@ import { addDirHelpMessage, validateDirectoryForWorkspace } from '../../../../co
 import TextInput from '../../TextInput';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
+import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
 import type { ToolPermissionContext } from '../../../../tools/Tool';
 import { getDirectoryCompletions } from '../../../../utils/suggestions/directoryCompletion'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -38,6 +39,12 @@ const REMEMBER_DIRECTORY_OPTIONS: Array<{
   value: 'no',
   label: 'No'
 }];
+export function getAddWorkspaceDirectoryInputColumns(columns: number): number {
+  const safeColumns = Number.isFinite(columns)
+    ? Math.max(0, Math.trunc(columns))
+    : 0;
+  return Math.max(1, safeColumns - 10);
+}
 function PermissionDescription() {
   const $ = _c(1);
   let t0;
@@ -79,61 +86,41 @@ function DirectoryDisplay(t0) {
   }
   return t3;
 }
-function DirectoryInput(t0) {
-  const $ = _c(14);
-  const {
-    value,
-    onChange,
-    onSubmit,
-    error,
-    suggestions,
-    selectedSuggestion
-  } = t0;
-  let t1;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = <Text>Enter the path to the directory:</Text>;
-    $[0] = t1;
-  } else {
-    t1 = $[0];
-  }
-  let t2;
-  if ($[1] !== onChange || $[2] !== onSubmit || $[3] !== value) {
-    t2 = <Box borderDimColor={true} borderStyle="round" marginY={1} paddingLeft={1}><TextInput showCursor={true} placeholder={`Directory path${figures.ellipsis}`} value={value} onChange={onChange} onSubmit={onSubmit} columns={80} cursorOffset={value.length} onChangeCursorOffset={_temp} /></Box>;
-    $[1] = onChange;
-    $[2] = onSubmit;
-    $[3] = value;
-    $[4] = t2;
-  } else {
-    t2 = $[4];
-  }
-  let t3;
-  if ($[5] !== selectedSuggestion || $[6] !== suggestions) {
-    t3 = suggestions.length > 0 && <Box marginBottom={1}><PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} /></Box>;
-    $[5] = selectedSuggestion;
-    $[6] = suggestions;
-    $[7] = t3;
-  } else {
-    t3 = $[7];
-  }
-  let t4;
-  if ($[8] !== error) {
-    t4 = error && <Text color="error">{error}</Text>;
-    $[8] = error;
-    $[9] = t4;
-  } else {
-    t4 = $[9];
-  }
-  let t5;
-  if ($[10] !== t2 || $[11] !== t3 || $[12] !== t4) {
-    t5 = <Box flexDirection="column">{t1}{t2}{t3}{t4}</Box>;
-    $[10] = t2;
-    $[11] = t3;
-    $[12] = t4;
-    $[13] = t5;
-  } else {
-    t5 = $[13];
-  }
-  return t5;
+function DirectoryInput({
+  value,
+  onChange,
+  onSubmit,
+  error,
+  suggestions,
+  selectedSuggestion,
+  columns,
+}) {
+  return (
+    <Box flexDirection="column">
+      <Text>Enter the path to the directory:</Text>
+      <Box borderDimColor={true} borderStyle="round" marginY={1} paddingLeft={1}>
+        <TextInput
+          showCursor={true}
+          placeholder={`Directory path${figures.ellipsis}`}
+          value={value}
+          onChange={onChange}
+          onSubmit={onSubmit}
+          columns={columns}
+          cursorOffset={value.length}
+          onChangeCursorOffset={_temp}
+        />
+      </Box>
+      {suggestions.length > 0 && (
+        <Box marginBottom={1}>
+          <PromptInputFooterSuggestions
+            suggestions={suggestions}
+            selectedSuggestion={selectedSuggestion}
+          />
+        </Box>
+      )}
+      {error && <Text color="error">{error}</Text>}
+    </Box>
+  );
 }
 function _temp() {}
 export function AddWorkspaceDirectory(t0) {
@@ -228,6 +215,10 @@ export function AddWorkspaceDirectory(t0) {
     t7 = $[10];
   }
   useKeybinding("confirm:no", onCancel, t7);
+  const {
+    columns
+  } = useTerminalSize();
+  const directoryInputColumns = getAddWorkspaceDirectoryInputColumns(columns);
   let t8;
   if ($[11] !== handleSubmit || $[12] !== selectedSuggestion || $[13] !== suggestions) {
     t8 = e => {
@@ -301,20 +292,7 @@ export function AddWorkspaceDirectory(t0) {
   }
   const handleSelect = t9;
   const t10 = directoryPath ? undefined : _temp2;
-  let t11;
-  if ($[19] !== directoryInput || $[20] !== directoryPath || $[21] !== error || $[22] !== handleSelect || $[23] !== handleSubmit || $[24] !== selectedSuggestion || $[25] !== suggestions) {
-    t11 = directoryPath ? <Box flexDirection="column" gap={1}><DirectoryDisplay path={directoryPath} /><Select options={REMEMBER_DIRECTORY_OPTIONS} onChange={handleSelect} onCancel={() => handleSelect("no")} /></Box> : <Box flexDirection="column" gap={1} marginX={2}><PermissionDescription /><DirectoryInput value={directoryInput} onChange={setDirectoryInput} onSubmit={handleSubmit} error={error} suggestions={suggestions} selectedSuggestion={selectedSuggestion} /></Box>;
-    $[19] = directoryInput;
-    $[20] = directoryPath;
-    $[21] = error;
-    $[22] = handleSelect;
-    $[23] = handleSubmit;
-    $[24] = selectedSuggestion;
-    $[25] = suggestions;
-    $[26] = t11;
-  } else {
-    t11 = $[26];
-  }
+  const t11 = directoryPath ? <Box flexDirection="column" gap={1}><DirectoryDisplay path={directoryPath} /><Select options={REMEMBER_DIRECTORY_OPTIONS} onChange={handleSelect} onCancel={() => handleSelect("no")} /></Box> : <Box flexDirection="column" gap={1} marginX={2}><PermissionDescription /><DirectoryInput value={directoryInput} onChange={setDirectoryInput} onSubmit={handleSubmit} error={error} suggestions={suggestions} selectedSuggestion={selectedSuggestion} columns={directoryInputColumns} /></Box>;
   let t12;
   if ($[27] !== onCancel || $[28] !== t10 || $[29] !== t11) {
     t12 = <Dialog title="Add directory to workspace" onCancel={onCancel} color="permission" isCancelActive={false} inputGuide={t10}>{t11}</Dialog>;
