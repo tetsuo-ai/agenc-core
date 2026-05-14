@@ -439,7 +439,7 @@ export function FullscreenLayout(t0) {
         rows: modalViewport.rows,
         columns: modalViewport.columns,
         scrollRef: modalScrollRef ?? null
-      }}><Box position="absolute" bottom={0} left={0} right={0} maxHeight={modalViewport.maxHeight} flexDirection="column" overflow="hidden" opaque={true}><Box flexShrink={0}><Text color="permission">{"\u2594".repeat(Math.max(0, columns))}</Text></Box><Box flexDirection="column" paddingX={2} flexShrink={0} overflow="hidden">{modal}</Box></Box></ModalContext>;
+      }}><Box position="absolute" bottom={0} left={0} right={0} maxHeight={modalViewport.maxHeight} flexDirection="column" overflow="hidden" opaque={true}><Box flexShrink={0}><Text color="permission">{selectAgenCTuiGlyphs().modalDivider.repeat(Math.max(0, columns))}</Text></Box><Box flexDirection="column" paddingX={2} flexShrink={0} overflow="hidden">{modal}</Box></Box></ModalContext>;
       $[33] = columns;
       $[34] = modal;
       $[35] = modalScrollRef;
@@ -476,21 +476,22 @@ function DesignTopChrome({ columns }: { columns: number }): React.ReactNode {
   const cwdName = React.useMemo(() => process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace', []);
   const title = trimMiddle(`agenc - ${cwdName}`, Math.max(12, Math.floor(columns * 0.44)));
   const showTask = columns >= 84;
+  const glyphs = selectAgenCTuiGlyphs();
   return <Box flexDirection="column" flexShrink={0} width="100%">
-      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="clawd_background">
+      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="surfaceBackground">
         <Box gap={1} flexShrink={0}>
-          <Text color="error">●</Text>
-          <Text color="warning">●</Text>
-          <Text color="success">●</Text>
+          <Text color="error">{glyphs.statusDot}</Text>
+          <Text color="warning">{glyphs.statusDot}</Text>
+          <Text color="success">{glyphs.statusDot}</Text>
           {columns >= 56 ? <Text dimColor> agenc</Text> : null}
-          {columns >= 64 ? <Text color="success">● orchestrator</Text> : null}
+          {columns >= 64 ? <Text color="success">{glyphs.statusDot} orchestrator</Text> : null}
         </Box>
         <Text dimColor wrap="truncate">{title}</Text>
         <Box flexShrink={0}>
           {showTask ? <Text dimColor>TASK SYSTEMIC</Text> : null}
         </Box>
       </Box>
-      <Text color="promptBorder">{'─'.repeat(Math.max(0, columns))}</Text>
+      <Text color="promptBorder">{glyphs.horizontal.repeat(Math.max(0, columns))}</Text>
     </Box>;
 }
 
@@ -500,9 +501,10 @@ function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
   const modelLabel = modelDisplayString(model);
   const left = columns >= 70 ? `MODEL ${modelLabel}` : modelLabel;
   const right = columns >= 70 ? `MODE ${mode}  CTX live` : mode;
+  const glyphs = selectAgenCTuiGlyphs();
   return <Box flexDirection="column" flexShrink={0} width="100%">
-      <Text color="promptBorder">{'─'.repeat(Math.max(0, columns))}</Text>
-      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="clawd_background">
+      <Text color="promptBorder">{glyphs.horizontal.repeat(Math.max(0, columns))}</Text>
+      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="surfaceBackground">
         <Text color="inactive" wrap="truncate">{left}</Text>
         <Text color="inactive" wrap="truncate">{right}</Text>
       </Box>
@@ -655,7 +657,7 @@ function SuggestionsOverlay() {
   }
   let t0;
   if ($[0] !== data.maxColumnWidth || $[1] !== data.selectedSuggestion || $[2] !== data.suggestions) {
-    t0 = <Box position="absolute" bottom="100%" left={0} right={0} paddingX={2} paddingTop={1} flexDirection="column" opaque={true}><PromptInputFooterSuggestions suggestions={data.suggestions} selectedSuggestion={data.selectedSuggestion} maxColumnWidth={data.maxColumnWidth} overlay={true} /></Box>;
+    t0 = <Box position="absolute" bottom="100%" left={0} right={0} paddingX={0} paddingTop={1} flexDirection="column" opaque={true} backgroundColor="surfaceBackground"><PromptInputFooterSuggestions suggestions={data.suggestions} selectedSuggestion={data.selectedSuggestion} maxColumnWidth={data.maxColumnWidth} overlay={true} /></Box>;
     $[0] = data.maxColumnWidth;
     $[1] = data.selectedSuggestion;
     $[2] = data.suggestions;

@@ -1,5 +1,5 @@
-import figures from 'figures'
 import { memo, type ReactNode } from 'react'
+import { selectAgenCTuiGlyphs } from '../../glyphs.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { Box, Text } from '../../ink.js'
@@ -27,9 +27,9 @@ export type SuggestionType =
 
 export const OVERLAY_MAX_ITEMS = 5
 
-const SELECTED_PREFIX = `${figures.pointer} `
-const UNSELECTED_PREFIX = '  '
-const PREFIX_WIDTH = stringWidth(SELECTED_PREFIX)
+export function getSuggestionPopupWidth(columns: number, overlay?: boolean): number {
+  return overlay ? Math.max(1, columns - 2) : Math.max(32, columns - 10)
+}
 
 function padToWidth(text: string, width: number): string {
   const textWidth = stringWidth(text)
@@ -55,9 +55,9 @@ function getRightAlignedRowParts(
   }
 }
 
-function getIcon(itemId: string): string {
+function getIcon(itemId: string, mcpResourceGlyph: string): string {
   if (itemId.startsWith('file-')) return '+'
-  if (itemId.startsWith('mcp-resource-')) return '◇'
+  if (itemId.startsWith('mcp-resource-')) return mcpResourceGlyph
   if (itemId.startsWith('agent-')) return '*'
   return '+'
 }
@@ -81,10 +81,13 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
   isSelected: boolean
   width: number
 }): ReactNode {
-  const selectionPrefix = isSelected ? SELECTED_PREFIX : UNSELECTED_PREFIX
+  const glyphs = selectAgenCTuiGlyphs()
+  const selectedPrefix = `${glyphs.pointer} `
+  const prefixWidth = stringWidth(selectedPrefix)
+  const selectionPrefix = isSelected ? selectedPrefix : ' '.repeat(prefixWidth)
   const rowBackgroundColor: keyof Theme = isSelected
     ? 'userMessageBackground'
-    : 'clawd_background'
+    : 'surfaceBackground'
   const textColor: keyof Theme | undefined = isSelected
     ? 'text'
     : item.color
@@ -94,7 +97,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
 
   let lineContent: string
   if (isUnifiedSuggestion(item.id)) {
-    const icon = getIcon(item.id)
+    const icon = getIcon(item.id, glyphs.mcpResource)
     const isFile = item.id.startsWith('file-')
     const isMcpResource = item.id.startsWith('mcp-resource-')
     const iconWidth = 2
@@ -108,7 +111,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
         : 0
       const maxPathLength =
         width -
-        PREFIX_WIDTH -
+        prefixWidth -
         iconWidth -
         paddingWidth -
         separatorWidth -
@@ -122,7 +125,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
 
     const availableWidth =
       width -
-      PREFIX_WIDTH -
+      prefixWidth -
       iconWidth -
       stringWidth(displayText) -
       separatorWidth -
@@ -157,7 +160,7 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
     const tagWidth = stringWidth(tagText)
     const descriptionWidth = Math.max(
       0,
-      width - PREFIX_WIDTH - displayTextWidth - tagWidth - 4,
+      width - prefixWidth - displayTextWidth - tagWidth - 4,
     )
     const truncatedDescription = item.description
       ? truncateToWidth(item.description.replace(/\s+/g, ' '), descriptionWidth)
@@ -223,7 +226,8 @@ export function PromptInputFooterSuggestions({
   const hiddenAfter = suggestions.length - endIndex
   const hiddenBefore = startIndex
 
-  const width = Math.max(32, columns - (overlay ? 8 : 10))
+  const glyphs = selectAgenCTuiGlyphs()
+  const width = getSuggestionPopupWidth(columns, overlay)
   const contentWidth = Math.max(1, width - 4)
   const headerHint = suggestions.length === 1
     ? '1 match'
@@ -231,7 +235,7 @@ export function PromptInputFooterSuggestions({
   const titleRow = getRightAlignedRowParts('SLASH COMMANDS', headerHint, contentWidth)
   const commandHintRow = getRightAlignedRowParts(
     'command',
-    'navigate ↑↓ · run ↵',
+    `navigate ${glyphs.arrowUp}${glyphs.arrowDown} ${glyphs.separator} run ${glyphs.enter}`,
     contentWidth,
   )
 
@@ -244,12 +248,12 @@ export function PromptInputFooterSuggestions({
       borderStyle="round"
       borderColor="promptBorder"
       paddingX={1}
-      backgroundColor="clawd_background"
+      backgroundColor="surfaceBackground"
     >
       <Box
         width="100%"
         opaque={true}
-        backgroundColor="clawd_background"
+        backgroundColor="surfaceBackground"
       >
         <Text color="inactive" bold>{titleRow.left}</Text>
         <Text color="inactive">{titleRow.gap}{titleRow.right}</Text>
@@ -257,7 +261,7 @@ export function PromptInputFooterSuggestions({
       <Box
         width="100%"
         opaque={true}
-        backgroundColor="clawd_background"
+        backgroundColor="surfaceBackground"
       >
         <Text color="promptBorder">{commandHintRow.left}</Text>
         <Text color="inactive">
@@ -266,8 +270,8 @@ export function PromptInputFooterSuggestions({
         </Text>
       </Box>
       {hiddenBefore > 0 ? (
-        <Box width="100%" opaque={true} backgroundColor="clawd_background">
-          <Text dimColor>↑ {hiddenBefore} more above</Text>
+        <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+          <Text dimColor>{glyphs.arrowUp} {hiddenBefore} more above</Text>
         </Box>
       ) : null}
       {visibleItems.map(item => {
@@ -287,12 +291,12 @@ export function PromptInputFooterSuggestions({
         )
       })}
       {hiddenAfter > 0 ? (
-        <Box width="100%" opaque={true} backgroundColor="clawd_background">
-          <Text dimColor>↓ {hiddenAfter} more below</Text>
+        <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+          <Text dimColor>{glyphs.arrowDown} {hiddenAfter} more below</Text>
         </Box>
       ) : null}
-      <Box width="100%" opaque={true} backgroundColor="clawd_background">
-        <Text color="inactive">type to filter · esc closes</Text>
+      <Box width="100%" opaque={true} backgroundColor="surfaceBackground">
+        <Text color="inactive">type to filter {glyphs.separator} esc closes</Text>
       </Box>
     </Box>
   )

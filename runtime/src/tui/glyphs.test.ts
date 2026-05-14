@@ -10,6 +10,8 @@ describe("AgenC TUI glyph selection", () => {
     expect(resolveAgenCTuiGlyphMode({})).toBe("unicode");
     expect(selectAgenCTuiGlyphs({}).arrowDown).not.toBe("v");
     expect(selectAgenCTuiGlyphs({}).pointer).not.toBe(">");
+    expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
+    expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
   });
 
   test("uses ASCII glyphs when explicitly requested", () => {
@@ -17,8 +19,18 @@ describe("AgenC TUI glyph selection", () => {
       "ascii",
     );
     expect(selectAgenCTuiGlyphs({ AGENC_TUI_GLYPHS: "ascii" })).toEqual({
+      arrowUp: "^",
       arrowDown: "v",
+      enter: "Enter",
+      horizontal: "-",
+      modalDivider: "-",
+      mcpResource: "*",
       pointer: ">",
+      promptBypass: ">",
+      separator: "-",
+      statusDot: "*",
+      titleAnimationFrames: ["*", "+"],
+      titleStaticPrefix: "*",
     });
   });
 });

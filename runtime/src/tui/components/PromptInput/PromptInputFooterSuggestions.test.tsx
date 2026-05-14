@@ -2,6 +2,7 @@ import figures from 'figures'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToString } from '../../../utils/staticRender.js'
 import {
+  getSuggestionPopupWidth,
   PromptInputFooterSuggestions,
   type SuggestionItem,
 } from './PromptInputFooterSuggestions.js'
@@ -111,5 +112,46 @@ describe('PromptInputFooterSuggestions', () => {
     expect(output).toContain('SLASH COMMANDS')
     expect(output).toContain('/noop')
     expect(output).not.toContain('undefined')
+  })
+
+  it('uses full overlay width so the popup background can cover the overlay row', () => {
+    expect(getSuggestionPopupWidth(80, true)).toBe(78)
+    expect(getSuggestionPopupWidth(12, true)).toBe(10)
+  })
+
+  it('renders ASCII glyphs when requested', async () => {
+    const previousGlyphMode = process.env.AGENC_TUI_GLYPHS
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+
+    try {
+      const suggestions: SuggestionItem[] = [
+        {
+          id: 'mcp-resource-docs',
+          displayText: 'docs',
+          description: 'Project docs',
+        },
+      ]
+
+      const output = await renderToString(
+        <PromptInputFooterSuggestions
+          suggestions={suggestions}
+          selectedSuggestion={0}
+          overlay={true}
+        />,
+        80,
+      )
+
+      expect(output).toContain('> * docs')
+      expect(output).toContain('navigate ^v - run Enter')
+      expect(output).not.toContain('◇')
+      expect(output).not.toContain('❯')
+      expect(output).not.toContain('↵')
+    } finally {
+      if (previousGlyphMode === undefined) {
+        delete process.env.AGENC_TUI_GLYPHS
+      } else {
+        process.env.AGENC_TUI_GLYPHS = previousGlyphMode
+      }
+    }
   })
 })

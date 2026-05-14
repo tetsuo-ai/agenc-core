@@ -23,6 +23,7 @@ import { useHistorySearch } from '../../hooks/useHistorySearch.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
 import { useInputBuffer } from '../../hooks/useInputBuffer.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTypeahead } from '../../hooks/useTypeahead.js';
 import type { BorderTextOptions } from '../../ink/render-border.js';
@@ -2622,6 +2623,7 @@ function PromptInput({
       </Box>;
   }
   const textInputElement = <ConfiguredPromptTextInput baseProps={baseProps} vimMode={vimMode} onVimModeChange={setVimMode} />;
+  const promptGlyphs = selectAgenCTuiGlyphs();
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>
@@ -2631,13 +2633,13 @@ function PromptInput({
       {swarmBanner ? <>
           <Text color={swarmBanner.bgColor}>
             {swarmBanner.text ? <>
-                {'─'.repeat(Math.max(0, columns - stringWidth(swarmBanner.text) - 4))}
+                {promptGlyphs.horizontal.repeat(Math.max(0, columns - stringWidth(swarmBanner.text) - 4))}
                 <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
                   {' '}
                   {swarmBanner.text}{' '}
                 </Text>
-                {'──'}
-              </> : '─'.repeat(columns)}
+                {promptGlyphs.horizontal.repeat(2)}
+              </> : promptGlyphs.horizontal.repeat(columns)}
           </Text>
           <Box flexDirection="row" width="100%">
             <PromptInputModeIndicator mode={mode} permissionMode={effectiveToolPermissionContext.mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
@@ -2645,7 +2647,7 @@ function PromptInput({
               {textInputElement}
             </Box>
           </Box>
-          <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
+          <Text color={swarmBanner.bgColor}>{promptGlyphs.horizontal.repeat(columns)}</Text>
         </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" width="100%" paddingX={1} borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
           <PromptInputModeIndicator mode={mode} permissionMode={effectiveToolPermissionContext.mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>

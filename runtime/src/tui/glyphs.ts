@@ -3,18 +3,48 @@ import figures from "figures";
 export type AgenCTuiGlyphMode = "unicode" | "ascii";
 
 export interface AgenCTuiGlyphs {
+  readonly arrowUp: string;
   readonly arrowDown: string;
+  readonly enter: string;
+  readonly horizontal: string;
+  readonly modalDivider: string;
+  readonly mcpResource: string;
   readonly pointer: string;
+  readonly promptBypass: string;
+  readonly separator: string;
+  readonly statusDot: string;
+  readonly titleAnimationFrames: readonly string[];
+  readonly titleStaticPrefix: string;
 }
 
 const ASCII_GLYPHS: AgenCTuiGlyphs = {
+  arrowUp: "^",
   arrowDown: "v",
+  enter: "Enter",
+  horizontal: "-",
+  modalDivider: "-",
+  mcpResource: "*",
   pointer: ">",
+  promptBypass: ">",
+  separator: "-",
+  statusDot: "*",
+  titleAnimationFrames: ["*", "+"],
+  titleStaticPrefix: "*",
 };
 
 const UNICODE_GLYPHS: AgenCTuiGlyphs = {
+  arrowUp: figures.arrowUp,
   arrowDown: figures.arrowDown,
+  enter: "↵",
+  horizontal: "─",
+  modalDivider: "▔",
+  mcpResource: "◇",
   pointer: figures.pointer,
+  promptBypass: "▶",
+  separator: "·",
+  statusDot: "●",
+  titleAnimationFrames: ["⠂", "⠐"],
+  titleStaticPrefix: "✳",
 };
 
 export function resolveAgenCTuiGlyphMode(

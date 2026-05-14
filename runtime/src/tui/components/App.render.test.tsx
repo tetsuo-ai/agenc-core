@@ -711,6 +711,15 @@ function createRealtimeControls(): AgenCRealtimeTuiControls {
 }
 
 describeWithVitestMocks("AgenCTuiApp render smoke", () => {
+  test("terminal title prefix honors ASCII glyph mode", async () => {
+    const { animatedTerminalTitlePrefix } = await import("./App.js");
+
+    expect(animatedTerminalTitlePrefix(false, 0, {})).toBe("✳");
+    expect(animatedTerminalTitlePrefix(true, 1, {})).toBe("⠐");
+    expect(animatedTerminalTitlePrefix(false, 0, { AGENC_TUI_GLYPHS: "ascii" })).toBe("*");
+    expect(animatedTerminalTitlePrefix(true, 1, { AGENC_TUI_GLYPHS: "ascii" })).toBe("+");
+  });
+
   test("App wrapper preserves provider wiring", async () => {
     const { App } = await import("./App.js");
     providerProbe.fpsGetters.length = 0;

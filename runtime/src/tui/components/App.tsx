@@ -3,6 +3,7 @@ import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useStat
 import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../context/stats.js";
 import { onChangeAppState } from "../state/onChangeAppState.js";
+import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import type { FpsMetrics } from "../../utils/fpsTracker.js";
 import { Messages } from "./Messages.js";
 import { MessageSelector, selectableUserMessagesFilter } from "./MessageSelector.js";
@@ -1240,9 +1241,19 @@ function compactHookLabel(hookType: unknown): string {
   if (hookType === "post_compact") return "Running PostCompact hooks";
   return "Running SessionStart hooks";
 }
-const TITLE_ANIMATION_FRAMES = ["⠂", "⠐"];
-const TITLE_STATIC_PREFIX = "✳";
+const TITLE_ANIMATION_FRAME_COUNT = 2;
 const TITLE_ANIMATION_INTERVAL_MS = 960;
+
+export function animatedTerminalTitlePrefix(
+  isAnimating: boolean,
+  frame: number,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return isAnimating
+    ? glyphs.titleAnimationFrames[frame] ?? glyphs.titleStaticPrefix
+    : glyphs.titleStaticPrefix;
+}
 
 /**
  * Ports upstream `src/ink/hooks/use-terminal-title.ts` and the terminal-title
@@ -1295,12 +1306,12 @@ function AnimatedTerminalTitle(t0) {
     t4 = $[5];
   }
   useEffect(t3, t4);
-  const prefix = isAnimating ? TITLE_ANIMATION_FRAMES[frame] ?? TITLE_STATIC_PREFIX : TITLE_STATIC_PREFIX;
+  const prefix = animatedTerminalTitlePrefix(isAnimating, frame);
   useTerminalTitle(disabled ? null : noPrefix ? title : `${prefix} ${title}`);
   return null;
 }
 function _temp6(current) {
-  return (current + 1) % TITLE_ANIMATION_FRAMES.length;
+  return (current + 1) % TITLE_ANIMATION_FRAME_COUNT;
 }
 function terminalTitle(props: Parameters<typeof startupModel>[0]): string {
   const provider = props.session.sessionConfiguration?.provider?.slug?.trim();

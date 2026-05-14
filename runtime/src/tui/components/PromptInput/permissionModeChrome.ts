@@ -1,10 +1,9 @@
-import figures from 'figures'
-
 import {
   permissionModeSymbol,
   permissionModeTitle,
 } from '../../../permissions/mode-display.js'
 import type { PermissionMode } from '../../../permissions/types.js'
+import { selectAgenCTuiGlyphs } from '../../glyphs.js'
 
 export type PermissionModeFooterChrome = {
   readonly symbol: string
@@ -14,8 +13,10 @@ export type PermissionModeFooterChrome = {
 
 export function promptGlyphForPermissionMode(
   mode: PermissionMode | undefined,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
 ): string {
-  return mode === 'bypassPermissions' ? '▶' : figures.pointer
+  const glyphs = selectAgenCTuiGlyphs(env)
+  return mode === 'bypassPermissions' ? glyphs.promptBypass : glyphs.pointer
 }
 
 export function permissionModeFooterChrome(

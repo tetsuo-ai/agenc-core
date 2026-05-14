@@ -19,6 +19,13 @@ describe('permission mode chrome', () => {
     expect(promptGlyphForPermissionMode('default')).toBe('❯')
   })
 
+  test('uses ASCII prompt glyphs when requested', () => {
+    const env = { AGENC_TUI_GLYPHS: 'ascii' }
+
+    expect(promptGlyphForPermissionMode('bypassPermissions', env)).toBe('>')
+    expect(promptGlyphForPermissionMode('default', env)).toBe('>')
+  })
+
   test('keeps regular permission modes on the existing title path', () => {
     expect(permissionModeFooterChrome('acceptEdits')).toMatchObject({
       symbol: '⏵⏵',
