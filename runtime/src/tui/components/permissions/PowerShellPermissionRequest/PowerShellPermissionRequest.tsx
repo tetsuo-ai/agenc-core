@@ -1,26 +1,24 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../../services/analytics/growthbook';
-import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index';
-import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata';
-import { getDestructiveCommandWarning } from '../../../../tools/PowerShellTool/destructiveCommandWarning';
-import { PowerShellTool } from '../../../../tools/PowerShellTool/PowerShellTool';
-import { isAllowlistedCommand } from '../../../../tools/PowerShellTool/readOnlyValidation';
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCompoundCommandPrefixesStatic } from '../../../../utils/powershell/staticPrefix'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Select } from '../../CustomSelect/select';
-import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
-import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo';
-import { PermissionDialog } from '../PermissionDialog';
-import { PermissionExplainerContent, usePermissionExplainerUI } from '../PermissionExplanation';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../../services/analytics/growthbook.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index.js';
+import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata.js';
+import { getDestructiveCommandWarning } from '../../../../tools/PowerShellTool/destructiveCommandWarning.js';
+import { PowerShellTool } from '../../../../tools/PowerShellTool/PowerShellTool.js';
+import { isAllowlistedCommand } from '../../../../tools/PowerShellTool/readOnlyValidation.js';
+import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCompoundCommandPrefixesStatic } from '../../../../utils/powershell/staticPrefix.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { Select } from '../../CustomSelect/select.js';
+import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
+import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js';
+import { PermissionDialog } from '../PermissionDialog.js';
+import { PermissionExplainerContent, usePermissionExplainerUI } from '../PermissionExplanation.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
-import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
-import { useShellPermissionFeedback } from '../useShellPermissionFeedback';
-import { logUnaryPermissionEvent } from '../utils';
-import { powershellToolUseOptions } from './powershellToolUseOptions';
+import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
+import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js';
+import { logUnaryPermissionEvent } from '../utils.js';
+import { powershellToolUseOptions } from './powershellToolUseOptions.js';
 export function PowerShellPermissionRequest(props: PermissionRequestProps): React.ReactNode {
   const {
     toolUseConfirm,
@@ -38,7 +36,8 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
     toolName: toolUseConfirm.tool.name,
     toolInput: toolUseConfirm.input,
     toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages
+    messages: toolUseContext.messages,
+    abortSignal: toolUseContext.abortController.signal
   });
   const {
     yesInputMode,
