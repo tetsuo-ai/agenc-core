@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import type { PastedContent } from '../../../utils/config.js'
 import { maybeTruncateInput } from './inputPaste.js'
+
+const TRUNCATE_INPUT_THRESHOLD = 10_000
 
 type Props = {
   input: string
@@ -10,6 +12,18 @@ type Props = {
   setPastedContents: (contents: Record<number, PastedContent>) => void
 }
 
+export function buildTruncatedPromptInputUpdate(
+  input: string,
+  pastedContents: Record<number, PastedContent>,
+): { newInput: string; newPastedContents: Record<number, PastedContent> } | null {
+  if (input.length <= TRUNCATE_INPUT_THRESHOLD) {
+    return null
+  }
+
+  const update = maybeTruncateInput(input, pastedContents)
+  return update.newInput === input ? null : update
+}
+
 export function useMaybeTruncateInput({
   input,
   pastedContents,
@@ -17,42 +31,25 @@ export function useMaybeTruncateInput({
   setCursorOffset,
   setPastedContents,
 }: Props) {
-  // Track if we've initialized this specific input value
-  const [hasAppliedTruncationToInput, setHasAppliedTruncationToInput] =
-    useState(false)
-
   // Process input for truncation and pasted images from MessageSelector.
   useEffect(() => {
-    if (hasAppliedTruncationToInput) {
-      return
-    }
-
-    if (input.length <= 10_000) {
-      return
-    }
-
-    const { newInput, newPastedContents } = maybeTruncateInput(
+    const update = buildTruncatedPromptInputUpdate(
       input,
       pastedContents,
     )
+    if (!update) {
+      return
+    }
 
+    const { newInput, newPastedContents } = update
     onInputChange(newInput)
     setCursorOffset(newInput.length)
     setPastedContents(newPastedContents)
-    setHasAppliedTruncationToInput(true)
   }, [
     input,
-    hasAppliedTruncationToInput,
     pastedContents,
     onInputChange,
     setPastedContents,
     setCursorOffset,
   ])
-
-  // Reset hasInitializedInput when input is cleared (e.g., after submission)
-  useEffect(() => {
-    if (input === '') {
-      setHasAppliedTruncationToInput(false)
-    }
-  }, [input])
 }
