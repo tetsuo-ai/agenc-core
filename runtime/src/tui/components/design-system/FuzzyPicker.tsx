@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
@@ -8,13 +7,14 @@ import { useTerminalSize } from '../../hooks/useTerminalSize';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { clamp } from '../../ink/layout/geometry.js';
 import { Box, Text, useTerminalFocus } from '../../ink.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { SearchBox } from '../SearchBox';
 import { Byline } from './Byline';
 import { KeyboardShortcutHint } from './KeyboardShortcutHint';
 import { ListItem } from './ListItem';
 import { Pane } from './Pane';
 type PickerAction<T> = {
-  /** Hint label shown in the byline, e.g. "mention" → "Tab to mention". */
+  /** Hint label shown in the byline, e.g. "mention" -> "Tab to mention". */
   action: string;
   handler: (item: T) => void;
 };
@@ -24,7 +24,7 @@ type Props<T> = {
   initialQuery?: string;
   items: readonly T[];
   getKey: (item: T) => string;
-  /** Keep to one line — preview handles overflow. */
+  /** Keep to one line; preview handles overflow. */
   renderItem: (item: T, isFocused: boolean) => React.ReactNode;
   renderPreview?: (item: T) => React.ReactNode;
   /** 'right' keeps hints stable (no bounce), but needs width. */
@@ -32,7 +32,7 @@ type Props<T> = {
   visibleCount?: number;
   /**
    * 'up' puts items[0] at the bottom next to the input (atuin-style). Arrows
-   * always match screen direction — ↑ walks visually up regardless.
+   * always match screen direction; up walks visually up regardless.
    */
   direction?: 'down' | 'up';
   /** Caller owns filtering: re-filter on each call and pass new items. */
@@ -40,7 +40,7 @@ type Props<T> = {
   /** Enter key. Primary action. */
   onSelect: (item: T) => void;
   /**
-   * Tab key. If provided, Tab no longer aliases Enter — it gets its own
+   * Tab key. If provided, Tab no longer aliases Enter; it gets its own
    * handler and hint. Shift+Tab falls through to this if onShiftTab is unset.
    */
   onTab?: PickerAction<T>;
@@ -48,15 +48,15 @@ type Props<T> = {
   onShiftTab?: PickerAction<T>;
   /**
    * Fires when the focused item changes (via arrows or when items reset).
-   * Useful for async preview loading — keeps I/O out of renderPreview.
+   * Useful for async preview loading; keeps I/O out of renderPreview.
    */
   onFocus?: (item: T | undefined) => void;
   onCancel: () => void;
   /** Shown when items is empty. Caller bakes loading/searching state into this. */
   emptyMessage?: string | ((query: string) => string);
   /**
-   * Status line below the list, e.g. "500+ matches" or "42 matches…".
-   * Caller decides when to show it — pass undefined to hide.
+   * Status line below the list, e.g. "500+ matches" or "42 matches...".
+   * Caller decides when to show it; pass undefined to hide.
    */
   matchLabel?: string;
   selectAction?: string;
@@ -66,10 +66,26 @@ const DEFAULT_VISIBLE = 8;
 // Pane (paddingTop + Divider) + title + 3 gaps + SearchBox (rounded border = 3
 // rows) + hints. matchLabel adds +1 when present, accounted for separately.
 const CHROME_ROWS = 10;
-const MIN_VISIBLE = 2;
+const MIN_VISIBLE = 1;
+export function computeFuzzyPickerVisibleCount(requestedVisible: number, rows: number, hasMatchLabel = false): number {
+  const safeRequested = Math.max(MIN_VISIBLE, Math.floor(requestedVisible || 0));
+  const availableRows = Math.floor(rows || 0) - CHROME_ROWS - (hasMatchLabel ? 1 : 0);
+  return Math.max(MIN_VISIBLE, Math.min(safeRequested, availableRows));
+}
+export function getFuzzyPickerDefaultPlaceholder(env: {
+  readonly AGENC_TUI_GLYPHS?: string;
+} = process.env): string {
+  return `Type to search${selectAgenCTuiGlyphs(env).ellipsis}`;
+}
+export function getFuzzyPickerNavigationShortcut(env: {
+  readonly AGENC_TUI_GLYPHS?: string;
+} = process.env): string {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return `${glyphs.arrowUp}/${glyphs.arrowDown}`;
+}
 export function FuzzyPicker<T>({
   title,
-  placeholder = 'Type to search…',
+  placeholder,
   initialQuery,
   items,
   getKey,
@@ -99,7 +115,9 @@ export function FuzzyPicker<T>({
   // Cap visibleCount so the picker never exceeds the terminal height. When it
   // overflows, each re-render (arrow key, ctrl+p) mis-positions the cursor-up
   // by the overflow amount and a previously-drawn line flashes blank.
-  const visibleCount = Math.max(MIN_VISIBLE, Math.min(requestedVisible, rows - CHROME_ROWS - (matchLabel ? 1 : 0)));
+  const visibleCount = computeFuzzyPickerVisibleCount(requestedVisible, rows, Boolean(matchLabel));
+  const effectivePlaceholder = placeholder ?? getFuzzyPickerDefaultPlaceholder();
+  const navigationShortcut = getFuzzyPickerNavigationShortcut();
 
   // Full hint row with onTab+onShiftTab is ~100 chars and wraps inconsistently
   // below that. Compact mode drops shift+tab and shortens labels.
@@ -109,7 +127,7 @@ export function FuzzyPicker<T>({
   };
 
   // onKeyDown fires after useSearchInput's useInput, so onExit must be a
-  // no-op — return/downArrow are handled by handleKeyDown below. onCancel
+  // no-op; return/downArrow are handled by handleKeyDown below. onCancel
   // still covers escape/ctrl+c/ctrl+d. Backspace-on-empty is disabled so
   // a held backspace doesn't eject the user from the dialog.
   const {
@@ -171,14 +189,14 @@ export function FuzzyPicker<T>({
   const windowStart = clamp(focusedIndex - visibleCount + 1, 0, items.length - visibleCount);
   const visible = items.slice(windowStart, windowStart + visibleCount);
   const emptyText = typeof emptyMessage === 'function' ? emptyMessage(query) : emptyMessage;
-  const searchBox = <SearchBox query={query} cursorOffset={cursorOffset} placeholder={placeholder} isFocused isTerminalFocused={isTerminalFocused} />;
+  const searchBox = <SearchBox query={query} cursorOffset={cursorOffset} placeholder={effectivePlaceholder} isFocused isTerminalFocused={isTerminalFocused} />;
   const listBlock = <List visible={visible} windowStart={windowStart} visibleCount={visibleCount} total={items.length} focusedIndex={focusedIndex} direction={direction} getKey={getKey} renderItem={renderItem} emptyText={emptyText} />;
   const preview = renderPreview && focused ? <Box flexDirection="column" flexGrow={1}>
         {renderPreview(focused)}
       </Box> : null;
 
-  // Structure must not depend on preview truthiness — when focused goes
-  // undefined (e.g. delete clears matches), switching row→fragment would
+  // Structure must not depend on preview truthiness; when focused goes
+  // undefined (e.g. delete clears matches), switching row->fragment would
   // change both layout AND gap count, bouncing the searchBox below.
   const listGroup = renderPreview && previewPosition === 'right' ? <Box flexDirection="row" gap={2} height={visibleCount + (matchLabel ? 1 : 0)}>
         <Box flexDirection="column" flexShrink={0}>
@@ -188,7 +206,7 @@ export function FuzzyPicker<T>({
         {preview ?? <Box flexGrow={1} />}
       </Box> :
   // Box (not fragment) so the outer gap={1} doesn't insert a blank line
-  // between list/matchLabel/preview — that read as extra space above the
+  // between list/matchLabel/preview; that read as extra space above the
   // prompt in direction='up'.
   <Box flexDirection="column">
         {listBlock}
@@ -206,7 +224,7 @@ export function FuzzyPicker<T>({
         {!inputAbove && searchBox}
         <Text dimColor>
           <Byline>
-            <KeyboardShortcutHint shortcut="↑/↓" action={compact ? 'nav' : 'navigate'} />
+            <KeyboardShortcutHint shortcut={navigationShortcut} action={compact ? 'nav' : 'navigate'} />
             <KeyboardShortcutHint shortcut="Enter" action={compact ? firstWord(selectAction) : selectAction} />
             {onTab && <KeyboardShortcutHint shortcut="Tab" action={onTab.action} />}
             {onShiftTab && !compact && <KeyboardShortcutHint shortcut="shift+tab" action={onShiftTab.action} />}

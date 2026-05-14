@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as path from 'path';
 import * as React from 'react';
@@ -9,11 +8,11 @@ import { generateFileSuggestions } from '../hooks/fileSuggestions';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { Text } from '../ink.js';
 import { logEvent } from '../../services/analytics/index';
-import { getCwd } from '../../utils/cwd'; // upstream-import: keep target is owned by another Z-PURGE item
-import { openFileInExternalEditor } from '../../utils/editor'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncatePathMiddle, truncateToWidth } from '../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
-import { highlightMatch } from '../../utils/highlightMatch'; // upstream-import: keep target is owned by another Z-PURGE item
-import { readFileInRange } from '../../utils/readFileInRange'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../utils/cwd';
+import { openFileInExternalEditor } from '../../utils/editor';
+import { truncatePathMiddle, truncateToWidth } from '../../utils/format';
+import { highlightMatch } from '../../utils/highlightMatch';
+import { readFileInRange } from '../../utils/readFileInRange';
 import { FuzzyPicker } from './design-system/FuzzyPicker';
 import { LoadingState } from './design-system/LoadingState';
 type Props = {
@@ -22,6 +21,23 @@ type Props = {
 };
 const VISIBLE_RESULTS = 8;
 const PREVIEW_LINES = 20;
+
+export function computeQuickOpenLayout(columns: number, rows: number) {
+  const safeColumns = Math.max(1, Math.floor(columns || 0));
+  const safeRows = Math.max(1, Math.floor(rows || 0));
+  const previewOnRight = safeColumns >= 120;
+  const visibleResults = Math.min(VISIBLE_RESULTS, Math.max(1, safeRows - 14));
+  const effectivePreviewLines = previewOnRight ? Math.max(1, visibleResults - 1) : PREVIEW_LINES;
+  const maxPathWidth = previewOnRight ? Math.max(1, Math.floor(Math.max(1, safeColumns - 10) * 0.4)) : Math.max(1, safeColumns - 8);
+  const previewWidth = previewOnRight ? Math.max(1, safeColumns - maxPathWidth - 14) : Math.max(1, safeColumns - 6);
+  return {
+    previewOnRight,
+    visibleResults,
+    effectivePreviewLines,
+    maxPathWidth,
+    previewWidth
+  };
+}
 
 /**
  * Quick Open dialog (ctrl+shift+p / cmd+shift+p).
@@ -38,7 +54,13 @@ export function QuickOpenDialog(t0) {
     columns,
     rows
   } = useTerminalSize();
-  const visibleResults = Math.min(VISIBLE_RESULTS, Math.max(4, rows - 14));
+  const {
+    previewOnRight,
+    visibleResults,
+    effectivePreviewLines,
+    maxPathWidth,
+    previewWidth
+  } = computeQuickOpenLayout(columns, rows);
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = [];
@@ -66,8 +88,6 @@ export function QuickOpenDialog(t0) {
     t3 = $[2];
   }
   useEffect(t2, t3);
-  const previewOnRight = columns >= 120;
-  const effectivePreviewLines = previewOnRight ? VISIBLE_RESULTS - 1 : PREVIEW_LINES;
   let t4;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = q => {
@@ -129,13 +149,11 @@ export function QuickOpenDialog(t0) {
     t6 = $[7];
   }
   useEffect(t5, t6);
-  const maxPathWidth = previewOnRight ? Math.max(20, Math.floor((columns - 10) * 0.4)) : Math.max(20, columns - 8);
-  const previewWidth = previewOnRight ? Math.max(40, columns - maxPathWidth - 14) : columns - 6;
   let t7;
   if ($[8] !== onDone || $[9] !== results.length) {
     t7 = p_1 => {
       const opened = openFileInExternalEditor(path.resolve(getCwd(), p_1));
-      logEvent("tengu_quick_open_select", {
+      logEvent("agenc_quick_open_select", {
         result_count: results.length,
         opened_editor: opened
       });
@@ -152,7 +170,7 @@ export function QuickOpenDialog(t0) {
   if ($[11] !== onDone || $[12] !== onInsert || $[13] !== results.length) {
     t8 = (p_2, mention) => {
       onInsert(mention ? `@${p_2} ` : `${p_2} `);
-      logEvent("tengu_quick_open_insert", {
+      logEvent("agenc_quick_open_insert", {
         result_count: results.length,
         mention
       });
@@ -199,7 +217,7 @@ export function QuickOpenDialog(t0) {
   }
   let t13;
   if ($[21] !== preview || $[22] !== previewWidth || $[23] !== query) {
-    t13 = p_7 => preview ? <><Text dimColor={true}>{truncatePathMiddle(p_7, previewWidth)}{preview.path !== p_7 ? " \xB7 loading\u2026" : ""}</Text>{preview.content.split("\n").map((line, i_1) => <Text key={i_1}>{highlightMatch(truncateToWidth(line, previewWidth), query)}</Text>)}</> : <LoadingState message={"Loading preview\u2026"} dimColor={true} />;
+    t13 = p_7 => preview ? <><Text dimColor={true}>{truncatePathMiddle(p_7, previewWidth)}{preview.path !== p_7 ? " - loading..." : ""}</Text>{preview.content.split("\n").map((line, i_1) => <Text key={i_1}>{highlightMatch(truncateToWidth(line, previewWidth), query)}</Text>)}</> : <LoadingState message={"Loading preview..."} dimColor={true} />;
     $[21] = preview;
     $[22] = previewWidth;
     $[23] = query;
@@ -209,7 +227,7 @@ export function QuickOpenDialog(t0) {
   }
   let t14;
   if ($[25] !== handleOpen || $[26] !== onDone || $[27] !== results || $[28] !== t10 || $[29] !== t11 || $[30] !== t12 || $[31] !== t13 || $[32] !== t9 || $[33] !== visibleResults) {
-    t14 = <FuzzyPicker title="Quick Open" placeholder={"Type to search files\u2026"} items={results} getKey={_temp5} visibleCount={visibleResults} direction="up" previewPosition={t9} onQueryChange={handleQueryChange} onFocus={setFocusedPath} onSelect={handleOpen} onTab={t10} onShiftTab={t11} onCancel={onDone} emptyMessage={_temp6} selectAction="open in editor" renderItem={t12} renderPreview={t13} />;
+    t14 = <FuzzyPicker title="Quick Open" placeholder={"Type to search files..."} items={results} getKey={_temp5} visibleCount={visibleResults} direction="up" previewPosition={t9} onQueryChange={handleQueryChange} onFocus={setFocusedPath} onSelect={handleOpen} onTab={t10} onShiftTab={t11} onCancel={onDone} emptyMessage={_temp6} selectAction="open in editor" renderItem={t12} renderPreview={t13} />;
     $[25] = handleOpen;
     $[26] = onDone;
     $[27] = results;
@@ -226,7 +244,7 @@ export function QuickOpenDialog(t0) {
   return t14;
 }
 function _temp6(q_0) {
-  return q_0 ? "No matching files" : "Start typing to search\u2026";
+  return q_0 ? "No matching files" : "Start typing to search...";
 }
 function _temp5(p_3) {
   return p_3;
