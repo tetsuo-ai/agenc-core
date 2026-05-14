@@ -534,7 +534,7 @@ Remaining partitions:
 | 469 | Log selector agentic search code path | Disabled/dead agentic search code should not remain in active resume selector rendering. | `isAgenticSearchEnabled` is hard-coded false; `handleAgenticSearch` returns early on `true`, and the "Search deeply" option is gated by `false`. | LEGACY | `runtime/src/tui/components/LogSelector.tsx:194`, `runtime/src/tui/components/LogSelector.tsx:792`, `runtime/src/tui/components/LogSelector.tsx:794`, `runtime/src/tui/components/LogSelector.tsx:1058`, `runtime/src/tui/components/LogSelector.tsx:1348` | Dead agentic-search rendering code remains in the live selector. | P2 |
 | 470 | Log selector active search indicator | Search mode should show a loading state when filtering/searching is active. | Footer text checks `isSearching && false`, so the "Searching…" footer branch can never render. | BUG | `runtime/src/tui/components/LogSelector.tsx:305`, `runtime/src/tui/components/LogSelector.tsx:1414` | The visible search mode always says "Type to Search" even if the disabled search state is set. | P3 |
 | 471 | Log selector ascii/no-unicode rendering | Resume selector indicators and footer hints should degrade in ascii terminals. | Tree prefixes and footer shortcuts use raw triangles, arrows, ellipses, and `figures` pointers/checks without a local ascii branch. | BUG | `runtime/src/tui/components/LogSelector.tsx:69`, `runtime/src/tui/components/LogSelector.tsx:70`, `runtime/src/tui/components/LogSelector.tsx:71`, `runtime/src/tui/components/LogSelector.tsx:1312`, `runtime/src/tui/components/LogSelector.tsx:1348`, `runtime/src/tui/components/LogSelector.tsx:1414` | This affects resume/session selection in no-unicode terminals. | P3 |
-| 472 | Language picker input width | Language selection should size the input to the dialog width and support narrow terminals. | `LanguagePicker` renders `TextInput` with `columns={60}` and a Unicode-heavy placeholder. | BUG | `runtime/src/tui/components/LanguagePicker.tsx:53`, `runtime/src/tui/components/LanguagePicker.tsx:61`, `runtime/src/tui/components/LanguagePicker.tsx:71` | Narrow settings dialogs can overflow when editing language. | P2 |
+| 472 | Language picker input width | Language selection should size the input to the dialog width and support narrow terminals. | `LanguagePicker` now reads modal-aware terminal width, clamps the text input between one and sixty columns, and uses an ASCII placeholder. | OK | `runtime/src/tui/components/LanguagePicker.tsx:15`, `runtime/src/tui/components/LanguagePicker.tsx:17`, `runtime/src/tui/components/LanguagePicker.tsx:30`, `runtime/src/tui/components/LanguagePicker.tsx:31`, `runtime/src/tui/components/LanguagePicker.tsx:73`, `runtime/src/tui/components/LanguagePicker.tsx:74`, `runtime/src/tui/components/LanguagePicker.test.ts:8`, `runtime/src/tui/components/LanguagePicker.test.ts:17` | Focused tests cover wide, narrow, tiny, zero-column, and ASCII-placeholder behavior. | P2 |
 | 473 | Settings tab shell | Settings should render status/config/usage tabs, let Config temporarily own Escape/search, and close from the shell when no nested search/submenu owns focus. | `Settings` tracks selected tab, tabsHidden, and `configOwnsEsc`; it computes tab content and guards `confirm:no` with those flags. | OK | `runtime/src/tui/components/Settings/Settings.tsx:31`, `runtime/src/tui/components/Settings/Settings.tsx:38`, `runtime/src/tui/components/Settings/Settings.tsx:42`, `runtime/src/tui/components/Settings/Settings.tsx:58`, `runtime/src/tui/components/Settings/Settings.tsx:70`, `runtime/src/tui/components/Settings/Settings.tsx:72` | Top-level settings focus ownership is explicit. | None |
 | 474 | Settings Config loading state | Config tab should show a loading row while suspended async settings data is loading. | `Settings` wraps `Config` in `Suspense fallback={null}`. | BUG | `runtime/src/tui/components/Settings/Settings.tsx:82`, `runtime/src/tui/components/Settings/Config.tsx:206` | The config tab can render blank during suspended memory-file loading. | P2 |
 | 475 | Settings layout in modal/tiny height | Settings should clamp content height to the visible modal/terminal area. | `Settings` uses `rows + 1` inside modal; `Config` forces `Math.max(5, paneCap - 10)` visible rows. | BUG | `runtime/src/tui/components/Settings/Settings.tsx:36`, `runtime/src/tui/components/Settings/Settings.tsx:38`, `runtime/src/tui/components/Settings/Config.tsx:117`, `runtime/src/tui/components/Settings/Config.tsx:125` | Modal settings can exceed tiny terminal height instead of shrinking. | P2 |
@@ -713,7 +713,7 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 176 active rows: 104 BUG, 5 MISSING, 67 LEGACY.
+Totals: 175 active rows: 103 BUG, 5 MISSING, 67 LEGACY.
 
 ### P2
 
@@ -742,10 +742,6 @@ Totals: 176 active rows: 104 BUG, 5 MISSING, 67 LEGACY.
 #### `runtime/src/tui/components/HelpV2/HelpV2.tsx`
 
 - #483 BUG: Help tiny-height behavior. Citations: `runtime/src/tui/components/HelpV2/HelpV2.tsx:29`, `runtime/src/tui/components/HelpV2/HelpV2.tsx:32`, `runtime/src/tui/components/HelpV2/Commands.tsx:31`, `runtime/src/tui/components/HelpV2/Commands.tsx:32`
-
-#### `runtime/src/tui/components/LanguagePicker.tsx`
-
-- #472 BUG: Language picker input width. Citations: `runtime/src/tui/components/LanguagePicker.tsx:53`, `runtime/src/tui/components/LanguagePicker.tsx:61`, `runtime/src/tui/components/LanguagePicker.tsx:71`
 
 #### `runtime/src/tui/components/LogSelector.tsx`
 
