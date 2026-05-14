@@ -1,10 +1,8 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { logEvent } from '../../services/analytics/index.js';
 import { Box, Link, Text } from '../ink.js';
-import { updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 
@@ -37,7 +35,7 @@ export function AutoModeOptInDialog(t0: Props) {
       bb3: switch (value) {
         case "accept":
           {
-            logEvent("tengu_auto_mode_opt_in_dialog_accept", {});
+            logEvent("agenc_auto_mode_opt_in_dialog_accept", {});
             updateSettingsForSource("userSettings", {
               skipAutoPermissionPrompt: true
             });
@@ -46,7 +44,7 @@ export function AutoModeOptInDialog(t0: Props) {
           }
         case "accept-default":
           {
-            logEvent("tengu_auto_mode_opt_in_dialog_accept_default", {});
+            logEvent("agenc_auto_mode_opt_in_dialog_accept_default", {});
             updateSettingsForSource("userSettings", {
               skipAutoPermissionPrompt: true,
               permissions: {
@@ -58,7 +56,7 @@ export function AutoModeOptInDialog(t0: Props) {
           }
         case "decline":
           {
-            logEvent("tengu_auto_mode_opt_in_dialog_decline", {});
+            logEvent("agenc_auto_mode_opt_in_dialog_decline", {});
             onDecline();
           }
       }
@@ -139,5 +137,5 @@ export function AutoModeOptInDialog(t0: Props) {
   return t10;
 }
 function _temp() {
-  logEvent("tengu_auto_mode_opt_in_dialog_shown", {});
+  logEvent("agenc_auto_mode_opt_in_dialog_shown", {});
 }
