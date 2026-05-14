@@ -90,6 +90,20 @@ const LogoHeader = React.memo(function LogoHeader(t0: {
 const BRIEF_TOOL_NAME: string | null = feature('KAIROS') || feature('KAIROS_BRIEF') ? (require('../../tools/BriefTool/prompt.js') as typeof import('../../tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME : null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS') ? getMessagesSendUserFileToolName() : null;
+export const STREAMING_THINKING_GRACE_MS = 30000;
+
+export function getStreamingThinkingExpiryDelayMs(streamingThinking: StreamingThinking | null | undefined, now = Date.now()): number | null {
+  if (!streamingThinking || streamingThinking.isStreaming || !streamingThinking.streamingEndedAt) {
+    return null;
+  }
+  return Math.max(0, STREAMING_THINKING_GRACE_MS - (now - streamingThinking.streamingEndedAt));
+}
+
+export function shouldShowStreamingThinking(streamingThinking: StreamingThinking | null | undefined, now = Date.now()): boolean {
+  if (!streamingThinking) return false;
+  if (streamingThinking.isStreaming) return true;
+  return (getStreamingThinkingExpiryDelayMs(streamingThinking, now) ?? 0) > 0;
+}
 
 import { VirtualMessageList } from './VirtualMessageList.js';
 export { dropTextInBriefTurns, filterForBriefTool } from './messagesBriefFiltering.js';
@@ -266,16 +280,22 @@ const MessagesImpl = ({
   } = useTerminalSize();
   const toggleShowAllShortcut = useShortcutDisplay('transcript:toggleShowAll', 'Transcript', 'Ctrl+E');
   const normalizedMessages = useMemo(() => normalizeMessages(messages).filter(isNotEmptyMessage), [messages]);
+  const [streamingThinkingExpiryTick, setStreamingThinkingExpiryTick] = useState(0);
 
   // Check if streaming thinking should be visible (streaming or within 30s timeout)
   const isStreamingThinkingVisible = useMemo(() => {
-    if (!streamingThinking) return false;
-    if (streamingThinking.isStreaming) return true;
-    if (streamingThinking.streamingEndedAt) {
-      return Date.now() - streamingThinking.streamingEndedAt < 30000;
+    return shouldShowStreamingThinking(streamingThinking);
+  }, [streamingThinking, streamingThinkingExpiryTick]);
+  useEffect(() => {
+    const delay = getStreamingThinkingExpiryDelayMs(streamingThinking);
+    if (delay === null || delay <= 0) {
+      return;
     }
-    return false;
-  }, [streamingThinking]);
+    const timeout = setTimeout(() => {
+      setStreamingThinkingExpiryTick(tick => tick + 1);
+    }, delay);
+    return () => clearTimeout(timeout);
+  }, [streamingThinking?.isStreaming, streamingThinking?.streamingEndedAt]);
 
   // Find the last thinking block (message UUID + content index) for hiding past thinking in transcript mode
   // When streaming thinking is visible, use a special ID that won't match any completed thinking block

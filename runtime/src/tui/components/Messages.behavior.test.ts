@@ -8,6 +8,11 @@ import {
   dropTextInBriefTurns,
   filterForBriefTool,
 } from './messagesBriefFiltering.js'
+import {
+  getStreamingThinkingExpiryDelayMs,
+  shouldShowStreamingThinking,
+  STREAMING_THINKING_GRACE_MS,
+} from './Messages.js'
 
 const BRIEF_TOOL = 'SendUserMessage'
 const FILE_TOOL = 'SendUserFile'
@@ -106,5 +111,41 @@ describe('Messages brief-mode filtering', () => {
       'turn-two-text',
       'turn-two-file',
     ])
+  })
+})
+
+describe('streaming thinking visibility', () => {
+  it('keeps active thinking visible regardless of elapsed time', () => {
+    expect(shouldShowStreamingThinking({
+      thinking: 'working',
+      isStreaming: true,
+      streamingEndedAt: 1,
+    }, 1 + STREAMING_THINKING_GRACE_MS * 10)).toBe(true)
+  })
+
+  it('expires ended thinking at the grace-period boundary', () => {
+    const streamingEndedAt = 1_000
+    const thinking = {
+      thinking: 'done',
+      isStreaming: false,
+      streamingEndedAt,
+    }
+
+    expect(shouldShowStreamingThinking(
+      thinking,
+      streamingEndedAt + STREAMING_THINKING_GRACE_MS - 1,
+    )).toBe(true)
+    expect(shouldShowStreamingThinking(
+      thinking,
+      streamingEndedAt + STREAMING_THINKING_GRACE_MS,
+    )).toBe(false)
+    expect(getStreamingThinkingExpiryDelayMs(
+      thinking,
+      streamingEndedAt + STREAMING_THINKING_GRACE_MS - 1,
+    )).toBe(1)
+    expect(getStreamingThinkingExpiryDelayMs(
+      thinking,
+      streamingEndedAt + STREAMING_THINKING_GRACE_MS,
+    )).toBe(0)
   })
 })
