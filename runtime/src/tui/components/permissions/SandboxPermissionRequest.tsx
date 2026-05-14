@@ -90,7 +90,7 @@ export function SandboxPermissionRequest(t0) {
   let t6;
   if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
     t6 = {
-      label: <Text>No, and tell AgenC what to do differently <Text bold={true}>(esc)</Text></Text>,
+      label: "No, deny connection",
       value: "no"
     };
     $[6] = t6;
