@@ -6,9 +6,14 @@ import { renderToString } from '../../../utils/staticRender.js'
 import { AsyncAgentDetailDialog } from './AsyncAgentDetailDialog.js'
 import { InProcessTeammateDetailDialog } from './InProcessTeammateDetailDialog.js'
 import { ShellDetailDialog } from './ShellDetailDialog.js'
+import { getShellOutputMaxWidth } from './ShellDetailDialog.layout.js'
 
 const terminalSizeMock = vi.hoisted(() => ({
   size: { columns: 80, rows: 24 },
+}))
+
+const tailFileMock = vi.hoisted(() => ({
+  result: { content: '', bytesTotal: 0 },
 }))
 
 vi.mock('../../hooks/useTerminalSize.js', () => ({
@@ -21,7 +26,7 @@ vi.mock('../../../utils/fsOperations.js', async () => {
   )
   return {
     ...actual,
-    tailFile: async () => ({ content: '', bytesTotal: 0 }),
+    tailFile: async () => tailFileMock.result,
   }
 })
 
@@ -72,6 +77,7 @@ const taskBase = {
 describe('task detail stop affordances', () => {
   beforeEach(() => {
     terminalSizeMock.size = { columns: 80, rows: 24 }
+    tailFileMock.result = { content: '', bytesTotal: 0 }
   })
 
   it('shows stop affordance for pending shell tasks', async () => {
@@ -92,6 +98,13 @@ describe('task detail stop affordances', () => {
 
     expect(output).toContain('x to stop')
     expect(output).toContain('Status: pending')
+  })
+
+  it('clamps shell output width for tiny terminals', () => {
+    expect(getShellOutputMaxWidth(4)).toBe(1)
+    expect(getShellOutputMaxWidth(6)).toBe(1)
+    expect(getShellOutputMaxWidth(80)).toBe(74)
+    expect(getShellOutputMaxWidth(Number.NaN)).toBe(1)
   })
 
   it('shows stop affordance for pending async agent tasks', async () => {

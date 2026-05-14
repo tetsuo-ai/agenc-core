@@ -2,18 +2,20 @@ import { c as _c } from "react-compiler-runtime";
 import React, { Suspense, use, useDeferredValue, useEffect, useState } from 'react';
 import type { DeepImmutable } from '../../../types/utils.js';
 import type { CommandResultDisplay } from '../../../commands.js';
+import { useElapsedTime } from '../../hooks/useElapsedTime';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { LocalShellTaskState } from '../../../tasks/LocalShellTask/guards';
 import { isStoppableTaskStatus } from '../../../tasks/types';
-import { formatDuration, formatFileSize, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatFileSize, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import { tailFile } from '../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getTaskOutputPath } from '../../../utils/task/diskOutput'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
+import { getShellOutputMaxWidth } from './ShellDetailDialog.layout.js';
 type Props = {
   shell: DeepImmutable<LocalShellTaskState>;
   onDone: (result?: string, options?: {
@@ -123,6 +125,7 @@ export function ShellDetailDialog(t0) {
     t6 = $[11];
   }
   useKeybindings(t5, t6);
+  const elapsedTime = useElapsedTime(shell.startTime, shell.status === "running", 1000, shell.totalPausedMs ?? 0, shell.endTime);
   let t7;
   if ($[12] !== onBack || $[13] !== onDone || $[14] !== onKillShell || $[15] !== shell.status) {
     t7 = e => {
@@ -197,30 +200,14 @@ export function ShellDetailDialog(t0) {
     t13 = $[27];
   }
   let t14;
-  if ($[28] !== shell.endTime) {
-    t14 = shell.endTime ?? Date.now();
-    $[28] = shell.endTime;
+  if ($[28] !== elapsedTime) {
+    t14 = <Text>{t13}{" "}{elapsedTime}</Text>;
+    $[28] = elapsedTime;
     $[29] = t14;
   } else {
     t14 = $[29];
   }
-  const t15 = t14 - shell.startTime;
-  let t16;
-  if ($[30] !== t15) {
-    t16 = formatDuration(t15);
-    $[30] = t15;
-    $[31] = t16;
-  } else {
-    t16 = $[31];
-  }
-  let t17;
-  if ($[32] !== t16) {
-    t17 = <Text>{t13}{" "}{t16}</Text>;
-    $[32] = t16;
-    $[33] = t17;
-  } else {
-    t17 = $[33];
-  }
+  const t17 = t14;
   const t18 = isMonitor ? "Script:" : "Command:";
   let t19;
   if ($[34] !== t18) {
@@ -351,7 +338,7 @@ function ShellOutputContent(t0) {
     isIncomplete = $[3];
     rendered = $[4];
   }
-  const t1 = columns - 6;
+  const t1 = getShellOutputMaxWidth(columns);
   let t2;
   if ($[5] !== rendered) {
     t2 = rendered.map(_temp2);
