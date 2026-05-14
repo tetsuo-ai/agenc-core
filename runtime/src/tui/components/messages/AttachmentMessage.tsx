@@ -1,6 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import React, { useMemo } from 'react';
+import { resolveAgenCTuiGlyphMode } from '../../glyphs.js';
 import { Ansi, Box, Text } from '../../ink.js';
 import type { Attachment } from '../../../utils/attachments.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { NullRenderingAttachmentType } from './nullRenderingAttachments';
@@ -34,6 +35,9 @@ type Props = {
   verbose: boolean;
   isTranscriptMode?: boolean;
 };
+export function getSelectedLinesAttachmentPrefix(env: { readonly AGENC_TUI_GLYPHS?: string } = process.env): string {
+  return resolveAgenCTuiGlyphMode(env) === 'ascii' ? '[]' : '⧉';
+}
 export function AttachmentMessage({
   attachment,
   addMargin,
@@ -158,7 +162,7 @@ export function AttachmentMessage({
         </Line>;
     case 'selected_lines_in_ide':
       return <Line>
-          ⧉ Selected{' '}
+          {getSelectedLinesAttachmentPrefix()} Selected{' '}
           <Text bold>{attachment.lineEnd - attachment.lineStart + 1}</Text>{' '}
           lines from <Text bold>{attachment.displayPath}</Text> in{' '}
           {attachment.ideName}
@@ -364,9 +368,6 @@ function TaskStatusMessage(t0) {
   const {
     attachment
   } = t0;
-  if (false && attachment.status === "killed") {
-    return null;
-  }
   if (isAgentSwarmsEnabled() && attachment.taskType === "in_process_teammate") {
     let t1;
     if ($[0] !== attachment) {
