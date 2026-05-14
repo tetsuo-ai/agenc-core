@@ -33,4 +33,13 @@ describe('permission mode chrome', () => {
       emphasize: false,
     })
   })
+
+  test('uses ASCII footer symbols when requested', () => {
+    const env = { AGENC_TUI_GLYPHS: 'ascii' }
+
+    expect(permissionModeFooterChrome('plan', env).symbol).toBe('||')
+    expect(permissionModeFooterChrome('acceptEdits', env).symbol).toBe('>>')
+    expect(permissionModeFooterChrome('auto', env).symbol).toBe('>>')
+    expect(permissionModeFooterChrome('unattended', env).symbol).toBe('>')
+  })
 })

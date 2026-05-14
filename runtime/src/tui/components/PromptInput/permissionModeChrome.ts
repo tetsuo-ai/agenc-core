@@ -21,6 +21,7 @@ export function promptGlyphForPermissionMode(
 
 export function permissionModeFooterChrome(
   mode: PermissionMode,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
 ): PermissionModeFooterChrome {
   if (mode === 'bypassPermissions') {
     return {
@@ -31,7 +32,7 @@ export function permissionModeFooterChrome(
   }
 
   return {
-    symbol: permissionModeSymbol(mode),
+    symbol: permissionModeSymbol(mode, env),
     label: `${permissionModeTitle(mode).toLowerCase()} on`,
     emphasize: false,
   }
