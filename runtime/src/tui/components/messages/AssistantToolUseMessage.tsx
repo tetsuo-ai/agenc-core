@@ -89,7 +89,7 @@ export function AssistantToolUseMessage(t0) {
   const parsed = t1;
   if (!parsed) {
     logError(new Error(tools ? `Tool ${param.name} not found` : `Tools array is undefined for tool ${param.name}`));
-    return null;
+    return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Tool use unavailable" detail={tools ? "This transcript references a tool that is not available in this version of AgenC." : "Tool definitions were unavailable while rendering this transcript."} toolName={param.name} />;
   }
   const {
     tool: tool_0,
@@ -98,6 +98,10 @@ export function AssistantToolUseMessage(t0) {
     userFacingToolNameBackgroundColor,
     isTransparentWrapper
   } = parsed;
+  if (!input_0.success) {
+    logError(new Error(`Invalid input for tool ${param.name}`));
+    return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Invalid tool input" detail="This transcript contains tool input that no longer matches the tool schema." toolName={param.name} />;
+  }
   let t2;
   if ($[4] !== lookups.resolvedToolUseIDs || $[5] !== param.id) {
     t2 = lookups.resolvedToolUseIDs.has(param.id);
@@ -177,7 +181,7 @@ export function AssistantToolUseMessage(t0) {
   }
   const renderedToolUseMessage = t4;
   if (renderedToolUseMessage === null) {
-    return null;
+    return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Tool details unavailable" detail="AgenC could not render this tool-use row, but the transcript entry is preserved." toolName={param.name} />;
   }
   const t5 = addMargin ? 1 : 0;
   const t6 = stringWidth(userFacingToolName) + (shouldShowDot ? 2 : 0);
@@ -355,4 +359,23 @@ function renderToolUseQueuedMessage(tool: Tool): React.ReactNode {
     logError(new Error(`Error rendering tool use queued message for ${tool.name}: ${error}`));
     return null;
   }
+}
+function ToolUseRecoveryMessage({
+  addMargin,
+  backgroundColor,
+  title,
+  detail,
+  toolName
+}: {
+  addMargin: boolean;
+  backgroundColor: string | undefined;
+  title: string;
+  detail: string;
+  toolName: string;
+}): React.ReactElement {
+  return <Box flexDirection="column" justifyContent="space-between" marginTop={addMargin ? 1 : 0} width="100%" borderStyle="round" borderColor="error" paddingX={1} backgroundColor={backgroundColor}>
+      <Text bold={true} color="error">{title}</Text>
+      <Text dimColor={true}>{detail}</Text>
+      <Text dimColor={true}>Tool: {toolName}</Text>
+    </Box>;
 }
