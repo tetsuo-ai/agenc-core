@@ -7,6 +7,7 @@ import { getRunningTeammatesSorted } from '../../../tasks/InProcessTeammateTask/
 import { formatNumber } from '../../../utils/format.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { TeammateSpinnerLine } from './TeammateSpinnerLine.js';
+import { SPINNER_AGENT_THEME_COLOR } from './spinnerTheme.js';
 import { TEAMMATE_SELECT_HINT } from './teammateSelectHint.js';
 import { getSpinnerEllipsis } from './utils.js';
 type Props = {
@@ -80,7 +81,7 @@ export function TeammateSpinnerTree(t0: Props) {
       } else {
         t11 = $[23];
       }
-      const t12 = isLeaderSelected ? "suggestion" : "cyan_FOR_SUBAGENTS_ONLY";
+      const t12 = SPINNER_AGENT_THEME_COLOR;
       let t13;
       if ($[24] !== isLeaderHighlighted || $[25] !== t12) {
         t13 = <Text bold={isLeaderHighlighted} color={t12}>team-lead</Text>;

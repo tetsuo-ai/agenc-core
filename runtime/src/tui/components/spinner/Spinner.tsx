@@ -37,6 +37,7 @@ import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../bootstr
 import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../../ink.js';
 import { formatRunningAgentSummary, getActiveLocalAgentTasks } from './agentActivity.js';
+import { SPINNER_AGENT_THEME_COLOR } from './spinnerTheme.js';
 export type { SpinnerMode } from './types.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
@@ -455,7 +456,7 @@ function RunningLocalAgentsLine({
   agents: readonly ReturnType<typeof getActiveLocalAgentTasks>[number][];
 }) {
   return <MessageResponse>
-      <Text color="cyan_FOR_SUBAGENTS_ONLY">{figures.play} {formatRunningAgentSummary(agents)}</Text>
+      <Text color={SPINNER_AGENT_THEME_COLOR}>{figures.play} {formatRunningAgentSummary(agents)}</Text>
     </MessageResponse>;
 }
 function _temp5(s: any) {
