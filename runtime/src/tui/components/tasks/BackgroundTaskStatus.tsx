@@ -8,11 +8,12 @@ import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../../state/teammateViewHelpers.js';
 import { getPillLabel, pillNeedsCta } from 'src/tasks/pillLabel.js';
 import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
-import { calculateHorizontalScrollWindow } from '../../../utils/horizontalScroll.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../../ink.js';
 import { AGENT_COLOR_TO_THEME_COLOR, AGENT_COLORS, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
+import { getTeammateFooterLayout } from './BackgroundTaskStatus.layout.js';
 import { shouldHideTasksFooter } from './taskStatusUtils';
 type Props = {
   tasksSelected: boolean;
@@ -22,7 +23,7 @@ type Props = {
   onOpenDialog?: (taskId?: string) => void;
 };
 export function BackgroundTaskStatus(t0) {
-  const $ = _c(48);
+  const $ = _c(51);
   const {
     tasksSelected,
     isViewingTeammate,
@@ -110,12 +111,11 @@ export function BackgroundTaskStatus(t0) {
       t8 = $[14];
     }
     const viewedIdx = t8;
-    const availableWidth = Math.max(20, columns - 20 - 4);
     const t9 = selectedIdx >= 0 ? selectedIdx : 0;
     let t10;
-    if ($[15] !== availableWidth || $[16] !== pillWidths || $[17] !== t9) {
-      t10 = calculateHorizontalScrollWindow(pillWidths, availableWidth, 2, t9);
-      $[15] = availableWidth;
+    if ($[15] !== columns || $[16] !== pillWidths || $[17] !== t9) {
+      t10 = getTeammateFooterLayout(pillWidths, columns, t9);
+      $[15] = columns;
       $[16] = pillWidths;
       $[17] = t9;
       $[18] = t10;
@@ -126,7 +126,9 @@ export function BackgroundTaskStatus(t0) {
       startIndex,
       endIndex,
       showLeftArrow,
-      showRightArrow
+      showRightArrow,
+      showExpandHint,
+      visiblePillWidths
     } = t10;
     let t11;
     if ($[19] !== allPills || $[20] !== endIndex || $[21] !== startIndex) {
@@ -148,43 +150,46 @@ export function BackgroundTaskStatus(t0) {
       t12 = $[24];
     }
     let t13;
-    if ($[25] !== selectedIdx || $[26] !== setAppState || $[27] !== viewedIdx || $[28] !== visiblePills) {
+    if ($[25] !== selectedIdx || $[26] !== setAppState || $[27] !== viewedIdx || $[28] !== visiblePillWidths || $[29] !== visiblePills) {
       t13 = visiblePills.map((pill_1, i_1) => {
         const needsSeparator = i_1 > 0;
-        return <React.Fragment key={pill_1.name}>{needsSeparator && <Text> </Text>}<AgentPill name={pill_1.name} color={pill_1.color} isSelected={selectedIdx === pill_1.idx} isViewed={viewedIdx === pill_1.idx} isIdle={pill_1.isIdle} onClick={() => pill_1.taskId ? enterTeammateView(pill_1.taskId, setAppState) : exitTeammateView(setAppState)} /></React.Fragment>;
+        return <React.Fragment key={pill_1.name}>{needsSeparator && <Text> </Text>}<AgentPill name={pill_1.name} color={pill_1.color} maxWidth={visiblePillWidths[i_1]} isSelected={selectedIdx === pill_1.idx} isViewed={viewedIdx === pill_1.idx} isIdle={pill_1.isIdle} onClick={() => pill_1.taskId ? enterTeammateView(pill_1.taskId, setAppState) : exitTeammateView(setAppState)} /></React.Fragment>;
       });
       $[25] = selectedIdx;
       $[26] = setAppState;
       $[27] = viewedIdx;
-      $[28] = visiblePills;
-      $[29] = t13;
+      $[28] = visiblePillWidths;
+      $[29] = visiblePills;
+      $[30] = t13;
     } else {
-      t13 = $[29];
+      t13 = $[30];
     }
     let t14;
-    if ($[30] !== showRightArrow) {
+    if ($[31] !== showRightArrow) {
       t14 = showRightArrow && <Text dimColor={true}> {figures.arrowRight}</Text>;
-      $[30] = showRightArrow;
-      $[31] = t14;
+      $[31] = showRightArrow;
+      $[32] = t14;
     } else {
-      t14 = $[31];
+      t14 = $[32];
     }
     let t15;
-    if ($[32] === Symbol.for("react.memo_cache_sentinel")) {
-      t15 = <Text dimColor={true}>{" \xB7 "}<KeyboardShortcutHint shortcut={"shift + \u2193"} action="expand" /></Text>;
-      $[32] = t15;
+    if ($[33] !== showExpandHint) {
+      t15 = showExpandHint && <Text dimColor={true}>{" \xB7 "}<KeyboardShortcutHint shortcut={"shift + \u2193"} action="expand" /></Text>;
+      $[33] = showExpandHint;
+      $[34] = t15;
     } else {
-      t15 = $[32];
+      t15 = $[34];
     }
     let t16;
-    if ($[33] !== t12 || $[34] !== t13 || $[35] !== t14) {
+    if ($[35] !== t12 || $[36] !== t13 || $[37] !== t14 || $[38] !== t15) {
       t16 = <>{t12}{t13}{t14}{t15}</>;
-      $[33] = t12;
-      $[34] = t13;
-      $[35] = t14;
-      $[36] = t16;
+      $[35] = t12;
+      $[36] = t13;
+      $[37] = t14;
+      $[38] = t15;
+      $[39] = t16;
     } else {
-      t16 = $[36];
+      t16 = $[39];
     }
     return t16;
   }
@@ -195,39 +200,39 @@ export function BackgroundTaskStatus(t0) {
     return null;
   }
   let t8;
-  if ($[37] !== runningTasks) {
+  if ($[40] !== runningTasks) {
     t8 = getPillLabel(runningTasks);
-    $[37] = runningTasks;
-    $[38] = t8;
+    $[40] = runningTasks;
+    $[41] = t8;
   } else {
-    t8 = $[38];
+    t8 = $[41];
   }
   let t9;
-  if ($[39] !== onOpenDialog || $[40] !== t8 || $[41] !== tasksSelected) {
+  if ($[42] !== onOpenDialog || $[43] !== t8 || $[44] !== tasksSelected) {
     t9 = <SummaryPill selected={tasksSelected} onClick={onOpenDialog}>{t8}</SummaryPill>;
-    $[39] = onOpenDialog;
-    $[40] = t8;
-    $[41] = tasksSelected;
-    $[42] = t9;
+    $[42] = onOpenDialog;
+    $[43] = t8;
+    $[44] = tasksSelected;
+    $[45] = t9;
   } else {
-    t9 = $[42];
+    t9 = $[45];
   }
   let t10;
-  if ($[43] !== runningTasks) {
+  if ($[46] !== runningTasks) {
     t10 = pillNeedsCta(runningTasks) && <Text dimColor={true}> · {figures.arrowDown} to view</Text>;
-    $[43] = runningTasks;
-    $[44] = t10;
+    $[46] = runningTasks;
+    $[47] = t10;
   } else {
-    t10 = $[44];
+    t10 = $[47];
   }
   let t11;
-  if ($[45] !== t10 || $[46] !== t9) {
+  if ($[48] !== t10 || $[49] !== t9) {
     t11 = <>{t9}{t10}</>;
-    $[45] = t10;
-    $[46] = t9;
-    $[47] = t11;
+    $[48] = t10;
+    $[49] = t9;
+    $[50] = t11;
   } else {
-    t11 = $[47];
+    t11 = $[50];
   }
   return t11;
 }
@@ -279,6 +284,7 @@ function _temp(s) {
 type AgentPillProps = {
   name: string;
   color?: keyof Theme;
+  maxWidth?: number;
   isSelected: boolean;
   isViewed: boolean;
   isIdle: boolean;
@@ -289,6 +295,7 @@ function AgentPill(t0) {
   const {
     name,
     color,
+    maxWidth,
     isSelected,
     isViewed,
     isIdle,
@@ -296,14 +303,16 @@ function AgentPill(t0) {
   } = t0;
   const [hover, setHover] = useState(false);
   const highlighted = isSelected || hover;
+  const rawLabelText = `@${name}`;
+  const labelText = maxWidth === undefined ? rawLabelText : truncate(rawLabelText, Math.max(1, maxWidth), true);
   let label;
   if (highlighted) {
     let t1;
-    if ($[0] !== color || $[1] !== isViewed || $[2] !== name) {
-      t1 = color ? <Text backgroundColor={color} color="inverseText" bold={isViewed}>@{name}</Text> : <Text color="background" inverse={true} bold={isViewed}>@{name}</Text>;
+    if ($[0] !== color || $[1] !== isViewed || $[2] !== labelText) {
+      t1 = color ? <Text backgroundColor={color} color="inverseText" bold={isViewed}>{labelText}</Text> : <Text color="background" inverse={true} bold={isViewed}>{labelText}</Text>;
       $[0] = color;
       $[1] = isViewed;
-      $[2] = name;
+      $[2] = labelText;
       $[3] = t1;
     } else {
       t1 = $[3];
@@ -312,10 +321,10 @@ function AgentPill(t0) {
   } else {
     if (isIdle) {
       let t1;
-      if ($[4] !== isViewed || $[5] !== name) {
-        t1 = <Text dimColor={true} bold={isViewed}>@{name}</Text>;
+      if ($[4] !== isViewed || $[5] !== labelText) {
+        t1 = <Text dimColor={true} bold={isViewed}>{labelText}</Text>;
         $[4] = isViewed;
-        $[5] = name;
+        $[5] = labelText;
         $[6] = t1;
       } else {
         t1 = $[6];
@@ -324,10 +333,10 @@ function AgentPill(t0) {
     } else {
       if (isViewed) {
         let t1;
-        if ($[7] !== color || $[8] !== name) {
-          t1 = <Text color={color} bold={true}>@{name}</Text>;
+        if ($[7] !== color || $[8] !== labelText) {
+          t1 = <Text color={color} bold={true}>{labelText}</Text>;
           $[7] = color;
-          $[8] = name;
+          $[8] = labelText;
           $[9] = t1;
         } else {
           t1 = $[9];
@@ -336,10 +345,10 @@ function AgentPill(t0) {
       } else {
         const t1 = !color;
         let t2;
-        if ($[10] !== color || $[11] !== name || $[12] !== t1) {
-          t2 = <Text color={color} dimColor={t1}>@{name}</Text>;
+        if ($[10] !== color || $[11] !== labelText || $[12] !== t1) {
+          t2 = <Text color={color} dimColor={t1}>{labelText}</Text>;
           $[10] = color;
-          $[11] = name;
+          $[11] = labelText;
           $[12] = t1;
           $[13] = t2;
         } else {
