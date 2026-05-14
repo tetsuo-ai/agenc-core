@@ -2,6 +2,7 @@ import * as React from 'react';
 import { memo, type ReactNode, useMemo, useRef } from 'react';
 
 
+import { useIsModalOverlayActive } from '../../context/overlayContext.js';
 import { useSetPromptOverlay } from '../../context/promptOverlayContext.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
@@ -105,6 +106,8 @@ function PromptInputFooter({
   // has terminal scrollback to absorb overflow, so we never hide StatusLine there.
   const isFullscreen = isFullscreenEnvEnabled();
   const isShort = isFullscreen && rows < 24;
+  const isModalOverlayActive = useIsModalOverlayActive();
+  const shouldShowSuggestions = suggestions.length > 0 && !isModalOverlayActive;
 
   // Pill highlights when tasks is the active footer item AND no specific
   // agent row is selected. When coordinatorTaskIndex >= 0 the pointer has
@@ -119,14 +122,14 @@ function PromptInputFooter({
   const suppressHint = suppressHintFromProps || statusLineShouldDisplay(settings) || isSearching;
   const showStatusLine = mode === 'prompt' && !isShort && !exitMessage.show && !isPasting && statusLineShouldDisplay(settings);
   // Fullscreen: portal data to FullscreenLayout — see promptOverlayContext.tsx
-  const overlayData = useMemo(() => isFullscreen && suggestions.length ? {
+  const overlayData = useMemo(() => isFullscreen && shouldShowSuggestions ? {
     suggestions,
     selectedSuggestion,
     maxColumnWidth,
     suggestionType
-  } : null, [isFullscreen, suggestions, selectedSuggestion, maxColumnWidth, suggestionType]);
+  } : null, [isFullscreen, shouldShowSuggestions, suggestions, selectedSuggestion, maxColumnWidth, suggestionType]);
   useSetPromptOverlay(overlayData);
-  if (suggestions.length && !isFullscreen) {
+  if (shouldShowSuggestions && !isFullscreen) {
     return <Box paddingX={2} paddingY={0}>
         <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} suggestionType={suggestionType} />
       </Box>;
