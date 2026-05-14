@@ -28,20 +28,20 @@ vi.mock('bun:bundle', () => ({
 }))
 
 vi.mock('../CustomSelect/select.js', async () => {
-  const { Box, Text } = await import('../../ink.js')
   return {
-    Select: ({ options }: { options: Array<{ label: string }> }) => (
-      <Box flexDirection="column">
-        {options.map(option => (
-          <Text key={option.label}>{option.label}</Text>
-        ))}
-      </Box>
-    ),
+    Select: ({ options }: { options: Array<{ label: string }> }) =>
+      React.createElement(
+        'ink-text',
+        null,
+        options.map(option => option.label).join('\n'),
+      ),
   }
 })
 
 vi.mock('../design-system/Dialog.js', async () => {
-  const { Box, Text } = await import('../../ink.js')
+  const { Box, Text } = await vi.importActual<typeof import('../../ink.js')>(
+    '../../ink.js',
+  )
   return {
     Dialog: ({
     title,
@@ -80,6 +80,7 @@ vi.mock('../../../utils/auth.js', () => ({
   getSubscriptionType: () => rateLimitMock.subscriptionType,
   getRateLimitTier: () => rateLimitMock.rateLimitTier,
   isAgenCAISubscriber: () => rateLimitMock.isSubscriber,
+  isOverageProvisioningAllowed: () => rateLimitMock.extraUsageEnabled,
 }))
 
 vi.mock('../../../utils/billing.js', () => ({

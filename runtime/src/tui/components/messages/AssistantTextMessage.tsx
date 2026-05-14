@@ -12,17 +12,11 @@ import { getDefaultSonnetModel, renderModelName } from '../../../utils/model/mod
 import { isMacOsKeychainLocked } from '../../../utils/secureStorage/macOsKeychainStorage'; // upstream-import: keep target is owned by another Z-PURGE item
 import { CtrlOToExpand } from '../CtrlOToExpand';
 import { InterruptedByUser } from '../InterruptedByUser';
+import { RateLimitMessage } from '../dialogs/RateLimitMessage.js';
 import { Markdown } from '../markdown/Markdown.js';
 import { MessageResponse } from '../MessageResponse';
 import { MessageActionsSelectedContext } from '../messageActions';
 
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const RateLimitMessage = (_props: unknown): null => null;
-// ---- end donor-purge stubs ----
 const MAX_API_ERROR_CHARS = 1000;
 type Props = {
   param: TextBlockParam;
