@@ -6,7 +6,11 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { DiffData, DiffFile } from '../../hooks/useDiffData.js'
 import { StructuredDiff } from './StructuredDiff.js'
 import { StructuredDiffList } from './StructuredDiffList.js'
-import { DiffDetailView } from './DiffDetailView.js'
+import {
+  DiffDetailView,
+  getDiffDetailBodyHeight,
+  getDiffDetailEstimatedRows,
+} from './DiffDetailView.js'
 import { DiffDialog } from './DiffDialog.js'
 import { DiffFileList } from './DiffFileList.js'
 import { FileEditToolDiff } from './FileEditToolDiff.js'
@@ -404,6 +408,20 @@ describe('diff renderer components', () => {
     expect(binary).toContain('Binary file - cannot display diff')
     expect(untracked).toContain('New file not yet staged.')
     expect(untracked).toContain('Run `git add docs/new.md`')
+  })
+
+  test('clips long diff detail bodies to the terminal height budget', () => {
+    const longHunk = makeHunk(
+      1,
+      Array.from({ length: 40 }, (_, index) => ` context ${index}`),
+    )
+    const output = renderPlain(
+      <DiffDetailView filePath="src/large.ts" hunks={[longHunk]} />,
+    )
+
+    expect(getDiffDetailBodyHeight(40)).toBe(30)
+    expect(getDiffDetailEstimatedRows([longHunk])).toBe(40)
+    expect(output).toContain('diff clipped to 30 rows')
   })
 
   test('renders the current diff dialog list from diff data', () => {

@@ -8,6 +8,7 @@ import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target 
 import { readFileSafe } from '../../../utils/file.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from '../design-system/Divider';
 import { StructuredDiff } from './StructuredDiff';
+const DIFF_DETAIL_CHROME_ROWS = 10;
 type Props = {
   filePath: string;
   hunks: StructuredPatchHunk[];
@@ -20,10 +21,17 @@ type Props = {
 /**
  * Displays the diff content for a single file.
  * Uses StructuredDiff for word-level diffing and syntax highlighting.
- * No scrolling - renders all lines (max 400 due to parsing limits).
+ * Clips long diff bodies to the current terminal budget so dialog chrome remains visible.
  */
+export function getDiffDetailBodyHeight(rows: number): number {
+  const safeRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+  return Math.max(1, safeRows - DIFF_DETAIL_CHROME_ROWS);
+}
+export function getDiffDetailEstimatedRows(hunks: StructuredPatchHunk[]): number {
+  return hunks.reduce((total, hunk, index) => total + hunk.lines.length + (index > 0 ? 1 : 0), 0);
+}
 export function DiffDetailView(t0) {
-  const $ = _c(53);
+  const $ = _c(56);
   const {
     filePath,
     hunks,
@@ -33,7 +41,8 @@ export function DiffDetailView(t0) {
     isUntracked
   } = t0;
   const {
-    columns
+    columns,
+    rows
   } = useTerminalSize();
   let t1;
   bb0: {
@@ -250,31 +259,37 @@ export function DiffDetailView(t0) {
   } else {
     t6 = $[44];
   }
+  const estimatedDiffRows = useMemo(() => getDiffDetailEstimatedRows(hunks), [hunks]);
+  const detailBodyHeight = hunks.length === 0 ? undefined : getDiffDetailBodyHeight(rows);
+  const isBodyClipped = detailBodyHeight !== undefined && estimatedDiffRows > detailBodyHeight;
   let t7;
-  if ($[45] !== t6) {
-    t7 = <Box flexDirection="column">{t6}</Box>;
-    $[45] = t6;
-    $[46] = t7;
+  if ($[45] !== detailBodyHeight || $[46] !== t6) {
+    t7 = detailBodyHeight === undefined ? <Box flexDirection="column">{t6}</Box> : <Box flexDirection="column" height={detailBodyHeight} overflowY="hidden">{t6}</Box>;
+    $[45] = detailBodyHeight;
+    $[46] = t6;
+    $[47] = t7;
   } else {
-    t7 = $[46];
+    t7 = $[47];
   }
   let t8;
-  if ($[47] !== isTruncated) {
-    t8 = isTruncated && <Text dimColor={true} italic={true}>… diff truncated (exceeded 400 line limit)</Text>;
-    $[47] = isTruncated;
-    $[48] = t8;
+  if ($[48] !== detailBodyHeight || $[49] !== isBodyClipped || $[50] !== isTruncated) {
+    t8 = isTruncated ? <Text dimColor={true} italic={true}>… diff truncated (exceeded 400 line limit)</Text> : isBodyClipped && <Text dimColor={true} italic={true}>… diff clipped to {detailBodyHeight} rows to fit this terminal</Text>;
+    $[48] = detailBodyHeight;
+    $[49] = isBodyClipped;
+    $[50] = isTruncated;
+    $[51] = t8;
   } else {
-    t8 = $[48];
+    t8 = $[51];
   }
   let t9;
-  if ($[49] !== t4 || $[50] !== t7 || $[51] !== t8) {
+  if ($[52] !== t4 || $[53] !== t7 || $[54] !== t8) {
     t9 = <Box flexDirection="column" width="100%">{t4}{t5}{t7}{t8}</Box>;
-    $[49] = t4;
-    $[50] = t7;
-    $[51] = t8;
-    $[52] = t9;
+    $[52] = t4;
+    $[53] = t7;
+    $[54] = t8;
+    $[55] = t9;
   } else {
-    t9 = $[52];
+    t9 = $[55];
   }
   return t9;
 }
