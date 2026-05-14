@@ -27,6 +27,7 @@ const files = [
   "runtime/src/tui/components/permissions/PermissionRequest.tsx",
   "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
   "runtime/src/tui/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.tsx",
+  "runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx",
   "runtime/src/tui/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.tsx",
 ];
 

@@ -1,22 +1,20 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { useCallback, useMemo } from 'react';
 import { logError } from '../../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getOriginalCwd } from '../../../../bootstrap/state';
+import { getOriginalCwd } from '../../../../bootstrap/state.js';
 import { Box, Text } from '../../../ink.js';
-import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata';
-import { env } from '../../../../utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
-import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logUnaryEvent } from '../../../../utils/unaryLogging'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
-import { PermissionDialog } from '../PermissionDialog';
-import { PermissionPrompt, type PermissionPromptOption, type ToolAnalyticsContext } from '../PermissionPrompt';
+import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata.js';
+import { env } from '../../../../utils/env.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { logUnaryEvent } from '../../../../utils/unaryLogging.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { usePermissionRequestLogging } from '../hooks.js';
+import { PermissionDialog } from '../PermissionDialog.js';
+import { PermissionPrompt, type PermissionPromptOption } from '../PermissionPrompt.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
-import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
+import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
 type SkillOptionValue = 'yes' | 'yes-exact' | 'yes-prefix' | 'no';
 const SKILL_PERMISSION_TOOL_NAME = "Skill";
-export function SkillPermissionRequest(props) {
+export function SkillPermissionRequest(props: PermissionRequestProps): React.ReactNode {
   const $ = _c(51);
   const {
     toolUseConfirm,
@@ -37,7 +35,9 @@ export function SkillPermissionRequest(props) {
   if (skill.trim().length === 0) {
     return <MalformedSkillPermissionInputDialog toolUseConfirm={toolUseConfirm} onDone={onDone} onReject={onReject} workerBadge={workerBadge} />;
   }
-  const commandObj = toolUseConfirm.permissionResult.behavior === "ask" && toolUseConfirm.permissionResult.metadata && "command" in toolUseConfirm.permissionResult.metadata ? toolUseConfirm.permissionResult.metadata.command : undefined;
+  const commandObj = toolUseConfirm.permissionResult.behavior === "ask" && toolUseConfirm.permissionResult.metadata && "command" in toolUseConfirm.permissionResult.metadata ? toolUseConfirm.permissionResult.metadata.command as {
+    description?: string;
+  } : undefined;
   let t1;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = {
@@ -79,10 +79,10 @@ export function SkillPermissionRequest(props) {
   } else {
     t4 = $[5];
   }
-  const baseOptions = t4;
+  const baseOptions = t4 as PermissionPromptOption<SkillOptionValue>[];
   let alwaysAllowOptions;
   if ($[6] !== skill) {
-    alwaysAllowOptions = [];
+    alwaysAllowOptions = [] as PermissionPromptOption<SkillOptionValue>[];
     if (showAlwaysAllowOptions) {
       const t5 = <Text bold={true}>{skill}</Text>;
       let t6;
@@ -155,7 +155,7 @@ export function SkillPermissionRequest(props) {
   } else {
     t5 = $[16];
   }
-  const noOption = t5;
+  const noOption = t5 as PermissionPromptOption<SkillOptionValue>;
   let t6;
   if ($[17] !== alwaysAllowOptions) {
     t6 = [...baseOptions, ...alwaysAllowOptions, noOption];
@@ -189,7 +189,7 @@ export function SkillPermissionRequest(props) {
   const toolAnalyticsContext = t9;
   let t10;
   if ($[24] !== onDone || $[25] !== onReject || $[26] !== skill || $[27] !== toolUseConfirm) {
-    t10 = (value, feedback) => {
+    t10 = (value: SkillOptionValue, feedback?: string) => {
       bb33: switch (value) {
         case "yes":
           {
@@ -367,16 +367,16 @@ function MalformedSkillPermissionInputDialog({
   onDone,
   onReject,
   workerBadge
-}) {
-  const handleReject = useCallback(feedback => {
+}: Pick<PermissionRequestProps, 'toolUseConfirm' | 'onDone' | 'onReject' | 'workerBadge'>): React.ReactNode {
+  const handleReject = useCallback((feedback?: string) => {
     toolUseConfirm.onReject(feedback);
     onReject();
     onDone();
   }, [onDone, onReject, toolUseConfirm]);
-  const handleSelect = useCallback((_value, feedback) => {
+  const handleSelect = useCallback((_value: 'no', feedback?: string) => {
     handleReject(feedback);
   }, [handleReject]);
-  const options = useMemo(() => [{
+  const options = useMemo<PermissionPromptOption<'no'>[]>(() => [{
     label: "No",
     value: "no",
     feedbackConfig: {
@@ -388,9 +388,13 @@ function MalformedSkillPermissionInputDialog({
         isMcp: toolUseConfirm.tool.isMcp ?? false
       }} /></Box></PermissionDialog>;
 }
-function _temp(input) {
+function _temp(input: unknown): string {
   if (input && typeof input === "object") {
-    const skill = input.skill ?? input.name;
+    const record = input as {
+      name?: unknown;
+      skill?: unknown;
+    };
+    const skill = record.skill ?? record.name;
     if (typeof skill === "string") {
       return skill;
     }
