@@ -209,7 +209,7 @@ export function GlobalKeybindingHandlers({
   // toggle() blocks in spawnSync until the user detaches from tmux.
   const handleToggleTerminal = useCallback(() => {
     if (feature('TERMINAL_PANEL')) {
-      if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_terminal_panel', false)) {
+      if (!getFeatureValue_CACHED_MAY_BE_STALE('agenc_terminal_panel', false)) {
         return;
       }
       getTerminalPanel().toggle();
