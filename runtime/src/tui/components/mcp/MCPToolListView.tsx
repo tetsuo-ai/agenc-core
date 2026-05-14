@@ -25,7 +25,7 @@ type ToolOption = {
 };
 type ExitState = {
   pending: boolean;
-  keyName: string;
+  keyName: string | null;
 };
 export function MCPToolListView(t0: Props) {
   const $ = _c(21);

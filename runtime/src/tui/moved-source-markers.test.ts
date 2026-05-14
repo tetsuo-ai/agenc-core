@@ -19,6 +19,7 @@ const files = [
   "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx",
   "runtime/src/tui/components/IdeOnboardingDialog.tsx",
   "runtime/src/tui/components/IdleReturnDialog.tsx",
+  "runtime/src/tui/components/design-system/Dialog.tsx",
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
@@ -88,6 +89,17 @@ describe("moved-source marker cleanup", () => {
       expect(source).not.toContain("Moved-source note");
       expect(source).not.toContain("upstream-import");
     }
+  });
+
+  test("design-system dialog does not keep moved-source or upstream-import residue", () => {
+    const source = readFileSync(
+      `${repoRoot}runtime/src/tui/components/design-system/Dialog.tsx`,
+      "utf8",
+    );
+
+    expect(source).not.toContain("@ts-nocheck");
+    expect(source).not.toContain("Moved-source note");
+    expect(source).not.toContain("upstream-import");
   });
 
   test("owned message renderers do not import provider SDK block types directly", () => {

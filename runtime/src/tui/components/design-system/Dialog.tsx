@@ -1,20 +1,21 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { type ExitState, useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
 import { TerminalSizeContext } from '../../ink/components/TerminalSizeContext.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { Byline } from './Byline';
-import FullWidthRow from './FullWidthRow';
-import { KeyboardShortcutHint } from './KeyboardShortcutHint';
-import { Pane } from './Pane';
+import type { Theme } from '../../../utils/theme.js';
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { Byline } from './Byline.js';
+import FullWidthRow from './FullWidthRow.js';
+import { KeyboardShortcutHint } from './KeyboardShortcutHint.js';
+import { Pane } from './Pane.js';
 const DEFAULT_DIALOG_ROWS = 24;
 const DIALOG_BODY_CHROME_ROWS_WITH_GUIDE = 6;
 const DIALOG_BODY_CHROME_ROWS_WITHOUT_GUIDE = 4;
+type DialogInputGuide = {
+  bivarianceHack(exitState: ExitState): React.ReactNode;
+}["bivarianceHack"];
 type DialogProps = {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
@@ -24,7 +25,7 @@ type DialogProps = {
   hideInputGuide?: boolean;
   hideBorder?: boolean;
   /** Custom input guide content. Receives exitState for Ctrl+C/D pending display. */
-  inputGuide?: (exitState: ExitState) => React.ReactNode;
+  inputGuide?: DialogInputGuide;
   /**
    * Controls whether Dialog's built-in confirm:no (Esc/n) and app:exit/interrupt
    * (Ctrl-C/D) keybindings are active. Set to `false` while an embedded text
@@ -39,7 +40,7 @@ export function getDialogBodyMaxHeight(rows: number, showInputGuide: boolean): n
   const chromeRows = showInputGuide ? DIALOG_BODY_CHROME_ROWS_WITH_GUIDE : DIALOG_BODY_CHROME_ROWS_WITHOUT_GUIDE;
   return Math.max(1, safeRows - chromeRows);
 }
-export function Dialog(t0) {
+export function Dialog(t0: DialogProps): React.ReactNode {
   const $ = _c(27);
   const {
     title,

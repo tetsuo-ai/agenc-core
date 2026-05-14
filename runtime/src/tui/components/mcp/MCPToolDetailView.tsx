@@ -13,7 +13,7 @@ type Props = {
 };
 type ExitState = {
   pending: boolean;
-  keyName: string;
+  keyName: string | null;
 };
 export function MCPToolDetailView(t0: Props) {
   const $ = _c(44);
