@@ -12,6 +12,7 @@ import { getCurrentSessionTitle } from '../../../utils/sessionStorage.js'; // up
 import { buildAccountProperties, buildAPIProviderProperties, buildIDEProperties, buildInstallationDiagnostics, buildInstallationHealthDiagnostics, buildMcpProperties, buildMemoryDiagnostics, buildSandboxProperties, buildSettingSourcesProperties, type Diagnostic, getModelDisplayLabel, type Property } from '../../../utils/status.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
+import { SettingsDiagnosticsLoadingState } from './LoadingState.js';
 type Props = {
   context: LocalJSXCommandContext;
   diagnosticsPromise: Promise<Diagnostic[]>;
@@ -151,7 +152,7 @@ export function Status(t0) {
   }
   let t5;
   if ($[10] !== diagnosticsPromise) {
-    t5 = <Suspense fallback={null}><Diagnostics promise={diagnosticsPromise} /></Suspense>;
+    t5 = <Suspense fallback={<SettingsDiagnosticsLoadingState />}><Diagnostics promise={diagnosticsPromise} /></Suspense>;
     $[10] = diagnosticsPromise;
     $[11] = t5;
   } else {

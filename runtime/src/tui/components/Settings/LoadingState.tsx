@@ -8,3 +8,12 @@ export function SettingsConfigLoadingState(): React.ReactNode {
     </Box>
   );
 }
+
+export function SettingsDiagnosticsLoadingState(): React.ReactNode {
+  return (
+    <Box flexDirection="column">
+      <Text bold>System Diagnostics</Text>
+      <Text dimColor>Loading diagnostics...</Text>
+    </Box>
+  );
+}

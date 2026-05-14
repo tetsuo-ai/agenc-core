@@ -6,7 +6,6 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import * as React from 'react';
 import { useState, useCallback } from 'react';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
-import figures from 'figures';
 import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type OutputStyle } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { normalizeApiKeyForConfig } from '../../../utils/authPortable.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -49,6 +48,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeEnabled, getFastModeModel, isFastModeSupportedByModel } from '../../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { calculateSettingsConfigMaxVisible, calculateSettingsContentHeight } from './layout.js';
+import { getSettingsConfigGlyphLabels } from './glyphs.js';
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -209,7 +209,7 @@ export function Config({
   const autoUpdaterDisabledReason = getAutoUpdaterDisabledReason();
   function onChangeMainModelConfig(value: string | null): void {
     const previousModel = mainLoopModel;
-    logEvent('tengu_config_model_changed', {
+    logEvent('agenc_config_model_changed', {
       from_model: previousModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       to_model: value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });
@@ -284,7 +284,7 @@ export function Config({
         ...getGlobalConfig(),
         autoCompactEnabled
       });
-      logEvent('tengu_auto_compact_setting_changed', {
+      logEvent('agenc_auto_compact_setting_changed', {
         enabled: autoCompactEnabled
       });
     }
@@ -302,7 +302,7 @@ export function Config({
         ...getGlobalConfig(),
         toolHistoryCompressionEnabled
       });
-      logEvent('tengu_tool_history_compression_setting_changed', {
+      logEvent('agenc_tool_history_compression_setting_changed', {
         enabled: toolHistoryCompressionEnabled
       });
     }
@@ -322,7 +322,7 @@ export function Config({
         ...getGlobalConfig(),
         showCacheStats
       });
-      logEvent('tengu_show_cache_stats_setting_changed', {
+      logEvent('agenc_show_cache_stats_setting_changed', {
         mode: showCacheStats as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
     }
@@ -340,7 +340,7 @@ export function Config({
         ...prev_3,
         spinnerTipsEnabled
       }));
-      logEvent('tengu_tips_setting_changed', {
+      logEvent('agenc_tips_setting_changed', {
         enabled: spinnerTipsEnabled
       });
     }
@@ -365,7 +365,7 @@ export function Config({
           prefersReducedMotion
         }
       }));
-      logEvent('tengu_reduce_motion_setting_changed', {
+      logEvent('agenc_reduce_motion_setting_changed', {
         enabled: prefersReducedMotion
       });
     }
@@ -382,7 +382,7 @@ export function Config({
       updateSettingsForSource('userSettings', {
         alwaysThinkingEnabled: enabled ? undefined : false
       });
-      logEvent('tengu_thinking_toggled', {
+      logEvent('agenc_thinking_toggled', {
         enabled
       });
     }
@@ -421,7 +421,7 @@ export function Config({
         }));
       }
     }
-  }] : []), ...(getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false) ? [{
+  }] : []), ...(getFeatureValue_CACHED_MAY_BE_STALE('agenc_chomp_inflection', false) ? [{
     id: 'promptSuggestionEnabled',
     label: 'Prompt suggestions',
     value: promptSuggestionEnabled,
@@ -433,29 +433,6 @@ export function Config({
       }));
       updateSettingsForSource('userSettings', {
         promptSuggestionEnabled: enabled_1 ? undefined : false
-      });
-    }
-  }] : []),
-  // Speculation toggle (internal-only)
-  ...("external" === 'ant' ? [{
-    id: 'speculationEnabled',
-    label: 'Speculative execution',
-    value: globalConfig.speculationEnabled ?? true,
-    type: 'boolean' as const,
-    onChange(enabled_2: boolean) {
-      saveGlobalConfig(current_1 => {
-        if (current_1.speculationEnabled === enabled_2) return current_1;
-        return {
-          ...current_1,
-          speculationEnabled: enabled_2
-        };
-      });
-      setGlobalConfig({
-        ...getGlobalConfig(),
-        speculationEnabled: enabled_2
-      });
-      logEvent('tengu_speculation_setting_changed', {
-        enabled: enabled_2
       });
     }
   }] : []), ...(isFileCheckpointingAvailable ? [{
@@ -472,7 +449,7 @@ export function Config({
         ...getGlobalConfig(),
         fileCheckpointingEnabled: enabled_3
       });
-      logEvent('tengu_file_history_snapshots_setting_changed', {
+      logEvent('agenc_file_history_snapshots_setting_changed', {
         enabled: enabled_3
       });
     }
@@ -496,11 +473,11 @@ export function Config({
         ...getGlobalConfig(),
         terminalProgressBarEnabled
       });
-      logEvent('tengu_terminal_progress_bar_setting_changed', {
+      logEvent('agenc_terminal_progress_bar_setting_changed', {
         enabled: terminalProgressBarEnabled
       });
     }
-  }, ...(getFeatureValue_CACHED_MAY_BE_STALE('tengu_terminal_sidebar', false) ? [{
+  }, ...(getFeatureValue_CACHED_MAY_BE_STALE('agenc_terminal_sidebar', false) ? [{
     id: 'showStatusInTerminalTab',
     label: 'Show status in terminal tab',
     value: globalConfig.showStatusInTerminalTab ?? false,
@@ -514,7 +491,7 @@ export function Config({
         ...getGlobalConfig(),
         showStatusInTerminalTab
       });
-      logEvent('tengu_terminal_tab_status_setting_changed', {
+      logEvent('agenc_terminal_tab_status_setting_changed', {
         enabled: showStatusInTerminalTab
       });
     }
@@ -532,7 +509,7 @@ export function Config({
         ...getGlobalConfig(),
         showTurnDuration
       });
-      logEvent('tengu_show_turn_duration_setting_changed', {
+      logEvent('agenc_show_turn_duration_setting_changed', {
         enabled: showTurnDuration
       });
     }
@@ -581,7 +558,7 @@ export function Config({
         ...prev_13,
         defaultPermissionMode: mode
       }));
-      logEvent('tengu_config_changed', {
+      logEvent('agenc_config_changed', {
         setting: 'defaultPermissionMode' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         value: mode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -631,7 +608,7 @@ export function Config({
         ...getGlobalConfig(),
         respectGitignore
       });
-      logEvent('tengu_respect_gitignore_setting_changed', {
+      logEvent('agenc_respect_gitignore_setting_changed', {
         enabled: respectGitignore
       });
     }
@@ -649,7 +626,7 @@ export function Config({
         ...getGlobalConfig(),
         copyFullResponse
       });
-      logEvent('tengu_config_changed', {
+      logEvent('agenc_config_changed', {
         setting: 'copyFullResponse' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         value: String(copyFullResponse) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -671,7 +648,7 @@ export function Config({
         ...getGlobalConfig(),
         copyOnSelect
       });
-      logEvent('tengu_config_changed', {
+      logEvent('agenc_config_changed', {
         setting: 'copyOnSelect' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         value: String(copyOnSelect) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -679,7 +656,7 @@ export function Config({
   }] : []), {
     id: 'flickerFreeMode',
     label: 'Flicker-free mode',
-    value: globalConfig.flickerFreeMode ?? (process.env.USER_TYPE === 'ant'),
+    value: globalConfig.flickerFreeMode ?? false,
     type: 'boolean' as const,
     onChange(flickerFreeMode: boolean) {
       saveGlobalConfig(current => ({
@@ -690,7 +667,7 @@ export function Config({
         ...getGlobalConfig(),
         flickerFreeMode
       });
-      logEvent('tengu_config_changed', {
+      logEvent('agenc_config_changed', {
         setting: 'flickerFreeMode' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         value: String(flickerFreeMode) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -819,7 +796,7 @@ export function Config({
         ...prev_19,
         'Default view': selected
       }));
-      logEvent('tengu_default_view_setting_changed', {
+      logEvent('agenc_default_view_setting_changed', {
         value: (defaultView ?? 'unset') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
     }
@@ -853,7 +830,7 @@ export function Config({
         },
         editorMode: value_1 as GlobalConfig['editorMode']
       });
-      logEvent('tengu_editor_mode_changed', {
+      logEvent('agenc_editor_mode_changed', {
         mode: value_1 as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         source: 'config_panel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -875,7 +852,7 @@ export function Config({
         ...getGlobalConfig(),
         prStatusFooterEnabled: enabled_4
       });
-      logEvent('tengu_pr_status_footer_setting_changed', {
+      logEvent('agenc_pr_status_footer_setting_changed', {
         enabled: enabled_4
       });
     }
@@ -900,7 +877,7 @@ export function Config({
         ...getGlobalConfig(),
         diffTool: diffTool as GlobalConfig['diffTool']
       });
-      logEvent('tengu_diff_tool_changed', {
+      logEvent('agenc_diff_tool_changed', {
         tool: diffTool as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         source: 'config_panel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -919,7 +896,7 @@ export function Config({
         ...getGlobalConfig(),
         autoConnectIde
       });
-      logEvent('tengu_auto_connect_ide_changed', {
+      logEvent('agenc_auto_connect_ide_changed', {
         enabled: autoConnectIde,
         source: 'config_panel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -938,7 +915,7 @@ export function Config({
         ...getGlobalConfig(),
         autoInstallIdeExtension
       });
-      logEvent('tengu_auto_install_ide_extension_changed', {
+      logEvent('agenc_auto_install_ide_extension_changed', {
         enabled: autoInstallIdeExtension,
         source: 'config_panel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
@@ -957,7 +934,7 @@ export function Config({
         ...getGlobalConfig(),
         agencInChromeDefaultEnabled: enabled_5
       });
-      logEvent('tengu_agenc_in_chrome_setting_changed', {
+      logEvent('agenc_agenc_in_chrome_setting_changed', {
         enabled: enabled_5
       });
     }
@@ -986,7 +963,7 @@ export function Config({
           ...getGlobalConfig(),
           teammateMode: mode_0
         });
-        logEvent('tengu_teammate_mode_changed', {
+        logEvent('agenc_teammate_mode_changed', {
           mode: mode_0 as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
       }
@@ -1165,22 +1142,22 @@ export function Config({
     // Log any changes that were made
     // Follow-up: Make these proper messages
     const formattedChanges: string[] = Object.entries(changes).map(([key, value_2]) => {
-      logEvent('tengu_config_changed', {
+      logEvent('agenc_config_changed', {
         key: key as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         value: value_2 as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       return `Set ${key} to ${chalk.bold(value_2)}`;
     });
     // Check for API key changes
-    // On homespace, ANTHROPIC_API_KEY is preserved in process.env for child
+    // On homespace, the custom API key env var is preserved for child
     // processes but ignored by AgenC itself (see auth.ts).
     const effectiveApiKey = isRunningOnHomespace() ? undefined : process.env.ANTHROPIC_API_KEY;
     const initialUsingCustomKey = Boolean(effectiveApiKey && initialConfig.current.customApiKeyResponses?.approved?.includes(normalizeApiKeyForConfig(effectiveApiKey)));
     const currentUsingCustomKey = Boolean(effectiveApiKey && globalConfig.customApiKeyResponses?.approved?.includes(normalizeApiKeyForConfig(effectiveApiKey)));
     if (initialUsingCustomKey !== currentUsingCustomKey) {
       formattedChanges.push(`${currentUsingCustomKey ? 'Enabled' : 'Disabled'} custom API key`);
-      logEvent('tengu_config_changed', {
-        key: 'env.ANTHROPIC_API_KEY' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      logEvent('agenc_config_changed', {
+        key: 'env.custom_api_key' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         value: currentUsingCustomKey as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
     }
@@ -1426,7 +1403,7 @@ export function Config({
           autoUpdatesChannel: 'latest',
           minimumVersion: undefined
         }));
-        logEvent('tengu_autoupdate_channel_changed', {
+        logEvent('agenc_autoupdate_channel_changed', {
           channel: 'latest' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
       }
@@ -1449,7 +1426,7 @@ export function Config({
   useKeybindings({
     'select:previous': () => {
       if (selectedIndex === 0) {
-        // ↑ at top enters search mode so users can type-to-filter after
+        // Up at top enters search mode so users can type-to-filter after
         // reaching the list boundary. Wheel-up (scroll:lineUp) clamps
         // instead — overshoot shouldn't move focus away from the list.
         setShowThinkingWarning(false);
@@ -1482,7 +1459,7 @@ export function Config({
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (showSubmenu !== null) return;
     if (headerFocused) return;
-    // Search mode: Esc clears then exits, Enter/↓ moves to the list.
+    // Search mode: Esc clears then exits, Enter/down moves to the list.
     if (isSearchMode) {
       if (e.key === 'escape') {
         e.preventDefault();
@@ -1521,6 +1498,7 @@ export function Config({
       setSearchQuery(e.key);
     }
   }, [showSubmenu, headerFocused, isSearchMode, searchQuery, setSearchQuery, toggleSetting]);
+  const settingsConfigGlyphs = getSettingsConfigGlyphLabels();
   return <Box flexDirection="column" width="100%" tabIndex={0} autoFocus onKeyDown={handleKeyDown}>
       {showSubmenu === 'Theme' ? <>
           <ThemePicker onThemeSelect={setting_1 => {
@@ -1563,7 +1541,7 @@ export function Config({
         setTabsHidden(false);
         // First-open-then-Enter from unset: picker highlights "Default"
         // (initial=null) and confirming would write null, silently
-        // switching Opus-fallback → follow-leader. Treat as no-op.
+        // switching default fallback to follow-leader. Treat as no-op.
         if (globalConfig.teammateDefaultModel === undefined && model_1 === null) {
           return;
         }
@@ -1580,7 +1558,7 @@ export function Config({
           ...prev_25,
           teammateDefaultModel: teammateModelDisplayString(model_1)
         }));
-        logEvent('tengu_teammate_default_model_changed', {
+        logEvent('agenc_teammate_default_model_changed', {
           model: model_1 as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
       }} onCancel={() => {
@@ -1615,7 +1593,7 @@ export function Config({
         updateSettingsForSource('localSettings', {
           outputStyle: style
         });
-        void logEvent('tengu_output_style_changed', {
+        void logEvent('agenc_output_style_changed', {
           style: (style ?? DEFAULT_OUTPUT_STYLE_NAME) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           source: 'config_panel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           settings_source: 'localSettings' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
@@ -1641,7 +1619,7 @@ export function Config({
         updateSettingsForSource('userSettings', {
           language
         });
-        void logEvent('tengu_language_changed', {
+        void logEvent('agenc_language_changed', {
           language: (language ?? 'default') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           source: 'config_panel' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
@@ -1694,7 +1672,7 @@ export function Config({
           autoUpdatesChannel: channel as 'latest' | 'stable',
           minimumVersion: undefined
         }));
-        logEvent('tengu_autoupdate_enabled', {
+        logEvent('agenc_autoupdate_enabled', {
           channel: channel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
         });
       }} />}
@@ -1722,18 +1700,18 @@ export function Config({
         ...prev_27,
         ...newSettings
       }));
-      logEvent('tengu_autoupdate_channel_changed', {
+      logEvent('agenc_autoupdate_channel_changed', {
         channel: 'stable' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         minimum_version_set: choice === 'stay'
       });
     }} /> : <Box flexDirection="column" gap={1} marginY={insideModal ? undefined : 1}>
-          <SearchBox query={searchQuery} isFocused={isSearchMode && !headerFocused} isTerminalFocused={isTerminalFocused} cursorOffset={searchCursorOffset} placeholder="Search settings…" />
+          <SearchBox query={searchQuery} isFocused={isSearchMode && !headerFocused} isTerminalFocused={isTerminalFocused} cursorOffset={searchCursorOffset} placeholder={settingsConfigGlyphs.searchPlaceholder} />
           <Box flexDirection="column">
             {filteredSettingsItems.length === 0 ? <Text dimColor italic>
                 No settings match &quot;{searchQuery}&quot;
               </Text> : <>
                 {scrollOffset > 0 && <Text dimColor>
-                    {figures.arrowUp} {scrollOffset} more above
+                    {settingsConfigGlyphs.scrollUpPrefix} {scrollOffset} more above
                   </Text>}
                 {filteredSettingsItems.slice(scrollOffset, scrollOffset + maxVisible).map((setting_2, i) => {
             const actualIndex = scrollOffset + i;
@@ -1742,7 +1720,7 @@ export function Config({
                         <Box>
                           <Box width={44}>
                             <Text color={isSelected ? 'suggestion' : undefined}>
-                              {isSelected ? figures.pointer : ' '}{' '}
+                              {isSelected ? settingsConfigGlyphs.pointer : ' '}{' '}
                               {setting_2.label}
                             </Text>
                           </Box>
@@ -1780,7 +1758,7 @@ export function Config({
                       </React.Fragment>;
           })}
                 {scrollOffset + maxVisible < filteredSettingsItems.length && <Text dimColor>
-                    {figures.arrowDown}{' '}
+                    {settingsConfigGlyphs.scrollDownPrefix}{' '}
                     {filteredSettingsItems.length - scrollOffset - maxVisible}{' '}
                     more below
                   </Text>}
@@ -1788,15 +1766,15 @@ export function Config({
           </Box>
           {headerFocused ? <Text dimColor>
               <Byline>
-                <KeyboardShortcutHint shortcut="←/→ tab" action="switch" />
-                <KeyboardShortcutHint shortcut="↓" action="return" />
+                <KeyboardShortcutHint shortcut={settingsConfigGlyphs.switchTabsShortcut} action="switch" />
+                <KeyboardShortcutHint shortcut={settingsConfigGlyphs.returnShortcut} action="return" />
                 <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="close" />
               </Byline>
             </Text> : isSearchMode ? <Text dimColor>
               <Byline>
                 <Text>Type to filter</Text>
-                <KeyboardShortcutHint shortcut="Enter/↓" action="select" />
-                <KeyboardShortcutHint shortcut="↑" action="tabs" />
+                <KeyboardShortcutHint shortcut={settingsConfigGlyphs.selectShortcut} action="select" />
+                <KeyboardShortcutHint shortcut={settingsConfigGlyphs.tabsShortcut} action="tabs" />
                 <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="clear" />
               </Byline>
             </Text> : <Text dimColor>

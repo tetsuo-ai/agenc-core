@@ -1,17 +1,22 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import * as React from 'react';
 import { Suspense, useState } from 'react';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { useTerminalSize } from '../../hooks/useTerminalSize';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { Pane } from '../design-system/Pane';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { Tabs, Tab } from '../design-system/Tabs';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { Status, buildDiagnostics } from './Status';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { Config } from './Config';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this Settings subtree.
 import { Usage } from './Usage';
 import { calculateSettingsContentHeight } from './layout.js';
 import { SettingsConfigLoadingState } from './LoadingState.js';
@@ -23,7 +28,7 @@ type Props = {
   context: LocalJSXCommandContext;
   defaultTab: 'Status' | 'Config' | 'Usage';
 };
-export function Settings(t0) {
+export function Settings(t0: Props): React.ReactNode {
   const $ = _c(25);
   const {
     onClose,

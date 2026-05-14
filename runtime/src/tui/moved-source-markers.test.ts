@@ -10,6 +10,8 @@ const files = [
   "runtime/src/tui/context/modalContext.tsx",
   "runtime/src/tui/components/ScrollKeybindingHandler.tsx",
   "runtime/src/tui/components/SearchBox.tsx",
+  "runtime/src/tui/components/Settings/Settings.tsx",
+  "runtime/src/tui/components/HelpV2/HelpV2.tsx",
   "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx",
   "runtime/src/tui/components/AutoModeOptInDialog.tsx",
   "runtime/src/tui/components/AutoUpdaterWrapper.tsx",
@@ -53,6 +55,21 @@ describe("moved-source marker cleanup", () => {
       expect(source).not.toContain("upstream-import");
       expect(source).not.toContain("tengu_");
       expect(source).not.toContain("•");
+    }
+  });
+
+  test("settings and help surfaces do not keep moved-source or donor telemetry residue", () => {
+    for (const file of [
+      "runtime/src/tui/components/Settings/Settings.tsx",
+      "runtime/src/tui/components/Settings/Config.tsx",
+      "runtime/src/tui/components/HelpV2/HelpV2.tsx",
+    ]) {
+      const source = readFileSync(`${repoRoot}${file}`, "utf8");
+
+      expect(source).not.toContain("@ts-nocheck");
+      expect(source).not.toContain("Moved-source note");
+      expect(source).not.toContain("tengu_");
+      expect(source).not.toContain("key: 'env.ANTHROPIC_API_KEY'");
     }
   });
 

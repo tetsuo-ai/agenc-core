@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
@@ -20,7 +18,7 @@ type Props = {
   }) => void;
   commands: Command[];
 };
-export function HelpV2(t0) {
+export function HelpV2(t0: Props): React.ReactNode {
   const $ = _c(44);
   const {
     onClose,
