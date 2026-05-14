@@ -2,13 +2,34 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useRef } from 'react';
 import type { RemoteAgentTaskState } from '../../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import type { DeepImmutable } from '../../../types/utils.js';
-import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useSettings } from '../../hooks/useSettings';
 import { Text, useAnimationFrame } from '../../ink.js';
 import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getRainbowColor } from '../../../utils/thinking.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { resolveAgenCTuiGlyphMode, selectAgenCTuiGlyphs } from '../../glyphs.js';
 const TICK_MS = 80;
 type ReviewStage = NonNullable<NonNullable<RemoteAgentTaskState['reviewProgress']>['stage']>;
+export function getRemoteProgressGlyphText(
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): {
+  readonly runningMarker: string;
+  readonly completeMarker: string;
+  readonly separator: string;
+  readonly stageSeparator: string;
+  readonly ellipsis: string;
+  readonly viewShortcut: string;
+} {
+  const glyphMode = resolveAgenCTuiGlyphMode(env);
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return {
+    runningMarker: glyphMode === 'ascii' ? '<>' : '◇',
+    completeMarker: glyphMode === 'ascii' ? '*' : '◆',
+    separator: glyphs.separator,
+    stageSeparator: ` ${glyphs.separator} `,
+    ellipsis: glyphs.ellipsis,
+    viewShortcut: glyphMode === 'ascii' ? 'shift + down' : `shift+${glyphs.arrowDown}`,
+  };
+}
 
 /**
  * Stage-appropriate counts line for a running review. Shared between the
@@ -19,19 +40,19 @@ type ReviewStage = NonNullable<NonNullable<RemoteAgentTaskState['reviewProgress'
  * Canonical behavior: word labels (not ✓/✗), hide refuted when 0, "deduping"
  * for the synthesizing stage (matches STAGE_LABELS in the detail dialog).
  */
-export function formatReviewStageCounts(stage: ReviewStage | undefined, found: number, verified: number, refuted: number): string {
+export function formatReviewStageCounts(stage: ReviewStage | undefined, found: number, verified: number, refuted: number, separator = ' · '): string {
   // Pre-stage orchestrator images don't write the stage field.
-  if (!stage) return `${found} found · ${verified} verified`;
+  if (!stage) return `${found} found${separator}${verified} verified`;
   if (stage === 'synthesizing') {
     const parts = [`${verified} verified`];
     if (refuted > 0) parts.push(`${refuted} refuted`);
     parts.push('deduping');
-    return parts.join(' · ');
+    return parts.join(separator);
   }
   if (stage === 'verifying') {
     const parts = [`${found} found`, `${verified} verified`];
     if (refuted > 0) parts.push(`${refuted} refuted`);
-    return parts.join(' · ');
+    return parts.join(separator);
   }
   // stage === 'finding'
   return found > 0 ? `${found} found` : 'finding';
@@ -93,6 +114,7 @@ function ReviewRainbowLine(t0) {
   const reducedMotion = settings.prefersReducedMotion ?? false;
   const p = session.reviewProgress;
   const running = session.status === "running";
+  const remoteGlyphs = getRemoteProgressGlyphText();
   const [, time] = useAnimationFrame(running && !reducedMotion ? TICK_MS : null);
   const targetFound = p?.bugsFound ?? 0;
   const targetVerified = p?.bugsVerified ?? 0;
@@ -103,28 +125,14 @@ function ReviewRainbowLine(t0) {
   const refuted = useSmoothCount(targetRefuted, time, snap);
   const phase = Math.floor(time / (TICK_MS * 3)) % 7;
   if (session.status === "completed") {
-    let t1;
-    if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-      t1 = <><Text color="background">{DIAMOND_FILLED} </Text><RainbowText text="ultrareview" phase={0} /><Text dimColor={true}> ready · shift+↓ to view</Text></>;
-      $[0] = t1;
-    } else {
-      t1 = $[0];
-    }
-    return t1;
+    return <><Text color="background">{remoteGlyphs.completeMarker} </Text><RainbowText text="ultrareview" phase={0} /><Text dimColor={true}> ready{remoteGlyphs.stageSeparator}{remoteGlyphs.viewShortcut} to view</Text></>;
   }
   if (session.status === "failed") {
-    let t1;
-    if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
-      t1 = <><Text color="background">{DIAMOND_FILLED} </Text><RainbowText text="ultrareview" phase={0} /><Text color="error" dimColor={true}>{" \xB7 "}error</Text></>;
-      $[1] = t1;
-    } else {
-      t1 = $[1];
-    }
-    return t1;
+    return <><Text color="background">{remoteGlyphs.completeMarker} </Text><RainbowText text="ultrareview" phase={0} /><Text color="error" dimColor={true}>{remoteGlyphs.stageSeparator}error</Text></>;
   }
   let t1;
   if ($[2] !== found || $[3] !== p || $[4] !== refuted || $[5] !== verified) {
-    t1 = !p ? "setting up" : formatReviewStageCounts(p.stage, found, verified, refuted);
+    t1 = !p ? "setting up" : formatReviewStageCounts(p.stage, found, verified, refuted, remoteGlyphs.stageSeparator);
     $[2] = found;
     $[3] = p;
     $[4] = refuted;
@@ -135,12 +143,7 @@ function ReviewRainbowLine(t0) {
   }
   const tail = t1;
   let t2;
-  if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Text color="background">{DIAMOND_OPEN} </Text>;
-    $[7] = t2;
-  } else {
-    t2 = $[7];
-  }
+  t2 = <Text color="background">{remoteGlyphs.runningMarker} </Text>;
   const t3 = running ? phase : 0;
   let t4;
   if ($[8] !== t3) {
@@ -152,7 +155,7 @@ function ReviewRainbowLine(t0) {
   }
   let t5;
   if ($[10] !== tail) {
-    t5 = <Text dimColor={true}> · {tail}</Text>;
+    t5 = <Text dimColor={true}>{remoteGlyphs.stageSeparator}{tail}</Text>;
     $[10] = tail;
     $[11] = t5;
   } else {
@@ -174,6 +177,7 @@ export function RemoteSessionProgress(t0) {
   const {
     session
   } = t0;
+  const remoteGlyphs = getRemoteProgressGlyphText();
   if (session.isRemoteReview) {
     let t1;
     if ($[0] !== session) {
@@ -208,7 +212,7 @@ export function RemoteSessionProgress(t0) {
   if (!session.todoList.length) {
     let t1;
     if ($[4] !== session.status) {
-      t1 = <Text dimColor={true}>{session.status}…</Text>;
+      t1 = <Text dimColor={true}>{session.status}{remoteGlyphs.ellipsis}</Text>;
       $[4] = session.status;
       $[5] = t1;
     } else {
