@@ -11,38 +11,24 @@ import { isAdvisorBlock } from '../../utils/advisor.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { logError } from '../../utils/log.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { CompactBoundaryMessage } from './compact/CompactBoundaryMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { CompactSummary } from './compact/CompactSummary';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { AdvisorMessage } from './messages/AdvisorMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { AssistantTextMessage } from './messages/AssistantTextMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { AssistantToolUseMessage } from './messages/AssistantToolUseMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { AttachmentMessage } from './messages/AttachmentMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { CollapsedReadSearchContent } from './messages/CollapsedReadSearchContent';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { GroupedToolUseContent } from './messages/GroupedToolUseContent';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { SystemTextMessage } from './messages/SystemTextMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserImageMessage } from './messages/UserImageMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserTextMessage } from './messages/UserTextMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserToolResultMessage } from './messages/UserToolResultMessage/UserToolResultMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { OffscreenFreeze } from './OffscreenFreeze';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { ExpandShellOutputProvider } from './shell/ExpandShellOutputContext';
+import {
+  AdvisorMessage,
+  AssistantRedactedThinkingMessage,
+  AssistantTextMessage,
+  AssistantThinkingMessage,
+  AssistantToolUseMessage,
+  AttachmentMessage,
+  CollapsedReadSearchContent,
+  CompactBoundaryMessage,
+  CompactSummary,
+  ExpandShellOutputProvider,
+  GroupedToolUseContent,
+  OffscreenFreeze,
+  SystemTextMessage,
+  UserImageMessage,
+  UserTextMessage,
+  UserToolResultMessage,
+} from './Message.renderers.js';
 
 type AnyComponent = React.ComponentType<any>;
 

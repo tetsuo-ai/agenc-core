@@ -6,30 +6,20 @@ import { NO_CONTENT_MESSAGE } from '../../../constants/messages.js';
 import { COMMAND_MESSAGE_TAG, LOCAL_COMMAND_CAVEAT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../../constants/xml.js';
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
 import { extractTag, INTERRUPT_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE } from '../../../utils/messages.js';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { InterruptedByUser } from '../InterruptedByUser';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { MessageResponse } from '../MessageResponse';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserAgentNotificationMessage } from './UserAgentNotificationMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserBashInputMessage } from './UserBashInputMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserBashOutputMessage } from './UserBashOutputMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserCommandMessage } from './UserCommandMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserLocalCommandOutputMessage } from './UserLocalCommandOutputMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserMemoryInputMessage } from './UserMemoryInputMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserPlanMessage } from './UserPlanMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserPromptMessage } from './UserPromptMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserResourceUpdateMessage } from './UserResourceUpdateMessage';
-// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
-import { UserTeammateMessage } from './UserTeammateMessage';
+import {
+  InterruptedByUser,
+  MessageResponse,
+  UserAgentNotificationMessage,
+  UserBashInputMessage,
+  UserBashOutputMessage,
+  UserCommandMessage,
+  UserLocalCommandOutputMessage,
+  UserMemoryInputMessage,
+  UserPlanMessage,
+  UserPromptMessage,
+  UserResourceUpdateMessage,
+  UserTeammateMessage,
+} from './UserTextMessage.renderers.js';
 
 type AnyComponent = React.ComponentType<any>;
 type Props = {
