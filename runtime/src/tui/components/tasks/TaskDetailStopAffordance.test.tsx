@@ -1,4 +1,5 @@
 import React from 'react'
+import stripAnsi from 'strip-ansi'
 import { describe, expect, it, vi } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
@@ -111,6 +112,61 @@ describe('task detail stop affordances', () => {
 
     expect(output).toContain('x to stop')
     expect(output).toContain('Pending')
+  })
+
+  it('uses ASCII-safe async agent detail glyphs when requested', async () => {
+    const previousGlyphMode = process.env.AGENC_TUI_GLYPHS
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+
+    try {
+      const output = stripAnsi(
+        await renderToString(
+          <AsyncAgentDetailDialog
+            agent={{
+              ...taskBase,
+              status: 'running',
+              id: 'agent-1',
+              type: 'local_agent',
+              description: 'inspect repo',
+              agentId: 'agent-1',
+              prompt: 'inspect repo '.repeat(80),
+              agentType: 'default',
+              retrieved: false,
+              lastReportedToolCount: 0,
+              lastReportedTokenCount: 0,
+              pendingMessages: [],
+              retain: false,
+              diskLoaded: false,
+              progress: {
+                tokenCount: 1,
+                toolUseCount: 1,
+                recentActivities: [
+                  {
+                    toolName: 'VeryLongToolNameThatShouldTruncateInsideTheDialog',
+                    input: {},
+                  },
+                ],
+              },
+            } as never}
+            onDone={() => {}}
+            onBack={() => {}}
+            onKillAgent={() => {}}
+          />,
+          42,
+        ),
+      )
+
+      expect(output).toContain('Left to go back')
+      expect(output).toContain('> VeryLongToolName')
+      expect(output).not.toContain('←')
+      expect(output).not.toContain('›')
+    } finally {
+      if (previousGlyphMode === undefined) {
+        delete process.env.AGENC_TUI_GLYPHS
+      } else {
+        process.env.AGENC_TUI_GLYPHS = previousGlyphMode
+      }
+    }
   })
 
   it('shows stop affordance for pending in-process teammate tasks', async () => {

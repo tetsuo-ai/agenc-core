@@ -2,9 +2,11 @@ import { c as _c } from "react-compiler-runtime";
 import React, { useMemo } from 'react';
 import type { DeepImmutable } from '../../../types/utils.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import type { LocalAgentTaskState } from '../../../tasks/LocalAgentTask/LocalAgentTask';
 import { isStoppableTaskStatus } from '../../../tasks/types';
@@ -17,6 +19,10 @@ import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { UserPlanMessage } from '../messages/UserPlanMessage';
 import { renderToolActivity } from './renderToolActivity';
 import { getTaskStatusColor, getTaskStatusIcon } from './taskStatusUtils';
+import {
+  getAsyncAgentDetailContentColumns,
+  getAsyncAgentPromptPreview,
+} from './AsyncAgentDetailDialog.layout.js';
 type Props = {
   agent: DeepImmutable<LocalAgentTaskState>;
   onDone: () => void;
@@ -24,7 +30,7 @@ type Props = {
   onBack?: () => void;
 };
 export function AsyncAgentDetailDialog(t0) {
-  const $ = _c(54);
+  const $ = _c(58);
   const {
     agent,
     onDone,
@@ -32,6 +38,11 @@ export function AsyncAgentDetailDialog(t0) {
     onBack
   } = t0;
   const [theme] = useTheme();
+  const glyphs = selectAgenCTuiGlyphs();
+  const {
+    columns
+  } = useTerminalSize();
+  const contentColumns = getAsyncAgentDetailContentColumns(columns);
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = getTools(getEmptyToolPermissionContext());
@@ -97,20 +108,12 @@ export function AsyncAgentDetailDialog(t0) {
     t5 = $[10];
   }
   const planContent = t5;
-  const displayPrompt = agent.prompt.length > 300 ? agent.prompt.substring(0, 297) + "\u2026" : agent.prompt;
+  const displayPrompt = getAsyncAgentPromptPreview(agent.prompt, columns);
   const tokenCount = agent.result?.totalTokens ?? agent.progress?.tokenCount;
   const toolUseCount = agent.result?.totalToolUseCount ?? agent.progress?.toolUseCount;
   const t6 = agent.selectedAgent?.agentType ?? "agent";
   const t7 = agent.description || "Async agent";
-  let t8;
-  if ($[11] !== t6 || $[12] !== t7) {
-    t8 = <Text>{t6} ›{" "}{t7}</Text>;
-    $[11] = t6;
-    $[12] = t7;
-    $[13] = t8;
-  } else {
-    t8 = $[13];
-  }
+  const t8 = <Text>{t6} {glyphs.separator}{" "}{t7}</Text>;
   const title = t8;
   let t9;
   if ($[14] !== agent.status) {
@@ -158,7 +161,7 @@ export function AsyncAgentDetailDialog(t0) {
   const subtitle = t13;
   let t14;
   if ($[27] !== agent.status || $[28] !== onBack || $[29] !== onKillAgent) {
-    t14 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(agent.status) && onKillAgent && <KeyboardShortcutHint shortcut="x" action="stop" />}</Byline>;
+    t14 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut="Left" action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(agent.status) && onKillAgent && <KeyboardShortcutHint shortcut="x" action="stop" />}</Byline>;
     $[27] = agent.status;
     $[28] = onBack;
     $[29] = onKillAgent;
@@ -167,63 +170,67 @@ export function AsyncAgentDetailDialog(t0) {
     t14 = $[30];
   }
   let t15;
-  if ($[31] !== agent.progress || $[32] !== agent.status || $[33] !== theme) {
-    t15 = agent.status === "running" && agent.progress?.recentActivities && agent.progress.recentActivities.length > 0 && <Box flexDirection="column"><Text bold={true} dimColor={true}>Progress</Text>{agent.progress.recentActivities.map((activity, i) => <Text key={i} dimColor={i < agent.progress.recentActivities.length - 1} wrap="truncate-end">{i === agent.progress.recentActivities.length - 1 ? "\u203A " : "  "}{renderToolActivity(activity, tools, theme)}</Text>)}</Box>;
+  if ($[31] !== agent.progress || $[32] !== agent.status || $[33] !== theme || $[34] !== contentColumns || $[35] !== glyphs.pointer) {
+    t15 = agent.status === "running" && agent.progress?.recentActivities && agent.progress.recentActivities.length > 0 && <Box flexDirection="column" width={contentColumns}><Text bold={true} dimColor={true}>Progress</Text>{agent.progress.recentActivities.map((activity, i) => <Text key={i} dimColor={i < agent.progress.recentActivities.length - 1} wrap="truncate-end">{i === agent.progress.recentActivities.length - 1 ? `${glyphs.pointer} ` : "  "}{renderToolActivity(activity, tools, theme)}</Text>)}</Box>;
     $[31] = agent.progress;
     $[32] = agent.status;
     $[33] = theme;
-    $[34] = t15;
+    $[34] = contentColumns;
+    $[35] = glyphs.pointer;
+    $[36] = t15;
   } else {
-    t15 = $[34];
+    t15 = $[36];
   }
   let t16;
-  if ($[35] !== displayPrompt || $[36] !== planContent) {
-    t16 = planContent ? <Box marginTop={1}><UserPlanMessage addMargin={false} planContent={planContent} /></Box> : <Box flexDirection="column" marginTop={1}><Text bold={true} dimColor={true}>Prompt</Text><Text wrap="wrap">{displayPrompt}</Text></Box>;
-    $[35] = displayPrompt;
-    $[36] = planContent;
-    $[37] = t16;
+  if ($[37] !== contentColumns || $[38] !== displayPrompt || $[39] !== planContent) {
+    t16 = planContent ? <Box marginTop={1} width={contentColumns}><UserPlanMessage addMargin={false} planContent={planContent} /></Box> : <Box flexDirection="column" marginTop={1} width={contentColumns}><Text bold={true} dimColor={true}>Prompt</Text><Text wrap="wrap">{displayPrompt}</Text></Box>;
+    $[37] = contentColumns;
+    $[38] = displayPrompt;
+    $[39] = planContent;
+    $[40] = t16;
   } else {
-    t16 = $[37];
+    t16 = $[40];
   }
   let t17;
-  if ($[38] !== agent.error || $[39] !== agent.status) {
-    t17 = agent.status === "failed" && agent.error && <Box flexDirection="column" marginTop={1}><Text bold={true} color="error">Error</Text><Text color="error" wrap="wrap">{agent.error}</Text></Box>;
-    $[38] = agent.error;
-    $[39] = agent.status;
-    $[40] = t17;
+  if ($[41] !== agent.error || $[42] !== agent.status || $[43] !== contentColumns) {
+    t17 = agent.status === "failed" && agent.error && <Box flexDirection="column" marginTop={1} width={contentColumns}><Text bold={true} color="error">Error</Text><Text color="error" wrap="wrap">{agent.error}</Text></Box>;
+    $[41] = agent.error;
+    $[42] = agent.status;
+    $[43] = contentColumns;
+    $[44] = t17;
   } else {
-    t17 = $[40];
+    t17 = $[44];
   }
   let t18;
-  if ($[41] !== t15 || $[42] !== t16 || $[43] !== t17) {
+  if ($[45] !== t15 || $[46] !== t16 || $[47] !== t17) {
     t18 = <Box flexDirection="column">{t15}{t16}{t17}</Box>;
-    $[41] = t15;
-    $[42] = t16;
-    $[43] = t17;
-    $[44] = t18;
+    $[45] = t15;
+    $[46] = t16;
+    $[47] = t17;
+    $[48] = t18;
   } else {
-    t18 = $[44];
+    t18 = $[48];
   }
   let t19;
-  if ($[45] !== onDone || $[46] !== subtitle || $[47] !== t14 || $[48] !== t18 || $[49] !== title) {
+  if ($[49] !== onDone || $[50] !== subtitle || $[51] !== t14 || $[52] !== t18 || $[53] !== title) {
     t19 = <Dialog title={title} subtitle={subtitle} onCancel={onDone} color="background" inputGuide={t14}>{t18}</Dialog>;
-    $[45] = onDone;
-    $[46] = subtitle;
-    $[47] = t14;
-    $[48] = t18;
-    $[49] = title;
-    $[50] = t19;
+    $[49] = onDone;
+    $[50] = subtitle;
+    $[51] = t14;
+    $[52] = t18;
+    $[53] = title;
+    $[54] = t19;
   } else {
-    t19 = $[50];
+    t19 = $[54];
   }
   let t20;
-  if ($[51] !== handleKeyDown || $[52] !== t19) {
+  if ($[55] !== handleKeyDown || $[56] !== t19) {
     t20 = <Box flexDirection="column" tabIndex={0} autoFocus={true} onKeyDown={handleKeyDown}>{t19}</Box>;
-    $[51] = handleKeyDown;
-    $[52] = t19;
-    $[53] = t20;
+    $[55] = handleKeyDown;
+    $[56] = t19;
+    $[57] = t20;
   } else {
-    t20 = $[53];
+    t20 = $[57];
   }
   return t20;
 }
