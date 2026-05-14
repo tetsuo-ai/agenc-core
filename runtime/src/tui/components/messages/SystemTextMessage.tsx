@@ -18,6 +18,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize';
 import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMessage, SystemTurnDurationMessage, SystemThinkingMessage, SystemMemorySavedMessage } from '../../../types/message';
 import { SystemAPIErrorMessage } from '../SystemAPIErrorMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../../tools/hooks.js';
 import { getGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import Link from '../../ink/components/Link.js';
 import ThemedText from '../design-system/ThemedText';
@@ -32,6 +33,26 @@ type Props = {
   verbose: boolean;
   isTranscriptMode?: boolean;
 };
+
+export function getSystemMessageContentWidth(columns: number): number {
+  return Math.max(1, columns - 10);
+}
+
+export function formatHookDuration(durationMs: number | undefined): string {
+  return durationMs !== undefined && durationMs > 0 ? ` (${formatSecondsShort(durationMs)})` : "";
+}
+
+export function getStopHookTotalDurationMs(message: SystemStopHookSummaryMessage): number {
+  return message.totalDurationMs ?? message.hookInfos.reduce(_temp, 0);
+}
+
+export function shouldRenderStopHookSummary(message: SystemStopHookSummaryMessage, totalDurationMs = getStopHookTotalDurationMs(message)): boolean {
+  if (message.hookErrors.length > 0 || message.preventedContinuation || message.hookLabel) {
+    return true;
+  }
+  return totalDurationMs > HOOK_TIMING_DISPLAY_THRESHOLD_MS;
+}
+
 export function SystemTextMessage(t0) {
   const $ = _c(51);
   const {
@@ -292,14 +313,12 @@ function StopHookSummaryMessage(t0) {
     t1 = $[2];
   }
   const totalDurationMs = t1;
-  if (hookErrors.length === 0 && !preventedContinuation && !message.hookLabel) {
-    if (true || totalDurationMs < HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
-      return null;
-    }
+  if (!shouldRenderStopHookSummary(message, totalDurationMs)) {
+    return null;
   }
   let t2;
   if ($[3] !== totalDurationMs) {
-    t2 = false && totalDurationMs > 0 ? ` (${formatSecondsShort(totalDurationMs)})` : "";
+    t2 = formatHookDuration(totalDurationMs);
     $[3] = totalDurationMs;
     $[4] = t2;
   } else {
@@ -347,7 +366,7 @@ function StopHookSummaryMessage(t0) {
   } else {
     t4 = $[16];
   }
-  const t5 = columns - 10;
+  const t5 = getSystemMessageContentWidth(columns);
   let t6;
   if ($[17] !== hookCount) {
     t6 = <Text bold={true}>{hookCount}</Text>;
@@ -431,11 +450,11 @@ function StopHookSummaryMessage(t0) {
   return t15;
 }
 function _temp3(info_0, idx_0) {
-  const durationStr_0 = false && info_0.durationMs !== undefined ? ` (${formatSecondsShort(info_0.durationMs)})` : "";
+  const durationStr_0 = formatHookDuration(info_0.durationMs);
   return <Text key={`cmd-${idx_0}`} dimColor={true}>⎿  {info_0.command === "prompt" ? `prompt: ${info_0.promptText || ""}` : info_0.command}{durationStr_0}</Text>;
 }
 function _temp2(info, idx) {
-  const durationStr = false && info.durationMs !== undefined ? ` (${formatSecondsShort(info.durationMs)})` : "";
+  const durationStr = formatHookDuration(info.durationMs);
   return <Text key={`cmd-${idx}`} dimColor={true}>{"     \u23BF "}{info.command === "prompt" ? `prompt: ${info.promptText || ""}` : info.command}{durationStr}</Text>;
 }
 function _temp(sum, h) {
@@ -465,7 +484,7 @@ function SystemTextMessageInner(t0) {
   } else {
     t2 = $[3];
   }
-  const t3 = columns - 10;
+  const t3 = getSystemMessageContentWidth(columns);
   let t4;
   if ($[4] !== content) {
     t4 = content.trim();
@@ -527,7 +546,7 @@ function CollabAgentSystemMessage({
           ? "cyan_FOR_SUBAGENTS_ONLY"
           : undefined;
   const details = Array.isArray(message.details) ? message.details : [];
-  const width = Math.max(20, columns - 10);
+  const width = getSystemMessageContentWidth(columns);
   return (
     <Box flexDirection="row" marginTop={marginTop} backgroundColor={bg} width="100%">
       <Box minWidth={2}>
@@ -824,62 +843,28 @@ function ThinkingMessage(t0) {
   }
   return t4;
 }
-function BridgeStatusMessage(t0) {
-  const $ = _c(13);
-  const {
-    message,
-    addMargin
-  } = t0;
+function BridgeStatusMessage({
+  message,
+  addMargin,
+}: {
+  message: SystemBridgeStatusMessage;
+  addMargin: boolean;
+}) {
   const bg = useSelectedMessageBg();
-  const t1 = addMargin ? 1 : 0;
-  let t2;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Box minWidth={2} />;
-    $[0] = t2;
-  } else {
-    t2 = $[0];
-  }
-  let t3;
-  if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = <Text><ThemedText color="suggestion">/remote-control</ThemedText> is active. Code in CLI or at</Text>;
-    $[1] = t3;
-  } else {
-    t3 = $[1];
-  }
-  let t4;
-  if ($[2] !== message.url) {
-    t4 = <Link url={message.url}>{message.url}</Link>;
-    $[2] = message.url;
-    $[3] = t4;
-  } else {
-    t4 = $[3];
-  }
-  let t5;
-  if ($[4] !== message.upgradeNudge) {
-    t5 = message.upgradeNudge && <Text dimColor={true}>⎿ {message.upgradeNudge}</Text>;
-    $[4] = message.upgradeNudge;
-    $[5] = t5;
-  } else {
-    t5 = $[5];
-  }
-  let t6;
-  if ($[6] !== t4 || $[7] !== t5) {
-    t6 = <Box flexDirection="column">{t3}{t4}{t5}</Box>;
-    $[6] = t4;
-    $[7] = t5;
-    $[8] = t6;
-  } else {
-    t6 = $[8];
-  }
-  let t7;
-  if ($[9] !== bg || $[10] !== t1 || $[11] !== t6) {
-    t7 = <Box flexDirection="row" marginTop={t1} backgroundColor={bg} width={999}>{t2}{t6}</Box>;
-    $[9] = bg;
-    $[10] = t1;
-    $[11] = t6;
-    $[12] = t7;
-  } else {
-    t7 = $[12];
-  }
-  return t7;
+  const { columns } = useTerminalSize();
+  const marginTop = addMargin ? 1 : 0;
+  const contentWidth = getSystemMessageContentWidth(columns);
+
+  return (
+    <Box flexDirection="row" marginTop={marginTop} backgroundColor={bg} width="100%">
+      <Box minWidth={2} />
+      <Box flexDirection="column" width={contentWidth}>
+        <Text>
+          <ThemedText color="suggestion">/remote-control</ThemedText> is active. Code in CLI or at
+        </Text>
+        <Link url={message.url}>{message.url}</Link>
+        {message.upgradeNudge && <Text dimColor={true}>⎿ {message.upgradeNudge}</Text>}
+      </Box>
+    </Box>
+  );
 }
