@@ -22,7 +22,7 @@ import { useAppState } from '../../state/AppState.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import type { SpinnerMode } from './types.js';
-import { getDefaultCharacters } from './utils.js';
+import { getDefaultCharacters, getSpinnerEllipsis } from './utils.js';
 import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../../../tasks/InProcessTeammateTask/types.js';
@@ -191,7 +191,7 @@ function SpinnerWithVerbInner({
   // Leader's own verb (always the leader's, regardless of who is foregrounded)
   const leaderVerb = overrideMessage ?? currentTask?.activeForm ?? currentTask?.subject ?? randomVerb;
   const effectiveVerb = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.spinnerVerb ?? randomVerb : leaderVerb;
-  const message = effectiveVerb + '…';
+  const message = effectiveVerb + getSpinnerEllipsis();
 
   // Track CLI activity when spinner is active
   useEffect(() => {
@@ -360,16 +360,9 @@ function BriefSpinner(t0: BriefSpinnerProps) {
   const showConnWarning = connStatus === "reconnecting" || connStatus === "disconnected";
   const connText = connStatus === "reconnecting" ? "Reconnecting" : "Disconnected";
   const dotFrame = Math.floor(time / 300) % 3;
-  let t3;
-  if ($[3] !== dotFrame || $[4] !== reducedMotion) {
-    t3 = reducedMotion ? "\u2026  " : ".".repeat(dotFrame + 1).padEnd(3);
-    $[3] = dotFrame;
-    $[4] = reducedMotion;
-    $[5] = t3;
-  } else {
-    t3 = $[5];
-  }
-  const dots = t3;
+  const dots = reducedMotion
+    ? getSpinnerEllipsis().padEnd(3)
+    : ".".repeat(dotFrame + 1).padEnd(3);
   let t4;
   if ($[6] !== verb) {
     t4 = stringWidth(verb);
@@ -479,7 +472,7 @@ export function BriefIdleStatus() {
     columns
   } = useTerminalSize();
   const showConnWarning = connStatus === "reconnecting" || connStatus === "disconnected";
-  const connText = connStatus === "reconnecting" ? "Reconnecting\u2026" : "Disconnected";
+  const connText = connStatus === "reconnecting" ? `Reconnecting${getSpinnerEllipsis()}` : "Disconnected";
   const leftText = showConnWarning ? connText : "";
   const rightText = runningLocalAgents.length > 0 ? `${runningLocalAgents.length} ${runningLocalAgents.length === 1 ? "agent" : "agents"} running` : runningCount > 0 ? `${runningCount} in background` : "";
   if (!leftText && !rightText) {

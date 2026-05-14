@@ -1,13 +1,40 @@
+import {
+  resolveAgenCTuiGlyphMode,
+  selectAgenCTuiGlyphs,
+} from '../../glyphs.js'
 import type { RGBColor as RGBColorString } from '../../ink/styles.js'
 import type { RGBColor as RGBColorType } from './types.js'
 
-export function getDefaultCharacters(): string[] {
-  if (process.env.TERM === 'xterm-ghostty') {
+type SpinnerGlyphEnv = {
+  readonly AGENC_TUI_GLYPHS?: string
+  readonly TERM?: string
+}
+
+export function getDefaultCharacters(
+  env: SpinnerGlyphEnv = process.env,
+): string[] {
+  const glyphs = selectAgenCTuiGlyphs(env)
+  if (resolveAgenCTuiGlyphMode(env) === 'ascii') {
+    return [...glyphs.spinnerFrames]
+  }
+  if (env.TERM === 'xterm-ghostty') {
     return ['·', '✢', '✳', '✶', '✻', '*'] // Use * instead of ✽ for Ghostty because the latter renders in a way that's slightly offset
   }
   return process.platform === 'darwin'
-    ? ['·', '✢', '✳', '✶', '✻', '✽']
+    ? [...glyphs.spinnerFrames]
     : ['·', '✢', '*', '✶', '✻', '✽']
+}
+
+export function getReducedMotionDot(
+  env: SpinnerGlyphEnv = process.env,
+): string {
+  return selectAgenCTuiGlyphs(env).spinnerReducedMotionDot
+}
+
+export function getSpinnerEllipsis(
+  env: SpinnerGlyphEnv = process.env,
+): string {
+  return selectAgenCTuiGlyphs(env).ellipsis
 }
 
 // Interpolate between two RGB colors

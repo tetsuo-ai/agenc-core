@@ -6,6 +6,7 @@ export interface AgenCTuiGlyphs {
   readonly arrowUp: string;
   readonly arrowDown: string;
   readonly enter: string;
+  readonly ellipsis: string;
   readonly horizontal: string;
   readonly modalDivider: string;
   readonly mcpResource: string;
@@ -14,6 +15,8 @@ export interface AgenCTuiGlyphs {
   readonly responseGutter: string;
   readonly redactedThinkingPrefix: string;
   readonly separator: string;
+  readonly spinnerFrames: readonly string[];
+  readonly spinnerReducedMotionDot: string;
   readonly statusDot: string;
   readonly thinkingEllipsis: string;
   readonly thinkingPrefix: string;
@@ -26,6 +29,7 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   arrowUp: "^",
   arrowDown: "v",
   enter: "Enter",
+  ellipsis: "...",
   horizontal: "-",
   modalDivider: "-",
   mcpResource: "*",
@@ -34,6 +38,8 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   responseGutter: "|_",
   redactedThinkingPrefix: "*",
   separator: "-",
+  spinnerFrames: ["-", "\\", "|", "/"],
+  spinnerReducedMotionDot: "*",
   statusDot: "*",
   thinkingEllipsis: "...",
   thinkingPrefix: "",
@@ -46,6 +52,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   arrowUp: figures.arrowUp,
   arrowDown: figures.arrowDown,
   enter: "↵",
+  ellipsis: "…",
   horizontal: "─",
   modalDivider: "▔",
   mcpResource: "◇",
@@ -54,6 +61,8 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   responseGutter: "⎿",
   redactedThinkingPrefix: "✻",
   separator: "·",
+  spinnerFrames: ["·", "✢", "✳", "✶", "✻", "✽"],
+  spinnerReducedMotionDot: "●",
   statusDot: "●",
   thinkingEllipsis: "…",
   thinkingPrefix: "∴",

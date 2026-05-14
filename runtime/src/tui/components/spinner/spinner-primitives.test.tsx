@@ -6,6 +6,8 @@ import { Text } from '../../ink.js'
 import { useShimmerAnimation } from './useShimmerAnimation.js'
 import {
   getDefaultCharacters,
+  getReducedMotionDot,
+  getSpinnerEllipsis,
   hueToRgb,
   interpolateColor,
   parseRGB,
@@ -14,6 +16,7 @@ import {
 import type { SpinnerMode } from './types.js'
 
 const originalTerm = process.env.TERM
+const originalGlyphMode = process.env.AGENC_TUI_GLYPHS
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
@@ -24,6 +27,11 @@ afterEach(() => {
     delete process.env.TERM
   } else {
     process.env.TERM = originalTerm
+  }
+  if (originalGlyphMode === undefined) {
+    delete process.env.AGENC_TUI_GLYPHS
+  } else {
+    process.env.AGENC_TUI_GLYPHS = originalGlyphMode
   }
 })
 
@@ -42,6 +50,14 @@ describe('spinner primitives', () => {
     expect(hueToRgb(0)).toEqual({ r: 224, g: 82, b: 82 })
     expect(hueToRgb(120)).toEqual({ r: 82, g: 224, b: 82 })
     expect(getDefaultCharacters()).toEqual(['·', '✢', '✳', '✶', '✻', '*'])
+  })
+
+  test('uses ASCII spinner glyph primitives when ASCII glyphs are requested', () => {
+    const env = { AGENC_TUI_GLYPHS: 'ascii' }
+
+    expect(getDefaultCharacters(env)).toEqual(['-', '\\', '|', '/'])
+    expect(getReducedMotionDot(env)).toBe('*')
+    expect(getSpinnerEllipsis(env)).toBe('...')
   })
 
   test('computes shimmer positions from render-time hook state', async () => {

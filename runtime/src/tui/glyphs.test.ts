@@ -10,8 +10,18 @@ describe("AgenC TUI glyph selection", () => {
     expect(resolveAgenCTuiGlyphMode({})).toBe("unicode");
     expect(selectAgenCTuiGlyphs({}).arrowDown).not.toBe("v");
     expect(selectAgenCTuiGlyphs({}).pointer).not.toBe(">");
+    expect(selectAgenCTuiGlyphs({}).ellipsis).toBe("…");
     expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
     expect(selectAgenCTuiGlyphs({}).responseGutter).toBe("⎿");
+    expect(selectAgenCTuiGlyphs({}).spinnerFrames).toEqual([
+      "·",
+      "✢",
+      "✳",
+      "✶",
+      "✻",
+      "✽",
+    ]);
+    expect(selectAgenCTuiGlyphs({}).spinnerReducedMotionDot).toBe("●");
     expect(selectAgenCTuiGlyphs({}).thinkingPrefix).toBe("∴");
     expect(selectAgenCTuiGlyphs({}).redactedThinkingPrefix).toBe("✻");
     expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
@@ -26,6 +36,7 @@ describe("AgenC TUI glyph selection", () => {
       arrowUp: "^",
       arrowDown: "v",
       enter: "Enter",
+      ellipsis: "...",
       horizontal: "-",
       modalDivider: "-",
       mcpResource: "*",
@@ -34,6 +45,8 @@ describe("AgenC TUI glyph selection", () => {
       responseGutter: "|_",
       redactedThinkingPrefix: "*",
       separator: "-",
+      spinnerFrames: ["-", "\\", "|", "/"],
+      spinnerReducedMotionDot: "*",
       statusDot: "*",
       thinkingEllipsis: "...",
       thinkingPrefix: "",

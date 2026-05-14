@@ -4,10 +4,10 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text, useTheme } from '../../ink.js';
 import { getTheme, type Theme } from '../../../utils/theme.js';
-import { getDefaultCharacters, interpolateColor, parseRGB, toRGBColor } from './utils.js';
+import { getDefaultCharacters, getReducedMotionDot, interpolateColor, parseRGB, toRGBColor } from './utils.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
-const REDUCED_MOTION_DOT = '●';
+const REDUCED_MOTION_DOT = getReducedMotionDot();
 const REDUCED_MOTION_CYCLE_MS = 2000; // 2-second cycle: 1s visible, 1s dim
 const ERROR_RED = {
   r: 171,
