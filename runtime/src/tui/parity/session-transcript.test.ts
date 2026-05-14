@@ -129,6 +129,57 @@ describe("AgenC TUI session transcript", () => {
     ]);
   });
 
+  test("orders sequenced lifecycle events before adapting turn state", () => {
+    let state = createSessionTranscriptStateForTesting([
+      {
+        id: "complete",
+        seq: 2,
+        msg: {
+          type: "turn_complete",
+          payload: { turnId: "t1", lastAgentMessage: "done" },
+        },
+      },
+    ]);
+    state = appendSessionTranscriptEventForTesting(state, {
+      id: "turn",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    });
+
+    expect(state.events.map((event) => (event as { seq?: number }).seq)).toEqual([
+      1,
+      2,
+    ]);
+
+    const transcript = adaptTranscriptEvents(state.events);
+
+    expect(transcript.isStreaming).toBe(false);
+    expect(transcript.currentTurnId).toBeNull();
+    expect(transcript.streamingText).toBeNull();
+    expect(transcript.messages.at(-1)?.message.content).toEqual([
+      { type: "text", text: "done" },
+    ]);
+  });
+
+  test("preserves unsequenced streaming delta arrival order", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "turn",
+        msg: { type: "turn_started", payload: { turnId: "t1" } },
+      },
+      {
+        id: "delta-a",
+        msg: { type: "agent_message_delta", payload: { delta: "A" } },
+      },
+      {
+        id: "delta-b",
+        msg: { type: "agent_message_delta", payload: { delta: "B" } },
+      },
+    ]);
+
+    expect(transcript.streamingText).toBe("AB");
+  });
+
   test("treats history_cleared as a transcript boundary and resets event dedupe", () => {
     const transcript = adaptTranscriptEvents(
       [
@@ -182,6 +233,33 @@ describe("AgenC TUI session transcript", () => {
     expect(transcript.streamingToolUses).toEqual([]);
   });
 
+  test("orders sequenced reset events before adapting transcript boundaries", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "after-clear",
+        seq: 3,
+        msg: { type: "user_message", payload: { message: "after" } },
+      },
+      {
+        id: "before-clear",
+        seq: 1,
+        msg: { type: "user_message", payload: { message: "before" } },
+      },
+      {
+        id: "clear",
+        seq: 2,
+        type: "history_cleared",
+        timestamp: 2,
+      },
+    ]);
+
+    expect(transcript.messages).toHaveLength(1);
+    expect(transcript.messages.at(0)).toMatchObject({
+      type: "user",
+      message: { content: "after" },
+    });
+  });
+
   test("resets prior messages when subscribed history_cleared appends through the reducer", () => {
     let state = createSessionTranscriptStateForTesting([
       {
@@ -199,6 +277,41 @@ describe("AgenC TUI session transcript", () => {
       id: "after-clear",
       msg: { type: "user_message", payload: { message: "after" } },
     });
+
+    const transcript = adaptTranscriptEvents(state.events);
+
+    expect(transcript.messages).toHaveLength(1);
+    expect(transcript.messages.at(0)).toMatchObject({
+      type: "user",
+      message: { content: "after" },
+    });
+  });
+
+  test("replays a delayed sequenced reset without discarding newer events", () => {
+    let state = createSessionTranscriptStateForTesting([
+      {
+        id: "before-clear",
+        seq: 1,
+        msg: { type: "user_message", payload: { message: "before" } },
+      },
+      {
+        id: "after-clear",
+        seq: 3,
+        msg: { type: "user_message", payload: { message: "after" } },
+      },
+    ]);
+
+    state = appendSessionTranscriptEventForTesting(state, {
+      id: "clear",
+      seq: 2,
+      type: "history_cleared",
+      timestamp: 2,
+    });
+
+    expect(state.events.map((event) => (event as { seq?: number }).seq)).toEqual([
+      2,
+      3,
+    ]);
 
     const transcript = adaptTranscriptEvents(state.events);
 

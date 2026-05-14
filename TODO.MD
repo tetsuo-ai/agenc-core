@@ -131,7 +131,7 @@ Remaining partitions:
 | 96 | Deprecation notice | Deprecation notices should be visible warnings. | Emits warning system message. | OK | `runtime/src/tui/session-transcript.ts:1932` | Straightforward. | None |
 | 97 | Duplicate transcript events | Duplicate events should not double-render. | Reducer dedupes by seq, id, or JSON fallback; adapter also has `seen`. | OK | `runtime/src/tui/session-transcript.ts:404`, `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1995` | JSON fallback may be unstable for non-serializable events. | P3 |
 | 98 | Transcript reset event appended mid-session | Reset should discard previous events immediately. | Reducer replaces events with reset event when reset arrives. | OK | `runtime/src/tui/session-transcript.ts:1987`, `runtime/src/tui/session-transcript.ts:1990` | Correct boot/recovery behavior. | None |
-| 99 | Out-of-order transcript events generally | Event order must be robust, especially for lifecycle events arriving late or replayed. | Unlike completion pipeline, session transcript reducer appends arrival order and adapter processes that order; only selected families handle out-of-order cases. | BUG | `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1996` | A late `turn_started` after `turn_complete`, or late generic lifecycle event, can produce impossible transient state. | P1 |
+| 99 | Out-of-order transcript events generally | Event order must be robust, especially for lifecycle events arriving late or replayed. | Sequenced transcript events are normalized before adaptation, reset replay rebuilds from the ordered stream, and completed/aborted turns clear active turn state only when the event belongs to that turn. | OK | `runtime/src/tui/session-transcript.ts:414`, `runtime/src/tui/session-transcript.ts:1199`, `runtime/src/tui/session-transcript.ts:2039`, `runtime/src/tui/parity/session-transcript.test.ts:132`, `runtime/src/tui/parity/session-transcript.test.ts:236`, `runtime/src/tui/parity/session-transcript.test.ts:290` | Focused coverage proves late `turn_started`/`turn_complete` ordering, direct adapter reset ordering, delayed reset replay, and preservation of unsequenced streaming delta order. | P1 |
 | 100 | Ledger updates and token/cost ledger rendering | Supervisor or ledger updates should have a visible, ordered render path if emitted by the runtime. | Root shell only wires `useCostSummary` and cost threshold modal; no audited root transcript case handles ledger-specific events. | MISSING | `runtime/src/tui/components/App.tsx:1317`, `runtime/src/tui/components/App.tsx:1918` | No ledger event render path found in this module partition. | P2 |
 
 ## Part 2 - PromptInput, Slash, And Typeahead Rendering
@@ -713,14 +713,7 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 200 active rows: 125 BUG, 5 MISSING, 70 LEGACY.
-
-### P1
-
-#### `runtime/src/tui/session-transcript.ts`
-
-- #99 BUG: Out-of-order transcript events generally. Citations: `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1996`
-
+Totals: 199 active rows: 124 BUG, 5 MISSING, 70 LEGACY.
 
 ### P2
 

@@ -411,6 +411,64 @@ function eventKey(event: SessionTranscriptEvent): string {
   }
 }
 
+function eventSeq(event: SessionTranscriptEvent): number | null {
+  if (
+    "seq" in event &&
+    typeof event.seq === "number" &&
+    Number.isFinite(event.seq)
+  ) {
+    return event.seq;
+  }
+  return null;
+}
+
+function maxEventSeq(
+  current: number | null,
+  event: SessionTranscriptEvent,
+): number | null {
+  const seq = eventSeq(event);
+  if (seq === null) return current;
+  return current === null ? seq : Math.max(current, seq);
+}
+
+function orderSequencedEvents(
+  events: readonly SessionTranscriptEvent[],
+): readonly SessionTranscriptEvent[] {
+  if (events.length < 2) return events;
+
+  const sequenced: Array<{
+    readonly event: SessionTranscriptEvent;
+    readonly index: number;
+    readonly seq: number;
+  }> = [];
+  const positions: number[] = [];
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    if (!event) continue;
+    const seq = eventSeq(event);
+    if (seq === null) continue;
+    positions.push(index);
+    sequenced.push({ event, index, seq });
+  }
+
+  if (sequenced.length < 2) return events;
+
+  const sorted = [...sequenced].sort((left, right) => {
+    if (left.seq !== right.seq) return left.seq - right.seq;
+    return left.index - right.index;
+  });
+  if (sorted.every((entry, index) => entry.index === sequenced[index]?.index)) {
+    return events;
+  }
+
+  const ordered = [...events];
+  for (let index = 0; index < positions.length; index += 1) {
+    ordered[positions[index]!] = sorted[index]!.event;
+  }
+  return ordered;
+}
+
 function unwrap(event: SessionTranscriptEvent): {
   readonly type: string;
   readonly payload: unknown;
@@ -1138,7 +1196,7 @@ export function adaptTranscriptEvents(
   let lastAssistantText = "";
   let isStreaming = false;
 
-  for (const raw of events) {
+  for (const raw of orderSequencedEvents(events)) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
     seen.add(event.key);
@@ -1223,6 +1281,13 @@ export function adaptTranscriptEvents(
         streamingToolUses.length = 0;
         pendingToolInputDeltas.clear();
         isStreaming = false;
+        if (
+          typeof payload.turnId !== "string" ||
+          currentTurnId === null ||
+          payload.turnId === currentTurnId
+        ) {
+          currentTurnId = null;
+        }
         break;
       }
       case "turn_aborted":
@@ -1254,6 +1319,13 @@ export function adaptTranscriptEvents(
         streamingText = "";
         streamingThinking = null;
         isStreaming = false;
+        if (
+          typeof payload.turnId !== "string" ||
+          currentTurnId === null ||
+          payload.turnId === currentTurnId
+        ) {
+          currentTurnId = null;
+        }
         // Clear streaming tool state on cancellation.
         // stream cancellation — any partially-streamed tool inputs are
         // abandoned because their completion events will never arrive
@@ -1957,45 +2029,60 @@ export function adaptTranscriptEvents(
 interface TranscriptState {
   readonly events: readonly SessionTranscriptEvent[];
   readonly keys: ReadonlySet<string>;
+  readonly maxSeq: number | null;
 }
 
 type TranscriptAction =
   | { readonly kind: "reset"; readonly events: readonly SessionTranscriptEvent[] }
   | { readonly kind: "append"; readonly event: SessionTranscriptEvent };
 
+function buildTranscriptState(
+  unorderedEvents: readonly SessionTranscriptEvent[],
+): TranscriptState {
+  const keys = new Set<string>();
+  const events: SessionTranscriptEvent[] = [];
+  let maxSeq: number | null = null;
+
+  for (const event of orderSequencedEvents(unorderedEvents)) {
+    const key = eventKey(event);
+    if (isTranscriptResetEvent(event)) {
+      keys.clear();
+      events.length = 0;
+      maxSeq = null;
+      keys.add(key);
+      events.push(event);
+      maxSeq = maxEventSeq(maxSeq, event);
+      continue;
+    }
+    if (keys.has(key)) continue;
+    keys.add(key);
+    events.push(event);
+    maxSeq = maxEventSeq(maxSeq, event);
+  }
+
+  return { events, keys, maxSeq };
+}
+
 function reducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
   switch (action.kind) {
-    case "reset": {
-      const keys = new Set<string>();
-      const events: SessionTranscriptEvent[] = [];
-      for (const event of action.events) {
-        const key = eventKey(event);
-        if (isTranscriptResetEvent(event)) {
-          keys.clear();
-          events.length = 0;
-          keys.add(key);
-          events.push(event);
-          continue;
-        }
-        if (keys.has(key)) continue;
-        keys.add(key);
-        events.push(event);
-      }
-      return { events, keys };
-    }
+    case "reset":
+      return buildTranscriptState(action.events);
     case "append": {
       const key = eventKey(action.event);
-      if (isTranscriptResetEvent(action.event)) {
-        if (state.keys.has(key)) return state;
-        return {
-          events: [action.event],
-          keys: new Set([key]),
-        };
-      }
       if (state.keys.has(key)) return state;
+
+      const seq = eventSeq(action.event);
+      if (
+        isTranscriptResetEvent(action.event) ||
+        (seq !== null && state.maxSeq !== null && seq < state.maxSeq)
+      ) {
+        return buildTranscriptState([...state.events, action.event]);
+      }
+
       return {
         events: [...state.events, action.event],
         keys: new Set([...state.keys, key]),
+        maxSeq: seq === null ? state.maxSeq : maxEventSeq(state.maxSeq, action.event),
       };
     }
   }
@@ -2004,7 +2091,10 @@ function reducer(state: TranscriptState, action: TranscriptAction): TranscriptSt
 export function createSessionTranscriptStateForTesting(
   events: readonly SessionTranscriptEvent[],
 ): TranscriptState {
-  return reducer({ events: [], keys: new Set() }, { kind: "reset", events });
+  return reducer(
+    { events: [], keys: new Set(), maxSeq: null },
+    { kind: "reset", events },
+  );
 }
 
 export function appendSessionTranscriptEventForTesting(
@@ -2024,7 +2114,11 @@ export function useSessionTranscript(
   session: AgenCBridgeSession,
   startupMessages: readonly LLMMessage[] = [],
 ) {
-  const [state, dispatch] = useReducer(reducer, { events: [], keys: new Set() });
+  const [state, dispatch] = useReducer(reducer, {
+    events: [],
+    keys: new Set(),
+    maxSeq: null,
+  });
 
   useEffect(() => {
     dispatch({ kind: "reset", events: initialEvents(session) });
