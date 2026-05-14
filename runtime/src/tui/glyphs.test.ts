@@ -15,6 +15,7 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).thinkingPrefix).toBe("∴");
     expect(selectAgenCTuiGlyphs({}).redactedThinkingPrefix).toBe("✻");
     expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
+    expect(selectAgenCTuiGlyphs({}).voiceCursorBars).toBe(" ▁▂▃▄▅▆▇█");
   });
 
   test("uses ASCII glyphs when explicitly requested", () => {
@@ -38,6 +39,7 @@ describe("AgenC TUI glyph selection", () => {
       thinkingPrefix: "",
       titleAnimationFrames: ["*", "+"],
       titleStaticPrefix: "*",
+      voiceCursorBars: " .:-=+*#@",
     });
   });
 });

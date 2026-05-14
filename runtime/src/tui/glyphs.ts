@@ -19,6 +19,7 @@ export interface AgenCTuiGlyphs {
   readonly thinkingPrefix: string;
   readonly titleAnimationFrames: readonly string[];
   readonly titleStaticPrefix: string;
+  readonly voiceCursorBars: string;
 }
 
 const ASCII_GLYPHS: AgenCTuiGlyphs = {
@@ -38,6 +39,7 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   thinkingPrefix: "",
   titleAnimationFrames: ["*", "+"],
   titleStaticPrefix: "*",
+  voiceCursorBars: " .:-=+*#@",
 };
 
 const UNICODE_GLYPHS: AgenCTuiGlyphs = {
@@ -57,6 +59,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   thinkingPrefix: "∴",
   titleAnimationFrames: ["⠂", "⠐"],
   titleStaticPrefix: "✳",
+  voiceCursorBars: " ▁▂▃▄▅▆▇█",
 };
 
 export function resolveAgenCTuiGlyphMode(

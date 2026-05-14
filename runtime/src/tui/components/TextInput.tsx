@@ -8,14 +8,12 @@ import { useClipboardImageHint } from '../hooks/useClipboardImageHint';
 import { useSettings } from '../hooks/useSettings';
 import { useTextInput } from '../hooks/useTextInput';
 import { Box, color, useAnimationFrame, useTerminalFocus, useTheme } from '../ink.js';
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import type { BaseTextInputProps } from '../../types/textInputTypes';
 import { isEnvTruthy } from '../../utils/envUtils';
 import type { TextHighlight } from '../../utils/textHighlighting.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { BaseTextInput } from './BaseTextInput';
 import { hueToRgb } from './spinner/utils.js';
-
-// Block characters for waveform bars: space (silent) + 8 rising block elements.
-const BARS = ' \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588';
 
 // Mini waveform cursor width
 const CURSOR_WAVEFORM_WIDTH = 1;
@@ -75,7 +73,8 @@ export default function TextInput(props: Props): React.ReactNode {
     const target = Math.min(raw * LEVEL_BOOST, 1);
     smoothed[0] = (smoothed[0] ?? 0) * SMOOTH + target * (1 - SMOOTH);
     const displayLevel = smoothed[0] ?? 0;
-    const barIndex = Math.max(1, Math.min(Math.round(displayLevel * (BARS.length - 1)), BARS.length - 1));
+    const voiceCursorBars = selectAgenCTuiGlyphs().voiceCursorBars;
+    const barIndex = Math.max(1, Math.min(Math.round(displayLevel * (voiceCursorBars.length - 1)), voiceCursorBars.length - 1));
     const isSilent = raw < SILENCE_THRESHOLD;
     const hue = animTime / 1000 * 90 % 360;
     const {
@@ -87,7 +86,7 @@ export default function TextInput(props: Props): React.ReactNode {
       g: 128,
       b: 128
     } : hueToRgb(hue);
-    invert = () => chalk.rgb(r, g, b)(BARS[barIndex]!);
+    invert = () => chalk.rgb(r, g, b)(voiceCursorBars[barIndex]!);
   } else {
     invert = chalk.inverse;
   }
