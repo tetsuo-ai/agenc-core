@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import type { ElicitRequestFormParams, ElicitRequestURLParams, ElicitResult, PrimitiveSchemaDefinition } from '@modelcontextprotocol/sdk/types.js';
-import figures from 'figures';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { resolveAgenCTuiGlyphMode, selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useRegisterOverlay } from '../../context/overlayContext.js';
 import { useNotifyAfterTimeout } from '../../hooks/useNotifyAfterTimeout.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
@@ -36,8 +36,47 @@ type AsyncValidationResult = Awaited<ReturnType<typeof validateElicitationInputA
 function getMultiSelectConstraints(schema: PrimitiveSchemaDefinition): MultiSelectConstraints {
   return schema as PrimitiveSchemaDefinition & MultiSelectConstraints;
 }
-const RESOLVING_SPINNER_CHARS = '\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F';
-const advanceSpinnerFrame = (f: number) => (f + 1) % RESOLVING_SPINNER_CHARS.length;
+type ElicitationRenderGlyphs = {
+  arrowUp: string;
+  arrowDown: string;
+  arrowLeft: string;
+  arrowRight: string;
+  checkboxOff: string;
+  checkboxOn: string;
+  disclosureClosed: string;
+  disclosureOpen: string;
+  ellipsis: string;
+  pointer: string;
+  radioOff: string;
+  radioOn: string;
+  warning: string;
+};
+
+export function getElicitationRenderGlyphs(env: { readonly AGENC_TUI_GLYPHS?: string } = process.env): ElicitationRenderGlyphs {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  const isAscii = resolveAgenCTuiGlyphMode(env) === 'ascii';
+  return {
+    arrowUp: glyphs.arrowUp,
+    arrowDown: glyphs.arrowDown,
+    arrowLeft: glyphs.arrowLeft,
+    arrowRight: glyphs.arrowRight,
+    checkboxOff: isAscii ? ' ' : '☐',
+    checkboxOn: isAscii ? 'x' : '☑',
+    disclosureClosed: glyphs.arrowRight,
+    disclosureOpen: glyphs.arrowDown,
+    ellipsis: glyphs.ellipsis,
+    pointer: glyphs.pointer,
+    radioOff: isAscii ? ' ' : '○',
+    radioOn: isAscii ? '*' : '◉',
+    warning: isAscii ? '!' : '⚠'
+  };
+}
+
+export function getResolvingSpinnerFrames(env: { readonly AGENC_TUI_GLYPHS?: string } = process.env): readonly string[] {
+  return selectAgenCTuiGlyphs(env).spinnerFrames;
+}
+
+const advanceSpinnerFrame = (f: number, frameCount: number) => (f + 1) % Math.max(1, frameCount);
 const ELICITATION_LINES_PER_COLLAPSED_FIELD = 3;
 const ELICITATION_DIALOG_OVERHEAD_ROWS = 14;
 const ELICITATION_MAX_VISIBLE_ACCORDION_OPTIONS = 8;
@@ -150,31 +189,34 @@ function resetTypeahead(ta: {
  * column alignment here (other checkbox states are width-1 glyphs).
  */
 function ResolvingSpinner() {
-  const $ = _c(4);
+  const $ = _c(5);
+  const glyphs = selectAgenCTuiGlyphs();
+  const frames = glyphs.spinnerFrames;
   const [frame, setFrame] = useState(0);
   let t0: React.EffectCallback;
   let t1: React.DependencyList;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
+  if ($[2] !== frames) {
     t0 = () => {
-      const timer = setInterval(setFrame, 80, advanceSpinnerFrame);
+      const timer = setInterval(() => setFrame(currentFrame => advanceSpinnerFrame(currentFrame, frames.length)), 80);
       return () => clearInterval(timer);
     };
-    t1 = [];
+    t1 = [frames];
     $[0] = t0;
     $[1] = t1;
+    $[2] = frames;
   } else {
     t0 = $[0];
     t1 = $[1];
   }
   useEffect(t0, t1);
-  const t2 = RESOLVING_SPINNER_CHARS[frame];
+  const t2 = frames[frame % frames.length] ?? glyphs.spinnerReducedMotionDot;
   let t3;
-  if ($[2] !== t2) {
+  if ($[3] !== t2) {
     t3 = <Text color="warning">{t2}</Text>;
-    $[2] = t2;
-    $[3] = t3;
+    $[3] = t2;
+    $[4] = t3;
   } else {
-    t3 = $[3];
+    t3 = $[4];
   }
   return t3;
 }
@@ -351,6 +393,7 @@ function ElicitationFormDialog({
     columns,
     rows
   } = useTerminalSize();
+  const glyphs = getElicitationRenderGlyphs();
   const currentField = currentFieldIndex !== undefined ? schemaFields[currentFieldIndex] : undefined;
   const currentFieldIsText = currentField !== undefined && isTextField(currentField.schema) && !isEnumSchema(currentField.schema);
 
@@ -868,7 +911,7 @@ function ElicitationFormDialog({
     return <Box flexDirection="column">
         {hasFieldsAbove && <Box marginLeft={2}>
             <Text dimColor>
-              {figures.arrowUp} {scrollWindow.start} more above
+              {glyphs.arrowUp} {scrollWindow.start} more above
             </Text>
           </Box>}
         {schemaFields.slice(scrollWindow.start, scrollWindow.end).map((field_0, visibleIdx) => {
@@ -883,10 +926,10 @@ function ElicitationFormDialog({
         const hasValue = value_3 !== undefined && (!Array.isArray(value_3) || value_3.length > 0);
         const error_0 = validationErrors[name_1];
 
-        // Checkbox: spinner → ⚠ error → ✔ set → * required → space
+        // Checkbox: spinner -> error -> set -> required -> empty
         const isResolving = resolvingFields.has(name_1);
-        const checkbox = isResolving ? <ResolvingSpinner /> : error_0 ? <Text color="error">{figures.warning}</Text> : hasValue ? <Text color="success" dimColor={!isActive}>
-                {figures.tick}
+        const checkbox = isResolving ? <ResolvingSpinner /> : error_0 ? <Text color="error">{glyphs.warning}</Text> : hasValue ? <Text color="success" dimColor={!isActive}>
+                {glyphs.checkboxOn}
               </Text> : isRequired ? <Text color="error">*</Text> : <Text> </Text>;
 
         // Selection color matches field status
@@ -906,10 +949,10 @@ function ElicitationFormDialog({
           if (isExpanded) {
             const optionWindow = getElicitationOptionWindow(msValues_0.length, accordionOptionIndex, maxVisibleAccordionOptions);
             const visibleOptions = msValues_0.slice(optionWindow.start, optionWindow.end);
-            valueContent = <Text dimColor>{figures.triangleDownSmall}</Text>;
+            valueContent = <Text dimColor>{glyphs.disclosureOpen}</Text>;
             accordionContent = <Box flexDirection="column" marginLeft={6}>
                     {optionWindow.start > 0 && <Text dimColor>
-                        {figures.arrowUp} {optionWindow.start} more
+                        {glyphs.arrowUp} {optionWindow.start} more
                       </Text>}
                     {visibleOptions.map((optVal: string, visibleOptIdx: number) => {
                 const optIdx = optionWindow.start + visibleOptIdx;
@@ -918,10 +961,10 @@ function ElicitationFormDialog({
                 const isFocused = optIdx === accordionOptionIndex;
                 return <Box key={optVal} gap={1}>
                           <Text color="suggestion">
-                            {isFocused ? figures.pointer : ' '}
+                            {isFocused ? glyphs.pointer : ' '}
                           </Text>
                           <Text color={isChecked ? 'success' : undefined}>
-                            {isChecked ? figures.checkboxOn : figures.checkboxOff}
+                            {isChecked ? glyphs.checkboxOn : glyphs.checkboxOff}
                           </Text>
                           <Text color={isFocused ? 'suggestion' : undefined} bold={isFocused}>
                             {optLabel}
@@ -929,12 +972,12 @@ function ElicitationFormDialog({
                         </Box>;
               })}
                     {optionWindow.end < msValues_0.length && <Text dimColor>
-                        {figures.arrowDown} {msValues_0.length - optionWindow.end} more
+                        {glyphs.arrowDown} {msValues_0.length - optionWindow.end} more
                       </Text>}
                   </Box>;
           } else {
-            // Collapsed: ▸ arrow then comma-joined selected items
-            const arrow = isActive ? <Text dimColor>{figures.triangleRightSmall} </Text> : null;
+            // Collapsed: disclosure arrow then comma-joined selected items
+            const arrow = isActive ? <Text dimColor>{glyphs.disclosureClosed} </Text> : null;
             if (selected_1.length > 0) {
               const displayLabels = selected_1.map(v_4 => getMultiSelectLabel(schema_6, v_4));
               valueContent = <Text>
@@ -958,10 +1001,10 @@ function ElicitationFormDialog({
           if (isExpanded_0) {
             const optionWindow_0 = getElicitationOptionWindow(enumValues_0.length, accordionOptionIndex, maxVisibleAccordionOptions);
             const visibleOptions_0 = enumValues_0.slice(optionWindow_0.start, optionWindow_0.end);
-            valueContent = <Text dimColor>{figures.triangleDownSmall}</Text>;
+            valueContent = <Text dimColor>{glyphs.disclosureOpen}</Text>;
             accordionContent = <Box flexDirection="column" marginLeft={6}>
                     {optionWindow_0.start > 0 && <Text dimColor>
-                        {figures.arrowUp} {optionWindow_0.start} more
+                        {glyphs.arrowUp} {optionWindow_0.start} more
                       </Text>}
                     {visibleOptions_0.map((optVal_0: string, visibleOptIdx_0: number) => {
                 const optIdx_0 = optionWindow_0.start + visibleOptIdx_0;
@@ -970,10 +1013,10 @@ function ElicitationFormDialog({
                 const isFocused_0 = optIdx_0 === accordionOptionIndex;
                 return <Box key={optVal_0} gap={1}>
                           <Text color="suggestion">
-                            {isFocused_0 ? figures.pointer : ' '}
+                            {isFocused_0 ? glyphs.pointer : ' '}
                           </Text>
                           <Text color={isSelected ? 'success' : undefined}>
-                            {isSelected ? figures.radioOn : figures.radioOff}
+                            {isSelected ? glyphs.radioOn : glyphs.radioOff}
                           </Text>
                           <Text color={isFocused_0 ? 'suggestion' : undefined} bold={isFocused_0}>
                             {optLabel_0}
@@ -981,12 +1024,12 @@ function ElicitationFormDialog({
                         </Box>;
               })}
                     {optionWindow_0.end < enumValues_0.length && <Text dimColor>
-                        {figures.arrowDown} {enumValues_0.length - optionWindow_0.end} more
+                        {glyphs.arrowDown} {enumValues_0.length - optionWindow_0.end} more
                       </Text>}
                   </Box>;
           } else {
-            // Collapsed: ▸ arrow then current value
-            const arrow_0 = isActive ? <Text dimColor>{figures.triangleRightSmall} </Text> : null;
+            // Collapsed: disclosure arrow then current value
+            const arrow_0 = isActive ? <Text dimColor>{glyphs.disclosureClosed} </Text> : null;
             if (hasValue) {
               valueContent = <Text>
                       {arrow_0}
@@ -1006,18 +1049,18 @@ function ElicitationFormDialog({
         } else if (schema_6.type === 'boolean') {
           if (isActive) {
             valueContent = hasValue ? <Text color={activeColor} bold>
-                    {value_3 ? figures.checkboxOn : figures.checkboxOff}
-                  </Text> : <Text dimColor>{figures.checkboxOff}</Text>;
+                    {value_3 ? glyphs.checkboxOn : glyphs.checkboxOff}
+                  </Text> : <Text dimColor>{glyphs.checkboxOff}</Text>;
           } else {
             valueContent = hasValue ? <Text>
-                    {value_3 ? figures.checkboxOn : figures.checkboxOff}
+                    {value_3 ? glyphs.checkboxOn : glyphs.checkboxOff}
                   </Text> : <Text dimColor italic>
                     not set
                   </Text>;
           }
         } else if (isTextField(schema_6)) {
           if (isActive) {
-            valueContent = <TextInput value={textInputValue} onChange={handleTextInputChange} onSubmit={handleTextInputSubmit} placeholder={`Type something\u{2026}`} columns={getElicitationTextInputColumns(columns)} cursorOffset={textInputCursorOffset} onChangeCursorOffset={setTextInputCursorOffset} focus showCursor />;
+            valueContent = <TextInput value={textInputValue} onChange={handleTextInputChange} onSubmit={handleTextInputSubmit} placeholder={`Type something${glyphs.ellipsis}`} columns={getElicitationTextInputColumns(columns)} cursorOffset={textInputCursorOffset} onChangeCursorOffset={setTextInputCursorOffset} focus showCursor />;
           } else {
             const displayValue = hasValue && isDateTimeSchema(schema_6) ? formatDateDisplay(String(value_3), schema_6) : String(value_3);
             valueContent = hasValue ? <Text>{displayValue}</Text> : <Text dimColor italic>
@@ -1032,7 +1075,7 @@ function ElicitationFormDialog({
         return <Box key={name_1} flexDirection="column">
                 <Box gap={1}>
                   <Text color={selectionColor}>
-                    {isActive ? figures.pointer : ' '}
+                    {isActive ? glyphs.pointer : ' '}
                   </Text>
                   {checkbox}
                   <Box>
@@ -1054,31 +1097,31 @@ function ElicitationFormDialog({
       })}
         {hasFieldsBelow && <Box marginLeft={2}>
             <Text dimColor>
-              {figures.arrowDown} {schemaFields.length - scrollWindow.end} more
+              {glyphs.arrowDown} {schemaFields.length - scrollWindow.end} more
               below
             </Text>
           </Box>}
       </Box>;
   }
-  return <Dialog title={`MCP server \u201c${serverName}\u201d requests your input`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive={(!currentField || !!focusedButton) && !expandedAccordion} inputGuide={(exitState: ExitState) => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
+  return <Dialog title={`MCP server "${serverName}" requests your input`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive={(!currentField || !!focusedButton) && !expandedAccordion} inputGuide={(exitState: ExitState) => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
             <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
-            <KeyboardShortcutHint shortcut="↑↓" action="navigate" />
+            <KeyboardShortcutHint shortcut={`${glyphs.arrowUp}${glyphs.arrowDown}`} action="navigate" />
             {currentField && <KeyboardShortcutHint shortcut="Backspace" action="unset" />}
             {currentField && currentField.schema.type === 'boolean' && <KeyboardShortcutHint shortcut="Space" action="toggle" />}
-            {currentField && isEnumSchema(currentField.schema) && (expandedAccordion ? <KeyboardShortcutHint shortcut="Space" action="select" /> : <KeyboardShortcutHint shortcut="→" action="expand" />)}
-            {currentField && isMultiSelectEnumSchema(currentField.schema) && (expandedAccordion ? <KeyboardShortcutHint shortcut="Space" action="toggle" /> : <KeyboardShortcutHint shortcut="→" action="expand" />)}
+            {currentField && isEnumSchema(currentField.schema) && (expandedAccordion ? <KeyboardShortcutHint shortcut="Space" action="select" /> : <KeyboardShortcutHint shortcut={glyphs.arrowRight} action="expand" />)}
+            {currentField && isMultiSelectEnumSchema(currentField.schema) && (expandedAccordion ? <KeyboardShortcutHint shortcut="Space" action="toggle" /> : <KeyboardShortcutHint shortcut={glyphs.arrowRight} action="expand" />)}
           </Byline>}>
       <Box flexDirection="column">
         {renderFormFields()}
         <Box>
           <Text color="success">
-            {focusedButton === 'accept' ? figures.pointer : ' '}
+            {focusedButton === 'accept' ? glyphs.pointer : ' '}
           </Text>
           <Text bold={focusedButton === 'accept'} color={focusedButton === 'accept' ? 'success' : undefined} dimColor={focusedButton !== 'accept'}>
             {' Accept  '}
           </Text>
           <Text color="error">
-            {focusedButton === 'decline' ? figures.pointer : ' '}
+            {focusedButton === 'decline' ? glyphs.pointer : ' '}
           </Text>
           <Text bold={focusedButton === 'decline'} color={focusedButton === 'decline' ? 'error' : undefined} dimColor={focusedButton !== 'decline'}>
             {' Decline'}
@@ -1110,6 +1153,7 @@ function ElicitationURLDialog({
   const phaseRef = useRef<'prompt' | 'waiting'>('prompt');
   const [focusedButton, setFocusedButton] = useState<'accept' | 'decline' | 'open' | 'action' | 'cancel'>('accept');
   const showCancel = waitingState?.showCancel ?? false;
+  const glyphs = getElicitationRenderGlyphs();
   useNotifyAfterTimeout('AgenC needs your input', 'elicitation_url_dialog');
   useRegisterOverlay('elicitation-url', true);
 
@@ -1200,9 +1244,9 @@ function ElicitationURLDialog({
   });
   if (phase === 'waiting') {
     const actionLabel = waitingState?.actionLabel ?? 'Continue without waiting';
-    return <Dialog title={`MCP server \u201c${serverName}\u201d \u2014 waiting for completion`} subtitle={`\n${message}`} color="permission" onCancel={() => onWaitingDismiss?.('cancel')} isCancelActive inputGuide={(exitState: ExitState) => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
+    return <Dialog title={`MCP server "${serverName}" - waiting for completion`} subtitle={`\n${message}`} color="permission" onCancel={() => onWaitingDismiss?.('cancel')} isCancelActive inputGuide={(exitState: ExitState) => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>
               <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
-              <KeyboardShortcutHint shortcut="\u2190\u2192" action="switch" />
+              <KeyboardShortcutHint shortcut={`${glyphs.arrowLeft}${glyphs.arrowRight}`} action="switch" />
             </Byline>}>
         <Box flexDirection="column">
           <Box marginBottom={1} flexDirection="column">
@@ -1214,18 +1258,18 @@ function ElicitationURLDialog({
           </Box>
           <Box marginBottom={1}>
             <Text dimColor italic>
-              Waiting for the server to confirm completion…
+              Waiting for the server to confirm completion{glyphs.ellipsis}
             </Text>
           </Box>
           <Box>
             <Text color="success">
-              {focusedButton === 'open' ? figures.pointer : ' '}
+              {focusedButton === 'open' ? glyphs.pointer : ' '}
             </Text>
             <Text bold={focusedButton === 'open'} color={focusedButton === 'open' ? 'success' : undefined} dimColor={focusedButton !== 'open'}>
               {' Reopen URL  '}
             </Text>
             <Text color="success">
-              {focusedButton === 'action' ? figures.pointer : ' '}
+              {focusedButton === 'action' ? glyphs.pointer : ' '}
             </Text>
             <Text bold={focusedButton === 'action'} color={focusedButton === 'action' ? 'success' : undefined} dimColor={focusedButton !== 'action'}>
               {` ${actionLabel}`}
@@ -1233,7 +1277,7 @@ function ElicitationURLDialog({
             {showCancel && <>
                 <Text> </Text>
                 <Text color="error">
-                  {focusedButton === 'cancel' ? figures.pointer : ' '}
+                  {focusedButton === 'cancel' ? glyphs.pointer : ' '}
                 </Text>
                 <Text bold={focusedButton === 'cancel'} color={focusedButton === 'cancel' ? 'error' : undefined} dimColor={focusedButton !== 'cancel'}>
                   {' Cancel'}
@@ -1243,9 +1287,9 @@ function ElicitationURLDialog({
         </Box>
       </Dialog>;
   }
-  return <Dialog title={`MCP server \u201c${serverName}\u201d wants to open a URL`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive inputGuide={(exitState_0: ExitState) => exitState_0.pending ? <Text>Press {exitState_0.keyName} again to exit</Text> : <Byline>
+  return <Dialog title={`MCP server "${serverName}" wants to open a URL`} subtitle={`\n${message}`} color="permission" onCancel={() => onResponse('cancel')} isCancelActive inputGuide={(exitState_0: ExitState) => exitState_0.pending ? <Text>Press {exitState_0.keyName} again to exit</Text> : <Byline>
             <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />
-            <KeyboardShortcutHint shortcut="\u2190\u2192" action="switch" />
+            <KeyboardShortcutHint shortcut={`${glyphs.arrowLeft}${glyphs.arrowRight}`} action="switch" />
           </Byline>}>
       <Box flexDirection="column">
         <Box marginBottom={1} flexDirection="column">
@@ -1257,13 +1301,13 @@ function ElicitationURLDialog({
         </Box>
         <Box>
           <Text color="success">
-            {focusedButton === 'accept' ? figures.pointer : ' '}
+            {focusedButton === 'accept' ? glyphs.pointer : ' '}
           </Text>
           <Text bold={focusedButton === 'accept'} color={focusedButton === 'accept' ? 'success' : undefined} dimColor={focusedButton !== 'accept'}>
             {' Accept  '}
           </Text>
           <Text color="error">
-            {focusedButton === 'decline' ? figures.pointer : ' '}
+            {focusedButton === 'decline' ? glyphs.pointer : ' '}
           </Text>
           <Text bold={focusedButton === 'decline'} color={focusedButton === 'decline' ? 'error' : undefined} dimColor={focusedButton !== 'decline'}>
             {' Decline'}

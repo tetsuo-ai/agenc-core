@@ -5,8 +5,10 @@ import {
   getElicitationExpandedFieldRows,
   getElicitationFieldBodyRows,
   getElicitationOptionWindow,
+  getElicitationRenderGlyphs,
   getElicitationScrollWindow,
   getElicitationTextInputColumns,
+  getResolvingSpinnerFrames,
 } from './ElicitationDialog.js'
 
 describe('ElicitationDialog layout helpers', () => {
@@ -56,5 +58,31 @@ describe('ElicitationDialog layout helpers', () => {
       start: 3,
       end: 4,
     })
+  })
+
+  it('uses ascii-safe elicitation glyphs when requested', () => {
+    const glyphs = getElicitationRenderGlyphs({ AGENC_TUI_GLYPHS: 'ascii' })
+
+    expect(Object.values(glyphs).join('')).toMatch(/^[\x00-\x7F]*$/)
+    expect(glyphs).toMatchObject({
+      arrowDown: 'v',
+      arrowLeft: '<',
+      arrowRight: '>',
+      arrowUp: '^',
+      checkboxOn: 'x',
+      ellipsis: '...',
+      pointer: '>',
+      radioOn: '*',
+      warning: '!',
+    })
+  })
+
+  it('uses ascii-safe resolving spinner frames when requested', () => {
+    expect(getResolvingSpinnerFrames({ AGENC_TUI_GLYPHS: 'ascii' })).toEqual([
+      '-',
+      '\\',
+      '|',
+      '/',
+    ])
   })
 })
