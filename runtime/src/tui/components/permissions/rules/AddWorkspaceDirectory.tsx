@@ -1,23 +1,20 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
-import * as React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useDebounceCallback } from 'usehooks-ts';
-import { addDirHelpMessage, validateDirectoryForWorkspace } from '../../../../commands/add-dir/validation';
-import TextInput from '../../TextInput';
+import { addDirHelpMessage, validateDirectoryForWorkspace } from '../../../../commands/add-dir/validation.js';
+import TextInput from '../../TextInput.js';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
-import { useTerminalSize } from '../../../hooks/useTerminalSize';
+import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { useKeybinding } from '../../../keybindings/useKeybinding.js';
-import type { ToolPermissionContext } from '../../../../tools/Tool';
-import { getDirectoryCompletions } from '../../../../utils/suggestions/directoryCompletion'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from '../../ConfigurableShortcutHint';
-import { Select } from '../../CustomSelect/select';
-import { Byline } from '../../design-system/Byline';
-import { Dialog } from '../../design-system/Dialog';
-import { KeyboardShortcutHint } from '../../design-system/KeyboardShortcutHint';
+import type { ToolPermissionContext } from '../../../../tools/Tool.js';
+import { getDirectoryCompletions } from '../../../../utils/suggestions/directoryCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { ConfigurableShortcutHint } from '../../ConfigurableShortcutHint.js';
+import { Select } from '../../CustomSelect/select.js';
+import { Byline } from '../../design-system/Byline.js';
+import { Dialog } from '../../design-system/Dialog.js';
+import { KeyboardShortcutHint } from '../../design-system/KeyboardShortcutHint.js';
 import { PromptInputFooterSuggestions, type SuggestionItem } from '../../PromptInput/PromptInputFooterSuggestions.js';
 type Props = {
   onAddDirectory: (path: string, remember?: boolean) => void;
@@ -56,7 +53,7 @@ function PermissionDescription() {
   }
   return t0;
 }
-function DirectoryDisplay(t0) {
+function DirectoryDisplay(t0: { path: string }): ReactNode {
   const $ = _c(5);
   const {
     path
@@ -86,6 +83,15 @@ function DirectoryDisplay(t0) {
   }
   return t3;
 }
+type DirectoryInputProps = {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (value: string) => void;
+  error: string | null;
+  suggestions: SuggestionItem[];
+  selectedSuggestion: number;
+  columns: number;
+};
 function DirectoryInput({
   value,
   onChange,
@@ -94,7 +100,7 @@ function DirectoryInput({
   suggestions,
   selectedSuggestion,
   columns,
-}) {
+}: DirectoryInputProps): ReactNode {
   return (
     <Box flexDirection="column">
       <Text>Enter the path to the directory:</Text>
@@ -123,7 +129,7 @@ function DirectoryInput({
   );
 }
 function _temp() {}
-export function AddWorkspaceDirectory(t0) {
+export function AddWorkspaceDirectory(t0: Props): ReactNode {
   const $ = _c(34);
   const {
     onAddDirectory,
@@ -132,8 +138,8 @@ export function AddWorkspaceDirectory(t0) {
     directoryPath
   } = t0;
   const [directoryInput, setDirectoryInput] = useState("");
-  const [error, setError] = useState(null);
-  let t1;
+  const [error, setError] = useState<string | null>(null);
+  let t1: SuggestionItem[];
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = [];
     $[0] = t1;
@@ -144,7 +150,7 @@ export function AddWorkspaceDirectory(t0) {
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   let t2;
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = async path => {
+    t2 = async (path: string) => {
       if (!path) {
         setSuggestions([]);
         setSelectedSuggestion(0);
@@ -178,7 +184,7 @@ export function AddWorkspaceDirectory(t0) {
   useEffect(t3, t4);
   let t5;
   if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
-    t5 = suggestion => {
+    t5 = (suggestion: SuggestionItem) => {
       const newPath = suggestion.id + "/";
       setDirectoryInput(newPath);
       setError(null);
@@ -190,7 +196,7 @@ export function AddWorkspaceDirectory(t0) {
   const applySuggestion = t5;
   let t6;
   if ($[7] !== onAddDirectory || $[8] !== permissionContext) {
-    t6 = async newPath_0 => {
+    t6 = async (newPath_0: string) => {
       const result = await validateDirectoryForWorkspace(newPath_0, permissionContext);
       if (result.resultType === "success") {
         onAddDirectory(result.absolutePath, false);
@@ -221,7 +227,7 @@ export function AddWorkspaceDirectory(t0) {
   const directoryInputColumns = getAddWorkspaceDirectoryInputColumns(columns);
   let t8;
   if ($[11] !== handleSubmit || $[12] !== selectedSuggestion || $[13] !== suggestions) {
-    t8 = e => {
+    t8 = (e: KeyboardEvent) => {
       if (suggestions.length > 0) {
         if (e.key === "tab") {
           e.preventDefault();
@@ -261,7 +267,7 @@ export function AddWorkspaceDirectory(t0) {
   const handleKeyDown = t8;
   let t9;
   if ($[15] !== directoryPath || $[16] !== onAddDirectory || $[17] !== onCancel) {
-    t9 = value => {
+    t9 = (value: string) => {
       if (!directoryPath) {
         return;
       }
@@ -314,6 +320,6 @@ export function AddWorkspaceDirectory(t0) {
   }
   return t13;
 }
-function _temp2(exitState) {
+function _temp2(exitState: { pending: boolean; keyName: string | null }): ReactNode {
   return exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline><KeyboardShortcutHint shortcut="Tab" action="complete" /><KeyboardShortcutHint shortcut="Enter" action="add" /><ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" /></Byline>;
 }
