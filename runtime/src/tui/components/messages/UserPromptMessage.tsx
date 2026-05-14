@@ -8,6 +8,7 @@ import { useAppState } from '../../state/AppState.js';
 import { isEnvTruthy } from '../../../utils/envUtils';
 import { logError } from '../../../utils/log.js';
 import { countCharInString } from '../../../utils/stringUtils.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { MessageActionsSelectedContext } from '../messageActions';
 import { HighlightedThinkingText } from './HighlightedThinkingText';
 type Props = {
@@ -28,6 +29,26 @@ type Props = {
 const MAX_DISPLAY_CHARS = 10_000;
 const TRUNCATE_HEAD_CHARS = 2_500;
 const TRUNCATE_TAIL_CHARS = 2_500;
+
+export function getUserPromptTruncationNotice(
+  hiddenLines: number,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const ellipsis = selectAgenCTuiGlyphs(env).ellipsis;
+  return `${ellipsis} +${hiddenLines} lines ${ellipsis}`;
+}
+
+export function truncateUserPromptDisplayText(
+  text: string,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  if (text.length <= MAX_DISPLAY_CHARS) return text;
+  const head = text.slice(0, TRUNCATE_HEAD_CHARS);
+  const tail = text.slice(-TRUNCATE_TAIL_CHARS);
+  const hiddenLines = countCharInString(text, '\n', TRUNCATE_HEAD_CHARS) - countCharInString(tail, '\n');
+  return `${head}\n${getUserPromptTruncationNotice(hiddenLines, env)}\n${tail}`;
+}
+
 export function UserPromptMessage({
   addMargin,
   param: {
@@ -62,11 +83,7 @@ export function UserPromptMessage({
 
   // Truncate before the early return so the hook order is stable.
   const displayText = useMemo(() => {
-    if (text.length <= MAX_DISPLAY_CHARS) return text;
-    const head = text.slice(0, TRUNCATE_HEAD_CHARS);
-    const tail = text.slice(-TRUNCATE_TAIL_CHARS);
-    const hiddenLines = countCharInString(text, '\n', TRUNCATE_HEAD_CHARS) - countCharInString(tail, '\n');
-    return `${head}\n… +${hiddenLines} lines …\n${tail}`;
+    return truncateUserPromptDisplayText(text);
   }, [text]);
   const isSelected = useContext(MessageActionsSelectedContext);
   if (!text) {
