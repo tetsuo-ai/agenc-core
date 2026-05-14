@@ -34,6 +34,9 @@ export function SkillPermissionRequest(props) {
     t0 = $[1];
   }
   const skill = t0;
+  if (skill.trim().length === 0) {
+    return <MalformedSkillPermissionInputDialog toolUseConfirm={toolUseConfirm} onDone={onDone} onReject={onReject} workerBadge={workerBadge} />;
+  }
   const commandObj = toolUseConfirm.permissionResult.behavior === "ask" && toolUseConfirm.permissionResult.metadata && "command" in toolUseConfirm.permissionResult.metadata ? toolUseConfirm.permissionResult.metadata.command : undefined;
   let t1;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
@@ -358,6 +361,32 @@ export function SkillPermissionRequest(props) {
     t19 = $[50];
   }
   return t19;
+}
+function MalformedSkillPermissionInputDialog({
+  toolUseConfirm,
+  onDone,
+  onReject,
+  workerBadge
+}) {
+  const handleReject = useCallback(feedback => {
+    toolUseConfirm.onReject(feedback);
+    onReject();
+    onDone();
+  }, [onDone, onReject, toolUseConfirm]);
+  const handleSelect = useCallback((_value, feedback) => {
+    handleReject(feedback);
+  }, [handleReject]);
+  const options = useMemo(() => [{
+    label: "No",
+    value: "no",
+    feedbackConfig: {
+      type: "reject"
+    }
+  }], []);
+  return <PermissionDialog title="Use skill?" workerBadge={workerBadge}><Box flexDirection="column" gap={1}><Box flexDirection="column"><Text color="error" bold={true}>Invalid Skill input</Text><Text dimColor={true}>Skill permission input must include a non-empty skill or name.</Text></Box><PermissionPrompt options={options} onSelect={handleSelect} onCancel={() => handleReject()} question="Reject this malformed skill request?" toolAnalyticsContext={{
+        toolName: toolUseConfirm.tool.name,
+        isMcp: toolUseConfirm.tool.isMcp ?? false
+      }} /></Box></PermissionDialog>;
 }
 function _temp(input) {
   if (input && typeof input === "object") {
