@@ -29,6 +29,7 @@ describe('PromptInputFooterLeftSide vim mode indicator', () => {
 
     expect(leftSide).not.toContain('TungstenPill')
     expect(leftSide).not.toContain('hasTmuxSession')
+    expect(leftSide).not.toContain('hasCoordinatorTasks')
     expect(promptInput).not.toContain('tmuxSelected')
   })
 })

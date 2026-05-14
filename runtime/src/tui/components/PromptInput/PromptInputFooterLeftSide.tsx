@@ -355,9 +355,6 @@ function ModeIndicator({
       </Box>;
   }
 
-  // Add "↓ to manage tasks" hint when panel has visible rows
-  const hasCoordinatorTasks = false;
-
   // Tasks pill renders as a Box sibling (not a parts entry) so its
   // click-target Box isn't nested inside <Text wrap="truncate"> — the
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
@@ -396,7 +393,7 @@ function ModeIndicator({
         </Byline>
       </Text>);
   }
-  if ((tasksPart || hasCoordinatorTasks) && showHint && !hasTeams) {
+  if (tasksPart && showHint && !hasTeams) {
     parts.push(<Text dimColor key="manage-tasks">
         {tasksSelected ? <KeyboardShortcutHint shortcut="Enter" action="view tasks" /> : <KeyboardShortcutHint shortcut="↓" action="manage" />}
       </Text>);
