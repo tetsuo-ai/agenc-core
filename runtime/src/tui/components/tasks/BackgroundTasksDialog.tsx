@@ -10,8 +10,9 @@ import {
   isTaskType,
   type TaskState,
 } from "../../../tasks/types.js";
-import { formatNumber } from "../../../utils/format.js";
+import { formatNumber, truncateToWidth } from "../../../utils/format.js";
 import { Box, Text, useInput } from "../../ink.js";
+import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useAppState, useSetAppState } from "../../state/AppState.js";
 
 type Props = {
@@ -143,6 +144,9 @@ export function BackgroundTasksDialog({
   initialDetailTaskId,
   toolUseContext,
 }: Props): React.ReactNode {
+  const { columns } = useTerminalSize();
+  const taskTextWidth = Math.max(1, columns - 4);
+  const indentedTaskTextWidth = Math.max(1, taskTextWidth - 2);
   const tasks = useAppState((state) =>
     Object.values(state.tasks ?? {}).filter(isBackgroundDialogTask),
   );
@@ -181,6 +185,7 @@ export function BackgroundTasksDialog({
     sorted.findIndex((task) => task.id === selectedTaskId),
   );
   const selectedTask = sorted[selectedIndex] ?? null;
+  const selectedTaskDetail = selectedTask ? taskDetail(selectedTask) : null;
   const selectRelative = React.useCallback(
     (delta: number) => {
       if (sorted.length === 0) {
@@ -237,23 +242,22 @@ export function BackgroundTasksDialog({
             Task details
           </Text>
           <Text>
-            {selectedTask.status} · {selectedTask.type} · {taskTitle(selectedTask)}
+            {truncateToWidth(`${selectedTask.status} · ${selectedTask.type} · ${taskTitle(selectedTask)}`, taskTextWidth)}
           </Text>
-          <Text dimColor={true}>id: {selectedTask.id}</Text>
-          {taskDetail(selectedTask) ? (
-            <Text dimColor={true}>{taskDetail(selectedTask)}</Text>
+          <Text dimColor={true}>{truncateToWidth(`id: ${selectedTask.id}`, taskTextWidth)}</Text>
+          {selectedTaskDetail ? (
+            <Text dimColor={true}>{truncateToWidth(selectedTaskDetail, taskTextWidth)}</Text>
           ) : null}
           {"command" in selectedTask && selectedTask.command ? (
-            <Text dimColor={true}>command: {selectedTask.command}</Text>
+            <Text dimColor={true}>{truncateToWidth(`command: ${selectedTask.command}`, taskTextWidth)}</Text>
           ) : null}
           {"prompt" in selectedTask && selectedTask.prompt ? (
-            <Text dimColor={true}>prompt: {selectedTask.prompt}</Text>
+            <Text dimColor={true}>{truncateToWidth(`prompt: ${selectedTask.prompt}`, taskTextWidth)}</Text>
           ) : null}
-          <Text dimColor={true}>view output: {selectedTask.outputFile}</Text>
+          <Text dimColor={true}>{truncateToWidth(`view output: ${selectedTask.outputFile}`, taskTextWidth)}</Text>
           <Box marginTop={1}>
             <Text dimColor={true}>
-              ←/b back · ↑/↓ select · {taskActionLabel(selectedTask) === "Stop" ? "x stop · " : ""}
-              Esc/q closes
+              {truncateToWidth(`←/b back · ↑/↓ select · ${taskActionLabel(selectedTask) === "Stop" ? "x stop · " : ""}Esc/q closes`, taskTextWidth)}
             </Text>
           </Box>
           {taskActionLabel(selectedTask) === "Stop unavailable" ? (
@@ -268,18 +272,17 @@ export function BackgroundTasksDialog({
           return (
             <Box key={task.id} flexDirection="column" marginTop={1}>
               <Text color={selected ? "suggestion" : color} bold={selected}>
-                {selected ? "› " : "  "}
-                {task.status} · {task.type} · {taskTitle(task)}
+                {truncateToWidth(`${selected ? "› " : "  "}${task.status} · ${task.type} · ${taskTitle(task)}`, taskTextWidth)}
               </Text>
-              <Text dimColor={true}>  id: {task.id}</Text>
-              {detail ? <Text dimColor={true}>  {detail}</Text> : null}
+              <Text dimColor={true}>{truncateToWidth(`  id: ${task.id}`, taskTextWidth)}</Text>
+              {detail ? <Text dimColor={true}>{truncateToWidth(`  ${detail}`, indentedTaskTextWidth)}</Text> : null}
             </Box>
           );
         })
       )}
       <Box marginTop={1}>
         <Text dimColor={true}>
-          {sorted.length === 0 ? "Esc/q closes" : "↑/↓ select · Enter opens details · x stops · Esc/q closes"}
+          {truncateToWidth(sorted.length === 0 ? "Esc/q closes" : "↑/↓ select · Enter opens details · x stops · Esc/q closes", taskTextWidth)}
         </Text>
       </Box>
     </Box>

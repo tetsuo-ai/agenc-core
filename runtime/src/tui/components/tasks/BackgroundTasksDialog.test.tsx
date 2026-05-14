@@ -14,6 +14,10 @@ const inputHandler = vi.hoisted(() => ({
     | ((input: string, key: Record<string, boolean>) => void),
 }))
 
+const terminalSizeMock = vi.hoisted(() => ({
+  size: { columns: 100, rows: 30 },
+}))
+
 const killTaskMock = vi.hoisted(() => vi.fn())
 const killAsyncAgentMock = vi.hoisted(() => vi.fn())
 const requestTeammateShutdownMock = vi.hoisted(() => vi.fn())
@@ -22,6 +26,10 @@ vi.mock('../../state/AppState.js', () => ({
   useAppState: (selector: (state: typeof appStateMock.state) => unknown) =>
     selector(appStateMock.state),
   useSetAppState: () => appStateMock.setAppState,
+}))
+
+vi.mock('../../hooks/useTerminalSize.js', () => ({
+  useTerminalSize: () => terminalSizeMock.size,
 }))
 
 vi.mock('../../ink.js', async () => {
@@ -82,6 +90,7 @@ describe('BackgroundTasksDialog', () => {
   beforeEach(() => {
     appStateMock.state = { tasks: {} }
     appStateMock.setAppState.mockClear()
+    terminalSizeMock.size = { columns: 100, rows: 30 }
     inputHandler.current = undefined
     killTaskMock.mockClear()
     killAsyncAgentMock.mockClear()
@@ -141,6 +150,40 @@ describe('BackgroundTasksDialog', () => {
     expect(output).toContain('completed · local_bash · npm run build')
     expect(output).toContain('failed · local_bash · npm run lint')
     expect(output).toContain('killed · local_bash · npm run dev')
+  })
+
+  it('truncates long task list and detail text to the terminal width', async () => {
+    const longCommand =
+      'npm run extremely-long-background-command-name -- --with-a-very-long-argument'
+    terminalSizeMock.size = { columns: 34, rows: 30 }
+    appStateMock.state = {
+      tasks: {
+        b1: makeShellTask({
+          command: longCommand,
+          id: 'background-task-with-a-very-long-identifier',
+          progress: {
+            toolUseCount: 1234,
+            tokenCount: 56789,
+            lastActivity: {
+              activityDescription:
+                'reading a very long file path that would otherwise overflow the dialog',
+            },
+          },
+        }),
+      },
+    }
+
+    const { BackgroundTasksDialog } = await import('./BackgroundTasksDialog.js')
+
+    const listOutput = await renderToString(<BackgroundTasksDialog />, 34)
+    const detailOutput = await renderToString(
+      <BackgroundTasksDialog initialDetailTaskId="b1" />,
+      34,
+    )
+
+    expect(listOutput).not.toContain(longCommand)
+    expect(detailOutput).not.toContain(longCommand)
+    expect(`${listOutput}\n${detailOutput}`).toContain('…')
   })
 
   it('routes stop actions through the task helper and current tool-use context', async () => {
