@@ -6,6 +6,7 @@ import { Box, Text } from '../../ink.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
 import { useTabHeaderFocus } from '../design-system/Tabs';
+import { calculateCommandVisibleOptionCount } from './layout.js';
 type Props = {
   commands: Command[];
   maxHeight: number;
@@ -29,7 +30,7 @@ export function Commands(t0) {
     focusHeader
   } = useTabHeaderFocus();
   const maxWidth = Math.max(1, columns - 10);
-  const visibleCount = Math.max(1, Math.floor((maxHeight - 10) / 2));
+  const visibleCount = calculateCommandVisibleOptionCount(maxHeight);
   let t1;
   if ($[0] !== commands || $[1] !== maxWidth) {
     const seen = new Set();
@@ -61,7 +62,7 @@ export function Commands(t0) {
   const options = t1;
   let t2;
   if ($[5] !== commands.length || $[6] !== emptyMessage || $[7] !== focusHeader || $[8] !== headerFocused || $[9] !== onCancel || $[10] !== options || $[11] !== title || $[12] !== visibleCount) {
-    t2 = <Box flexDirection="column" paddingY={1}>{commands.length === 0 && emptyMessage ? <Text dimColor={true}>{emptyMessage}</Text> : <><Text>{title}</Text><Box marginTop={1}><Select options={options} visibleOptionCount={visibleCount} onCancel={onCancel} disableSelection={true} hideIndexes={true} layout="compact-vertical" onUpFromFirstItem={focusHeader} isDisabled={headerFocused} /></Box></>}</Box>;
+    t2 = <Box flexDirection="column" paddingY={1}>{commands.length === 0 && emptyMessage ? <Text dimColor={true}>{emptyMessage}</Text> : <><Text>{title}</Text>{visibleCount > 0 ? <Box marginTop={1}><Select options={options} visibleOptionCount={visibleCount} onCancel={onCancel} disableSelection={true} hideIndexes={true} layout="compact-vertical" onUpFromFirstItem={focusHeader} isDisabled={headerFocused} /></Box> : <Box marginTop={1}><Text dimColor={true} wrap="truncate">Terminal too small to browse commands</Text></Box>}</>}</Box>;
     $[5] = commands.length;
     $[6] = emptyMessage;
     $[7] = focusHeader;

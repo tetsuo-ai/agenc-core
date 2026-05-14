@@ -13,6 +13,7 @@ import { Pane } from '../design-system/Pane';
 import { Tab, Tabs } from '../design-system/Tabs';
 import { Commands } from './Commands';
 import { General } from './General';
+import { calculateHelpBodyHeight } from './layout.js';
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -29,7 +30,7 @@ export function HelpV2(t0) {
     rows,
     columns
   } = useTerminalSize();
-  const maxHeight = Math.floor(rows / 2);
+  const maxHeight = calculateHelpBodyHeight(rows);
   const insideModal = useIsInsideModal();
   let t1;
   if ($[0] !== onClose) {
