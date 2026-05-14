@@ -1,8 +1,9 @@
-import * as React from "react";
+import type * as React from "react";
 import { useState } from "react";
 import { Box, Text, useInterval } from "../ink.js";
 import { formatAPIError } from "../../errors/api.js";
 import type { AgenCSystemAPIErrorMessage } from "../../errors/api.js";
+import { MessageResponse } from "./MessageResponse.js";
 
 const MAX_API_ERROR_CHARS = 1000;
 
@@ -10,21 +11,6 @@ type Props = {
   readonly message: AgenCSystemAPIErrorMessage;
   readonly verbose: boolean;
 };
-
-function MessageResponse({
-  children,
-}: {
-  readonly children: React.ReactNode;
-}): React.ReactNode {
-  return (
-    <Box flexDirection="row">
-      <Text dimColor={true}>{"  "}⎿  </Text>
-      <Box flexDirection="column" flexShrink={1} flexGrow={1}>
-        {children}
-      </Box>
-    </Box>
-  );
-}
 
 function CtrlOToExpand(): React.ReactNode {
   return <Text dimColor={true}>(ctrl+o to expand)</Text>;

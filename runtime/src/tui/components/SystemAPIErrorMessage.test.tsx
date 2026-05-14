@@ -25,6 +25,7 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...actual,
     useState: <T,>(initial: T) => [initial, () => {}],
+    useContext: () => false,
   };
 });
 
@@ -37,8 +38,21 @@ vi.mock("../ink.js", async () => {
   }) => React.createElement(React.Fragment, null, children);
   return {
     Box: Passthrough,
+    NoSelect: Passthrough,
     Text: Passthrough,
     useInterval: () => {},
+  };
+});
+
+vi.mock("./design-system/Ratchet.js", async () => {
+  const React = await import("react");
+  const Passthrough = ({
+    children,
+  }: {
+    readonly children?: React.ReactNode;
+  }) => React.createElement(React.Fragment, null, children);
+  return {
+    Ratchet: Passthrough,
   };
 });
 
@@ -78,6 +92,7 @@ function collectText(node: React.ReactNode): string {
 describe("SystemAPIErrorMessage", () => {
   afterEach(() => {
     delete process.env.API_TIMEOUT_MS;
+    delete process.env.AGENC_TUI_GLYPHS;
   });
 
   test("hides early retry attempts", () => {
@@ -122,6 +137,29 @@ describe("SystemAPIErrorMessage", () => {
     expect(output).toContain("Request timed out");
     expect(output).toContain("Retrying in 3 seconds");
     expect(output).toContain("API_TIMEOUT_MS=1000ms");
+  });
+
+  test("uses shared ASCII response gutter when ASCII glyphs are requested", () => {
+    process.env.AGENC_TUI_GLYPHS = "ascii";
+
+    const output = renderPlain(
+      <SystemAPIErrorMessage
+        verbose={false}
+        message={{
+          type: "system",
+          subtype: "api_error",
+          level: "error",
+          error: new Error("temporary failure"),
+          retryAttempt: 4,
+          retryInMs: 3000,
+          maxRetries: 5,
+        }}
+      />,
+    );
+
+    expect(output).toContain("|_");
+    expect(output).toContain("temporary failure");
+    expect(output).not.toContain("⎿");
   });
 
   test("truncates long errors outside verbose mode", () => {
