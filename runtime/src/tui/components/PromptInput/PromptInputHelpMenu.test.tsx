@@ -65,4 +65,12 @@ describe('PromptInputHelpMenu', () => {
       )
     expect(sharedRow).toBeDefined()
   })
+
+  it('describes Shift+Tab as cycling modes', async () => {
+    const { PromptInputHelpMenu } = await import('./PromptInputHelpMenu.js')
+    const output = await renderToString(<PromptInputHelpMenu />, 120)
+
+    expect(output).toContain('shift + tab to cycle modes')
+    expect(output).not.toContain('shift + tab to auto-accept edits')
+  })
 })

@@ -207,7 +207,7 @@ export function PromptInputHelpMenu(props) {
   }
   let t30;
   if ($[42] !== cycleModeShortcut || $[43] !== dimColor) {
-    t30 = <Box><Text dimColor={dimColor}>{cycleModeShortcut}{" "}{false ? "to cycle modes" : "to auto-accept edits"}</Text></Box>;
+    t30 = <Box><Text dimColor={dimColor}>{cycleModeShortcut}{" "}to cycle modes</Text></Box>;
     $[42] = cycleModeShortcut;
     $[43] = dimColor;
     $[44] = t30;
