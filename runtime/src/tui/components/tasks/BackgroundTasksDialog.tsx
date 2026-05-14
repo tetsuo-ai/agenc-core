@@ -1,4 +1,3 @@
-// @ts-nocheck
 import * as React from "react";
 
 import { killAsyncAgent } from "../../../tasks/LocalAgentTask/LocalAgentTask.js";
@@ -13,7 +12,7 @@ import {
 import { formatNumber, truncateToWidth } from "../../../utils/format.js";
 import { Box, Text, useInput } from "../../ink.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
-import { useAppState, useSetAppState } from "../../state/AppState.js";
+import { useAppState, useSetAppState, type AppState } from "../../state/AppState.js";
 
 type Props = {
   onDone?: () => void;
@@ -43,14 +42,14 @@ function taskStatusColor(status: string): string | undefined {
       return "error";
     case "running":
     case "pending":
-      return "cyan_FOR_SUBAGENTS_ONLY";
+      return "background";
     default:
       return undefined;
   }
 }
 
 function taskDetail(task: TaskState): string | null {
-  const progress = task.progress;
+  const progress = "progress" in task ? task.progress : undefined;
   const parts: string[] = [];
   if (progress?.toolUseCount !== undefined) {
     parts.push(`${formatNumber(progress.toolUseCount)} tools`);
@@ -147,7 +146,7 @@ export function BackgroundTasksDialog({
   const { columns } = useTerminalSize();
   const taskTextWidth = Math.max(1, columns - 4);
   const indentedTaskTextWidth = Math.max(1, taskTextWidth - 2);
-  const tasks = useAppState((state) =>
+  const tasks = useAppState((state: AppState) =>
     Object.values(state.tasks ?? {}).filter(isBackgroundDialogTask),
   );
   const appStateSetter = useSetAppState();
