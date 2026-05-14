@@ -6,6 +6,7 @@ import { getOriginalCwd, getSessionId } from '../../bootstrap/state';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useSearchInput } from '../hooks/useSearchInput';
 import { useTerminalSize } from '../hooks/useTerminalSize';
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { Box, Text, useInput, useTerminalFocus } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { logEvent } from '../../services/analytics/index';
@@ -46,9 +47,38 @@ function normalizeAndTruncateToWidth(text: string, maxWidth: number): string {
   return truncateToWidth(normalized, maxWidth);
 }
 
-// Width of prefixes that TreeSelect will add
-const PARENT_PREFIX_WIDTH = 2; // '▼ ' or '▶ '
-const CHILD_PREFIX_WIDTH = 4; // '  ▸ '
+// Width of prefixes that LogSelector passes to TreeSelect.
+const PARENT_PREFIX_WIDTH = 2;
+const CHILD_PREFIX_WIDTH = 4;
+
+export function getLogSelectorGlyphParts(env = process.env) {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return {
+    parentExpandedPrefix: `${glyphs.arrowDown} `,
+    parentCollapsedPrefix: `${glyphs.arrowRight} `,
+    childPrefix: `  ${glyphs.arrowRight} `,
+    metadataSeparator: ` ${glyphs.separator} `,
+    collapseHint: `${glyphs.arrowLeft} to collapse`,
+    expandHint: `${glyphs.arrowRight} to expand`
+  };
+}
+
+function getLogSelectorParentPrefix(isExpanded: boolean): string {
+  const glyphs = getLogSelectorGlyphParts();
+  return isExpanded ? glyphs.parentExpandedPrefix : glyphs.parentCollapsedPrefix;
+}
+
+function getLogSelectorChildPrefix(): string {
+  return getLogSelectorGlyphParts().childPrefix;
+}
+
+export function getLogSelectorExpandCollapseHintText(options: {
+  isExpanded: boolean;
+  isChildNode: boolean;
+}, env = process.env): string {
+  const glyphs = getLogSelectorGlyphParts(env);
+  return options.isChildNode || options.isExpanded ? glyphs.collapseHint : glyphs.expandHint;
+}
 
 function buildLogLabel(log: LogOption, maxLabelWidth: number, options?: {
   isGroupHeader?: boolean;
@@ -78,9 +108,9 @@ function buildLogMetadata(log: LogOption, options?: {
     showProjectPath = false
   } = options || {};
   // Match the child prefix width for proper alignment
-  const childPadding = isChild ? '    ' : ''; // 4 spaces to match '  ▸ '
+  const childPadding = isChild ? '    ' : ''; // 4 spaces to match the tree child prefix
   const baseMetadata = formatLogMetadata(log);
-  const projectSuffix = showProjectPath && log.projectPath ? ` · ${log.projectPath}` : '';
+  const projectSuffix = showProjectPath && log.projectPath ? `${getLogSelectorGlyphParts().metadataSeparator}${log.projectPath}` : '';
   return childPadding + baseMetadata + projectSuffix;
 }
 
@@ -457,7 +487,7 @@ export function LogSelector(t0) {
           const summaryWithSidechain = rawSummary + (log_9.isSidechain ? " (sidechain)" : "");
           const summary = normalizeAndTruncateToWidth(summaryWithSidechain, maxLabelWidth);
           const baseDescription = formatLogMetadata(log_9);
-          const projectSuffix = showAllProjects && log_9.projectPath ? ` · ${log_9.projectPath}` : "";
+          const projectSuffix = showAllProjects && log_9.projectPath ? `${getLogSelectorGlyphParts().metadataSeparator}${log_9.projectPath}` : "";
           return {
             label: summary,
             description: baseDescription + projectSuffix,
@@ -500,10 +530,10 @@ export function LogSelector(t0) {
       }
       const isExpanded = expandedGroupSessionIds.has(sessionId_0);
       const isChildNode = sessionLogs.indexOf(focusedLog) > 0;
-      if (isChildNode) {
-        return "\u2190 to collapse";
-      }
-      return isExpanded ? "\u2190 to collapse" : "\u2192 to expand";
+      return getLogSelectorExpandCollapseHintText({
+        isExpanded,
+        isChildNode
+      });
     };
     $[84] = displayedLogs;
     $[85] = expandedGroupSessionIds;
@@ -888,7 +918,7 @@ export function LogSelector(t0) {
           return newSet;
         });
       }
-    }} onUpFromFirstItem={enterSearchMode} /> : <Select options={flatOptions} onChange={value_0 => {
+    }} getParentPrefix={getLogSelectorParentPrefix} getChildPrefix={getLogSelectorChildPrefix} onUpFromFirstItem={enterSearchMode} /> : <Select options={flatOptions} onChange={value_0 => {
       const itemIndex = parseInt(value_0, 10);
       const log_13 = displayedLogs[itemIndex];
       if (log_13) {
