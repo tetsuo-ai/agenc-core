@@ -53,3 +53,20 @@ export function shouldShowPromptSuggestionPlaceholder({
 }): boolean {
   return mode === 'prompt' && suggestionCount === 0 && Boolean(promptSuggestion) && !viewingAgentTaskId;
 }
+
+export function shouldSuppressPromptSuggestionForTiming({
+  promptSuggestionText,
+  visiblePromptSuggestion,
+  shownAt,
+  viewingAgentTaskId,
+}: {
+  promptSuggestionText: string | null;
+  visiblePromptSuggestion: string | null;
+  shownAt: number;
+  viewingAgentTaskId?: string | null;
+}): boolean {
+  return Boolean(promptSuggestionText) &&
+    !visiblePromptSuggestion &&
+    shownAt === 0 &&
+    !viewingAgentTaskId;
+}

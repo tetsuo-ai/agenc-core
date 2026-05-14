@@ -37,7 +37,7 @@ import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import { abortPromptSuggestion, logSuggestionSuppressed } from '../../../services/PromptSuggestion/promptSuggestion.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS as PromptSuggestionAnalyticsMetadata, logEvent as logPromptSuggestionEvent } from '../../../services/PromptSuggestion/runtime.js';
 import { type ActiveSpeculationState, abortSpeculation } from '../../../services/PromptSuggestion/speculation.js';
-import { computePromptSuggestionOutcome, getVisiblePromptSuggestion, shouldShowPromptSuggestionPlaceholder } from './promptSuggestionControl.js';
+import { computePromptSuggestionOutcome, getVisiblePromptSuggestion, shouldShowPromptSuggestionPlaceholder, shouldSuppressPromptSuggestionForTiming } from './promptSuggestionControl.js';
 import { getActiveAgentForInput, getViewedTeammateTask } from '../../state/selectors.js';
 import { enterTeammateView, exitTeammateView, stopOrDismissAgent } from '../../state/teammateViewHelpers.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
@@ -1520,14 +1520,21 @@ function PromptInput({
     suggestionCount: suggestions.length,
     viewingAgentTaskId,
   });
-  if (showPromptSuggestion) {
-    markShown();
-  }
+  useEffect(() => {
+    if (showPromptSuggestion) markShown();
+  }, [showPromptSuggestion, markShown]);
 
   // If suggestion was generated but can't be shown due to timing, log suppression.
   // Exclude teammate view: markShown() is gated above, so shownAt stays 0 there —
   // but that's not a timing failure, the suggestion is valid when returning to leader.
-  if (promptSuggestionState.text && !promptSuggestion && promptSuggestionState.shownAt === 0 && !viewingAgentTaskId) {
+  const shouldSuppressPromptSuggestion = shouldSuppressPromptSuggestionForTiming({
+    promptSuggestionText: promptSuggestionState.text,
+    visiblePromptSuggestion: promptSuggestion,
+    shownAt: promptSuggestionState.shownAt,
+    viewingAgentTaskId,
+  });
+  useEffect(() => {
+    if (!shouldSuppressPromptSuggestion || !promptSuggestionState.text) return;
     logSuggestionSuppressed('timing', promptSuggestionState.text);
     setAppState(prev => ({
       ...prev,
@@ -1539,7 +1546,7 @@ function PromptInput({
         generationRequestId: null
       }
     }));
-  }
+  }, [shouldSuppressPromptSuggestion, promptSuggestionState.text, setAppState]);
   function onImagePaste(image: string, mediaType?: string, filename?: string, dimensions?: ImageDimensions, sourcePath?: string) {
     logEvent('agenc_paste_image', {});
     onModeChange('prompt');

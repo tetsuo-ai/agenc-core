@@ -3,6 +3,7 @@ import {
   computePromptSuggestionOutcome,
   getVisiblePromptSuggestion,
   shouldShowPromptSuggestionPlaceholder,
+  shouldSuppressPromptSuggestionForTiming,
 } from "./promptSuggestionControl.js";
 
 describe("PromptInput prompt suggestion helpers", () => {
@@ -113,6 +114,41 @@ describe("PromptInput prompt suggestion helpers", () => {
         mode: "bash",
         promptSuggestion: "run tests",
         suggestionCount: 0,
+        viewingAgentTaskId: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("identifies timing-only suppression without treating teammate view as failure", () => {
+    expect(
+      shouldSuppressPromptSuggestionForTiming({
+        promptSuggestionText: "run tests",
+        visiblePromptSuggestion: null,
+        shownAt: 0,
+        viewingAgentTaskId: null,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSuppressPromptSuggestionForTiming({
+        promptSuggestionText: "run tests",
+        visiblePromptSuggestion: "run tests",
+        shownAt: 0,
+        viewingAgentTaskId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuppressPromptSuggestionForTiming({
+        promptSuggestionText: "run tests",
+        visiblePromptSuggestion: null,
+        shownAt: 0,
+        viewingAgentTaskId: "agent-task",
+      }),
+    ).toBe(false);
+    expect(
+      shouldSuppressPromptSuggestionForTiming({
+        promptSuggestionText: "run tests",
+        visiblePromptSuggestion: null,
+        shownAt: 100,
         viewingAgentTaskId: null,
       }),
     ).toBe(false);
