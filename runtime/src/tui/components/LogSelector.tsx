@@ -142,6 +142,30 @@ function buildLogMetadata(log: LogOption, options?: {
   const projectSuffix = showProjectPath && log.projectPath ? ` · ${log.projectPath}` : '';
   return childPadding + baseMetadata + projectSuffix;
 }
+
+type LogSelectorEmptyStateProps = {
+  exitState: {
+    pending: boolean;
+    keyName: string;
+  };
+};
+
+export function LogSelectorEmptyState({
+  exitState
+}: LogSelectorEmptyStateProps): React.ReactNode {
+  return <Box flexDirection="column" gap={1}>
+      <Box flexShrink={0}>
+        <Divider color="suggestion" />
+      </Box>
+      <Text bold={true} color="suggestion">Resume Session</Text>
+      <Text dimColor={true}>No resumable sessions found.</Text>
+      <Text dimColor={true}>Start a conversation to create resume history.</Text>
+      <Text dimColor={true}>
+        {exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Byline><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline>}
+      </Text>
+    </Box>;
+}
+
 export function LogSelector(t0) {
   const $ = _c(247);
   const {
@@ -1224,7 +1248,7 @@ export function LogSelector(t0) {
   }
   React.useEffect(t55, t56);
   if (logs.length === 0) {
-    return null;
+    return <LogSelectorEmptyState exitState={exitState} />;
   }
   if (viewMode === "preview" && previewLog && isResumeWithRenameEnabled) {
     let t57;
