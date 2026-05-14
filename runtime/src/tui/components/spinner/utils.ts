@@ -2,6 +2,8 @@ import {
   resolveAgenCTuiGlyphMode,
   selectAgenCTuiGlyphs,
 } from '../../glyphs.js'
+import { stringWidth } from '../../ink/stringWidth.js'
+import { getGraphemeSegmenter } from '../../../utils/intl.js'
 import type { RGBColor as RGBColorString } from '../../ink/styles.js'
 import type { RGBColor as RGBColorType } from './types.js'
 
@@ -35,6 +37,66 @@ export function getSpinnerEllipsis(
   env: SpinnerGlyphEnv = process.env,
 ): string {
   return selectAgenCTuiGlyphs(env).ellipsis
+}
+
+export function truncateSpinnerText(
+  text: string,
+  maxWidth: number,
+  ellipsis: string = getSpinnerEllipsis(),
+): string {
+  if (maxWidth <= 0) return ''
+  if (stringWidth(text) <= maxWidth) return text
+
+  const ellipsisWidth = stringWidth(ellipsis)
+  if (ellipsisWidth >= maxWidth) {
+    let width = 0
+    let result = ''
+    for (const { segment } of getGraphemeSegmenter().segment(ellipsis)) {
+      const segmentWidth = stringWidth(segment)
+      if (width + segmentWidth > maxWidth) break
+      result += segment
+      width += segmentWidth
+    }
+    return result
+  }
+
+  let width = 0
+  let result = ''
+  const textWidth = maxWidth - ellipsisWidth
+  for (const { segment } of getGraphemeSegmenter().segment(text)) {
+    const segmentWidth = stringWidth(segment)
+    if (width + segmentWidth > textWidth) break
+    result += segment
+    width += segmentWidth
+  }
+  return result + ellipsis
+}
+
+export function computeSpinnerMessageMaxWidth(columns: number): number {
+  return Math.max(0, Math.floor(columns) - 3)
+}
+
+export function computeBriefRightStatusLayout(
+  columns: number,
+  leftWidth: number,
+  rightText: string,
+): { pad: number; rightText: string } {
+  if (!rightText) return { pad: 0, rightText: '' }
+
+  const contentWidth = Math.max(0, Math.floor(columns) - 2)
+  if (contentWidth <= leftWidth) return { pad: 0, rightText: '' }
+
+  const maxRightWidth = contentWidth - leftWidth - 1
+  if (maxRightWidth < 4) return { pad: 0, rightText: '' }
+
+  const visibleRightText = truncateSpinnerText(rightText, maxRightWidth)
+  const visibleRightWidth = stringWidth(visibleRightText)
+  if (visibleRightWidth === 0) return { pad: 0, rightText: '' }
+
+  return {
+    pad: Math.max(1, contentWidth - leftWidth - visibleRightWidth),
+    rightText: visibleRightText,
+  }
 }
 
 // Interpolate between two RGB colors

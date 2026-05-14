@@ -22,7 +22,7 @@ import { useAppState } from '../../state/AppState.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import type { SpinnerMode } from './types.js';
-import { getDefaultCharacters, getSpinnerEllipsis } from './utils.js';
+import { computeBriefRightStatusLayout, getDefaultCharacters, getSpinnerEllipsis } from './utils.js';
 import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../../../tasks/InProcessTeammateTask/types.js';
@@ -405,7 +405,9 @@ function BriefSpinner(t0: BriefSpinnerProps) {
     t6 = $[17];
   }
   const leftWidth = t6 + 3;
-  const pad = Math.max(1, columns - 2 - leftWidth - stringWidth(rightText));
+  const briefRightLayout = computeBriefRightStatusLayout(columns, leftWidth, rightText);
+  const pad = briefRightLayout.pad;
+  const visibleRightText = briefRightLayout.rightText;
   let t7;
   if ($[18] !== after || $[19] !== before || $[20] !== connText || $[21] !== dots || $[22] !== shimmer || $[23] !== showConnWarning) {
     t7 = showConnWarning ? <Text color="error">{connText + dots}</Text> : <>{before ? <Text dimColor={true}>{before}</Text> : null}{shimmer ? <Text>{shimmer}</Text> : null}{after ? <Text dimColor={true}>{after}</Text> : null}<Text dimColor={true}>{dots}</Text></>;
@@ -420,10 +422,10 @@ function BriefSpinner(t0: BriefSpinnerProps) {
     t7 = $[24];
   }
   let t8;
-  if ($[25] !== pad || $[26] !== rightText) {
-    t8 = rightText ? <><Text>{" ".repeat(pad)}</Text><Text color="subtle">{rightText}</Text></> : null;
+  if ($[25] !== pad || $[26] !== visibleRightText) {
+    t8 = visibleRightText ? <><Text>{" ".repeat(pad)}</Text><Text color="subtle">{visibleRightText}</Text></> : null;
     $[25] = pad;
-    $[26] = rightText;
+    $[26] = visibleRightText;
     $[27] = t8;
   } else {
     t8 = $[27];
@@ -485,7 +487,9 @@ export function BriefIdleStatus() {
     }
     return t0;
   }
-  const pad = Math.max(1, columns - 2 - stringWidth(leftText) - stringWidth(rightText));
+  const briefRightLayout = computeBriefRightStatusLayout(columns, stringWidth(leftText), rightText);
+  const pad = briefRightLayout.pad;
+  const visibleRightText = briefRightLayout.rightText;
   let t0;
   if ($[1] !== leftText) {
     t0 = leftText ? <Text color="error">{leftText}</Text> : null;
@@ -495,10 +499,10 @@ export function BriefIdleStatus() {
     t0 = $[2];
   }
   let t1;
-  if ($[3] !== pad || $[4] !== rightText) {
-    t1 = rightText ? <><Text>{" ".repeat(pad)}</Text><Text color="subtle">{rightText}</Text></> : null;
+  if ($[3] !== pad || $[4] !== visibleRightText) {
+    t1 = visibleRightText ? <><Text>{" ".repeat(pad)}</Text><Text color="subtle">{visibleRightText}</Text></> : null;
     $[3] = pad;
-    $[4] = rightText;
+    $[4] = visibleRightText;
     $[5] = t1;
   } else {
     t1 = $[5];

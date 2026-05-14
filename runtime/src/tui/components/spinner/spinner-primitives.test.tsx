@@ -5,12 +5,15 @@ import { renderToString } from '../../../utils/staticRender.js'
 import { Text } from '../../ink.js'
 import { useShimmerAnimation } from './useShimmerAnimation.js'
 import {
+  computeBriefRightStatusLayout,
+  computeSpinnerMessageMaxWidth,
   getDefaultCharacters,
   getReducedMotionDot,
   getSpinnerEllipsis,
   hueToRgb,
   interpolateColor,
   parseRGB,
+  truncateSpinnerText,
   toRGBColor,
 } from './utils.js'
 import type { SpinnerMode } from './types.js'
@@ -75,6 +78,24 @@ describe('spinner primitives', () => {
       <ShimmerProbe mode="thinking" message="working" isStalled />,
       80,
     )).toContain('-100')
+  })
+
+  test('truncates spinner messages to the visible row budget', () => {
+    expect(computeSpinnerMessageMaxWidth(20)).toBe(17)
+    expect(computeSpinnerMessageMaxWidth(2)).toBe(0)
+    expect(truncateSpinnerText('Reading a very long task subject', 12, '...')).toBe('Reading a...')
+    expect(truncateSpinnerText('Reading', 12, '...')).toBe('Reading')
+  })
+
+  test('hides or truncates brief right-side status before overflow', () => {
+    expect(computeBriefRightStatusLayout(24, 8, '3 in background')).toEqual({
+      pad: 1,
+      rightText: '3 in backgro…',
+    })
+    expect(computeBriefRightStatusLayout(16, 14, '3 in background')).toEqual({
+      pad: 0,
+      rightText: '',
+    })
   })
 })
 

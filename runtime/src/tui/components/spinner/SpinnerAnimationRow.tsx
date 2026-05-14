@@ -16,7 +16,7 @@ import { GlimmerMessage } from './GlimmerMessage.js';
 import { SpinnerGlyph } from './SpinnerGlyph.js';
 import type { SpinnerMode } from './types.js';
 import { useStalledAnimation } from './useStalledAnimation.js';
-import { interpolateColor, toRGBColor } from './utils.js';
+import { computeSpinnerMessageMaxWidth, interpolateColor, toRGBColor, truncateSpinnerText } from './utils.js';
 const SEP_WIDTH = stringWidth(' · ');
 const THINKING_BARE_WIDTH = stringWidth('thinking');
 const SHOW_TOKENS_AFTER_MS = 30_000;
@@ -133,9 +133,10 @@ export function SpinnerAnimationRow({
   } = useStalledAnimation(time, currentResponseLength, hasActiveTools || leaderIsIdle, reducedMotion);
   const frame = reducedMotion ? 0 : Math.floor(time / 120);
   const glimmerSpeed = mode === 'requesting' ? 50 : 200;
+  const visibleMessage = truncateSpinnerText(message, computeSpinnerMessageMaxWidth(columns));
   // message is stable within a turn; stringWidth is expensive enough (Bun native
   // call per code point) to memoize explicitly across the 50ms loop.
-  const glimmerMessageWidth = useMemo(() => stringWidth(message), [message]);
+  const glimmerMessageWidth = useMemo(() => stringWidth(visibleMessage), [visibleMessage]);
   const cycleLength = glimmerMessageWidth + 20;
   const cyclePosition = Math.floor(time / glimmerSpeed);
   const glimmerIndex = reducedMotion ? -100 : isStalled ? -100 : mode === 'requesting' ? cyclePosition % cycleLength - 10 : glimmerMessageWidth + 10 - cyclePosition % cycleLength;
@@ -229,7 +230,7 @@ export function SpinnerAnimationRow({
   return <FullWidthRow>
       <Box ref={viewportRef} flexDirection="row" flexWrap="wrap" marginTop={1}>
         <SpinnerGlyph frame={frame} messageColor={messageColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} reducedMotion={reducedMotion} time={time} />
-        <GlimmerMessage message={message} mode={mode} messageColor={messageColor} glimmerIndex={glimmerIndex} flashOpacity={flashOpacity} shimmerColor={shimmerColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} />
+        <GlimmerMessage message={visibleMessage} mode={mode} messageColor={messageColor} glimmerIndex={glimmerIndex} flashOpacity={flashOpacity} shimmerColor={shimmerColor} stalledIntensity={overrideColor ? 0 : stalledIntensity} />
         {status}
       </Box>
     </FullWidthRow>;
