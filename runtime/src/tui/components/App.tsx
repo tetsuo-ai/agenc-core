@@ -1,9 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
-import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../context/stats.js";
 import { onChangeAppState } from "../state/onChangeAppState.js";
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
+import { formatTuiBackpressureWarning, getTuiBackpressureSnapshot, subscribeTuiBackpressure } from "../backpressure.js";
 import type { FpsMetrics } from "../../utils/fpsTracker.js";
 import { Messages } from "./Messages.js";
 import { MessageSelector, selectableUserMessagesFilter } from "./MessageSelector.js";
@@ -1327,6 +1328,12 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const getFpsMetrics = useFpsMetrics();
   useCostSummary(getFpsMetrics);
   const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
+  const backpressureSnapshot = useSyncExternalStore(
+    subscribeTuiBackpressure,
+    getTuiBackpressureSnapshot,
+    getTuiBackpressureSnapshot,
+  );
+  const backpressureWarning = formatTuiBackpressureWarning(backpressureSnapshot);
   const { addNotification } = useNotifications();
   const [completionPipelineState, setCompletionPipelineState] =
     useState<CompletionPipelineState>(() => readCompletionPipelineState());
@@ -2218,6 +2225,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     await submitViaElicitationPrompt(elicitation, submit, value_1, helpers_0);
   }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} /> : null;
   const bottomContent = <Box flexDirection="column" flexGrow={1}>
+      {backpressureWarning !== null ? <Text color="warning" wrap="truncate">{backpressureWarning}</Text> : null}
       {spinnerElement}
       {selectorNotice !== null ? <Text color="warning" wrap="truncate">{selectorNotice}</Text> : null}
       {promptInputElement}

@@ -1,6 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { formatRenderHealthWarning } from "./App.js";
+import {
+  formatTuiBackpressureWarning,
+  getTuiBackpressureSnapshot,
+  recordTuiBackpressure,
+  resetTuiBackpressureForTesting,
+  subscribeTuiBackpressure,
+} from "../backpressure.js";
 import { FpsTracker } from "../../utils/fpsTracker.js";
 
 describe("FpsTracker", () => {
@@ -76,5 +83,51 @@ describe("TUI render health warning", () => {
 
   test("suppresses warnings until the sample window is large enough", () => {
     expect(formatRenderHealthWarning({ averageFps: 3.8, low1PctFps: 2.5, sampleCount: 2 })).toBeNull();
+  });
+});
+
+describe("TUI input backpressure warning", () => {
+  test("formats visible input and render backpressure states", () => {
+    expect(
+      formatTuiBackpressureWarning({
+        active: true,
+        source: "input",
+        durationMs: 1250,
+        startedAtMs: 10,
+        expiresAtMs: 20,
+      }),
+    ).toBe("Input is catching up after 1.3s of blocked key processing");
+    expect(
+      formatTuiBackpressureWarning({
+        active: true,
+        source: "render",
+        durationMs: 750,
+        startedAtMs: 10,
+        expiresAtMs: 20,
+      }),
+    ).toBe("Rendering is catching up after a 750ms frame");
+  });
+
+  test("publishes and clears the visible backpressure snapshot", () => {
+    resetTuiBackpressureForTesting();
+    const listener = vi.fn();
+    const unsubscribe = subscribeTuiBackpressure(listener);
+
+    recordTuiBackpressure({
+      source: "render",
+      durationMs: 1500,
+      nowMs: Date.now(),
+      visibleMs: 50_000,
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(getTuiBackpressureSnapshot()).toMatchObject({
+      active: true,
+      source: "render",
+      durationMs: 1500,
+    });
+
+    unsubscribe();
+    resetTuiBackpressureForTesting();
   });
 });

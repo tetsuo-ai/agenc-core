@@ -14,6 +14,7 @@ import type {
 } from "./session-types.js";
 import type { Event } from "../session/event-log.js";
 import { FpsTracker } from "../utils/fpsTracker.js";
+import { recordTuiBackpressure } from "./backpressure.js";
 
 export interface StdinLossSession extends AgenCBridgeSession {
   readonly abortTerminal?: (reason: string) => void;
@@ -46,6 +47,7 @@ export interface BootTUIHandle {
 
 export const STDIN_LOSS_FLUSH_HARD_CAP_MS = 2_000;
 export const STDIN_LOSS_FLUSH_FALLBACK_MS = 200;
+export const RENDER_BACKPRESSURE_THRESHOLD_MS = 1_000;
 
 function restoreTerminal(stdout: NodeJS.WriteStream): void {
   try {
@@ -208,6 +210,12 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         exitOnCtrlC: false,
         onFrame: (event) => {
           fpsTracker.record(event.durationMs);
+          if (event.durationMs >= RENDER_BACKPRESSURE_THRESHOLD_MS) {
+            recordTuiBackpressure({
+              source: "render",
+              durationMs: event.durationMs,
+            });
+          }
         },
       },
     );

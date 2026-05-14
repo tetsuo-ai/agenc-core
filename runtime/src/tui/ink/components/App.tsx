@@ -7,6 +7,7 @@ import { isEnvTruthy } from '../../../utils/envUtils.js';
 import { isMouseClicksDisabled } from '../../../utils/fullscreen.js';
 import { logForDebugging } from '../../../utils/debug.js';
 import { logError } from '../../../utils/log.js';
+import { recordTuiBackpressure } from '../../backpressure.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
@@ -35,6 +36,7 @@ const SUPPORTS_SUSPEND = process.platform !== 'win32';
 // but no signal reaches us. 5s is well above normal inter-keystroke gaps
 // but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000;
+const INPUT_BACKPRESSURE_THRESHOLD_MS = 500;
 type Props = {
   readonly children: ReactNode;
   readonly stdin: NodeJS.ReadStream;
@@ -326,6 +328,7 @@ export default class App extends PureComponent<Props, State> {
 
   // Process input through the parser and handle the results
   processInput = (input: string | Buffer | null): void => {
+    const processingStart = performance.now();
     // Parse input using our state machine
     const [keys, newState] = parseMultipleKeypresses(this.keyParseState, input);
     this.keyParseState = newState;
@@ -337,6 +340,13 @@ export default class App extends PureComponent<Props, State> {
     // listeners together within one high-priority update context.
     if (keys.length > 0) {
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined);
+      const processingMs = performance.now() - processingStart;
+      if (processingMs >= INPUT_BACKPRESSURE_THRESHOLD_MS) {
+        recordTuiBackpressure({
+          source: 'input',
+          durationMs: processingMs,
+        });
+      }
     }
 
     // If we have incomplete escape sequences, set a timer to flush them
