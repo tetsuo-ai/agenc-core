@@ -4,6 +4,7 @@
  */
 
 import { feature } from 'bun:bundle'
+import { createSignal } from './signal.js'
 
 export type AutoModeDenial = {
   toolName: string
@@ -15,12 +16,16 @@ export type AutoModeDenial = {
 
 let DENIALS: readonly AutoModeDenial[] = []
 const MAX_DENIALS = 20
+const denialsChanged = createSignal()
 
 export function recordAutoModeDenial(denial: AutoModeDenial): void {
   if (!feature('TRANSCRIPT_CLASSIFIER')) return
   DENIALS = [denial, ...DENIALS.slice(0, MAX_DENIALS - 1)]
+  denialsChanged.emit()
 }
 
 export function getAutoModeDenials(): readonly AutoModeDenial[] {
   return DENIALS
 }
+
+export const subscribeAutoModeDenials = denialsChanged.subscribe

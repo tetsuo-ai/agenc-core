@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- 'r' is a view-specific key, not a global keybinding
 import { Box, Text, useInput } from '../../../ink.js';
-import { type AutoModeDenial, getAutoModeDenials } from '../../../../utils/autoModeDenials.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AutoModeDenial, getAutoModeDenials, subscribeAutoModeDenials } from '../../../../utils/autoModeDenials.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../../CustomSelect/select';
 import { StatusIcon } from '../../design-system/StatusIcon';
 import { useTabHeaderFocus } from '../../design-system/Tabs';
@@ -42,7 +42,7 @@ export function RecentDenialsTab(t0) {
     t2 = $[3];
   }
   useEffect(t1, t2);
-  const [denials] = useState(_temp);
+  const denials = useSyncExternalStore(subscribeAutoModeDenials, getAutoModeDenials, getAutoModeDenials);
   const [approved, setApproved] = useState(_temp2);
   const [retry, setRetry] = useState(_temp3);
   const [focusedIdx, setFocusedIdx] = useState(0);
@@ -200,7 +200,4 @@ function _temp3() {
 }
 function _temp2() {
   return new Set();
-}
-function _temp() {
-  return getAutoModeDenials();
 }
