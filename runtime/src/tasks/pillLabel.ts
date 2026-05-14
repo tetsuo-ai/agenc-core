@@ -13,11 +13,28 @@
 import type { BackgroundTaskState } from "./types.js";
 
 const DIAMOND_OPEN = "\u25c7";
+const ASCII_REMOTE_SESSION_MARKER = "<>";
+
+type PillLabelGlyphEnv = {
+  readonly AGENC_TUI_GLYPHS?: string;
+};
+
+function remoteSessionMarker(
+  env: PillLabelGlyphEnv = process.env,
+): string {
+  return env.AGENC_TUI_GLYPHS === "ascii"
+    ? ASCII_REMOTE_SESSION_MARKER
+    : DIAMOND_OPEN;
+}
+
 function count<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   return items.reduce((total, item) => total + (predicate(item) ? 1 : 0), 0);
 }
 
-export function getPillLabel(tasks: readonly BackgroundTaskState[]): string {
+export function getPillLabel(
+  tasks: readonly BackgroundTaskState[],
+  env: PillLabelGlyphEnv = process.env,
+): string {
   const n = tasks.length;
   if (n === 0) {
     return "0 background tasks";
@@ -52,10 +69,12 @@ export function getPillLabel(tasks: readonly BackgroundTaskState[]): string {
       }
       case "local_agent":
         return n === 1 ? "1 local agent" : `${n} local agents`;
-      case "remote_agent":
+      case "remote_agent": {
+        const marker = remoteSessionMarker(env);
         return n === 1
-          ? `${DIAMOND_OPEN} 1 cloud session`
-          : `${DIAMOND_OPEN} ${n} cloud sessions`;
+          ? `${marker} 1 cloud session`
+          : `${marker} ${n} cloud sessions`;
+      }
     }
   }
 

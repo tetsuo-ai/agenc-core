@@ -1,7 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
-import figures from 'figures';
 import * as React from 'react';
 import { useMemo, useState } from 'react';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
@@ -37,6 +37,8 @@ export function BackgroundTaskStatus(t0) {
   const {
     columns
   } = useTerminalSize();
+  const glyphs = selectAgenCTuiGlyphs();
+  const expandShortcut = glyphs.arrowDown === "v" ? "shift + down" : `shift + ${glyphs.arrowDown}`;
   const tasks = useAppState(_temp);
   const viewingAgentTaskId = useAppState(_temp2);
   let t3;
@@ -141,14 +143,7 @@ export function BackgroundTaskStatus(t0) {
       t11 = $[22];
     }
     const visiblePills = t11;
-    let t12;
-    if ($[23] !== showLeftArrow) {
-      t12 = showLeftArrow && <Text dimColor={true}>{figures.arrowLeft} </Text>;
-      $[23] = showLeftArrow;
-      $[24] = t12;
-    } else {
-      t12 = $[24];
-    }
+    const t12 = showLeftArrow && <Text dimColor={true}>{glyphs.arrowLeft} </Text>;
     let t13;
     if ($[25] !== selectedIdx || $[26] !== setAppState || $[27] !== viewedIdx || $[28] !== visiblePillWidths || $[29] !== visiblePills) {
       t13 = visiblePills.map((pill_1, i_1) => {
@@ -164,22 +159,8 @@ export function BackgroundTaskStatus(t0) {
     } else {
       t13 = $[30];
     }
-    let t14;
-    if ($[31] !== showRightArrow) {
-      t14 = showRightArrow && <Text dimColor={true}> {figures.arrowRight}</Text>;
-      $[31] = showRightArrow;
-      $[32] = t14;
-    } else {
-      t14 = $[32];
-    }
-    let t15;
-    if ($[33] !== showExpandHint) {
-      t15 = showExpandHint && <Text dimColor={true}>{" \xB7 "}<KeyboardShortcutHint shortcut={"shift + \u2193"} action="expand" /></Text>;
-      $[33] = showExpandHint;
-      $[34] = t15;
-    } else {
-      t15 = $[34];
-    }
+    const t14 = showRightArrow && <Text dimColor={true}> {glyphs.arrowRight}</Text>;
+    const t15 = showExpandHint && <Text dimColor={true}> {glyphs.separator} <KeyboardShortcutHint shortcut={expandShortcut} action="expand" /></Text>;
     let t16;
     if ($[35] !== t12 || $[36] !== t13 || $[37] !== t14 || $[38] !== t15) {
       t16 = <>{t12}{t13}{t14}{t15}</>;
@@ -217,14 +198,7 @@ export function BackgroundTaskStatus(t0) {
   } else {
     t9 = $[45];
   }
-  let t10;
-  if ($[46] !== runningTasks) {
-    t10 = pillNeedsCta(runningTasks) && <Text dimColor={true}> · {figures.arrowDown} to view</Text>;
-    $[46] = runningTasks;
-    $[47] = t10;
-  } else {
-    t10 = $[47];
-  }
+  const t10 = pillNeedsCta(runningTasks) && <Text dimColor={true}> {glyphs.separator} {glyphs.arrowDown} to view</Text>;
   let t11;
   if ($[48] !== t10 || $[49] !== t9) {
     t11 = <>{t9}{t10}</>;

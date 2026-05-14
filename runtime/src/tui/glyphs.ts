@@ -5,6 +5,8 @@ export type AgenCTuiGlyphMode = "unicode" | "ascii";
 export interface AgenCTuiGlyphs {
   readonly arrowUp: string;
   readonly arrowDown: string;
+  readonly arrowLeft: string;
+  readonly arrowRight: string;
   readonly enter: string;
   readonly ellipsis: string;
   readonly horizontal: string;
@@ -35,6 +37,8 @@ export interface AgenCTuiGlyphs {
 const ASCII_GLYPHS: AgenCTuiGlyphs = {
   arrowUp: "^",
   arrowDown: "v",
+  arrowLeft: "<",
+  arrowRight: ">",
   enter: "Enter",
   ellipsis: "...",
   horizontal: "-",
@@ -65,6 +69,8 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
 const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   arrowUp: figures.arrowUp,
   arrowDown: figures.arrowDown,
+  arrowLeft: figures.arrowLeft,
+  arrowRight: figures.arrowRight,
   enter: "↵",
   ellipsis: "…",
   horizontal: "─",

@@ -9,6 +9,8 @@ describe("AgenC TUI glyph selection", () => {
   test("uses unicode glyphs by default", () => {
     expect(resolveAgenCTuiGlyphMode({})).toBe("unicode");
     expect(selectAgenCTuiGlyphs({}).arrowDown).not.toBe("v");
+    expect(selectAgenCTuiGlyphs({}).arrowLeft).not.toBe("<");
+    expect(selectAgenCTuiGlyphs({}).arrowRight).not.toBe(">");
     expect(selectAgenCTuiGlyphs({}).pointer).not.toBe(">");
     expect(selectAgenCTuiGlyphs({}).ellipsis).toBe("…");
     expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
@@ -39,6 +41,8 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({ AGENC_TUI_GLYPHS: "ascii" })).toEqual({
       arrowUp: "^",
       arrowDown: "v",
+      arrowLeft: "<",
+      arrowRight: ">",
       enter: "Enter",
       ellipsis: "...",
       horizontal: "-",

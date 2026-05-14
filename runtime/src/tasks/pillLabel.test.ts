@@ -99,6 +99,14 @@ describe("getPillLabel", () => {
     ).toBe("1 local agent");
     expect(getPillLabel([remote("remote-1")])).toBe("\u25c7 1 cloud session");
     expect(
+      getPillLabel([remote("remote-1")], { AGENC_TUI_GLYPHS: "ascii" }),
+    ).toBe("<> 1 cloud session");
+    expect(
+      getPillLabel([remote("remote-1"), remote("remote-2")], {
+        AGENC_TUI_GLYPHS: "ascii",
+      }),
+    ).toBe("<> 2 cloud sessions");
+    expect(
       getPillLabel([remote("remote-1"), shell("shell-1")] as BackgroundTaskState[]),
     ).toBe("2 background tasks");
     expect(getPillLabel([])).toBe("0 background tasks");
