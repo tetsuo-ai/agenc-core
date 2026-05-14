@@ -13,6 +13,7 @@ const files = [
   "runtime/src/tui/components/AutoUpdaterWrapper.tsx",
   "runtime/src/tui/components/CustomSelect/select.tsx",
   "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx",
+  "runtime/src/tui/components/IdeOnboardingDialog.tsx",
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
@@ -40,6 +41,7 @@ describe("moved-source marker cleanup", () => {
     for (const file of [
       "runtime/src/tui/components/AutoModeOptInDialog.tsx",
       "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx",
+      "runtime/src/tui/components/IdeOnboardingDialog.tsx",
     ]) {
       const source = readFileSync(`${repoRoot}${file}`, "utf8");
 
@@ -47,6 +49,7 @@ describe("moved-source marker cleanup", () => {
       expect(source).not.toContain("Moved-source note");
       expect(source).not.toContain("upstream-import");
       expect(source).not.toContain("tengu_");
+      expect(source).not.toContain("•");
     }
   });
 });
