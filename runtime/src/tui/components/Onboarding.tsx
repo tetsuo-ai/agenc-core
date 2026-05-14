@@ -4,6 +4,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { setupTerminal, shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalSetup';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Link, Newline, Text, useTheme } from '../ink.js';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { isAnthropicAuthEnabled } from '../../utils/auth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { normalizeApiKeyForConfig } from '../../utils/authPortable.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -16,6 +17,7 @@ import { ApproveApiKey } from './ApproveApiKey';
 import { ConsoleOAuthFlow } from './ConsoleOAuthFlow';
 import { Select } from './CustomSelect/select';
 import { WelcomeV2 } from './LogoV2/WelcomeV2';
+import { calculateOnboardingBodyWidth, shouldShowOnboardingWelcomeBanner } from './Onboarding.layout.js';
 import { PressEnterToContinue } from './PressEnterToContinue';
 import { ThemePicker } from './ThemePicker';
 import { OrderedList } from './ui/OrderedList';
@@ -34,6 +36,9 @@ export function Onboarding({
   const [skipOAuth, setSkipOAuth] = useState(false);
   const [oauthEnabled] = useState(() => isAnthropicAuthEnabled());
   const [theme, setTheme] = useTheme();
+  const { columns, rows } = useTerminalSize();
+  const bodyWidth = calculateOnboardingBodyWidth(columns);
+  const showWelcomeBanner = shouldShowOnboardingWelcomeBanner(rows);
   useEffect(() => {
     logEvent('tengu_began_setup', {
       oauthEnabled
@@ -64,7 +69,7 @@ export function Onboarding({
     </Box>;
   const securityStep = <Box flexDirection="column" gap={1} paddingLeft={1}>
       <Text bold>Security notes:</Text>
-      <Box flexDirection="column" width={70}>
+      <Box flexDirection="column" width={bodyWidth}>
         {/**
          * OrderedList misnumbers items when rendering conditionally,
          * so put all items in the if/else
@@ -147,7 +152,7 @@ export function Onboarding({
       id: 'terminal-setup',
       component: <Box flexDirection="column" gap={1} paddingLeft={1}>
           <Text bold>Use AgenC&apos;s terminal setup?</Text>
-          <Box flexDirection="column" width={70} gap={1}>
+          <Box flexDirection="column" width={bodyWidth} gap={1}>
             <Text>
               For the optimal coding experience, enable the recommended settings
               <Newline />
@@ -202,8 +207,8 @@ export function Onboarding({
     isActive: currentStep?.id === 'terminal-setup'
   });
   return <Box flexDirection="column">
-      <WelcomeV2 />
-      <Box flexDirection="column" marginTop={1}>
+      {showWelcomeBanner ? <WelcomeV2 /> : null}
+      <Box flexDirection="column" marginTop={showWelcomeBanner ? 1 : 0}>
         {currentStep?.component}
         {exitState.pending && <Box padding={1}>
             <Text dimColor>Press {exitState.keyName} again to exit</Text>
