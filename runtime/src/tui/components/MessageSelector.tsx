@@ -6,7 +6,7 @@ import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState } from '../state/AppState.js';
-import { type DiffStats, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
+import { type DiffStats, type FileHistoryState, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
 import { logError } from '../../utils/log.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../ink.js';
@@ -41,6 +41,37 @@ import { Divider } from './design-system/Divider';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {
   return option === 'summarize' || option === 'summarize_up_to';
+}
+type FileHistoryMetadataByMessageId = Record<string, DiffStats>;
+type BuildFileHistoryMetadataOptions = {
+  messageOptions: UserMessage[];
+  messages: Message[];
+  currentUUID: UUID;
+  fileHistory: FileHistoryState;
+  isFileHistoryEnabled: boolean;
+  canRestoreMessage?: (state: FileHistoryState, messageId: UUID) => boolean;
+};
+export function buildMessageSelectorFileHistoryMetadata({
+  messageOptions,
+  messages,
+  currentUUID,
+  fileHistory,
+  isFileHistoryEnabled,
+  canRestoreMessage = fileHistoryCanRestore
+}: BuildFileHistoryMetadataOptions): FileHistoryMetadataByMessageId {
+  if (!isFileHistoryEnabled) {
+    return {};
+  }
+  const metadata: FileHistoryMetadataByMessageId = {};
+  for (const [itemIndex, userMessage] of messageOptions.entries()) {
+    if (userMessage.uuid === currentUUID) {
+      continue;
+    }
+    const canRestore = canRestoreMessage(fileHistory, userMessage.uuid);
+    const nextUserMessage = messageOptions.at(itemIndex + 1);
+    metadata[userMessage.uuid] = canRestore ? computeDiffStatsBetweenMessages(messages, userMessage.uuid, nextUserMessage?.uuid !== currentUUID ? nextUserMessage?.uuid : undefined) : undefined;
+  }
+  return metadata;
 }
 type Props = {
   messages: Message[];
@@ -295,33 +326,15 @@ export function MessageSelector({
     context: 'MessageSelector',
     isActive: !isRestoring && !error && !messageToRestore && hasMessagesToSelect
   });
-  const [fileHistoryMetadata, setFileHistoryMetadata] = useState<Record<number, DiffStats>>({});
+  const [fileHistoryMetadata, setFileHistoryMetadata] = useState<FileHistoryMetadataByMessageId>({});
   useEffect(() => {
-    async function loadFileHistoryMetadata() {
-      if (!isFileHistoryEnabled) {
-        return;
-      }
-      // Load file snapshot metadata
-      void Promise.all(messageOptions.map(async (userMessage, itemIndex) => {
-        if (userMessage.uuid !== currentUUID) {
-          const canRestore = fileHistoryCanRestore(fileHistory, userMessage.uuid);
-          const nextUserMessage = messageOptions.at(itemIndex + 1);
-          const diffStats_0 = canRestore ? computeDiffStatsBetweenMessages(messages, userMessage.uuid, nextUserMessage?.uuid !== currentUUID ? nextUserMessage?.uuid : undefined) : undefined;
-          if (diffStats_0 !== undefined) {
-            setFileHistoryMetadata(prev_1 => ({
-              ...prev_1,
-              [itemIndex]: diffStats_0
-            }));
-          } else {
-            setFileHistoryMetadata(prev_2 => ({
-              ...prev_2,
-              [itemIndex]: undefined
-            }));
-          }
-        }
-      }));
-    }
-    void loadFileHistoryMetadata();
+    setFileHistoryMetadata(buildMessageSelectorFileHistoryMetadata({
+      messageOptions,
+      messages,
+      currentUUID,
+      fileHistory,
+      isFileHistoryEnabled
+    }));
   }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled]);
   const canRestoreCode_0 = isFileHistoryEnabled && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
@@ -373,8 +386,8 @@ export function MessageSelector({
             const optionIndex = firstVisibleIndex + visibleOptionIndex;
             const isSelected = optionIndex === selectedIndex;
             const isCurrent = msg.uuid === currentUUID;
-            const metadataLoaded = optionIndex in fileHistoryMetadata;
-            const metadata = fileHistoryMetadata[optionIndex];
+            const metadataLoaded = msg.uuid in fileHistoryMetadata;
+            const metadata = fileHistoryMetadata[msg.uuid];
             const numFilesChanged = metadata?.filesChanged && metadata.filesChanged.length;
             return <Box key={msg.uuid} height={isFileHistoryEnabled ? 3 : 2} overflow="hidden" width="100%" flexDirection="row">
                       <Box width={2} minWidth={2}>
