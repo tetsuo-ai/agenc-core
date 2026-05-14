@@ -1,5 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
-import { Suspense, use, useState } from 'react';
+import { Suspense, use, useEffect, useRef, useState } from 'react';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { logEvent } from '../../../services/analytics/index.js';
@@ -63,6 +63,7 @@ type PermissionExplanationProps = {
   toolInput: unknown;
   toolDescription?: string;
   messages?: Message[];
+  abortSignal?: AbortSignal;
 };
 type ExplainerState = {
   visible: boolean;
@@ -74,13 +75,13 @@ type ExplainerState = {
  * Creates an explanation promise that never rejects.
  * Errors are caught and returned as null.
  */
-function createExplanationPromise(props: PermissionExplanationProps): Promise<PermissionExplanationType | null> {
+function createExplanationPromise(props: PermissionExplanationProps, signal: AbortSignal): Promise<PermissionExplanationType | null> {
   return generatePermissionExplanation({
     toolName: props.toolName,
     toolInput: props.toolInput,
     toolDescription: props.toolDescription,
     messages: props.messages,
-    signal: new AbortController().signal // Won't abort - request is fast enough
+    signal
   }).catch(() => null);
 }
 
@@ -101,13 +102,43 @@ export function usePermissionExplainerUI(props: PermissionExplanationProps): Exp
   const enabled = t0;
   const [visible, setVisible] = useState(false);
   const [promise, setPromise] = useState<Promise<PermissionExplanationType | null> | null>(null);
+  const explanationAbortControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const parentSignal = props.abortSignal;
+    if (!parentSignal) {
+      return;
+    }
+    const abortExplanation = (): void => {
+      explanationAbortControllerRef.current?.abort(parentSignal.reason);
+    };
+    if (parentSignal.aborted) {
+      abortExplanation();
+      return;
+    }
+    parentSignal.addEventListener('abort', abortExplanation, {
+      once: true
+    });
+    return () => {
+      parentSignal.removeEventListener('abort', abortExplanation);
+    };
+  }, [props.abortSignal]);
+  useEffect(() => () => {
+    explanationAbortControllerRef.current?.abort();
+    explanationAbortControllerRef.current = null;
+  }, []);
   let t1;
   if ($[1] !== promise || $[2] !== props || $[3] !== visible) {
     t1 = () => {
       if (!visible) {
         logEvent("tengu_permission_explainer_shortcut_used", {});
         if (!promise) {
-          setPromise(createExplanationPromise(props));
+          const controller = new AbortController();
+          if (props.abortSignal?.aborted) {
+            controller.abort(props.abortSignal.reason);
+          }
+          explanationAbortControllerRef.current?.abort();
+          explanationAbortControllerRef.current = controller;
+          setPromise(createExplanationPromise(props, controller.signal));
         }
       }
       setVisible(_temp);

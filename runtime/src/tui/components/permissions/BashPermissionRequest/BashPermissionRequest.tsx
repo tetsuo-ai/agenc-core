@@ -152,7 +152,8 @@ function BashPermissionRequestInner({
     toolName: toolUseConfirm.tool.name,
     toolInput: toolUseConfirm.input,
     toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages
+    messages: toolUseContext.messages,
+    abortSignal: toolUseContext.abortController.signal
   });
   const {
     yesInputMode,
