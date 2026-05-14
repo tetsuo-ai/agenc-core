@@ -44,14 +44,13 @@ export interface AdaptedTranscript {
   readonly isStreaming: boolean;
   readonly currentTurnId: string | null;
   /**
-   * Mid-stream tool input accumulator that mirrors the upstream
-   * `streamingToolUses` state from the live TUI transcript surface.
-   * Each entry tracks an `input_json_delta`-driven tool-use block
-   * whose JSON arguments are still arriving. Consumed by the upstream
-   * `<Messages>` component (`components/Messages.tsx:222`) to render
-   * synthetic streaming-tool-use cells while the model emits partial
-   * arguments. Populated by row R5 of the streaming-tool-use parity
-   * contract. Empty until R5 lands.
+   * Mid-stream tool input accumulator that mirrors the `streamingToolUses`
+   * state from the live TUI transcript surface. Each entry tracks an
+   * `input_json_delta`-driven tool-use block whose JSON arguments are still
+   * arriving. Consumed by `<Messages>` (`components/Messages.tsx:222`) to
+   * render synthetic streaming-tool-use cells while the model emits partial
+   * arguments. Populated by row R5 of the streaming-tool-use parity contract.
+   * Empty until R5 lands.
    */
   readonly streamingToolUses: readonly StreamingToolUse[];
   /**
@@ -133,9 +132,8 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
  * `collab_waiting_*`, and `collab_close_*` events. The raw
  * `tool_call_started`/`tool_call_completed` rows for these names are
  * suppressed so the transcript shows a single structured collab-agent row
- * per call (matching upstream's `CollabAgentToolCall` ThreadItem
- * routing, where the generic function-call ThreadItem variant is
- * never produced for these tools).
+ * per call, matching `CollabAgentToolCall` ThreadItem routing where the
+ * generic function-call ThreadItem variant is never produced for these tools.
  */
 const COLLAB_V2_TOOL_NAMES: ReadonlySet<string> = new Set([
   "spawn_agent",
@@ -958,7 +956,7 @@ function isUserRealtimeRole(role: unknown): boolean {
  * always running everything through `stringResult` so that callers
  * who want structured rendering (Bash stdout/stderr, FileEdit diffs)
  * can preserve shape. Returns an array of provider-style content
- * blocks the upstream renderer can dispatch on; falls back to a
+ * blocks the renderer can dispatch on; falls back to a
  * single `{type:'text', text:stringResult(...)}` block for tools we
  * do not have a structured projection for.
  */
@@ -974,10 +972,10 @@ export function formatStructuredToolResult(
       typeof payload.exitCode === "number" ? payload.exitCode : null;
     const durationMs =
       typeof payload.durationMs === "number" ? payload.durationMs : null;
-    // Wrap in upstream's `<bash-stdout>...</bash-stdout>` /
+    // Wrap in the `<bash-stdout>...</bash-stdout>` /
     // `<bash-stderr>...</bash-stderr>` envelope so the Bash renderer
-    // can hand the joined text directly to the upstream
-    // `UserBashOutputMessage` component, which extracts these tags via
+    // can hand the joined text directly to `UserBashOutputMessage`, which
+    // extracts these tags via
     // `extractTag(content, "bash-stdout")`. The exit_code / duration_ms
     // metadata block is appended outside the tags so it remains
     // human-readable in fallback paths.
@@ -1628,9 +1626,9 @@ export function adaptTranscriptEvents(
       }
       case "tool_input_block_start": {
         // Provider-emitted (R6) when a tool_use content
-        // block begins streaming. Mirrors the upstream content_block_start
-        // case in messages.ts:3024-3037 that appends a new element to the
-        // streamingToolUses array. The upstream Messages.tsx:446 filter
+        // block begins streaming. Matches the content_block_start case in
+        // messages.ts:3024-3037 that appends a new element to the
+        // streamingToolUses array. The Messages.tsx:446 filter
         // removes the element again once the same callId/id appears in
         // inProgressToolUseIDs (which our `tool_call_started` handler
         // already populates via openTools).
@@ -1685,10 +1683,10 @@ export function adaptTranscriptEvents(
         break;
       }
       case "tool_input_delta": {
-        // Provider-emitted (R6) for each input_json_delta. Mirrors
+        // Provider-emitted (R6) for each input_json_delta. Matches
         // messages.ts:3062-3079: locate the element with the matching index
         // and append the partial JSON; if no element is found, return the
-        // array unchanged (the upstream `if (!element) return _` early
+        // array unchanged (the `if (!element) return _` early
         // return on line 3068-3070).
         const indexCandidate =
           typeof payload.index === "number" ? payload.index : null;
@@ -1765,12 +1763,12 @@ export function adaptTranscriptEvents(
           payload.result,
         );
         runningToolNames.delete(callId);
-        // Remove the matching streaming-tool-use element so the upstream
+        // Remove the matching streaming-tool-use element so the
         // <Messages> consumer stops rendering a synthetic streaming cell
-        // for a tool that has already settled. Upstream relies on the
-        // Messages.tsx:446 filter (drop ids in inProgressToolUseIDs or
-        // normalizedToolUseIDs) to do this; we drop here on completion
-        // because AgenC moves the call out of openTools at the same step.
+        // for a tool that has already settled. The message renderer relies on
+        // the Messages.tsx:446 filter (drop ids in inProgressToolUseIDs or
+        // normalizedToolUseIDs) to do this; we drop here on completion because
+        // AgenC moves the call out of openTools at the same step.
         const slot = streamingToolUses.findIndex(
           (entry) => entry.contentBlock.id === callId,
         );
@@ -1838,7 +1836,7 @@ export function adaptTranscriptEvents(
           // Never render a bare "Error: " row. The dispatcher path
           // populates `message` (e.g.
           // "Unrecognized command: /foo"); fall back to a generic label
-          // only if something upstream drops it.
+          // only if a producer drops it.
           out.push(
             makeSystemMessage(
               `Error: ${text.length > 0 ? text : "slash command failed"}`,

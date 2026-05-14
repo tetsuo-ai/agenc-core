@@ -1257,19 +1257,17 @@ export function animatedTerminalTitlePrefix(
 }
 
 /**
- * Ports upstream `src/ink/hooks/use-terminal-title.ts` and the terminal-title
- * leaf onto the live AgenC TUI shell.
+ * Maintains the terminal-title side effect for the live AgenC TUI shell.
  *
- * Shape difference from upstream:
- *   - AgenC currently does not carry upstream session rename or generated-title
- *     state in this bridge, so the title is derived from the active
- *     provider/model when available and otherwise falls back to the product
- *     name.
+ * Current shape:
+ *   - AgenC does not carry session rename or generated-title state in this
+ *     bridge, so the title is derived from the active provider/model when
+ *     available and otherwise falls back to the product name.
  *
- * Cross-cuts deliberately NOT carried:
+ * Cross-cuts deliberately not carried:
  *   - Generated title extraction and session rename persistence; those need
  *     their own runtime state bridge before they can be live behavior.
- *   - Terminal tab status integration; this port only owns OSC title writes.
+ *   - Terminal tab status integration; this path only owns OSC title writes.
  */
 function AnimatedTerminalTitle(t0) {
   const $ = _c(6);
@@ -2236,8 +2234,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // direct children of AlternateScreen's <Box height={rows} flex column>.
   // Wrapping in another <Box flexDirection="column"> with no height/flexGrow
   // breaks the flex chain — the inner Box collapses to its intrinsic content
-  // size and the bottom slot has 0 height. Mirrors upstream pattern where
-  // KeybindingSetup is a context provider, not a Box.
+  // size and the bottom slot has 0 height. KeybindingSetup must remain a
+  // context provider, not a Box.
   const body = <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers screen={screen as any} setScreen={setScreen as any} showAllInTranscript={showAllInTranscript} setShowAllInTranscript={setShowAllInTranscript} messageCount={transcript.messages.length} />
