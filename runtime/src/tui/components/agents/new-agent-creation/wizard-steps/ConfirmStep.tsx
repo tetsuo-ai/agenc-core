@@ -3,11 +3,11 @@ import React, { type ReactNode } from 'react';
 import type { KeyboardEvent } from '../../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../../ink.js';
 import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
+import { selectAgenCTuiGlyphs, type AgenCTuiGlyphs } from '../../../../glyphs.js';
 import { isAutoMemoryEnabled } from '../../../../../memory/paths';
 import type { Tools } from '../../../../../tools/Tool';
 import { getMemoryScopeDisplay } from '../../../../../tools/AgentTool/agentMemory';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { truncateToWidth } from '../../../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getAgentModelDisplay } from '../../../../../utils/model/agent.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
@@ -16,6 +16,10 @@ import { useWizard } from '../../../wizard/index';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
 import { getNewRelativeAgentFilePath } from '../../agentFileUtils';
 import { validateAgent } from '../../validateAgent';
+import {
+  getAgentConfirmationPreviewText,
+  useAgentConfirmationPreviewColumns,
+} from '../layout.js';
 import type { AgentWizardData } from '../types';
 type Props = {
   tools: Tools;
@@ -25,7 +29,7 @@ type Props = {
   error?: string | null;
 };
 export function ConfirmStep(t0) {
-  const $ = _c(88);
+  const $ = _c(90);
   const {
     tools,
     existingAgents,
@@ -37,6 +41,8 @@ export function ConfirmStep(t0) {
     goBack,
     wizardData
   } = useWizard();
+  const previewColumns = useAgentConfirmationPreviewColumns();
+  const glyphs = selectAgenCTuiGlyphs();
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = {
@@ -87,11 +93,11 @@ export function ConfirmStep(t0) {
   let t7;
   let t8;
   let t9;
-  if ($[4] !== agent || $[5] !== existingAgents || $[6] !== handleKeyDown || $[7] !== tools || $[8] !== wizardData.location) {
+  if ($[4] !== agent || $[5] !== existingAgents || $[6] !== handleKeyDown || $[7] !== tools || $[8] !== wizardData.location || $[88] !== previewColumns || $[89] !== glyphs) {
     const validation = validateAgent(agent, tools, existingAgents);
     let t20;
-    if ($[28] !== agent) {
-      t20 = truncateToWidth(agent.getSystemPrompt(), 240);
+    if ($[28] !== agent || $[88] !== previewColumns || $[89] !== glyphs) {
+      t20 = getAgentConfirmationPreviewText(agent.getSystemPrompt(), previewColumns, glyphs.ellipsis);
       $[28] = agent;
       $[29] = t20;
     } else {
@@ -99,8 +105,8 @@ export function ConfirmStep(t0) {
     }
     const systemPromptPreview = t20;
     let t21;
-    if ($[30] !== agent.whenToUse) {
-      t21 = truncateToWidth(agent.whenToUse, 240);
+    if ($[30] !== agent.whenToUse || $[88] !== previewColumns || $[89] !== glyphs) {
+      t21 = getAgentConfirmationPreviewText(agent.whenToUse, previewColumns, glyphs.ellipsis);
       $[30] = agent.whenToUse;
       $[31] = t21;
     } else {
@@ -241,13 +247,15 @@ export function ConfirmStep(t0) {
     } else {
       t15 = $[59];
     }
-    t16 = validation.warnings.length > 0 && <Box marginTop={1} flexDirection="column"><Text color="warning">Warnings:</Text>{validation.warnings.map(_temp2)}</Box>;
-    t17 = validation.errors.length > 0 && <Box marginTop={1} flexDirection="column"><Text color="error">Errors:</Text>{validation.errors.map(_temp3)}</Box>;
+    t16 = validation.warnings.length > 0 && <Box marginTop={1} flexDirection="column"><Text color="warning">Warnings:</Text>{validation.warnings.map((warning, i) => renderAgentConfirmationWarning(warning, i, glyphs))}</Box>;
+    t17 = validation.errors.length > 0 && <Box marginTop={1} flexDirection="column"><Text color="error">Errors:</Text>{validation.errors.map((err, i_0) => renderAgentConfirmationError(err, i_0, glyphs))}</Box>;
     $[4] = agent;
     $[5] = existingAgents;
     $[6] = handleKeyDown;
     $[7] = tools;
     $[8] = wizardData.location;
+    $[88] = previewColumns;
+    $[89] = glyphs;
     $[9] = T0;
     $[10] = T1;
     $[11] = t10;
@@ -354,11 +362,11 @@ export function ConfirmStep(t0) {
   }
   return t25;
 }
-function _temp3(err, i_0) {
-  return <Text key={i_0} color="error">{" "}• {err}</Text>;
+function renderAgentConfirmationError(err: string, i_0: number, glyphs: AgenCTuiGlyphs): ReactNode {
+  return <Text key={i_0} color="error">{" "}{glyphs.statusDot} {err}</Text>;
 }
-function _temp2(warning, i) {
-  return <Text key={i} dimColor={true}>{" "}• {warning}</Text>;
+function renderAgentConfirmationWarning(warning: string, i: number, glyphs: AgenCTuiGlyphs): ReactNode {
+  return <Text key={i} dimColor={true}>{" "}{glyphs.statusDot} {warning}</Text>;
 }
 function _temp(toolNames) {
   if (toolNames === undefined) {
