@@ -2,8 +2,6 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 
 import type { ThreadRealtimeAudioChunk } from "../../app-server/protocol/index.js";
 
-// RT-15 parity: tui/src/chatwidget/realtime.rs realtime capture/player lifecycle.
-
 export interface RealtimeAudioCaptureCallbacks {
   readonly onAudio: (audio: ThreadRealtimeAudioChunk) => void;
   readonly onLevel: (peak: number) => void;

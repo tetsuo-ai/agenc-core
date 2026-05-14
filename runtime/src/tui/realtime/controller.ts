@@ -30,8 +30,6 @@ import {
   type RealtimeTuiTransport,
 } from "./state.js";
 
-// RT-15 parity: tui/src/chatwidget/realtime.rs realtime TUI controller.
-
 export interface RealtimeDaemonRequestClient {
   request<Method extends AgenCDaemonMethod>(
     method: Method,

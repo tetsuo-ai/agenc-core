@@ -1,7 +1,5 @@
 import type { AgenCRealtimeTuiControls } from "./controller.js";
 
-// RT-15 parity: tui/src/chatwidget/realtime.rs lifecycle command controls.
-
 export type RealtimeComposerCommand =
   | { readonly kind: "toggle" }
   | { readonly kind: "start"; readonly transport: "websocket" | "webrtc" }

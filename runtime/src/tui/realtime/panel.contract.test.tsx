@@ -2,7 +2,8 @@ import React from "react";
 import { describe, expect, test } from "vitest";
 
 import { renderToString } from "../../utils/staticRender.js";
-import { RealtimePanel } from "./RealtimePanel.js";
+import { stringWidth } from "../ink/stringWidth.js";
+import { getRealtimeStatusRenderParts, RealtimePanel } from "./RealtimePanel.js";
 import {
   initialRealtimeTuiState,
   reduceRealtimeTuiState,
@@ -43,6 +44,37 @@ describe("RealtimePanel", () => {
     expect(output).toContain("[############]");
     expect(output).toContain("assistant: ready");
     expect(output).toContain("item: message item_1");
+  });
+
+  test("keeps the status row within narrow terminal width", async () => {
+    const longSessionId = "rt_session_with_a_very_long_identifier_that_must_not_overflow";
+    let state = reduceRealtimeTuiState(initialRealtimeTuiState(), {
+      type: "start_requested",
+      transport: "websocket",
+    });
+    state = reduceRealtimeTuiState(state, {
+      type: "started",
+      realtimeSessionId: longSessionId,
+    });
+    state = reduceRealtimeTuiState(state, {
+      type: "local_audio_level",
+      peak: 65535,
+    });
+    state = reduceRealtimeTuiState(state, {
+      type: "push_to_talk_changed",
+      enabled: true,
+    });
+
+    const parts = getRealtimeStatusRenderParts(state, 32);
+    expect(stringWidth(`${parts.statusText}${parts.meterText ?? ""}`)).toBeLessThanOrEqual(32);
+    expect(parts.statusText).not.toContain(longSessionId);
+
+    const output = await renderToString(<RealtimePanel state={state} />, 32);
+    const statusLine = output
+      .split("\n")
+      .find((line) => line.includes("voice"))!
+      .trimEnd();
+    expect(stringWidth(statusLine)).toBeLessThanOrEqual(32);
   });
 
   test("renders error and closed terminal banners", async () => {

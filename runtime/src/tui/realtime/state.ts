@@ -1,7 +1,5 @@
 import type { JsonValue } from "../../app-server/protocol/index.js";
 
-// RT-15 parity: tui/src/chatwidget/realtime.rs voice session state.
-
 export type RealtimeTuiPhase = "inactive" | "starting" | "active" | "stopping";
 export type RealtimeTuiTransport = "websocket" | "webrtc";
 export type RealtimeTuiTranscriptRole = "assistant" | "user" | string;
