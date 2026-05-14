@@ -8,9 +8,13 @@ const inputHelper = ["repl", "Input", "Suppression"].join("");
 const workerPendingHelper = ["Worker", "Pending", "Permission"].join("");
 const backgroundTaskHelper = ["Background", "Task"].join("");
 const shellProgressHelper = ["Shell", "Progress"].join("");
+const dreamDetailHelper = ["Dream", "Detail", "Dialog"].join("");
+const monitorMcpDetailHelper = ["Monitor", "Mcp", "Detail", "Dialog"].join("");
 const deletedImportPatterns = [
   new RegExp(`from ['"]\\./${backgroundTaskHelper}(?:\\.js)?['"]`),
   new RegExp(`from ['"]\\./${shellProgressHelper}(?:\\.js)?['"]`),
+  new RegExp(`from ['"]\\./${dreamDetailHelper}(?:\\.js)?['"]`),
+  new RegExp(`from ['"]\\./${monitorMcpDetailHelper}(?:\\.js)?['"]`),
 ];
 const removed = [
   `runtime/src/tui/screens/${startupHelper}.ts`,
@@ -20,6 +24,8 @@ const removed = [
   `runtime/src/tui/components/permissions/${workerPendingHelper}.tsx`,
   `runtime/src/tui/components/tasks/${backgroundTaskHelper}.tsx`,
   `runtime/src/tui/components/tasks/${shellProgressHelper}.tsx`,
+  `runtime/src/tui/components/tasks/${dreamDetailHelper}.tsx`,
+  `runtime/src/tui/components/tasks/${monitorMcpDetailHelper}.tsx`,
 ];
 
 function filesUnder(dir: string): string[] {
