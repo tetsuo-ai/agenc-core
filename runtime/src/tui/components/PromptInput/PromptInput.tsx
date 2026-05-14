@@ -99,6 +99,7 @@ import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { getEffortNotificationText } from '../EffortIndicator.js';
 import { getFastIconString } from '../FastIcon.js';
+import { calculateFullscreenLayoutBudget } from '../FullscreenLayout.js';
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
 import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
@@ -476,6 +477,17 @@ type Props = {
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
 const PROMPT_FOOTER_LINES = 5;
 const MIN_INPUT_VIEWPORT_LINES = 3;
+const ABSOLUTE_MIN_INPUT_VIEWPORT_LINES = 1;
+
+export function calculatePromptMaxVisibleLines(rows: number, fullscreen: boolean): number | undefined {
+  if (!fullscreen) return undefined;
+
+  const safeRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+  const desiredLines = Math.max(MIN_INPUT_VIEWPORT_LINES, Math.floor(safeRows / 2) - PROMPT_FOOTER_LINES);
+  const bottomBudget = calculateFullscreenLayoutBudget(safeRows).bottomMaxHeight;
+
+  return Math.max(ABSOLUTE_MIN_INPUT_VIEWPORT_LINES, Math.min(desiredLines, bottomBudget));
+}
 
 export type BusyInputSubmissionPolicyArgs = {
   isLoading: boolean;
@@ -2353,7 +2365,7 @@ function PromptInput({
   // branding-scan: allow TextCursor is the text-caret utility name.
   // in the TextCursor wrap model. MeasuredText.getOffsetFromPosition handles
   // wide chars, wrapped lines, and clamps past-end clicks to line end.
-  const maxVisibleLines = isFullscreenEnvEnabled() ? Math.max(MIN_INPUT_VIEWPORT_LINES, Math.floor(rows / 2) - PROMPT_FOOTER_LINES) : undefined;
+  const maxVisibleLines = calculatePromptMaxVisibleLines(rows, isFullscreenEnvEnabled());
   const handleInputClick = useCallback((e: ClickEvent) => {
     // During history search the displayed text is historyMatch, not
     // input, and showCursor is false anyway — skip rather than

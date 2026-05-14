@@ -27,7 +27,27 @@ import {
   getCommandQueue,
   resetCommandQueue,
 } from '../../../utils/messageQueueManager.js'
-import { applyBusyInputSubmissionPolicy } from './PromptInput.js'
+import {
+  applyBusyInputSubmissionPolicy,
+  calculatePromptMaxVisibleLines,
+} from './PromptInput.js'
+
+describe('PromptInput fullscreen layout budget', () => {
+  test.each([
+    [0, 1],
+    [1, 1],
+    [3, 2],
+    [5, 2],
+    [8, 2],
+    [24, 7],
+  ])('caps prompt input viewport to the bottom slot at terminal height %i', (rows, expected) => {
+    expect(calculatePromptMaxVisibleLines(rows, true)).toBe(expected)
+  })
+
+  test('does not cap the prompt input viewport outside fullscreen', () => {
+    expect(calculatePromptMaxVisibleLines(3, false)).toBeUndefined()
+  })
+})
 
 describe('PromptInput busy input policy', () => {
   afterEach(() => {
