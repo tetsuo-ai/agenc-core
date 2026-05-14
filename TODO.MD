@@ -1,556 +1,199 @@
-# TODO.MD - AgenC TUI UX Issue Backlog
-
-Generated from four specialist TUI probes plus manual reproduction on 2026-05-12.
-
-## Working Rules
-
-- Treat this file as the source of truth for the current TUI UX/debug backlog.
-- Mark an item `[x]` only after the code fix is implemented, targeted tests pass, and the behavior is verified through real `agenc` or `agenc --yolo` usage from `/tmp`.
-- Add a short `Fixed in:` note under completed items with the relevant commit or file list.
-- Do not mark partial mitigations as complete. If an item splits into smaller bugs, add child checklist items and keep the parent open until all children are done.
-- Keep new discoveries in this file rather than scattering notes across chat transcripts.
-
-## Required Reproduction Matrix
-
-Use fresh throwaway directories under `/tmp` while working these items:
-
-- `agenc` normal mode in a fresh `/tmp` project.
-- `agenc --yolo` in a fresh `/tmp` project.
-- First-run onboarding with an isolated `AGENC_HOME`.
-- Slash commands including `/help`, `/plan`, `/agents`, `/config`, `/provider`, `/mcp`, `/skills`, `/model`, `/compact`, `/hooks`, `/history`, `/clear`, `/exit`.
-- A code-writing prompt that triggers file reads/writes and permission prompts.
-- A prompt that asks the agent to create/use subagents.
-
-## P0 - Blockers
-
-### TUI-001 - Daemon startup and transport break under isolated homes
-
-- [x] Fix fixed websocket port collisions across isolated `AGENC_HOME` instances.
-- [x] Fix `connect ENOENT .../daemon.sock` when daemon exits after websocket `EADDRINUSE`.
-- [x] Fix `read ECONNRESET` after setting a non-default websocket port.
-- [x] Fix `agenc agent list` hanging when it starts a daemon in an isolated environment.
-- [x] Add regression coverage for multiple isolated homes running concurrently.
-
-Fixed in:
-
-- `runtime/src/app-server/daemon-cli.ts`
-- `runtime/src/app-server/daemon-cli.contract.test.ts`
-
-Verification:
-
-- Reproduced pre-fix `listen EADDRINUSE: address already in use 127.0.0.1:7766` from a fresh isolated `AGENC_HOME`.
-- Reproduced pre-fix `connect ENOENT /tmp/.../daemon.sock` and `agenc agent list` timeout from `/tmp`.
-- Verified post-fix foreground daemon with isolated `AGENC_HOME` binds an ephemeral websocket port.
-- Verified post-fix concurrent `agenc agent list` from two isolated `/tmp` homes returns `No active agents`.
-- Verified explicit non-default `AGENC_DAEMON_WEBSOCKET_PORT` still works.
-- Targeted tests passed: `npm test -- src/app-server/daemon-cli.contract.test.ts -t "pins daemon websocket defaults|multiple configured daemon homes"`.
-- Build passed: `npm run build`.
-- TUI gate passed: `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build`.
-
-Evidence:
-
-- Specialist probes in `/tmp` hit daemon shutdowns and socket failures before TUI workflows could complete.
-- Setting `AGENC_DAEMON_WEBSOCKET_PORT=17766` avoided the first collision but still caused reset/shutdown behavior.
-- `daemon-snapshot.json` showed no active agents after a prompt-driven subagent workflow stalled.
-
-Likely code to inspect:
-
-- `runtime/src/app-server/daemon-cli.ts`
-- `runtime/src/app-server/daemon-autostart.ts`
-- `runtime/src/app-server/transport/websocket.ts`
-- `runtime/src/app-server/agent-cli.ts`
-- `runtime/src/tui/daemon-session.ts`
-
-### TUI-002 - First-run onboarding and trust prompts are hard to escape or complete
-
-- [x] Make `--yolo` either bypass trust/onboarding when intended or clearly explain why it cannot.
-- [x] Fix trust prompt keyboard handling so advertised `y/n` input works reliably.
-- [x] Fix onboarding composer text retention where entries become `1next` or `dark1next`.
-- [x] Make `/help` and `/exit` work during onboarding, or show an explicit onboarding-only input state.
-- [x] Fix repeated Ctrl-C behavior so the second press exits reliably.
-
-Fixed in:
-
-- `runtime/src/bin/agenc.ts`
-- `runtime/src/bin/tui-trust-prompt.tsx`
-- `runtime/src/permissions/trust/TrustDialog.tsx`
-- `runtime/src/onboarding/Onboarding.tsx`
-- `runtime/src/tui/components/App.tsx`
-- `runtime/src/tui/ink/parse-keypress.ts`
-- `runtime/src/tui/ink/parse-keypress.test.ts`
-- `runtime/src/onboarding/onboarding.test.tsx`
-- `runtime/src/bin/project-trust-preflight.test.ts`
-
-Verification:
-
-- Reproduced pre-fix `agenc --yolo` trust prompt ignoring `y` + Enter in a fresh `/tmp` home.
-- Reproduced pre-fix onboarding composer retention after `next`, where the following input could appear as stale merged text.
-- Reproduced pre-fix repeated Ctrl-C failing to exit onboarding.
-- Verified post-fix trust prompt explains why `--yolo` still requires project trust, and accepts `y` + Enter in one input burst.
-- Verified post-fix first-run onboarding explains that `--yolo` applies to tool approval while setup still needs first-run choices.
-- Verified post-fix onboarding shows an onboarding-only slash-command state and returns that guidance for `/help`.
-- Verified post-fix onboarding clears the composer after submitted steps and double Ctrl-C exits from a fresh `/tmp` TUI.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/onboarding/onboarding.test.tsx src/bin/project-trust-preflight.test.ts src/tui/ink/parse-keypress.test.ts` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- `agenc --yolo` still showed trust and first-run onboarding.
-- Trust prompt advertised `y/n`, but `y` plus Enter did not accept until arrow navigation was used.
-- Onboarding retained stale typed text across steps.
-- Slash commands were swallowed as onboarding answers.
-
-Likely code to inspect:
-
-- `runtime/src/permissions/trust/TrustDialog.tsx`
-- `runtime/src/tui/components/TrustDialog/TrustDialog.tsx`
-- `runtime/src/onboarding/Onboarding.tsx`
-- `runtime/src/tui/components/Onboarding.tsx`
-- `runtime/src/tui/components/PromptInput/PromptInput.tsx`
-
-### TUI-003 - Slash commands crash because daemon TUI context lacks services
-
-- [x] Fix `/config`: `ConfigStore not initialised`.
-- [x] Fix `/settings`: same missing config store path as `/config`.
-- [x] Fix `/provider grok`: `Cannot read properties of undefined (reading 'unsafePeek')`.
-- [x] Fix `/mcp`: `Cannot read properties of undefined (reading 'effectiveServers')`.
-- [x] Fix `/skills`: `Cannot read properties of undefined (reading 'skillsForConfig')`.
-- [x] Add command execution tests with the same context shape used by daemon-backed TUI sessions.
-
-Fixed in:
-
-- `runtime/src/app-server-client/index.ts`
-- `runtime/src/app-server-client/index.test.ts`
-- `runtime/src/commands/provider.ts`
-- `runtime/src/tui/components/App.tsx`
-- `runtime/src/tui/session-types.ts`
-
-Verification:
-
-- Reproduced pre-fix from `/tmp/agenc-tui-003-config` with isolated `AGENC_HOME`: `/config`, `/settings`, `/provider grok`, `/mcp`, and `/skills` each returned the listed service/`unsafePeek` errors.
-- Verified post-fix from `/tmp/agenc-tui-003-verify` with isolated `AGENC_HOME` and `agenc --yolo`: `/config` and `/settings` render config, `/provider grok` returns a daemon-unsupported guidance message instead of crashing, `/mcp` reports no configured servers, and `/skills` reports no available/invoked/plugin-root skills.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/app-server-client/index.test.ts src/commands/provider.test.ts src/commands/mcp.test.ts src/commands/skills.test.ts` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Slash commands are visible/advertised but fail at runtime due to missing session services.
-
-Likely code to inspect:
-
-- `runtime/src/commands/registry.ts`
-- `runtime/src/commands/config.ts`
-- `runtime/src/commands/provider.ts`
-- `runtime/src/commands/mcp.ts`
-- `runtime/src/commands/skills.ts`
-- `runtime/src/commands/dispatcher.ts`
-- `runtime/src/app-server-client/index.ts`
-
-### TUI-004 - `/plan` and `/agents` are implemented but unavailable in the TUI
-
-- [x] Register `/plan` in the active TUI slash command registry.
-- [x] Register `/agents` in the active TUI slash command registry.
-- [x] Verify `/plan` can enter plan flow from the TUI.
-- [x] Verify `/agents` opens agent management or creation UX from the TUI.
-- [x] Add a parity check so implemented commands do not silently fall out of the active registry.
-
-Fixed in:
-
-- `runtime/src/commands/agent-management.tsx`
-- `runtime/src/commands/registry.ts`
-- `runtime/src/commands/types.ts`
-- `runtime/src/tui/components/App.tsx`
-- `runtime/src/app-server-client/index.test.ts`
-- `runtime/src/commands/registry.test.ts`
-- `runtime/src/commands/tui-command-list.test.ts`
-- `runtime/src/commands/command-surface.test.ts`
-- `runtime/src/commands/help.test.ts`
-
-Verification:
-
-- Reproduced pre-fix `/plan` and `/agents` as unknown slash commands from the TUI registry.
-- Verified post-fix from `/tmp/agenc-tui-004-verify2` with isolated `AGENC_HOME` and `agenc --yolo`: `/plan` appears in slash typeahead, returns `Enabled plan mode`, and switches the footer to `MODE plan`.
-- Verified post-fix `/agents` appears in slash typeahead, opens the agent management menu, and Enter opens the `Create new agent` wizard without forwarding `/agents` to the model.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/app-server-client/index.test.ts src/commands/registry.test.ts src/commands/tui-command-list.test.ts src/commands/command-surface.test.ts src/commands/help.test.ts src/commands/plan.test.ts` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- `/plan` returns `Unknown command: /plan` even though plan command code exists.
-- `/agents` returns `Unknown command: /agents` even though `AgentsMenu` and create wizard code exists.
-- The requested specialist workflows could not exercise plan mode or agent creation through slash commands.
-
-Likely code to inspect:
-
-- `runtime/src/commands/registry.ts`
-- `runtime/src/commands.ts`
-- `runtime/src/commands/plan.ts`
-- `runtime/src/commands/agents/index.ts`
-- `runtime/src/tui/components/agents/AgentsMenu.tsx`
-
-### TUI-005 - Permission denial leaks raw internal recovery JSON
-
-- [x] Replace raw recovered tool-result JSON with a user-facing denial message.
-- [x] Preserve enough debug metadata in logs without showing it in the transcript.
-- [x] Add a regression test for denied `FileRead` and denied write/tool calls.
-
-Fixed in:
-
-- `runtime/src/tui/tool-result-denial.ts`
-- `runtime/src/tui/session-transcript.ts`
-- `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx`
-- `runtime/src/tui/components/messages/UserToolResultMessage/UserToolErrorMessage.tsx`
-- `runtime/src/tui/parity/session-transcript.test.ts`
-- `runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx`
-
-Verification:
-
-- Reproduced pre-fix with focused failing tests: denied `FileRead` orphan result and denied write/tool orphan result both rendered raw recovery JSON / `rejected by user`.
-- Verified post-fix transcript recovery and orphan result fallback render `Permission request denied by user.` while leaving the original event payload available in daemon/session logs.
-- Verified a live fresh `/tmp` TUI run with temp HOME: denied a real `FileRead` permission prompt and confirmed the TUI omitted `Recovered tool result without matching start`, raw rejection JSON, and raw `rejected by user`.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/parity/session-transcript.test.ts src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.test.tsx` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Denying a `FileRead` produced:
-
-```text
-Recovered tool result without matching start (call_...): { "type": "text", "text": "{\"error\":\"rejected by user\"}" }
-```
-
-Likely code to inspect:
-
-- `runtime/src/tui/permission-requests.tsx`
-- `runtime/src/tui/components/permissions/`
-- `runtime/src/permissions/`
-- `runtime/src/tui/session-transcript.ts`
-
-## P1 - High Priority UX Issues
-
-### TUI-006 - Advertised slash commands are not supported in daemon TUI
-
-- [x] Decide whether `/model`, `/compact`, and `/hooks` should be daemon-backed or hidden.
-- [x] Make unsupported commands absent from suggestions/help, or implement them end to end.
-- [x] Add a command capability source so help, suggestions, and dispatcher agree.
-
-Fixed in:
-
-- `runtime/src/commands/types.ts`
-- `runtime/src/commands/registry.ts`
-- `runtime/src/commands/model.ts`
-- `runtime/src/commands/provider.ts`
-- `runtime/src/commands/session-compact.ts`
-- `runtime/src/commands/hooks.ts`
-- `runtime/src/tui/components/App.tsx`
-- `runtime/src/commands/registry.test.ts`
-- `runtime/src/commands/tui-command-list.test.ts`
-- `runtime/src/commands/help.test.ts`
-- `runtime/src/commands/command-surface.test.ts`
-
-Verification:
-
-- Reproduced pre-fix in a fresh `/tmp` TUI with temp HOME: typeahead advertised `/model`, `/compact`, and `/hooks`, then dispatch returned daemon/in-process unsupported messages.
-- Implemented a `SlashCommandSurface` capability source. Runtime registry keeps the full minimal command set; daemon-TUI registry filters runtime-only commands before suggestions, `/help`, and dispatch share it.
-- Marked `/model`, `/model-provider`/`/provider`, `/compact`, and `/hooks` as runtime-only because they require in-process session APIs or hook runtime access.
-- Verified post-fix in a fresh `/tmp` TUI with temp HOME: `/help` omits `/model`, `/model-provider`, `/compact`, and `/hooks`; direct `/model`, `/compact`, and `/hooks` submissions return unknown-command responses from the filtered dispatcher.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/commands/registry.test.ts src/commands/tui-command-list.test.ts src/commands/help.test.ts src/commands/command-surface.test.ts` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- `/model grok-4-fast`, `/compact`, and `/hooks` were advertised but not supported in daemon-backed TUI usage.
-
-Likely code to inspect:
-
-- `runtime/src/commands/registry.ts`
-- `runtime/src/commands.ts`
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
-
-### TUI-007 - `/history` behaves as a destructive alias for `/clear`
-
-- [x] Make `/history` show history or remove/rename it.
-- [x] If the intended behavior is clearing history, require explicit naming and confirmation.
-- [x] Add a regression test to prevent accidental destructive aliases.
-
-Fixed in:
-
-- `runtime/src/commands/clear.ts`
-- `runtime/src/commands/clear.test.ts`
-- `runtime/src/commands/tui-command-list.test.ts`
-- `runtime/src/utils/suggestions/commandSuggestions.ts`
-- `runtime/src/utils/suggestions/sortBySearchPriority.ts`
-- `runtime/src/tui/components/PromptInput/slashCommandSuggestions.test.ts`
-- `runtime/src/tui/components/PromptInput/slashTypeaheadExactMatch.test.ts`
-
-Verification:
-
-- Reproduced pre-fix with focused tests: `/history` dispatched through the registry as `/clear`, emptied history, and appeared in built-in command aliases.
-- Removed `history` from `/clear` aliases so direct `/history` now returns `Unknown command: /history`.
-- Tightened slash command suggestions so non-empty slash queries only match command names or aliases by prefix, preventing description-only fuzzy hits like `/history` -> `/clear`.
-- Verified a live fresh `/tmp` TUI run with temp HOME: bare Enter on `/history` submits as unknown and does not clear the session.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/commands/clear.test.ts src/commands/tui-command-list.test.ts src/tui/components/PromptInput/slashTypeaheadExactMatch.test.ts src/tui/components/PromptInput/slashCommandSuggestions.test.ts` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- `/history` immediately clears session history, matching `/clear`, which is surprising and dangerous.
-
-Likely code to inspect:
-
-- `runtime/src/commands/clear.ts`
-- `runtime/src/commands/registry.ts`
-
-### TUI-008 - Prompt-driven subagent workflow stalls at `Triggering...`
-
-- [x] Show agent lifecycle state when a subagent is requested.
-- [x] Fix the path where a requested subagent never appears in daemon snapshots.
-- [x] Surface failures in the transcript instead of leaving `Triggering...`.
-- [x] Verify both prompt-driven subagent creation and `/agents` creation once `/agents` is registered.
-
-Fixed in:
-
-- `runtime/src/app-server/background-agent-runner.ts`
-- `runtime/src/app-server/background-agent-runner.contract.test.ts`
-- `runtime/src/bin/bootstrap.ts`
-- `runtime/src/tui/parity/session-transcript.contract.test.ts`
-
-Verification:
-
-- Reproduced from `/tmp/agenc-tui-008-repro-25wLnQ` with `agenc --yolo`: prompt-driven `spawn_agent` / `wait_agent` wrote `collab_agent_spawn_*` and `collab_waiting_*` lifecycle events to rollout, but the attached TUI only showed generic spinner/text while the daemon bridge dropped those session events.
-- Verified post-fix from `/tmp/agenc-tui-008-verify-qfMqk0` with `agenc --yolo`: prompt-driven subagent creation rendered live `Spawning agent`, `Spawned Mainframe`, `Waiting for Mainframe`, and `Finished waiting` rows with status details.
-- Verified `/agents` from the same fresh `/tmp` project opens the agent management list and Enter opens the `Create new agent` wizard.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/app-server/background-agent-runner.contract.test.ts src/tui/parity/session-transcript.contract.test.ts` passed.
-- `npm run build` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- A prompt asking the agent to create/use subagents stayed at `Triggering...`.
-- `daemon-snapshot.json` reported `"agents": []`.
-
-Likely code to inspect:
-
-- `runtime/src/tools/AgentTool/AgentTool.tsx`
-- `runtime/src/tasks/LocalAgentTask/LocalAgentTask.tsx`
-- `runtime/src/tui/components/AgentProgressLine.tsx`
-- `runtime/src/tui/components/agents/AgentsMenu.tsx`
-
-### TUI-009 - Slash palette can trap focus and Enter inserts blank composer lines
-
-- [x] Fix focus handling when slash suggestions/help is open.
-- [x] Ensure Enter either runs the selected command or closes the palette according to the displayed hint.
-- [x] Prevent blank line insertion when the palette owns selection.
-
-Fixed in:
-
-- `runtime/src/tui/components/PromptInput/PromptInput.tsx`
-- `runtime/src/tui/hooks/typeaheadKeyHandling.ts`
-- `runtime/src/tui/hooks/typeaheadKeyHandling.test.ts`
-- `runtime/src/tui/hooks/useTypeahead.tsx`
-
-Verification:
-
-- Reproduced from `/tmp/agenc-tui-009-repro-6vWbB8` with `agenc --yolo`: slash suggestions owned the visible selection, but Enter handling only called `preventDefault()` on the synthetic keyboard event, leaving the underlying Ink input event free to continue into `TextInput`.
-- Verified post-fix from `/tmp/agenc-tui-009-verify-xmW5l0` with `agenc --yolo`: `/hel` Enter accepted `/help` without leaking a submit, the next Enter ran `/help`, and Enter dismissed the help panel without leaving composer content behind.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/hooks/typeaheadKeyHandling.test.ts` passed.
-- `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- `/help` and slash palette interactions could trap focus.
-- Pressing Enter inserted blank lines in the composer instead of consistently selecting/running.
-
-Likely code to inspect:
-
-- `runtime/src/tui/components/PromptInput/PromptInput.tsx`
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
-
-### TUI-010 - Slash palette selected row duplicates description and background leaks through
-
-- [x] Remove duplicate selected-row description rendering, or render description in exactly one place.
-- [x] Make slash palette rows and expanded description rows full-width and opaque.
-- [x] Fix black/background fill so the overlay covers the full intended panel width, including empty cells.
-- [x] Add a screenshot or snapshot check for selected slash command rendering.
-
-Fixed in:
-
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx`
-
-Verification:
-
-- Reproduced from `/tmp/agenc-tui-010-repro-j8fuOA` with `agenc --yolo`: `/clear` rendered `Clear session history and caches` inline and again on the next selected-description row; the command header clipped to `navigate ↑↓ · ru`.
-- Verified post-fix from `/tmp/agenc-tui-010-verify-MMHuyv` with `agenc --yolo`: `/clear` rendered one selected row only, the duplicate description row was gone, and the header rendered `navigate ↑↓ · run ↵`.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx` passed.
-- `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Screenshot showed `/clear` highlighted with `Clear session history and caches` inline, then the same description repeated on the next row.
-- The black palette background did not fill the entire window/palette area; underlying wallpaper showed through.
-- Header hint also clipped to `navigate ... ru`, suggesting width/accounting issues in the same component.
-
-Likely cause:
-
-- `SuggestionItemRow` renders `item.description` inline for non-unified suggestions.
-- The parent map also renders the selected item's description as an expanded row.
-- The overlay and selected-description row do not appear to consistently use full-width opaque background.
-
-Likely code to inspect:
-
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
-- `runtime/src/tui/components/PromptInput/PromptInput.tsx`
-
-### TUI-011 - Render health warning reports impossible/noisy FPS metrics
-
-- [x] Fix FPS math so 1 percent low cannot appear higher than average for the same sample window.
-- [x] Reduce prominence/noise of render-health warnings unless the metric is reliable and actionable.
-- [x] Add tests for FPS aggregation and display formatting.
-
-Fixed in:
-
-- `runtime/src/utils/fpsTracker.ts`
-- `runtime/src/tui/components/App.tsx`
-- `runtime/src/tui/components/renderHealth.test.ts`
-
-Verification:
-
-- Reproduced from fresh `/tmp` TUI sessions before the fix: render-health warnings could show average FPS near `1.3` to `3.8` while reporting `1% low` values above `160 FPS`, which is internally impossible for a same-window low-percentile metric.
-- Verified post-fix from `/tmp/agenc-tui-011-verify-BoapiZ` with `agenc --yolo`: startup no longer showed an impossible render-health warning from the initial sparse samples.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/renderHealth.test.ts` passed.
-- `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Warning displayed average `3.8 FPS` and `1% low 160.2 FPS`, which is internally inconsistent.
-
-Likely code to inspect:
-
-- `runtime/src/utils/fpsTracker.ts`
-- `runtime/src/tui/components/App.tsx`
-
-## P2 - Polish and Consistency
-
-### TUI-012 - Slash palette header hint is clipped
-
-- [x] Fix right-side header hint clipping.
-- [x] Verify narrow and wide terminal widths.
-
-Fixed in:
-
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx`
-
-Verification:
-
-- Reproduced before the slash palette row cleanup: the header hint rendered as `navigate ↑↓ · ru` at standard width.
-- Verified post-fix in static rendering at `48`, `80`, and `120` columns: each output contains the full `navigate ↑↓ · run ↵` hint.
-- Verified post-fix from `/tmp/agenc-tui-012-narrow-sVqShO` with `agenc --yolo` at 48 columns: slash palette showed the full `navigate ↑↓ · run ↵` hint.
-- Verified post-fix from `/tmp/agenc-tui-012-wide-MHNtvb` with `agenc --yolo` at 120 columns: slash palette showed the full `navigate ↑↓ · run ↵` hint.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/PromptInput/PromptInputFooterSuggestions.test.tsx` passed.
-- `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Slash palette hint rendered as `navigate ... ru` instead of the full `navigate ... run`.
-
-Likely code to inspect:
-
-- `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx`
-
-### TUI-013 - Invalid slash commands show random spinner verbs
-
-- [x] Replace random spinner verbs for immediate command errors with deterministic command feedback.
-- [x] Ensure `Unknown command` appears without misleading transitional states.
-
-Fixed in:
-
-- `runtime/src/tui/components/App.tsx`
-- `runtime/src/tui/components/App.render.test.tsx`
-
-Verification:
-
-- Reproduced from `/tmp/agenc-tui-013-repro-E4sx3Z` with `agenc --yolo`: submitting `/zzzzz` briefly rendered a random model-request spinner verb (`Soldering...`) before `Error: Unknown command: /zzzzz`.
-- Verified post-fix from `/tmp/agenc-tui-013-verify-7V3yZY` with `agenc --yolo`: submitting `/zzzzz` rendered `Error: Unknown command: /zzzzz` directly with no spinner verb frame.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tui/components/App.render.test.tsx` passed.
-- `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Invalid commands briefly showed unrelated verbs such as `Embedding...` or `Transcoding...`.
-
-Likely code to inspect:
-
-- `runtime/src/commands/dispatcher.ts`
-- `runtime/src/constants/spinnerVerbs.ts`
-- `runtime/src/tui/session-transcript.ts`
-
-### TUI-014 - Permission prompt copy and wrapping are awkward
-
-- [x] Improve permission option labels for non-shell tools.
-- [x] Avoid wording such as `FileRead commands`.
-- [x] Ensure long paths wrap cleanly without harming selection readability.
-
-Fixed in:
-
-- `runtime/src/tui/tool-rendering.tsx`
-- `runtime/src/tui/components/permissions/FallbackPermissionRequest.tsx`
-- `runtime/src/tools/tool-rendering-extra.test.tsx`
-
-Verification:
-
-- Reproduced from `/tmp/agenc-tui-014-repro-uBgUnu` with real `agenc`: asking the model to `FileRead` `/tmp/agenc-tui-014-target-marPxB/secret.txt` rendered the generic permission row `Yes, and don't ask again for FileRead commands in /tmp/agenc-tui-014-repro-uBgUnu`.
-- Verified post-fix from `/tmp/agenc-tui-014-verify-GubVqt` with real `agenc`: the same FileRead flow rendered the file-specific `Read file` dialog and the option `Yes, allow reading from agenc-tui-014-target-verify-FQOgxs/ during this session`; no `FileRead commands` wording or full cwd row appeared.
-- `npm run test --workspace=@tetsuo-ai/runtime -- src/tools/tool-rendering-extra.test.tsx` passed.
-- `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-
-Evidence:
-
-- Permission option said `Yes, and don't ask again for FileRead commands in /tmp/...`.
-- This is confusing for file reads and wraps poorly.
-
-Likely code to inspect:
-
-- `runtime/src/tui/permission-requests.tsx`
-- `runtime/src/tui/components/permissions/`
-- `runtime/src/permissions/`
-
-## Verification Checklist
-
-- [x] `npm run build` or repository equivalent passes.
-- [x] TUI validation gate passes if TUI files changed.
-- [x] Real `agenc` from `/tmp` can complete onboarding/trust flow.
-- [x] Real `agenc --yolo` from `/tmp` behaves according to intended trust/onboarding policy.
-- [x] `/plan` works in TUI.
-- [x] `/agents` works in TUI and can start an agent workflow.
-- [x] Slash command help/suggestions only advertise runnable commands.
-- [x] Permission deny/allow flows show user-facing messages only.
-- [x] Slash palette selected row has no duplicate description.
-- [x] Slash palette background is opaque across the full intended width.
-- [x] Multiple isolated `AGENC_HOME` sessions can run without daemon port/socket collisions.
-
-Fixed in:
-
-- Build: `npm run build --workspace=@tetsuo-ai/runtime` passed.
-- TUI gate: `node /home/tetsuo/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --no-build` passed.
-- Live trust/onboarding, `--yolo`, `/plan`, and `/agents`: verified from fresh `/tmp` workspaces with isolated `AGENC_HOME` values.
-- Permission deny/allow: verified denied reads render a user-facing denial, approved outside-path `FileRead` succeeds, and orphaned successful FileRead output no longer leaks a raw recovery row.
-- Slash palette rendering and command surface: covered by targeted TUI parity/unit tests and prior live checks.
-- Isolated daemon homes: verified with repeated fresh `/tmp/agenc-home-*` sessions and targeted daemon/socket coverage.
-
-## Goal Prompt For The Next Agent
-
-You are working in `/home/tetsuo/git/AgenC/agenc-core`. Read `TODO.MD` first and treat it as the active TUI UX/debug backlog. Work through the checklist from P0 downward. For each issue, reproduce it in a fresh `/tmp` directory with real `agenc` or `agenc --yolo`, identify the responsible code, implement the smallest correct fix, run targeted tests plus the TUI validation gate when TUI code changes, then update `TODO.MD` by marking only fully verified items as `[x]` and adding a short `Fixed in:` note. Do not skip verification, do not mark partial fixes complete, and keep all reproduction artifacts under `/tmp`.
+# TODO.MD - Active AgenC TUI Rendering Audit
+
+Audit started on 2026-05-13.
+
+Rules for this section:
+
+- Audit only. Do not propose fixes in this matrix.
+- Cite file paths and line numbers for every claim.
+- Use only these status values: `OK`, `BUG`, `MISSING`, `LEGACY`.
+- Complete one module partition fully before moving to the next.
+- Add future partitions below this one without deleting prior findings.
+
+Completed partition:
+
+- Root TUI rendering shell: `runtime/src/tui/components/App.tsx`
+- Fullscreen/root layout: `runtime/src/tui/components/FullscreenLayout.tsx`
+- Transcript event adaptation: `runtime/src/tui/session-transcript.ts`
+- Completion pipeline rendering state: `runtime/src/tui/completion-pipeline.ts`
+- Permission overlay bridge: `runtime/src/tui/permission-requests.tsx`
+- PromptInput and slash/typeahead rendering: `runtime/src/tui/components/PromptInput/**`, `runtime/src/tui/hooks/useTypeahead.tsx`, `runtime/src/tui/hooks/typeaheadTokens.ts`, `runtime/src/tui/hooks/useTextInput.ts`, `runtime/src/tui/hooks/usePasteHandler.ts`, `runtime/src/tui/components/BaseTextInput.tsx`, `runtime/src/tui/components/TextInput.tsx`, `runtime/src/tui/components/VimTextInput.tsx`, `runtime/src/tui/context/promptOverlayContext.tsx`
+
+Remaining partitions:
+
+- `Messages`, `MessageRow`, message renderers, markdown/tool result rendering.
+- Spinner internals and agent activity rows.
+- Tasks, background agents, local agents, teams, and agent panes.
+- Permission UI internals.
+- Dialogs, selectors, settings, help, MCP, diff, realtime, startup.
+- Ink renderer, ScrollBox, terminal input, keybindings, resize/no-color/ascii behavior.
+
+## Part 1 - Root TUI Rendering Shell
+
+| # | Scenario | Expected behavior (verbose, exact) | Current behavior | Status | File:line | Notes / defect detail | Fix priority |
+|---:|---|---|---|---|---|---|---|
+| 1 | Root provider shell mounts | The TUI root must provide app state, stats, FPS metrics, prompt overlay context, and keybinding setup before any visible shell renders. | `AgenCTuiApp` wraps `AgenCTuiShell` in `App`, `PromptOverlayProvider`, and `KeybindingSetup`; `App` wraps children in app state, stats, and FPS providers. | OK | `runtime/src/tui/components/App.tsx:934`, `runtime/src/tui/components/App.tsx:2252` | Provider order is explicit and stable. | None |
+| 2 | Initial app state | Main model, session model, and permission context must be seeded before footer/prompt reads them. | `initialState` pulls `startupModel` and `permissionModeRegistry.current()`. | OK | `runtime/src/tui/components/App.tsx:971`, `runtime/src/tui/components/App.tsx:977` | Footer reads app-state model and permission mode later in layout. | None |
+| 3 | Permission mode changes after mount | Footer/prompt must reflect permission mode registry updates without remounting. | `useSyncedPermissionContext` subscribes to mode changes and writes `toolPermissionContext` into app state. | OK | `runtime/src/tui/components/App.tsx:985`, `runtime/src/tui/components/App.tsx:990` | Update errors are swallowed. Rendering stays live. | None |
+| 4 | MCP surface idle | MCP clients/tools should be stable when unchanged so prompt/typeahead and permission overlays do not repaint unnecessarily. | `useSessionMcpSurface` snapshots clients/tools and compares signatures before state updates. | OK | `runtime/src/tui/components/App.tsx:1091`, `runtime/src/tui/components/App.tsx:1138` | Polls every 1500 ms and refreshes on session events. | None |
+| 5 | MCP surface object identity | Connected MCP tool/client changes must be detected even if value serialization is similar. | Signature includes object identity for connected clients and tool objects. | OK | `runtime/src/tui/components/App.tsx:1110`, `runtime/src/tui/components/App.tsx:1119` | Identity tracking prevents stale connected object surfaces. | None |
+| 6 | Initial submit with no prompt and no startup messages | Nothing should submit and no loading indicator should appear. | `useInitialSubmit` returns if no prompt and startup message list is empty. | OK | `runtime/src/tui/components/App.tsx:1055` | No spurious daemon call. | None |
+| 7 | Initial prompt exists | Initial prompt should submit exactly once, bridge to pending spinner, then follow normal lifecycle. | `submitted` ref prevents repeat; calls `submit(initialPrompt)`. | OK | `runtime/src/tui/components/App.tsx:1047`, `runtime/src/tui/components/App.tsx:1064` | Submit errors are swallowed by `_temp4`, so error rendering is not surfaced here. | P2 |
+| 8 | Startup messages exist but no prompt | Startup user messages should enqueue, then an empty submit should start the turn without duplicate visible prompt text. | Startup messages enqueue through `enqueueIdleInput`; empty `session.submit` uses `displayUserMessage: null`. | OK | `runtime/src/tui/components/App.tsx:1061`, `runtime/src/tui/components/App.tsx:1067` | Initial transcript conversion is in `useSessionTranscript`. | None |
+| 9 | Onboarding active | Onboarding must replace the normal transcript shell; prompt should use onboarding command set and not show spinner/normal overlays. | Early return renders title, `Onboarding`, and a dedicated `PromptInput`; normal `FullscreenLayout`, messages, spinner, cost dialog, and selector are bypassed. | OK | `runtime/src/tui/components/App.tsx:2152` | Onboarding prompt has `isLoading={false}`. | None |
+| 10 | Normal empty idle shell | Empty idle shell should render messages area, realtime panel, no spinner, prompt visible, and layout chrome depending on fullscreen mode. | `Messages`, `RealtimePanel`, optional pipeline/compact/render-health/tool JSX, prompt input, and `FullscreenLayout` render. | OK | `runtime/src/tui/components/App.tsx:2169`, `runtime/src/tui/components/App.tsx:2170`, `runtime/src/tui/components/App.tsx:2207` | Empty-state copy is not owned by this root module; it is delegated to `Messages`. | None |
+| 11 | Prior messages idle | Existing transcript should remain visible, prompt should be editable, no spinner unless active agents exist. | `isLoading` depends on streaming, pending submission, or active session turn; prompt receives `isLoading={effectiveInputBusy}`. | OK | `runtime/src/tui/components/App.tsx:1469`, `runtime/src/tui/components/App.tsx:1470`, `runtime/src/tui/components/App.tsx:2207` | Recent memo fix stabilizes `commands`; root path now avoids one known transcript repaint. | None |
+| 12 | User submits normal prompt while daemon has not emitted `turn_started` | Input must clear immediately, history persists, spinner must appear as requesting, and prompt should become busy. | `pendingSubmission` is set before `session.submit`; `isLoading` includes it; spinner mode resolves to `requesting`. | OK | `runtime/src/tui/components/App.tsx:1632`, `runtime/src/tui/components/App.tsx:1637`, `runtime/src/tui/components/App.tsx:1470`, `runtime/src/tui/components/App.tsx:2142` | This covers the gap before daemon acknowledgement. | None |
+| 13 | Submit while already busy | Typed text should not start a second turn; it should queue, clear composer, preserve attachments, and not lose history. | Busy path enqueues command, clears input/pastes, persists history, and returns. | OK | `runtime/src/tui/components/App.tsx:1599`, `runtime/src/tui/components/App.tsx:1600`, `runtime/src/tui/components/App.tsx:1606` | Queue rendering is in `PromptInputQueuedCommands`. | None |
+| 14 | Queue drains after busy state clears | Queued commands should run only when not busy and no blocking overlay or onboarding is active. | Effect exits when busy, permission, elicitation, message selector, or onboarding active; then dequeues one command and runs it. | OK | `runtime/src/tui/components/App.tsx:1851`, `runtime/src/tui/components/App.tsx:1853`, `runtime/src/tui/components/App.tsx:1856` | Queue drain ticks after promise finalization. | None |
+| 15 | Model is requesting with no visible text | Spinner should be visible in the pinned bottom area above prompt. | `showSpinner` true when loading and no buffered text; `spinnerElement` renders before prompt in `bottomContent`. | OK | `runtime/src/tui/components/App.tsx:2126`, `runtime/src/tui/components/App.tsx:2150`, `runtime/src/tui/components/App.tsx:2216` | Correct for pending request and pre-token gap. | None |
+| 16 | Model streams assistant text with no tool running | A user-visible activity indicator should remain present if the product requirement is "spinner indication of anything taking place." | Current gate suppresses spinner when `streamingText` has content and no tool/local agent is active. | BUG | `runtime/src/tui/components/App.tsx:2123`, `runtime/src/tui/components/App.tsx:2126` | Text itself is treated as feedback; this conflicts with the stated UX expectation that spinner indicates ongoing work. | P1 |
+| 17 | Thinking block streaming | Thinking spinner mode should show while thinking is active unless a stronger visible state suppresses it. | `streamMode` chooses `thinking`, but `showSpinner` can still suppress spinner if buffered assistant text exists and no tool/local agent is active. | BUG | `runtime/src/tui/components/App.tsx:2142`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2126` | Thinking and text can coexist; current suppression can hide thinking activity. | P1 |
+| 18 | Tool running after buffered assistant text | Spinner should stay visible and indicate tool work even if assistant text has already streamed. | `inProgressToolCount > 0` overrides buffered-text suppression and sets mode `tool-use` with "Running tools". | OK | `runtime/src/tui/components/App.tsx:2123`, `runtime/src/tui/components/App.tsx:2131`, `runtime/src/tui/components/App.tsx:2143`, `runtime/src/tui/components/App.tsx:2150` | This root path is implemented. | None |
+| 19 | Local agent active while leader idle | A visible activity indicator must show because work is still happening outside the leader turn. | `hasActiveLocalAgents` contributes to `effectiveInputBusy` and `showSpinner`; spinner gets `leaderIsIdle`. | OK | `runtime/src/tui/components/App.tsx:1468`, `runtime/src/tui/components/App.tsx:1471`, `runtime/src/tui/components/App.tsx:2127`, `runtime/src/tui/components/App.tsx:2150` | Detailed agent spinner rows are in spinner module, not audited in this pass. | None |
+| 20 | Permission request active | Prompt should be hidden, spinner should be hidden, permission overlay should be visible in scrollable overlay region. | Prompt gate false when permission count nonzero; spinner gate false; `overlayContent` includes `PermissionOverlay`. | OK | `runtime/src/tui/components/App.tsx:916`, `runtime/src/tui/components/App.tsx:2128`, `runtime/src/tui/components/App.tsx:2194`, `runtime/src/tui/components/App.tsx:2201` | Overlay placement is inside `ScrollBox` in fullscreen layout. | None |
+| 21 | Permission request for missing/unregistered tool | UI must fail closed and not render an approval surface for the wrong tool. | `buildToolUseConfirm` denies and returns null when tool name cannot be resolved. | OK | `runtime/src/tui/permission-requests.tsx:93`, `runtime/src/tui/permission-requests.tsx:109`, `runtime/src/tui/permission-requests.tsx:117` | Security behavior is correct at rendering boundary. | None |
+| 22 | Permission overlay context | Permission components must receive enough context to render dialogs without crashing. | `AgenCPermissionOverlay` builds minimal `toolUseContext.options` with tools, MCP clients, commands, debug, and session flags. | OK | `runtime/src/tui/permission-requests.tsx:239`, `runtime/src/tui/permission-requests.tsx:264` | The comment says this replaced a crashy legacy stub. | None |
+| 23 | Elicitation active | Prompt should be hidden, spinner hidden, elicitation content visible with title, message, detail lines, placeholder. | `useTuiElicitation` exposes prompt; `ElicitationOverlay` renders prompt fields; root overlay includes it. | OK | `runtime/src/tui/components/App.tsx:757`, `runtime/src/tui/components/App.tsx:815`, `runtime/src/tui/components/App.tsx:2195`, `runtime/src/tui/components/App.tsx:2204` | Input is routed through `submitViaElicitationPrompt`. | None |
+| 24 | Permission and elicitation active simultaneously | One focus owner should be unambiguous; if both are possible, rendering should specify priority or queueing. | `overlayContent` renders `PermissionOverlay` and `ElicitationOverlay` in the same fragment when both exist. | BUG | `runtime/src/tui/components/App.tsx:2194`, `runtime/src/tui/components/App.tsx:2195`, `runtime/src/tui/components/App.tsx:2239` | Root render has no visible priority or focus arbitration for simultaneous overlays. | P1 |
+| 25 | Message selector visible | Prompt and spinner should be suppressed; selector should paint over the main layout; conversation actions must reject while busy. | Prompt gate false, spinner gate false, selector rendered after layout; restore/summarize guard active turn. | OK | `runtime/src/tui/components/App.tsx:1979`, `runtime/src/tui/components/App.tsx:1995`, `runtime/src/tui/components/App.tsx:2033`, `runtime/src/tui/components/App.tsx:2129`, `runtime/src/tui/components/App.tsx:2242` | Detailed selector rendering is outside this pass. | None |
+| 26 | Completion pipeline active | Prompt should be owned by pipeline, pipeline rows visible, rows highlighted as warning while active. | `completionPipelineOwnsPrompt` feeds `effectiveInputBusy` and prompt gate; rows render in scrollable content with warning color. | OK | `runtime/src/tui/components/App.tsx:1320`, `runtime/src/tui/components/App.tsx:1328`, `runtime/src/tui/components/App.tsx:1471`, `runtime/src/tui/components/App.tsx:2173`, `runtime/src/tui/components/App.tsx:2205` | Pipeline text rows render above compact/render-health/tool JSX and below realtime panel. | None |
+| 27 | Completion pipeline active while user types | Prompt should be hidden because the completion pipeline owns the prompt surface. | `shouldShowPromptInputState` returns false when `completionPipelineOwnsPrompt` true. | OK | `runtime/src/tui/components/App.tsx:916`, `runtime/src/tui/components/App.tsx:920`, `runtime/src/tui/components/App.tsx:926` | Root suppression implemented. | None |
+| 28 | Slash command local success | Slash command should echo input, render result transiently, avoid model submit, and clear pending spinner. | Slash input emits user message, dispatches command, renders text/compact via `showTransientResult`, clears pending when not forwarded. | OK | `runtime/src/tui/components/App.tsx:1671`, `runtime/src/tui/components/App.tsx:1681`, `runtime/src/tui/components/App.tsx:1751`, `runtime/src/tui/components/App.tsx:1782` | Transient overlay clears after 3000 ms or next submit. | None |
+| 29 | Slash command error | Error should be visible but not permanent; prompt should remain available. | `showTransientResult` colors error border red and clears timer on next input. | OK | `runtime/src/tui/components/App.tsx:1510`, `runtime/src/tui/components/App.tsx:1517`, `runtime/src/tui/components/App.tsx:1524`, `runtime/src/tui/components/App.tsx:1623` | Error content is rendered as tool JSX in scrollable content. | None |
+| 30 | Slash command produces prompt result | Produced prompt should not bypass ordering; it should enter queue path. | `renderResult` enqueues prompt result and schedules queue drain. | OK | `runtime/src/tui/components/App.tsx:1735`, `runtime/src/tui/components/App.tsx:1740` | `forwardedToModel` returns false because queue owns execution. | None |
+| 31 | Slash exit | App must unmount and exit cleanly rather than swallowing command. | `result.kind === "exit"` calls Ink `exit()`. | OK | `runtime/src/tui/components/App.tsx:1724`, `runtime/src/tui/components/App.tsx:1732` | No extra transcript row expected. | None |
+| 32 | `session.submit` rejects | Error should surface, spinner should clear, app should not unhandled-reject. | Catch renders transient error and clears `pendingSubmission`. | OK | `runtime/src/tui/components/App.tsx:1805`, `runtime/src/tui/components/App.tsx:1806`, `runtime/src/tui/components/App.tsx:1814`, `runtime/src/tui/components/App.tsx:1821` | Good recovery path. | None |
+| 33 | Turn starts after pending submit | Optimistic spinner should clear when daemon activity begins. | Effect clears pending on `isStreaming`, `streamingText`, or assistant count growth. | OK | `runtime/src/tui/components/App.tsx:1824`, `runtime/src/tui/components/App.tsx:1844` | Handles skipped `turn_started`. | None |
+| 34 | Turn cancel available | ESC should cancel active streaming turn only when abort controller exists. | Controller is created when transcript streaming true; cancel aborts local controller and calls daemon cancel. | OK | `runtime/src/tui/components/App.tsx:1882`, `runtime/src/tui/components/App.tsx:1884`, `runtime/src/tui/components/App.tsx:1892`, `runtime/src/tui/components/App.tsx:1901` | Cancel handler is wired through `CancelRequestHandler`. | None |
+| 35 | Background agents killed | User should receive concise notification after cancel kills background agents. | `formatAgentsKilledNotification` formats descriptions and `handleAgentsKilled` posts immediate notification. | OK | `runtime/src/tui/components/App.tsx:895`, `runtime/src/tui/components/App.tsx:1903` | Notification detail limited to descriptions. | None |
+| 36 | Cost threshold reached with console billing access | Cost dialog should render once and persist acknowledgement. | Effect opens dialog at cost >= 5; dialog renders after layout; done saves config. | OK | `runtime/src/tui/components/App.tsx:1918`, `runtime/src/tui/components/App.tsx:1923`, `runtime/src/tui/components/App.tsx:2095`, `runtime/src/tui/components/App.tsx:2240` | Modal ordering after layout means it paints above root layout. | None |
+| 37 | Cost threshold reached without console billing access | Should mark as shown without rendering inaccessible dialog. | Effect sets `haveShownCostDialog` and only sets `showCostDialog` with access. | OK | `runtime/src/tui/components/App.tsx:1922`, `runtime/src/tui/components/App.tsx:1923` | Rendering is intentionally suppressed. | None |
+| 38 | Worktree exit flow | Exiting with active worktree session should render confirm flow instead of immediate exit. | `handleExit` renders `ExitFlow` when `getCurrentWorktreeSession()` exists. | OK | `runtime/src/tui/components/App.tsx:2084`, `runtime/src/tui/components/App.tsx:2085`, `runtime/src/tui/components/App.tsx:2241` | Exit flow paints after layout. | None |
+| 39 | Render health slow frame warning | Slow render should produce visible warning only after enough samples and when thresholds are crossed. | `formatRenderHealthWarning` clamps impossible low FPS, suppresses under 10 samples, warns under average 20 or low 12. | OK | `runtime/src/tui/components/App.tsx:880`, `runtime/src/tui/components/App.tsx:885`, `runtime/src/tui/components/App.tsx:2180` | Current warning matches screenshot class of `Render health` output. | None |
+| 40 | Compact progress hooks | Compact hook start should show hook label in transcript area and clear when compact ends. | `hooks_start` maps to hook label, `compact_start` maps to compacting label, else idle. | OK | `runtime/src/tui/components/App.tsx:1927`, `runtime/src/tui/components/App.tsx:1940`, `runtime/src/tui/components/App.tsx:1950`, `runtime/src/tui/components/App.tsx:1958` | Response length is optional. | None |
+| 41 | Realtime panel placement | Realtime state should render after messages and before completion/compact/status rows. | `RealtimePanel` is second child of `scrollableContent`. | OK | `runtime/src/tui/components/App.tsx:2170`, `runtime/src/tui/components/App.tsx:2172` | Detailed realtime panel audit remains. | None |
+| 42 | Fullscreen paint order | Expected order: top chrome, scroll region, bottom slot with prompt/spinner, bottom chrome, modal above all. | `FullscreenLayout` returns `PromptOverlayProvider`, `DesignTopChrome`, scroll wrapper, bottom slot, `DesignBottomChrome`, modal. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:451` | Root `App` wraps this in `AlternateScreen` when fullscreen. | None |
+| 43 | Root body paint order | Keybinding/cancel handlers should mount before visible layout; selector/cost/exit overlays should paint after layout. | Body order is title, global keybindings, scroll handler, cancel handler, layout, cost dialog, exit flow, message selector. | OK | `runtime/src/tui/components/App.tsx:2229`, `runtime/src/tui/components/App.tsx:2239`, `runtime/src/tui/components/App.tsx:2240`, `runtime/src/tui/components/App.tsx:2242` | Focus ordering depends on child hooks in later modules. | None |
+| 44 | Non-fullscreen paint order | Non-fullscreen mode should render sequentially into terminal scrollback. | `FullscreenLayout` returns `scrollable`, `bottom`, `overlay`, `modal` in sequence. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:453`, `runtime/src/tui/components/FullscreenLayout.tsx:455` | Root still wraps in a column Box. | None |
+| 45 | ScrollBox content order | Messages and transient content should scroll; prompt must not scroll in fullscreen. | ScrollBox contains scrollable content plus overlay; bottom slot is outside ScrollBox and flex-shrink zero. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:375`, `runtime/src/tui/components/FullscreenLayout.tsx:427` | Spinner/prompt are pinned in bottom slot. | None |
+| 46 | Bottom slot clipping | Bottom content should not consume the full screen and should not resize scroll region unbounded. | Bottom slot has `maxHeight="50%"`, flex-shrink zero, and inner `overflowY="hidden"`. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:427`, `runtime/src/tui/components/FullscreenLayout.tsx:429` | Long prompt or overlays can be clipped rather than scrollable. Detailed prompt audit remains. | P2 |
+| 47 | Slash suggestions overlay | Suggestions should paint above prompt, escape bottom slot clipping, and not move scrollback. | `SuggestionsOverlay` is absolute at `bottom="100%"`, opaque, inside bottom slot before dialog overlay. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:642`, `runtime/src/tui/components/FullscreenLayout.tsx:650`, `runtime/src/tui/components/FullscreenLayout.tsx:658` | Screenshot issue with black fill belongs here and PromptInput suggestions. Full diagnosis remains for PromptInput module. | P1 |
+| 48 | Prompt dialog overlay | Prompt-level dialog should paint above suggestions if both appear. | `DialogOverlay` renders after `SuggestionsOverlay`, absolute bottom 100 percent, opaque. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:669`, `runtime/src/tui/components/FullscreenLayout.tsx:672`, `runtime/src/tui/components/FullscreenLayout.tsx:680` | The comment says both should not normally coexist. | None |
+| 49 | Modal pane | Slash-command modal should paint over ScrollBox and bottom slot, reserve transcript peek rows, and use modal context. | `modal` gets absolute bottom pane with `ModalContext`, divider line, padding, max height from terminal rows. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:26`, `runtime/src/tui/components/FullscreenLayout.tsx:436`, `runtime/src/tui/components/FullscreenLayout.tsx:438` | Root `App` does not currently pass `modal`; other modules may. | P2 |
+| 50 | Overlay suppresses sticky header and new-message pill | Permission/elicitation overlay should avoid conflicting sticky chrome. | Header prompt and pill both require `overlay == null`. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:355`, `runtime/src/tui/components/FullscreenLayout.tsx:386` | Good z-order suppression. | None |
+| 51 | Sticky prompt header | When scrolled into history, header should be one fixed row and clickable back to prompt. | `StickyPromptHeader` is fixed height 1, truncate-end, hover background, onClick wired. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:590`, `runtime/src/tui/components/FullscreenLayout.tsx:622`, `runtime/src/tui/components/FullscreenLayout.tsx:631` | Sticky tracking writer is in `VirtualMessageList`, not this pass. | None |
+| 52 | New messages pill | While scrolled away, pill should show `Jump to bottom` or count of new assistant turns, centered over scroll area. | `NewMessagesPill` absolute bottom centered; label uses count and arrow glyph. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:542`, `runtime/src/tui/components/FullscreenLayout.tsx:562`, `runtime/src/tui/components/FullscreenLayout.tsx:580` | Count source is external props; not wired from root `App` in this audited path. | P2 |
+| 53 | Fullscreen top/bottom chrome narrow width | Chrome should progressively omit low-value labels on narrow terminals while keeping model/mode readable. | Top chrome hides `agenc` under 56 cols, orchestrator under 64, task under 84; bottom abbreviates under 70. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:475`, `runtime/src/tui/components/FullscreenLayout.tsx:485`, `runtime/src/tui/components/FullscreenLayout.tsx:501` | Truncation exists for title and footer text. | None |
+| 54 | Tiny terminal height | Layout should avoid negative dimensions and should still show critical input/overlay if rows are extremely small. | Modal viewport clamps rows/maxHeight to zero; bottom slot max-height 50 percent may leave little or no prompt room. | BUG | `runtime/src/tui/components/FullscreenLayout.tsx:26`, `runtime/src/tui/components/FullscreenLayout.tsx:31`, `runtime/src/tui/components/FullscreenLayout.tsx:429` | Critical input visibility for tiny heights is not guaranteed in root layout. | P2 |
+| 55 | Terminal resize | Chrome/modal measurements should recompute from terminal rows/columns. | `useTerminalSize` feeds `terminalRows` and `columns`; modal and chrome derive from those values. | OK | `runtime/src/tui/components/FullscreenLayout.tsx:304`, `runtime/src/tui/components/FullscreenLayout.tsx:436`, `runtime/src/tui/components/FullscreenLayout.tsx:451` | ScrollBox resize behavior remains for Ink module audit. | None |
+| 56 | ASCII terminal mode | All decorative glyphs should have ASCII fallback when unicode is disabled or unsupported. | Some glyphs go through `selectAgenCTuiGlyphs`, but top chrome uses raw `●`, dividers use raw `─`, modal divider uses raw `▔`, title prefix uses `✳`, animation uses braille. | BUG | `runtime/src/tui/components/FullscreenLayout.tsx:442`, `runtime/src/tui/components/FullscreenLayout.tsx:482`, `runtime/src/tui/components/FullscreenLayout.tsx:493`, `runtime/src/tui/components/App.tsx:1243` | Root module has partial glyph abstraction only. | P1 |
+| 57 | No-color terminal mode | Chrome/status should remain meaningful without color. | Several semantic states are conveyed by color tokens and colored dots; no explicit no-color labels replace the dots. | MISSING | `runtime/src/tui/components/FullscreenLayout.tsx:480`, `runtime/src/tui/components/FullscreenLayout.tsx:482`, `runtime/src/tui/components/FullscreenLayout.tsx:505` | Ink may strip colors, but root chrome does not add textual equivalents. | P2 |
+| 58 | Legacy theme token in live chrome | Live AgenC chrome should not use old/donor-branded theme token names. | `backgroundColor="clawd_background"` is used in top and bottom chrome. | LEGACY | `runtime/src/tui/components/FullscreenLayout.tsx:480`, `runtime/src/tui/components/FullscreenLayout.tsx:505` | Old theme token name is not AgenC-owned and should be removed from live render surface. | P1 |
+| 59 | Moved-source/upstream markers in live layout | Live AgenC rendering files should not carry moved-source or upstream purge markers. | `FullscreenLayout` has `@ts-nocheck`, moved-source note, and upstream-import keep comments. | LEGACY | `runtime/src/tui/components/FullscreenLayout.tsx:1`, `runtime/src/tui/components/FullscreenLayout.tsx:2`, `runtime/src/tui/components/FullscreenLayout.tsx:14` | File is live root layout, not an isolated migration artifact. | P2 |
+| 60 | Upstream provenance comments in live transcript/root files | Live AgenC rendering code should not describe itself as upstream-derived behavior. | `App.tsx` terminal-title comment and `session-transcript.ts` comments repeatedly reference upstream renderer behavior. | LEGACY | `runtime/src/tui/components/App.tsx:1248`, `runtime/src/tui/session-transcript.ts:40`, `runtime/src/tui/session-transcript.ts:821`, `runtime/src/tui/session-transcript.ts:1477` | Comments are not user-visible UI, but they are live AgenC source surface and migration residue. | P3 |
+| 61 | Completion pipeline no events | No rows should render and prompt should not be owned. | Empty state has null pipeline, empty gates, no active gate, no terminal, `ownsPrompt=false`; formatter returns empty rows. | OK | `runtime/src/tui/completion-pipeline.ts:76`, `runtime/src/tui/completion-pipeline.ts:339`, `runtime/src/tui/completion-pipeline.ts:342` | Root renders nothing because map is empty. | None |
+| 62 | Completion pipeline gate started | The started gate should become active, own prompt, and render as running with ordinal. | Reducer sets `activeGate`, `ownsPrompt` true, formatter emits `Completion n/9: label running`. | OK | `runtime/src/tui/completion-pipeline.ts:259`, `runtime/src/tui/completion-pipeline.ts:323`, `runtime/src/tui/completion-pipeline.ts:349` | Gate labels cover all nine known IDs. | None |
+| 63 | Completion pipeline gate succeeded | Active gate should clear when its matching gate succeeds, row should remain as ok. | `succeeded` clears active if matching; formatter suffix becomes `ok`. | OK | `runtime/src/tui/completion-pipeline.ts:262`, `runtime/src/tui/completion-pipeline.ts:350` | If later gate starts, active moves to later gate. | None |
+| 64 | Completion pipeline gate failed | Prompt ownership should release, terminal failure row should include gate label and detail. | Failed status clears active and sets terminal; formatter emits failed-at row. | OK | `runtime/src/tui/completion-pipeline.ts:264`, `runtime/src/tui/completion-pipeline.ts:266`, `runtime/src/tui/completion-pipeline.ts:368` | Detail bounded to 240 chars earlier. | None |
+| 65 | Completion pipeline cancelled | Prompt ownership should release, terminal cancellation row should say cancelled. | Cancelled status clears active, terminal detail defaults to `Pipeline cancelled`; formatter emits cancelled row. | OK | `runtime/src/tui/completion-pipeline.ts:264`, `runtime/src/tui/completion-pipeline.ts:270`, `runtime/src/tui/completion-pipeline.ts:364` | Cancelled gate row also includes cancelled suffix. | None |
+| 66 | Completion pipeline completed | Prompt ownership should release, terminal complete row should render final detail. | Completed clears active and sets terminal complete; formatter emits complete row. | OK | `runtime/src/tui/completion-pipeline.ts:276`, `runtime/src/tui/completion-pipeline.ts:361` | Completed can arrive without all gate rows. | None |
+| 67 | Completion pipeline out-of-order terminal before started | Non-start terminal events should be held until the gate has started, except completed. | Reducer holds terminal gate events if start not seen; flushes them after start. | OK | `runtime/src/tui/completion-pipeline.ts:286`, `runtime/src/tui/completion-pipeline.ts:303`, `runtime/src/tui/completion-pipeline.ts:309` | This is explicit out-of-order handling. | None |
+| 68 | Completion pipeline duplicate sequence | Latest event for a pipeline sequence should win so log rewrites do not double-render. | `dedupedBySequence` map stores by pipeline and sequence, later value overwrites. | OK | `runtime/src/tui/completion-pipeline.ts:224`, `runtime/src/tui/completion-pipeline.ts:225`, `runtime/src/tui/completion-pipeline.ts:228` | Sorting precedes dedupe. | None |
+| 69 | Completion pipeline old pipeline events | Only latest pipeline should render. | Reducer selects `latestPipelineId` from last event and skips other pipeline IDs. | OK | `runtime/src/tui/completion-pipeline.ts:224`, `runtime/src/tui/completion-pipeline.ts:227` | Correct for repeated completion attempts. | None |
+| 70 | Completion pipeline detail truncation | Long messages/details must not flood prompt area. | `boundText` normalizes whitespace and truncates message/detail to max lengths. | OK | `runtime/src/tui/completion-pipeline.ts:110`, `runtime/src/tui/completion-pipeline.ts:162`, `runtime/src/tui/completion-pipeline.ts:165` | Detail max is 240 chars. | None |
+| 71 | Transcript history cleared | All visible transcript state should reset, including open tools, streaming text, thinking, collab agents, and current turn. | `history_cleared` clears arrays, sets, maps, streaming accumulators, and flags. | OK | `runtime/src/tui/session-transcript.ts:1148`, `runtime/src/tui/session-transcript.ts:1152`, `runtime/src/tui/session-transcript.ts:1159`, `runtime/src/tui/session-transcript.ts:1166` | Dedup key is re-added after reset. | None |
+| 72 | Transcript history replaced | Existing transcript should be replaced by supplied messages and all live streaming/tool state cleared. | `history_replaced` clears state then pushes replacement messages if array. | OK | `runtime/src/tui/session-transcript.ts:1168`, `runtime/src/tui/session-transcript.ts:1187`, `runtime/src/tui/session-transcript.ts:1189` | Replacement shape trust is broad. | P3 |
+| 73 | Turn start | Turn start should set streaming true, clear streaming text/tool/thinking state, and record current turn id. | Handles `turn_start` and `turn_started`, clears streaming accumulators. | OK | `runtime/src/tui/session-transcript.ts:1193`, `runtime/src/tui/session-transcript.ts:1195`, `runtime/src/tui/session-transcript.ts:1203`, `runtime/src/tui/session-transcript.ts:1208` | Correct turn boundary reset. | None |
+| 74 | Turn complete with content | Final assistant content should persist once and streaming state should clear. | Uses `lastAgentMessage`, `content`, or buffered text; suppresses duplicate `lastAssistantText`; clears streaming buffers. | OK | `runtime/src/tui/session-transcript.ts:1211`, `runtime/src/tui/session-transcript.ts:1218`, `runtime/src/tui/session-transcript.ts:1222` | Good duplicate guard. | None |
+| 75 | Turn aborted with partial text/thinking | Partial visible content should persist, then warning row should explain abort. | Preserves streaming text and non-redacted thinking, clears state, adds warning. | OK | `runtime/src/tui/session-transcript.ts:1228`, `runtime/src/tui/session-transcript.ts:1236`, `runtime/src/tui/session-transcript.ts:1243`, `runtime/src/tui/session-transcript.ts:1263` | Redacted thinking is not persisted. | None |
+| 76 | User message event | User prompt should render as user message with display text preferred. | Pushes `makeUserMessage(payload.displayText ?? payload.message)`. | OK | `runtime/src/tui/session-transcript.ts:1265` | Empty content becomes `(empty)` in helper. | None |
+| 77 | Assistant text deltas | Assistant deltas should accumulate as streaming text until final turn completion. | `assistant_text` appends `content`; `agent_message_delta` appends `delta`. | OK | `runtime/src/tui/session-transcript.ts:1272`, `runtime/src/tui/session-transcript.ts:1277` | Rendering delegated to `Messages` via `streamingText`. | None |
+| 78 | Thinking delta arrives before thinking start | Out-of-order thinking delta should still render rather than disappear. | Synthesizes `streamingThinking` when delta arrives without block start. | OK | `runtime/src/tui/session-transcript.ts:1299`, `runtime/src/tui/session-transcript.ts:1305` | Good out-of-order handling for this one event family. | None |
+| 79 | Thinking block stop | Thinking should stop streaming but remain visible according to downstream visibility window. | Sets `isStreaming=false` and `streamingEndedAt=Date.now()`. | OK | `runtime/src/tui/session-transcript.ts:1323`, `runtime/src/tui/session-transcript.ts:1327` | Visibility timing is consumed by `Messages`. | None |
+| 80 | Realtime assistant transcript | Assistant realtime deltas should stream, then persist final text and clear realtime buffer. | Non-user deltas append `realtimeStreamingText`; done writes assistant message and clears. | OK | `runtime/src/tui/session-transcript.ts:1344`, `runtime/src/tui/session-transcript.ts:1352`, `runtime/src/tui/session-transcript.ts:1360` | User realtime done writes user message. | None |
+| 81 | Realtime error/closed | Realtime error should show error and clear streaming buffer; close should show close reason. | `realtime_error` pushes error and clears; `realtime_closed` pushes info and clears. | OK | `runtime/src/tui/session-transcript.ts:1371`, `runtime/src/tui/session-transcript.ts:1380`, `runtime/src/tui/session-transcript.ts:1382` | Good recovery rendering. | None |
+| 82 | Generic tool start | Tool use should become visible and count as in-progress. | `tool_call_started`, `mcp_tool_call_begin`, and `exec_command_begin` add open tool unless suppressed. | OK | `runtime/src/tui/session-transcript.ts:1442`, `runtime/src/tui/session-transcript.ts:1471` | Bash/MCP names are inferred. | None |
+| 83 | Tool result before start | Out-of-order result should not crash; should recover with warning/error unless intentionally suppressible. | `pushToolResult` detects missing open tool and emits recovered warning or special suppression. | OK | `runtime/src/tui/session-transcript.ts:475`, `runtime/src/tui/session-transcript.ts:484`, `runtime/src/tui/session-transcript.ts:504` | Line-numbered read result can be suppressed. | None |
+| 84 | Structured tool input delta before block start | Partial tool JSON should not be lost if delta arrives before block start. | Delta is buffered by index and applied when block start arrives. | OK | `runtime/src/tui/session-transcript.ts:1516`, `runtime/src/tui/session-transcript.ts:1533`, `runtime/src/tui/session-transcript.ts:1552` | Explicit out-of-order handling for streaming tool input. | None |
+| 85 | Tool completion from streaming block with no start event | Completion should synthesize a tool-use row from streamed input before result. | Completion checks `streamingToolUses` and calls `pushToolUse` before `pushToolResult`. | OK | `runtime/src/tui/session-transcript.ts:1580`, `runtime/src/tui/session-transcript.ts:1584`, `runtime/src/tui/session-transcript.ts:1603` | Good recovery for missing start. | None |
+| 86 | Collab v2 raw tool rows | Raw generic rows for agent tools should be suppressed so structured agent rows are not duplicated. | Tool starts for `spawn_agent`, `wait_agent`, `close_agent`, etc. add to `suppressedToolResults` and skip generic row. | OK | `runtime/src/tui/session-transcript.ts:133`, `runtime/src/tui/session-transcript.ts:1457`, `runtime/src/tui/session-transcript.ts:1467` | Structured rows handled by collab events. | None |
+| 87 | Background agent status lifecycle | Idle, starting, running, blocked, completing, failed, completed, cancelled should render clear system rows. | `normalizeBackgroundStatus` maps lifecycle names; event emits `Background agent <status>` with optional message. | OK | `runtime/src/tui/session-transcript.ts:664`, `runtime/src/tui/session-transcript.ts:668`, `runtime/src/tui/session-transcript.ts:676`, `runtime/src/tui/session-transcript.ts:681`, `runtime/src/tui/session-transcript.ts:683`, `runtime/src/tui/session-transcript.ts:686`, `runtime/src/tui/session-transcript.ts:689`, `runtime/src/tui/session-transcript.ts:1653` | This is transcript-only; task panes are later. | None |
+| 88 | Warning event visibility | Only actionable or turn-explaining warnings should surface. | Allow-list controls visible warning causes; other warning events are dropped. | OK | `runtime/src/tui/session-transcript.ts:94`, `runtime/src/tui/session-transcript.ts:1631`, `runtime/src/tui/session-transcript.ts:1649` | Prevents warning spam. | None |
+| 89 | Error and stream_error events | Errors should render as visible error system messages. | Both event types push system error with payload message. | OK | `runtime/src/tui/session-transcript.ts:1656`, `runtime/src/tui/session-transcript.ts:1658` | Missing message becomes empty string via `stringResult`. | P3 |
+| 90 | Slash result transcript rows | Text/compact should render info, errors should render clean error, skip/exit/prompt should not create transcript noise. | Switch formats by result kind. | OK | `runtime/src/tui/session-transcript.ts:1660`, `runtime/src/tui/session-transcript.ts:1671`, `runtime/src/tui/session-transcript.ts:1678`, `runtime/src/tui/session-transcript.ts:1693` | Matches App slash formatter. | None |
+| 91 | Collab agent spawn lifecycle | Starting spawn should show running row; end should show spawned or failed with status. | `collab_agent_spawn_begin` opens tool and renders `Spawning agent`; end deletes open tool and renders final state. | OK | `runtime/src/tui/session-transcript.ts:1704`, `runtime/src/tui/session-transcript.ts:1713`, `runtime/src/tui/session-transcript.ts:1716`, `runtime/src/tui/session-transcript.ts:1733` | Missing callId drops event. | P3 |
+| 92 | Collab agent interaction lifecycle | Sending input should show running row; end should show sent input plus status. | Begin/end rows implemented with receiver metadata updates. | OK | `runtime/src/tui/session-transcript.ts:1742`, `runtime/src/tui/session-transcript.ts:1749`, `runtime/src/tui/session-transcript.ts:1758`, `runtime/src/tui/session-transcript.ts:1774` | Good structured transcript surface. | None |
+| 93 | Collab wait with multiple agents | Waiting should identify number/labels; completion should list statuses and timeout state. | Begin aggregates receiver labels; end aggregates `agentStatuses` or `statuses`. | OK | `runtime/src/tui/session-transcript.ts:1783`, `runtime/src/tui/session-transcript.ts:1796`, `runtime/src/tui/session-transcript.ts:1817`, `runtime/src/tui/session-transcript.ts:1839` | Supports simultaneous agent outputs as summarized rows. | None |
+| 94 | Collab close/resume lifecycle | Close/resume should show running then terminal rows with previous/final status. | Close and resume begin/end rows are implemented. | OK | `runtime/src/tui/session-transcript.ts:1850`, `runtime/src/tui/session-transcript.ts:1860`, `runtime/src/tui/session-transcript.ts:1869`, `runtime/src/tui/session-transcript.ts:1888`, `runtime/src/tui/session-transcript.ts:1907` | Good lifecycle coverage. | None |
+| 95 | Plan events | Plan start and completed item should appear in transcript. | `plan_started` emits system info; `plan_item_completed` emits assistant text. | OK | `runtime/src/tui/session-transcript.ts:1926`, `runtime/src/tui/session-transcript.ts:1929` | Detailed `/plan` UI remains in PromptInput/commands modules. | None |
+| 96 | Deprecation notice | Deprecation notices should be visible warnings. | Emits warning system message. | OK | `runtime/src/tui/session-transcript.ts:1932` | Straightforward. | None |
+| 97 | Duplicate transcript events | Duplicate events should not double-render. | Reducer dedupes by seq, id, or JSON fallback; adapter also has `seen`. | OK | `runtime/src/tui/session-transcript.ts:404`, `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1995` | JSON fallback may be unstable for non-serializable events. | P3 |
+| 98 | Transcript reset event appended mid-session | Reset should discard previous events immediately. | Reducer replaces events with reset event when reset arrives. | OK | `runtime/src/tui/session-transcript.ts:1987`, `runtime/src/tui/session-transcript.ts:1990` | Correct boot/recovery behavior. | None |
+| 99 | Out-of-order transcript events generally | Event order must be robust, especially for lifecycle events arriving late or replayed. | Unlike completion pipeline, session transcript reducer appends arrival order and adapter processes that order; only selected families handle out-of-order cases. | BUG | `runtime/src/tui/session-transcript.ts:1141`, `runtime/src/tui/session-transcript.ts:1966`, `runtime/src/tui/session-transcript.ts:1996` | A late `turn_started` after `turn_complete`, or late generic lifecycle event, can produce impossible transient state. | P1 |
+| 100 | Ledger updates and token/cost ledger rendering | Supervisor or ledger updates should have a visible, ordered render path if emitted by the runtime. | Root shell only wires `useCostSummary` and cost threshold modal; no audited root transcript case handles ledger-specific events. | MISSING | `runtime/src/tui/components/App.tsx:1317`, `runtime/src/tui/components/App.tsx:1918` | No ledger event render path found in this module partition. | P2 |
+
+## Part 2 - PromptInput, Slash, And Typeahead Rendering
+
+| # | Scenario | Expected behavior (verbose, exact) | Current behavior | Status | File:line | Notes / defect detail | Fix priority |
+|---:|---|---|---|---|---|---|---|
+| 101 | PromptInput cold idle render | With no dialog, no suggestions, no queued commands, and normal prompt mode, the bottom slot should show one bordered input row with a mode glyph, placeholder text, footer/status row, and no hidden modal side effects. | `PromptInput` builds `baseProps`, renders `ConfiguredPromptTextInput` inside a bordered row, then renders `PromptInputFooter`; placeholder comes from `usePromptInputPlaceholder`. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2553`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2624`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2649`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2661`, `runtime/src/tui/components/PromptInput/usePromptInputPlaceholder.ts:123` | This covers the normal visible composer surface. | None |
+| 102 | Bash composer mode | When the user enters bash mode, the typed `!` marker should not remain in the editable buffer, the prompt chrome should switch to bash styling, the footer should state bash mode, and submit should emit bash input/output transcript rows rather than send plain text to the model. | `detectModeEntry` strips the marker; border and indicator use `bashBorder`; footer returns `! for bash mode`; bash submit emits `<bash-input>`, processes the shell command, emits stdout/stderr, clears input, and returns to prompt mode. | OK | `runtime/src/tui/components/PromptInput/inputModes.ts:233`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1166`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2595`, `runtime/src/tui/components/PromptInput/PromptInputModeIndicator.tsx:90`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:277`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1417` | Rendering and routing agree for this mode. | None |
+| 103 | Busy bash submission | If a bash command is submitted while a turn is already busy, the command should be visibly queued for the next turn, the composer should clear, and the UI should not pretend the bash command ran immediately. | `applyBusyInputSubmissionPolicy` enqueues bash input, emits a temporary notification, clears the input/cursor/buffer/history, and switches back to prompt mode. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:496`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:507`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:513`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:518`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:524` | Normal prompt-mode busy queuing is delegated to the root submit path already audited in Part 1. | None |
+| 104 | Non-prompt busy submission | If a future or non-default input mode is active while the leader is busy, the UI should not silently drop or submit that text as normal prompt text. | `applyBusyInputSubmissionPolicy` reports that the mode remains available after the current turn and returns without clearing the buffer. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:532`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:533`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:539` | The current known modes are prompt and bash. | None |
+| 105 | Teammate/agent input routing | When viewing an active teammate or local agent, the prompt should visibly target that agent, use that agent permission mode/color, and submit through agent input rather than leader input. | Active agent is resolved before busy policy; non-leader input calls `onAgentSubmit`; mode indicator receives `viewingAgentName` and `viewingAgentColor`; placeholder says `Message @name`. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:647`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:660`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1384`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2643`, `runtime/src/tui/components/PromptInput/usePromptInputPlaceholder.ts:135` | This row covers prompt ownership; task panes are audited later. | None |
+| 106 | External editor active | While `$EDITOR` owns the prompt, the TUI should suppress normal input editing and show a stable waiting state so the user knows why typing in the TUI is not effective. | `handleExternalEditor` sets `isExternalEditorActive`; render returns a bordered centered row saying `Save and close editor to continue...`. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:1739`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1741`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2617`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2620` | External editor errors are displayed through notifications. | None |
+| 107 | Model picker active | When the model picker is open, it should own the prompt area and prevent the normal composer from rendering underneath it. | `modelPickerElement` is memoized and returned before `baseProps` and the normal composer are created. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2448`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2450`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2543`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2544` | This is an early-return dialog path inside PromptInput. | None |
+| 108 | Fast mode picker active | When the fast mode picker is open, it should show a focused picker with toggle/confirm/cancel instructions and suppress the normal composer. | `FastModePicker` handles Escape, Return, Tab, and Space; the memoized element returns before the normal composer. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:209`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:218`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:239`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2467`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2547` | The picker itself is rendered inline in the prompt area. | None |
+| 109 | Thinking toggle active | When the thinking toggle is open, it should own the prompt area and report the new value through a notification after selection. | `thinkingToggleElement` returns before the normal composer; `handleThinkingSelect` updates app state, closes the toggle, logs, and enqueues a notification. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2475`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2484`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2497`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2550` | Detailed `ThinkingToggle` internals belong to the dialogs partition. | None |
+| 110 | Background tasks dialog active from prompt | When the tasks footer/dialog is opened, it should replace the prompt composer and receive current tool-use context. | `showBashesDialog` returns `BackgroundTasksDialog` before teams/search/model/prompt rendering and passes `initialDetailTaskId` when supplied. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2511`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2512` | Detailed tasks dialog rendering is in a later partition. | None |
+| 111 | Teams dialog active from prompt | When team management is opened and agent swarms are enabled, it should replace the prompt composer and clear its own open state on done. | `showTeamsDialog` returns `TeamsDialog` before quick-search and prompt rendering. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2514`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2515` | Detailed team dialog rendering is in a later partition. | None |
+| 112 | Quick open/global search/history picker active | Prompt-level selectors should replace the composer, own keyboard input, and insert selected content back into the composer with spacing and cursor restoration. | Quick open and global search early-return their dialogs; history picker restores mode, value, pasted contents, cursor, and closes. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2520`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2524`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2527`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2531`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2535` | Detailed selector internals are later. | None |
+| 113 | Focus suppression while overlays/history/footer are active | Only one input owner should receive keystrokes: modal overlays, history search, and footer selection should suppress the text input cursor/focus while their own handlers run. | `baseProps.focus` requires no history search, no modal overlay, and no footer selection; `showCursor` also suppresses when footer/history/image-chip selection is active. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2580`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2581` | This is the primary prompt focus gate. | None |
+| 114 | Modal overlay keybinding suppression | When a full-screen dialog overlays PromptInput, chat keybindings and submit should not leak behind it. | `isModalOverlayActive` includes overlay context and local JSX commands; chat keybindings are active only when false; submit handler registration is skipped when true. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:586`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:591`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2062`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2088` | This reduces stacked-dialog and accidental-submit paths. | None |
+| 115 | Help menu visible | Typing `?` should toggle a help surface, help should suppress the normal footer, and Escape/Return/backspace should dismiss it without submitting prompt text. | `onChange` toggles `helpOpen` for `?`; `PromptInputFooter` returns `PromptInputHelpMenu`; help dismiss keybinding and local input handler close it. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:1147`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:131`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2109`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2313`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2337` | The help menu content has separate defect rows below. | None |
+| 116 | Help menu narrow width | The help menu should not wrap three columns into each other on narrow terminals. | `PromptInputHelpMenu` switches from row layout to a single-column layout below 100 columns. | OK | `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:20`, `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:43`, `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:361` | The row/column switch is explicit. | None |
+| 117 | Help menu cycle-mode text | Help text should describe the active keybinding behavior accurately for the current product: Shift+Tab cycles permission/planning modes in the footer and prompt. | The help row is hard-coded to render `to auto-accept edits` because the conditional is `false ? "to cycle modes" : "to auto-accept edits"`. | BUG | `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:210`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1827`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:395` | The visible shortcut hint contradicts the live cycle-mode handler. | P1 |
+| 118 | Prompt autocomplete registration | When suggestions or ghost text are active, autocomplete must become an overlay/context so Escape/up/down/Tab/Enter go to autocomplete before chat cancel/history handlers. | `useTypeahead` registers an `autocomplete` overlay and an `Autocomplete` keybinding context while suggestions or ghost text are active. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:1222`, `runtime/src/tui/hooks/useTypeahead.tsx:1232`, `runtime/src/tui/hooks/useTypeahead.tsx:1234`, `runtime/src/tui/hooks/useTypeahead.tsx:1237`, `runtime/src/tui/hooks/useTypeahead.tsx:1241` | The hook also has a backward-compat `useInput` bridge for keydown behavior. | P2 |
+| 119 | Slash command suggestions at input start | Typing a slash command prefix in prompt mode should show command suggestions, preserve selection, provide argument hints for exact command spaces, and prevent Enter from submitting while the selector is open. | `useTypeahead` detects `isCommandInput`, generates command suggestions, computes static/progressive argument hints, and `PromptInput.onSubmit` returns early when non-directory suggestions are open. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:638`, `runtime/src/tui/hooks/useTypeahead.tsx:661`, `runtime/src/tui/hooks/useTypeahead.tsx:684`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1368`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1371` | Directory suggestions are intentionally exempted so `/add-dir` can submit. | None |
+| 120 | Slash command Enter selection safety | Pressing Enter on a slash suggestion must not auto-run a different fuzzy match unless the typed literal exactly matches the command or one of its aliases. | `handleEnter` computes an exact name/alias match before calling `applyCommandSuggestion` with `execute` true. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:1072`, `runtime/src/tui/hooks/useTypeahead.tsx:1086`, `runtime/src/tui/hooks/useTypeahead.tsx:1090`, `runtime/src/tui/hooks/useTypeahead.tsx:1094` | This avoids one class of destructive-command typo. | None |
+| 121 | Mid-input slash ghost text | A slash command typed mid-prompt should show ghost text without opening a dropdown, and Tab should complete it in place. | `syncPromptGhostText` computes the match during render; `updateSuggestions` clears dropdown suggestions when a mid-input match exists; `handleTab` replaces the token with the full command. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:312`, `runtime/src/tui/hooks/useTypeahead.tsx:455`, `runtime/src/tui/hooks/useTypeahead.tsx:460`, `runtime/src/tui/hooks/useTypeahead.tsx:832`, `runtime/src/tui/hooks/useTypeahead.tsx:838` | This path avoids one-frame effect flicker. | None |
+| 122 | Bash history ghost text | In bash mode, matching shell history should render as inline ghost text and Tab should accept the full command. | `updateSuggestions` asks `getShellHistoryCompletion`, stores `inlineGhostText`, clears dropdown suggestions, and `handleTab` accepts `fullCommand` in bash mode. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:473`, `runtime/src/tui/hooks/useTypeahead.tsx:476`, `runtime/src/tui/hooks/useTypeahead.tsx:481`, `runtime/src/tui/hooks/useTypeahead.tsx:823`, `runtime/src/tui/hooks/useTypeahead.tsx:826` | Shell history completion is async and stale-guarded. | None |
+| 123 | Direct teammate/member suggestions | Typing `@name` in prompt mode should prefer teammate/member message suggestions before file suggestions, and accepting should insert the visible `@name` token. | `useTypeahead` checks teammate/member matches before file `@` completion, marks type `agent`, and applies `DM_MEMBER_RE` suggestions via Tab or Enter. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:502`, `runtime/src/tui/hooks/useTypeahead.tsx:513`, `runtime/src/tui/hooks/useTypeahead.tsx:525`, `runtime/src/tui/hooks/useTypeahead.tsx:957`, `runtime/src/tui/hooks/useTypeahead.tsx:1125` | This prevents agent DMs from being swallowed by file suggestions. | None |
+| 124 | Slack channel suggestions | Typing a Slack-style `#channel` token in prompt mode should ask MCP-backed Slack suggestions only when a Slack MCP server exists, and stale channel results should not repaint later. | Hash detection checks for Slack MCP, fetches through a debounced function, guards with `latestSlackTokenRef`, and clears stale channel suggestions when the trigger disappears. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:548`, `runtime/src/tui/hooks/useTypeahead.tsx:551`, `runtime/src/tui/hooks/useTypeahead.tsx:421`, `runtime/src/tui/hooks/useTypeahead.tsx:424`, `runtime/src/tui/hooks/useTypeahead.tsx:554` | Accept paths exist for both Tab and Enter. | None |
+| 125 | File/MCP/agent unified suggestions | Typing an `@` token should show unified file, MCP resource, and agent suggestions without blocking the first render, and should update when the background index catches up. | `useTypeahead` prewarms file cache on mount, refires latest search after index completion, and `generateUnifiedSuggestions` combines file suggestions, MCP resources, and agents. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:389`, `runtime/src/tui/hooks/useTypeahead.tsx:403`, `runtime/src/tui/hooks/useTypeahead.tsx:407`, `runtime/src/tui/hooks/unifiedSuggestions.ts:485`, `runtime/src/tui/hooks/unifiedSuggestions.ts:495` | Ranking details are owned by the unified suggestions helper. | None |
+| 126 | Async typeahead stale-result handling | Slow file/path/bash/slack suggestion requests should never overwrite newer user input. | File, path, bash, and Slack lookups compare request tokens against latest refs before committing visible suggestions or ghost text. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:333`, `runtime/src/tui/hooks/useTypeahead.tsx:365`, `runtime/src/tui/hooks/useTypeahead.tsx:477`, `runtime/src/tui/hooks/useTypeahead.tsx:741`, `runtime/src/tui/hooks/useTypeahead.tsx:424` | This is the main out-of-order protection for typeahead. | None |
+| 127 | Directory completion in `/add-dir` | Directory suggestions inside `/add-dir` should appear for the argument path, update after directory selection, and not hijack Enter submission. | `updateSuggestions` detects `/add-dir` args and calls `getDirectoryCompletions`; Tab can drill into directories; Enter in command context clears suggestions and lets submit process the command. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:570`, `runtime/src/tui/hooks/useTypeahead.tsx:584`, `runtime/src/tui/hooks/useTypeahead.tsx:895`, `runtime/src/tui/hooks/useTypeahead.tsx:909`, `runtime/src/tui/hooks/useTypeahead.tsx:1155` | The Enter behavior is intentionally different from normal file suggestion acceptance. | None |
+| 128 | `/resume` custom title suggestions | `/resume` with an argument should offer matching custom session titles and execute with the underlying session id when accepted with Enter. | `searchSessionsByCustomTitle` maps matches to suggestions with `sessionId`; Enter builds `/resume <sessionId>` and submits as a slash command. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:601`, `runtime/src/tui/hooks/useTypeahead.tsx:608`, `runtime/src/tui/hooks/useTypeahead.tsx:611`, `runtime/src/tui/hooks/useTypeahead.tsx:1105`, `runtime/src/tui/hooks/useTypeahead.tsx:1111` | Tab only applies the generated resume input without running. | None |
+| 129 | Autocomplete Tab behavior | Tab should accept ghost text, cycle file/directory suggestions when cursor is at the end of an `@` token, accept selected command/title/shell/agent/channel suggestions, and never leak raw Tab bytes into the prompt. | `handleTab` handles ghost text and suggestion-specific acceptance/cycling; `handleKeyDown` consumes Tab even when no dropdown is active and reopens `@` completion when appropriate. | OK | `runtime/src/tui/hooks/useTypeahead.tsx:819`, `runtime/src/tui/hooks/useTypeahead.tsx:846`, `runtime/src/tui/hooks/useTypeahead.tsx:854`, `runtime/src/tui/hooks/useTypeahead.tsx:1272`, `runtime/src/tui/hooks/useTypeahead.tsx:1281` | Empty prompt Tab shows a thinking-toggle hint instead of inserting a tab. | None |
+| 130 | Autocomplete Enter behavior | Enter should accept a selected suggestion unless Shift or Meta is held, and Shift/Meta Enter should remain available for newline insertion. | `consumeAutocompleteEnterKey` ignores shifted/meta return; otherwise it prevents default, stops propagation, and `handleEnter` applies the selected suggestion. | OK | `runtime/src/tui/hooks/typeaheadKeyHandling.ts:9`, `runtime/src/tui/hooks/typeaheadKeyHandling.ts:14`, `runtime/src/tui/hooks/typeaheadKeyHandling.ts:17`, `runtime/src/tui/hooks/useTypeahead.tsx:1338`, `runtime/src/tui/hooks/useTypeahead.tsx:1341` | This keeps multiline submit semantics separate from autocomplete. | None |
+| 131 | Fullscreen suggestion overlay portal | In fullscreen mode, slash/typeahead suggestions should escape the bottom-slot clipping and float above the prompt without consuming scrollback height. | `PromptInputFooter` writes overlay data through `useSetPromptOverlay`; `FullscreenLayout.SuggestionsOverlay` renders it as absolute `bottom="100%"` with `opaque`. | OK | `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:119`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:125`, `runtime/src/tui/components/FullscreenLayout.tsx:650`, `runtime/src/tui/components/FullscreenLayout.tsx:658` | The portal path is structurally present. | None |
+| 132 | Non-fullscreen suggestion list | Outside fullscreen, suggestions should render inline in terminal scrollback immediately under the prompt footer area. | `PromptInputFooter` returns `PromptInputFooterSuggestions` inline when suggestions exist and fullscreen is false. | OK | `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:126`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:128` | This path does not use the overlay provider. | None |
+| 133 | Suggestion overlay background fill | The suggestion popup should paint one coherent opaque background over the entire intended overlay rectangle, especially behind highlighted rows, so underlying transcript art/text does not show through. | The fullscreen overlay wrapper is opaque but has no background color; the inner suggestions box uses `width = columns - 8` plus `marginX=1` while the portal wrapper adds `paddingX=2`, leaving uncovered columns around the box. | BUG | `runtime/src/tui/components/FullscreenLayout.tsx:658`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:226`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:239`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:243`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:247` | This matches the active class of screenshot issue where black does not fill the full slash-command popup area. | P1 |
+| 134 | Suggestion selected-row text duplication | The selected suggestion row should not render the same description twice; command name, tag, and description should appear once in a single stable row. | Current `SuggestionItemRow` intentionally keeps every row to one line and the selected row uses the same `lineContent` path as unselected rows, with no expanded second-line description. | OK | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:91`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:95`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:165`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:170` | The historical doubled-text screenshot is not present in the current renderer path audited here. | None |
+| 135 | Suggestion list title accuracy | The suggestion popup title should identify the type of suggestions being shown, because the same renderer is used for commands, files, directories, agents, shell, custom-title, and Slack channels. | `PromptInputFooterSuggestions` always renders `SLASH COMMANDS`; the component has no `suggestionType` prop even though the hook tracks one. | BUG | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:18`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:231`, `runtime/src/tui/hooks/useTypeahead.tsx:285`, `runtime/src/tui/hooks/useTypeahead.tsx:1360` | File, agent, shell, and Slack suggestions can be mislabeled as slash commands. | P2 |
+| 136 | Suggestion popup tiny-width behavior | On very narrow terminals, the popup should shrink to the available columns instead of forcing overflow beyond terminal bounds. | Width is `Math.max(32, columns - ...)`, so terminals narrower than the minimum can still ask Ink to render a 32-column popup plus margins/padding. | BUG | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:198`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:226`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:242`, `runtime/src/tui/components/FullscreenLayout.tsx:658` | This is a concrete narrow-width overflow path. | P2 |
+| 137 | Suggestion list scrolling window | Long suggestion lists should show a bounded window around the selected row plus explicit counts above/below. | The renderer limits visible rows, centers around selection, and renders `more above`/`more below` rows when hidden items exist. | OK | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:199`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:209`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:223`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:268`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:289` | Overlay mode caps at 5 items; inline mode caps by terminal rows. | None |
+| 138 | Suggestion row truncation | Suggestion rows should remain one terminal row, truncate long file paths/descriptions, and pad selected and unselected backgrounds to the same width. | Rows compute `contentWidth`, truncate display/description strings, pad `lineContent` to width, and use a one-line opaque row. | OK | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:116`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:132`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:168`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:171` | Padding depends on `stringWidth`, so wide glyphs are considered. | None |
+| 139 | Suggestion unicode/ascii fallback | Suggestion UI should render usable ASCII equivalents when Unicode glyphs are disabled or unsupported. | The selected prefix uses `figures.pointer`, but MCP resource icons use raw `◇`; prompt mode glyphs and swarm dividers use raw symbols elsewhere with no terminal capability branch in this partition. | BUG | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:30`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:58`, `runtime/src/tui/components/PromptInput/permissionModeChrome.ts:18`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2634`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2648` | This extends the Part 1 ASCII gap into the prompt-specific surface. | P1 |
+| 140 | Suggestion no-color behavior | Suggestion selection should remain discoverable without color by using stable text or glyph cues, not only background color. | The selected row has a pointer prefix, bold, and inverted row background; unselected rows have two-space prefixes. | OK | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:30`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:84`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:170`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:175` | The pointer gives a non-color selection indicator. | None |
+| 141 | Legacy theme token in suggestion renderer | Live AgenC prompt surfaces should not use old/donor-branded theme token names. | Suggestion rows and popup backgrounds still use `clawd_background`. | LEGACY | `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:87`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:247`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:252`, `runtime/src/tui/components/PromptInput/PromptInputFooterSuggestions.tsx:260` | Same legacy token class as Part 1, now in the slash/typeahead surface. | P1 |
+| 142 | Legacy moved-source markers in PromptInput partition | Live AgenC prompt files should not carry moved-source, `@ts-nocheck`, or upstream purge comments once they are active owned TUI code. | Several active prompt/input files still start with `@ts-nocheck` and moved-source notes, or contain upstream-import comments. | LEGACY | `runtime/src/tui/hooks/useTypeahead.tsx:1`, `runtime/src/tui/hooks/useTypeahead.tsx:2`, `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:1`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:1`, `runtime/src/tui/components/TextInput.tsx:1`, `runtime/src/tui/components/VimTextInput.tsx:1` | These are live rendering paths, not isolated migration artifacts. | P2 |
+| 143 | Legacy donor event/feature names in prompt partition | Live AgenC prompt code should not emit donor-branded analytics or feature flag identifiers from current rendering paths. | Bash completion failure logs `tengu_shell_completion_failed`; help menu checks `tengu_terminal_panel`; notifications emit `tengu_external_editor_hint_shown`. | LEGACY | `runtime/src/tui/hooks/useTypeahead.tsx:202`, `runtime/src/tui/components/PromptInput/PromptInputHelpMenu.tsx:146`, `runtime/src/tui/components/PromptInput/Notifications.tsx:149` | These are donor-name residues in active prompt rendering/support code. | P2 |
+| 144 | Prompt suggestion render side effects | Rendering should be pure: prompt suggestion visibility should not set app state directly during render because that can cause extra render passes and keystroke latency. | `PromptInput` calls `markShown()` directly in the render body when `showPromptSuggestion` is true, and the suppression branch can call `setAppState` in the render body. | BUG | `runtime/src/tui/components/PromptInput/PromptInput.tsx:1516`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1522`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1529`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1531` | This is a render-path performance and correctness risk in the exact composer area that freezes on typing. | P1 |
+| 145 | Controlled input local mirror | Typed characters should appear immediately even if parent state updates lag behind a frame. | `useTextInput` keeps `renderState`, `liveValueRef`, and `liveOffsetRef`, updates them synchronously in `setValue`, and only calls parent callbacks after the local render state changes. | OK | `runtime/src/tui/hooks/useTextInput.ts:104`, `runtime/src/tui/hooks/useTextInput.ts:116`, `runtime/src/tui/hooks/useTextInput.ts:145`, `runtime/src/tui/hooks/useTextInput.ts:153` | This is the current local anti-lag mechanism. | None |
+| 146 | Text input submit/newline behavior | Return should submit; Shift+Return, Meta+Return, and backslash+Return should insert newlines when multiline behavior applies. | `handleEnter` handles backslash-return, modifier-return, Apple Terminal shift detection, and otherwise calls `onSubmit`. | OK | `runtime/src/tui/hooks/useTextInput.ts:327`, `runtime/src/tui/hooks/useTextInput.ts:330`, `runtime/src/tui/hooks/useTextInput.ts:339`, `runtime/src/tui/hooks/useTextInput.ts:343`, `runtime/src/tui/hooks/useTextInput.ts:348` | This is below PromptInput and applies to normal and Vim input. | None |
+| 147 | Text input history versus cursor movement | Up/down keys in multiline input should move within wrapped/logical lines first and only fall back to history/footer navigation at the top or bottom. | `useTextInput` tries wrapped movement, then logical movement, then calls history callbacks; PromptInput disables cursor movement when suggestions/footer owns arrows. | OK | `runtime/src/tui/hooks/useTextInput.ts:351`, `runtime/src/tui/hooks/useTextInput.ts:357`, `runtime/src/tui/hooks/useTextInput.ts:365`, `runtime/src/tui/hooks/useTextInput.ts:376`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2574` | This prevents dropdown arrows from also moving the cursor. | None |
+| 148 | Escape behavior layering | Escape should first dismiss autocomplete/help/footer or edit queued input as applicable, and should not immediately clear prompt text or open the message selector in those states. | `useTextInput` respects `disableEscapeDoublePress`; PromptInput closes help, defers footer selection, pops editable queued commands, and only invokes double-press message selector when idle/empty. | OK | `runtime/src/tui/hooks/useTextInput.ts:402`, `runtime/src/tui/hooks/useTextInput.ts:411`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2305`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2313`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2327`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2333` | Cancel-request handling is owned by root. | None |
+| 149 | Paste progress state | During paste capture, the prompt should not submit stale input, should display a paste state, and should convert long or multi-line text into a compact reference. | `usePasteHandler` tracks `isPasting` and blocks return while paste pending; footer renders `Pasting text...`; `onTextPaste` creates pasted text references when threshold/line limits are exceeded. | OK | `runtime/src/tui/hooks/usePasteHandler.ts:87`, `runtime/src/tui/hooks/usePasteHandler.ts:314`, `runtime/src/tui/components/BaseTextInput.tsx:215`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:309`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1621`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1631` | The UI also suppresses placeholder while pasting. | None |
+| 150 | Image paste and image-chip rendering | Pasted images should create non-editable visible chips, maintain pasted-content metadata, and delete metadata when chips are removed. | `onImagePaste` creates `PastedContent`, inserts `[Image #N]`, caches/stores the image, snaps cursor out of chip interiors, highlights selected chips inverse, and prunes orphaned image contents. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:1542`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1557`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1572`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:920`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:932`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:1580` | This is prompt-rendering behavior; transcript image rendering is later. | None |
+| 151 | Long input truncation lifecycle | Very large prompt text should be converted into a visible compact reference every time a new oversized input enters the composer, not just once per lifetime until cleared. | `useMaybeTruncateInput` only applies once until input becomes empty; a second oversized external input inserted while input is non-empty can skip truncation. | BUG | `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:57`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:63`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:67`, `runtime/src/tui/components/PromptInput/useMaybeTruncateInput.ts:90` | This is a partial recovery/loading-state gap for external editor/history/message-selector injection of large text. | P3 |
+| 152 | Prompt tiny-height behavior | In extremely short terminals, the prompt should preserve a usable input viewport without stealing impossible height from the scroll region or being clipped by the bottom slot. | PromptInput computes `maxVisibleLines` as at least 3 in fullscreen while root bottom slot caps height to 50 percent; this can demand more prompt rows than the bottom slot can visibly provide. | BUG | `runtime/src/tui/components/PromptInput/PromptInput.tsx:475`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:477`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2377`, `runtime/src/tui/components/FullscreenLayout.tsx:427`, `runtime/src/tui/components/FullscreenLayout.tsx:429` | This is the PromptInput-specific side of Part 1 tiny-height row 54. | P2 |
+| 153 | Prompt no-color/error/status hints | Footer and prompt state should remain meaningful when color is unavailable. | Many states have textual hints (`YOLO`, `! for bash mode`, `Waiting for permission...`, `Pasting text...`, queued-count text, selection pointer), so the audited prompt-specific states do not rely only on color. | OK | `runtime/src/tui/components/PromptInput/permissionModeChrome.ts:24`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:277`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2628`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:309`, `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:121` | Some decorative glyphs still fail ASCII fallback separately. | None |
+| 154 | Prompt voice recording cursor | Voice recording should not cause uncontrolled prompt re-rendering and should respect reduced-motion/accessibility settings. | `TextInput` uses reduced-motion to disable waveform animation, hides cursor inversion when accessibility is enabled, and drives waveform animation only while recording. | OK | `runtime/src/tui/components/TextInput.tsx:74`, `runtime/src/tui/components/TextInput.tsx:85`, `runtime/src/tui/components/TextInput.tsx:86`, `runtime/src/tui/components/TextInput.tsx:98`, `runtime/src/tui/components/BaseTextInput.tsx:268` | Unicode waveform fallback is separate. | None |
+| 155 | Voice cursor ASCII fallback | The voice-mode cursor should have a non-Unicode fallback when block characters are unsupported. | The waveform cursor uses raw block characters in `BARS` and there is no ASCII/unicode capability branch in `TextInput`. | BUG | `runtime/src/tui/components/TextInput.tsx:48`, `runtime/src/tui/components/TextInput.tsx:49`, `runtime/src/tui/components/TextInput.tsx:121` | This is another prompt-surface ASCII fallback gap. | P2 |
+| 156 | Vim input rendering path | When Vim mode is enabled, the prompt should use Vim input state while keeping the same base renderer, highlights, image paste hint, and terminal focus behavior. | `ConfiguredPromptTextInput` selects `VimTextInput`; `VimTextInput` uses `useVimInput`, then renders `BaseTextInput` with the same highlight and focus props. | OK | `runtime/src/tui/components/PromptInput/ConfiguredPromptTextInput.tsx:22`, `runtime/src/tui/components/VimTextInput.tsx:15`, `runtime/src/tui/components/VimTextInput.tsx:103`, `runtime/src/tui/components/VimTextInput.tsx:128` | Vim command semantics are outside this rendering partition. | None |
+| 157 | Footer pills navigation and focus | Footer task/team pills should be part of focus order after history-down, arrow/navigation keys should move through visible pills or rows, and typing should return focus to the input. | `footerItems` defines render/nav order; `navigateFooter` handles next/previous/exit; footer keybindings own navigation while selected; printable input while selected writes the char into the composer. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:766`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:775`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:806`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2160`, `runtime/src/tui/components/PromptInput/PromptInput.tsx:2282` | Detailed task/team renderer rows are later. | None |
+| 158 | Footer coordinator hint dead path | Live footer rendering should not contain dead boolean branches that imply a visible coordinator hint path but can never execute. | `hasCoordinatorTasks` is hard-coded to `false`; the later branch tests it anyway. | LEGACY | `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:360`, `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx:401` | This is dead/orphaned footer rendering logic in an active file. | P3 |
+| 159 | Prompt overlay stale suggestions under modal | If a non-PromptInput modal becomes active while suggestions are still populated, suggestions should either be hidden or have an explicit lower z-order/focus state so the modal remains the only interactive surface. | Autocomplete keybindings become inactive when a modal overlay is active, but `PromptInputFooter` still publishes overlay data based solely on `isFullscreen && suggestions.length`; `SuggestionsOverlay` still renders when data exists. | BUG | `runtime/src/tui/hooks/useTypeahead.tsx:1239`, `runtime/src/tui/hooks/useTypeahead.tsx:1241`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:119`, `runtime/src/tui/components/PromptInput/PromptInputFooter.tsx:125`, `runtime/src/tui/components/FullscreenLayout.tsx:652` | This can leave a visible, non-interactive autocomplete popup behind or below another modal. | P2 |
+| 160 | Queued command preview | Queued user-editable commands should be visible outside fullscreen, hide idle/meta noise, cap task-notification spam, and reuse normal message rendering without animation. | `PromptInputQueuedCommands` filters invisible commands, caps task notifications with a summary, hides while viewing an agent, and renders static `Message` rows. | OK | `runtime/src/tui/components/PromptInput/PromptInput.tsx:2626`, `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:48`, `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:95`, `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:117`, `runtime/src/tui/components/PromptInput/PromptInputQueuedCommands.tsx:121` | In fullscreen the queue preview is omitted here; root/prompt layout does not render an equivalent in this partition. | P2 |
