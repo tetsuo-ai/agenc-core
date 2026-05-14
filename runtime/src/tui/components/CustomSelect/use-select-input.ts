@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useRegisterOverlay } from '../../context/overlayContext'
+import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { InputEvent } from '../../ink/events/input-event.js'
 import { useInput } from '../../ink.js'
 import { useKeybindings } from '../../keybindings/useKeybinding.js'
@@ -7,8 +7,8 @@ import {
   normalizeFullWidthDigits,
   normalizeFullWidthSpace,
 } from '../../../utils/stringUtils.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { OptionWithDescription } from './select'
-import type { SelectState } from './use-select-state'
+import type { OptionWithDescription } from './select.js'
+import type { SelectState } from './use-select-state.js'
 
 export type UseSelectProps<T> = {
   /**

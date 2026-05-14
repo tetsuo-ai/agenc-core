@@ -11,6 +11,7 @@ const files = [
   "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx",
   "runtime/src/tui/components/AutoModeOptInDialog.tsx",
   "runtime/src/tui/components/AutoUpdaterWrapper.tsx",
+  "runtime/src/tui/components/CustomSelect/select.tsx",
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
