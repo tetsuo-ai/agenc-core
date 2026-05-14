@@ -1,234 +1,282 @@
-import { c as _c } from "react-compiler-runtime";
-import { relative } from 'path';
-import * as React from 'react';
-import { Suspense, use, useMemo } from 'react';
-import { Box, NoSelect, Text } from '../../../ink.js';
-import type { NotebookCellType, NotebookContent } from '../../../../types/notebook';
-import { intersperse } from '../../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getCwd } from '../../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getPatchForDisplay } from '../../../../utils/diff.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { safeParseJSON } from '../../../../utils/json.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { parseCellId } from '../../../../utils/notebook.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { HighlightedCode } from '../../markdown/HighlightedCode.js';
-import { StructuredDiff } from '../../diff/StructuredDiff';
+// @ts-nocheck
+// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
+import { relative } from 'path'
+import { Suspense, use, useMemo, type ReactNode } from 'react'
+
+import type {
+  NotebookCellType,
+  NotebookContent,
+} from '../../../../types/notebook'
+import { intersperse } from '../../../../utils/array.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getCwd } from '../../../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getPatchForDisplay } from '../../../../utils/diff.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getFsImplementation } from '../../../../utils/fsOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { safeParseJSON } from '../../../../utils/json.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { parseCellId } from '../../../../utils/notebook.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { Box, NoSelect, Text } from '../../../ink.js'
+import { LoadingState } from '../../design-system/LoadingState'
+import { StructuredDiff } from '../../diff/StructuredDiff'
+import { HighlightedCode } from '../../markdown/HighlightedCode.js'
+
 type Props = {
-  notebook_path: string;
-  cell_id: string | undefined;
-  new_source: string;
-  cell_type?: NotebookCellType;
-  edit_mode?: string;
-  verbose: boolean;
-  width: number;
-};
-type InnerProps = {
-  notebook_path: string;
-  cell_id: string | undefined;
-  new_source: string;
-  cell_type?: NotebookCellType;
-  edit_mode?: string;
-  verbose: boolean;
-  width: number;
-  promise: Promise<NotebookContent | null>;
-};
-export function NotebookEditToolDiff(props) {
-  const $ = _c(5);
-  let t0;
-  if ($[0] !== props.notebook_path) {
-    t0 = getFsImplementation().readFile(props.notebook_path, {
-      encoding: "utf-8"
-    }).then(_temp).catch(_temp2);
-    $[0] = props.notebook_path;
-    $[1] = t0;
-  } else {
-    t0 = $[1];
-  }
-  const notebookDataPromise = t0;
-  let t1;
-  if ($[2] !== notebookDataPromise || $[3] !== props) {
-    t1 = <Suspense fallback={null}><NotebookEditToolDiffInner {...props} promise={notebookDataPromise} /></Suspense>;
-    $[2] = notebookDataPromise;
-    $[3] = props;
-    $[4] = t1;
-  } else {
-    t1 = $[4];
-  }
-  return t1;
+  notebook_path: string
+  cell_id: string | undefined
+  new_source: string
+  cell_type?: NotebookCellType
+  edit_mode?: string
+  verbose: boolean
+  width: number
 }
-function _temp2() {
-  return null;
+
+type NotebookPreviewLoadResult =
+  | { status: 'ok'; data: NotebookContent }
+  | { status: 'error'; message: string }
+
+type InnerProps = Props & {
+  promise: Promise<NotebookPreviewLoadResult>
 }
-function _temp(content) {
-  return safeParseJSON(content) as NotebookContent | null;
+
+function notebookPreviewLabel(notebookPath: string, verbose: boolean): string {
+  return verbose ? notebookPath : relative(getCwd(), notebookPath)
 }
-function NotebookEditToolDiffInner(t0) {
-  const $ = _c(34);
-  const {
-    notebook_path,
-    cell_id,
-    new_source,
-    cell_type,
-    edit_mode: t1,
-    verbose,
-    width,
-    promise
-  } = t0;
-  const edit_mode = t1 === undefined ? "replace" : t1;
-  const notebookData = use(promise);
-  let t2;
-  if ($[0] !== cell_id || $[1] !== notebookData) {
-    bb0: {
-      if (!notebookData || !cell_id) {
-        t2 = "";
-        break bb0;
+
+function normalizeDiffWidth(width: number): number {
+  const safeWidth = Number.isFinite(width) ? Math.max(0, Math.trunc(width)) : 0
+  return Math.max(1, safeWidth)
+}
+
+export async function loadNotebookPreview(
+  notebookPath: string,
+): Promise<NotebookPreviewLoadResult> {
+  try {
+    const content = await getFsImplementation().readFile(notebookPath, {
+      encoding: 'utf-8',
+    })
+    const parsed = safeParseJSON(content) as NotebookContent | null
+    if (!parsed) {
+      return {
+        status: 'error',
+        message: 'Could not parse notebook JSON.',
       }
-      const cellIndex = parseCellId(cell_id);
-      if (cellIndex !== undefined) {
-        if (notebookData.cells[cellIndex]) {
-          const source = notebookData.cells[cellIndex].source;
-          let t3;
-          if ($[3] !== source) {
-            t3 = Array.isArray(source) ? source.join("") : source;
-            $[3] = source;
-            $[4] = t3;
-          } else {
-            t3 = $[4];
-          }
-          t2 = t3;
-          break bb0;
-        }
-        t2 = "";
-        break bb0;
-      }
-      let t3;
-      if ($[5] !== cell_id) {
-        t3 = cell => cell.id === cell_id;
-        $[5] = cell_id;
-        $[6] = t3;
-      } else {
-        t3 = $[6];
-      }
-      const cell_0 = notebookData.cells.find(t3);
-      if (!cell_0) {
-        t2 = "";
-        break bb0;
-      }
-      t2 = Array.isArray(cell_0.source) ? cell_0.source.join("") : cell_0.source;
     }
-    $[0] = cell_id;
-    $[1] = notebookData;
-    $[2] = t2;
-  } else {
-    t2 = $[2];
-  }
-  const oldSource = t2;
-  let t3;
-  bb1: {
-    if (!notebookData || edit_mode === "insert" || edit_mode === "delete") {
-      t3 = null;
-      break bb1;
+
+    return {
+      status: 'ok',
+      data: parsed,
     }
-    let t4;
-    if ($[7] !== new_source || $[8] !== notebook_path || $[9] !== oldSource) {
-      t4 = getPatchForDisplay({
-        filePath: notebook_path,
-        fileContents: oldSource,
-        edits: [{
-          old_string: oldSource,
-          new_string: new_source,
-          replace_all: false
-        }],
-        ignoreWhitespace: false
-      });
-      $[7] = new_source;
-      $[8] = notebook_path;
-      $[9] = oldSource;
-      $[10] = t4;
-    } else {
-      t4 = $[10];
+  } catch (error) {
+    return {
+      status: 'error',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Could not read notebook preview.',
     }
-    t3 = t4;
   }
-  const hunks = t3;
-  let editTypeDescription;
-  bb2: switch (edit_mode) {
-    case "insert":
-      {
-        editTypeDescription = "Insert new cell";
-        break bb2;
-      }
-    case "delete":
-      {
-        editTypeDescription = "Delete cell";
-        break bb2;
-      }
-    default:
-      {
-        editTypeDescription = "Replace cell contents";
-      }
-  }
-  let t4;
-  if ($[11] !== notebook_path || $[12] !== verbose) {
-    t4 = verbose ? notebook_path : relative(getCwd(), notebook_path);
-    $[11] = notebook_path;
-    $[12] = verbose;
-    $[13] = t4;
-  } else {
-    t4 = $[13];
-  }
-  let t5;
-  if ($[14] !== t4) {
-    t5 = <Text bold={true}>{t4}</Text>;
-    $[14] = t4;
-    $[15] = t5;
-  } else {
-    t5 = $[15];
-  }
-  const t6 = cell_type ? ` (${cell_type})` : "";
-  let t7;
-  if ($[16] !== cell_id || $[17] !== editTypeDescription || $[18] !== t6) {
-    t7 = <Text dimColor={true}>{editTypeDescription} for cell {cell_id}{t6}</Text>;
-    $[16] = cell_id;
-    $[17] = editTypeDescription;
-    $[18] = t6;
-    $[19] = t7;
-  } else {
-    t7 = $[19];
-  }
-  let t8;
-  if ($[20] !== t5 || $[21] !== t7) {
-    t8 = <Box paddingBottom={1} flexDirection="column">{t5}{t7}</Box>;
-    $[20] = t5;
-    $[21] = t7;
-    $[22] = t8;
-  } else {
-    t8 = $[22];
-  }
-  let t9;
-  if ($[23] !== cell_type || $[24] !== edit_mode || $[25] !== hunks || $[26] !== new_source || $[27] !== notebook_path || $[28] !== oldSource || $[29] !== width) {
-    t9 = edit_mode === "delete" ? <Box flexDirection="column" paddingLeft={2}><HighlightedCode code={oldSource} filePath={notebook_path} /></Box> : edit_mode === "insert" ? <Box flexDirection="column" paddingLeft={2}><HighlightedCode code={new_source} filePath={cell_type === "markdown" ? "file.md" : notebook_path} /></Box> : hunks ? intersperse(hunks.map(_ => <StructuredDiff key={_.newStart} patch={_} dim={false} width={width} filePath={notebook_path} firstLine={new_source.split("\n")[0] ?? null} fileContent={oldSource} />), _temp3) : <HighlightedCode code={new_source} filePath={cell_type === "markdown" ? "file.md" : notebook_path} />;
-    $[23] = cell_type;
-    $[24] = edit_mode;
-    $[25] = hunks;
-    $[26] = new_source;
-    $[27] = notebook_path;
-    $[28] = oldSource;
-    $[29] = width;
-    $[30] = t9;
-  } else {
-    t9 = $[30];
-  }
-  let t10;
-  if ($[31] !== t8 || $[32] !== t9) {
-    t10 = <Box flexDirection="column"><Box borderStyle="round" flexDirection="column" paddingX={1}>{t8}{t9}</Box></Box>;
-    $[31] = t8;
-    $[32] = t9;
-    $[33] = t10;
-  } else {
-    t10 = $[33];
-  }
-  return t10;
 }
-function _temp3(i) {
-  return <NoSelect fromLeftEdge={true} key={`ellipsis-${i}`}><Text dimColor={true}>...</Text></NoSelect>;
+
+function sourceForCell(
+  notebookData: NotebookContent,
+  cellId: string | undefined,
+): string {
+  if (!cellId) return ''
+
+  const cellIndex = parseCellId(cellId)
+  if (cellIndex !== undefined) {
+    const indexedCell = notebookData.cells[cellIndex]
+    if (!indexedCell) return ''
+    return Array.isArray(indexedCell.source)
+      ? indexedCell.source.join('')
+      : indexedCell.source
+  }
+
+  const matchingCell = notebookData.cells.find(cell => cell.id === cellId)
+  if (!matchingCell) return ''
+  return Array.isArray(matchingCell.source)
+    ? matchingCell.source.join('')
+    : matchingCell.source
+}
+
+function NotebookEditToolDiffLoading({
+  notebook_path,
+  verbose,
+}: Pick<Props, 'notebook_path' | 'verbose'>): ReactNode {
+  return (
+    <NotebookEditToolDiffFrame
+      notebook_path={notebook_path}
+      verbose={verbose}
+      detail={<LoadingState message="Loading notebook preview..." dimColor={true} />}
+    />
+  )
+}
+
+function NotebookEditToolDiffError({
+  notebook_path,
+  verbose,
+  message,
+}: Pick<Props, 'notebook_path' | 'verbose'> & {
+  message: string
+}): ReactNode {
+  return (
+    <NotebookEditToolDiffFrame
+      notebook_path={notebook_path}
+      verbose={verbose}
+      detail={
+        <Box flexDirection="column">
+          <Text color="error" bold={true}>
+            Could not load notebook preview
+          </Text>
+          <Text dimColor={true}>{message}</Text>
+        </Box>
+      }
+    />
+  )
+}
+
+function NotebookEditToolDiffFrame({
+  notebook_path,
+  verbose,
+  detail,
+}: Pick<Props, 'notebook_path' | 'verbose'> & {
+  detail: ReactNode
+}): ReactNode {
+  return (
+    <Box flexDirection="column">
+      <Box borderStyle="round" flexDirection="column" paddingX={1}>
+        <Box paddingBottom={1} flexDirection="column">
+          <Text bold={true}>{notebookPreviewLabel(notebook_path, verbose)}</Text>
+        </Box>
+        {detail}
+      </Box>
+    </Box>
+  )
+}
+
+export function NotebookEditToolDiff(props: Props): ReactNode {
+  const notebookDataPromise = useMemo(
+    () => loadNotebookPreview(props.notebook_path),
+    [props.notebook_path],
+  )
+
+  return (
+    <Suspense
+      fallback={
+        <NotebookEditToolDiffLoading
+          notebook_path={props.notebook_path}
+          verbose={props.verbose}
+        />
+      }
+    >
+      <NotebookEditToolDiffInner {...props} promise={notebookDataPromise} />
+    </Suspense>
+  )
+}
+
+function NotebookEditToolDiffInner({
+  notebook_path,
+  cell_id,
+  new_source,
+  cell_type,
+  edit_mode = 'replace',
+  verbose,
+  width,
+  promise,
+}: InnerProps): ReactNode {
+  const loadResult = use(promise)
+
+  if (loadResult.status === 'error') {
+    return (
+      <NotebookEditToolDiffError
+        notebook_path={notebook_path}
+        verbose={verbose}
+        message={loadResult.message}
+      />
+    )
+  }
+
+  const oldSource = sourceForCell(loadResult.data, cell_id)
+  const hunks =
+    edit_mode === 'insert' || edit_mode === 'delete'
+      ? null
+      : getPatchForDisplay({
+          filePath: notebook_path,
+          fileContents: oldSource,
+          edits: [
+            {
+              old_string: oldSource,
+              new_string: new_source,
+              replace_all: false,
+            },
+          ],
+          ignoreWhitespace: false,
+        })
+  const editTypeDescription =
+    edit_mode === 'insert'
+      ? 'Insert new cell'
+      : edit_mode === 'delete'
+        ? 'Delete cell'
+        : 'Replace cell contents'
+  const cellTypeDescription = cell_type ? ` (${cell_type})` : ''
+  const diffWidth = normalizeDiffWidth(width)
+  const content =
+    edit_mode === 'delete' ? (
+      <Box flexDirection="column" paddingLeft={2}>
+        <HighlightedCode code={oldSource} filePath={notebook_path} />
+      </Box>
+    ) : edit_mode === 'insert' ? (
+      <Box flexDirection="column" paddingLeft={2}>
+        <HighlightedCode
+          code={new_source}
+          filePath={cell_type === 'markdown' ? 'file.md' : notebook_path}
+        />
+      </Box>
+    ) : hunks ? (
+      intersperse(
+        hunks.map(hunk => (
+          <StructuredDiff
+            key={hunk.newStart}
+            patch={hunk}
+            dim={false}
+            width={diffWidth}
+            filePath={notebook_path}
+            firstLine={new_source.split('\n')[0] ?? null}
+            fileContent={oldSource}
+          />
+        )),
+        renderEllipsis,
+      )
+    ) : (
+      <HighlightedCode
+        code={new_source}
+        filePath={cell_type === 'markdown' ? 'file.md' : notebook_path}
+      />
+    )
+
+  return (
+    <Box flexDirection="column">
+      <Box borderStyle="round" flexDirection="column" paddingX={1}>
+        <Box paddingBottom={1} flexDirection="column">
+          <Text bold={true}>{notebookPreviewLabel(notebook_path, verbose)}</Text>
+          <Text dimColor={true}>
+            {editTypeDescription} for cell {cell_id}
+            {cellTypeDescription}
+          </Text>
+        </Box>
+        {content}
+      </Box>
+    </Box>
+  )
+}
+
+function renderEllipsis(i: number): ReactNode {
+  return (
+    <NoSelect fromLeftEdge={true} key={`ellipsis-${i}`}>
+      <Text dimColor={true}>...</Text>
+    </NoSelect>
+  )
+}
+
+export const __notebookEditToolDiffTest = {
+  loadNotebookPreview,
+  normalizeDiffWidth,
 }
