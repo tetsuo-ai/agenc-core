@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { installOAuthTokens } from '../../cli/handlers/auth';
@@ -19,6 +17,11 @@ import { Select } from './CustomSelect/select';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
 import { Spinner } from './spinner/Spinner.js';
 import TextInput from './TextInput';
+import {
+  CONSOLE_OAUTH_PASTE_PROMPT,
+  type ConsoleOAuthPasteLayout,
+  getConsoleOAuthPasteLayout,
+} from './ConsoleOAuthFlow.layout.js';
 export type ConsoleOAuthFlowResult = {
   type: 'oauth';
 } | {
@@ -29,7 +32,7 @@ type Props = {
   onDone(result?: ConsoleOAuthFlowResult): void;
   startingMessage?: string;
   mode?: 'login' | 'setup-token';
-  forceLoginMethod?: 'claudeai' | 'console';
+  forceLoginMethod?: 'agencai' | 'console';
   initialStatus?: OAuthStatus;
 };
 type OAuthStatus = {
@@ -63,7 +66,7 @@ type OAuthStatus = {
   message: string;
   toRetry?: OAuthStatus;
 };
-const PASTE_HERE_MSG = 'Paste code here if prompted > ';
+
 export function ConsoleOAuthFlow({
   onDone,
   startingMessage,
@@ -74,7 +77,7 @@ export function ConsoleOAuthFlow({
   const settings = getSettings_DEPRECATED() || {};
   const forceLoginMethod = forceLoginMethodProp ?? settings.forceLoginMethod;
   const orgUUID = settings.forceLoginOrgUUID;
-  const forcedMethodMessage = forceLoginMethod === 'claudeai' ? 'Login method pre-selected: Subscription Plan (AgenC Pro/Max)' : forceLoginMethod === 'console' ? 'Login method pre-selected: API Usage Billing (Anthropic Console)' : null;
+  const forcedMethodMessage = forceLoginMethod === 'agencai' ? 'Login method pre-selected: Subscription Plan (AgenC Pro/Max)' : forceLoginMethod === 'console' ? 'Login method pre-selected: API Usage Billing (Console)' : null;
   const terminal = useTerminalNotification();
   const [oauthStatus, setOAuthStatus] = useState<OAuthStatus>(() => {
     if (initialStatus) {
@@ -85,7 +88,7 @@ export function ConsoleOAuthFlow({
         state: 'ready_to_start'
       };
     }
-    if (forceLoginMethod === 'claudeai' || forceLoginMethod === 'console') {
+    if (forceLoginMethod === 'agencai' || forceLoginMethod === 'console') {
       return {
         state: 'ready_to_start'
       };
@@ -99,21 +102,21 @@ export function ConsoleOAuthFlow({
   const [oauthService] = useState(() => new OAuthService());
   const [loginWithAgenCAi, setLoginWithAgenCAi] = useState(() => {
     // Use AgenC AI auth for setup-token mode to support user:inference scope
-    return mode === 'setup-token' || forceLoginMethod === 'claudeai';
+    return mode === 'setup-token' || forceLoginMethod === 'agencai';
   });
   // After a few seconds we suggest the user to copy/paste url if the
   // browser did not open automatically. In this flow we expect the user to
   // copy the code from the browser and paste it in the terminal
   const [showPastePrompt, setShowPastePrompt] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
-  const textInputColumns = useTerminalSize().columns - PASTE_HERE_MSG.length - 1;
+  const pasteLayout = getConsoleOAuthPasteLayout(useTerminalSize().columns);
 
   // Log forced login method on mount
   useEffect(() => {
-    if (forceLoginMethod === 'claudeai') {
-      logEvent('tengu_oauth_claudeai_forced', {});
+    if (forceLoginMethod === 'agencai') {
+      logEvent('agenc_oauth_agencai_forced', {});
     } else if (forceLoginMethod === 'console') {
-      logEvent('tengu_oauth_console_forced', {});
+      logEvent('agenc_oauth_console_forced', {});
     }
   }, [forceLoginMethod]);
 
@@ -127,7 +130,7 @@ export function ConsoleOAuthFlow({
 
   // Handle Enter to continue on success state
   useKeybinding('confirm:yes', () => {
-    logEvent('tengu_oauth_success', {
+    logEvent('agenc_oauth_success', {
       loginWithAgenCAi
     });
     onDone({
@@ -192,7 +195,7 @@ export function ConsoleOAuthFlow({
       }
 
       // Track which path the user is taking (manual code entry)
-      logEvent('tengu_oauth_manual_entry', {});
+      logEvent('agenc_oauth_manual_entry', {});
       oauthService.handleManualAuthCodeInput({
         authorizationCode,
         state
@@ -211,7 +214,7 @@ export function ConsoleOAuthFlow({
   }
   const startOAuth = useCallback(async () => {
     try {
-      logEvent('tengu_oauth_flow_start', {
+      logEvent('agenc_oauth_flow_start', {
         loginWithAgenCAi
       });
       const result = await oauthService.startOAuthFlow(async url_0 => {
@@ -241,7 +244,7 @@ export function ConsoleOAuthFlow({
             state: 'idle'
           }
         });
-        logEvent('tengu_oauth_token_exchange_error', {
+        logEvent('agenc_oauth_token_exchange_error', {
           error: err_1.message,
           ssl_error: sslHint_0 !== null
         });
@@ -278,7 +281,7 @@ export function ConsoleOAuthFlow({
           state: mode === 'setup-token' ? 'ready_to_start' : 'idle'
         }
       });
-      logEvent('tengu_oauth_error', {
+      logEvent('agenc_oauth_error', {
         error: errorMessage as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         ssl_error: sslHint !== null
       });
@@ -300,7 +303,7 @@ export function ConsoleOAuthFlow({
     if (mode === 'setup-token' && oauthStatus.state === 'success') {
       // Delay to ensure static content is fully rendered before exiting
       const timer_0 = setTimeout((loginWithAgenCAi_0, onDone_0) => {
-        logEvent('tengu_oauth_success', {
+        logEvent('agenc_oauth_success', {
           loginWithAgenCAi: loginWithAgenCAi_0
         });
         // Don't clear terminal so the token remains visible
@@ -348,7 +351,7 @@ export function ConsoleOAuthFlow({
             </Box>
           </Box>}
       <Box paddingLeft={1} flexDirection="column" gap={1}>
-        <OAuthStatusMessage oauthStatus={oauthStatus} mode={mode} startingMessage={startingMessage} forcedMethodMessage={forcedMethodMessage} showPastePrompt={showPastePrompt} pastedCode={pastedCode} setPastedCode={setPastedCode} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} textInputColumns={textInputColumns} handleSubmitCode={handleSubmitCode} setOAuthStatus={setOAuthStatus} setLoginWithAgenCAi={setLoginWithAgenCAi} />
+        <OAuthStatusMessage oauthStatus={oauthStatus} mode={mode} startingMessage={startingMessage} forcedMethodMessage={forcedMethodMessage} showPastePrompt={showPastePrompt} pastedCode={pastedCode} setPastedCode={setPastedCode} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} pasteLayout={pasteLayout} handleSubmitCode={handleSubmitCode} setOAuthStatus={setOAuthStatus} setLoginWithAgenCAi={setLoginWithAgenCAi} />
       </Box>
     </Box>;
 }
@@ -362,7 +365,7 @@ type OAuthStatusMessageProps = {
   setPastedCode: (value: string) => void;
   cursorOffset: number;
   setCursorOffset: (offset: number) => void;
-  textInputColumns: number;
+  pasteLayout: ConsoleOAuthPasteLayout;
   handleSubmitCode: (value: string, url: string) => void;
   setOAuthStatus: (status: OAuthStatus) => void;
   setLoginWithAgenCAi: (value: boolean) => void;
@@ -377,7 +380,7 @@ function OAuthStatusMessage({
   setPastedCode,
   cursorOffset,
   setCursorOffset,
-  textInputColumns,
+  pasteLayout,
   handleSubmitCode,
   setOAuthStatus,
   setLoginWithAgenCAi,
@@ -397,12 +400,12 @@ function OAuthStatusMessage({
               {'\n'}
             </Text>
           ),
-          value: 'claudeai' as const,
+          value: 'agencai' as const,
         },
         {
           label: (
             <Text>
-              Anthropic Console account ·{' '}
+              Console account ·{' '}
               <Text dimColor>API usage billing</Text>
               {'\n'}
             </Text>
@@ -430,17 +433,17 @@ function OAuthStatusMessage({
               options={loginOptions}
               onChange={value => {
                 if (value === 'platform') {
-                  logEvent('tengu_oauth_platform_selected', {})
+                  logEvent('agenc_oauth_platform_selected', {})
                   setOAuthStatus({ state: 'platform_setup' })
                   return
                 }
 
                 setOAuthStatus({ state: 'ready_to_start' })
-                if (value === 'claudeai') {
-                  logEvent('tengu_oauth_claudeai_selected', {})
+                if (value === 'agencai') {
+                  logEvent('agenc_oauth_agencai_selected', {})
                   setLoginWithAgenCAi(true)
                 } else {
-                  logEvent('tengu_oauth_console_selected', {})
+                  logEvent('agenc_oauth_console_selected', {})
                   setLoginWithAgenCAi(false)
                 }
               }}
@@ -493,15 +496,15 @@ function OAuthStatusMessage({
             </Box>
           ) : null}
           {showPastePrompt ? (
-            <Box>
-              <Text>{PASTE_HERE_MSG}</Text>
+            <Box flexDirection={pasteLayout.flexDirection}>
+              <Text>{CONSOLE_OAUTH_PASTE_PROMPT}</Text>
               <TextInput
                 value={pastedCode}
                 onChange={setPastedCode}
                 onSubmit={value => handleSubmitCode(value, oauthStatus.url)}
                 cursorOffset={cursorOffset}
                 onChangeCursorOffset={setCursorOffset}
-                columns={textInputColumns}
+                columns={pasteLayout.inputColumns}
                 mask="*"
               />
             </Box>
