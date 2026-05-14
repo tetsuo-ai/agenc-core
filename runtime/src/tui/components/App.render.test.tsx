@@ -768,6 +768,65 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("prioritizes a pending permission overlay over an elicitation overlay", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async () => {
+        expect(session.services.requestUserInputResolver).toBeDefined();
+        expect(session.services.approvalResolver).toBeDefined();
+
+        const elicitationAbort = new AbortController();
+        const permissionAbort = new AbortController();
+        const elicitation = session.services.requestUserInputResolver!.request(
+          userRequest("ask-while-permission-pending"),
+          elicitationAbort.signal,
+        );
+        const permission = session.services.approvalResolver!.request({
+          callId: "permission-while-eliciting",
+          toolName: "FileRead",
+          turnId: "turn-1",
+          signal: permissionAbort.signal,
+          invocation: {
+            session: {} as never,
+            turn: {} as never,
+            tracker: {
+              appendFileDiff() {},
+              snapshot: () => [],
+              clear() {},
+            },
+            callId: "permission-while-eliciting",
+            toolName: { name: "FileRead" },
+            payload: {
+              kind: "function",
+              arguments: "{\"file_path\":\"TODO.MD\"}",
+            },
+            source: "direct",
+          },
+        } as never);
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
+        expect(layoutProps).toBeDefined();
+        expect(containsElementNamed(layoutProps?.overlay, "AgenCPermissionOverlay")).toBe(true);
+        expect(containsElementNamed(layoutProps?.overlay, "ElicitationOverlay")).toBe(false);
+
+        permissionAbort.abort();
+        elicitationAbort.abort();
+        await expect(permission).resolves.toEqual({ kind: "abort" });
+        await expect(elicitation).resolves.toBeNull();
+      },
+    );
+  });
+
   test("does not show model spinner while a local slash command error is pending", async () => {
     const dispatcher = await import("../../commands/dispatcher.js");
     let resolveDispatch: (outcome: any) => void = () => {};

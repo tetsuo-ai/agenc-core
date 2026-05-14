@@ -2185,14 +2185,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       {fullscreen ? <PromptInputQueuedCommands /> : null}
     </>;
 
-  // PermissionOverlay + ElicitationOverlay live in `overlay` slot — rendered
-  // inside ScrollBox after messages so users can scroll up to see context
-  // while approving/answering. Matches the fullscreen layout
-  // overlay={toolPermissionOverlay} pattern.
-  const overlayContent = <>
-      <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} />
-      <ElicitationOverlay prompt={elicitation.prompt} />
-    </>;
+  // A permission request owns the overlay while it is pending. Elicitation stays
+  // queued behind it so Enter/Escape never have two modal owners.
+  const overlayContent = permissionRequests.length > 0 ? <PermissionOverlay request={permissionRequests[0]} tools={availableTools as any} mcpClients={mcpClients as any} /> : elicitation.prompt !== null ? <ElicitationOverlay prompt={elicitation.prompt} /> : null;
 
   // Phase 5 #53: hide PromptInput while a permission overlay or
   // elicitation prompt is active so a single Enter doesn't fire both.
@@ -2234,7 +2229,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={transcript.isStreaming ? "requesting" as never : undefined} />
-      <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={permissionRequests.length > 0 || elicitation.prompt !== null ? overlayContent : undefined} />
+      <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} />
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
       {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}
