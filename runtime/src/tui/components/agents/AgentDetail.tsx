@@ -10,7 +10,7 @@ import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { getMemoryScopeDisplay } from '../../../tools/AgentTool/agentMemory';
 import { resolveAgentTools } from '../../../tools/AgentTool/agentToolUtils';
 import { type AgentDefinition, isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { getAgentModelDisplay } from '../../../utils/model/agent.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getAgentModelDisplay } from '../../../utils/model/agent.js';
 import { Markdown } from '../markdown/Markdown.js';
 import { getActualRelativeAgentFilePath } from './agentFileUtils';
 import {

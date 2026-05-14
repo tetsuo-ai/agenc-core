@@ -18,8 +18,8 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js';
+import { plural } from '../../../utils/stringUtils.js';
 import { Divider } from '../design-system/Divider';
 import {
   getToolSelectorContentColumns,

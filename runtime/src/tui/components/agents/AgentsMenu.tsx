@@ -1,43 +1,51 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import * as React from 'react';
-import { useCallback, useMemo, useState } from 'react';
-import type { SettingSource } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { useMergedTools } from '../../hooks/useMergedTools';
 import { Box, Text } from '../../ink.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
-import type { Tools } from '../../../tools/Tool';
-import { type ResolvedAgent, resolveAgentOverrides } from '../../../tools/AgentTool/agentDisplay';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
+import { resolveAgentOverrides } from '../../../tools/AgentTool/agentDisplay';
 import { type AgentDefinition, getActiveAgentsFromList } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { toError } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { toError } from '../../../utils/errors.js';
+import { logError } from '../../../utils/log.js';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { Select } from '../CustomSelect/select';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { Dialog } from '../design-system/Dialog';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { AgentDetail } from './AgentDetail';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { AgentEditor } from './AgentEditor';
-import { AgentNavigationFooter } from './AgentNavigationFooter';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
+import { AgentNavigationFooter, getAgentDeleteFooterInstructions } from './AgentNavigationFooter';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { AgentsList } from './AgentsList';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { AgentDeleteFailureMessage, formatAgentDeleteFailureMessage } from './AgentDeleteFailure';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { deleteAgentFromFile } from './agentFileUtils';
+// @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { CreateAgentWizard } from './new-agent-creation/CreateAgentWizard';
-import type { ModeState } from './types';
+import type { ModeState } from './types.js';
+type Tools = unknown;
 type Props = {
   tools: Tools;
   onExit: (result?: string, options?: {
     display?: CommandResultDisplay;
   }) => void;
 };
-export function AgentsMenu(t0) {
+export function AgentsMenu(t0: Props): React.ReactNode {
   const $ = _c(157);
   const {
     tools,
     onExit
   } = t0;
-  let t1;
+  let t1: ModeState;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = {
       mode: "list-agents",
@@ -47,7 +55,7 @@ export function AgentsMenu(t0) {
   } else {
     t1 = $[0];
   }
-  const [modeState, setModeState] = useState(t1);
+  const [modeState, setModeState] = useState<ModeState>(t1);
   const agentDefinitions = useAppState(_temp);
   const mcpTools = useAppState(_temp2);
   const toolPermissionContext = useAppState(_temp3);
@@ -56,15 +64,15 @@ export function AgentsMenu(t0) {
     allAgents,
     activeAgents: agents
   } = agentDefinitions;
-  let t2;
+  let t2: string[];
   if ($[1] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = [];
     $[1] = t2;
   } else {
     t2 = $[1];
   }
-  const [changes, setChanges] = useState(t2);
-  const [deleteFailureMessage, setDeleteFailureMessage] = useState(null);
+  const [changes, setChanges] = useState<string[]>(t2);
+  const [deleteFailureMessage, setDeleteFailureMessage] = useState<string | null>(null);
   const mergedTools = useMergedTools(tools, mcpTools, toolPermissionContext);
   useExitOnCtrlCDWithKeybindings();
   let t3;
@@ -150,8 +158,8 @@ export function AgentsMenu(t0) {
   const agentsBySource = t10;
   let t11;
   if ($[25] === Symbol.for("react.memo_cache_sentinel")) {
-    t11 = message => {
-      setChanges(prev => [...prev, message]);
+    t11 = (message: string) => {
+      setChanges((prev: string[]) => [...prev, message]);
       setModeState({
         mode: "list-agents",
         source: "all"
@@ -164,13 +172,13 @@ export function AgentsMenu(t0) {
   const handleAgentCreated = t11;
   let t12;
   if ($[26] !== setAppState) {
-    t12 = async agent => {
+    t12 = async (agent: AgentDefinition) => {
       ;
       setDeleteFailureMessage(null);
       try {
         await deleteAgentFromFile(agent);
-        setAppState(state => {
-          const allAgents_0 = state.agentDefinitions.allAgents.filter(a_6 => !(a_6.agentType === agent.agentType && a_6.source === agent.source));
+        setAppState((state: any) => {
+          const allAgents_0 = state.agentDefinitions.allAgents.filter((a_6: AgentDefinition) => !(a_6.agentType === agent.agentType && a_6.source === agent.source));
           return {
             ...state,
             agentDefinitions: {
@@ -180,7 +188,7 @@ export function AgentsMenu(t0) {
             }
           };
         });
-        setChanges(prev_0 => [...prev_0, `Deleted agent: ${chalk.bold(agent.agentType)}`]);
+        setChanges((prev_0: string[]) => [...prev_0, `Deleted agent: ${chalk.bold(agent.agentType)}`]);
         setModeState({
           mode: "list-agents",
           source: "all"
@@ -237,7 +245,7 @@ export function AgentsMenu(t0) {
         }
         let t16;
         if ($[37] !== modeState) {
-          t16 = agent_0 => setModeState({
+          t16 = (agent_0: AgentDefinition) => setModeState({
             mode: "agent-menu",
             agent: agent_0,
             previousMode: modeState
@@ -314,7 +322,7 @@ export function AgentsMenu(t0) {
         if ($[53] !== allAgents || $[54] !== modeState.agent.agentType || $[55] !== modeState.agent.source) {
           let t14;
           if ($[57] !== modeState.agent.agentType || $[58] !== modeState.agent.source) {
-            t14 = a_9 => a_9.agentType === modeState.agent.agentType && a_9.source === modeState.agent.source;
+            t14 = (a_9: AgentDefinition) => a_9.agentType === modeState.agent.agentType && a_9.source === modeState.agent.source;
             $[57] = modeState.agent.agentType;
             $[58] = modeState.agent.source;
             $[59] = t14;
@@ -377,7 +385,7 @@ export function AgentsMenu(t0) {
         const menuItems = t17;
         let t18;
         if ($[66] !== agentToUse || $[67] !== modeState) {
-          t18 = value_0 => {
+          t18 = (value_0: string) => {
             bb129: switch (value_0) {
               case "view":
                 {
@@ -496,7 +504,7 @@ export function AgentsMenu(t0) {
         if ($[89] !== allAgents || $[90] !== modeState.agent) {
           let t14;
           if ($[92] !== modeState.agent) {
-            t14 = a_8 => a_8.agentType === modeState.agent.agentType && a_8.source === modeState.agent.source;
+            t14 = (a_8: AgentDefinition) => a_8.agentType === modeState.agent.agentType && a_8.source === modeState.agent.source;
             $[92] = modeState.agent;
             $[93] = t14;
           } else {
@@ -622,7 +630,7 @@ export function AgentsMenu(t0) {
         }
         let t17;
         if ($[119] !== handleAgentDeleted || $[120] !== modeState) {
-          t17 = value => {
+          t17 = (value: string) => {
             if (value === "yes") {
               handleAgentDeleted(modeState.agent);
             } else {
@@ -664,7 +672,7 @@ export function AgentsMenu(t0) {
         const t20 = <Dialog title="Delete agent" onCancel={t14} color="error">{t15}{t16}{deleteFailure}{t19}</Dialog>;
         let t21;
         if ($[132] === Symbol.for("react.memo_cache_sentinel")) {
-          t21 = <AgentNavigationFooter instructions={"Press \u2191\u2193 to navigate, Enter to select, Esc to cancel"} />;
+          t21 = <AgentNavigationFooter instructions={getAgentDeleteFooterInstructions()} />;
           $[132] = t21;
         } else {
           t21 = $[132];
@@ -685,7 +693,7 @@ export function AgentsMenu(t0) {
         if ($[135] !== allAgents || $[136] !== modeState.agent) {
           let t14;
           if ($[138] !== modeState.agent) {
-            t14 = a_7 => a_7.agentType === modeState.agent.agentType && a_7.source === modeState.agent.source;
+            t14 = (a_7: AgentDefinition) => a_7.agentType === modeState.agent.agentType && a_7.source === modeState.agent.source;
             $[138] = modeState.agent;
             $[139] = t14;
           } else {
@@ -712,7 +720,7 @@ export function AgentsMenu(t0) {
         let t16;
         let t17;
         if ($[142] !== modeState.previousMode) {
-          t16 = message_0 => {
+          t16 = (message_0: string) => {
             handleAgentCreated(message_0);
             setModeState(modeState.previousMode);
           };
@@ -768,33 +776,36 @@ export function AgentsMenu(t0) {
       }
   }
 }
-function _temp0(a_5) {
-  return a_5.source === "plugin";
+function _temp0(a_5: AgentDefinition): boolean {
+  return (a_5.source as string) === "plugin";
 }
-function _temp9(a_4) {
-  return a_4.source === "flagSettings";
+function _temp9(a_4: AgentDefinition): boolean {
+  return (a_4.source as string) === "flagSettings";
 }
-function _temp8(a_3) {
-  return a_3.source === "localSettings";
+function _temp8(a_3: AgentDefinition): boolean {
+  return (a_3.source as string) === "localSettings";
 }
-function _temp7(a_2) {
-  return a_2.source === "policySettings";
+function _temp7(a_2: AgentDefinition): boolean {
+  return (a_2.source as string) === "policySettings";
 }
-function _temp6(a_1) {
-  return a_1.source === "projectSettings";
+function _temp6(a_1: AgentDefinition): boolean {
+  return (a_1.source as string) === "projectSettings";
 }
-function _temp5(a_0) {
-  return a_0.source === "userSettings";
+function _temp5(a_0: AgentDefinition): boolean {
+  return (a_0.source as string) === "userSettings";
 }
-function _temp4(a) {
-  return a.source === "built-in";
+function _temp4(a: AgentDefinition): boolean {
+  return (a.source as string) === "built-in";
 }
-function _temp3(s_1) {
+function _temp3(s_1: any): unknown {
   return s_1.toolPermissionContext;
 }
-function _temp2(s_0) {
+function _temp2(s_0: any): unknown {
   return s_0.mcp.tools;
 }
-function _temp(s) {
+function _temp(s: any): {
+  allAgents: AgentDefinition[];
+  activeAgents: AgentDefinition[];
+} {
   return s.agentDefinitions;
 }

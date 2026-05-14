@@ -73,6 +73,23 @@ describe("moved-source marker cleanup", () => {
     }
   });
 
+  test("agent management surfaces do not keep moved-source or upstream-import residue", () => {
+    for (const file of [
+      "runtime/src/tui/components/agents/AgentsMenu.tsx",
+      "runtime/src/tui/components/agents/AgentEditor.tsx",
+      "runtime/src/tui/components/agents/AgentDetail.tsx",
+      "runtime/src/tui/components/agents/ToolSelector.tsx",
+      "runtime/src/tui/components/agents/ModelSelector.tsx",
+      "runtime/src/tui/components/agents/ColorPicker.tsx",
+    ]) {
+      const source = readFileSync(`${repoRoot}${file}`, "utf8");
+
+      expect(source).not.toContain("@ts-nocheck");
+      expect(source).not.toContain("Moved-source note");
+      expect(source).not.toContain("upstream-import");
+    }
+  });
+
   test("owned message renderers do not import provider SDK block types directly", () => {
     for (const file of [
       "runtime/src/tui/components/Message.tsx",

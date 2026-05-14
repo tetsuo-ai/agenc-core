@@ -9,7 +9,7 @@ import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { Tools } from '../../../tools/Tool';
 import { type AgentColorName, setAgentColor } from 'src/tools/AgentTool/agentColorManager.js';
 import { type AgentDefinition, getActiveAgentsFromList, isCustomAgent, isPluginAgent } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { editFileInEditor } from '../../../utils/promptEditor.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { editFileInEditor } from '../../../utils/promptEditor.js';
 import { getActualAgentFilePath, updateAgentFile } from './agentFileUtils';
 import { ColorPicker } from './ColorPicker';
 import { ModelSelector } from './ModelSelector';
