@@ -27,6 +27,7 @@ import { useAppStateStore } from '../../state/AppState.js';
 import { isBackgroundTask, type TaskState } from '../../../tasks/types';
 import { getPillLabel } from '../../../tasks/pillLabel';
 import { useSelectedMessageBg } from '../messageActions';
+import { AGENT_MESSAGE_THEME_COLOR } from './agentMessageTheme.js';
 type Props = {
   message: SystemMessage;
   addMargin: boolean;
@@ -543,7 +544,7 @@ function CollabAgentSystemMessage({
       : state === "error"
         ? "error"
         : state === "running"
-          ? "cyan_FOR_SUBAGENTS_ONLY"
+          ? AGENT_MESSAGE_THEME_COLOR
           : undefined;
   const details = Array.isArray(message.details) ? message.details : [];
   const width = getSystemMessageContentWidth(columns);

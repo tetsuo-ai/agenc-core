@@ -2,12 +2,13 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Box, Text } from '../../ink.js';
 import { isTaskAssignment, type TaskAssignmentMessage } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { AGENT_MESSAGE_THEME_COLOR } from './agentMessageTheme.js';
 type Props = {
   assignment: TaskAssignmentMessage;
 };
 
 /**
- * Renders a task assignment with a cyan border (team-related color).
+ * Renders a task assignment with the shared agent-message accent.
  */
 export function TaskAssignmentDisplay(t0) {
   const $ = _c(11);
@@ -16,7 +17,7 @@ export function TaskAssignmentDisplay(t0) {
   } = t0;
   let t1;
   if ($[0] !== assignment.assignedBy || $[1] !== assignment.taskId) {
-    t1 = <Box marginBottom={1}><Text color="cyan_FOR_SUBAGENTS_ONLY" bold={true}>Task #{assignment.taskId} assigned by {assignment.assignedBy}</Text></Box>;
+    t1 = <Box marginBottom={1}><Text color={AGENT_MESSAGE_THEME_COLOR} bold={true}>Task #{assignment.taskId} assigned by {assignment.assignedBy}</Text></Box>;
     $[0] = assignment.assignedBy;
     $[1] = assignment.taskId;
     $[2] = t1;
@@ -41,7 +42,7 @@ export function TaskAssignmentDisplay(t0) {
   }
   let t4;
   if ($[7] !== t1 || $[8] !== t2 || $[9] !== t3) {
-    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor="cyan_FOR_SUBAGENTS_ONLY" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
+    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor={AGENT_MESSAGE_THEME_COLOR} flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
     $[7] = t1;
     $[8] = t2;
     $[9] = t3;
