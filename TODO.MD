@@ -603,7 +603,7 @@ Remaining partitions:
 | 538 | Auto updater status rows | Auto-updater UI should stay hidden when disabled or idle, show installing progress, show success, and show failure/permission messages. | `AutoUpdater` returns null for idle states and renders `Auto-updating…`, success, and error rows based on update result. | OK | `runtime/src/tui/components/AutoUpdater.tsx:171`, `runtime/src/tui/components/AutoUpdater.tsx:174`, `runtime/src/tui/components/AutoUpdater.tsx:176`, `runtime/src/tui/components/AutoUpdater.tsx:184`, `runtime/src/tui/components/AutoUpdater.tsx:187`, `runtime/src/tui/components/AutoUpdater.tsx:190` | Normal update status rendering is present. | None |
 | 539 | Auto updater ascii/no-unicode rendering | Update status should not rely on check/cross and middle-dot glyphs without fallback. | AutoUpdater and NativeAutoUpdater now use `selectAgenCTuiGlyphs()` for success/error markers and separators; JS updater progress also uses the shared ellipsis glyph. ASCII mode renders `OK`, `ERR`, `-`, and `...`, with focused render coverage for JS and native updater rows. | OK | `runtime/src/tui/glyphs.ts:20`, `runtime/src/tui/glyphs.ts:53`, `runtime/src/tui/glyphs.ts:54`, `runtime/src/tui/glyphs.ts:55`, `runtime/src/tui/glyphs.ts:87`, `runtime/src/tui/glyphs.ts:88`, `runtime/src/tui/glyphs.ts:89`, `runtime/src/tui/components/AutoUpdater.tsx:177`, `runtime/src/tui/components/AutoUpdater.tsx:186`, `runtime/src/tui/components/AutoUpdater.tsx:190`, `runtime/src/tui/components/AutoUpdater.tsx:193`, `runtime/src/tui/components/NativeAutoUpdater.tsx:163`, `runtime/src/tui/components/NativeAutoUpdater.tsx:173`, `runtime/src/tui/components/NativeAutoUpdater.tsx:176`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:125`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:128`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:157`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:159` | Update status rows are now terminal-glyph-mode aware. | None |
 | 540 | Native auto updater dead external branch | Dead donor-conditional code should not remain in update rendering. | `NativeAutoUpdater` no longer carries the `maxVersionIssue` state, max-version warning render branch, or `"external" === 'ant'` constant comparison; rendering is limited to active update progress/result states. | OK | `runtime/src/tui/components/NativeAutoUpdater.tsx:155`, `runtime/src/tui/components/NativeAutoUpdater.tsx:159`, `runtime/src/tui/components/NativeAutoUpdater.tsx:163`, `runtime/src/tui/components/NativeAutoUpdater.tsx:172`, `runtime/src/tui/components/NativeAutoUpdater.tsx:175` | Dead donor warning UI was removed. | None |
-| 541 | Auto updater wrapper migration residue | Auto updater wrapper should not carry moved-source scaffolding. | `AutoUpdaterWrapper` starts with `@ts-nocheck` and a moved-source note. | LEGACY | `runtime/src/tui/components/AutoUpdaterWrapper.tsx:1`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:2` | Live status wrapper has migration residue. | P3 |
+| 541 | Auto updater wrapper migration residue | Auto updater wrapper should not carry moved-source scaffolding. | `AutoUpdaterWrapper` now starts with real imports, has typed props/state, and routes to the native, package-manager, or JS updater without compiled moved-source scaffolding; the moved-source marker test includes it. | OK | `runtime/src/tui/components/AutoUpdaterWrapper.tsx:1`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:20`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:27`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:28`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:31`, `runtime/src/tui/moved-source-markers.test.ts:13`, `runtime/src/tui/moved-source-markers.test.ts:32`, `runtime/src/tui/moved-source-markers.test.ts:33` | Live status wrapper no longer carries migration scaffolding. | None |
 
 ## Part 8 - Ink Renderer, ScrollBox, Terminal Input, Keybindings, Resize, No-Color, ASCII
 
@@ -714,13 +714,9 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 82 active rows: 39 BUG, 2 MISSING, 41 LEGACY.
+Totals: 81 active rows: 39 BUG, 2 MISSING, 40 LEGACY.
 
 ### P3
-
-#### `runtime/src/tui/components/AutoUpdaterWrapper.tsx`
-
-- #541 LEGACY: Auto updater wrapper migration residue. Citations: `runtime/src/tui/components/AutoUpdaterWrapper.tsx:1`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:2`
 
 #### `runtime/src/tui/components/ConsoleOAuthFlow.tsx`
 

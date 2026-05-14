@@ -6,7 +6,7 @@ import { Text } from '../ink.js';
 import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
-import { getPackageManager, type PackageManager } from '../../utils/nativeInstaller/packageManagers.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPackageManager } from '../../utils/nativeInstaller/packageManagers.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { gt, gte } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
@@ -17,7 +17,7 @@ type Props = {
   showSuccessMessage: boolean;
   verbose: boolean;
 };
-export function PackageManagerAutoUpdater(t0) {
+export function PackageManagerAutoUpdater(t0: Props): React.ReactNode {
   const $ = _c(10);
   const {
     verbose

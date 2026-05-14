@@ -4,7 +4,7 @@ import { logEvent } from '../../services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useInterval } from 'usehooks-ts';
-import { useUpdateNotification } from '../hooks/useUpdateNotification';
+import { useUpdateNotification } from '../hooks/useUpdateNotification.js';
 import { Box, Text } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -72,7 +72,7 @@ export function NativeAutoUpdater({
     if (isUpdatingRef.current) {
       return;
     }
-    if ("production" === 'test' || "production" === 'development') {
+    if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') {
       logForDebugging('NativeAutoUpdater: Skipping update check in test/dev environment');
       return;
     }

@@ -142,12 +142,12 @@ declare module "semver" {
   export function eq(a: string, b: string, opts?: SemverOpts): boolean;
   export function satisfies(version: string, range: string, opts?: SemverOpts): boolean;
   export function compare(a: string, b: string, opts?: SemverOpts): -1 | 0 | 1;
-  export function coerce(input: string | null | undefined): { version: string } | null;
-  export function major(version: string): number;
-  export function minor(version: string): number;
-  export function patch(version: string): number;
+  export function coerce(input: string | null | undefined, opts?: SemverOpts): { version: string } | null;
+  export function major(version: string, opts?: SemverOpts): number;
+  export function minor(version: string, opts?: SemverOpts): number;
+  export function patch(version: string, opts?: SemverOpts): number;
   export function valid(version: string | null | undefined): string | null;
-  export function parse(version: string | null | undefined): { version: string } | null;
+  export function parse(version: string | null | undefined, opts?: SemverOpts): { version: string } | null;
   export function inc(version: string, release: string): string | null;
   export function diff(a: string, b: string): string | null;
 }
