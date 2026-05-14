@@ -109,6 +109,40 @@ describe('BackgroundTasksDialog', () => {
     expect(output).toContain('back')
   })
 
+  it('keeps terminal background tasks visible while the dialog is open', async () => {
+    appStateMock.state = {
+      tasks: {
+        completed: makeShellTask({
+          id: 'completed',
+          status: 'completed',
+          command: 'npm run build',
+          startTime: 30,
+        }),
+        failed: makeShellTask({
+          id: 'failed',
+          status: 'failed',
+          command: 'npm run lint',
+          startTime: 20,
+        }),
+        killed: makeShellTask({
+          id: 'killed',
+          status: 'killed',
+          command: 'npm run dev',
+          startTime: 10,
+        }),
+      },
+    }
+
+    const { BackgroundTasksDialog } = await import('./BackgroundTasksDialog.js')
+
+    const output = await renderToString(<BackgroundTasksDialog />, 100)
+
+    expect(output).not.toContain('No background tasks')
+    expect(output).toContain('completed · local_bash · npm run build')
+    expect(output).toContain('failed · local_bash · npm run lint')
+    expect(output).toContain('killed · local_bash · npm run dev')
+  })
+
   it('routes stop actions through the task helper and current tool-use context', async () => {
     const contextSetAppState = vi.fn()
     appStateMock.state = {

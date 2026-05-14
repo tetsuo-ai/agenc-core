@@ -7,6 +7,7 @@ import { requestTeammateShutdown } from "../../../tasks/InProcessTeammateTask/In
 import {
   isBackgroundTask,
   isStoppableTaskStatus,
+  isTaskType,
   type TaskState,
 } from "../../../tasks/types.js";
 import { formatNumber } from "../../../utils/format.js";
@@ -81,6 +82,31 @@ function taskActionLabel(task: TaskState): string {
   }
 }
 
+function isBackgroundDialogTask(task: unknown): task is TaskState {
+  if (isBackgroundTask(task)) {
+    return true;
+  }
+  if (typeof task !== "object" || task === null) {
+    return false;
+  }
+  const candidate = task as {
+    readonly type?: unknown;
+    readonly status?: unknown;
+    readonly isBackgrounded?: unknown;
+  };
+  if (typeof candidate.type !== "string" || !isTaskType(candidate.type)) {
+    return false;
+  }
+  if (candidate.isBackgrounded === false) {
+    return false;
+  }
+  return (
+    candidate.status === "completed" ||
+    candidate.status === "failed" ||
+    candidate.status === "killed"
+  );
+}
+
 function stopTask(task: TaskState, setAppState: ReturnType<typeof useSetAppState>): void {
   if (!isStoppableTaskStatus(task.status)) {
     return;
@@ -118,7 +144,7 @@ export function BackgroundTasksDialog({
   toolUseContext,
 }: Props): React.ReactNode {
   const tasks = useAppState((state) =>
-    Object.values(state.tasks ?? {}).filter(isBackgroundTask),
+    Object.values(state.tasks ?? {}).filter(isBackgroundDialogTask),
   );
   const appStateSetter = useSetAppState();
   const setAppState = setAppStateFromContext(toolUseContext) ?? appStateSetter;
