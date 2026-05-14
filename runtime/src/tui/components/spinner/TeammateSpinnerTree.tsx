@@ -1,10 +1,8 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
-import * as React from 'react';
-import { Box, Text, type TextProps } from '../../ink.js';
+import { Box, Text } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
+import type { AppState } from '../../state/AppState.js';
 import { getRunningTeammatesSorted } from '../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { formatNumber } from '../../../utils/format.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
@@ -22,7 +20,7 @@ type Props = {
   /** Leader's idle status text (when leader is idle, e.g. "✻ Idle for 3s") */
   leaderIdleText?: string;
 };
-export function TeammateSpinnerTree(t0) {
+export function TeammateSpinnerTree(t0: Props) {
   const $ = _c(61);
   const {
     selectedIndex,
@@ -205,16 +203,16 @@ export function TeammateSpinnerTree(t0) {
   }
   return t7;
 }
-function _temp3(s_1) {
+function _temp3(s_1: AppState) {
   return s_1.showTeammateMessagePreview;
 }
-function _temp2(s_0) {
+function _temp2(s_0: AppState) {
   return s_0.viewingAgentTaskId;
 }
-function _temp(s) {
+function _temp(s: AppState) {
   return s.tasks;
 }
-function HideRow(t0) {
+function HideRow(t0: { isSelected?: boolean }) {
   const $ = _c(18);
   const {
     isSelected

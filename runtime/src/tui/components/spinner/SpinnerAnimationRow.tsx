@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
@@ -235,7 +233,7 @@ export function SpinnerAnimationRow({
       </Box>
     </FullWidthRow>;
 }
-function SpinnerModeGlyph(t0) {
+function SpinnerModeGlyph(t0: { mode: SpinnerMode }) {
   const $ = _c(2);
   const {
     mode

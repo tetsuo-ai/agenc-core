@@ -1,7 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Text, useTheme } from '../../ink.js';
 import { getGraphemeSegmenter } from '../../../utils/intl.js';
@@ -22,7 +19,7 @@ const ERROR_RED = {
   g: 43,
   b: 63
 };
-export function GlimmerMessage(t0) {
+export function GlimmerMessage(t0: Props) {
   const $ = _c(75);
   const {
     message,

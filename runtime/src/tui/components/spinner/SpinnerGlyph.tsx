@@ -1,7 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
 import { Box, Text, useTheme } from '../../ink.js';
 import { getTheme, type Theme } from '../../../utils/theme.js';
 import { getDefaultCharacters, getReducedMotionDot, interpolateColor, parseRGB, toRGBColor } from './utils.js';
@@ -21,7 +18,7 @@ type Props = {
   reducedMotion?: boolean;
   time?: number;
 };
-export function SpinnerGlyph(t0) {
+export function SpinnerGlyph(t0: Props) {
   const $ = _c(9);
   const {
     frame,

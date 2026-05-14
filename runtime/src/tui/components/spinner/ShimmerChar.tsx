@@ -1,7 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
 import { Text } from '../../ink.js';
 import type { Theme } from '../../../utils/theme.js';
 type Props = {
@@ -11,7 +8,7 @@ type Props = {
   messageColor: keyof Theme;
   shimmerColor: keyof Theme;
 };
-export function ShimmerChar(t0) {
+export function ShimmerChar(t0: Props) {
   const $ = _c(3);
   const {
     char,
