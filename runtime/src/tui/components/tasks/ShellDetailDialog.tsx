@@ -7,6 +7,7 @@ import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { LocalShellTaskState } from '../../../tasks/LocalShellTask/guards';
+import { isStoppableTaskStatus } from '../../../tasks/types';
 import { formatDuration, formatFileSize, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import { tailFile } from '../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getTaskOutputPath } from '../../../utils/task/diskOutput'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -135,7 +136,7 @@ export function ShellDetailDialog(t0) {
           e.preventDefault();
           onBack();
         } else {
-          if (e.key === "x" && shell.status === "running" && onKillShell) {
+          if (e.key === "x" && isStoppableTaskStatus(shell.status) && onKillShell) {
             e.preventDefault();
             onKillShell();
           }
@@ -164,7 +165,7 @@ export function ShellDetailDialog(t0) {
   const t9 = isMonitor ? "Monitor details" : "Shell details";
   let t10;
   if ($[19] !== onBack || $[20] !== onKillShell || $[21] !== shell.status) {
-    t10 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{shell.status === "running" && onKillShell && <KeyboardShortcutHint shortcut="x" action="stop" />}</Byline>;
+    t10 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(shell.status) && onKillShell && <KeyboardShortcutHint shortcut="x" action="stop" />}</Byline>;
     $[19] = onBack;
     $[20] = onKillShell;
     $[21] = shell.status;

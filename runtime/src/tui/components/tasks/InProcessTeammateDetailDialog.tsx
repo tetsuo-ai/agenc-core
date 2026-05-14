@@ -7,6 +7,7 @@ import { Box, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types';
+import { isStoppableTaskStatus } from '../../../tasks/types';
 import { getTools } from '../../../tools';
 import { formatNumber, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import { toInkColor } from '../../../utils/ink'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -14,7 +15,7 @@ import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { renderToolActivity } from './renderToolActivity';
-import { describeTeammateActivity } from './taskStatusUtils';
+import { describeTeammateActivity, getTaskStatusColor } from './taskStatusUtils';
 type Props = {
   teammate: DeepImmutable<InProcessTeammateTaskState>;
   onDone: () => void;
@@ -72,7 +73,7 @@ export function InProcessTeammateDetailDialog(t0) {
           e.preventDefault();
           onBack();
         } else {
-          if (e.key === "x" && teammate.status === "running" && onKill) {
+          if (e.key === "x" && isStoppableTaskStatus(teammate.status) && onKill) {
             e.preventDefault();
             onKill();
           } else {
@@ -151,7 +152,7 @@ export function InProcessTeammateDetailDialog(t0) {
   const title = t10;
   let t11;
   if ($[24] !== teammate.status) {
-    t11 = teammate.status !== "running" && <Text color={teammate.status === "completed" ? "success" : teammate.status === "killed" ? "warning" : "error"}>{teammate.status === "completed" ? "Completed" : teammate.status === "failed" ? "Failed" : "Stopped"}{" \xB7 "}</Text>;
+    t11 = teammate.status !== "running" && <Text color={getTaskStatusColor(teammate.status)}>{teammate.status === "pending" ? "Pending" : teammate.status === "completed" ? "Completed" : teammate.status === "failed" ? "Failed" : "Stopped"}{" \xB7 "}</Text>;
     $[24] = teammate.status;
     $[25] = t11;
   } else {
@@ -195,7 +196,7 @@ export function InProcessTeammateDetailDialog(t0) {
   const subtitle = t15;
   let t16;
   if ($[37] !== onBack || $[38] !== onForeground || $[39] !== onKill || $[40] !== teammate.status) {
-    t16 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{teammate.status === "running" && onKill && <KeyboardShortcutHint shortcut="x" action="stop" />}{teammate.status === "running" && onForeground && <KeyboardShortcutHint shortcut="f" action="foreground" />}</Byline>;
+    t16 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(teammate.status) && onKill && <KeyboardShortcutHint shortcut="x" action="stop" />}{teammate.status === "running" && onForeground && <KeyboardShortcutHint shortcut="f" action="foreground" />}</Byline>;
     $[37] = onBack;
     $[38] = onForeground;
     $[39] = onKill;

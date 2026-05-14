@@ -7,6 +7,7 @@ import { Box, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import type { LocalAgentTaskState } from '../../../tasks/LocalAgentTask/LocalAgentTask';
+import { isStoppableTaskStatus } from '../../../tasks/types';
 import { getTools } from '../../../tools';
 import { formatNumber } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import { extractTag } from '../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -71,7 +72,7 @@ export function AsyncAgentDetailDialog(t0) {
           e.preventDefault();
           onBack();
         } else {
-          if (e.key === "x" && agent.status === "running" && onKillAgent) {
+          if (e.key === "x" && isStoppableTaskStatus(agent.status) && onKillAgent) {
             e.preventDefault();
             onKillAgent();
           }
@@ -113,7 +114,7 @@ export function AsyncAgentDetailDialog(t0) {
   const title = t8;
   let t9;
   if ($[14] !== agent.status) {
-    t9 = agent.status !== "running" && <Text color={getTaskStatusColor(agent.status)}>{getTaskStatusIcon(agent.status)}{" "}{agent.status === "completed" ? "Completed" : agent.status === "failed" ? "Failed" : "Stopped"}{" \xB7 "}</Text>;
+    t9 = agent.status !== "running" && <Text color={getTaskStatusColor(agent.status)}>{getTaskStatusIcon(agent.status)}{" "}{agent.status === "pending" ? "Pending" : agent.status === "completed" ? "Completed" : agent.status === "failed" ? "Failed" : "Stopped"}{" \xB7 "}</Text>;
     $[14] = agent.status;
     $[15] = t9;
   } else {
@@ -157,7 +158,7 @@ export function AsyncAgentDetailDialog(t0) {
   const subtitle = t13;
   let t14;
   if ($[27] !== agent.status || $[28] !== onBack || $[29] !== onKillAgent) {
-    t14 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{agent.status === "running" && onKillAgent && <KeyboardShortcutHint shortcut="x" action="stop" />}</Byline>;
+    t14 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(agent.status) && onKillAgent && <KeyboardShortcutHint shortcut="x" action="stop" />}</Byline>;
     $[27] = agent.status;
     $[28] = onBack;
     $[29] = onKillAgent;
