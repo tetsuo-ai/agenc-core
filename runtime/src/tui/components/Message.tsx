@@ -1,35 +1,50 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
-import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs';
-import type { ImageBlockParam, TextBlockParam, ThinkingBlockParam, ToolResultBlockParam, ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import type { Command } from '../../commands.js';
-import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box } from '../ink.js';
-import type { Tools } from '../../tools/Tool';
-import { type ConnectorTextBlock, isConnectorTextBlock } from '../../types/connectorText';
-import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../../types/message';
-import { type AdvisorBlock, isAdvisorBlock } from '../../utils/advisor.js';
+import type { Tools } from '../../tools/Tool.js';
+import { isConnectorTextBlock } from '../../types/connectorText.js';
+import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../../types/message.js';
+import { isAdvisorBlock } from '../../utils/advisor.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { logError } from '../../utils/log.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { CompactBoundaryMessage } from './compact/CompactBoundaryMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { CompactSummary } from './compact/CompactSummary';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { AdvisorMessage } from './messages/AdvisorMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { AssistantTextMessage } from './messages/AssistantTextMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { AssistantToolUseMessage } from './messages/AssistantToolUseMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { AttachmentMessage } from './messages/AttachmentMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { CollapsedReadSearchContent } from './messages/CollapsedReadSearchContent';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { GroupedToolUseContent } from './messages/GroupedToolUseContent';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { SystemTextMessage } from './messages/SystemTextMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserImageMessage } from './messages/UserImageMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserTextMessage } from './messages/UserTextMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserToolResultMessage } from './messages/UserToolResultMessage/UserToolResultMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { OffscreenFreeze } from './OffscreenFreeze';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { ExpandShellOutputProvider } from './shell/ExpandShellOutputContext';
+
+type AnyComponent = React.ComponentType<any>;
 
 export function getToolResultMessageWidth(columns: number): number {
   return Math.max(1, columns - 5);
@@ -61,7 +76,45 @@ export type Props = {
   /** UUID of the latest user bash output message (for auto-expanding) */
   latestBashOutputUUID?: string | null;
 };
-function MessageImpl(t0) {
+
+type AssistantContentBlock = AssistantMessage['message']['content'][number];
+type UserContentBlock = NormalizedUserMessage['message']['content'][number];
+
+type UserMessageProps = {
+  message: NormalizedUserMessage;
+  addMargin: boolean;
+  tools: Tools;
+  progressMessagesForMessage: ProgressMessage[];
+  param: UserContentBlock;
+  style?: Props['style'];
+  verbose: boolean;
+  imageIndex?: number;
+  isUserContinuation: boolean;
+  lookups: ReturnType<typeof buildMessageLookups>;
+  isTranscriptMode: boolean;
+};
+
+type AssistantMessageBlockProps = {
+  param: AssistantContentBlock;
+  addMargin: boolean;
+  tools: Tools;
+  commands: Command[];
+  verbose: boolean;
+  inProgressToolUseIDs: Set<string>;
+  progressMessagesForMessage: ProgressMessage[];
+  shouldAnimate: boolean;
+  shouldShowDot: boolean;
+  width?: number | string;
+  inProgressToolCallCount: number;
+  isTranscriptMode: boolean;
+  lookups: ReturnType<typeof buildMessageLookups>;
+  onOpenRateLimitOptions?: () => void;
+  thinkingBlockId: string;
+  lastThinkingBlockId?: string | null;
+  advisorModel?: string;
+};
+
+function MessageImpl(t0: Props): React.ReactNode {
   const $ = _c(94);
   const {
     message,
@@ -108,7 +161,7 @@ function MessageImpl(t0) {
         if ($[5] !== addMargin || $[6] !== commands || $[7] !== inProgressToolUseIDs || $[8] !== isTranscriptMode || $[9] !== lastThinkingBlockId || $[10] !== lookups || $[11] !== message.advisorModel || $[12] !== message.message.content || $[13] !== message.uuid || $[14] !== onOpenRateLimitOptions || $[15] !== progressMessagesForMessage || $[16] !== shouldAnimate || $[17] !== shouldShowDot || $[18] !== tools || $[19] !== verbose || $[20] !== width) {
           let t4;
           if ($[22] !== addMargin || $[23] !== commands || $[24] !== inProgressToolUseIDs || $[25] !== isTranscriptMode || $[26] !== lastThinkingBlockId || $[27] !== lookups || $[28] !== message.advisorModel || $[29] !== message.uuid || $[30] !== onOpenRateLimitOptions || $[31] !== progressMessagesForMessage || $[32] !== shouldAnimate || $[33] !== shouldShowDot || $[34] !== tools || $[35] !== verbose || $[36] !== width) {
-            t4 = (_, index_0) => <AssistantMessageBlock key={index_0} param={_} addMargin={addMargin} tools={tools} commands={commands} verbose={verbose} inProgressToolUseIDs={inProgressToolUseIDs} progressMessagesForMessage={progressMessagesForMessage} shouldAnimate={shouldAnimate} shouldShowDot={shouldShowDot} width={width} inProgressToolCallCount={inProgressToolUseIDs.size} isTranscriptMode={isTranscriptMode} lookups={lookups} onOpenRateLimitOptions={onOpenRateLimitOptions} thinkingBlockId={`${message.uuid}:${index_0}`} lastThinkingBlockId={lastThinkingBlockId} advisorModel={message.advisorModel} />;
+            t4 = (_: AssistantContentBlock, index_0: number) => <AssistantMessageBlock key={index_0} param={_} addMargin={addMargin} tools={tools} commands={commands} verbose={verbose} inProgressToolUseIDs={inProgressToolUseIDs} progressMessagesForMessage={progressMessagesForMessage} shouldAnimate={shouldAnimate} shouldShowDot={shouldShowDot} width={width} inProgressToolCallCount={inProgressToolUseIDs.size} isTranscriptMode={isTranscriptMode} lookups={lookups} onOpenRateLimitOptions={onOpenRateLimitOptions} thinkingBlockId={`${message.uuid}:${index_0}`} lastThinkingBlockId={lastThinkingBlockId} advisorModel={message.advisorModel} />;
             $[22] = addMargin;
             $[23] = commands;
             $[24] = inProgressToolUseIDs;
@@ -198,7 +251,7 @@ function MessageImpl(t0) {
         const t2 = containerWidth ?? "100%";
         let t3;
         if ($[47] !== addMargin || $[48] !== imageIndices || $[49] !== isTranscriptMode || $[50] !== isUserContinuation || $[51] !== lookups || $[52] !== message || $[53] !== progressMessagesForMessage || $[54] !== style || $[55] !== tools || $[56] !== verbose) {
-          t3 = message.message.content.map((param_0, index) => <UserMessage key={index} message={message} addMargin={addMargin} tools={tools} progressMessagesForMessage={progressMessagesForMessage} param={param_0} style={style} verbose={verbose} imageIndex={imageIndices[index]} isUserContinuation={isUserContinuation} lookups={lookups} isTranscriptMode={isTranscriptMode} />);
+          t3 = message.message.content.map((param_0: UserContentBlock, index: number) => <UserMessage key={index} message={message} addMargin={addMargin} tools={tools} progressMessagesForMessage={progressMessagesForMessage} param={param_0} style={style} verbose={verbose} imageIndex={imageIndices[index]} isUserContinuation={isUserContinuation} lookups={lookups} isTranscriptMode={isTranscriptMode} />);
           $[47] = addMargin;
           $[48] = imageIndices;
           $[49] = isTranscriptMode;
@@ -255,21 +308,21 @@ function MessageImpl(t0) {
         if (feature("HISTORY_SNIP")) {
           const {
             isSnipBoundaryMessage
-          } = require("../../services/compact/snipProjection") as typeof import('../../services/compact/snipProjection');
+          } = require("../../services/compact/snipProjection.js") as { isSnipBoundaryMessage: (candidate: unknown) => boolean };
           const {
             isSnipMarkerMessage
-          } = require("../../services/compact/snipCompact") as typeof import('../../services/compact/snipCompact');
+          } = require("../../services/compact/snipCompact.js") as { isSnipMarkerMessage: (candidate: unknown) => boolean };
           if (isSnipBoundaryMessage(message)) {
             let t2;
             if ($[65] === Symbol.for("react.memo_cache_sentinel")) {
-              t2 = require("./messages/SnipBoundaryMessage");
+              t2 = require("./messages/SnipBoundaryMessage.js");
               $[65] = t2;
             } else {
               t2 = $[65];
             }
             const {
               SnipBoundaryMessage
-            } = t2 as typeof import('./messages/SnipBoundaryMessage');
+            } = t2 as { SnipBoundaryMessage: AnyComponent };
             let t3;
             if ($[66] !== message) {
               t3 = <SnipBoundaryMessage message={message} />;
@@ -358,8 +411,9 @@ function MessageImpl(t0) {
         return t3;
       }
   }
+  return null;
 }
-function UserMessage(t0) {
+function UserMessage(t0: UserMessageProps): React.ReactNode {
   const $ = _c(20);
   const {
     message,
@@ -436,7 +490,7 @@ function UserMessage(t0) {
       }
   }
 }
-function AssistantMessageBlock(t0) {
+function AssistantMessageBlock(t0: AssistantMessageBlockProps): React.ReactNode {
   const $ = _c(45);
   const {
     param,

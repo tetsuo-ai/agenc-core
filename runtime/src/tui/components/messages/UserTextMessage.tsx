@@ -1,24 +1,37 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
-import * as React from 'react';
+import type React from 'react';
 import { NO_CONTENT_MESSAGE } from '../../../constants/messages.js';
 import { COMMAND_MESSAGE_TAG, LOCAL_COMMAND_CAVEAT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../../constants/xml.js';
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
 import { extractTag, INTERRUPT_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE } from '../../../utils/messages.js';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { InterruptedByUser } from '../InterruptedByUser';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { MessageResponse } from '../MessageResponse';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserAgentNotificationMessage } from './UserAgentNotificationMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserBashInputMessage } from './UserBashInputMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserBashOutputMessage } from './UserBashOutputMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserCommandMessage } from './UserCommandMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserLocalCommandOutputMessage } from './UserLocalCommandOutputMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserMemoryInputMessage } from './UserMemoryInputMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserPlanMessage } from './UserPlanMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserPromptMessage } from './UserPromptMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserResourceUpdateMessage } from './UserResourceUpdateMessage';
+// @ts-expect-error TS2835: extensionless child renderer imports stay runtime-resolved until those renderer rows are typed.
 import { UserTeammateMessage } from './UserTeammateMessage';
+
+type AnyComponent = React.ComponentType<any>;
 type Props = {
   addMargin: boolean;
   param: TextBlockParam;
@@ -27,7 +40,7 @@ type Props = {
   isTranscriptMode?: boolean;
   timestamp?: string;
 };
-export function UserTextMessage(t0) {
+export function UserTextMessage(t0: Props): React.ReactNode {
   const $ = _c(49);
   const {
     addMargin,
@@ -95,14 +108,14 @@ export function UserTextMessage(t0) {
     if (param.text.startsWith("<github-webhook-activity>")) {
       let t1;
       if ($[9] === Symbol.for("react.memo_cache_sentinel")) {
-        t1 = require("./UserGitHubWebhookMessage");
+        t1 = require("./UserGitHubWebhookMessage.js");
         $[9] = t1;
       } else {
         t1 = $[9];
       }
       const {
         UserGitHubWebhookMessage
-      } = t1 as typeof import('./UserGitHubWebhookMessage');
+      } = t1 as { UserGitHubWebhookMessage: AnyComponent };
       let t2;
       if ($[10] !== addMargin || $[11] !== param) {
         t2 = <UserGitHubWebhookMessage addMargin={addMargin} param={param} />;
@@ -192,14 +205,14 @@ export function UserTextMessage(t0) {
     if (param.text.includes("<fork-boilerplate>")) {
       let t1;
       if ($[32] === Symbol.for("react.memo_cache_sentinel")) {
-        t1 = require("./UserForkBoilerplateMessage");
+        t1 = require("./UserForkBoilerplateMessage.js");
         $[32] = t1;
       } else {
         t1 = $[32];
       }
       const {
         UserForkBoilerplateMessage
-      } = t1 as typeof import('./UserForkBoilerplateMessage');
+      } = t1 as { UserForkBoilerplateMessage: AnyComponent };
       let t2;
       if ($[33] !== addMargin || $[34] !== param) {
         t2 = <UserForkBoilerplateMessage addMargin={addMargin} param={param} />;
@@ -216,14 +229,14 @@ export function UserTextMessage(t0) {
     if (param.text.includes("<cross-session-message")) {
       let t1;
       if ($[36] === Symbol.for("react.memo_cache_sentinel")) {
-        t1 = require("./UserCrossSessionMessage");
+        t1 = require("./UserCrossSessionMessage.js");
         $[36] = t1;
       } else {
         t1 = $[36];
       }
       const {
         UserCrossSessionMessage
-      } = t1 as typeof import('./UserCrossSessionMessage');
+      } = t1 as { UserCrossSessionMessage: AnyComponent };
       let t2;
       if ($[37] !== addMargin || $[38] !== param) {
         t2 = <UserCrossSessionMessage addMargin={addMargin} param={param} />;
@@ -240,14 +253,14 @@ export function UserTextMessage(t0) {
     if (param.text.includes("<channel source=\"")) {
       let t1;
       if ($[40] === Symbol.for("react.memo_cache_sentinel")) {
-        t1 = require("./UserChannelMessage");
+        t1 = require("./UserChannelMessage.js");
         $[40] = t1;
       } else {
         t1 = $[40];
       }
       const {
         UserChannelMessage
-      } = t1 as typeof import('./UserChannelMessage');
+      } = t1 as { UserChannelMessage: AnyComponent };
       let t2;
       if ($[41] !== addMargin || $[42] !== param) {
         t2 = <UserChannelMessage addMargin={addMargin} param={param} />;

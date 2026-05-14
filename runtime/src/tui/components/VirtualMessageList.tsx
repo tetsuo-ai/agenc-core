@@ -1,23 +1,22 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import type { RefObject } from 'react';
 import * as React from 'react';
 import { useCallback, useContext, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from 'react';
-import { useVirtualScroll } from '../hooks/useVirtualScroll';
+import { useVirtualScroll } from '../hooks/useVirtualScroll.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import type { DOMElement } from '../ink/dom.js';
 import type { MatchPosition } from '../ink/render-to-screen.js';
 import { Box } from '../ink.js';
-import type { RenderableMessage } from '../../types/message';
-import { TextHoverColorContext } from './design-system/ThemedText';
-import { ScrollChromeContext } from './FullscreenLayout';
+import type { RenderableMessage } from '../../types/message.js';
+import { TextHoverColorContext } from './design-system/ThemedText.js';
+import { ScrollChromeContext } from './FullscreenLayout.js';
 
 // Rows of breathing room above the target when we scrollTo.
 const HEADROOM = 3;
 import { logForDebugging } from 'src/utils/debug.js';
 import { sleep } from '../../utils/sleep.js';
 import { renderableSearchText } from '../history/transcriptSearch.js';
-import { isNavigableMessage, type MessageActionsNav, type MessageActionsState, type NavigableMessage, stripSystemReminders, toolCallOf } from './messageActions';
+import { isNavigableMessage, type MessageActionsNav, type MessageActionsState, type NavigableMessage, stripSystemReminders, toolCallOf } from './messageActions.js';
 
 // Fallback extractor: lower + cache here for callers without the
 // Messages.tsx tool-lookup path (tests, static contexts). Messages.tsx
@@ -30,14 +29,15 @@ function defaultExtractSearchText(msg: RenderableMessage): string {
   fallbackLowerCache.set(msg, lowered);
   return lowered;
 }
-export type StickyPrompt = {
-  text: string;
-  scrollTo: () => void;
-}
-// Click sets this — header HIDES but padding stays collapsed (0) so
-// the content ❯ lands at screen row 0 instead of row 1. Cleared on
-// the next sticky-prompt compute (user scrolls again).
-| 'clicked';
+export type StickyPrompt =
+  | {
+      text: string;
+      scrollTo: () => void;
+    }
+  // Click sets this: header hides but padding stays collapsed (0) so the
+  // content prompt lands at screen row 0 instead of row 1. Cleared on the next
+  // sticky-prompt compute when the user scrolls again.
+  | 'clicked';
 
 /** Huge pasted prompts (cat file | agenc) can be MBs. Header wraps into
  *  2 rows via overflow:hidden — this just bounds the React prop size. */
@@ -152,7 +152,7 @@ function computeStickyPromptText(msg: RenderableMessage): string | null {
     raw = block.text;
   } else if (msg.type === 'attachment' && msg.attachment.type === 'queued_command' && msg.attachment.commandMode !== 'task-notification' && !msg.attachment.isMeta) {
     const p = msg.attachment.prompt;
-    raw = typeof p === 'string' ? p : p.flatMap(b => b.type === 'text' ? [b.text] : []).join('\n');
+    raw = typeof p === 'string' ? p : p.flatMap((b: { type: string; text?: string }) => b.type === 'text' && typeof b.text === 'string' ? [b.text] : []).join('\n');
   }
   if (raw === null) return null;
   const t = stripSystemReminders(raw);
@@ -195,7 +195,7 @@ type VirtualItemProps = {
 // verbose). Memoing with a comparator that ignores renderItem would use a
 // STALE closure on bail (wrong selection highlight, stale verbose). Including
 // renderItem in the comparator defeats memo since it's fresh each render.
-function VirtualItem(t0) {
+function VirtualItem(t0: VirtualItemProps): React.ReactNode {
   const $ = _c(30);
   const {
     itemKey: k,
@@ -223,7 +223,7 @@ function VirtualItem(t0) {
   const t3 = expanded ? 1 : undefined;
   let t4;
   if ($[3] !== clickable || $[4] !== msg || $[5] !== onClickK) {
-    t4 = clickable ? e => onClickK(msg, e.cellIsBlank) : undefined;
+    t4 = clickable ? (e: { cellIsBlank: boolean }) => onClickK(msg, e.cellIsBlank) : undefined;
     $[3] = clickable;
     $[4] = msg;
     $[5] = onClickK;
