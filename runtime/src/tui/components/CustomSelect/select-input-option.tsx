@@ -2,6 +2,8 @@ import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- UP arrow exit not in Attachments bindings
 import { Box, Text, useInput } from '../../ink.js';
+import { stringWidth } from '../../ink/stringWidth.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { PastedContent } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -75,8 +77,15 @@ type Props<T> = {
    */
   onSelectedImageIndexChange?: (index: number) => void;
 };
+export function computeSelectInputColumns(columns: number, maxIndexWidth: number, showLabel: boolean, label: ReactNode, separator = ', '): number {
+  const safeColumns = Math.max(1, Math.floor(columns || 0));
+  const safeMaxIndexWidth = Math.max(0, Math.floor(maxIndexWidth || 0));
+  const indexReserve = safeMaxIndexWidth + 2;
+  const labelReserve = showLabel && typeof label === 'string' ? stringWidth(label) + stringWidth(separator) : 0;
+  return Math.max(1, safeColumns - indexReserve - labelReserve - 2);
+}
 export function SelectInputOption(t0) {
-  const $ = _c(100);
+  const $ = _c(101);
   const {
     option,
     isFocused,
@@ -115,6 +124,10 @@ export function SelectInputOption(t0) {
   }
   const imageAttachments = t4;
   const showLabel = showLabelProp || option.showLabelWithValue === true;
+  const {
+    columns
+  } = useTerminalSize();
+  const inputColumns = computeSelectInputColumns(columns, maxIndexWidth, showLabel, option.label, option.labelValueSeparator ?? ", ");
   const [cursorOffset, setCursorOffset] = useState(inputValue.length);
   const isUserEditing = useRef(false);
   let t5;
@@ -374,12 +387,12 @@ export function SelectInputOption(t0) {
     t31 = $[58];
   }
   let t32;
-  if ($[59] !== cursorOffset || $[60] !== imagesSelected || $[61] !== inputValue || $[62] !== isFocused || $[63] !== onExit || $[64] !== onImagePaste || $[65] !== onInputChange || $[66] !== onSubmit || $[67] !== option || $[68] !== showLabel) {
+  if ($[59] !== cursorOffset || $[60] !== imagesSelected || $[61] !== inputColumns || $[62] !== inputValue || $[63] !== isFocused || $[64] !== onExit || $[65] !== onImagePaste || $[66] !== onInputChange || $[67] !== onSubmit || $[68] !== option || $[69] !== showLabel) {
     t32 = showLabel ? <><Text color={isFocused ? "suggestion" : undefined}>{option.label}</Text>{isFocused ? <><Text color="suggestion">{option.labelValueSeparator ?? ", "}</Text><TextInput value={inputValue} onChange={value => {
           isUserEditing.current = true;
           onInputChange(value);
           option.onChange(value);
-        }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={80} onImagePaste={onImagePaste} onPaste={pastedText => {
+        }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={inputColumns} onImagePaste={onImagePaste} onPaste={pastedText => {
           isUserEditing.current = true;
           const before = inputValue.slice(0, cursorOffset);
           const after = inputValue.slice(cursorOffset);
@@ -391,7 +404,7 @@ export function SelectInputOption(t0) {
       isUserEditing.current = true;
       onInputChange(value_0);
       option.onChange(value_0);
-    }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder || (typeof option.label === "string" ? option.label : undefined)} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={80} onImagePaste={onImagePaste} onPaste={pastedText_0 => {
+    }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder || (typeof option.label === "string" ? option.label : undefined)} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={inputColumns} onImagePaste={onImagePaste} onPaste={pastedText_0 => {
       isUserEditing.current = true;
       const before_0 = inputValue.slice(0, cursorOffset);
       const after_0 = inputValue.slice(cursorOffset);
@@ -402,83 +415,84 @@ export function SelectInputOption(t0) {
     }} /> : <Text color={inputValue ? undefined : "inactive"}>{inputValue || option.placeholder || option.label}</Text>;
     $[59] = cursorOffset;
     $[60] = imagesSelected;
-    $[61] = inputValue;
-    $[62] = isFocused;
-    $[63] = onExit;
-    $[64] = onImagePaste;
-    $[65] = onInputChange;
-    $[66] = onSubmit;
-    $[67] = option;
-    $[68] = showLabel;
-    $[69] = t32;
+    $[61] = inputColumns;
+    $[62] = inputValue;
+    $[63] = isFocused;
+    $[64] = onExit;
+    $[65] = onImagePaste;
+    $[66] = onInputChange;
+    $[67] = onSubmit;
+    $[68] = option;
+    $[69] = showLabel;
+    $[70] = t32;
   } else {
-    t32 = $[69];
+    t32 = $[70];
   }
   let t33;
-  if ($[70] !== children || $[71] !== t28 || $[72] !== t31 || $[73] !== t32) {
+  if ($[71] !== children || $[72] !== t28 || $[73] !== t31 || $[74] !== t32) {
     t33 = <Box flexDirection="row" flexShrink={t28}>{t31}{children}{t32}</Box>;
-    $[70] = children;
-    $[71] = t28;
-    $[72] = t31;
-    $[73] = t32;
-    $[74] = t33;
+    $[71] = children;
+    $[72] = t28;
+    $[73] = t31;
+    $[74] = t32;
+    $[75] = t33;
   } else {
-    t33 = $[74];
+    t33 = $[75];
   }
   let t34;
-  if ($[75] !== isFocused || $[76] !== isSelected || $[77] !== shouldShowDownArrow || $[78] !== shouldShowUpArrow || $[79] !== t33) {
+  if ($[76] !== isFocused || $[77] !== isSelected || $[78] !== shouldShowDownArrow || $[79] !== shouldShowUpArrow || $[80] !== t33) {
     t34 = <SelectOption isFocused={isFocused} isSelected={isSelected} shouldShowDownArrow={shouldShowDownArrow} shouldShowUpArrow={shouldShowUpArrow} declareCursor={false}>{t33}</SelectOption>;
-    $[75] = isFocused;
-    $[76] = isSelected;
-    $[77] = shouldShowDownArrow;
-    $[78] = shouldShowUpArrow;
-    $[79] = t33;
-    $[80] = t34;
+    $[76] = isFocused;
+    $[77] = isSelected;
+    $[78] = shouldShowDownArrow;
+    $[79] = shouldShowUpArrow;
+    $[80] = t33;
+    $[81] = t34;
   } else {
-    t34 = $[80];
+    t34 = $[81];
   }
   let t35;
-  if ($[81] !== descriptionPaddingLeft || $[82] !== isFocused || $[83] !== isSelected || $[84] !== option.description || $[85] !== option.dimDescription) {
+  if ($[82] !== descriptionPaddingLeft || $[83] !== isFocused || $[84] !== isSelected || $[85] !== option.description || $[86] !== option.dimDescription) {
     t35 = option.description && <Box paddingLeft={descriptionPaddingLeft}><Text dimColor={option.dimDescription !== false} color={isSelected ? "success" : isFocused ? "suggestion" : undefined}>{option.description}</Text></Box>;
-    $[81] = descriptionPaddingLeft;
-    $[82] = isFocused;
-    $[83] = isSelected;
-    $[84] = option.description;
-    $[85] = option.dimDescription;
-    $[86] = t35;
+    $[82] = descriptionPaddingLeft;
+    $[83] = isFocused;
+    $[84] = isSelected;
+    $[85] = option.description;
+    $[86] = option.dimDescription;
+    $[87] = t35;
   } else {
-    t35 = $[86];
+    t35 = $[87];
   }
   let t36;
-  if ($[87] !== descriptionPaddingLeft || $[88] !== imageAttachments || $[89] !== imagesSelected || $[90] !== isFocused || $[91] !== selectedImageIndex) {
-    t36 = imageAttachments.length > 0 && <Box flexDirection="row" gap={1} paddingLeft={descriptionPaddingLeft}>{imageAttachments.map((img_0, idx) => <ClickableImageRef key={img_0.id} imageId={img_0.id} isSelected={!!imagesSelected && idx === selectedImageIndex} />)}<Box flexGrow={1} justifyContent="flex-start" flexDirection="row"><Text dimColor={true}>{imagesSelected ? <Byline>{imageAttachments.length > 1 && <><ConfigurableShortcutHint action="attachments:next" context="Attachments" fallback={"\u2192"} description="next" /><ConfigurableShortcutHint action="attachments:previous" context="Attachments" fallback={"\u2190"} description="prev" /></>}<ConfigurableShortcutHint action="attachments:remove" context="Attachments" fallback="backspace" description="remove" /><ConfigurableShortcutHint action="attachments:exit" context="Attachments" fallback="esc" description="cancel" /></Byline> : isFocused ? "(\u2193 to select)" : null}</Text></Box></Box>;
-    $[87] = descriptionPaddingLeft;
-    $[88] = imageAttachments;
-    $[89] = imagesSelected;
-    $[90] = isFocused;
-    $[91] = selectedImageIndex;
-    $[92] = t36;
+  if ($[88] !== descriptionPaddingLeft || $[89] !== imageAttachments || $[90] !== imagesSelected || $[91] !== isFocused || $[92] !== selectedImageIndex) {
+    t36 = imageAttachments.length > 0 && <Box flexDirection="row" gap={1} paddingLeft={descriptionPaddingLeft}>{imageAttachments.map((img_0, idx) => <ClickableImageRef key={img_0.id} imageId={img_0.id} isSelected={!!imagesSelected && idx === selectedImageIndex} />)}<Box flexGrow={1} justifyContent="flex-start" flexDirection="row"><Text dimColor={true}>{imagesSelected ? <Byline>{imageAttachments.length > 1 && <><ConfigurableShortcutHint action="attachments:next" context="Attachments" fallback={"right"} description="next" /><ConfigurableShortcutHint action="attachments:previous" context="Attachments" fallback={"left"} description="prev" /></>}<ConfigurableShortcutHint action="attachments:remove" context="Attachments" fallback="backspace" description="remove" /><ConfigurableShortcutHint action="attachments:exit" context="Attachments" fallback="esc" description="cancel" /></Byline> : isFocused ? "(down to select)" : null}</Text></Box></Box>;
+    $[88] = descriptionPaddingLeft;
+    $[89] = imageAttachments;
+    $[90] = imagesSelected;
+    $[91] = isFocused;
+    $[92] = selectedImageIndex;
+    $[93] = t36;
   } else {
-    t36 = $[92];
+    t36 = $[93];
   }
   let t37;
-  if ($[93] !== layout) {
+  if ($[94] !== layout) {
     t37 = layout === "expanded" && <Text> </Text>;
-    $[93] = layout;
-    $[94] = t37;
+    $[94] = layout;
+    $[95] = t37;
   } else {
-    t37 = $[94];
+    t37 = $[95];
   }
   let t38;
-  if ($[95] !== t34 || $[96] !== t35 || $[97] !== t36 || $[98] !== t37) {
+  if ($[96] !== t34 || $[97] !== t35 || $[98] !== t36 || $[99] !== t37) {
     t38 = <Box flexDirection="column" flexShrink={0}>{t34}{t35}{t36}{t37}</Box>;
-    $[95] = t34;
-    $[96] = t35;
-    $[97] = t36;
-    $[98] = t37;
-    $[99] = t38;
+    $[96] = t34;
+    $[97] = t35;
+    $[98] = t36;
+    $[99] = t37;
+    $[100] = t38;
   } else {
-    t38 = $[99];
+    t38 = $[100];
   }
   return t38;
 }
