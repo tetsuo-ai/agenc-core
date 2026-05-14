@@ -12,8 +12,11 @@ export interface AgenCTuiGlyphs {
   readonly pointer: string;
   readonly promptBypass: string;
   readonly responseGutter: string;
+  readonly redactedThinkingPrefix: string;
   readonly separator: string;
   readonly statusDot: string;
+  readonly thinkingEllipsis: string;
+  readonly thinkingPrefix: string;
   readonly titleAnimationFrames: readonly string[];
   readonly titleStaticPrefix: string;
 }
@@ -28,8 +31,11 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   pointer: ">",
   promptBypass: ">",
   responseGutter: "|_",
+  redactedThinkingPrefix: "*",
   separator: "-",
   statusDot: "*",
+  thinkingEllipsis: "...",
+  thinkingPrefix: "",
   titleAnimationFrames: ["*", "+"],
   titleStaticPrefix: "*",
 };
@@ -44,8 +50,11 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   pointer: figures.pointer,
   promptBypass: "▶",
   responseGutter: "⎿",
+  redactedThinkingPrefix: "✻",
   separator: "·",
   statusDot: "●",
+  thinkingEllipsis: "…",
+  thinkingPrefix: "∴",
   titleAnimationFrames: ["⠂", "⠐"],
   titleStaticPrefix: "✳",
 };

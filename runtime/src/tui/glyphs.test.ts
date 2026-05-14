@@ -12,6 +12,8 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).pointer).not.toBe(">");
     expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
     expect(selectAgenCTuiGlyphs({}).responseGutter).toBe("⎿");
+    expect(selectAgenCTuiGlyphs({}).thinkingPrefix).toBe("∴");
+    expect(selectAgenCTuiGlyphs({}).redactedThinkingPrefix).toBe("✻");
     expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
   });
 
@@ -29,8 +31,11 @@ describe("AgenC TUI glyph selection", () => {
       pointer: ">",
       promptBypass: ">",
       responseGutter: "|_",
+      redactedThinkingPrefix: "*",
       separator: "-",
       statusDot: "*",
+      thinkingEllipsis: "...",
+      thinkingPrefix: "",
       titleAnimationFrames: ["*", "+"],
       titleStaticPrefix: "*",
     });
