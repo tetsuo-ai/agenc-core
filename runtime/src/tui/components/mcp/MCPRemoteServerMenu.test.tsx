@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { clampMcpCallbackInputColumns } from "./MCPRemoteServerMenu.js";
+import {
+  clampMcpCallbackInputColumns,
+  getMCPRemoteServerGlyphs,
+} from "./MCPRemoteServerMenu.js";
 
 describe("MCPRemoteServerMenu callback input sizing", () => {
   test("clamps callback input columns on narrow terminals", () => {
@@ -10,5 +13,21 @@ describe("MCPRemoteServerMenu callback input sizing", () => {
     expect(clampMcpCallbackInputColumns(8)).toBe(1);
     expect(clampMcpCallbackInputColumns(9.9)).toBe(1);
     expect(clampMcpCallbackInputColumns(80)).toBe(72);
+  });
+
+  test("uses ascii-safe remote server glyphs when requested", () => {
+    const glyphs = getMCPRemoteServerGlyphs({ AGENC_TUI_GLYPHS: "ascii" });
+
+    expect(Object.values(glyphs).join("")).toMatch(/^[\x00-\x7F]*$/);
+    expect(glyphs).toMatchObject({
+      arrowDown: "v",
+      arrowUp: "^",
+      ellipsis: "...",
+      pointer: ">",
+      statusError: "ERR",
+      statusInactive: "o",
+      statusSuccess: "OK",
+      statusWarning: "!",
+    });
   });
 });

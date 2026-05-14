@@ -1,9 +1,9 @@
-import figures from 'figures';
 import React, { useEffect, useRef, useState } from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import type { CommandResultDisplay } from '../../../commands.js';
 import { getOauthConfig } from '../../../constants/oauth.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
+import { resolveAgenCTuiGlyphMode, selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
@@ -40,6 +40,32 @@ type Props = {
   borderless?: boolean;
 };
 
+type MCPRemoteServerGlyphs = {
+  arrowDown: string;
+  arrowUp: string;
+  ellipsis: string;
+  pointer: string;
+  statusError: string;
+  statusInactive: string;
+  statusSuccess: string;
+  statusWarning: string;
+};
+
+export function getMCPRemoteServerGlyphs(env: { readonly AGENC_TUI_GLYPHS?: string } = process.env): MCPRemoteServerGlyphs {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  const isAscii = resolveAgenCTuiGlyphMode(env) === 'ascii';
+  return {
+    arrowDown: glyphs.arrowDown,
+    arrowUp: glyphs.arrowUp,
+    ellipsis: glyphs.ellipsis,
+    pointer: glyphs.pointer,
+    statusError: glyphs.statusError,
+    statusInactive: isAscii ? 'o' : '○',
+    statusSuccess: glyphs.statusSuccess,
+    statusWarning: isAscii ? '!' : '△'
+  };
+}
+
 export function clampMcpCallbackInputColumns(terminalColumns: number): number {
   const safeColumns = Number.isFinite(terminalColumns) ? Math.max(0, Math.trunc(terminalColumns)) : 0;
   return Math.max(1, safeColumns - 8);
@@ -58,6 +84,7 @@ export function MCPRemoteServerMenu({
   const {
     columns: terminalColumns
   } = useTerminalSize();
+  const glyphs = getMCPRemoteServerGlyphs();
   const [isAuthenticating, setIsAuthenticating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const mcp = useAppState((s: AppState) => s.mcp);
@@ -346,12 +373,12 @@ export function MCPRemoteServerMenu({
     }
   };
   if (isAuthenticating) {
-    // XAA: silent exchange (cached id_token → no browser), so don't claim
+    // XAA: silent exchange (cached id_token, no browser), so don't claim
     // one will open. If IdP login IS needed, authorizationUrl populates and
     // the URL fallback block below still renders.
     const authCopy = server.config.type !== 'agencai-proxy' && server.config.oauth?.xaa ? ' Authenticating via your identity provider' : ' A browser window will open for authentication';
     return <Box flexDirection="column" gap={1} padding={1}>
-        <Text color="text">Authenticating with {server.name}…</Text>
+        <Text color="text">Authenticating with {server.name}{glyphs.ellipsis}</Text>
         <Box>
           <Spinner />
           <Text>{authCopy}</Text>
@@ -374,7 +401,7 @@ export function MCPRemoteServerMenu({
               your browser&apos;s address bar:
             </Text>
             <Box>
-              <Text dimColor>URL {'>'} </Text>
+              <Text dimColor>URL {glyphs.pointer} </Text>
               <TextInput value={callbackUrlInput} onChange={setCallbackUrlInput} onSubmit={(value: string) => {
             manualCallbackSubmit(value.trim());
             setCallbackUrlInput('');
@@ -391,7 +418,7 @@ export function MCPRemoteServerMenu({
   }
   if (isAgenCAIAuthenticating) {
     return <Box flexDirection="column" gap={1} padding={1}>
-        <Text color="text">Authenticating with {server.name}…</Text>
+        <Text color="text">Authenticating with {server.name}{glyphs.ellipsis}</Text>
         <Box>
           <Spinner />
           <Text> A browser window will open for authentication</Text>
@@ -465,7 +492,7 @@ export function MCPRemoteServerMenu({
   if (isReconnecting) {
     return <Box flexDirection="column" gap={1} padding={1}>
         <Text color="text">
-          Connecting to <Text bold>{server.name}</Text>…
+          Connecting to <Text bold>{server.name}</Text>{glyphs.ellipsis}
         </Text>
         <Box>
           <Spinner />
@@ -548,21 +575,21 @@ export function MCPRemoteServerMenu({
         <Box flexDirection="column" gap={0}>
           <Box>
             <Text bold>Status: </Text>
-            {server.client.type === 'disabled' ? <Text>{color('inactive', theme)(figures.radioOff)} disabled</Text> : server.client.type === 'connected' ? <Text>{color('success', theme)(figures.tick)} connected</Text> : server.client.type === 'pending' ? <>
-                <Text dimColor>{figures.radioOff}</Text>
-                <Text> connecting…</Text>
+            {server.client.type === 'disabled' ? <Text>{color('inactive', theme)(glyphs.statusInactive)} disabled</Text> : server.client.type === 'connected' ? <Text>{color('success', theme)(glyphs.statusSuccess)} connected</Text> : server.client.type === 'pending' ? <>
+                <Text dimColor>{glyphs.statusInactive}</Text>
+                <Text> connecting{glyphs.ellipsis}</Text>
               </> : server.client.type === 'needs-auth' ? <Text>
-                {color('warning', theme)(figures.triangleUpOutline)} needs
+                {color('warning', theme)(glyphs.statusWarning)} needs
                 authentication
-              </Text> : <Text>{color('error', theme)(figures.cross)} failed</Text>}
+              </Text> : <Text>{color('error', theme)(glyphs.statusError)} failed</Text>}
           </Box>
 
           {server.transport !== 'agencai-proxy' && <Box>
               <Text bold>Auth: </Text>
               {isEffectivelyAuthenticated ? <Text>
-                  {color('success', theme)(figures.tick)} authenticated
+                  {color('success', theme)(glyphs.statusSuccess)} authenticated
                 </Text> : <Text>
-                  {color('error', theme)(figures.cross)} not authenticated
+                  {color('error', theme)(glyphs.statusError)} not authenticated
                 </Text>}
             </Box>}
 
@@ -645,7 +672,7 @@ export function MCPRemoteServerMenu({
       <Box marginTop={1}>
         <Text dimColor italic>
           {exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Byline>
-              <KeyboardShortcutHint shortcut="↑↓" action="navigate" />
+              <KeyboardShortcutHint shortcut={`${glyphs.arrowUp}${glyphs.arrowDown}`} action="navigate" />
               <KeyboardShortcutHint shortcut="Enter" action="select" />
               <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="back" />
             </Byline>}
