@@ -41,7 +41,8 @@ type Props = {
 };
 
 export function clampMcpCallbackInputColumns(terminalColumns: number): number {
-  return Math.max(0, terminalColumns - 8);
+  const safeColumns = Number.isFinite(terminalColumns) ? Math.max(0, Math.trunc(terminalColumns)) : 0;
+  return Math.max(1, safeColumns - 8);
 }
 
 export function MCPRemoteServerMenu({
