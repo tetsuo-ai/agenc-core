@@ -21,6 +21,18 @@ import { useAppState } from '../state/AppState.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
+const TOP_CHROME_ROWS = 2;
+const BOTTOM_CHROME_ROWS = 2;
+const MIN_ROWS_FOR_TOP_CHROME = 8;
+const MIN_ROWS_FOR_BOTTOM_CHROME = 5;
+const MIN_ROWS_FOR_SCROLLABLE = 2;
+
+export type FullscreenLayoutBudget = {
+  readonly showTopChrome: boolean;
+  readonly showScrollable: boolean;
+  readonly showBottomChrome: boolean;
+  readonly bottomMaxHeight: number;
+};
 
 export function calculateModalViewport(
   terminalRows: number,
@@ -31,6 +43,33 @@ export function calculateModalViewport(
     columns: Math.max(0, columns - 4),
     maxHeight: Math.max(0, terminalRows - MODAL_TRANSCRIPT_PEEK),
   };
+}
+
+export function calculateFullscreenLayoutBudget(
+  terminalRows: number,
+): FullscreenLayoutBudget {
+  const rows = Number.isFinite(terminalRows)
+    ? Math.max(0, Math.trunc(terminalRows))
+    : 0;
+  const showTopChrome = rows >= MIN_ROWS_FOR_TOP_CHROME;
+  const showBottomChrome = rows >= MIN_ROWS_FOR_BOTTOM_CHROME;
+  const chromeRows =
+    (showTopChrome ? TOP_CHROME_ROWS : 0) +
+    (showBottomChrome ? BOTTOM_CHROME_ROWS : 0);
+  const contentRows = Math.max(1, rows - chromeRows);
+
+  return {
+    showTopChrome,
+    showScrollable: contentRows >= MIN_ROWS_FOR_SCROLLABLE,
+    showBottomChrome,
+    bottomMaxHeight: Math.max(1, Math.ceil(contentRows / 2)),
+  };
+}
+
+export function isNoColorEnv(
+  env: Pick<NodeJS.ProcessEnv, 'NO_COLOR' | 'FORCE_COLOR' | 'TERM'> = process.env,
+): boolean {
+  return env.NO_COLOR !== undefined || env.FORCE_COLOR === '0' || env.TERM === 'dumb';
 }
 
 /** Context for scroll-derived chrome (sticky header, pill). StickyTracker
@@ -304,6 +343,8 @@ export function FullscreenLayout(t0) {
     rows: terminalRows,
     columns
   } = useTerminalSize();
+  const layoutBudget = calculateFullscreenLayoutBudget(terminalRows);
+  const noColor = isNoColorEnv();
   const [stickyPrompt, setStickyPrompt] = useState(null);
   let t4;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -424,9 +465,10 @@ export function FullscreenLayout(t0) {
       t16 = $[30];
     }
     let t17;
-    if ($[31] !== bottom) {
-      t17 = <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">{t15}{t16}<Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden">{bottom}</Box></Box>;
+    if ($[31] !== bottom || $[38] !== layoutBudget.bottomMaxHeight) {
+      t17 = <Box flexDirection="column" flexShrink={0} width="100%" maxHeight={layoutBudget.bottomMaxHeight}>{t15}{t16}<Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden">{bottom}</Box></Box>;
       $[31] = bottom;
+      $[38] = layoutBudget.bottomMaxHeight;
       $[32] = t17;
     } else {
       t17 = $[32];
@@ -447,7 +489,7 @@ export function FullscreenLayout(t0) {
     } else {
       t18 = $[37];
     }
-    return <PromptOverlayProvider><DesignTopChrome columns={columns} />{t14}{t17}<DesignBottomChrome columns={columns} />{t18}</PromptOverlayProvider>;
+    return <PromptOverlayProvider>{layoutBudget.showTopChrome ? <DesignTopChrome columns={columns} noColor={noColor} /> : null}{layoutBudget.showScrollable ? t14 : null}{t17}{layoutBudget.showBottomChrome ? <DesignBottomChrome columns={columns} /> : null}{t18}</PromptOverlayProvider>;
   }
   let t8;
   if ($[42] !== bottom || $[43] !== modal || $[44] !== overlay || $[45] !== scrollable) {
@@ -471,19 +513,20 @@ function trimMiddle(value: string, maxWidth: number): string {
   return `${value.slice(0, left)}…${value.slice(value.length - right)}`;
 }
 
-function DesignTopChrome({ columns }: { columns: number }): React.ReactNode {
+function DesignTopChrome({ columns, noColor }: { columns: number; noColor: boolean }): React.ReactNode {
   const cwdName = React.useMemo(() => process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace', []);
   const title = trimMiddle(`agenc - ${cwdName}`, Math.max(12, Math.floor(columns * 0.44)));
   const showTask = columns >= 84;
   const glyphs = selectAgenCTuiGlyphs();
+  const statusLabels = noColor ? ['ERR', 'WARN', 'OK'] : [glyphs.statusDot, glyphs.statusDot, glyphs.statusDot];
   return <Box flexDirection="column" flexShrink={0} width="100%">
       <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="surfaceBackground">
         <Box gap={1} flexShrink={0}>
-          <Text color="error">{glyphs.statusDot}</Text>
-          <Text color="warning">{glyphs.statusDot}</Text>
-          <Text color="success">{glyphs.statusDot}</Text>
+          <Text color={noColor ? undefined : "error"}>{statusLabels[0]}</Text>
+          <Text color={noColor ? undefined : "warning"}>{statusLabels[1]}</Text>
+          <Text color={noColor ? undefined : "success"}>{statusLabels[2]}</Text>
           {columns >= 56 ? <Text dimColor> agenc</Text> : null}
-          {columns >= 64 ? <Text color="success">{glyphs.statusDot} orchestrator</Text> : null}
+          {columns >= 64 ? <Text color={noColor ? undefined : "success"}>{noColor ? 'OK orchestrator' : `${glyphs.statusDot} orchestrator`}</Text> : null}
         </Box>
         <Text dimColor wrap="truncate">{title}</Text>
         <Box flexShrink={0}>
