@@ -887,6 +887,157 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("keeps spinner visible while assistant text is streaming", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "turn-started",
+          type: "turn_started",
+          payload: { turnId: "turn-with-text" },
+        },
+        {
+          id: "assistant-delta",
+          type: "agent_message_delta",
+          payload: { delta: "Streaming response text." },
+        },
+      ],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    const output = await renderApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    expect(output).toContain("spinner:responding:");
+    const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
+    expect(layoutProps).toBeDefined();
+    expect(containsElementNamed(layoutProps?.bottom, "SpinnerWithVerb")).toBe(true);
+    expect(providerProbe.spinnerProps.at(-1)).toEqual(
+      expect.objectContaining({
+        mode: "responding",
+        hasActiveTools: false,
+      }),
+    );
+    expect(providerProbe.messageProps.at(-1)).toEqual(
+      expect.objectContaining({
+        streamingText: "Streaming response text.",
+      }),
+    );
+  });
+
+  test("keeps spinner visible while thinking and text coexist", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "turn-started",
+          type: "turn_started",
+          payload: { turnId: "turn-with-thinking" },
+        },
+        {
+          id: "thinking-start",
+          type: "assistant_thinking_block_start",
+          payload: { kind: "thinking" },
+        },
+        {
+          id: "thinking-delta",
+          type: "assistant_thinking_delta",
+          payload: { delta: "Planning.", kind: "thinking" },
+        },
+        {
+          id: "assistant-delta",
+          type: "agent_message_delta",
+          payload: { delta: "Partial answer." },
+        },
+      ],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    const output = await renderApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    expect(output).toContain("spinner:thinking:");
+    const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
+    expect(layoutProps).toBeDefined();
+    expect(containsElementNamed(layoutProps?.bottom, "SpinnerWithVerb")).toBe(true);
+    expect(providerProbe.spinnerProps.at(-1)).toEqual(
+      expect.objectContaining({
+        mode: "thinking",
+        hasActiveTools: false,
+      }),
+    );
+  });
+
+  test("uses tool-input spinner mode while provider tool input is streaming", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = {
+      ...createSession(),
+      getInitialTranscriptEvents: () => [
+        {
+          id: "turn-started",
+          type: "turn_started",
+          payload: { turnId: "turn-with-tool-input" },
+        },
+        {
+          id: "tool-input-start",
+          type: "tool_input_block_start",
+          payload: {
+            callId: "tool-read-1",
+            index: 0,
+            toolName: "Read",
+            contentBlock: {
+              type: "tool_use",
+              id: "tool-read-1",
+              name: "Read",
+              input: {},
+            },
+          },
+        },
+        {
+          id: "tool-input-delta",
+          type: "tool_input_delta",
+          payload: {
+            index: 0,
+            partialJson: "{\"file_path\":\"TODO.MD\"",
+          },
+        },
+      ],
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    const output = await renderApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    expect(output).toContain("spinner:tool-input:");
+    const layoutProps = providerProbe.fullscreenLayoutProps.at(-1);
+    expect(layoutProps).toBeDefined();
+    expect(containsElementNamed(layoutProps?.bottom, "SpinnerWithVerb")).toBe(true);
+    expect(providerProbe.spinnerProps.at(-1)).toEqual(
+      expect.objectContaining({
+        mode: "tool-input",
+        hasActiveTools: true,
+        overrideMessage: null,
+      }),
+    );
+  });
+
   test("pins the pending-submit spinner after a prior assistant turn", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     let resolveSubmit: () => void = () => {};

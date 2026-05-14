@@ -2117,18 +2117,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   // model is still working — the user wants feedback during those
   // gaps, not a blank screen.
   //
-  // Streaming text is its own feedback only while the model is actively
-  // producing text. Once a tool starts, that buffered text is stale; keep the
-  // activity spinner visible so long-running tool work does not look idle.
   const inProgressToolCount = transcript.inProgressToolUseIDs.size;
-  const hasBufferedStreamingText =
-    transcript.streamingText !== null && transcript.streamingText.length > 0;
+  const isStreamingToolInput = transcript.streamingToolUses.length > 0 && inProgressToolCount === 0;
+  const hasActiveToolActivity = inProgressToolCount > 0 || isStreamingToolInput;
   const showSpinner =
     (isLoading || hasActiveLocalAgents) &&
     permissionRequests.length === 0 &&
     elicitation.prompt === null &&
-    !isMessageSelectorVisible &&
-    (!hasBufferedStreamingText || inProgressToolCount > 0 || hasActiveLocalAgents);
+    !isMessageSelectorVisible;
   if (isLoading && !wasStreamingRef.current) {
     loadingStartTimeRef.current = Date.now();
     totalPausedMsRef.current = 0;
@@ -2142,12 +2138,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const streamMode: SpinnerMode =
     inProgressToolCount > 0
       ? "tool-use"
+      : isStreamingToolInput
+        ? "tool-input"
       : transcript.streamingThinking?.isStreaming
         ? "thinking"
         : transcript.streamingText
           ? "responding"
           : "requesting";
-  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={inProgressToolCount > 0} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
+  const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={hasActiveToolActivity} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
 
   // Onboarding renders standalone — composer-only flow drives its own input.
   if (onboarding.active) {
