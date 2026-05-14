@@ -13,6 +13,10 @@ type Props = {
   fileExists: boolean;
   oldContent: string;
 };
+export function getFileWriteDiffWidth(columns: number): number {
+  const safeColumns = Number.isFinite(columns) ? Math.max(0, Math.trunc(columns)) : 0;
+  return Math.max(1, safeColumns - 2);
+}
 export function FileWriteToolDiff(t0) {
   const $ = _c(15);
   const {
@@ -62,7 +66,7 @@ export function FileWriteToolDiff(t0) {
   const firstLine = t2;
   let t3;
   if ($[6] !== columns || $[7] !== content || $[8] !== file_path || $[9] !== firstLine || $[10] !== hunks || $[11] !== oldContent) {
-    t3 = hunks ? intersperse(hunks.map(_ => <StructuredDiff key={_.newStart} patch={_} dim={false} filePath={file_path} firstLine={firstLine} fileContent={oldContent} width={columns - 2} />), _temp) : <HighlightedCode code={content || "(No content)"} filePath={file_path} />;
+    t3 = hunks ? intersperse(hunks.map(_ => <StructuredDiff key={_.newStart} patch={_} dim={false} filePath={file_path} firstLine={firstLine} fileContent={oldContent} width={getFileWriteDiffWidth(columns)} />), _temp) : <HighlightedCode code={content || "(No content)"} filePath={file_path} />;
     $[6] = columns;
     $[7] = content;
     $[8] = file_path;
