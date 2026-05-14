@@ -110,6 +110,21 @@ export function ConsoleOAuthFlow({
   const [showPastePrompt, setShowPastePrompt] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
   const pasteLayout = getConsoleOAuthPasteLayout(useTerminalSize().columns);
+  const isMountedRef = useRef(true);
+  const pastePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const urlCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearPastePromptTimer = useCallback(() => {
+    if (pastePromptTimerRef.current) {
+      clearTimeout(pastePromptTimerRef.current);
+      pastePromptTimerRef.current = null;
+    }
+  }, []);
+  const clearUrlCopiedTimer = useCallback(() => {
+    if (urlCopiedTimerRef.current) {
+      clearTimeout(urlCopiedTimerRef.current);
+      urlCopiedTimerRef.current = null;
+    }
+  }, []);
 
   // Log forced login method on mount
   useEffect(() => {
@@ -170,14 +185,23 @@ export function ConsoleOAuthFlow({
   });
   useEffect(() => {
     if (pastedCode === 'c' && oauthStatus.state === 'waiting_for_login' && showPastePrompt && !urlCopied) {
+      clearUrlCopiedTimer();
       void setClipboard(oauthStatus.url).then(raw => {
+        if (!isMountedRef.current) {
+          return;
+        }
         if (raw) process.stdout.write(raw);
         setUrlCopied(true);
-        setTimeout(setUrlCopied, 2000, false);
+        urlCopiedTimerRef.current = setTimeout(() => {
+          urlCopiedTimerRef.current = null;
+          if (isMountedRef.current) {
+            setUrlCopied(false);
+          }
+        }, 2000);
       });
       setPastedCode('');
     }
-  }, [pastedCode, oauthStatus, showPastePrompt, urlCopied]);
+  }, [clearUrlCopiedTimer, pastedCode, oauthStatus, showPastePrompt, urlCopied]);
   async function handleSubmitCode(value: string, url: string) {
     try {
       // Expecting format "authorizationCode#state" from the authorization callback URL
@@ -222,7 +246,13 @@ export function ConsoleOAuthFlow({
           state: 'waiting_for_login',
           url: url_0
         });
-        setTimeout(setShowPastePrompt, 3000, true);
+        clearPastePromptTimer();
+        pastePromptTimerRef.current = setTimeout(() => {
+          pastePromptTimerRef.current = null;
+          if (isMountedRef.current) {
+            setShowPastePrompt(true);
+          }
+        }, 3000);
       }, {
         loginWithAgenCAi,
         inferenceOnly: mode === 'setup-token',
@@ -286,7 +316,7 @@ export function ConsoleOAuthFlow({
         ssl_error: sslHint !== null
       });
     }
-  }, [oauthService, setShowPastePrompt, loginWithAgenCAi, mode, orgUUID]);
+  }, [clearPastePromptTimer, oauthService, setShowPastePrompt, loginWithAgenCAi, mode, orgUUID]);
   const pendingOAuthStartRef = useRef(false);
   useEffect(() => {
     if (oauthStatus.state === 'ready_to_start' && !pendingOAuthStartRef.current) {
@@ -315,10 +345,14 @@ export function ConsoleOAuthFlow({
 
   // Cleanup OAuth service when component unmounts
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      clearPastePromptTimer();
+      clearUrlCopiedTimer();
       oauthService.cleanup();
     };
-  }, [oauthService]);
+  }, [clearPastePromptTimer, clearUrlCopiedTimer, oauthService]);
   return <Box flexDirection="column" gap={1}>
       {oauthStatus.state === 'waiting_for_login' && showPastePrompt && <Box flexDirection="column" key="urlToCopy" gap={1} paddingBottom={1}>
           <Box paddingX={1}>
