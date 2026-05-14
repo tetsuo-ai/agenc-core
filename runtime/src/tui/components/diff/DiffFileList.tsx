@@ -7,10 +7,15 @@ import { Box, Text } from '../../ink.js';
 import { truncateStartToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 const MAX_VISIBLE_FILES = 5;
+const FILE_ROW_CHROME_WIDTH = 16 + 3 + 4;
 type Props = {
   files: DiffFile[];
   selectedIndex: number;
 };
+export function getDiffFilePathWidth(columns: number): number {
+  const safeColumns = Number.isFinite(columns) ? Math.max(0, Math.trunc(columns)) : 0;
+  return Math.max(1, safeColumns - FILE_ROW_CHROME_WIDTH);
+}
 export function DiffFileList(t0) {
   const $ = _c(36);
   const {
@@ -82,7 +87,7 @@ export function DiffFileList(t0) {
     const hasMoreAbove = startIndex > 0;
     hasMoreBelow = endIndex < files.length;
     needsPagination = files.length > MAX_VISIBLE_FILES;
-    const maxPathWidth = Math.max(20, columns - 16 - 3 - 4);
+    const maxPathWidth = getDiffFilePathWidth(columns);
     T0 = Box;
     t2 = "column";
     if ($[17] !== hasMoreAbove || $[18] !== needsPagination || $[19] !== startIndex) {
