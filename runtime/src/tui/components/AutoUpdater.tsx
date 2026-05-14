@@ -12,6 +12,7 @@ import { installOrUpdateAgenCPackage, localInstallationExists } from '../../util
 import { removeInstalledSymlink } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { gt, gte } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;
@@ -173,22 +174,23 @@ export function AutoUpdater({
   if (!autoUpdaterResult?.version && !isUpdating) {
     return null;
   }
+  const glyphs = selectAgenCTuiGlyphs();
   return <Box flexDirection="row" gap={1}>
       {verbose && <Text dimColor wrap="truncate">
-          globalVersion: {versions.global} &middot; latestVersion:{' '}
+          globalVersion: {versions.global} {glyphs.separator} latestVersion:{' '}
           {versions.latest}
         </Text>}
       {isUpdating ? <>
           <Box>
             <Text color="text" dimColor wrap="truncate">
-              Auto-updating…
+              Auto-updating{glyphs.ellipsis}
             </Text>
           </Box>
         </> : autoUpdaterResult?.status === 'success' && showSuccessMessage && updateSemver && <Text color="success" wrap="truncate">
-            ✓ Update installed · Restart to apply
+            {glyphs.statusSuccess} Update installed {glyphs.separator} Restart to apply
           </Text>}
       {(autoUpdaterResult?.status === 'install_failed' || autoUpdaterResult?.status === 'no_permissions') && <Text color="error" wrap="truncate">
-          ✗ Auto-update failed &middot; Try <Text bold>agenc doctor</Text> or{' '}
+          {glyphs.statusError} Auto-update failed {glyphs.separator} Try <Text bold>agenc doctor</Text> or{' '}
           <Text bold>
             {hasLocalInstall ? `cd ~/.agenc/local && npm update ${MACRO.PACKAGE_URL}` : `npm i -g ${MACRO.PACKAGE_URL}`}
           </Text>

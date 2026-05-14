@@ -26,6 +26,8 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).spinnerReducedMotionDot).toBe("●");
     expect(selectAgenCTuiGlyphs({}).thinkingPrefix).toBe("∴");
     expect(selectAgenCTuiGlyphs({}).redactedThinkingPrefix).toBe("✻");
+    expect(selectAgenCTuiGlyphs({}).statusError).toBe("✗");
+    expect(selectAgenCTuiGlyphs({}).statusSuccess).toBe("✓");
     expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
     expect(selectAgenCTuiGlyphs({}).treeBranch).toBe("├─");
     expect(selectAgenCTuiGlyphs({}).treeContinuation).toBe("│");
@@ -53,6 +55,8 @@ describe("AgenC TUI glyph selection", () => {
       responseGutter: "|_",
       redactedThinkingPrefix: "*",
       separator: "-",
+      statusError: "ERR",
+      statusSuccess: "OK",
       spinnerFrames: ["-", "\\", "|", "/"],
       spinnerReducedMotionDot: "*",
       statusDot: "*",

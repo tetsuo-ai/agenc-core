@@ -601,8 +601,8 @@ Remaining partitions:
 | 536 | Worktree exit asking and action states | Worktree exit should warn about uncommitted files/commits, default to keep, show tmux-specific options, and show spinner while keeping/removing. | The dialog computes subtitle/options/defaults and renders `Select`; keeping/removing states render a `Spinner` with status text. | OK | `runtime/src/tui/components/WorktreeExitDialog.tsx:178`, `runtime/src/tui/components/WorktreeExitDialog.tsx:184`, `runtime/src/tui/components/WorktreeExitDialog.tsx:194`, `runtime/src/tui/components/WorktreeExitDialog.tsx:198`, `runtime/src/tui/components/WorktreeExitDialog.tsx:214`, `runtime/src/tui/components/WorktreeExitDialog.tsx:224`, `runtime/src/tui/components/WorktreeExitDialog.tsx:227`, `runtime/src/tui/components/WorktreeExitDialog.tsx:236`, `runtime/src/tui/components/WorktreeExitDialog.tsx:237` | Destructive exit path has visible ask/action states once loading finishes. | None |
 | 537 | Cost threshold dialog | Cost threshold warning should show provider-specific copy, documentation link, and an acknowledgement action. | `CostThresholdDialog` builds provider label, renders the spend title, docs link, and a single Select acknowledgement. | OK | `runtime/src/tui/components/dialogs/CostThresholdDialog.tsx:16`, `runtime/src/tui/components/dialogs/CostThresholdDialog.tsx:39`, `runtime/src/tui/components/dialogs/CostThresholdDialog.tsx:43`, `runtime/src/tui/components/dialogs/CostThresholdDialog.tsx:47`, `runtime/src/tui/components/dialogs/CostThresholdDialog.tsx:48`, `runtime/src/tui/components/dialogs/CostThresholdDialog.tsx:50` | Cost warning rendering is present. | None |
 | 538 | Auto updater status rows | Auto-updater UI should stay hidden when disabled or idle, show installing progress, show success, and show failure/permission messages. | `AutoUpdater` returns null for idle states and renders `Auto-updating…`, success, and error rows based on update result. | OK | `runtime/src/tui/components/AutoUpdater.tsx:171`, `runtime/src/tui/components/AutoUpdater.tsx:174`, `runtime/src/tui/components/AutoUpdater.tsx:176`, `runtime/src/tui/components/AutoUpdater.tsx:184`, `runtime/src/tui/components/AutoUpdater.tsx:187`, `runtime/src/tui/components/AutoUpdater.tsx:190` | Normal update status rendering is present. | None |
-| 539 | Auto updater ascii/no-unicode rendering | Update status should not rely on check/cross and middle-dot glyphs without fallback. | Auto-updater rows use `✓`, `✗`, and middle-dot text. | BUG | `runtime/src/tui/components/AutoUpdater.tsx:187`, `runtime/src/tui/components/NativeAutoUpdater.tsx:181`, `runtime/src/tui/components/NativeAutoUpdater.tsx:185` | Update status is not ascii-safe. | P3 |
-| 540 | Native auto updater dead external branch | Dead donor-conditional code should not remain in update rendering. | `NativeAutoUpdater` gates a warning with the constant comparison `"external" === 'ant'`, so that render path is unreachable. | LEGACY | `runtime/src/tui/components/NativeAutoUpdater.tsx:187` | The branch is dead donor-era code. | P3 |
+| 539 | Auto updater ascii/no-unicode rendering | Update status should not rely on check/cross and middle-dot glyphs without fallback. | AutoUpdater and NativeAutoUpdater now use `selectAgenCTuiGlyphs()` for success/error markers and separators; JS updater progress also uses the shared ellipsis glyph. ASCII mode renders `OK`, `ERR`, `-`, and `...`, with focused render coverage for JS and native updater rows. | OK | `runtime/src/tui/glyphs.ts:20`, `runtime/src/tui/glyphs.ts:53`, `runtime/src/tui/glyphs.ts:54`, `runtime/src/tui/glyphs.ts:55`, `runtime/src/tui/glyphs.ts:87`, `runtime/src/tui/glyphs.ts:88`, `runtime/src/tui/glyphs.ts:89`, `runtime/src/tui/components/AutoUpdater.tsx:177`, `runtime/src/tui/components/AutoUpdater.tsx:186`, `runtime/src/tui/components/AutoUpdater.tsx:190`, `runtime/src/tui/components/AutoUpdater.tsx:193`, `runtime/src/tui/components/NativeAutoUpdater.tsx:163`, `runtime/src/tui/components/NativeAutoUpdater.tsx:173`, `runtime/src/tui/components/NativeAutoUpdater.tsx:176`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:125`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:128`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:157`, `runtime/src/tui/components/AutoUpdater.ascii.test.tsx:159` | Update status rows are now terminal-glyph-mode aware. | None |
+| 540 | Native auto updater dead external branch | Dead donor-conditional code should not remain in update rendering. | `NativeAutoUpdater` no longer carries the `maxVersionIssue` state, max-version warning render branch, or `"external" === 'ant'` constant comparison; rendering is limited to active update progress/result states. | OK | `runtime/src/tui/components/NativeAutoUpdater.tsx:155`, `runtime/src/tui/components/NativeAutoUpdater.tsx:159`, `runtime/src/tui/components/NativeAutoUpdater.tsx:163`, `runtime/src/tui/components/NativeAutoUpdater.tsx:172`, `runtime/src/tui/components/NativeAutoUpdater.tsx:175` | Dead donor warning UI was removed. | None |
 | 541 | Auto updater wrapper migration residue | Auto updater wrapper should not carry moved-source scaffolding. | `AutoUpdaterWrapper` starts with `@ts-nocheck` and a moved-source note. | LEGACY | `runtime/src/tui/components/AutoUpdaterWrapper.tsx:1`, `runtime/src/tui/components/AutoUpdaterWrapper.tsx:2` | Live status wrapper has migration residue. | P3 |
 
 ## Part 8 - Ink Renderer, ScrollBox, Terminal Input, Keybindings, Resize, No-Color, ASCII
@@ -714,13 +714,9 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 84 active rows: 40 BUG, 2 MISSING, 42 LEGACY.
+Totals: 82 active rows: 39 BUG, 2 MISSING, 41 LEGACY.
 
 ### P3
-
-#### `runtime/src/tui/components/AutoUpdater.tsx`
-
-- #539 BUG: Auto updater ascii/no-unicode rendering. Citations: `runtime/src/tui/components/AutoUpdater.tsx:187`, `runtime/src/tui/components/NativeAutoUpdater.tsx:181`, `runtime/src/tui/components/NativeAutoUpdater.tsx:185`
 
 #### `runtime/src/tui/components/AutoUpdaterWrapper.tsx`
 
@@ -757,10 +753,6 @@ Totals: 84 active rows: 40 BUG, 2 MISSING, 42 LEGACY.
 #### `runtime/src/tui/components/MessageSelector.tsx`
 
 - #456 BUG: Message selector async metadata ordering. Citations: `runtime/src/tui/components/MessageSelector.tsx:305`, `runtime/src/tui/components/MessageSelector.tsx:322`
-
-#### `runtime/src/tui/components/NativeAutoUpdater.tsx`
-
-- #540 LEGACY: Native auto updater dead external branch. Citations: `runtime/src/tui/components/NativeAutoUpdater.tsx:187`
 
 #### `runtime/src/tui/components/PromptInput/PromptInputFooterLeftSide.tsx`
 

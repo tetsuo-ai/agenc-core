@@ -17,6 +17,8 @@ export interface AgenCTuiGlyphs {
   readonly responseGutter: string;
   readonly redactedThinkingPrefix: string;
   readonly separator: string;
+  readonly statusError: string;
+  readonly statusSuccess: string;
   readonly spinnerFrames: readonly string[];
   readonly spinnerReducedMotionDot: string;
   readonly statusDot: string;
@@ -49,6 +51,8 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   responseGutter: "|_",
   redactedThinkingPrefix: "*",
   separator: "-",
+  statusError: "ERR",
+  statusSuccess: "OK",
   spinnerFrames: ["-", "\\", "|", "/"],
   spinnerReducedMotionDot: "*",
   statusDot: "*",
@@ -81,6 +85,8 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   responseGutter: "⎿",
   redactedThinkingPrefix: "✻",
   separator: "·",
+  statusError: "✗",
+  statusSuccess: "✓",
   spinnerFrames: ["·", "✢", "✳", "✶", "✻", "✽"],
   spinnerReducedMotionDot: "●",
   statusDot: "●",

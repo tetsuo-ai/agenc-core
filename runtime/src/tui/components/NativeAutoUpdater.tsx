@@ -6,11 +6,10 @@ import { logError } from '../../utils/log.js'; // upstream-import: keep target i
 import { useInterval } from 'usehooks-ts';
 import { useUpdateNotification } from '../hooks/useUpdateNotification';
 import { Box, Text } from '../ink.js';
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import type { AutoUpdaterResult } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getMaxVersion, getMaxVersionMessage } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { installLatest } from '../../utils/nativeInstaller/installer.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { gt } from '../../utils/semver.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getInitialSettings } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 /**
@@ -60,7 +59,6 @@ export function NativeAutoUpdater({
     current?: string | null;
     latest?: string | null;
   }>({});
-  const [maxVersionIssue, setMaxVersionIssue] = useState<string | null>(null);
   const updateSemver = useUpdateNotification(autoUpdaterResult?.version);
   const channel = getInitialSettings()?.autoUpdatesChannel ?? 'latest';
 
@@ -87,12 +85,6 @@ export function NativeAutoUpdater({
     // Log the start of an auto-update check for funnel analysis
     logEvent('tengu_native_auto_updater_start', {});
     try {
-      // Check if current version is above the max allowed version
-      const maxVersion = await getMaxVersion();
-      if (maxVersion && gt(MACRO.VERSION, maxVersion)) {
-        const msg = await getMaxVersionMessage();
-        setMaxVersionIssue(msg ?? 'affects your version');
-      }
       const result = await installLatest(channel);
       const currentVersion = MACRO.VERSION;
       const latencyMs = Date.now() - startTime;
@@ -162,31 +154,26 @@ export function NativeAutoUpdater({
   useInterval(checkForUpdates, 30 * 60 * 1000);
   const hasUpdateResult = !!autoUpdaterResult?.version;
   const hasVersionInfo = !!versions.current && !!versions.latest;
-  // Show the component when:
-  // - warning banner needed (above max version), or
-  // - there's an update result to display (success/error), or
-  // - actively checking and we have version info to show
-  const shouldRender = !!maxVersionIssue || hasUpdateResult || isUpdating && hasVersionInfo;
+  // Show the component when there is an update result to display or an active
+  // check has version info to show.
+  const shouldRender = hasUpdateResult || isUpdating && hasVersionInfo;
   if (!shouldRender) {
     return null;
   }
+  const glyphs = selectAgenCTuiGlyphs();
   return <Box flexDirection="row" gap={1}>
       {verbose && <Text dimColor wrap="truncate">
-          current: {versions.current} &middot; {channel}: {versions.latest}
+          current: {versions.current} {glyphs.separator} {channel}: {versions.latest}
         </Text>}
       {isUpdating ? <Box>
           <Text dimColor wrap="truncate">
             Checking for updates
           </Text>
         </Box> : autoUpdaterResult?.status === 'success' && showSuccessMessage && updateSemver && <Text color="success" wrap="truncate">
-            ✓ Update installed · Restart to update
+            {glyphs.statusSuccess} Update installed {glyphs.separator} Restart to update
           </Text>}
       {autoUpdaterResult?.status === 'install_failed' && <Text color="error" wrap="truncate">
-          ✗ Auto-update failed &middot; Try <Text bold>/status</Text>
-        </Text>}
-      {maxVersionIssue && "external" === 'ant' && <Text color="warning">
-          ⚠ Known issue: {maxVersionIssue} &middot; Run{' '}
-          <Text bold>agenc rollback --safe</Text> to downgrade
+          {glyphs.statusError} Auto-update failed {glyphs.separator} Try <Text bold>/status</Text>
         </Text>}
     </Box>;
 }
