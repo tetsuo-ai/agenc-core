@@ -1,11 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
-import figures from 'figures';
 import React, { useMemo } from 'react';
 import type { DiffFile } from '../../hooks/useDiffData';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
+import { selectAgenCTuiGlyphs, type AgenCTuiGlyphs } from '../../glyphs.js';
 import { Box, Text } from '../../ink.js';
-import { truncateStartToWidth } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { stringWidth } from '../../ink/stringWidth.js';
+import { truncateToWidthNoEllipsis } from '../../../utils/truncate.js';
+import { plural } from '../../../utils/stringUtils.js';
 const MAX_VISIBLE_FILES = 5;
 const FILE_ROW_CHROME_WIDTH = 16 + 3 + 4;
 type Props = {
@@ -16,6 +17,29 @@ export function getDiffFilePathWidth(columns: number): number {
   const safeColumns = Number.isFinite(columns) ? Math.max(0, Math.trunc(columns)) : 0;
   return Math.max(1, safeColumns - FILE_ROW_CHROME_WIDTH);
 }
+export function truncateDiffFilePath(path: string, maxPathWidth: number, ellipsis: string): string {
+  const safeMaxPathWidth = Number.isFinite(maxPathWidth) ? Math.max(1, Math.trunc(maxPathWidth)) : 1;
+  if (stringWidth(path) <= safeMaxPathWidth) {
+    return path;
+  }
+  const safeEllipsis = ellipsis || '...';
+  const ellipsisWidth = stringWidth(safeEllipsis);
+  if (ellipsisWidth >= safeMaxPathWidth) {
+    return truncateToWidthNoEllipsis(safeEllipsis, safeMaxPathWidth);
+  }
+  const tailBudget = safeMaxPathWidth - ellipsisWidth;
+  let width = 0;
+  let tail = '';
+  for (const segment of Array.from(path).reverse()) {
+    const segmentWidth = stringWidth(segment);
+    if (width + segmentWidth > tailBudget) {
+      break;
+    }
+    tail = `${segment}${tail}`;
+    width += segmentWidth;
+  }
+  return `${safeEllipsis}${tail}`;
+}
 export function DiffFileList(t0) {
   const $ = _c(36);
   const {
@@ -25,6 +49,7 @@ export function DiffFileList(t0) {
   const {
     columns
   } = useTerminalSize();
+  const glyphs = selectAgenCTuiGlyphs();
   let t1;
   bb0: {
     if (files.length === 0 || files.length <= MAX_VISIBLE_FILES) {
@@ -91,7 +116,7 @@ export function DiffFileList(t0) {
     T0 = Box;
     t2 = "column";
     if ($[17] !== hasMoreAbove || $[18] !== needsPagination || $[19] !== startIndex) {
-      t3 = needsPagination && <Text dimColor={true}>{hasMoreAbove ? ` ↑ ${startIndex} more ${plural(startIndex, "file")}` : " "}</Text>;
+      t3 = needsPagination && <Text dimColor={true}>{hasMoreAbove ? ` ${glyphs.arrowUp} ${startIndex} more ${plural(startIndex, "file")}` : " "}</Text>;
       $[17] = hasMoreAbove;
       $[18] = needsPagination;
       $[19] = startIndex;
@@ -101,7 +126,7 @@ export function DiffFileList(t0) {
     }
     let t5;
     if ($[21] !== maxPathWidth || $[22] !== selectedIndex || $[23] !== startIndex) {
-      t5 = (file, index) => <FileItem key={file.path} file={file} isSelected={startIndex + index === selectedIndex} maxPathWidth={maxPathWidth} />;
+      t5 = (file, index) => <FileItem key={file.path} file={file} isSelected={startIndex + index === selectedIndex} maxPathWidth={maxPathWidth} glyphs={glyphs} />;
       $[21] = maxPathWidth;
       $[22] = selectedIndex;
       $[23] = startIndex;
@@ -131,7 +156,7 @@ export function DiffFileList(t0) {
   }
   let t5;
   if ($[25] !== endIndex || $[26] !== files.length || $[27] !== hasMoreBelow || $[28] !== needsPagination) {
-    t5 = needsPagination && <Text dimColor={true}>{hasMoreBelow ? ` ↓ ${files.length - endIndex} more ${plural(files.length - endIndex, "file")}` : " "}</Text>;
+    t5 = needsPagination && <Text dimColor={true}>{hasMoreBelow ? ` ${glyphs.arrowDown} ${files.length - endIndex} more ${plural(files.length - endIndex, "file")}` : " "}</Text>;
     $[25] = endIndex;
     $[26] = files.length;
     $[27] = hasMoreBelow;
@@ -155,59 +180,61 @@ export function DiffFileList(t0) {
   return t6;
 }
 function FileItem(t0) {
-  const $ = _c(14);
+  const $ = _c(15);
   const {
     file,
     isSelected,
-    maxPathWidth
+    maxPathWidth,
+    glyphs
   } = t0;
   let t1;
-  if ($[0] !== file.path || $[1] !== maxPathWidth) {
-    t1 = truncateStartToWidth(file.path, maxPathWidth);
+  if ($[0] !== file.path || $[1] !== glyphs || $[2] !== maxPathWidth) {
+    t1 = truncateDiffFilePath(file.path, maxPathWidth, glyphs.ellipsis);
     $[0] = file.path;
-    $[1] = maxPathWidth;
-    $[2] = t1;
+    $[1] = glyphs;
+    $[2] = maxPathWidth;
+    $[3] = t1;
   } else {
-    t1 = $[2];
+    t1 = $[3];
   }
   const displayPath = t1;
-  const pointer = isSelected ? figures.pointer + " " : "  ";
+  const pointer = isSelected ? `${glyphs.pointer} ` : "  ";
   const line = `${pointer}${displayPath}`;
   const t2 = isSelected ? "background" : undefined;
   let t3;
-  if ($[3] !== isSelected || $[4] !== line || $[5] !== t2) {
+  if ($[4] !== isSelected || $[5] !== line || $[6] !== t2) {
     t3 = <Text bold={isSelected} color={t2} inverse={isSelected}>{line}</Text>;
-    $[3] = isSelected;
-    $[4] = line;
-    $[5] = t2;
-    $[6] = t3;
+    $[4] = isSelected;
+    $[5] = line;
+    $[6] = t2;
+    $[7] = t3;
   } else {
-    t3 = $[6];
+    t3 = $[7];
   }
   let t4;
-  if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
+  if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
     t4 = <Box flexGrow={1} />;
-    $[7] = t4;
+    $[8] = t4;
   } else {
-    t4 = $[7];
+    t4 = $[8];
   }
   let t5;
-  if ($[8] !== file || $[9] !== isSelected) {
+  if ($[9] !== file || $[10] !== isSelected) {
     t5 = <FileStats file={file} isSelected={isSelected} />;
-    $[8] = file;
-    $[9] = isSelected;
-    $[10] = t5;
+    $[9] = file;
+    $[10] = isSelected;
+    $[11] = t5;
   } else {
-    t5 = $[10];
+    t5 = $[11];
   }
   let t6;
-  if ($[11] !== t3 || $[12] !== t5) {
+  if ($[12] !== t3 || $[13] !== t5) {
     t6 = <Box flexDirection="row">{t3}{t4}{t5}</Box>;
-    $[11] = t3;
-    $[12] = t5;
-    $[13] = t6;
+    $[12] = t3;
+    $[13] = t5;
+    $[14] = t6;
   } else {
-    t6 = $[13];
+    t6 = $[14];
   }
   return t6;
 }

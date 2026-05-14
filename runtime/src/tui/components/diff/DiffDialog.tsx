@@ -1,21 +1,20 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { CommandResultDisplay } from '../../../commands.js';
-import { useRegisterOverlay } from '../../context/overlayContext';
-import { type DiffData, useDiffData } from '../../hooks/useDiffData';
-import { type TurnDiff, useTurnDiffs } from '../../hooks/useTurnDiffs';
+import { useRegisterOverlay } from '../../context/overlayContext.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
+import { type DiffData, useDiffData } from '../../hooks/useDiffData.js';
+import { type TurnDiff, useTurnDiffs } from '../../hooks/useTurnDiffs.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import type { Message } from '../../../types/message';
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Byline } from '../design-system/Byline';
-import { Dialog } from '../design-system/Dialog';
-import { DiffDetailView } from './DiffDetailView';
-import { DiffFileList } from './DiffFileList';
+import type { Message } from '../../../types/message.js';
+import { plural } from '../../../utils/stringUtils.js';
+import { Byline } from '../design-system/Byline.js';
+import { Dialog } from '../design-system/Dialog.js';
+import { DiffDetailView } from './DiffDetailView.js';
+import { DiffFileList } from './DiffFileList.js';
 type Props = {
   messages: Message[];
   onDone: (result?: string, options?: {
@@ -54,15 +53,16 @@ function turnDiffToDiffData(turn: TurnDiff): DiffData {
     loading: false
   };
 }
-export function DiffDialog(t0) {
-  const $ = _c(73);
+export function DiffDialog(t0: Props): React.ReactNode {
+  const $ = _c(75);
   const {
     messages,
     onDone
   } = t0;
   const gitDiffData = useDiffData();
   const turnDiffs = useTurnDiffs(messages);
-  const [viewMode, setViewMode] = useState("list");
+  const glyphs = selectAgenCTuiGlyphs();
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [sourceIndex, setSourceIndex] = useState(0);
   let t1;
@@ -261,24 +261,25 @@ export function DiffDialog(t0) {
   const headerTitle = currentTurn ? `Turn ${currentTurn.turnIndex}` : "Uncommitted changes";
   const headerSubtitle = currentTurn ? currentTurn.userPromptPreview ? `"${currentTurn.userPromptPreview}"` : "" : "(git diff HEAD)";
   let t18;
-  if ($[40] !== sourceIndex || $[41] !== sources) {
-    t18 = sources.length > 1 ? <Box>{sourceIndex > 0 && <Text dimColor={true}>◀ </Text>}{sources.map((source, i) => {
+  if ($[40] !== glyphs || $[41] !== sourceIndex || $[42] !== sources) {
+    t18 = sources.length > 1 ? <Box>{sourceIndex > 0 && <Text dimColor={true}>{glyphs.arrowLeft} </Text>}{sources.map((source, i) => {
         const isSelected = i === sourceIndex;
         const label = source.type === "current" ? "Current" : `T${source.turn.turnIndex}`;
-        return <Text key={i} dimColor={!isSelected} bold={isSelected}>{i > 0 ? " \xB7 " : ""}{label}</Text>;
-      })}{sourceIndex < sources.length - 1 && <Text dimColor={true}> ▶</Text>}</Box> : null;
-    $[40] = sourceIndex;
-    $[41] = sources;
-    $[42] = t18;
+        return <Text key={i} dimColor={!isSelected} bold={isSelected}>{i > 0 ? ` ${glyphs.separator} ` : ""}{label}</Text>;
+      })}{sourceIndex < sources.length - 1 && <Text dimColor={true}> {glyphs.arrowRight}</Text>}</Box> : null;
+    $[40] = glyphs;
+    $[41] = sourceIndex;
+    $[42] = sources;
+    $[43] = t18;
   } else {
-    t18 = $[42];
+    t18 = $[43];
   }
   const sourceSelector = t18;
   const dismissShortcut = useShortcutDisplay("diff:dismiss", "DiffDialog", "esc");
   let t19;
   bb0: {
     if (diffData.loading) {
-      t19 = "Loading diff\u2026";
+      t19 = `Loading diff${glyphs.ellipsis}`;
       break bb0;
     }
     if (currentTurn) {
@@ -293,25 +294,25 @@ export function DiffDialog(t0) {
   }
   const emptyMessage = t19;
   let t20;
-  if ($[43] !== headerSubtitle) {
+  if ($[44] !== headerSubtitle) {
     t20 = headerSubtitle && <Text dimColor={true}> {headerSubtitle}</Text>;
-    $[43] = headerSubtitle;
-    $[44] = t20;
+    $[44] = headerSubtitle;
+    $[45] = t20;
   } else {
-    t20 = $[44];
+    t20 = $[45];
   }
   let t21;
-  if ($[45] !== headerTitle || $[46] !== t20) {
+  if ($[46] !== headerTitle || $[47] !== t20) {
     t21 = <Text>{headerTitle}{t20}</Text>;
-    $[45] = headerTitle;
-    $[46] = t20;
-    $[47] = t21;
+    $[46] = headerTitle;
+    $[47] = t20;
+    $[48] = t21;
   } else {
-    t21 = $[47];
+    t21 = $[48];
   }
   const title = t21;
   let t22;
-  if ($[48] !== onDone || $[49] !== viewMode) {
+  if ($[49] !== onDone || $[50] !== viewMode) {
     t22 = function handleCancel() {
       if (viewMode === "detail") {
         setViewMode("list");
@@ -321,52 +322,53 @@ export function DiffDialog(t0) {
         });
       }
     };
-    $[48] = onDone;
-    $[49] = viewMode;
-    $[50] = t22;
+    $[49] = onDone;
+    $[50] = viewMode;
+    $[51] = t22;
   } else {
-    t22 = $[50];
+    t22 = $[51];
   }
   const handleCancel = t22;
   let t23;
-  if ($[51] !== dismissShortcut || $[52] !== sources.length || $[53] !== viewMode) {
-    t23 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : viewMode === "list" ? <Byline>{sources.length > 1 && <Text>←/→ source</Text>}<Text>↑/↓ select</Text><Text>Enter view</Text><Text>{dismissShortcut} close</Text></Byline> : <Byline><Text>← back</Text><Text>{dismissShortcut} close</Text></Byline>;
-    $[51] = dismissShortcut;
-    $[52] = sources.length;
-    $[53] = viewMode;
-    $[54] = t23;
+  if ($[52] !== dismissShortcut || $[53] !== glyphs || $[54] !== sources.length || $[55] !== viewMode) {
+    t23 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : viewMode === "list" ? <Byline>{sources.length > 1 && <Text>{glyphs.arrowLeft}/{glyphs.arrowRight} source</Text>}<Text>{glyphs.arrowUp}/{glyphs.arrowDown} select</Text><Text>Enter view</Text><Text>{dismissShortcut} close</Text></Byline> : <Byline><Text>{glyphs.arrowLeft} back</Text><Text>{dismissShortcut} close</Text></Byline>;
+    $[52] = dismissShortcut;
+    $[53] = glyphs;
+    $[54] = sources.length;
+    $[55] = viewMode;
+    $[56] = t23;
   } else {
-    t23 = $[54];
+    t23 = $[56];
   }
   let t24;
-  if ($[55] !== diffData.files || $[56] !== emptyMessage || $[57] !== selectedFile?.isBinary || $[58] !== selectedFile?.isLargeFile || $[59] !== selectedFile?.isTruncated || $[60] !== selectedFile?.isUntracked || $[61] !== selectedFile?.path || $[62] !== selectedHunks || $[63] !== selectedIndex || $[64] !== viewMode) {
+  if ($[57] !== diffData.files || $[58] !== emptyMessage || $[59] !== selectedFile?.isBinary || $[60] !== selectedFile?.isLargeFile || $[61] !== selectedFile?.isTruncated || $[62] !== selectedFile?.isUntracked || $[63] !== selectedFile?.path || $[64] !== selectedHunks || $[65] !== selectedIndex || $[66] !== viewMode) {
     t24 = diffData.files.length === 0 ? <Box marginTop={1}><Text dimColor={true}>{emptyMessage}</Text></Box> : viewMode === "list" ? <Box flexDirection="column" marginTop={1}><DiffFileList files={diffData.files} selectedIndex={selectedIndex} /></Box> : <Box flexDirection="column" marginTop={1}><DiffDetailView filePath={selectedFile?.path || ""} hunks={selectedHunks} isLargeFile={selectedFile?.isLargeFile} isBinary={selectedFile?.isBinary} isTruncated={selectedFile?.isTruncated} isUntracked={selectedFile?.isUntracked} /></Box>;
-    $[55] = diffData.files;
-    $[56] = emptyMessage;
-    $[57] = selectedFile?.isBinary;
-    $[58] = selectedFile?.isLargeFile;
-    $[59] = selectedFile?.isTruncated;
-    $[60] = selectedFile?.isUntracked;
-    $[61] = selectedFile?.path;
-    $[62] = selectedHunks;
-    $[63] = selectedIndex;
-    $[64] = viewMode;
-    $[65] = t24;
+    $[57] = diffData.files;
+    $[58] = emptyMessage;
+    $[59] = selectedFile?.isBinary;
+    $[60] = selectedFile?.isLargeFile;
+    $[61] = selectedFile?.isTruncated;
+    $[62] = selectedFile?.isUntracked;
+    $[63] = selectedFile?.path;
+    $[64] = selectedHunks;
+    $[65] = selectedIndex;
+    $[66] = viewMode;
+    $[67] = t24;
   } else {
-    t24 = $[65];
+    t24 = $[67];
   }
   let t25;
-  if ($[66] !== handleCancel || $[67] !== sourceSelector || $[68] !== subtitle || $[69] !== t23 || $[70] !== t24 || $[71] !== title) {
+  if ($[68] !== handleCancel || $[69] !== sourceSelector || $[70] !== subtitle || $[71] !== t23 || $[72] !== t24 || $[73] !== title) {
     t25 = <Dialog title={title} onCancel={handleCancel} color="background" inputGuide={t23}>{sourceSelector}{subtitle}{t24}</Dialog>;
-    $[66] = handleCancel;
-    $[67] = sourceSelector;
-    $[68] = subtitle;
-    $[69] = t23;
-    $[70] = t24;
-    $[71] = title;
-    $[72] = t25;
+    $[68] = handleCancel;
+    $[69] = sourceSelector;
+    $[70] = subtitle;
+    $[71] = t23;
+    $[72] = t24;
+    $[73] = title;
+    $[74] = t25;
   } else {
-    t25 = $[72];
+    t25 = $[74];
   }
   return t25;
 }
@@ -376,7 +378,7 @@ function _temp3(prev_1) {
 function _temp2(prev) {
   return Math.max(0, prev - 1);
 }
-function _temp(turn) {
+function _temp(turn: TurnDiff): DiffSource {
   return {
     type: "turn",
     turn

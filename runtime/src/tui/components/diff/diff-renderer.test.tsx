@@ -1,9 +1,9 @@
-import figures from 'figures'
 import React from 'react'
 import type { StructuredPatchHunk } from 'diff'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { DiffData, DiffFile } from '../../hooks/useDiffData.js'
+import { selectAgenCTuiGlyphs } from '../../glyphs.js'
 import { StructuredDiff } from './StructuredDiff.js'
 import { StructuredDiffList } from './StructuredDiffList.js'
 import {
@@ -385,7 +385,7 @@ describe('diff renderer components', () => {
     )
 
     expect(output).toContain('1 more file')
-    expect(output).toContain(`${figures.pointer} src/file-3.ts`)
+    expect(output).toContain(`${selectAgenCTuiGlyphs({}).pointer} src/file-3.ts`)
     expect(output).toContain('+4 -3')
     expect(output).toContain('src/file-5.ts')
     expect(output).not.toContain('src/file-0.ts')
@@ -422,6 +422,66 @@ describe('diff renderer components', () => {
     expect(getDiffDetailBodyHeight(40)).toBe(30)
     expect(getDiffDetailEstimatedRows([longHunk])).toBe(40)
     expect(output).toContain('diff clipped to 30 rows')
+  })
+
+  test('uses ASCII glyphs for diff navigation and clipped-detail text', () => {
+    const previousGlyphMode = process.env.AGENC_TUI_GLYPHS
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+    try {
+      const files = Array.from({ length: 7 }, (_, index) =>
+        makeFile(`src/file-${index}.ts`, index),
+      )
+      const listOutput = renderPlain(
+        <DiffFileList files={files} selectedIndex={3} />,
+      )
+      const longHunk = makeHunk(
+        1,
+        Array.from({ length: 40 }, (_, index) => ` context ${index}`),
+      )
+      const detailOutput = renderPlain(
+        <DiffDetailView filePath="src/large.ts" hunks={[longHunk]} />,
+      )
+      hookState.diffData = {
+        stats: {
+          filesCount: 1,
+          linesAdded: 1,
+          linesRemoved: 0,
+        },
+        files: [makeFile('src/a.ts', 1)],
+        hunks: new Map(),
+        loading: false,
+      }
+      hookState.turnDiffs = [
+        {
+          turnIndex: 1,
+          userPromptPreview: 'turn diff',
+          stats: { filesChanged: 1, linesAdded: 1, linesRemoved: 0 },
+          files: new Map(),
+        },
+      ]
+      const dialogOutput = renderPlain(
+        <DiffDialog messages={[]} onDone={() => {}} />,
+      )
+
+      expect(listOutput).toContain('^ 1 more file')
+      expect(listOutput).toContain('> src/file-3.ts')
+      expect(listOutput).toContain('v 1 more file')
+      expect(detailOutput).toContain('... diff clipped to 30 rows')
+      expect(dialogOutput).toContain('</> source')
+      expect(dialogOutput).toContain('^/v select')
+      expect(dialogOutput).not.toContain('←')
+      expect(dialogOutput).not.toContain('→')
+      expect(dialogOutput).not.toContain('↑')
+      expect(dialogOutput).not.toContain('↓')
+      expect(`${listOutput}\n${detailOutput}\n${dialogOutput}`).not.toContain('…')
+    } finally {
+      if (previousGlyphMode === undefined) {
+        delete process.env.AGENC_TUI_GLYPHS
+      } else {
+        process.env.AGENC_TUI_GLYPHS = previousGlyphMode
+      }
+      hookState.turnDiffs = []
+    }
   })
 
   test('renders the current diff dialog list from diff data', () => {

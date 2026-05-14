@@ -2,6 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
 import { resolve } from 'path';
 import React, { useMemo } from 'react';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize';
 import { Box, Text } from '../../ink.js';
 import { getCwd } from '../../../utils/cwd.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -44,6 +45,7 @@ export function DiffDetailView(t0) {
     columns,
     rows
   } = useTerminalSize();
+  const glyphs = selectAgenCTuiGlyphs();
   let t1;
   bb0: {
     if (!filePath) {
@@ -273,7 +275,7 @@ export function DiffDetailView(t0) {
   }
   let t8;
   if ($[48] !== detailBodyHeight || $[49] !== isBodyClipped || $[50] !== isTruncated) {
-    t8 = isTruncated ? <Text dimColor={true} italic={true}>… diff truncated (exceeded 400 line limit)</Text> : isBodyClipped && <Text dimColor={true} italic={true}>… diff clipped to {detailBodyHeight} rows to fit this terminal</Text>;
+    t8 = isTruncated ? <Text dimColor={true} italic={true}>{glyphs.ellipsis} diff truncated (exceeded 400 line limit)</Text> : isBodyClipped && <Text dimColor={true} italic={true}>{glyphs.ellipsis} diff clipped to {detailBodyHeight} rows to fit this terminal</Text>;
     $[48] = detailBodyHeight;
     $[49] = isBodyClipped;
     $[50] = isTruncated;
