@@ -21,6 +21,7 @@ import { AgentDetail } from './AgentDetail';
 import { AgentEditor } from './AgentEditor';
 import { AgentNavigationFooter } from './AgentNavigationFooter';
 import { AgentsList } from './AgentsList';
+import { AgentDeleteFailureMessage, formatAgentDeleteFailureMessage } from './AgentDeleteFailure';
 import { deleteAgentFromFile } from './agentFileUtils';
 import { CreateAgentWizard } from './new-agent-creation/CreateAgentWizard';
 import type { ModeState } from './types';
@@ -63,6 +64,7 @@ export function AgentsMenu(t0) {
     t2 = $[1];
   }
   const [changes, setChanges] = useState(t2);
+  const [deleteFailureMessage, setDeleteFailureMessage] = useState(null);
   const mergedTools = useMergedTools(tools, mcpTools, toolPermissionContext);
   useExitOnCtrlCDWithKeybindings();
   let t3;
@@ -164,6 +166,7 @@ export function AgentsMenu(t0) {
   if ($[26] !== setAppState) {
     t12 = async agent => {
       ;
+      setDeleteFailureMessage(null);
       try {
         await deleteAgentFromFile(agent);
         setAppState(state => {
@@ -185,6 +188,7 @@ export function AgentsMenu(t0) {
       } catch (t13) {
         const error = t13;
         logError(toError(error));
+        setDeleteFailureMessage(formatAgentDeleteFailureMessage(agent, error));
       }
     };
     $[26] = setAppState;
@@ -395,6 +399,7 @@ export function AgentsMenu(t0) {
                 }
               case "delete":
                 {
+                  setDeleteFailureMessage(null);
                   setModeState({
                     mode: "delete-confirm",
                     agent: agentToUse,
@@ -589,6 +594,7 @@ export function AgentsMenu(t0) {
         let t14;
         if ($[113] !== modeState) {
           t14 = () => {
+            setDeleteFailureMessage(null);
             if ("previousMode" in modeState) {
               setModeState(modeState.previousMode);
             }
@@ -620,6 +626,7 @@ export function AgentsMenu(t0) {
             if (value === "yes") {
               handleAgentDeleted(modeState.agent);
             } else {
+              setDeleteFailureMessage(null);
               if ("previousMode" in modeState) {
                 setModeState(modeState.previousMode);
               }
@@ -634,6 +641,7 @@ export function AgentsMenu(t0) {
         let t18;
         if ($[122] !== modeState) {
           t18 = () => {
+            setDeleteFailureMessage(null);
             if ("previousMode" in modeState) {
               setModeState(modeState.previousMode);
             }
@@ -652,17 +660,8 @@ export function AgentsMenu(t0) {
         } else {
           t19 = $[126];
         }
-        let t20;
-        if ($[127] !== t14 || $[128] !== t15 || $[129] !== t16 || $[130] !== t19) {
-          t20 = <Dialog title="Delete agent" onCancel={t14} color="error">{t15}{t16}{t19}</Dialog>;
-          $[127] = t14;
-          $[128] = t15;
-          $[129] = t16;
-          $[130] = t19;
-          $[131] = t20;
-        } else {
-          t20 = $[131];
-        }
+        const deleteFailure = deleteFailureMessage && <AgentDeleteFailureMessage message={deleteFailureMessage} />;
+        const t20 = <Dialog title="Delete agent" onCancel={t14} color="error">{t15}{t16}{deleteFailure}{t19}</Dialog>;
         let t21;
         if ($[132] === Symbol.for("react.memo_cache_sentinel")) {
           t21 = <AgentNavigationFooter instructions={"Press \u2191\u2193 to navigate, Enter to select, Esc to cancel"} />;
