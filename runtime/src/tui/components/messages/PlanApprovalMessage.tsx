@@ -2,6 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { Markdown } from '../markdown/Markdown.js';
 import { Box, Text } from '../../ink.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { jsonParse } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { type IdleNotificationMessage, isIdleNotification, isPlanApprovalRequest, isPlanApprovalResponse, type PlanApprovalRequestMessage, type PlanApprovalResponseMessage } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getShutdownMessageSummary } from './ShutdownMessage';
@@ -60,6 +61,17 @@ type PlanApprovalResponseProps = {
   senderName: string;
 };
 
+export function getPlanApprovalResponseTitle(
+  approved: boolean,
+  senderName: string,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  const status = approved ? glyphs.statusSuccess : glyphs.statusError;
+  const action = approved ? 'Approved' : 'Rejected';
+  return `${status} Plan ${action} by ${senderName}`;
+}
+
 /**
  * Renders a plan approval response with a success (green) or error (red) border.
  */
@@ -70,10 +82,11 @@ export function PlanApprovalResponseDisplay(t0) {
     senderName
   } = t0;
   if (response.approved) {
+    const approvedTitle = getPlanApprovalResponseTitle(true, senderName);
     let t1;
-    if ($[0] !== senderName) {
-      t1 = <Box><Text color="success" bold={true}>✓ Plan Approved by {senderName}</Text></Box>;
-      $[0] = senderName;
+    if ($[0] !== approvedTitle) {
+      t1 = <Box><Text color="success" bold={true}>{approvedTitle}</Text></Box>;
+      $[0] = approvedTitle;
       $[1] = t1;
     } else {
       t1 = $[1];
@@ -95,10 +108,11 @@ export function PlanApprovalResponseDisplay(t0) {
     }
     return t3;
   }
+  const rejectedTitle = getPlanApprovalResponseTitle(false, senderName);
   let t1;
-  if ($[5] !== senderName) {
-    t1 = <Box><Text color="error" bold={true}>✗ Plan Rejected by {senderName}</Text></Box>;
-    $[5] = senderName;
+  if ($[5] !== rejectedTitle) {
+    t1 = <Box><Text color="error" bold={true}>{rejectedTitle}</Text></Box>;
+    $[5] = rejectedTitle;
     $[6] = t1;
   } else {
     t1 = $[6];
