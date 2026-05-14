@@ -1,21 +1,21 @@
 import React from 'react';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text } from '../ink.js';
+import { resolveAgenCTuiGlyphMode } from '../glyphs.js';
 import { truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 
 // Constants for width calculations - derived from actual rendered strings
 const ALL_TAB_LABEL = 'All';
 const TAB_PADDING = 2; // Space before and after tab text: " {tab} "
 const HASH_PREFIX_LENGTH = 1; // "#" prefix for non-All tabs
-const LEFT_ARROW_PREFIX = '← ';
-const RIGHT_HINT_WITH_COUNT_PREFIX = '→';
+const UNICODE_LEFT_OVERFLOW_PREFIX = '← ';
+const UNICODE_RIGHT_OVERFLOW_PREFIX = '→';
+const ASCII_LEFT_OVERFLOW_PREFIX = '< ';
+const ASCII_RIGHT_OVERFLOW_PREFIX = '>';
 const RIGHT_HINT_SUFFIX = ' (tab to cycle)';
 const RIGHT_HINT_NO_COUNT = '(tab to cycle)';
 const MAX_OVERFLOW_DIGITS = 2; // Assume max 99 hidden tabs for width calculation
-
-// Computed widths
-const LEFT_ARROW_WIDTH = LEFT_ARROW_PREFIX.length + MAX_OVERFLOW_DIGITS + 1; // "← NN " with gap
-const RIGHT_HINT_WIDTH_WITH_COUNT = RIGHT_HINT_WITH_COUNT_PREFIX.length + MAX_OVERFLOW_DIGITS + RIGHT_HINT_SUFFIX.length; // "→NN (tab to cycle)"
+const MIN_TAG_TAB_WIDTH = TAB_PADDING + HASH_PREFIX_LENGTH + 1;
 const RIGHT_HINT_WIDTH_NO_COUNT = RIGHT_HINT_NO_COUNT.length;
 type Props = {
   tabs: string[];
@@ -23,6 +23,22 @@ type Props = {
   availableWidth: number;
   showAllProjects?: boolean;
 };
+
+export function getTagTabsOverflowPrefixes(
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): { left: string; right: string } {
+  return resolveAgenCTuiGlyphMode(env) === 'ascii' ? {
+    left: ASCII_LEFT_OVERFLOW_PREFIX,
+    right: ASCII_RIGHT_OVERFLOW_PREFIX
+  } : {
+    left: UNICODE_LEFT_OVERFLOW_PREFIX,
+    right: UNICODE_RIGHT_OVERFLOW_PREFIX
+  };
+}
+
+export function getTagTabsMaxSingleTabWidth(maxTabsWidth: number): number {
+  return Math.max(MIN_TAG_TAB_WIDTH, Math.floor(Math.max(MIN_TAG_TAB_WIDTH, maxTabsWidth) / 2));
+}
 
 /**
  * Calculate the display width of a tab
@@ -59,16 +75,19 @@ export function TagTabs({
 }: Props): React.ReactNode {
   const resumeLabel = showAllProjects ? 'Resume (All Projects)' : 'Resume';
   const resumeLabelWidth = resumeLabel.length + 1; // +1 for gap
+  const overflowPrefixes = getTagTabsOverflowPrefixes();
+  const leftArrowWidth = stringWidth(overflowPrefixes.left) + MAX_OVERFLOW_DIGITS + 1; // "< NN " / "← NN " with gap
+  const rightHintWidthWithCount = stringWidth(overflowPrefixes.right) + MAX_OVERFLOW_DIGITS + RIGHT_HINT_SUFFIX.length;
 
   // Calculate how much space we have for tabs (use worst-case hint width)
-  const rightHintWidth = Math.max(RIGHT_HINT_WIDTH_WITH_COUNT, RIGHT_HINT_WIDTH_NO_COUNT);
-  const maxTabsWidth = availableWidth - resumeLabelWidth - rightHintWidth - 2; // 2 for gaps
+  const rightHintWidth = Math.max(rightHintWidthWithCount, RIGHT_HINT_WIDTH_NO_COUNT);
+  const maxTabsWidth = Math.max(MIN_TAG_TAB_WIDTH, availableWidth - resumeLabelWidth - rightHintWidth - 2); // 2 for gaps
 
   // Clamp selectedIndex to valid range
   const safeSelectedIndex = Math.max(0, Math.min(selectedIndex, tabs.length - 1));
 
   // Calculate width of each tab, with truncation for very long tags
-  const maxSingleTabWidth = Math.max(20, Math.floor(maxTabsWidth / 2)); // At least show half the space for one tab
+  const maxSingleTabWidth = getTagTabsMaxSingleTabWidth(maxTabsWidth); // At least show one tagged character
   const tabWidths = tabs.map(tab => getTabWidth(tab, maxSingleTabWidth));
 
   // Find a window of tabs that fits, centered around selectedIndex
@@ -80,7 +99,7 @@ export function TagTabs({
 
   if (totalTabsWidth > maxTabsWidth) {
     // Need to show a subset - account for left arrow when not at start
-    const effectiveMaxWidth = maxTabsWidth - LEFT_ARROW_WIDTH;
+    const effectiveMaxWidth = Math.max(MIN_TAG_TAB_WIDTH, maxTabsWidth - leftArrowWidth);
 
     // Start with the selected tab
     let windowWidth = tabWidths[safeSelectedIndex] ?? 0;
@@ -117,7 +136,7 @@ export function TagTabs({
   return <Box flexDirection="row" gap={1}>
       <Text color="suggestion">{resumeLabel}</Text>
       {hiddenLeft > 0 && <Text dimColor>
-          {LEFT_ARROW_PREFIX}
+          {overflowPrefixes.left}
           {hiddenLeft}
         </Text>}
       {visibleTabs.map((tab_0, i_1) => {
@@ -130,7 +149,7 @@ export function TagTabs({
           </Text>;
     })}
       {hiddenRight > 0 ? <Text dimColor>
-          {RIGHT_HINT_WITH_COUNT_PREFIX}
+          {overflowPrefixes.right}
           {hiddenRight}
           {RIGHT_HINT_SUFFIX}
         </Text> : <Text dimColor>{RIGHT_HINT_NO_COUNT}</Text>}
