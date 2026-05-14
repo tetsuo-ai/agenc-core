@@ -4,6 +4,7 @@ import { c as _c } from "react-compiler-runtime";
 import React from 'react';
 import { type ExitState, useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { Box, Text } from '../../ink.js';
+import { TerminalSizeContext } from '../../ink/components/TerminalSizeContext.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import type { Theme } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
@@ -11,6 +12,9 @@ import { Byline } from './Byline';
 import FullWidthRow from './FullWidthRow';
 import { KeyboardShortcutHint } from './KeyboardShortcutHint';
 import { Pane } from './Pane';
+const DEFAULT_DIALOG_ROWS = 24;
+const DIALOG_BODY_CHROME_ROWS_WITH_GUIDE = 6;
+const DIALOG_BODY_CHROME_ROWS_WITHOUT_GUIDE = 4;
 type DialogProps = {
   title: React.ReactNode;
   subtitle?: React.ReactNode;
@@ -30,6 +34,11 @@ type DialogProps = {
    */
   isCancelActive?: boolean;
 };
+export function getDialogBodyMaxHeight(rows: number, showInputGuide: boolean): number {
+  const safeRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+  const chromeRows = showInputGuide ? DIALOG_BODY_CHROME_ROWS_WITH_GUIDE : DIALOG_BODY_CHROME_ROWS_WITHOUT_GUIDE;
+  return Math.max(1, safeRows - chromeRows);
+}
 export function Dialog(t0) {
   const $ = _c(27);
   const {
@@ -45,6 +54,8 @@ export function Dialog(t0) {
   } = t0;
   const color = t1 === undefined ? "permission" : t1;
   const isCancelActive = t2 === undefined ? true : t2;
+  const terminalSize = React.useContext(TerminalSizeContext);
+  const bodyMaxHeight = getDialogBodyMaxHeight(terminalSize?.rows ?? DEFAULT_DIALOG_ROWS, !hideInputGuide);
   const exitState = useExitOnCtrlCDWithKeybindings(undefined, undefined, isCancelActive);
   let t3;
   if ($[0] !== isCancelActive) {
@@ -94,15 +105,7 @@ export function Dialog(t0) {
   } else {
     t7 = $[12];
   }
-  let t8;
-  if ($[13] !== children || $[14] !== t7) {
-    t8 = <Box flexDirection="column" gap={1}>{t7}{children}</Box>;
-    $[13] = children;
-    $[14] = t7;
-    $[15] = t8;
-  } else {
-    t8 = $[15];
-  }
+  const t8 = <Box flexDirection="column" gap={1}>{t7}<Box flexDirection="column" maxHeight={bodyMaxHeight} overflowY="hidden">{children}</Box></Box>;
   let t9;
   if ($[16] !== defaultInputGuide || $[17] !== exitState || $[18] !== hideInputGuide || $[19] !== inputGuide) {
     t9 = !hideInputGuide && <Box marginTop={1}><FullWidthRow><Text dimColor={true} italic={true}>{inputGuide ? inputGuide(exitState) : defaultInputGuide}</Text></FullWidthRow></Box>;
