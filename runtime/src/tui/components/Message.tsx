@@ -30,6 +30,11 @@ import { UserTextMessage } from './messages/UserTextMessage';
 import { UserToolResultMessage } from './messages/UserToolResultMessage/UserToolResultMessage';
 import { OffscreenFreeze } from './OffscreenFreeze';
 import { ExpandShellOutputProvider } from './shell/ExpandShellOutputContext';
+
+export function getToolResultMessageWidth(columns: number): number {
+  return Math.max(1, columns - 5);
+}
+
 export type Props = {
   message: NormalizedUserMessage | AssistantMessage | AttachmentMessageType | SystemMessage | GroupedToolUseMessageType | CollapsedReadSearchGroupType;
   lookups: ReturnType<typeof buildMessageLookups>;
@@ -406,7 +411,7 @@ function UserMessage(t0) {
       }
     case "tool_result":
       {
-        const t1 = columns - 5;
+        const t1 = getToolResultMessageWidth(columns);
         let t2;
         if ($[10] !== isTranscriptMode || $[11] !== lookups || $[12] !== message || $[13] !== param || $[14] !== progressMessagesForMessage || $[15] !== style || $[16] !== t1 || $[17] !== tools || $[18] !== verbose) {
           t2 = <UserToolResultMessage param={param} message={message} lookups={lookups} progressMessagesForMessage={progressMessagesForMessage} style={style} tools={tools} verbose={verbose} width={t1} isTranscriptMode={isTranscriptMode} />;
