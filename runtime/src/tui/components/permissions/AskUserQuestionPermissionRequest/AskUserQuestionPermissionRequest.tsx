@@ -6,7 +6,7 @@ import React, { Suspense, use, useCallback, useMemo, useRef, useState } from 're
 import { useSettings } from '../../../hooks/useSettings';
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { stringWidth } from '../../../ink/stringWidth.js';
-import { useTheme } from '../../../ink.js';
+import { Box, Text, useTheme } from '../../../ink.js';
 import { useKeybindings } from '../../../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../../services/analytics/index';
 import { useAppState } from '../../../state/AppState.js';
@@ -22,6 +22,8 @@ import { applyMarkdown } from '../../../../utils/markdown.js'; // upstream-impor
 import { isPlanModeInterviewPhaseEnabled } from '../../../../utils/planModeV2.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getPlanFilePath } from '../../../../utils/plans.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionRequestProps } from '../PermissionRequest.js';
+import { PermissionDialog } from '../PermissionDialog';
+import { PermissionPrompt } from '../PermissionPrompt';
 import { QuestionView } from './QuestionView';
 import { SubmitQuestionsView } from './SubmitQuestionsView';
 import { useMultipleChoiceState } from './use-multiple-choice-state';
@@ -252,7 +254,7 @@ function AskUserQuestionPermissionRequestBody(t0) {
     setTextInputMode
   } = state;
   const currentQuestion = currentQuestionIndex < (questions?.length || 0) ? questions?.[currentQuestionIndex] : null;
-  const isInSubmitView = currentQuestionIndex === (questions?.length || 0);
+  const isInSubmitView = questions.length > 0 && currentQuestionIndex === questions.length;
   let t11;
   if ($[22] !== answers || $[23] !== questions) {
     t11 = questions?.every(q_0 => q_0?.question && !!answers[q_0.question]) ?? false;
@@ -609,7 +611,39 @@ Questions asked and answers provided:\n${questionsWithAnswers_0}`;
     }
     return t23;
   }
+  if (!result.success) {
+    return <AskUserQuestionMalformedInputDialog toolUseConfirm={toolUseConfirm} onDone={onDone} onReject={onReject} message={result.error?.message ?? "Invalid AskUserQuestion input"} />;
+  }
+  if (questions.length === 0) {
+    return <AskUserQuestionMalformedInputDialog toolUseConfirm={toolUseConfirm} onDone={onDone} onReject={onReject} message="AskUserQuestion input did not include any questions." />;
+  }
   return null;
+}
+function AskUserQuestionMalformedInputDialog({
+  toolUseConfirm,
+  onDone,
+  onReject,
+  message
+}) {
+  const handleReject = useCallback(feedback => {
+    toolUseConfirm.onReject(feedback);
+    onReject();
+    onDone();
+  }, [onDone, onReject, toolUseConfirm]);
+  const handleSelect = useCallback((_value, feedback) => {
+    handleReject(feedback);
+  }, [handleReject]);
+  const options = useMemo(() => [{
+    label: "No",
+    value: "no",
+    feedbackConfig: {
+      type: "reject"
+    }
+  }], []);
+  return <PermissionDialog title="Ask user question" workerBadge={toolUseConfirm.workerBadge}><Box flexDirection="column" gap={1}><Box flexDirection="column"><Text color="error" bold={true}>Invalid AskUserQuestion input</Text><Text dimColor={true}>{message}</Text></Box><PermissionPrompt options={options} onSelect={handleSelect} onCancel={() => handleReject()} question="Reject this malformed question request?" toolAnalyticsContext={{
+        toolName: toolUseConfirm.tool.name,
+        isMcp: toolUseConfirm.tool.isMcp ?? false
+      }} /></Box></PermissionDialog>;
 }
 function _temp6(c_1) {
   return c_1.type === "image";
