@@ -1,14 +1,10 @@
-import type { ThinkingBlock, ThinkingBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
+import type { AgenCThinkingBlockParam } from '../../../types/message.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { Box, Text } from '../../ink.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { Markdown } from '../markdown/Markdown.js';
 type Props = {
-  // Accept either full ThinkingBlock/ThinkingBlockParam or a minimal shape with just type and thinking
-  param: ThinkingBlock | ThinkingBlockParam | {
-    type: 'thinking';
-    thinking: string;
-  };
+  param: AgenCThinkingBlockParam;
   addMargin: boolean;
   isTranscriptMode: boolean;
   verbose: boolean;

@@ -1,5 +1,4 @@
 import { c as _c } from "react-compiler-runtime";
-import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useMemo } from 'react';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -13,13 +12,14 @@ import type { ProgressMessage } from '../../../types/message';
 import { useIsClassifierChecking } from '../../../utils/classifierApprovalsHook.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logError } from '../../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { buildMessageLookups } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { AgenCToolUseBlockParam } from '../../../types/message.js';
 import { MessageResponse } from '../MessageResponse';
 import { useSelectedMessageBg } from '../messageActions';
 import { SentryErrorBoundary } from '../SentryErrorBoundary';
 import { ToolUseLoader } from '../ToolUseLoader';
 import { HookProgressMessage } from './HookProgressMessage';
 type Props = {
-  param: ToolUseBlockParam;
+  param: AgenCToolUseBlockParam;
   addMargin: boolean;
   tools: Tools;
   commands: Command[];

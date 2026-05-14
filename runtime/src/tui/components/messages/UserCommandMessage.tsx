@@ -1,13 +1,13 @@
 import { c as _c } from "react-compiler-runtime";
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import figures from 'figures';
 import * as React from 'react';
 import { COMMAND_MESSAGE_TAG } from '../../../constants/xml.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { AgenCTextBlockParam } from '../../../types/message.js';
 import { Box, Text } from '../../ink.js';
 import { extractTag } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type Props = {
   addMargin: boolean;
-  param: TextBlockParam;
+  param: AgenCTextBlockParam;
 };
 export function UserCommandMessage(t0) {
   const $ = _c(19);

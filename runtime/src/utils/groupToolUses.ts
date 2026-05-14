@@ -1,7 +1,7 @@
-import type { BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages/messages.mjs'
 import type { Tools } from '../tools/Tool.js'
 import type {
+  AgenCToolResultBlockParam,
+  AgenCToolUseBlockParam,
   GroupedToolUseMessage,
   NormalizedAssistantMessage,
   NormalizedUserMessage,
@@ -68,7 +68,7 @@ export function applyGrouping(
   // First pass: group tool uses by message.id + tool name
   const groups = new Map<
     string,
-    NormalizedAssistantMessage<BetaToolUseBlock>[]
+    NormalizedAssistantMessage<AgenCToolUseBlockParam>[]
   >()
 
   for (const msg of messages) {
@@ -76,7 +76,7 @@ export function applyGrouping(
     if (info && toolsWithGrouping.has(info.toolName)) {
       const key = `${info.messageId}:${info.toolName}`
       const group = groups.get(key) ?? []
-      group.push(msg as NormalizedAssistantMessage<BetaToolUseBlock>)
+      group.push(msg as NormalizedAssistantMessage<AgenCToolUseBlockParam>)
       groups.set(key, group)
     }
   }
@@ -84,7 +84,7 @@ export function applyGrouping(
   // Identify valid groups (2+ items) and collect their tool use IDs
   const validGroups = new Map<
     string,
-    NormalizedAssistantMessage<BetaToolUseBlock>[]
+    NormalizedAssistantMessage<AgenCToolUseBlockParam>[]
   >()
   const groupedToolUseIds = new Set<string>()
 
@@ -163,12 +163,12 @@ export function applyGrouping(
 
     // Skip user messages whose tool_results are all grouped
     if (msg.type === 'user') {
-      const toolResults: ToolResultBlockParam[] = msg.message.content.filter(
-        (c: { type: string }): c is ToolResultBlockParam =>
+      const toolResults: AgenCToolResultBlockParam[] = msg.message.content.filter(
+        (c: { type: string }): c is AgenCToolResultBlockParam =>
           c.type === 'tool_result',
       )
       if (toolResults.length > 0) {
-        const allGrouped = toolResults.every((tr: ToolResultBlockParam) =>
+        const allGrouped = toolResults.every((tr: AgenCToolResultBlockParam) =>
           groupedToolUseIds.has(tr.tool_use_id),
         )
         if (allGrouped) {

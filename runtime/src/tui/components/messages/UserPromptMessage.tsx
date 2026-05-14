@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle';
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useContext, useMemo } from 'react';
 import { getKairosActive, getUserMsgOptIn } from '../../../bootstrap/state';
+import type { AgenCTextBlockParam } from '../../../types/message.js';
 import { Box } from '../../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics/growthbook';
 import { useAppState } from '../../state/AppState.js';
@@ -12,7 +12,7 @@ import { MessageActionsSelectedContext } from '../messageActions';
 import { HighlightedThinkingText } from './HighlightedThinkingText';
 type Props = {
   addMargin: boolean;
-  param: TextBlockParam;
+  param: AgenCTextBlockParam;
   isTranscriptMode?: boolean;
   timestamp?: string;
 };

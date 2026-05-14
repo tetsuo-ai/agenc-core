@@ -1,11 +1,11 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { BULLET_OPERATOR } from '../../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../../../ink.js';
 import { filterToolProgressMessages, type Tool, type Tools } from '../../../../tools/Tool';
 import type { ProgressMessage } from '../../../../types/message';
+import type { AgenCToolResultBlockParam } from '../../../../types/message.js';
 import { INTERRUPT_MESSAGE_FOR_TOOL_USE, isClassifierDenial, PLAN_REJECTION_PREFIX, REJECT_MESSAGE_WITH_REASON_PREFIX } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../../tool-result-denial.js';
 import { FallbackToolUseErrorMessage } from '../../FallbackToolUseErrorMessage';
@@ -17,7 +17,7 @@ type Props = {
   progressMessagesForMessage: ProgressMessage[];
   tool?: Tool; // undefined when resuming an old conversation that uses an old tool
   tools: Tools;
-  param: ToolResultBlockParam;
+  param: AgenCToolResultBlockParam;
   verbose: boolean;
   isTranscriptMode?: boolean;
 };

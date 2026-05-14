@@ -53,4 +53,30 @@ describe("moved-source marker cleanup", () => {
       expect(source).not.toContain("•");
     }
   });
+
+  test("owned message renderers do not import provider SDK block types directly", () => {
+    for (const file of [
+      "runtime/src/tui/components/Message.tsx",
+      "runtime/src/tui/components/messages/AssistantTextMessage.tsx",
+      "runtime/src/tui/components/messages/AssistantThinkingMessage.tsx",
+      "runtime/src/tui/components/messages/AssistantToolUseMessage.tsx",
+      "runtime/src/tui/components/messages/GroupedToolUseContent.tsx",
+      "runtime/src/tui/components/messages/UserAgentNotificationMessage.tsx",
+      "runtime/src/tui/components/messages/UserBashInputMessage.tsx",
+      "runtime/src/tui/components/messages/UserChannelMessage.tsx",
+      "runtime/src/tui/components/messages/UserCommandMessage.tsx",
+      "runtime/src/tui/components/messages/UserPromptMessage.tsx",
+      "runtime/src/tui/components/messages/UserResourceUpdateMessage.tsx",
+      "runtime/src/tui/components/messages/UserTeammateMessage.tsx",
+      "runtime/src/tui/components/messages/UserTextMessage.tsx",
+      "runtime/src/tui/components/messages/UserToolResultMessage/UserToolErrorMessage.tsx",
+      "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx",
+      "runtime/src/tui/components/messages/UserToolResultMessage/utils.tsx",
+      "runtime/src/utils/groupToolUses.ts",
+    ]) {
+      const source = readFileSync(`${repoRoot}${file}`, "utf8");
+
+      expect(source).not.toContain("@anthropic-ai/sdk");
+    }
+  });
 });

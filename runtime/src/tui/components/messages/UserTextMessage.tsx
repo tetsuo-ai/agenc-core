@@ -1,10 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import type React from 'react';
 import { NO_CONTENT_MESSAGE } from '../../../constants/messages.js';
 import { COMMAND_MESSAGE_TAG, LOCAL_COMMAND_CAVEAT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../../constants/xml.js';
 import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
+import type { AgenCTextBlockParam } from '../../../types/message.js';
 import { extractTag, INTERRUPT_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE } from '../../../utils/messages.js';
 import {
   InterruptedByUser,
@@ -24,7 +24,7 @@ import {
 type AnyComponent = React.ComponentType<any>;
 type Props = {
   addMargin: boolean;
-  param: TextBlockParam;
+  param: AgenCTextBlockParam;
   verbose: boolean;
   planContent?: string;
   isTranscriptMode?: boolean;

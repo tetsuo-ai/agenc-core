@@ -55,3 +55,40 @@ export type StopHookInfo = any;
 export type StreamEvent = any;
 export type MessageOrigin = any;
 export type PartialCompactDirection = any;
+
+export type AgenCTextBlockParam = {
+  text: string;
+  type: 'text';
+  [key: string]: any;
+};
+
+export type AgenCThinkingBlockParam = {
+  thinking: string;
+  type: 'thinking';
+  signature?: string;
+  [key: string]: any;
+};
+
+export type AgenCToolUseBlockParam = {
+  id: string;
+  input: unknown;
+  name: string;
+  type: 'tool_use';
+  [key: string]: any;
+};
+
+export type AgenCToolResultBlockContent =
+  | string
+  | {
+      type: string;
+      text?: string;
+      [key: string]: any;
+    };
+
+export type AgenCToolResultBlockParam = {
+  tool_use_id: string;
+  type: 'tool_result';
+  content?: string | AgenCToolResultBlockContent[];
+  is_error?: boolean;
+  [key: string]: any;
+};

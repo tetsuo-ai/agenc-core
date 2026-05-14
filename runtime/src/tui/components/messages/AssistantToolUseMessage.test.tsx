@@ -1,8 +1,8 @@
-import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Tool } from '../../../tools/Tool.js'
+import type { AgenCToolUseBlockParam } from '../../../types/message.js'
 import { renderToString } from '../../../utils/staticRender.js'
 import { AssistantToolUseMessage } from './AssistantToolUseMessage.js'
 
@@ -42,7 +42,7 @@ vi.mock('../../ink.js', async () => {
   }
 })
 
-const param: ToolUseBlockParam = {
+const param: AgenCToolUseBlockParam = {
   type: 'tool_use',
   id: 'toolu_classifier',
   name: 'Bash',
@@ -83,7 +83,7 @@ async function renderClassifierToolUse(): Promise<string> {
 }
 
 async function renderToolUseWith(options: {
-  param?: ToolUseBlockParam
+  param?: AgenCToolUseBlockParam
   tools?: Tool[] | undefined
 } = {}): Promise<string> {
   const nextParam = options.param ?? param

@@ -1,5 +1,4 @@
 import { c as _c } from "react-compiler-runtime";
-import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import { useMemo } from 'react';
 import { findToolByName, type Tool, type Tools } from '../../../../tools/Tool';
 import type { buildMessageLookups } from '../../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item

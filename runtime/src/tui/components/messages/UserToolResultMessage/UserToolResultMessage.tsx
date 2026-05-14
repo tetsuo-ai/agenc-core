@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
-import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
 import { Text } from '../../../ink.js';
 import type { Tools } from '../../../../tools/Tool';
 import type { NormalizedUserMessage, ProgressMessage } from '../../../../types/message';
+import type { AgenCToolResultBlockParam } from '../../../../types/message.js';
 import { type buildMessageLookups, CANCEL_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE, REJECT_MESSAGE } from '../../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isPermissionDeniedToolResult, PERMISSION_DENIED_TOOL_RESULT_MESSAGE } from '../../../tool-result-denial.js';
 import { UserToolCanceledMessage } from './UserToolCanceledMessage';
@@ -12,7 +12,7 @@ import { UserToolRejectMessage } from './UserToolRejectMessage';
 import { UserToolSuccessMessage } from './UserToolSuccessMessage';
 import { useGetToolFromMessages } from './utils';
 type Props = {
-  param: ToolResultBlockParam;
+  param: AgenCToolResultBlockParam;
   message: NormalizedUserMessage;
   lookups: ReturnType<typeof buildMessageLookups>;
   progressMessagesForMessage: ProgressMessage[];
@@ -23,7 +23,7 @@ type Props = {
   isTranscriptMode?: boolean;
 };
 
-export function formatOrphanToolResultContent(content: ToolResultBlockParam["content"]): string {
+export function formatOrphanToolResultContent(content: AgenCToolResultBlockParam["content"]): string {
   if (isPermissionDeniedToolResult(content)) return PERMISSION_DENIED_TOOL_RESULT_MESSAGE;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {

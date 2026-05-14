@@ -1,5 +1,4 @@
 import { c as _c } from "react-compiler-runtime";
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useContext } from 'react';
 import { ERROR_MESSAGE_USER_ABORT } from 'src/services/compact/compact.js';
 import { isRateLimitErrorMessage } from '../../../services/rateLimitMessages.js';
@@ -9,6 +8,7 @@ import { API_ERROR_MESSAGE_PREFIX, API_TIMEOUT_ERROR_MESSAGE, CREDIT_BALANCE_TOO
 import { isEmptyMessageText, NO_RESPONSE_REQUESTED } from '../../../utils/messages';
 import { getUpgradeMessage } from '../../../utils/model/contextWindowUpgradeCheck';
 import { getDefaultMainLoopModel, renderModelName } from '../../../utils/model/model';
+import type { AgenCTextBlockParam } from '../../../types/message.js';
 import { isMacOsKeychainLocked } from '../../../utils/secureStorage/macOsKeychainStorage';
 import { CtrlOToExpand } from '../CtrlOToExpand';
 import { InterruptedByUser } from '../InterruptedByUser';
@@ -19,7 +19,7 @@ import { MessageActionsSelectedContext } from '../messageActions';
 
 const MAX_API_ERROR_CHARS = 1000;
 type Props = {
-  param: TextBlockParam;
+  param: AgenCTextBlockParam;
   addMargin: boolean;
   shouldShowDot: boolean;
   verbose: boolean;

@@ -1,8 +1,8 @@
 import { c as _c } from "react-compiler-runtime";
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import figures from 'figures';
 import * as React from 'react';
 import { TEAMMATE_MESSAGE_TAG } from '../../../constants/xml.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { AgenCTextBlockParam } from '../../../types/message.js';
 import { Ansi, Box, Text, type TextProps } from '../../ink.js';
 import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { jsonParse } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -13,7 +13,7 @@ import { tryRenderShutdownMessage } from './ShutdownMessage';
 import { tryRenderTaskAssignmentMessage } from './TaskAssignmentMessage';
 type Props = {
   addMargin: boolean;
-  param: TextBlockParam;
+  param: AgenCTextBlockParam;
   isTranscriptMode?: boolean;
 };
 type ParsedMessage = {
