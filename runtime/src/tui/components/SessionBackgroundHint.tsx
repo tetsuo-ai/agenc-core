@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useCallback, useState } from 'react';
@@ -9,8 +8,8 @@ import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { useAppState, useAppStateStore, useSetAppState } from '../state/AppState.js';
 import { backgroundAll, hasForegroundTasks } from '../../tasks/LocalShellTask/LocalShellTask';
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config'; // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../utils/env'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getGlobalConfig, saveGlobalConfig } from '../../utils/config';
+import { env } from '../../utils/env';
 import { isEnvTruthy } from '../../utils/envUtils';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
 type Props = {

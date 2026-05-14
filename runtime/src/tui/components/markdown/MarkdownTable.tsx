@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import type { Token, Tokens } from 'marked';
 import React from 'react';
 import stripAnsi from 'strip-ansi';

@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import type { RefObject } from 'react';
 import * as React from 'react';
@@ -16,7 +15,7 @@ import { ScrollChromeContext } from './FullscreenLayout';
 // Rows of breathing room above the target when we scrollTo.
 const HEADROOM = 3;
 import { logForDebugging } from 'src/utils/debug.js';
-import { sleep } from '../../utils/sleep.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { sleep } from '../../utils/sleep.js';
 import { renderableSearchText } from '../history/transcriptSearch.js';
 import { isNavigableMessage, type MessageActionsNav, type MessageActionsState, type NavigableMessage, stripSystemReminders, toolCallOf } from './messageActions';
 

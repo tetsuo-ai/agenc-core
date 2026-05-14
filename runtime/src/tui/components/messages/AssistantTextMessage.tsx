@@ -3,13 +3,13 @@ import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useContext } from 'react';
 import { ERROR_MESSAGE_USER_ABORT } from 'src/services/compact/compact.js';
 import { isRateLimitErrorMessage } from '../../../services/rateLimitMessages.js';
-import { BLACK_CIRCLE } from '../../../constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE } from '../../../constants/figures';
 import { Box, NoSelect, Text } from '../../ink.js';
 import { API_ERROR_MESSAGE_PREFIX, API_TIMEOUT_ERROR_MESSAGE, CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE, CUSTOM_OFF_SWITCH_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL, ORG_DISABLED_ERROR_MESSAGE_ENV_KEY, ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH, PROMPT_TOO_LONG_ERROR_MESSAGE, startsWithApiErrorPrefix, TOKEN_REVOKED_ERROR_MESSAGE } from '../../../services/api/errors';
-import { isEmptyMessageText, NO_RESPONSE_REQUESTED } from '../../../utils/messages'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getUpgradeMessage } from '../../../utils/model/contextWindowUpgradeCheck'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDefaultSonnetModel, renderModelName } from '../../../utils/model/model'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isMacOsKeychainLocked } from '../../../utils/secureStorage/macOsKeychainStorage'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isEmptyMessageText, NO_RESPONSE_REQUESTED } from '../../../utils/messages';
+import { getUpgradeMessage } from '../../../utils/model/contextWindowUpgradeCheck';
+import { getDefaultMainLoopModel, renderModelName } from '../../../utils/model/model';
+import { isMacOsKeychainLocked } from '../../../utils/secureStorage/macOsKeychainStorage';
 import { CtrlOToExpand } from '../CtrlOToExpand';
 import { InterruptedByUser } from '../InterruptedByUser';
 import { RateLimitMessage } from '../dialogs/RateLimitMessage.js';
@@ -169,14 +169,14 @@ export function AssistantTextMessage(t0) {
       {
         let t2;
         if ($[12] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = <Text color="error">We are experiencing high demand for Opus 4.</Text>;
+          t2 = <Text color="error">We are experiencing high demand for the selected model.</Text>;
           $[12] = t2;
         } else {
           t2 = $[12];
         }
         let t3;
         if ($[13] === Symbol.for("react.memo_cache_sentinel")) {
-          t3 = <MessageResponse><Box flexDirection="column" gap={1}>{t2}<Text>To continue immediately, use /model to switch to{" "}{renderModelName(getDefaultSonnetModel())} and continue coding.</Text></Box></MessageResponse>;
+          t3 = <MessageResponse><Box flexDirection="column" gap={1}>{t2}<Text>To continue immediately, use /model to switch to{" "}{renderModelName(getDefaultMainLoopModel())}.</Text></Box></MessageResponse>;
           $[13] = t3;
         } else {
           t3 = $[13];

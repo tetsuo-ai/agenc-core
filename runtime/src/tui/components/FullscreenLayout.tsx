@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
@@ -11,9 +10,9 @@ import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import instances from '../ink/instances.js';
 import { Box, Text } from '../ink.js';
 import type { Message } from '../../types/message';
-import { openBrowser, openPath } from '../../utils/browser.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { openBrowser, openPath } from '../../utils/browser.js';
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
+import { plural } from '../../utils/stringUtils.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';

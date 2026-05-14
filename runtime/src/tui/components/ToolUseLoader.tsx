@@ -1,8 +1,7 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { BLACK_CIRCLE } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { BLACK_CIRCLE } from '../../constants/figures.js';
 import { useBlink } from '../hooks/useBlink';
 import { Box, Text } from '../ink.js';
 type Props = {

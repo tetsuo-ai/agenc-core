@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';

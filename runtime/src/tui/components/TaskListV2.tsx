@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
@@ -9,12 +8,12 @@ import { Box, Text } from '../ink.js';
 import { useAppState } from '../state/AppState.js';
 import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types';
 import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
-import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { count } from '../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { summarizeRecentActivities } from '../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isTodoV2Enabled, type Task } from '../../utils/tasks.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
+import { count } from '../../utils/array.js';
+import { summarizeRecentActivities } from '../../utils/collapseReadSearch.js';
+import { truncateToWidth } from '../../utils/format.js';
+import { isTodoV2Enabled, type Task } from '../../utils/tasks.js';
+import type { Theme } from '../../utils/theme.js';
 import FullWidthRow from './design-system/FullWidthRow';
 import ThemedText from './design-system/ThemedText';
 type Props = {

@@ -1,13 +1,13 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
-import type { SettingSource } from '../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../utils/settings/constants.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
 import type { ResolvedAgent } from '../../../tools/AgentTool/agentDisplay';
 import { AGENT_SOURCE_GROUPS, compareAgentsByName, getOverrideSourceLabel, resolveAgentModelDisplay } from '../../../tools/AgentTool/agentDisplay';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
-import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { count } from '../../../utils/array.js';
 import { Dialog } from '../design-system/Dialog';
 import { Divider } from '../design-system/Divider';
 import { getAgentSourceDisplayName } from './utils';
@@ -242,8 +242,8 @@ export function AgentsList(t0) {
         let t25;
         let t26;
         if ($[58] === Symbol.for("react.memo_cache_sentinel")) {
-          t24 = <Text dimColor={true}>No agents found. Create specialized subagents that AgenC can delegate to.</Text>;
-          t25 = <Text dimColor={true}>Each subagent has its own context window, custom system prompt, and specific tools.</Text>;
+          t24 = <Text dimColor={true}>No agents found. Create specialized agents that AgenC can delegate to.</Text>;
+          t25 = <Text dimColor={true}>Each agent has its own context window, custom system prompt, and specific tools.</Text>;
           t26 = <Text dimColor={true}>Try creating: Code Reviewer, Code Simplifier, Security Reviewer, Tech Lead, or UX Reviewer.</Text>;
           $[58] = t24;
           $[59] = t25;

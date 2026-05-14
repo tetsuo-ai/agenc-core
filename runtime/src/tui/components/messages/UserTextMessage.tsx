@@ -1,13 +1,12 @@
 // @ts-nocheck
-// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import * as React from 'react';
-import { NO_CONTENT_MESSAGE } from '../../../constants/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { COMMAND_MESSAGE_TAG, LOCAL_COMMAND_CAVEAT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../../constants/xml.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { extractTag, INTERRUPT_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { NO_CONTENT_MESSAGE } from '../../../constants/messages.js';
+import { COMMAND_MESSAGE_TAG, LOCAL_COMMAND_CAVEAT_TAG, TASK_NOTIFICATION_TAG, TEAMMATE_MESSAGE_TAG, TICK_TAG } from '../../../constants/xml.js';
+import { isAgentSwarmsEnabled } from '../../../utils/agentSwarmsEnabled.js';
+import { extractTag, INTERRUPT_MESSAGE, INTERRUPT_MESSAGE_FOR_TOOL_USE } from '../../../utils/messages.js';
 import { InterruptedByUser } from '../InterruptedByUser';
 import { MessageResponse } from '../MessageResponse';
 import { UserAgentNotificationMessage } from './UserAgentNotificationMessage';

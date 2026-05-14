@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
 import type { BetaContentBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs';
@@ -11,10 +10,10 @@ import { Box } from '../ink.js';
 import type { Tools } from '../../tools/Tool';
 import { type ConnectorTextBlock, isConnectorTextBlock } from '../../types/connectorText';
 import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../../types/message';
-import { type AdvisorBlock, isAdvisorBlock } from '../../utils/advisor.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { logError } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { buildMessageLookups } from '../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type AdvisorBlock, isAdvisorBlock } from '../../utils/advisor.js';
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
+import { logError } from '../../utils/log.js';
+import type { buildMessageLookups } from '../../utils/messages.js';
 import { CompactBoundaryMessage } from './compact/CompactBoundaryMessage';
 import { CompactSummary } from './compact/CompactSummary';
 import { AdvisorMessage } from './messages/AdvisorMessage';
