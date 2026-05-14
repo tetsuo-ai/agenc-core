@@ -1,31 +1,29 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { useCallback, useEffect, useState } from 'react';
-import { gracefulShutdown } from '../../utils/gracefulShutdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { useEffect, useState } from 'react';
+import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { writeToStdout } from 'src/utils/process.js';
 import { Box, color, Text, useTheme } from '../ink.js';
-import { addMcpConfig, getAllMcpConfigs } from '../../services/mcp/config';
-import type { ConfigScope, McpServerConfig, ScopedMcpServerConfig } from '../../services/mcp/types';
-import { plural } from '../../utils/stringUtils'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
-import { SelectMulti } from './CustomSelect/SelectMulti';
-import { Byline } from './design-system/Byline';
-import { Dialog } from './design-system/Dialog';
-import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
+import { addMcpConfig, getAllMcpConfigs } from '../../services/mcp/config.js';
+import type { ConfigScope, McpServerConfig, ScopedMcpServerConfig } from '../../services/mcp/types.js';
+import { plural } from '../../utils/stringUtils.js';
+import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
+import { SelectMulti } from './CustomSelect/SelectMulti.js';
+import { Byline } from './design-system/Byline.js';
+import { Dialog } from './design-system/Dialog.js';
+import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 type Props = {
   servers: Record<string, McpServerConfig>;
   scope: ConfigScope;
   onDone(): void;
 };
-export function MCPServerDesktopImportDialog(t0) {
+export function MCPServerDesktopImportDialog(t0: Props) {
   const $ = _c(36);
   const {
     servers,
     scope,
     onDone
   } = t0;
-  let t1;
+  let t1: string[];
   if ($[0] !== servers) {
     t1 = Object.keys(servers);
     $[0] = servers;
@@ -34,19 +32,19 @@ export function MCPServerDesktopImportDialog(t0) {
     t1 = $[1];
   }
   const serverNames = t1;
-  let t2;
+  let t2: Record<string, ScopedMcpServerConfig>;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
     t2 = {};
     $[2] = t2;
   } else {
     t2 = $[2];
   }
-  const [existingServers, setExistingServers] = useState(t2);
-  let t3;
-  let t4;
+  const [existingServers, setExistingServers] = useState<Record<string, ScopedMcpServerConfig>>(t2);
+  let t3: () => void;
+  let t4: [];
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = () => {
-      getAllMcpConfigs().then(t5 => {
+      getAllMcpConfigs().then((t5) => {
         const {
           servers: servers_0
         } = t5;
@@ -61,9 +59,9 @@ export function MCPServerDesktopImportDialog(t0) {
     t4 = $[4];
   }
   useEffect(t3, t4);
-  let t5;
+  let t5: string[];
   if ($[5] !== existingServers || $[6] !== serverNames) {
-    t5 = serverNames.filter(name => existingServers[name] !== undefined);
+    t5 = serverNames.filter((name: string) => existingServers[name] !== undefined);
     $[5] = existingServers;
     $[6] = serverNames;
     $[7] = t5;
@@ -71,7 +69,7 @@ export function MCPServerDesktopImportDialog(t0) {
     t5 = $[7];
   }
   const collisions = t5;
-  const onSubmit = async function onSubmit(selectedServers) {
+  const onSubmit = async function onSubmit(selectedServers: string[]) {
     let importedCount = 0;
     for (const serverName of selectedServers) {
       const serverConfig = servers[serverName];
@@ -93,7 +91,7 @@ export function MCPServerDesktopImportDialog(t0) {
   const [theme] = useTheme();
   let t6;
   if ($[8] !== onDone || $[9] !== scope || $[10] !== theme) {
-    t6 = importedCount_0 => {
+    t6 = (importedCount_0: number) => {
       if (importedCount_0 > 0) {
         writeToStdout(`\n${color("success", theme)(`Successfully imported ${importedCount_0} MCP ${plural(importedCount_0, "server")} to ${scope} config.`)}\n`);
       } else {
@@ -150,11 +148,11 @@ export function MCPServerDesktopImportDialog(t0) {
   let t13;
   let t14;
   if ($[19] !== collisions || $[20] !== serverNames) {
-    t13 = serverNames.map(server => ({
+    t13 = serverNames.map((server: string) => ({
       label: `${server}${collisions.includes(server) ? " (already exists)" : ""}`,
       value: server
     }));
-    t14 = serverNames.filter(name_0 => !collisions.includes(name_0));
+    t14 = serverNames.filter((name_0: string) => !collisions.includes(name_0));
     $[19] = collisions;
     $[20] = serverNames;
     $[21] = t13;

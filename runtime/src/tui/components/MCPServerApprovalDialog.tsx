@@ -1,17 +1,14 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React from 'react';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
-import { getSettings_DEPRECATED, updateSettingsForSource } from '../../utils/settings/settings'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Select } from './CustomSelect/select';
-import { Dialog } from './design-system/Dialog';
-import { MCPServerDialogCopy } from './MCPServerDialogCopy';
+import { getInitialSettings, updateSettingsForSource } from '../../utils/settings/settings.js';
+import { Select } from './CustomSelect/select.js';
+import { Dialog } from './design-system/Dialog.js';
+import { MCPServerDialogCopy } from './MCPServerDialogCopy.js';
 type Props = {
   serverName: string;
   onDone(): void;
 };
-export function MCPServerApprovalDialog(t0) {
+export function MCPServerApprovalDialog(t0: Props) {
   const $ = _c(13);
   const {
     serverName,
@@ -19,15 +16,15 @@ export function MCPServerApprovalDialog(t0) {
   } = t0;
   let t1;
   if ($[0] !== onDone || $[1] !== serverName) {
-    t1 = function onChange(value) {
-      logEvent("tengu_mcp_dialog_choice", {
+    t1 = function onChange(value: 'yes_all' | 'yes' | 'no') {
+      logEvent("agenc_mcp_dialog_choice", {
         choice: value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       bb2: switch (value) {
         case "yes":
         case "yes_all":
           {
-            const currentSettings_0 = getSettings_DEPRECATED() || {};
+            const currentSettings_0 = getInitialSettings() || {};
             const enabledServers = currentSettings_0.enabledMcpjsonServers || [];
             if (!enabledServers.includes(serverName)) {
               updateSettingsForSource("localSettings", {
@@ -44,7 +41,7 @@ export function MCPServerApprovalDialog(t0) {
           }
         case "no":
           {
-            const currentSettings = getSettings_DEPRECATED() || {};
+            const currentSettings = getInitialSettings() || {};
             const disabledServers = currentSettings.disabledMcpjsonServers || [];
             if (!disabledServers.includes(serverName)) {
               updateSettingsForSource("localSettings", {

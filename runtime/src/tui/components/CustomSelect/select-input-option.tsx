@@ -1,19 +1,19 @@
 import { c as _c } from "react-compiler-runtime";
-import React, { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- UP arrow exit not in Attachments bindings
-import { Box, Text, useInput } from '../../ink.js';
+import { Box, Text, type Key, useInput } from '../../ink.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { PastedContent } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getImageFromClipboard } from '../../../utils/imagePaste.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ImageDimensions } from '../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ClickableImageRef } from '../ClickableImageRef';
-import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint';
-import { Byline } from '../design-system/Byline';
-import TextInput from '../TextInput';
-import type { OptionWithDescription } from './select';
-import { SelectOption } from './select-option';
+import { ClickableImageRef } from '../ClickableImageRef.js';
+import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { Byline } from '../design-system/Byline.js';
+import TextInput from '../TextInput.js';
+import type { OptionWithDescription } from './select.js';
+import { SelectOption } from './select-option.js';
 type Props<T> = {
   option: Extract<OptionWithDescription<T>, {
     type: 'input';
@@ -84,7 +84,7 @@ export function computeSelectInputColumns(columns: number, maxIndexWidth: number
   const labelReserve = showLabel && typeof label === 'string' ? stringWidth(label) + stringWidth(separator) : 0;
   return Math.max(1, safeColumns - indexReserve - labelReserve - 2);
 }
-export function SelectInputOption(t0) {
+export function SelectInputOption<T>(t0: Props<T>) {
   const $ = _c(101);
   const {
     option,
@@ -325,7 +325,7 @@ export function SelectInputOption(t0) {
   useKeybindings(t20, t22);
   let t23;
   if ($[45] !== onImagesSelectedChange) {
-    t23 = (_input, key) => {
+    t23 = (_input: string, key: Key) => {
       if (key.upArrow) {
         onImagesSelectedChange?.(false);
       }
@@ -388,11 +388,11 @@ export function SelectInputOption(t0) {
   }
   let t32;
   if ($[59] !== cursorOffset || $[60] !== imagesSelected || $[61] !== inputColumns || $[62] !== inputValue || $[63] !== isFocused || $[64] !== onExit || $[65] !== onImagePaste || $[66] !== onInputChange || $[67] !== onSubmit || $[68] !== option || $[69] !== showLabel) {
-    t32 = showLabel ? <><Text color={isFocused ? "suggestion" : undefined}>{option.label}</Text>{isFocused ? <><Text color="suggestion">{option.labelValueSeparator ?? ", "}</Text><TextInput value={inputValue} onChange={value => {
+    t32 = showLabel ? <><Text color={isFocused ? "suggestion" : undefined}>{option.label}</Text>{isFocused ? <><Text color="suggestion">{option.labelValueSeparator ?? ", "}</Text><TextInput value={inputValue} onChange={(value: string) => {
           isUserEditing.current = true;
           onInputChange(value);
           option.onChange(value);
-        }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={inputColumns} onImagePaste={onImagePaste} onPaste={pastedText => {
+        }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={inputColumns} onImagePaste={onImagePaste} onPaste={(pastedText: string) => {
           isUserEditing.current = true;
           const before = inputValue.slice(0, cursorOffset);
           const after = inputValue.slice(cursorOffset);
@@ -400,11 +400,11 @@ export function SelectInputOption(t0) {
           onInputChange(newValue);
           option.onChange(newValue);
           setCursorOffset(before.length + pastedText.length);
-        }} /></> : inputValue && <Text>{option.labelValueSeparator ?? ", "}{inputValue}</Text>}</> : isFocused ? <TextInput value={inputValue} onChange={value_0 => {
+        }} /></> : inputValue && <Text>{option.labelValueSeparator ?? ", "}{inputValue}</Text>}</> : isFocused ? <TextInput value={inputValue} onChange={(value_0: string) => {
       isUserEditing.current = true;
       onInputChange(value_0);
       option.onChange(value_0);
-    }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder || (typeof option.label === "string" ? option.label : undefined)} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={inputColumns} onImagePaste={onImagePaste} onPaste={pastedText_0 => {
+    }} onSubmit={onSubmit} onExit={onExit} placeholder={option.placeholder || (typeof option.label === "string" ? option.label : undefined)} focus={!imagesSelected} showCursor={true} multiline={true} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={inputColumns} onImagePaste={onImagePaste} onPaste={(pastedText_0: string) => {
       isUserEditing.current = true;
       const before_0 = inputValue.slice(0, cursorOffset);
       const after_0 = inputValue.slice(cursorOffset);
@@ -465,7 +465,7 @@ export function SelectInputOption(t0) {
   }
   let t36;
   if ($[88] !== descriptionPaddingLeft || $[89] !== imageAttachments || $[90] !== imagesSelected || $[91] !== isFocused || $[92] !== selectedImageIndex) {
-    t36 = imageAttachments.length > 0 && <Box flexDirection="row" gap={1} paddingLeft={descriptionPaddingLeft}>{imageAttachments.map((img_0, idx) => <ClickableImageRef key={img_0.id} imageId={img_0.id} isSelected={!!imagesSelected && idx === selectedImageIndex} />)}<Box flexGrow={1} justifyContent="flex-start" flexDirection="row"><Text dimColor={true}>{imagesSelected ? <Byline>{imageAttachments.length > 1 && <><ConfigurableShortcutHint action="attachments:next" context="Attachments" fallback={"right"} description="next" /><ConfigurableShortcutHint action="attachments:previous" context="Attachments" fallback={"left"} description="prev" /></>}<ConfigurableShortcutHint action="attachments:remove" context="Attachments" fallback="backspace" description="remove" /><ConfigurableShortcutHint action="attachments:exit" context="Attachments" fallback="esc" description="cancel" /></Byline> : isFocused ? "(down to select)" : null}</Text></Box></Box>;
+    t36 = imageAttachments.length > 0 && <Box flexDirection="row" gap={1} paddingLeft={descriptionPaddingLeft}>{imageAttachments.map((img_0: PastedContent, idx: number) => <ClickableImageRef key={img_0.id} imageId={img_0.id} isSelected={!!imagesSelected && idx === selectedImageIndex} />)}<Box flexGrow={1} justifyContent="flex-start" flexDirection="row"><Text dimColor={true}>{imagesSelected ? <Byline>{imageAttachments.length > 1 && <><ConfigurableShortcutHint action="attachments:next" context="Attachments" fallback={"right"} description="next" /><ConfigurableShortcutHint action="attachments:previous" context="Attachments" fallback={"left"} description="prev" /></>}<ConfigurableShortcutHint action="attachments:remove" context="Attachments" fallback="backspace" description="remove" /><ConfigurableShortcutHint action="attachments:exit" context="Attachments" fallback="esc" description="cancel" /></Byline> : isFocused ? "(down to select)" : null}</Text></Box></Box>;
     $[88] = descriptionPaddingLeft;
     $[89] = imageAttachments;
     $[90] = imagesSelected;
@@ -496,6 +496,6 @@ export function SelectInputOption(t0) {
   }
   return t38;
 }
-function _temp(c) {
+function _temp(c: PastedContent) {
   return c.type === "image";
 }

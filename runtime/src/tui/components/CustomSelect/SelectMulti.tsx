@@ -1,13 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
-import React from 'react';
 import { Box, Text } from '../../ink.js';
 import type { PastedContent } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ImageDimensions } from '../../../utils/imageResizer.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { OptionWithDescription } from './select';
-import { SelectInputOption } from './select-input-option';
-import { SelectOption } from './select-option';
-import { useMultiSelectState } from './use-multi-select-state';
+import type { OptionWithDescription } from './select.js';
+import { SelectInputOption } from './select-input-option.js';
+import { SelectOption } from './select-option.js';
+import { useMultiSelectState } from './use-multi-select-state.js';
 export type SelectMultiProps<T> = {
   readonly isDisabled?: boolean;
   readonly visibleOptionCount?: number;
@@ -55,7 +54,7 @@ export type SelectMultiProps<T> = {
   readonly pastedContents?: Record<number, PastedContent>;
   readonly onRemoveImage?: (id: number) => void;
 };
-export function SelectMulti(t0) {
+export function SelectMulti<T>(t0: SelectMultiProps<T>) {
   const $ = _c(44);
   const {
     isDisabled: t1,
@@ -79,7 +78,7 @@ export function SelectMulti(t0) {
   } = t0;
   const isDisabled = t1 === undefined ? false : t1;
   const visibleOptionCount = t2 === undefined ? 5 : t2;
-  let t5;
+  let t5: T[];
   if ($[0] !== t3) {
     t5 = t3 === undefined ? [] : t3;
     $[0] = t3;
@@ -137,7 +136,7 @@ export function SelectMulti(t0) {
     t9 = "column";
     T0 = Box;
     t7 = "column";
-    t8 = state.visibleOptions.map((option, index) => {
+    t8 = state.visibleOptions.map((option, index: number) => {
       const isOptionFocused = !isDisabled && state.focusedValue === option.value && !state.isSubmitFocused;
       const isSelected = state.selectedValues.includes(option.value);
       const isFirstVisibleOption = option.index === state.visibleFromIndex;
@@ -147,7 +146,7 @@ export function SelectMulti(t0) {
       const i = state.visibleFromIndex + index + 1;
       if (option.type === "input") {
         const inputValue = state.inputValues.get(option.value) || "";
-        return <Box key={String(option.value)} gap={1}><SelectInputOption option={option} isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} inputValue={inputValue} onInputChange={value => {
+        return <Box key={String(option.value)} gap={1}><SelectInputOption option={option} isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} inputValue={inputValue} onInputChange={(value: string) => {
             state.updateInputValue(option.value, value);
           }} onSubmit={_temp} onExit={() => {
             onCancel();

@@ -16,6 +16,7 @@ import { c as _c } from "react-compiler-runtime";
 import { useContext, useEffect, useLayoutEffect } from 'react';
 import instances from '../ink/instances.js';
 import { AppStoreContext, useAppState } from '../state/AppState.js';
+import type { AppState } from '../state/AppStateStore.js';
 
 // Non-modal overlays that shouldn't disable TextInput focus
 const NON_MODAL_OVERLAYS = new Set(['autocomplete']);
@@ -35,7 +36,7 @@ const NON_MODAL_OVERLAYS = new Set(['autocomplete']);
  *   // ...
  * }
  */
-export function useRegisterOverlay(id, t0) {
+export function useRegisterOverlay(id: string, t0?: boolean) {
   const $ = _c(8);
   const enabled = t0 === undefined ? true : t0;
   const store = useContext(AppStoreContext);
@@ -134,13 +135,13 @@ export function useIsOverlayActive() {
  * // Use for TextInput focus - allows typing during autocomplete
  * focus: !isSearchingHistory && !isModalOverlayActive
  */
-function _temp2(s) {
+function _temp2(s: AppState) {
   return s.activeOverlays.size > 0;
 }
 export function useIsModalOverlayActive() {
   return useAppState(_temp3);
 }
-function _temp3(s) {
+function _temp3(s: AppState) {
   for (const id of s.activeOverlays) {
     if (!NON_MODAL_OVERLAYS.has(id)) {
       return true;

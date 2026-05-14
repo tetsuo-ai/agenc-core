@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { useRegisterOverlay } from '../../context/overlayContext'
+import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { InputEvent } from '../../ink/events/input-event.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw space/arrow multiselect input
 import { useInput } from '../../ink.js'
@@ -7,9 +7,9 @@ import {
   normalizeFullWidthDigits,
   normalizeFullWidthSpace,
 } from '../../../utils/stringUtils.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { OptionWithDescription } from './select'
-import { optionsNavigateEqual } from './use-select-navigation'
-import { useSelectNavigation } from './use-select-navigation'
+import type { OptionWithDescription } from './select.js'
+import { optionsNavigateEqual } from './use-select-navigation.js'
+import { useSelectNavigation } from './use-select-navigation.js'
 
 export type UseMultiSelectStateProps<T> = {
   /**

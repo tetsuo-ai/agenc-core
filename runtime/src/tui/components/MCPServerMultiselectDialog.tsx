@@ -1,22 +1,19 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import partition from 'lodash-es/partition.js';
-import React, { useCallback } from 'react';
 import { logEvent } from '../../services/analytics/index.js';
 import { Box, Text } from '../ink.js';
-import { getInitialSettings, updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
-import { SelectMulti } from './CustomSelect/SelectMulti';
-import { Byline } from './design-system/Byline';
-import { Dialog } from './design-system/Dialog';
-import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
-import { MCPServerDialogCopy } from './MCPServerDialogCopy';
+import { getInitialSettings, updateSettingsForSource } from '../../utils/settings/settings.js';
+import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
+import { SelectMulti } from './CustomSelect/SelectMulti.js';
+import { Byline } from './design-system/Byline.js';
+import { Dialog } from './design-system/Dialog.js';
+import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
+import { MCPServerDialogCopy } from './MCPServerDialogCopy.js';
 type Props = {
   serverNames: string[];
   onDone(): void;
 };
-export function MCPServerMultiselectDialog(t0) {
+export function MCPServerMultiselectDialog(t0: Props) {
   const $ = _c(21);
   const {
     serverNames,
@@ -24,7 +21,7 @@ export function MCPServerMultiselectDialog(t0) {
   } = t0;
   let t1;
   if ($[0] !== onDone || $[1] !== serverNames) {
-    t1 = function onSubmit(selectedServers) {
+    t1 = function onSubmit(selectedServers: string[]) {
       const currentSettings = getInitialSettings() || {};
       const enabledServers = currentSettings.enabledMcpjsonServers || [];
       const disabledServers = currentSettings.disabledMcpjsonServers || [];
@@ -126,7 +123,7 @@ export function MCPServerMultiselectDialog(t0) {
   }
   return t9;
 }
-function _temp(server_0) {
+function _temp(server_0: string) {
   return {
     label: server_0,
     value: server_0

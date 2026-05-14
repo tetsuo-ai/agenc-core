@@ -1,6 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
-import React, { type ReactNode } from 'react';
-import { ListItem } from '../design-system/ListItem';
+import { type ReactNode } from 'react';
+import { ListItem } from '../design-system/ListItem.js';
 export type SelectOptionProps = {
   /**
    * Determines if option is focused.
@@ -38,7 +38,7 @@ export type SelectOptionProps = {
    */
   readonly declareCursor?: boolean;
 };
-export function SelectOption(t0) {
+export function SelectOption(t0: SelectOptionProps) {
   const $ = _c(8);
   const {
     isFocused,
