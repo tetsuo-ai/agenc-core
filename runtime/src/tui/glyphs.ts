@@ -11,6 +11,7 @@ export interface AgenCTuiGlyphs {
   readonly mcpResource: string;
   readonly pointer: string;
   readonly promptBypass: string;
+  readonly responseGutter: string;
   readonly separator: string;
   readonly statusDot: string;
   readonly titleAnimationFrames: readonly string[];
@@ -26,6 +27,7 @@ const ASCII_GLYPHS: AgenCTuiGlyphs = {
   mcpResource: "*",
   pointer: ">",
   promptBypass: ">",
+  responseGutter: "|_",
   separator: "-",
   statusDot: "*",
   titleAnimationFrames: ["*", "+"],
@@ -41,6 +43,7 @@ const UNICODE_GLYPHS: AgenCTuiGlyphs = {
   mcpResource: "◇",
   pointer: figures.pointer,
   promptBypass: "▶",
+  responseGutter: "⎿",
   separator: "·",
   statusDot: "●",
   titleAnimationFrames: ["⠂", "⠐"],

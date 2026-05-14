@@ -11,6 +11,7 @@ describe("AgenC TUI glyph selection", () => {
     expect(selectAgenCTuiGlyphs({}).arrowDown).not.toBe("v");
     expect(selectAgenCTuiGlyphs({}).pointer).not.toBe(">");
     expect(selectAgenCTuiGlyphs({}).horizontal).toBe("─");
+    expect(selectAgenCTuiGlyphs({}).responseGutter).toBe("⎿");
     expect(selectAgenCTuiGlyphs({}).titleStaticPrefix).toBe("✳");
   });
 
@@ -27,6 +28,7 @@ describe("AgenC TUI glyph selection", () => {
       mcpResource: "*",
       pointer: ">",
       promptBypass: ">",
+      responseGutter: "|_",
       separator: "-",
       statusDot: "*",
       titleAnimationFrames: ["*", "+"],

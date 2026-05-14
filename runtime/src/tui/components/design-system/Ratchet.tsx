@@ -1,19 +1,14 @@
 import { c as _c } from "react-compiler-runtime";
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import React, { useLayoutEffect, useRef, useState } from 'react';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTerminalViewport } from '../../ink/hooks/use-terminal-viewport.js';
 import { Box, type DOMElement, measureElement } from '../../ink.js';
 type Props = {
   children: React.ReactNode;
   lock?: 'always' | 'offscreen';
 };
-export function Ratchet(t0) {
+export function Ratchet({ children, lock = "always" }: Props) {
   const $ = _c(10);
-  const {
-    children,
-    lock: t1
-  } = t0;
-  const lock = t1 === undefined ? "always" : t1;
   const [viewportRef, t2] = useTerminalViewport();
   const {
     isVisible
@@ -21,12 +16,12 @@ export function Ratchet(t0) {
   const {
     rows
   } = useTerminalSize();
-  const innerRef = useRef(null);
+  const innerRef = useRef<DOMElement | null>(null);
   const maxHeight = useRef(0);
   const [minHeight, setMinHeight] = useState(0);
   let t3;
   if ($[0] !== viewportRef) {
-    t3 = el => {
+    t3 = (el: DOMElement | null) => {
       viewportRef(el);
     };
     $[0] = viewportRef;
