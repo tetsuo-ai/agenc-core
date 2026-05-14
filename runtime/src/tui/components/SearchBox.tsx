@@ -1,7 +1,6 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
+import { resolveAgenCTuiGlyphMode, selectAgenCTuiGlyphs } from '../glyphs.js';
 import { Box, Text } from '../ink.js';
 type Props = {
   query: string;
@@ -13,7 +12,17 @@ type Props = {
   cursorOffset?: number;
   borderless?: boolean;
 };
-export function SearchBox(t0) {
+export function getSearchBoxDefaults(env = process.env): {
+  placeholder: string;
+  prefix: string;
+} {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return {
+    placeholder: `Search${glyphs.ellipsis}`,
+    prefix: resolveAgenCTuiGlyphMode(env) === 'ascii' ? '/' : '\u2315',
+  };
+}
+export function SearchBox(t0: Props): React.ReactNode {
   const $ = _c(17);
   const {
     query,
@@ -25,8 +34,9 @@ export function SearchBox(t0) {
     cursorOffset,
     borderless: t3
   } = t0;
-  const placeholder = t1 === undefined ? "Search\u2026" : t1;
-  const prefix = t2 === undefined ? "\u2315" : t2;
+  const searchBoxDefaults = getSearchBoxDefaults();
+  const placeholder = t1 === undefined ? searchBoxDefaults.placeholder : t1;
+  const prefix = t2 === undefined ? searchBoxDefaults.prefix : t2;
   const borderless = t3 === undefined ? false : t3;
   const offset = cursorOffset ?? query.length;
   const t4 = borderless ? undefined : "round";

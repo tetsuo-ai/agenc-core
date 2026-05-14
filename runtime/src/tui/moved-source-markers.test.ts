@@ -9,6 +9,7 @@ const files = [
   "runtime/src/tui/context/promptOverlayContext.tsx",
   "runtime/src/tui/context/modalContext.tsx",
   "runtime/src/tui/components/ScrollKeybindingHandler.tsx",
+  "runtime/src/tui/components/SearchBox.tsx",
   "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx",
   "runtime/src/tui/components/AutoModeOptInDialog.tsx",
   "runtime/src/tui/components/AutoUpdaterWrapper.tsx",
