@@ -19,6 +19,9 @@ export function getHookProgressRunningLabel(
   const ellipsis = selectAgenCTuiGlyphs(env).ellipsis;
   return inProgressHookCount === 1 ? ` hook${ellipsis}` : ` hooks${ellipsis}`;
 }
+export function getHookProgressTranscriptRunningLabel(inProgressHookCount: number): string {
+  return inProgressHookCount === 1 ? ' hook running' : ' hooks running';
+}
 export function HookProgressMessage(t0) {
   const $ = _c(22);
   const {
@@ -60,10 +63,10 @@ export function HookProgressMessage(t0) {
       } else {
         t3 = $[7];
       }
-      const t4 = inProgressHookCount === 1 ? " hook" : " hooks";
+      const t4 = getHookProgressTranscriptRunningLabel(inProgressHookCount);
       let t5;
       if ($[8] !== t4) {
-        t5 = <Text dimColor={true}>{t4} ran</Text>;
+        t5 = <Text dimColor={true}>{t4}</Text>;
         $[8] = t4;
         $[9] = t5;
       } else {
@@ -110,7 +113,7 @@ export function HookProgressMessage(t0) {
   } else {
     t3 = $[16];
   }
-  const t4 = inProgressHookCount === 1 ? " hook\u2026" : " hooks\u2026";
+  const t4 = getHookProgressRunningLabel(inProgressHookCount);
   let t5;
   if ($[17] !== t4) {
     t5 = <Text dimColor={true}>{t4}</Text>;

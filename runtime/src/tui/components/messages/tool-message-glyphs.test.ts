@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { getCollapseReadSearchEllipsis, getSearchReadSummaryText } from '../../../utils/collapseReadSearch.js';
 import { getAssistantToolUsePendingText } from './AssistantToolUseMessage.js';
-import { getHookProgressRunningLabel } from './HookProgressMessage.js';
+import {
+  getHookProgressRunningLabel,
+  getHookProgressTranscriptRunningLabel,
+} from './HookProgressMessage.js';
 
 describe('tool message glyph fallbacks', () => {
   it('uses ascii ellipses for assistant tool pending labels when requested', () => {
@@ -18,6 +21,11 @@ describe('tool message glyph fallbacks', () => {
 
     expect(getHookProgressRunningLabel(1, env)).toBe(' hook...');
     expect(getHookProgressRunningLabel(2, env)).toBe(' hooks...');
+  });
+
+  it('uses running wording for transcript hook progress labels', () => {
+    expect(getHookProgressTranscriptRunningLabel(1)).toBe(' hook running');
+    expect(getHookProgressTranscriptRunningLabel(2)).toBe(' hooks running');
   });
 
   it('uses ascii ellipses for collapsed active summaries when requested', () => {
