@@ -6,6 +6,7 @@ import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppState, useSetAppState } from '../../../state/AppState.js';
+import { selectAgenCTuiGlyphs } from '../../../glyphs.js';
 import { applyPermissionUpdate, persistPermissionUpdate } from '../../../../utils/permissions/PermissionUpdate.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { PermissionUpdateDestination } from '../../../../utils/permissions/PermissionUpdateSchema.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { CommandResultDisplay } from '../../../../commands.js';
@@ -49,6 +50,46 @@ export function getPermissionRuleSearchSeed(key: string, modifiers: {
     return key;
   }
   return null;
+}
+
+export function getPermissionRuleListAddLabel(env: {
+  readonly AGENC_TUI_GLYPHS?: string;
+} = process.env): string {
+  return `Add a new rule${selectAgenCTuiGlyphs(env).ellipsis}`;
+}
+
+export function getPermissionRuleListFooterText({
+  defaultTab,
+  exitKeyName,
+  exitPending,
+  hasDenials,
+  headerFocused,
+  isSearchMode,
+}: {
+  defaultTab: TabType;
+  exitKeyName: string;
+  exitPending: boolean;
+  hasDenials: boolean;
+  headerFocused: boolean;
+  isSearchMode: boolean;
+}, env: { readonly AGENC_TUI_GLYPHS?: string } = process.env): string {
+  if (exitPending) {
+    return `Press ${exitKeyName} again to exit`;
+  }
+  const glyphs = selectAgenCTuiGlyphs(env);
+  const separator = ` ${glyphs.separator} `;
+  const horizontalNav = `${glyphs.arrowLeft}/${glyphs.arrowRight}`;
+  const verticalNav = `${glyphs.arrowUp}/${glyphs.arrowDown}`;
+  if (headerFocused) {
+    return `${horizontalNav} tab switch${separator}${glyphs.arrowDown} return${separator}Esc cancel`;
+  }
+  if (isSearchMode) {
+    return `Type to filter${separator}Enter/${glyphs.arrowDown} select${separator}${glyphs.arrowUp} tabs${separator}Esc clear`;
+  }
+  if (hasDenials && defaultTab === "recent") {
+    return `Enter approve${separator}r retry${separator}${verticalNav} navigate${separator}${horizontalNav} switch${separator}Esc cancel`;
+  }
+  return `${verticalNav} navigate${separator}Enter select${separator}Type to search${separator}${horizontalNav} switch${separator}Esc cancel`;
 }
 
 type RuleSourceTextProps = {
@@ -621,7 +662,7 @@ export function PermissionRuleList(t0) {
       const options = [];
       if (tab !== "workspace" && tab !== "recent" && !query) {
         options.push({
-          label: `Add a new rule${figures.ellipsis}`,
+          label: getPermissionRuleListAddLabel(),
           value: "add-new-rule"
         });
       }
@@ -1140,16 +1181,24 @@ export function PermissionRuleList(t0) {
     t30 = $[100];
   }
   let t31;
-  if ($[101] !== defaultTab || $[102] !== exitState.keyName || $[103] !== exitState.pending || $[104] !== headerFocused || $[105] !== isSearchMode) {
-    t31 = <Box marginTop={1} paddingLeft={1}><Text dimColor={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : headerFocused ? <>←/→ tab switch · ↓ return · Esc cancel</> : isSearchMode ? <>Type to filter · Enter/↓ select · ↑ tabs · Esc clear</> : hasDenials && defaultTab === "recent" ? <>Enter approve · r retry · ↑↓ navigate · ←/→ switch · Esc cancel</> : <>↑↓ navigate · Enter select · Type to search · ←/→ switch · Esc cancel</>}</Text></Box>;
+  if ($[101] !== defaultTab || $[102] !== exitState.keyName || $[103] !== exitState.pending || $[104] !== hasDenials || $[105] !== headerFocused || $[106] !== isSearchMode) {
+    t31 = <Box marginTop={1} paddingLeft={1}><Text dimColor={true}>{getPermissionRuleListFooterText({
+      defaultTab,
+      exitKeyName: exitState.keyName,
+      exitPending: exitState.pending,
+      hasDenials,
+      headerFocused,
+      isSearchMode
+    })}</Text></Box>;
     $[101] = defaultTab;
     $[102] = exitState.keyName;
     $[103] = exitState.pending;
-    $[104] = headerFocused;
-    $[105] = isSearchMode;
-    $[106] = t31;
+    $[104] = hasDenials;
+    $[105] = headerFocused;
+    $[106] = isSearchMode;
+    $[107] = t31;
   } else {
-    t31 = $[106];
+    t31 = $[107];
   }
   let t32;
   if ($[107] !== t30 || $[108] !== t31) {
