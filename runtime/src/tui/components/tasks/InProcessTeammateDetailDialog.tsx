@@ -1,21 +1,27 @@
 import { c as _c } from "react-compiler-runtime";
-import React, { useMemo } from 'react';
+import React from 'react';
 import type { DeepImmutable } from '../../../types/utils.js';
 import { useElapsedTime } from '../../hooks/useElapsedTime';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types';
 import { isStoppableTaskStatus } from '../../../tasks/types';
 import { getTools } from '../../../tools';
-import { formatNumber, truncateToWidth } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
+import { formatNumber } from '../../../utils/format'; // upstream-import: keep target is owned by another Z-PURGE item
 import { toInkColor } from '../../../utils/ink'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
 import { renderToolActivity } from './renderToolActivity';
 import { describeTeammateActivity, getTaskStatusColor } from './taskStatusUtils';
+import {
+  getInProcessTeammateDetailContentColumns,
+  getInProcessTeammatePromptPreview,
+} from './InProcessTeammateDetailDialog.layout.js';
 type Props = {
   teammate: DeepImmutable<InProcessTeammateTaskState>;
   onDone: () => void;
@@ -24,7 +30,7 @@ type Props = {
   onForeground?: () => void;
 };
 export function InProcessTeammateDetailDialog(t0) {
-  const $ = _c(63);
+  const $ = _c(67);
   const {
     teammate,
     onDone,
@@ -33,6 +39,11 @@ export function InProcessTeammateDetailDialog(t0) {
     onForeground
   } = t0;
   const [theme] = useTheme();
+  const glyphs = selectAgenCTuiGlyphs();
+  const {
+    columns
+  } = useTerminalSize();
+  const contentColumns = getInProcessTeammateDetailContentColumns(columns);
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = getTools(getEmptyToolPermissionContext());
@@ -77,7 +88,7 @@ export function InProcessTeammateDetailDialog(t0) {
             e.preventDefault();
             onKill();
           } else {
-            if (e.key === "f" && teammate.status === "running" && onForeground) {
+            if (e.key === "f" && isStoppableTaskStatus(teammate.status) && onForeground) {
               e.preventDefault();
               onForeground();
             }
@@ -106,15 +117,7 @@ export function InProcessTeammateDetailDialog(t0) {
   const activity = t5;
   const tokenCount = teammate.result?.totalTokens ?? teammate.progress?.tokenCount;
   const toolUseCount = teammate.result?.totalToolUseCount ?? teammate.progress?.toolUseCount;
-  let t6;
-  if ($[12] !== teammate.prompt) {
-    t6 = truncateToWidth(teammate.prompt, 300);
-    $[12] = teammate.prompt;
-    $[13] = t6;
-  } else {
-    t6 = $[13];
-  }
-  const displayPrompt = t6;
+  const displayPrompt = getInProcessTeammatePromptPreview(teammate.prompt, columns, glyphs.ellipsis);
   let t7;
   if ($[14] !== teammate.identity.color) {
     t7 = toInkColor(teammate.identity.color);
@@ -152,7 +155,7 @@ export function InProcessTeammateDetailDialog(t0) {
   const title = t10;
   let t11;
   if ($[24] !== teammate.status) {
-    t11 = teammate.status !== "running" && <Text color={getTaskStatusColor(teammate.status)}>{teammate.status === "pending" ? "Pending" : teammate.status === "completed" ? "Completed" : teammate.status === "failed" ? "Failed" : "Stopped"}{" \xB7 "}</Text>;
+    t11 = teammate.status !== "running" && <Text color={getTaskStatusColor(teammate.status)}>{teammate.status === "pending" ? "Pending" : teammate.status === "completed" ? "Completed" : teammate.status === "failed" ? "Failed" : "Stopped"} {glyphs.separator} </Text>;
     $[24] = teammate.status;
     $[25] = t11;
   } else {
@@ -160,7 +163,7 @@ export function InProcessTeammateDetailDialog(t0) {
   }
   let t12;
   if ($[26] !== tokenCount) {
-    t12 = tokenCount !== undefined && tokenCount > 0 && <> · {formatNumber(tokenCount)} tokens</>;
+    t12 = tokenCount !== undefined && tokenCount > 0 && <> {glyphs.separator} {formatNumber(tokenCount)} tokens</>;
     $[26] = tokenCount;
     $[27] = t12;
   } else {
@@ -168,7 +171,7 @@ export function InProcessTeammateDetailDialog(t0) {
   }
   let t13;
   if ($[28] !== toolUseCount) {
-    t13 = toolUseCount !== undefined && toolUseCount > 0 && <>{" "}· {toolUseCount} {toolUseCount === 1 ? "tool" : "tools"}</>;
+    t13 = toolUseCount !== undefined && toolUseCount > 0 && <> {glyphs.separator} {toolUseCount} {toolUseCount === 1 ? "tool" : "tools"}</>;
     $[28] = toolUseCount;
     $[29] = t13;
   } else {
@@ -196,7 +199,7 @@ export function InProcessTeammateDetailDialog(t0) {
   const subtitle = t15;
   let t16;
   if ($[37] !== onBack || $[38] !== onForeground || $[39] !== onKill || $[40] !== teammate.status) {
-    t16 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut={"\u2190"} action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(teammate.status) && onKill && <KeyboardShortcutHint shortcut="x" action="stop" />}{teammate.status === "running" && onForeground && <KeyboardShortcutHint shortcut="f" action="foreground" />}</Byline>;
+    t16 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : <Byline>{onBack && <KeyboardShortcutHint shortcut="Left" action="go back" />}<KeyboardShortcutHint shortcut="Esc/Enter/Space" action="close" />{isStoppableTaskStatus(teammate.status) && onKill && <KeyboardShortcutHint shortcut="x" action="stop" />}{isStoppableTaskStatus(teammate.status) && onForeground && <KeyboardShortcutHint shortcut="f" action="foreground" />}</Byline>;
     $[37] = onBack;
     $[38] = onForeground;
     $[39] = onKill;
@@ -206,11 +209,13 @@ export function InProcessTeammateDetailDialog(t0) {
     t16 = $[41];
   }
   let t17;
-  if ($[42] !== teammate.progress || $[43] !== teammate.status || $[44] !== theme) {
-    t17 = teammate.status === "running" && teammate.progress?.recentActivities && teammate.progress.recentActivities.length > 0 && <Box flexDirection="column"><Text bold={true} dimColor={true}>Progress</Text>{teammate.progress.recentActivities.map((activity_0, i) => <Text key={i} dimColor={i < teammate.progress.recentActivities.length - 1} wrap="truncate-end">{i === teammate.progress.recentActivities.length - 1 ? "\u203A " : "  "}{renderToolActivity(activity_0, tools, theme)}</Text>)}</Box>;
+  if ($[42] !== teammate.progress || $[43] !== teammate.status || $[44] !== theme || $[63] !== contentColumns || $[64] !== glyphs.pointer) {
+    t17 = teammate.status === "running" && teammate.progress?.recentActivities && teammate.progress.recentActivities.length > 0 && <Box flexDirection="column" width={contentColumns}><Text bold={true} dimColor={true}>Progress</Text>{teammate.progress.recentActivities.map((activity_0, i) => <Text key={i} dimColor={i < teammate.progress.recentActivities.length - 1} wrap="truncate-end">{i === teammate.progress.recentActivities.length - 1 ? `${glyphs.pointer} ` : "  "}{renderToolActivity(activity_0, tools, theme)}</Text>)}</Box>;
     $[42] = teammate.progress;
     $[43] = teammate.status;
     $[44] = theme;
+    $[63] = contentColumns;
+    $[64] = glyphs.pointer;
     $[45] = t17;
   } else {
     t17 = $[45];
@@ -223,18 +228,20 @@ export function InProcessTeammateDetailDialog(t0) {
     t18 = $[46];
   }
   let t19;
-  if ($[47] !== displayPrompt) {
-    t19 = <Box flexDirection="column" marginTop={1}>{t18}<Text wrap="wrap">{displayPrompt}</Text></Box>;
+  if ($[47] !== displayPrompt || $[65] !== contentColumns) {
+    t19 = <Box flexDirection="column" marginTop={1} width={contentColumns}>{t18}<Text wrap="wrap">{displayPrompt}</Text></Box>;
     $[47] = displayPrompt;
+    $[65] = contentColumns;
     $[48] = t19;
   } else {
     t19 = $[48];
   }
   let t20;
-  if ($[49] !== teammate.error || $[50] !== teammate.status) {
-    t20 = teammate.status === "failed" && teammate.error && <Box flexDirection="column" marginTop={1}><Text bold={true} color="error">Error</Text><Text color="error" wrap="wrap">{teammate.error}</Text></Box>;
+  if ($[49] !== teammate.error || $[50] !== teammate.status || $[66] !== contentColumns) {
+    t20 = teammate.status === "failed" && teammate.error && <Box flexDirection="column" marginTop={1} width={contentColumns}><Text bold={true} color="error">Error</Text><Text color="error" wrap="wrap">{teammate.error}</Text></Box>;
     $[49] = teammate.error;
     $[50] = teammate.status;
+    $[66] = contentColumns;
     $[51] = t20;
   } else {
     t20 = $[51];

@@ -1,14 +1,18 @@
 import React from 'react'
 import stripAnsi from 'strip-ansi'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
 import { AsyncAgentDetailDialog } from './AsyncAgentDetailDialog.js'
 import { InProcessTeammateDetailDialog } from './InProcessTeammateDetailDialog.js'
 import { ShellDetailDialog } from './ShellDetailDialog.js'
 
+const terminalSizeMock = vi.hoisted(() => ({
+  size: { columns: 80, rows: 24 },
+}))
+
 vi.mock('../../hooks/useTerminalSize.js', () => ({
-  useTerminalSize: () => ({ columns: 80, rows: 24 }),
+  useTerminalSize: () => terminalSizeMock.size,
 }))
 
 vi.mock('../../../utils/fsOperations.js', async () => {
@@ -66,6 +70,10 @@ const taskBase = {
 }
 
 describe('task detail stop affordances', () => {
+  beforeEach(() => {
+    terminalSizeMock.size = { columns: 80, rows: 24 }
+  })
+
   it('shows stop affordance for pending shell tasks', async () => {
     const output = await renderToString(
       <ShellDetailDialog
@@ -195,11 +203,79 @@ describe('task detail stop affordances', () => {
         } as never}
         onDone={() => {}}
         onKill={() => {}}
+        onForeground={() => {}}
       />,
       100,
     )
 
     expect(output).toContain('x to stop')
+    expect(output).toContain('f to foreground')
     expect(output).toContain('Pending')
+  })
+
+  it('uses ASCII-safe teammate detail glyphs and terminal-width prompt previews', async () => {
+    const previousGlyphMode = process.env.AGENC_TUI_GLYPHS
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+    terminalSizeMock.size = { columns: 42, rows: 24 }
+    const longPrompt = 'review this very long teammate prompt '.repeat(40)
+
+    try {
+      const output = stripAnsi(
+        await renderToString(
+          <InProcessTeammateDetailDialog
+            teammate={{
+              ...taskBase,
+              status: 'running',
+              id: 'team-1',
+              type: 'in_process_teammate',
+              description: 'review code',
+              prompt: longPrompt,
+              identity: {
+                agentId: 'agent-1',
+                agentName: 'reviewer',
+                teamName: 'default',
+                planModeRequired: false,
+                parentSessionId: 'session-1',
+              },
+              awaitingPlanApproval: false,
+              permissionMode: 'default',
+              pendingUserMessages: [],
+              isIdle: false,
+              shutdownRequested: false,
+              lastReportedToolCount: 0,
+              lastReportedTokenCount: 0,
+              progress: {
+                tokenCount: 1,
+                toolUseCount: 1,
+                recentActivities: [
+                  {
+                    toolName: 'VeryLongToolNameThatShouldTruncateInsideTheDialog',
+                    input: {},
+                  },
+                ],
+              },
+            } as never}
+            onDone={() => {}}
+            onBack={() => {}}
+            onKill={() => {}}
+            onForeground={() => {}}
+          />,
+          42,
+        ),
+      )
+
+      expect(output).toContain('Left to go back')
+      expect(output).toContain('> VeryLongToolName')
+      expect(output).toContain('review this very long teammate prom...')
+      expect(output).not.toContain('←')
+      expect(output).not.toContain('›')
+      expect(output).not.toContain(longPrompt)
+    } finally {
+      if (previousGlyphMode === undefined) {
+        delete process.env.AGENC_TUI_GLYPHS
+      } else {
+        process.env.AGENC_TUI_GLYPHS = previousGlyphMode
+      }
+    }
   })
 })
