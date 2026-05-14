@@ -26,6 +26,12 @@ type Props = {
   }) => void;
   onCancel?: () => void;
 };
+export function WorktreeExitLoadingState(): React.ReactNode {
+  return <Box flexDirection="row" marginY={1}>
+      <Spinner />
+      <Text>Checking worktree...</Text>
+    </Box>;
+}
 export function WorktreeExitDialog({
   onDone,
   onCancel
@@ -91,7 +97,10 @@ export function WorktreeExitDialog({
     });
     return null;
   }
-  if (status === 'loading' || status === 'done') {
+  if (status === 'loading') {
+    return <WorktreeExitLoadingState />;
+  }
+  if (status === 'done') {
     return null;
   }
   async function handleSelect(value: string) {
@@ -99,7 +108,7 @@ export function WorktreeExitDialog({
     const hasTmux = Boolean(worktreeSession.tmuxSessionName);
     if (value === 'keep' || value === 'keep-with-tmux') {
       setStatus('keeping');
-      logEvent('tengu_worktree_kept', {
+      logEvent('agenc_worktree_kept', {
         commits: commitCount,
         changed_files: changes.length
       });
@@ -116,7 +125,7 @@ export function WorktreeExitDialog({
       setStatus('done');
     } else if (value === 'keep-kill-tmux') {
       setStatus('keeping');
-      logEvent('tengu_worktree_kept', {
+      logEvent('agenc_worktree_kept', {
         commits: commitCount,
         changed_files: changes.length
       });
@@ -132,7 +141,7 @@ export function WorktreeExitDialog({
       setStatus('done');
     } else if (value === 'remove' || value === 'remove-with-tmux') {
       setStatus('removing');
-      logEvent('tengu_worktree_removed', {
+      logEvent('agenc_worktree_removed', {
         commits: commitCount,
         changed_files: changes.length
       });
@@ -169,13 +178,13 @@ export function WorktreeExitDialog({
   if (status === 'keeping') {
     return <Box flexDirection="row" marginY={1}>
         <Spinner />
-        <Text>Keeping worktree…</Text>
+        <Text>Keeping worktree...</Text>
       </Box>;
   }
   if (status === 'removing') {
     return <Box flexDirection="row" marginY={1}>
         <Spinner />
-        <Text>Removing worktree…</Text>
+        <Text>Removing worktree...</Text>
       </Box>;
   }
   const branchName = worktreeSession.worktreeBranch;
