@@ -44,7 +44,6 @@ export {
   type TaskStatus,
   type TaskType,
   type TeammateIdentity,
-  type UltraplanPhase,
 } from "./types.js";
 
 export {

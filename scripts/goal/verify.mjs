@@ -10162,7 +10162,6 @@ function assertGapTuiOrphanedCommandsResolved() {
     "vim",
     "voice",
     "install",
-    "ultraplan",
     "commit",
     "review",
     "ultrareview",

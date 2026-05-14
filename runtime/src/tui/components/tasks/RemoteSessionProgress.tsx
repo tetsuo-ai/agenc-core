@@ -37,7 +37,7 @@ export function formatReviewStageCounts(stage: ReviewStage | undefined, found: n
   return found > 0 ? `${found} found` : 'finding';
 }
 
-// Per-character rainbow gradient, same treatment as the ultraplan keyword.
+// Per-character rainbow gradient for remote review progress.
 // The phase offset lets the gradient cycle — so the colors sweep along the
 // text on each animation frame instead of being static.
 function RainbowText(t0) {

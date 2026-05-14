@@ -836,9 +836,6 @@
     "runtime/src/commands/terminalSetup/terminalSetup.tsx": [
       "exports"
     ],
-    "runtime/src/commands/ultraplan.tsx": [
-      "exports"
-    ],
     "runtime/src/commands/usage.ts": [
       "exports"
     ],
@@ -4411,13 +4408,6 @@
       "types"
     ],
     "runtime/src/utils/truncate.ts": [
-      "exports"
-    ],
-    "runtime/src/utils/ultraplan/ccrSession.ts": [
-      "exports",
-      "types"
-    ],
-    "runtime/src/utils/ultraplan/keyword.ts": [
       "exports"
     ],
     "runtime/src/utils/user.ts": [

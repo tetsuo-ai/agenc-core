@@ -37,9 +37,6 @@ export const WORKTREE_TAG = 'worktree'
 export const WORKTREE_PATH_TAG = 'worktreePath'
 export const WORKTREE_BRANCH_TAG = 'worktreeBranch'
 
-// XML tag names for ultraplan mode (remote parallel planning sessions)
-export const ULTRAPLAN_TAG = 'ultraplan'
-
 // XML tag name for remote /review results (teleported review session output).
 // Remote session wraps its final review in this tag; local poller extracts it.
 export const REMOTE_REVIEW_TAG = 'remote-review'

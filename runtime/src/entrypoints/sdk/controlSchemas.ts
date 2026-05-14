@@ -126,10 +126,6 @@ export const SDKControlSetPermissionModeRequestSchema = lazySchema(() =>
     .object({
       subtype: z.literal('set_permission_mode'),
       mode: PermissionModeSchema(),
-      ultraplan: z
-        .boolean()
-        .optional()
-        .describe('@internal CCR ultraplan session marker.'),
     })
     .describe('Sets the permission mode for tool execution handling.'),
 )

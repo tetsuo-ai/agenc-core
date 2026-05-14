@@ -2472,7 +2472,6 @@
 ^runtime/src/tasks/index\.ts:44 - TaskStatus$
 ^runtime/src/tasks/index\.ts:45 - TaskType$
 ^runtime/src/tasks/index\.ts:46 - TeammateIdentity$
-^runtime/src/tasks/index\.ts:47 - UltraplanPhase$
 ^runtime/src/tasks/index\.ts:51 - getAllTasks$
 ^runtime/src/tasks/index\.ts:52 - getTaskByType$
 ^runtime/src/tasks/index\.ts:53 - TaskRegistryError$
@@ -5031,7 +5030,6 @@
 ^runtime/src/tasks/MonitorMcpTask/MonitorMcpTask\.ts:35 - MonitorMcpTask \(used in module\)$
 ^runtime/src/tasks/RemoteAgentTask/RemoteAgentTask\.tsx:84 - registerCompletionChecker$
 ^runtime/src/tasks/RemoteAgentTask/RemoteAgentTask\.tsx:208 - extractPlanFromLog$
-^runtime/src/tasks/RemoteAgentTask/RemoteAgentTask\.tsx:225 - enqueueUltraplanFailureNotification$
 ^runtime/src/tasks/RemoteAgentTask/RemoteAgentTask\.tsx:62 - RemoteTaskType \(used in module\)$
 ^runtime/src/tasks/RemoteAgentTask/RemoteAgentTask\.tsx:66 - AutofixPrRemoteTaskMetadata \(used in module\)$
 ^runtime/src/tasks/RemoteAgentTask/RemoteAgentTask\.tsx:71 - RemoteTaskMetadata \(used in module\)$
@@ -6029,14 +6027,6 @@
 ^runtime/src/utils/teleport/gitBundle\.ts:35 - BundleUploadResult \(used in module\)$
 ^runtime/src/utils/todo/types\.ts:8 - TodoItemSchema \(used in module\)$
 ^runtime/src/utils/todo/types\.ts:15 - TodoItem$
-^runtime/src/utils/ultraplan/ccrSession\.ts:202 - pollForApprovedExitPlanMode$
-^runtime/src/utils/ultraplan/ccrSession\.ts:30 - PollFailReason \(used in module\)$
-^runtime/src/utils/ultraplan/ccrSession\.ts:38 - UltraplanPollError \(used in module\)$
-^runtime/src/utils/ultraplan/ccrSession\.ts:52 - ULTRAPLAN_TELEPORT_SENTINEL \(used in module\)$
-^runtime/src/utils/ultraplan/ccrSession\.ts:54 - ScanResult \(used in module\)$
-^runtime/src/utils/ultraplan/ccrSession\.ts:84 - ExitPlanModeScanner \(used in module\)$
-^runtime/src/utils/ultraplan/ccrSession\.ts:187 - PollResult \(used in module\)$
-^runtime/src/utils/ultraplan/keyword\.ts:111 - hasUltrareviewKeyword$
 ^runtime/src/conversation/realtime/instructions/messages\.ts:11 - renderRealtimeStartInstructions \(used in module\)$
 ^runtime/src/conversation/realtime/instructions/messages\.ts:17 - renderRealtimeEndInstructions \(used in module\)$
 ^runtime/src/conversation/realtime/instructions/messages\.ts:23 - renderRealtimeStartWithInstructions \(used in module\)$

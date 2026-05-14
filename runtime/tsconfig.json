@@ -158,7 +158,6 @@
     "src/commands/theme/index.ts",
     "src/commands/theme/theme.tsx",
     "src/commands/thinkback/thinkback.tsx",
-    "src/commands/ultraplan.tsx",
     "src/commands/upgrade/upgrade.tsx",
     "src/commands/vim/index.ts",
     "src/commands/voice/index.ts",

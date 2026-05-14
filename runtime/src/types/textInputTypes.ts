@@ -308,9 +308,9 @@ export type QueuedCommand = {
   pastedContents?: Record<number, PastedContent>
   /**
    * The input string before [Pasted text #N] placeholders were expanded.
-   * Used for ultraplan keyword detection so pasted content containing the
-   * keyword does not trigger a CCR session. Falls back to `value` when
-   * unset (bridge/UDS/MCP sources have no paste expansion).
+   * Preserves the user's original typed text before paste expansion.
+   * Falls back to `value` when unset (bridge/UDS/MCP sources have no paste
+   * expansion).
    */
   preExpansionValue?: string
   /**

@@ -313,7 +313,6 @@ export type RemoteAgentMetadata = {
   spawnedAt: number
   toolUseId?: string
   isLongRunning?: boolean
-  isUltraplan?: boolean
   isRemoteReview?: boolean
   remoteTaskMetadata?: Record<string, unknown>
 }

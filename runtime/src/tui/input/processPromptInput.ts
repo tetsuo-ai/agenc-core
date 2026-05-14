@@ -110,9 +110,8 @@ export async function processPromptInput({
 }: {
   input: string | Array<ContentBlockParam>
   /**
-   * Input before [Pasted text #N] expansion. Used for ultraplan keyword
-   * detection so pasted content containing the word cannot trigger. Falls
-   * back to the string `input` when unset.
+   * Input before [Pasted text #N] expansion. Falls back to the string
+   * `input` when unset.
    */
   preExpansionInput?: string
   mode: PromptInputMode

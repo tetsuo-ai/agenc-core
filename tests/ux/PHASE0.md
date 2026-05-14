@@ -26,7 +26,7 @@ Round 1's outputs are preserved under `tests/ux/round-1/` for comparison.
 - ANSI strip: `sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g'`
 
 ## Intentionally-dead surfaces (do NOT report as bugs)
-- `/login`, `/logout`, `/remote-control`, `/bridge-kick`, `/ultrareview`, `/ultraplan` — deleted in donor purge
+- `/login`, `/logout`, `/remote-control`, `/bridge-kick`, `/ultrareview` — deleted in donor purge
 - `/extra-usage`, `/pr-comments` — moved-to-plugin placeholders
 - Grove privacy dialog, Teleport, settings sync, voice STT, team memory, remote-managed settings, billing — gone
 - BridgeDialog, RateLimitMessage, BackgroundTasksDialog — stub to null

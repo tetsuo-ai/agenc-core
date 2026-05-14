@@ -113,12 +113,9 @@ export interface LocalAgentTaskState extends TaskStateBase<"local_agent"> {
 
 export type RemoteTaskType =
   | "remote-agent"
-  | "ultraplan"
   | "ultrareview"
   | "autofix-pr"
   | "background-pr";
-
-export type UltraplanPhase = "needs_input" | "plan_ready";
 
 export interface RemoteReviewProgress {
   readonly stage?: "finding" | "verifying" | "synthesizing";
@@ -139,8 +136,6 @@ export interface RemoteAgentTaskState extends TaskStateBase<"remote_agent"> {
   readonly pollStartedAt: number;
   readonly isRemoteReview?: boolean;
   readonly reviewProgress?: RemoteReviewProgress;
-  readonly isUltraplan?: boolean;
-  readonly ultraplanPhase?: UltraplanPhase;
 }
 
 export interface TeammateIdentity {

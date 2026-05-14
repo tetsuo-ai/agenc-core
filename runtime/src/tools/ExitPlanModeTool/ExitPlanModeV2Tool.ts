@@ -472,8 +472,8 @@ Request ID: ${requestId}`,
       ? `\n\nIf this plan can be broken down into multiple independent tasks, consider using the ${TEAM_CREATE_TOOL_NAME} tool to create a team and parallelize the work.`
       : ''
 
-    // Always include the plan — extractApprovedPlan() in the Ultraplan CCR
-    // flow parses the tool_result to retrieve the plan text for the local CLI.
+    // Always include the plan so downstream plan consumers can parse the
+    // tool_result and retrieve the approved text.
     // Label edited plans so the model knows the user changed something.
     const planLabel = planWasEdited
       ? 'Approved Plan (edited by user)'

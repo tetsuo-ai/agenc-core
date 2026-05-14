@@ -8504,11 +8504,6 @@
     {
       "file": "runtime/src/tasks/index.ts",
       "type": "types",
-      "name": "UltraplanPhase"
-    },
-    {
-      "file": "runtime/src/tasks/index.ts",
-      "type": "types",
       "name": "RegisteredTask"
     },
     {
@@ -12988,11 +12983,6 @@
     },
     {
       "file": "runtime/src/tasks/RemoteAgentTask/RemoteAgentTask.tsx",
-      "type": "exports",
-      "name": "enqueueUltraplanFailureNotification"
-    },
-    {
-      "file": "runtime/src/tasks/RemoteAgentTask/RemoteAgentTask.tsx",
       "type": "types",
       "name": "AutofixPrRemoteTaskMetadata"
     },
@@ -13075,46 +13065,6 @@
       "file": "runtime/src/utils/teleport.tsx",
       "type": "types",
       "name": "RepoValidationResult"
-    },
-    {
-      "file": "runtime/src/utils/ultraplan/ccrSession.ts",
-      "type": "exports",
-      "name": "ULTRAPLAN_TELEPORT_SENTINEL"
-    },
-    {
-      "file": "runtime/src/utils/ultraplan/ccrSession.ts",
-      "type": "exports",
-      "name": "ExitPlanModeScanner"
-    },
-    {
-      "file": "runtime/src/utils/ultraplan/ccrSession.ts",
-      "type": "types",
-      "name": "PollFailReason"
-    },
-    {
-      "file": "runtime/src/utils/ultraplan/ccrSession.ts",
-      "type": "types",
-      "name": "ScanResult"
-    },
-    {
-      "file": "runtime/src/utils/ultraplan/ccrSession.ts",
-      "type": "types",
-      "name": "PollResult"
-    },
-    {
-      "file": "runtime/src/commands/ultraplan.tsx",
-      "type": "exports",
-      "name": "CCR_TERMS_URL"
-    },
-    {
-      "file": "runtime/src/commands/ultraplan.tsx",
-      "type": "exports",
-      "name": "buildUltraplanPrompt"
-    },
-    {
-      "file": "runtime/src/commands/ultraplan.tsx",
-      "type": "exports",
-      "name": "default"
     },
     {
       "file": "runtime/src/config/_deps/file-read.ts",
@@ -18425,11 +18375,6 @@
       "file": "runtime/src/tui/hooks/useTypeahead.tsx",
       "type": "exports",
       "name": "extractCompletionToken"
-    },
-    {
-      "file": "runtime/src/utils/ultraplan/keyword.ts",
-      "type": "exports",
-      "name": "hasUltrareviewKeyword"
     },
     {
       "file": "runtime/src/tui/keybindings/validate.ts",

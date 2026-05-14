@@ -13,8 +13,6 @@
 import type { BackgroundTaskState } from "./types.js";
 
 const DIAMOND_OPEN = "\u25c7";
-const DIAMOND_FILLED = "\u25c6";
-
 function count<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   return items.reduce((total, item) => total + (predicate(item) ? 1 : 0), 0);
 }
@@ -55,16 +53,6 @@ export function getPillLabel(tasks: readonly BackgroundTaskState[]): string {
       case "local_agent":
         return n === 1 ? "1 local agent" : `${n} local agents`;
       case "remote_agent":
-        if (n === 1 && first.isUltraplan) {
-          switch (first.ultraplanPhase) {
-            case "plan_ready":
-              return `${DIAMOND_FILLED} ultraplan ready`;
-            case "needs_input":
-              return `${DIAMOND_OPEN} ultraplan needs your input`;
-            default:
-              return `${DIAMOND_OPEN} ultraplan`;
-          }
-        }
         return n === 1
           ? `${DIAMOND_OPEN} 1 cloud session`
           : `${DIAMOND_OPEN} ${n} cloud sessions`;
@@ -77,11 +65,6 @@ export function getPillLabel(tasks: readonly BackgroundTaskState[]): string {
 export function pillNeedsCta(
   tasks: readonly BackgroundTaskState[],
 ): boolean {
-  if (tasks.length !== 1) return false;
-  const task = tasks[0]!;
-  return (
-    task.type === "remote_agent" &&
-    task.isUltraplan === true &&
-    task.ultraplanPhase !== undefined
-  );
+  void tasks;
+  return false;
 }

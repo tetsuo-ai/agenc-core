@@ -104,43 +104,7 @@ describe("getPillLabel", () => {
     expect(getPillLabel([])).toBe("0 background tasks");
   });
 
-  it("keeps ultraplan attention labels and CTA rules", () => {
-    expect(
-      getPillLabel([
-        remote("remote-1", {
-          remoteTaskType: "ultraplan",
-          isUltraplan: true,
-        }),
-      ]),
-    ).toBe("\u25c7 ultraplan");
-    expect(
-      getPillLabel([
-        remote("remote-1", {
-          remoteTaskType: "ultraplan",
-          isUltraplan: true,
-          ultraplanPhase: "needs_input",
-        }),
-      ]),
-    ).toBe("\u25c7 ultraplan needs your input");
-    expect(
-      getPillLabel([
-        remote("remote-1", {
-          remoteTaskType: "ultraplan",
-          isUltraplan: true,
-          ultraplanPhase: "plan_ready",
-        }),
-      ]),
-    ).toBe("\u25c6 ultraplan ready");
-
-    expect(
-      pillNeedsCta([
-        remote("remote-1", {
-          remoteTaskType: "ultraplan",
-          isUltraplan: true,
-          ultraplanPhase: "plan_ready",
-        }),
-      ]),
-    ).toBe(true);
+  it("does not add a footer CTA for ordinary remote tasks", () => {
     expect(pillNeedsCta([remote("remote-1")])).toBe(false);
     expect(pillNeedsCta([remote("remote-1"), remote("remote-2")])).toBe(false);
   });
