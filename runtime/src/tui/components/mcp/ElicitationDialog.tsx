@@ -38,6 +38,97 @@ function getMultiSelectConstraints(schema: PrimitiveSchemaDefinition): MultiSele
 }
 const RESOLVING_SPINNER_CHARS = '\u280B\u2819\u2839\u2838\u283C\u2834\u2826\u2827\u2807\u280F';
 const advanceSpinnerFrame = (f: number) => (f + 1) % RESOLVING_SPINNER_CHARS.length;
+const ELICITATION_LINES_PER_COLLAPSED_FIELD = 3;
+const ELICITATION_DIALOG_OVERHEAD_ROWS = 14;
+const ELICITATION_MAX_VISIBLE_ACCORDION_OPTIONS = 8;
+
+export function getElicitationTextInputColumns(columns: number): number {
+  const safeColumns = Number.isFinite(columns) ? Math.max(0, Math.trunc(columns)) : 0;
+  return Math.max(1, Math.min(safeColumns - 20, 60));
+}
+
+export function getElicitationFieldBodyRows(rows: number): number {
+  const safeRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+  return Math.max(ELICITATION_LINES_PER_COLLAPSED_FIELD, safeRows - ELICITATION_DIALOG_OVERHEAD_ROWS);
+}
+
+export function getElicitationAccordionOptionLimit(rows: number): number {
+  const bodyRows = getElicitationFieldBodyRows(rows);
+  const rowsAvailableForOptions = bodyRows - ELICITATION_LINES_PER_COLLAPSED_FIELD - 2;
+  return Math.max(1, Math.min(ELICITATION_MAX_VISIBLE_ACCORDION_OPTIONS, rowsAvailableForOptions));
+}
+
+export function getElicitationExpandedFieldRows(optionCount: number, rows: number): number {
+  const safeOptionCount = Number.isFinite(optionCount) ? Math.max(0, Math.trunc(optionCount)) : 0;
+  if (safeOptionCount === 0) return ELICITATION_LINES_PER_COLLAPSED_FIELD;
+  const optionLimit = getElicitationAccordionOptionLimit(rows);
+  const hiddenIndicatorRows = safeOptionCount > optionLimit ? 2 : 0;
+  return ELICITATION_LINES_PER_COLLAPSED_FIELD + Math.min(safeOptionCount, optionLimit) + hiddenIndicatorRows;
+}
+
+export function getElicitationOptionWindow(totalOptions: number, focusedIndex: number, maxVisibleOptions: number): {
+  start: number;
+  end: number;
+} {
+  const safeTotal = Number.isFinite(totalOptions) ? Math.max(0, Math.trunc(totalOptions)) : 0;
+  const safeVisible = Number.isFinite(maxVisibleOptions) ? Math.max(1, Math.trunc(maxVisibleOptions)) : 1;
+  if (safeTotal <= safeVisible) {
+    return {
+      start: 0,
+      end: safeTotal
+    };
+  }
+  const focus = Number.isFinite(focusedIndex) ? Math.max(0, Math.min(safeTotal - 1, Math.trunc(focusedIndex))) : 0;
+  let start = Math.max(0, focus - Math.floor(safeVisible / 2));
+  let end = Math.min(safeTotal, start + safeVisible);
+  start = Math.max(0, end - safeVisible);
+  return {
+    start,
+    end
+  };
+}
+
+export function getElicitationScrollWindow(fieldRows: number[], focusedIndex: number | undefined, rowBudget: number): {
+  start: number;
+  end: number;
+} {
+  const total = fieldRows.length;
+  if (total === 0) {
+    return {
+      start: 0,
+      end: 0
+    };
+  }
+  const safeBudget = Number.isFinite(rowBudget) ? Math.max(1, Math.trunc(rowBudget)) : 1;
+  const focus = focusedIndex === undefined || !Number.isFinite(focusedIndex) ? total - 1 : Math.max(0, Math.min(total - 1, Math.trunc(focusedIndex)));
+  const getFieldRowsAt = (index: number): number => {
+    const rowsForField = fieldRows[index];
+    return Number.isFinite(rowsForField) ? Math.max(1, Math.trunc(rowsForField)) : ELICITATION_LINES_PER_COLLAPSED_FIELD;
+  };
+  let start = focus;
+  let end = focus + 1;
+  let usedRows = getFieldRowsAt(focus);
+  while (start > 0 || end < total) {
+    let added = false;
+    const previousRows = getFieldRowsAt(start - 1);
+    if (start > 0 && usedRows + previousRows <= safeBudget) {
+      start -= 1;
+      usedRows += previousRows;
+      added = true;
+    }
+    const nextRows = getFieldRowsAt(end);
+    if (end < total && usedRows + nextRows <= safeBudget) {
+      end += 1;
+      usedRows += nextRows;
+      added = true;
+    }
+    if (!added) break;
+  }
+  return {
+    start,
+    end
+  };
+}
 
 /** Timer callback for enumTypeaheadRef — module-scope to avoid closure capture. */
 function resetTypeahead(ta: {
@@ -755,37 +846,21 @@ function ElicitationFormDialog({
     return true;
   }
 
-  // Scroll windowing: compute visible field range
-  // Overhead: ~9 lines (dialog chrome, buttons, footer).
-  // Each field: ~3 lines (label + description + validation spacer).
-  // NOTE(v2): Multi-select accordion expands to N+3 lines when open.
-  // currently we assume 3 lines per field; an expanded accordion may
-  // temporarily push content off-screen (terminal scrollback handles it).
-  // To generalize: track per-field height (3 for collapsed, N+3 for
-  // expanded multi-select) and compute a pixel-budget window instead
-  // of a simple item-count window.
-  const LINES_PER_FIELD = 3;
-  const DIALOG_OVERHEAD = 14;
-  const maxVisibleFields = Math.max(2, Math.floor((rows - DIALOG_OVERHEAD) / LINES_PER_FIELD));
-  const scrollWindow = useMemo(() => {
-    const total = schemaFields.length;
-    if (total <= maxVisibleFields) {
-      return {
-        start: 0,
-        end: total
-      };
+  const fieldRows = useMemo(() => schemaFields.map(field => {
+    if (expandedAccordion !== field.name) return ELICITATION_LINES_PER_COLLAPSED_FIELD;
+    if (isMultiSelectEnumSchema(field.schema)) {
+      return getElicitationExpandedFieldRows(getMultiSelectValues(field.schema).length, rows);
     }
-    // When buttons are focused (currentFieldIndex undefined), pin to end
-    const focusIdx = currentFieldIndex ?? total - 1;
-    let start = Math.max(0, focusIdx - Math.floor(maxVisibleFields / 2));
-    const end = Math.min(start + maxVisibleFields, total);
-    // Adjust start if we hit the bottom
-    start = Math.max(0, end - maxVisibleFields);
-    return {
-      start,
-      end
-    };
-  }, [schemaFields.length, maxVisibleFields, currentFieldIndex]);
+    if (isEnumSchema(field.schema)) {
+      return getElicitationExpandedFieldRows(getEnumValues(field.schema).length, rows);
+    }
+    return ELICITATION_LINES_PER_COLLAPSED_FIELD;
+  }), [schemaFields, expandedAccordion, rows]);
+  const fieldBodyRows = getElicitationFieldBodyRows(rows);
+  const maxVisibleAccordionOptions = getElicitationAccordionOptionLimit(rows);
+  const scrollWindow = useMemo(() => {
+    return getElicitationScrollWindow(fieldRows, currentFieldIndex, fieldBodyRows);
+  }, [fieldRows, currentFieldIndex, fieldBodyRows]);
   const hasFieldsAbove = scrollWindow.start > 0;
   const hasFieldsBelow = scrollWindow.end < schemaFields.length;
   function renderFormFields(): React.ReactNode {
@@ -829,9 +904,15 @@ function ElicitationFormDialog({
           const selected_1 = value_3 as string[] | undefined ?? [];
           const isExpanded = expandedAccordion === name_1 && isActive;
           if (isExpanded) {
+            const optionWindow = getElicitationOptionWindow(msValues_0.length, accordionOptionIndex, maxVisibleAccordionOptions);
+            const visibleOptions = msValues_0.slice(optionWindow.start, optionWindow.end);
             valueContent = <Text dimColor>{figures.triangleDownSmall}</Text>;
             accordionContent = <Box flexDirection="column" marginLeft={6}>
-                    {msValues_0.map((optVal: string, optIdx: number) => {
+                    {optionWindow.start > 0 && <Text dimColor>
+                        {figures.arrowUp} {optionWindow.start} more
+                      </Text>}
+                    {visibleOptions.map((optVal: string, visibleOptIdx: number) => {
+                const optIdx = optionWindow.start + visibleOptIdx;
                 const optLabel = getMultiSelectLabel(schema_6, optVal);
                 const isChecked = selected_1.includes(optVal);
                 const isFocused = optIdx === accordionOptionIndex;
@@ -847,6 +928,9 @@ function ElicitationFormDialog({
                           </Text>
                         </Box>;
               })}
+                    {optionWindow.end < msValues_0.length && <Text dimColor>
+                        {figures.arrowDown} {msValues_0.length - optionWindow.end} more
+                      </Text>}
                   </Box>;
           } else {
             // Collapsed: ▸ arrow then comma-joined selected items
@@ -872,9 +956,15 @@ function ElicitationFormDialog({
           const enumValues_0 = getEnumValues(schema_6);
           const isExpanded_0 = expandedAccordion === name_1 && isActive;
           if (isExpanded_0) {
+            const optionWindow_0 = getElicitationOptionWindow(enumValues_0.length, accordionOptionIndex, maxVisibleAccordionOptions);
+            const visibleOptions_0 = enumValues_0.slice(optionWindow_0.start, optionWindow_0.end);
             valueContent = <Text dimColor>{figures.triangleDownSmall}</Text>;
             accordionContent = <Box flexDirection="column" marginLeft={6}>
-                    {enumValues_0.map((optVal_0: string, optIdx_0: number) => {
+                    {optionWindow_0.start > 0 && <Text dimColor>
+                        {figures.arrowUp} {optionWindow_0.start} more
+                      </Text>}
+                    {visibleOptions_0.map((optVal_0: string, visibleOptIdx_0: number) => {
+                const optIdx_0 = optionWindow_0.start + visibleOptIdx_0;
                 const optLabel_0 = getEnumLabel(schema_6, optVal_0);
                 const isSelected = value_3 === optVal_0;
                 const isFocused_0 = optIdx_0 === accordionOptionIndex;
@@ -890,6 +980,9 @@ function ElicitationFormDialog({
                           </Text>
                         </Box>;
               })}
+                    {optionWindow_0.end < enumValues_0.length && <Text dimColor>
+                        {figures.arrowDown} {enumValues_0.length - optionWindow_0.end} more
+                      </Text>}
                   </Box>;
           } else {
             // Collapsed: ▸ arrow then current value
@@ -924,7 +1017,7 @@ function ElicitationFormDialog({
           }
         } else if (isTextField(schema_6)) {
           if (isActive) {
-            valueContent = <TextInput value={textInputValue} onChange={handleTextInputChange} onSubmit={handleTextInputSubmit} placeholder={`Type something\u{2026}`} columns={Math.min(columns - 20, 60)} cursorOffset={textInputCursorOffset} onChangeCursorOffset={setTextInputCursorOffset} focus showCursor />;
+            valueContent = <TextInput value={textInputValue} onChange={handleTextInputChange} onSubmit={handleTextInputSubmit} placeholder={`Type something\u{2026}`} columns={getElicitationTextInputColumns(columns)} cursorOffset={textInputCursorOffset} onChangeCursorOffset={setTextInputCursorOffset} focus showCursor />;
           } else {
             const displayValue = hasValue && isDateTimeSchema(schema_6) ? formatDateDisplay(String(value_3), schema_6) : String(value_3);
             valueContent = hasValue ? <Text>{displayValue}</Text> : <Text dimColor italic>
