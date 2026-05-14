@@ -2,6 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import type { HookEvent } from '../../../entrypoints/agentSdkTypes.js';
 import type { buildMessageLookups } from '../../../utils/messages.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { Box, Text } from '../../ink.js';
 import { MessageResponse } from '../MessageResponse';
 type Props = {
@@ -11,6 +12,13 @@ type Props = {
   verbose: boolean;
   isTranscriptMode?: boolean;
 };
+export function getHookProgressRunningLabel(
+  inProgressHookCount: number,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const ellipsis = selectAgenCTuiGlyphs(env).ellipsis;
+  return inProgressHookCount === 1 ? ` hook${ellipsis}` : ` hooks${ellipsis}`;
+}
 export function HookProgressMessage(t0) {
   const $ = _c(22);
   const {
@@ -73,7 +81,7 @@ export function HookProgressMessage(t0) {
       }
       return t6;
     }
-    const hookLabel = inProgressHookCount === 1 ? " hook…" : " hooks…";
+    const hookLabel = getHookProgressRunningLabel(inProgressHookCount);
     return (
       <MessageResponse>
         <Box flexDirection="row">

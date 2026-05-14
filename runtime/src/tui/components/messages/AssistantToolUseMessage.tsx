@@ -1,5 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { useMemo } from 'react';
+import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Command } from '../../../commands.js';
@@ -32,6 +33,20 @@ type Props = {
   lookups: ReturnType<typeof buildMessageLookups>;
   isTranscriptMode?: boolean;
 };
+export function getAssistantToolUsePendingText(
+  state: 'permission' | 'auto-classifier' | 'bash-classifier',
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const ellipsis = selectAgenCTuiGlyphs(env).ellipsis;
+  switch (state) {
+    case 'permission':
+      return `Waiting for permission${ellipsis}`;
+    case 'auto-classifier':
+      return `Auto classifier checking${ellipsis}`;
+    case 'bash-classifier':
+      return `Bash classifier checking${ellipsis}`;
+  }
+}
 export function AssistantToolUseMessage(t0) {
   const $ = _c(81);
   const {
@@ -239,31 +254,11 @@ export function AssistantToolUseMessage(t0) {
   } else {
     t12 = $[53];
   }
-  let t13;
-  if ($[54] !== inProgressToolCallCount || $[55] !== isAutoClassifier || $[56] !== isClassifierChecking || $[57] !== isQueued || $[58] !== isResolved || $[59] !== isTranscriptMode || $[60] !== isWaitingForPermission || $[61] !== lookups || $[62] !== param.id || $[63] !== progressMessagesForMessage || $[64] !== terminalSize || $[65] !== tool_0 || $[66] !== tools || $[67] !== verbose) {
-    t13 = !isResolved && !isQueued && (isWaitingForPermission ? <MessageResponse height={1}><Text dimColor={true}>Waiting for permission…</Text></MessageResponse> : isClassifierChecking ? <MessageResponse height={1}><Text dimColor={true}>{isAutoClassifier ? "Auto classifier checking\u2026" : "Bash classifier checking\u2026"}</Text></MessageResponse> : renderToolUseProgressMessage(tool_0, tools, lookups, param.id, progressMessagesForMessage, {
+  const t13 = !isResolved && !isQueued && (isWaitingForPermission ? <MessageResponse height={1}><Text dimColor={true}>{getAssistantToolUsePendingText('permission')}</Text></MessageResponse> : isClassifierChecking ? <MessageResponse height={1}><Text dimColor={true}>{isAutoClassifier ? getAssistantToolUsePendingText('auto-classifier') : getAssistantToolUsePendingText('bash-classifier')}</Text></MessageResponse> : renderToolUseProgressMessage(tool_0, tools, lookups, param.id, progressMessagesForMessage, {
       verbose,
       inProgressToolCallCount,
       isTranscriptMode
     }, terminalSize));
-    $[54] = inProgressToolCallCount;
-    $[55] = isAutoClassifier;
-    $[56] = isClassifierChecking;
-    $[57] = isQueued;
-    $[58] = isResolved;
-    $[59] = isTranscriptMode;
-    $[60] = isWaitingForPermission;
-    $[61] = lookups;
-    $[62] = param.id;
-    $[63] = progressMessagesForMessage;
-    $[64] = terminalSize;
-    $[65] = tool_0;
-    $[66] = tools;
-    $[67] = verbose;
-    $[68] = t13;
-  } else {
-    t13 = $[68];
-  }
   let t14;
   if ($[69] !== isQueued || $[70] !== isResolved || $[71] !== tool_0) {
     t14 = !isResolved && isQueued && renderToolUseQueuedMessage(tool_0);

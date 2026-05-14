@@ -14,6 +14,7 @@ import {
   type PrAction,
 } from '../tools/shared/gitOperationTracking.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/prompt.js'
+import { selectAgenCTuiGlyphs } from '../tui/glyphs.js'
 import type {
   CollapsedReadSearchGroup,
   CollapsibleMessage,
@@ -116,6 +117,12 @@ function isMemoryWriteOrEdit(toolName: string, toolInput: unknown): boolean {
 // ~5 lines × ~60 cols. Generous static cap — the renderer lets Ink wrap.
 const MAX_HINT_CHARS = 300
 
+export function getCollapseReadSearchEllipsis(
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  return selectAgenCTuiGlyphs(env).ellipsis
+}
+
 /**
  * Format a bash command for the ⎿ hint. Drops blank lines, collapses runs of
  * inline whitespace, then caps total length. Newlines are preserved so the
@@ -130,7 +137,7 @@ function commandAsHint(command: string): string {
       .filter(l => l !== '')
       .join('\n')
   return cleaned.length > MAX_HINT_CHARS
-    ? cleaned.slice(0, MAX_HINT_CHARS - 1) + '…'
+    ? cleaned.slice(0, MAX_HINT_CHARS - 1) + getCollapseReadSearchEllipsis()
     : cleaned
 }
 
@@ -960,7 +967,7 @@ export function collapseReadSearchGroups(
  * @param isActive Whether the group is still in progress (use present tense) or completed (use past tense)
  * @param replCount Number of REPL executions (optional)
  * @param memoryCounts Optional memory file operation counts
- * @returns Summary text like "Searching for 3 patterns, reading 2 files, REPL'd 5 times…"
+ * @returns Summary text like "Searching for 3 patterns, reading 2 files, REPL'd 5 times..."
  */
 export function getSearchReadSummaryText(
   searchCount: number,
@@ -1066,7 +1073,7 @@ export function getSearchReadSummaryText(
   }
 
   const text = parts.join(', ')
-  return isActive ? `${text}…` : text
+  return isActive ? `${text}${getCollapseReadSearchEllipsis()}` : text
 }
 
 /**
