@@ -5,11 +5,13 @@ import { describe, expect, test } from "vitest";
 const repoRoot = new URL("../../../../", import.meta.url).pathname;
 const startupHelper = ["repl", "Startup", "Gates"].join("");
 const inputHelper = ["repl", "Input", "Suppression"].join("");
+const workerPendingHelper = ["Worker", "Pending", "Permission"].join("");
 const removed = [
   `runtime/src/tui/screens/${startupHelper}.ts`,
   `runtime/src/tui/screens/${startupHelper}.test.ts`,
   `runtime/src/tui/screens/${inputHelper}.ts`,
   `runtime/src/tui/screens/${inputHelper}.test.ts`,
+  `runtime/src/tui/components/permissions/${workerPendingHelper}.tsx`,
 ];
 
 function filesUnder(dir: string): string[] {
@@ -38,7 +40,11 @@ describe("orphan TUI rendering helpers", () => {
     ].filter(file => /\.(ts|tsx|mjs|js)$/.test(file));
     const hits = scannedFiles.filter(file => {
       const src = readFileSync(file, "utf8");
-      return src.includes(startupHelper) || src.includes(inputHelper);
+      return (
+        src.includes(startupHelper)
+        || src.includes(inputHelper)
+        || src.includes(workerPendingHelper)
+      );
     });
 
     expect(hits).toEqual([]);
