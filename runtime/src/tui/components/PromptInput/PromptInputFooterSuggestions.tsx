@@ -28,7 +28,7 @@ export type SuggestionType =
 export const OVERLAY_MAX_ITEMS = 5
 
 export function getSuggestionPopupWidth(columns: number, overlay?: boolean): number {
-  return overlay ? Math.max(1, columns - 2) : Math.max(32, columns - 10)
+  return overlay ? Math.max(1, columns - 2) : Math.max(1, columns - 10)
 }
 
 function padToWidth(text: string, width: number): string {
@@ -42,17 +42,69 @@ function getRightAlignedRowParts(
   right: string,
   width: number,
 ): { left: string; gap: string; right: string } {
-  const rightWidth = Math.max(0, width - stringWidth(left) - 1)
+  const safeWidth = Math.max(1, width)
+  const truncatedLeft = truncateToWidth(left, safeWidth)
+  const leftWidth = stringWidth(truncatedLeft)
+  if (leftWidth >= safeWidth) {
+    return {
+      left: truncatedLeft,
+      gap: '',
+      right: '',
+    }
+  }
+
+  const rightWidth = Math.max(0, safeWidth - leftWidth - 1)
   const truncatedRight = truncateToWidth(right, rightWidth)
   const gapWidth = Math.max(
-    1,
-    width - stringWidth(left) - stringWidth(truncatedRight),
+    0,
+    safeWidth - leftWidth - stringWidth(truncatedRight),
   )
   return {
-    left,
+    left: truncatedLeft,
     gap: ' '.repeat(gapWidth),
     right: truncatedRight,
   }
+}
+
+function getSuggestionHeaderCopy(type: SuggestionType): {
+  title: string
+  label: string
+  acceptVerb: string
+} {
+  switch (type) {
+    case 'command':
+      return { title: 'SLASH COMMANDS', label: 'command', acceptVerb: 'run' }
+    case 'file':
+      return { title: 'FILES & RESOURCES', label: 'file', acceptVerb: 'insert' }
+    case 'directory':
+      return { title: 'DIRECTORIES', label: 'directory', acceptVerb: 'insert' }
+    case 'agent':
+      return { title: 'AGENTS', label: 'agent', acceptVerb: 'message' }
+    case 'shell':
+      return { title: 'SHELL COMPLETIONS', label: 'shell', acceptVerb: 'complete' }
+    case 'custom-title':
+      return { title: 'SESSION TITLES', label: 'session', acceptVerb: 'resume' }
+    case 'slack-channel':
+      return { title: 'SLACK CHANNELS', label: 'channel', acceptVerb: 'mention' }
+    case 'none':
+      return { title: 'SUGGESTIONS', label: 'suggestion', acceptVerb: 'select' }
+  }
+}
+
+function inferSuggestionType(suggestions: SuggestionItem[]): SuggestionType {
+  if (suggestions.every(item => item.id.startsWith('command-') || item.displayText.startsWith('/'))) {
+    return 'command'
+  }
+  if (suggestions.every(item => item.id.startsWith('file-') || item.id.startsWith('mcp-resource-'))) {
+    return 'file'
+  }
+  if (suggestions.every(item => item.id.startsWith('directory-'))) {
+    return 'directory'
+  }
+  if (suggestions.every(item => item.id.startsWith('agent-') || item.id.startsWith('dm-'))) {
+    return 'agent'
+  }
+  return 'none'
 }
 
 function getIcon(itemId: string, mcpResourceGlyph: string): string {
@@ -109,13 +161,15 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       const descReserve = item.description
         ? Math.min(20, stringWidth(item.description))
         : 0
-      const maxPathLength =
+      const maxPathLength = Math.max(
+        1,
         width -
         prefixWidth -
         iconWidth -
         paddingWidth -
         separatorWidth -
-        descReserve
+        descReserve,
+      )
       displayText = truncatePathMiddle(item.displayText, maxPathLength)
     } else if (isMcpResource) {
       displayText = truncateToWidth(item.displayText, 30)
@@ -141,15 +195,16 @@ const SuggestionItemRow = memo(function SuggestionItemRow({
       lineContent = `${selectionPrefix}${icon} ${displayText}`
     }
   } else {
-    const maxNameWidth = Math.floor(width * 0.4)
-    const displayTextWidth = Math.min(
+    const maxNameWidth = Math.max(1, Math.floor(width * 0.4))
+    const displayTextWidth = Math.max(1, Math.min(
       maxColumnWidth ?? stringWidth(item.displayText) + 5,
       maxNameWidth,
-    )
+    ))
 
     let displayText = item.displayText
-    if (stringWidth(displayText) > displayTextWidth - 2) {
-      displayText = truncateToWidth(displayText, displayTextWidth - 2)
+    const displayTextContentWidth = Math.max(0, displayTextWidth - 2)
+    if (stringWidth(displayText) > displayTextContentWidth) {
+      displayText = truncateToWidth(displayText, displayTextContentWidth)
     }
 
     const paddedDisplayText =
@@ -190,6 +245,7 @@ type Props = {
   selectedSuggestion: number
   maxColumnWidth?: number
   overlay?: boolean
+  suggestionType?: SuggestionType
 }
 
 export function PromptInputFooterSuggestions({
@@ -197,6 +253,7 @@ export function PromptInputFooterSuggestions({
   selectedSuggestion,
   maxColumnWidth: maxColumnWidthProp,
   overlay,
+  suggestionType,
 }: Props): ReactNode {
   const { rows, columns } = useTerminalSize()
   const maxVisibleItems = overlay ? OVERLAY_MAX_ITEMS : Math.min(6, Math.max(1, rows - 3))
@@ -229,13 +286,14 @@ export function PromptInputFooterSuggestions({
   const glyphs = selectAgenCTuiGlyphs()
   const width = getSuggestionPopupWidth(columns, overlay)
   const contentWidth = Math.max(1, width - 4)
+  const headerCopy = getSuggestionHeaderCopy(suggestionType ?? inferSuggestionType(suggestions))
   const headerHint = suggestions.length === 1
     ? '1 match'
     : `${suggestions.length} matches`
-  const titleRow = getRightAlignedRowParts('SLASH COMMANDS', headerHint, contentWidth)
+  const titleRow = getRightAlignedRowParts(headerCopy.title, headerHint, contentWidth)
   const commandHintRow = getRightAlignedRowParts(
-    'command',
-    `navigate ${glyphs.arrowUp}${glyphs.arrowDown} ${glyphs.separator} run ${glyphs.enter}`,
+    headerCopy.label,
+    `navigate ${glyphs.arrowUp}${glyphs.arrowDown} ${glyphs.separator} ${headerCopy.acceptVerb} ${glyphs.enter}`,
     contentWidth,
   )
 

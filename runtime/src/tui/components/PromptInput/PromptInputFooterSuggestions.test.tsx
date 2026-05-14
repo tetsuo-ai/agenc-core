@@ -114,9 +114,40 @@ describe('PromptInputFooterSuggestions', () => {
     expect(output).not.toContain('undefined')
   })
 
+  it('labels non-command suggestions by their active suggestion type', async () => {
+    const suggestions: SuggestionItem[] = [
+      {
+        id: 'file-readme',
+        displayText: 'README.md',
+        description: 'Project readme',
+      },
+    ]
+
+    const output = await renderToString(
+      <PromptInputFooterSuggestions
+        suggestions={suggestions}
+        selectedSuggestion={0}
+        suggestionType="file"
+      />,
+      80,
+    )
+
+    expect(output).toContain('FILES & RESOURCES')
+    expect(output).toContain('file')
+    expect(output).toContain('insert')
+    expect(output).not.toContain('SLASH COMMANDS')
+  })
+
   it('uses full overlay width so the popup background can cover the overlay row', () => {
     expect(getSuggestionPopupWidth(80, true)).toBe(78)
     expect(getSuggestionPopupWidth(12, true)).toBe(10)
+  })
+
+  it('clamps inline popup width to tiny terminals instead of forcing the old minimum', () => {
+    expect(getSuggestionPopupWidth(80, false)).toBe(70)
+    expect(getSuggestionPopupWidth(48, false)).toBe(38)
+    expect(getSuggestionPopupWidth(12, false)).toBe(2)
+    expect(getSuggestionPopupWidth(8, false)).toBe(1)
   })
 
   it('renders ASCII glyphs when requested', async () => {
@@ -142,7 +173,7 @@ describe('PromptInputFooterSuggestions', () => {
       )
 
       expect(output).toContain('> * docs')
-      expect(output).toContain('navigate ^v - run Enter')
+      expect(output).toContain('navigate ^v - insert Enter')
       expect(output).not.toContain('◇')
       expect(output).not.toContain('❯')
       expect(output).not.toContain('↵')

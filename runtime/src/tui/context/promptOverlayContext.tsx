@@ -21,11 +21,12 @@ import { c as _c } from "react-compiler-runtime";
  */
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 // Keep the overlay shape aligned with PromptInput's suggestion row.
-import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js';
+import type { SuggestionItem, SuggestionType } from '../components/PromptInput/PromptInputFooterSuggestions.js';
 export type PromptOverlayData = {
   suggestions: SuggestionItem[];
   selectedSuggestion: number;
   maxColumnWidth?: number;
+  suggestionType: SuggestionType;
 };
 type Setter<T> = (d: T | null) => void;
 const DataContext = createContext<PromptOverlayData | null>(null);

@@ -19,7 +19,7 @@ import { CoordinatorTaskPanel, useCoordinatorTaskCount } from '../CoordinatorAge
 import { getLastAssistantMessageId, StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
 import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
-import { PromptInputFooterSuggestions, type SuggestionItem } from './PromptInputFooterSuggestions.js';
+import { PromptInputFooterSuggestions, type SuggestionItem, type SuggestionType } from './PromptInputFooterSuggestions.js';
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js';
 
 type Props = {
@@ -39,6 +39,7 @@ type Props = {
   suggestions: SuggestionItem[];
   selectedSuggestion: number;
   maxColumnWidth?: number;
+  suggestionType: SuggestionType;
   toolPermissionContext: ToolPermissionContext;
   helpOpen: boolean;
   suppressHint: boolean;
@@ -71,6 +72,7 @@ function PromptInputFooter({
   suggestions,
   selectedSuggestion,
   maxColumnWidth,
+  suggestionType,
   toolPermissionContext,
   helpOpen,
   suppressHint: suppressHintFromProps,
@@ -120,12 +122,13 @@ function PromptInputFooter({
   const overlayData = useMemo(() => isFullscreen && suggestions.length ? {
     suggestions,
     selectedSuggestion,
-    maxColumnWidth
-  } : null, [isFullscreen, suggestions, selectedSuggestion, maxColumnWidth]);
+    maxColumnWidth,
+    suggestionType
+  } : null, [isFullscreen, suggestions, selectedSuggestion, maxColumnWidth, suggestionType]);
   useSetPromptOverlay(overlayData);
   if (suggestions.length && !isFullscreen) {
     return <Box paddingX={2} paddingY={0}>
-        <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} />
+        <PromptInputFooterSuggestions suggestions={suggestions} selectedSuggestion={selectedSuggestion} maxColumnWidth={maxColumnWidth} suggestionType={suggestionType} />
       </Box>;
   }
   if (helpOpen) {
