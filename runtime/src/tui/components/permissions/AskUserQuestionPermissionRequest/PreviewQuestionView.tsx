@@ -235,7 +235,7 @@ export function PreviewQuestionView({
   const {
     columns
   } = useTerminalSize();
-  const previewMaxWidth = columns - LEFT_PANEL_WIDTH - GAP;
+  const previewMaxWidth = Math.max(4, columns - LEFT_PANEL_WIDTH - GAP);
 
   // Lines used within the content area that aren't preview content:
   // 1: marginTop on side-by-side box

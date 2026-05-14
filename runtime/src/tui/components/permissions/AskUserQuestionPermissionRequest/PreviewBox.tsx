@@ -30,6 +30,7 @@ const BOX_CHARS = {
   teeLeft: '├',
   teeRight: '┤'
 };
+const MIN_BOX_WIDTH = 4;
 
 /**
  * A bordered monospace box for displaying preview content.
@@ -96,8 +97,8 @@ function PreviewBoxBody(t0) {
     columns: terminalWidth
   } = useTerminalSize();
   const [theme] = useTheme();
-  const effectiveMaxWidth = maxWidth ?? terminalWidth - 4;
-  const effectiveMaxLines = maxLines ?? 20;
+  const effectiveMaxWidth = Math.max(MIN_BOX_WIDTH, maxWidth ?? terminalWidth - 4);
+  const effectiveMaxLines = Math.max(1, maxLines ?? 20);
   let t2;
   if ($[0] !== content || $[1] !== highlight || $[2] !== theme) {
     t2 = applyMarkdown(content, theme, highlight);
@@ -122,9 +123,9 @@ function PreviewBoxBody(t0) {
     const effectiveMinHeight = Math.min(minHeight ?? 0, effectiveMaxLines);
     const paddingNeeded = Math.max(0, effectiveMinHeight - truncatedLines.length - (isTruncated ? 1 : 0));
     const lines = paddingNeeded > 0 ? [...truncatedLines, ...Array(paddingNeeded).fill("")] : truncatedLines;
-    const contentWidth = Math.max(minWidth, ...lines.map(_temp));
-    const boxWidth = Math.min(contentWidth + 4, effectiveMaxWidth);
-    const innerWidth = boxWidth - 4;
+    const contentWidth = Math.max(0, minWidth, ...lines.map(_temp));
+    const boxWidth = Math.max(MIN_BOX_WIDTH, Math.min(contentWidth + 4, effectiveMaxWidth));
+    const innerWidth = Math.max(0, boxWidth - 4);
     let t6;
     if ($[15] !== boxWidth) {
       t6 = BOX_CHARS.horizontal.repeat(boxWidth - 2);
