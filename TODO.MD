@@ -329,7 +329,7 @@ Remaining partitions:
 | 279 | Spinner local-agent color token naming | Spinner-owned agent rows should use AgenC theme token names rather than migration-only subagent labels. | `RunningLocalAgentsLine` renders with `cyan_FOR_SUBAGENTS_ONLY`. | LEGACY | `runtime/src/tui/components/spinner/Spinner.tsx:462`, `runtime/src/tui/components/spinner/Spinner.tsx:463` | This is live spinner UI carrying a migration/internal token name. | P3 |
 | 280 | Spinner moved-source markers | Live AgenC spinner files should not carry `@ts-nocheck` or moved-source comments once the spinner subsystem is owned by AgenC. | The spinner renderers now start directly with real imports, and the compiler-visible prop/selectors that were hidden by the old suppressions are typed. | OK | `runtime/src/tui/components/spinner/SpinnerGlyph.tsx:1`, `runtime/src/tui/components/spinner/SpinnerAnimationRow.tsx:1`, `runtime/src/tui/components/spinner/TeammateSpinnerTree.tsx:1`, `runtime/src/tui/components/spinner/TeammateSpinnerLine.tsx:1`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:1`, `runtime/src/tui/components/spinner/ShimmerChar.tsx:1` | Focused spinner tests pass, and typecheck has no new spinner errors. | None |
 | 281 | Dead spinner primitive | Spinner primitives should not include unused active-code exports that are no longer part of the AgenC spinner render graph. | `FlashingChar` is exported from `FlashingChar.tsx`, but repository search finds no production import; only current spinner code uses `GlimmerMessage` and `ShimmerChar` paths. | LEGACY | `runtime/src/tui/components/spinner/FlashingChar.tsx:12`, `runtime/src/tui/components/spinner/GlimmerMessage.tsx:136`, `runtime/src/tui/components/spinner/ShimmerChar.tsx:14` | `FlashingChar` is orphaned spinner-era code. | P3 |
-| 282 | Cancel analytics stream mode | Cancel analytics should receive the actual visible stream mode so cancelled requesting/responding/thinking/tool-use states can be distinguished. | Root passes `streamMode={transcript.isStreaming ? "requesting" : undefined}` to `CancelRequestHandler`, so cancellation during responding/thinking/tool-use is always labeled requesting. | BUG | `runtime/src/tui/components/App.tsx:2142`, `runtime/src/tui/components/App.tsx:2143`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2147`, `runtime/src/tui/components/App.tsx:2233`, `runtime/src/tui/components/App.tsx:2238`, `runtime/src/tui/hooks/useCancelRequest.ts:94`, `runtime/src/tui/hooks/useCancelRequest.ts:98`, `runtime/src/tui/hooks/useCancelRequest.ts:105` | Non-rendering telemetry, but it is tied to spinner mode state and makes cancelled-state analysis inaccurate. | P3 |
+| 282 | Cancel analytics stream mode | Cancel analytics should receive the actual visible stream mode so cancelled requesting/responding/thinking/tool-use states can be distinguished. | Root now derives `cancelStreamMode` from the same `streamMode` used by `SpinnerWithVerb`, suppresses it when the spinner is hidden, and passes it through to `CancelRequestHandler`; the handler logs the received mode. Focused tests cover all spinner modes and the analytics payload. | OK | `runtime/src/tui/components/App.tsx:1259`, `runtime/src/tui/components/App.tsx:2161`, `runtime/src/tui/components/App.tsx:2171`, `runtime/src/tui/components/App.tsx:2256`, `runtime/src/tui/hooks/useCancelRequest.ts:95`, `runtime/src/tui/hooks/useCancelRequest.ts:99`, `runtime/src/tui/hooks/useCancelRequest.ts:106`, `runtime/src/tui/components/App.render.test.tsx:725`, `runtime/src/tui/components/App.render.test.tsx:733`, `runtime/src/tui/hooks/useCancelRequest.test.tsx:168`, `runtime/src/tui/hooks/useCancelRequest.test.tsx:181` | Non-rendering telemetry now tracks the same visible spinner state used by the TUI. | None |
 
 ## Part 5 - Tasks, Background Agents, Local Agents, Teams, And Agent Panes
 
@@ -714,13 +714,9 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 86 active rows: 41 BUG, 2 MISSING, 43 LEGACY.
+Totals: 85 active rows: 40 BUG, 2 MISSING, 43 LEGACY.
 
 ### P3
-
-#### `runtime/src/tui/components/App.tsx`
-
-- #282 BUG: Cancel analytics stream mode. Citations: `runtime/src/tui/components/App.tsx:2142`, `runtime/src/tui/components/App.tsx:2143`, `runtime/src/tui/components/App.tsx:2145`, `runtime/src/tui/components/App.tsx:2147`, `runtime/src/tui/components/App.tsx:2233`, `runtime/src/tui/components/App.tsx:2238`, `runtime/src/tui/hooks/useCancelRequest.ts:94`, `runtime/src/tui/hooks/useCancelRequest.ts:98`, `runtime/src/tui/hooks/useCancelRequest.ts:105`
 
 #### `runtime/src/tui/components/AutoModeOptInDialog.tsx`
 

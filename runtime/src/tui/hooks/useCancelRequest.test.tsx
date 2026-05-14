@@ -1,6 +1,7 @@
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { renderToString } from '../../utils/staticRender.js'
+import type { SpinnerMode } from '../components/spinner/types.js'
 
 const fixture = vi.hoisted(() => ({
   state: {
@@ -23,12 +24,16 @@ const fixture = vi.hoisted(() => ({
   onAgentsKilled: vi.fn(),
 }))
 
+const analyticsMock = vi.hoisted(() => ({
+  logEvent: vi.fn(),
+}))
+
 vi.mock('bun:bundle', () => ({
   feature: () => false,
 }))
 
 vi.mock('../../services/analytics/index.js', () => ({
-  logEvent: vi.fn(),
+  logEvent: analyticsMock.logEvent,
 }))
 
 vi.mock('../state/AppState.js', () => ({
@@ -117,7 +122,12 @@ function pendingAgent(id = 'agent_1'): Record<string, unknown> {
   }
 }
 
-async function renderHandler(): Promise<void> {
+async function renderHandler(
+  overrides: {
+    readonly abortSignal?: AbortSignal
+    readonly streamMode?: SpinnerMode
+  } = {},
+): Promise<void> {
   const { CancelRequestHandler } = await import('./useCancelRequest.js')
   await renderToString(
     <CancelRequestHandler
@@ -126,6 +136,7 @@ async function renderHandler(): Promise<void> {
       onAgentsKilled={fixture.onAgentsKilled}
       isMessageSelectorVisible={false}
       screen="prompt"
+      {...overrides}
     />,
     100,
   )
@@ -151,6 +162,27 @@ describe('CancelRequestHandler local-agent cancellation visibility', () => {
     fixture.emitTaskTerminatedSdk.mockClear()
     fixture.onCancel.mockClear()
     fixture.onAgentsKilled.mockClear()
+    analyticsMock.logEvent.mockClear()
+  })
+
+  test('logs the visible stream mode when cancelling an active turn', async () => {
+    const abortController = new AbortController()
+
+    await renderHandler({
+      abortSignal: abortController.signal,
+      streamMode: 'thinking',
+    })
+
+    const cancel = fixture.handlers.get('chat:cancel')
+    expect(cancel?.isActive).toBe(true)
+
+    cancel?.handler()
+
+    expect(analyticsMock.logEvent).toHaveBeenCalledWith('agenc_cancel', {
+      source: 'escape',
+      streamMode: 'thinking',
+    })
+    expect(fixture.onCancel).toHaveBeenCalled()
   })
 
   test('Escape is active during local-agent-only work and shows a visible cancel path', async () => {

@@ -602,6 +602,7 @@ function containsElementNamed(node: React.ReactNode, name: string): boolean {
 
 let installElicitationResolvers: any;
 let settlePendingOnSubmit: any;
+let visibleCancelStreamMode: any;
 const supportsVitestModuleMocks = process.versions.bun === undefined;
 const describeWithVitestMocks = supportsVitestModuleMocks ? describe : describe.skip;
 
@@ -616,6 +617,7 @@ beforeAll(async () => {
   const app = await import("./App.js");
   installElicitationResolvers = app.installElicitationResolvers;
   settlePendingOnSubmit = app.settlePendingOnSubmit;
+  visibleCancelStreamMode = app.visibleCancelStreamMode;
 });
 
 async function renderApp(node: React.ReactNode): Promise<string> {
@@ -718,6 +720,19 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     expect(animatedTerminalTitlePrefix(true, 1, {})).toBe("⠐");
     expect(animatedTerminalTitlePrefix(false, 0, { AGENC_TUI_GLYPHS: "ascii" })).toBe("*");
     expect(animatedTerminalTitlePrefix(true, 1, { AGENC_TUI_GLYPHS: "ascii" })).toBe("+");
+  });
+
+  test("cancel analytics stream mode follows the visible spinner mode", () => {
+    for (const mode of [
+      "requesting",
+      "responding",
+      "thinking",
+      "tool-use",
+      "tool-input",
+    ]) {
+      expect(visibleCancelStreamMode(true, mode)).toBe(mode);
+      expect(visibleCancelStreamMode(false, mode)).toBeUndefined();
+    }
   });
 
   test("App wrapper preserves provider wiring", async () => {

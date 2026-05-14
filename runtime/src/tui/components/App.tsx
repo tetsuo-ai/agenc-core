@@ -1256,6 +1256,13 @@ export function animatedTerminalTitlePrefix(
     : glyphs.titleStaticPrefix;
 }
 
+export function visibleCancelStreamMode(
+  showSpinner: boolean,
+  streamMode: SpinnerMode,
+): SpinnerMode | undefined {
+  return showSpinner ? streamMode : undefined;
+}
+
 /**
  * Maintains the terminal-title side effect for the live AgenC TUI shell.
  *
@@ -2161,6 +2168,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         : transcript.streamingText
           ? "responding"
           : "requesting";
+  const cancelStreamMode = visibleCancelStreamMode(showSpinner, streamMode);
   const spinnerElement = showSpinner ? <SpinnerWithVerb mode={streamMode} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} responseLengthRef={responseLengthRef} verbose={false} hasActiveTools={hasActiveToolActivity} leaderIsIdle={!transcript.isStreaming} overrideMessage={inProgressToolCount > 0 ? "Running tools" : null} /> : null;
 
   // Onboarding renders standalone — composer-only flow drives its own input.
@@ -2245,7 +2253,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     // and resolved via session.cancelTurn cascade.
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
-    } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={transcript.isStreaming ? "requesting" as never : undefined} />
+    } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} />
       <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} />
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
