@@ -10,6 +10,7 @@ import { isPlanModeInterviewPhaseEnabled } from '../../../../utils/planModeV2.js
 import { Select } from '../../CustomSelect/select';
 import { PermissionDialog } from '../PermissionDialog';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
+import { getEnterPlanModeBulletPrefix } from './enterPlanModeGlyphs.js';
 export function EnterPlanModePermissionRequest(t0) {
   const $ = _c(18);
   const {
@@ -56,9 +57,10 @@ export function EnterPlanModePermissionRequest(t0) {
   } else {
     t2 = $[5];
   }
+  const planBulletPrefix = getEnterPlanModeBulletPrefix();
   let t3;
   if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = <Box marginTop={1} flexDirection="column"><Text dimColor={true}>In plan mode, AgenC will:</Text><Text dimColor={true}> · Explore the codebase thoroughly</Text><Text dimColor={true}> · Identify existing patterns</Text><Text dimColor={true}> · Design an implementation strategy</Text><Text dimColor={true}> · Present a plan for your approval</Text></Box>;
+    t3 = <Box marginTop={1} flexDirection="column"><Text dimColor={true}>In plan mode, AgenC will:</Text><Text dimColor={true}>{planBulletPrefix}Explore the codebase thoroughly</Text><Text dimColor={true}>{planBulletPrefix}Identify existing patterns</Text><Text dimColor={true}>{planBulletPrefix}Design an implementation strategy</Text><Text dimColor={true}>{planBulletPrefix}Present a plan for your approval</Text></Box>;
     $[6] = t3;
   } else {
     t3 = $[6];
