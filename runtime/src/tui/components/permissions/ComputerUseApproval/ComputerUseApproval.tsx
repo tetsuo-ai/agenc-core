@@ -1,4 +1,3 @@
-import figures from 'figures'
 import * as React from 'react'
 import { useMemo, useState } from 'react'
 
@@ -15,6 +14,7 @@ import { Box, Text } from '../../../ink.js'
 import type { OptionWithDescription } from '../../CustomSelect/select.js'
 import { Select } from '../../CustomSelect/select.js'
 import { Dialog } from '../../design-system/Dialog.js'
+import { selectComputerUseApprovalGlyphs } from './computerUseGlyphs.js'
 
 type ComputerUseApprovalProps = {
   request: ComputerUsePermissionRequest
@@ -108,12 +108,13 @@ function ComputerUseTccPanel({
     }
   }
 
+  const glyphs = selectComputerUseApprovalGlyphs()
   const accessibilityStatus = tccState.accessibility
-    ? `${figures.tick} granted`
-    : `${figures.cross} not granted`
+    ? `${glyphs.granted} granted`
+    : `${glyphs.denied} not granted`
   const screenRecordingStatus = tccState.screenRecording
-    ? `${figures.tick} granted`
-    : `${figures.cross} not granted`
+    ? `${glyphs.granted} granted`
+    : `${glyphs.denied} not granted`
 
   return (
     <Dialog title="Computer Use needs macOS permissions" onCancel={onDone}>
@@ -191,6 +192,7 @@ function ComputerUseAppListPanel({
       ),
     [request.requestedFlags],
   )
+  const glyphs = selectComputerUseApprovalGlyphs()
 
   const respond = (allow: boolean): void => {
     if (!allow) {
@@ -236,13 +238,13 @@ function ComputerUseAppListPanel({
       return {
         label: (
           <Text>
-            {selected ? figures.circleFilled : figures.circle}{' '}
+            {selected ? glyphs.selectedApp : glyphs.unselectedApp}{' '}
             {app.resolved.displayName}
           </Text>
         ),
         value: toAppOptionValue(bundleId),
         description: sentinel
-          ? `${figures.warning} ${SENTINEL_WARNING[sentinel]}`
+          ? `${glyphs.warning} ${SENTINEL_WARNING[sentinel]}`
           : undefined,
       } satisfies OptionWithDescription<AppListOption>
     })
@@ -290,7 +292,7 @@ function ComputerUseAppListPanel({
       return [
         <Text key={app.requestedName} dimColor>
           {'  '}
-          {figures.circle} {app.requestedName}{' '}
+          {glyphs.unselectedApp} {app.requestedName}{' '}
           <Text dimColor>(not installed)</Text>
         </Text>,
       ]
@@ -300,7 +302,7 @@ function ComputerUseAppListPanel({
       return [
         <Text key={app.resolved.bundleId} dimColor>
           {'  '}
-          {figures.tick} {app.resolved.displayName}{' '}
+          {glyphs.granted} {app.resolved.displayName}{' '}
           <Text dimColor>(already granted)</Text>
         </Text>,
       ]
@@ -324,7 +326,7 @@ function ComputerUseAppListPanel({
             <Text dimColor>Also requested:</Text>
             {requestedFlagKeys.map(flag => (
               <Text key={flag} dimColor>
-                {'  '}· {flag}
+                {'  '}{glyphs.bullet} {flag}
               </Text>
             ))}
           </Box>
