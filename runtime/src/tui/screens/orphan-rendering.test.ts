@@ -6,12 +6,20 @@ const repoRoot = new URL("../../../../", import.meta.url).pathname;
 const startupHelper = ["repl", "Startup", "Gates"].join("");
 const inputHelper = ["repl", "Input", "Suppression"].join("");
 const workerPendingHelper = ["Worker", "Pending", "Permission"].join("");
+const backgroundTaskHelper = ["Background", "Task"].join("");
+const shellProgressHelper = ["Shell", "Progress"].join("");
+const deletedImportPatterns = [
+  new RegExp(`from ['"]\\./${backgroundTaskHelper}(?:\\.js)?['"]`),
+  new RegExp(`from ['"]\\./${shellProgressHelper}(?:\\.js)?['"]`),
+];
 const removed = [
   `runtime/src/tui/screens/${startupHelper}.ts`,
   `runtime/src/tui/screens/${startupHelper}.test.ts`,
   `runtime/src/tui/screens/${inputHelper}.ts`,
   `runtime/src/tui/screens/${inputHelper}.test.ts`,
   `runtime/src/tui/components/permissions/${workerPendingHelper}.tsx`,
+  `runtime/src/tui/components/tasks/${backgroundTaskHelper}.tsx`,
+  `runtime/src/tui/components/tasks/${shellProgressHelper}.tsx`,
 ];
 
 function filesUnder(dir: string): string[] {
@@ -44,6 +52,7 @@ describe("orphan TUI rendering helpers", () => {
         src.includes(startupHelper)
         || src.includes(inputHelper)
         || src.includes(workerPendingHelper)
+        || deletedImportPatterns.some(pattern => pattern.test(src))
       );
     });
 
