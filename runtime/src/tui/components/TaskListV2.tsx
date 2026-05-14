@@ -1,12 +1,11 @@
-// @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import figures from 'figures';
 import * as React from 'react';
-import { useTerminalSize } from '../hooks/useTerminalSize';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { Box, Text } from '../ink.js';
 import { useAppState } from '../state/AppState.js';
-import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types';
+import { isInProcessTeammateTask } from '../../tasks/InProcessTeammateTask/types.js';
 import { AGENT_COLOR_TO_THEME_COLOR, type AgentColorName } from 'src/tools/AgentTool/agentColorManager.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { count } from '../../utils/array.js';
@@ -14,13 +13,22 @@ import { summarizeRecentActivities } from '../../utils/collapseReadSearch.js';
 import { truncateToWidth } from '../../utils/format.js';
 import { isTodoV2Enabled, type Task } from '../../utils/tasks.js';
 import type { Theme } from '../../utils/theme.js';
-import FullWidthRow from './design-system/FullWidthRow';
-import ThemedText from './design-system/ThemedText';
+import type { AppState } from '../state/AppStateStore.js';
+import FullWidthRow from './design-system/FullWidthRow.js';
+import ThemedText from './design-system/ThemedText.js';
 type Props = {
   tasks: Task[];
   isStandalone?: boolean;
 };
 const RECENT_COMPLETED_TTL_MS = 30_000;
+const TASK_ROW_RESERVED_COLUMNS = 15;
+
+export function getTaskListTextWidth(columns: number, ownerWidth = 0): number {
+  const normalizedColumns = Number.isFinite(columns) ? Math.max(0, Math.trunc(columns)) : 0;
+  const normalizedOwnerWidth = Number.isFinite(ownerWidth) ? Math.max(0, Math.trunc(ownerWidth)) : 0;
+  return Math.max(1, normalizedColumns - TASK_ROW_RESERVED_COLUMNS - normalizedOwnerWidth);
+}
+
 function byIdAsc(a: Task, b: Task): number {
   const aNum = parseInt(a.id, 10);
   const bNum = parseInt(b.id, 10);
@@ -33,8 +41,8 @@ export function TaskListV2({
   tasks,
   isStandalone = false
 }: Props): React.ReactNode {
-  const teamContext = useAppState(s => s.teamContext);
-  const appStateTasks = useAppState(s_0 => s_0.tasks);
+  const teamContext = useAppState((s: AppState) => s.teamContext) as AppState['teamContext'];
+  const appStateTasks = useAppState((s_0: AppState) => s_0.tasks) as AppState['tasks'];
   const [, forceUpdate] = React.useState(0);
   const {
     rows,
@@ -82,7 +90,7 @@ export function TaskListV2({
     if (earliestExpiry === Infinity) {
       return;
     }
-    const timer = setTimeout(forceUpdate_0 => forceUpdate_0((n: number) => n + 1), earliestExpiry - currentNow, forceUpdate);
+    const timer = setTimeout(() => forceUpdate(n => n + 1), earliestExpiry - currentNow);
     return () => clearTimeout(timer);
   }, [tasks]);
   if (!isTodoV2Enabled()) {
@@ -95,7 +103,7 @@ export function TaskListV2({
   // Build a map of teammate name -> theme color
   const teammateColors: Record<string, keyof Theme> = {};
   if (isAgentSwarmsEnabled() && teamContext?.teammates) {
-    for (const teammate of Object.values(teamContext.teammates)) {
+    for (const teammate of Object.values(teamContext.teammates) as Array<NonNullable<AppState['teamContext']>['teammates'][string]>) {
       if (teammate.color) {
         const themeColor = AGENT_COLOR_TO_THEME_COLOR[teammate.color as AgentColorName];
         if (themeColor) {
@@ -232,7 +240,7 @@ function getTaskIcon(status: Task['status']): {
     case 'in_progress':
       return {
         icon: figures.squareSmallFilled,
-        color: 'cyan_FOR_SUBAGENTS_ONLY'
+        color: 'suggestion'
       };
     case 'pending':
       return {
@@ -241,7 +249,7 @@ function getTaskIcon(status: Task['status']): {
       };
   }
 }
-function TaskItem(t0) {
+function TaskItem(t0: TaskItemProps): React.ReactNode {
   const $ = _c(37);
   const {
     task,
@@ -278,7 +286,7 @@ function TaskItem(t0) {
     t2 = $[4];
   }
   const ownerWidth = t2;
-  const maxSubjectWidth = Math.max(15, columns - 15 - ownerWidth);
+  const maxSubjectWidth = getTaskListTextWidth(columns, ownerWidth);
   let t3;
   if ($[5] !== maxSubjectWidth || $[6] !== task.subject) {
     t3 = truncateToWidth(task.subject, maxSubjectWidth);
@@ -289,7 +297,7 @@ function TaskItem(t0) {
     t3 = $[7];
   }
   const displaySubject = t3;
-  const maxActivityWidth = Math.max(15, columns - 15);
+  const maxActivityWidth = getTaskListTextWidth(columns);
   let t4;
   if ($[8] !== activity || $[9] !== maxActivityWidth) {
     t4 = activity ? truncateToWidth(activity, maxActivityWidth) : undefined;
@@ -371,9 +379,9 @@ function TaskItem(t0) {
   }
   return t12;
 }
-function _temp2(id) {
+function _temp2(id: string): string {
   return `#${id}`;
 }
-function _temp(a, b) {
+function _temp(a: string, b: string): number {
   return parseInt(a, 10) - parseInt(b, 10);
 }
