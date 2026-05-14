@@ -6,6 +6,7 @@ import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index';
 import { useSetAppState } from '../../state/AppState.js';
 import { type OptionWithDescription, Select } from '../CustomSelect/select';
+import { getPermissionPromptFooterText } from './permissionPromptFooter.js';
 export type FeedbackType = 'accept' | 'reject';
 export type PermissionPromptOption<T extends string> = {
   value: T;
@@ -303,10 +304,10 @@ export function PermissionPrompt(t0) {
   } else {
     t10 = $[47];
   }
-  const t11 = showTabHint && " \xB7 Tab to amend";
+  const t11 = getPermissionPromptFooterText(showTabHint);
   let t12;
   if ($[48] !== t11) {
-    t12 = <Box marginTop={1}><Text dimColor={true}>Esc to cancel{t11}</Text></Box>;
+    t12 = <Box marginTop={1}><Text dimColor={true}>{t11}</Text></Box>;
     $[48] = t11;
     $[49] = t12;
   } else {
