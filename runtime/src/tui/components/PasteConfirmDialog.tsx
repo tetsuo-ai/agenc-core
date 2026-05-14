@@ -8,6 +8,7 @@
  * `n` or `Esc` aborts.
  */
 import React from 'react'
+import { useRegisterOverlay } from '../context/overlayContext.js'
 import { Box, Text, useInput } from '../ink.js'
 
 type Props = {
@@ -24,7 +25,9 @@ function previewCommand(command: string): string {
 }
 
 export function PasteConfirmDialog({ command, onDecide }: Props): React.ReactElement {
-  useInput((input, key) => {
+  useRegisterOverlay('paste-confirm')
+  useInput((input, key, event) => {
+    event.stopImmediatePropagation()
     if (key.escape || input === 'n' || input === 'N') {
       onDecide(false)
       return
