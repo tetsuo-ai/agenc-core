@@ -871,19 +871,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     const input = messageContentToAgentInput(params.content);
-    if (typeof input === "string") {
-      await active.control.sendInput(agentId, input);
-    } else {
-      await submitStructuredAgentInput(
-        active,
-        input,
-        messageContentDisplayText(params.content),
-      );
-    }
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage !== null) {
       const displayText =
         params.displayUserMessage ?? messageContentDisplayText(params.content);
+      // The TUI must see the submitted prompt before assistant deltas;
+      // sendInput can synchronously stream and complete a whole turn.
       await this.#emitOrBufferEvent(active, {
         id: params.messageId,
         type: "user_message",
@@ -895,6 +888,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           displayText,
         },
       });
+    }
+    if (typeof input === "string") {
+      await active.control.sendInput(agentId, input);
+    } else {
+      await submitStructuredAgentInput(
+        active,
+        input,
+        messageContentDisplayText(params.content),
+      );
     }
   }
 

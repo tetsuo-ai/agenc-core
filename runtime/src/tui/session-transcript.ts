@@ -1276,6 +1276,19 @@ export function adaptTranscriptEvents(
   let lastAssistantText = "";
   let isStreaming = false;
 
+  const persistAssistantText = (content: string): void => {
+    if (content.trim().length === 0 || content === lastAssistantText) {
+      return;
+    }
+    out.push(makeAssistantTextMessage(content));
+    lastAssistantText = content;
+  };
+
+  const flushStreamingText = (): void => {
+    persistAssistantText(streamingText);
+    streamingText = "";
+  };
+
   for (const raw of orderSequencedEvents(events)) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
@@ -1353,10 +1366,7 @@ export function adaptTranscriptEvents(
             : typeof payload.content === "string"
               ? payload.content
               : streamingText;
-        if (content.trim().length > 0 && content !== lastAssistantText) {
-          out.push(makeAssistantTextMessage(content));
-          lastAssistantText = content;
-        }
+        persistAssistantText(content);
         streamingText = "";
         streamingToolUses.length = 0;
         pendingToolInputDeltas.clear();
@@ -1378,10 +1388,7 @@ export function adaptTranscriptEvents(
         // assistant message so the user retains the context they
         // were watching get generated. Skip when nothing is buffered
         // to avoid emitting empty assistant rows.
-        if (streamingText.trim().length > 0 && streamingText !== lastAssistantText) {
-          out.push(makeAssistantTextMessage(streamingText));
-          lastAssistantText = streamingText;
-        }
+        persistAssistantText(streamingText);
         // Same preservation rule for partially-streamed thinking text.
         // Without this, an Esc during the thinking phase silently dropped
         // the visible chain-of-thought the user was reading.
@@ -1415,6 +1422,11 @@ export function adaptTranscriptEvents(
         out.push(makeSystemMessage(`Turn aborted: ${stringResult(payload.reason)}`, "warning"));
         break;
       case "user_message":
+        // A submitted user message is a hard visible turn boundary. Some
+        // daemon streams can miss or de-dupe lifecycle events between prompts,
+        // so close any live assistant text here before accumulating the next
+        // response.
+        flushStreamingText();
         out.push(makeUserMessage(payload.displayText ?? payload.message));
         break;
       case "request_user_input":

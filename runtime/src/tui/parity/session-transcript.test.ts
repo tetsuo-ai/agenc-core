@@ -227,6 +227,41 @@ describe("AgenC TUI session transcript", () => {
     expect(transcript.streamingText).toBe("AB");
   });
 
+  test("flushes live assistant text at a user turn boundary without lifecycle events", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "user-1",
+        msg: { type: "user_message", payload: { message: "first" } },
+      },
+      {
+        id: "delta-1",
+        msg: { type: "agent_message_delta", payload: { delta: "one" } },
+      },
+      {
+        id: "user-2",
+        msg: { type: "user_message", payload: { message: "second" } },
+      },
+      {
+        id: "delta-2",
+        msg: { type: "agent_message_delta", payload: { delta: "two" } },
+      },
+    ]);
+
+    expect(transcript.messages.map((message) => message.type)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(transcript.messages[1]?.message.content).toEqual([
+      { type: "text", text: "one" },
+    ]);
+    expect(transcript.messages[2]).toMatchObject({
+      type: "user",
+      message: { content: "second" },
+    });
+    expect(transcript.streamingText).toBe("two");
+  });
+
   test("treats history_cleared as a transcript boundary and resets event dedupe", () => {
     const transcript = adaptTranscriptEvents(
       [

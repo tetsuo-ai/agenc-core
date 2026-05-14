@@ -3884,6 +3884,64 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("[managed-thread] emits visible user message before routing attached input", async () => {
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-user-order",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-user-order", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+    control.sendInput.mockImplementation(async () => {
+      expect(emitted[0]).toMatchObject({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          agentId: "session-user-order",
+          eventId: "message_1",
+          acceptedAt: "2026-05-01T12:00:01.000Z",
+          event: {
+            id: "message_1",
+            type: "user_message",
+            messageId: "message_1",
+            streamId: "stream_1",
+            acceptedAt: "2026-05-01T12:00:01.000Z",
+            payload: {
+              message: "continue",
+              displayText: "continue",
+            },
+          },
+        },
+      });
+    });
+
+    await runner.submitAgentMessage("session-user-order", {
+      sessionId: "session_1",
+      content: "continue",
+      originalContent: "continue",
+      messageId: "message_1",
+      streamId: "stream_1",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+    });
+
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-user-order",
+      "continue",
+    );
+    expect(emitted).toHaveLength(1);
+  });
+
   it("[managed-thread] interruptAgentTurn submits interrupt op on managed thread", async () => {
     const { runner, stub } = makeTopLevelRunner({
       conversationId: "session-interrupt",
