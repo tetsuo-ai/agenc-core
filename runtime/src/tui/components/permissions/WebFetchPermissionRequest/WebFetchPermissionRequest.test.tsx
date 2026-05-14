@@ -5,7 +5,7 @@ import { renderToString } from '../../../../utils/staticRender.js'
 
 const selectProps = vi.hoisted(() => ({
   current: undefined as undefined | {
-    options: Array<{ value: string }>
+    options: Array<{ label: React.ReactNode; value: string }>
     onChange: (value: string) => void
     onCancel: () => void
   },
@@ -23,7 +23,7 @@ vi.mock('../../../ink.js', async () => {
 
 vi.mock('../../CustomSelect/select', () => ({
   Select: (props: {
-    options: Array<{ value: string }>
+    options: Array<{ label: React.ReactNode; value: string }>
     onChange: (value: string) => void
     onCancel: () => void
   }) => {
@@ -51,6 +51,22 @@ vi.mock('../PermissionRuleExplanation', () => ({
 vi.mock('../../../../utils/permissions/permissionsLoader', () => ({
   shouldShowAlwaysAllowOptions: () => true,
 }))
+
+function collectText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
+  }
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+  if (Array.isArray(node)) {
+    return node.map(collectText).join('')
+  }
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return collectText(node.props.children)
+  }
+  return ''
+}
 
 function makeProps(url: string) {
   const toolUseConfirm = {
@@ -126,5 +142,24 @@ describe('WebFetchPermissionRequest', () => {
       'yes-dont-ask-again-domain',
       'no',
     ])
+  })
+
+  it('does not advertise reject feedback when the dialog cannot collect it', async () => {
+    const { WebFetchPermissionRequest } = await import(
+      './WebFetchPermissionRequest.js'
+    )
+
+    await renderToString(
+      <WebFetchPermissionRequest {...makeProps('https://example.com/a')} />,
+      80,
+    )
+
+    const denyOption = selectProps.current?.options.find(
+      option => option.value === 'no',
+    )
+
+    expect(collectText(denyOption?.label)).toBe('No, deny fetch')
+    expect(collectText(denyOption?.label)).not.toContain('tell AgenC')
+    expect(collectText(denyOption?.label)).not.toContain('(esc)')
   })
 })

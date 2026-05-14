@@ -1,15 +1,13 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { useCallback, useMemo } from 'react';
 import { Box, Text, useTheme } from '../../../ink.js';
-import { WebFetchTool } from '../../../../tools/WebFetchTool/WebFetchTool';
-import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader'; // upstream-import: keep target is owned by another Z-PURGE item
-import { type OptionWithDescription, Select } from '../../CustomSelect/select';
-import { type UnaryEvent, usePermissionRequestLogging } from '../hooks';
-import { PermissionDialog } from '../PermissionDialog';
+import { WebFetchTool } from '../../../../tools/WebFetchTool/WebFetchTool.js';
+import { shouldShowAlwaysAllowOptions } from '../../../../utils/permissions/permissionsLoader.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { type OptionWithDescription, Select } from '../../CustomSelect/select.js';
+import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
+import { PermissionDialog } from '../PermissionDialog.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
-import { PermissionRuleExplanation } from '../PermissionRuleExplanation';
-import { logUnaryPermissionEvent } from '../utils';
+import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
+import { logUnaryPermissionEvent } from '../utils.js';
 
 function hostnameFromUrl(url: unknown): string | null {
   if (typeof url !== 'string') {
@@ -46,7 +44,7 @@ export function WebFetchPermissionRequest({
   onReject,
   verbose,
   workerBadge,
-}: PermissionRequestProps) {
+}: PermissionRequestProps): React.ReactNode {
   const [theme] = useTheme();
   const { url } = toolUseConfirm.input as {
     url: string;
@@ -59,7 +57,7 @@ export function WebFetchPermissionRequest({
   usePermissionRequestLogging(toolUseConfirm, unaryEvent);
   const showAlwaysAllowOptions = shouldShowAlwaysAllowOptions();
 
-  const options: OptionWithDescription[] = [{
+  const options: OptionWithDescription<string>[] = [{
     label: "Yes",
     value: "yes"
   }];
@@ -72,7 +70,7 @@ export function WebFetchPermissionRequest({
   }
 
   options.push({
-    label: <Text>No, and tell AgenC what to do differently <Text bold={true}>(esc)</Text></Text>,
+    label: "No, deny fetch",
     value: "no"
   });
 
