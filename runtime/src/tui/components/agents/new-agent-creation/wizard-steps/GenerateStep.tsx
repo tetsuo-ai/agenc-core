@@ -12,6 +12,7 @@ import TextInput from '../../../TextInput';
 import { useWizard } from '../../../wizard/index';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
 import { generateAgent } from '../../generateAgent';
+import { useAgentWizardInputColumns } from '../layout.js';
 import type { AgentWizardData } from '../types';
 export function GenerateStep(): ReactNode {
   const {
@@ -26,6 +27,7 @@ export function GenerateStep(): ReactNode {
   const [cursorOffset, setCursorOffset] = useState(prompt.length);
   const model = useMainLoopModel();
   const abortControllerRef = useRef<AbortController | null>(null);
+  const inputColumns = useAgentWizardInputColumns(80);
 
   // Cancel generation when escape pressed during generation
   const handleCancelGeneration = useCallback(() => {
@@ -136,7 +138,7 @@ export function GenerateStep(): ReactNode {
         {error && <Box marginBottom={1}>
             <Text color="error">{error}</Text>
           </Box>}
-        <TextInput value={prompt} onChange={setPrompt} onSubmit={handleGenerate} placeholder="e.g., Help me write unit tests for my code..." columns={80} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus showCursor />
+        <TextInput value={prompt} onChange={setPrompt} onSubmit={handleGenerate} placeholder="e.g., Help me write unit tests for my code..." columns={inputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus showCursor />
       </Box>
     </WizardDialogLayout>;
 }

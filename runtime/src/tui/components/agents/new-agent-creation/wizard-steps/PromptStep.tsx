@@ -9,6 +9,7 @@ import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHin
 import TextInput from '../../../TextInput';
 import { useWizard } from '../../../wizard/index';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
+import { useAgentWizardInputColumns } from '../layout.js';
 import type { AgentWizardData } from '../types';
 export function PromptStep() {
   const $ = _c(20);
@@ -21,6 +22,7 @@ export function PromptStep() {
   const [systemPrompt, setSystemPrompt] = useState(wizardData.systemPrompt || "");
   const [cursorOffset, setCursorOffset] = useState(systemPrompt.length);
   const [error, setError] = useState(null);
+  const inputColumns = useAgentWizardInputColumns(80);
   let t0;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t0 = {
@@ -96,16 +98,7 @@ export function PromptStep() {
     t5 = $[9];
     t6 = $[10];
   }
-  let t7;
-  if ($[11] !== cursorOffset || $[12] !== handleSubmit || $[13] !== systemPrompt) {
-    t7 = <Box marginTop={1}><TextInput value={systemPrompt} onChange={setSystemPrompt} onSubmit={handleSubmit} placeholder="You are a helpful code reviewer who..." columns={80} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus={true} showCursor={true} /></Box>;
-    $[11] = cursorOffset;
-    $[12] = handleSubmit;
-    $[13] = systemPrompt;
-    $[14] = t7;
-  } else {
-    t7 = $[14];
-  }
+  const t7 = <Box marginTop={1}><TextInput value={systemPrompt} onChange={setSystemPrompt} onSubmit={handleSubmit} placeholder="You are a helpful code reviewer who..." columns={inputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus={true} showCursor={true} /></Box>;
   let t8;
   if ($[15] !== error) {
     t8 = error && <Box marginTop={1}><Text color="error">{error}</Text></Box>;

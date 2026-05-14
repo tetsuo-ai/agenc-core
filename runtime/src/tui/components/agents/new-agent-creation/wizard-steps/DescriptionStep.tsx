@@ -9,6 +9,7 @@ import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHin
 import TextInput from '../../../TextInput';
 import { useWizard } from '../../../wizard/index';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
+import { useAgentWizardInputColumns } from '../layout.js';
 import type { AgentWizardData } from '../types';
 export function DescriptionStep() {
   const $ = _c(18);
@@ -21,6 +22,7 @@ export function DescriptionStep() {
   const [whenToUse, setWhenToUse] = useState(wizardData.whenToUse || "");
   const [cursorOffset, setCursorOffset] = useState(whenToUse.length);
   const [error, setError] = useState(null);
+  const inputColumns = useAgentWizardInputColumns(80);
   let t0;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t0 = {
@@ -91,16 +93,7 @@ export function DescriptionStep() {
   } else {
     t5 = $[8];
   }
-  let t6;
-  if ($[9] !== cursorOffset || $[10] !== handleSubmit || $[11] !== whenToUse) {
-    t6 = <Box marginTop={1}><TextInput value={whenToUse} onChange={setWhenToUse} onSubmit={handleSubmit} placeholder="e.g., use this agent after you're done writing code..." columns={80} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus={true} showCursor={true} /></Box>;
-    $[9] = cursorOffset;
-    $[10] = handleSubmit;
-    $[11] = whenToUse;
-    $[12] = t6;
-  } else {
-    t6 = $[12];
-  }
+  const t6 = <Box marginTop={1}><TextInput value={whenToUse} onChange={setWhenToUse} onSubmit={handleSubmit} placeholder="e.g., use this agent after you're done writing code..." columns={inputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus={true} showCursor={true} /></Box>;
   let t7;
   if ($[13] !== error) {
     t7 = error && <Box marginTop={1}><Text color="error">{error}</Text></Box>;
