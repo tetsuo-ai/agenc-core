@@ -1,26 +1,20 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import chalk from 'chalk';
-import figures from 'figures';
-import Fuse from 'fuse.js';
 import React from 'react';
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useSearchInput } from '../hooks/useSearchInput';
 import { useTerminalSize } from '../hooks/useTerminalSize';
-import { applyColor } from '../ink/colorize.js';
-import type { Color } from '../ink/styles.js';
-import { Box, Text, useInput, useTerminalFocus, useTheme } from '../ink.js';
+import { Box, Text, useInput, useTerminalFocus } from '../ink.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { logEvent } from '../../services/analytics/index';
-import type { LogOption, SerializedMessage } from '../../types/logs';
+import type { LogOption } from '../../types/logs';
 import { formatLogMetadata, truncateToWidth } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getWorktreePaths } from '../../utils/getWorktreePaths.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getBranch } from '../../utils/git';
 import { getLogDisplayTitle } from '../../utils/log.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getFirstMeaningfulUserMessageTextContent, getSessionIdFromLog, isCustomTitleEnabled, saveCustomTitle } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTheme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';
@@ -28,22 +22,9 @@ import { Divider } from './design-system/Divider';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
 import { SearchBox } from './SearchBox';
 import { SessionPreview } from './SessionPreview';
-import { Spinner } from './spinner/Spinner.js';
 import { TagTabs } from './TagTabs';
 import TextInput from './TextInput';
 import { type TreeNode, TreeSelect } from './ui/TreeSelect';
-type AgenticSearchState = {
-  status: 'idle';
-} | {
-  status: 'searching';
-} | {
-  status: 'results';
-  results: LogOption[];
-  query: string;
-} | {
-  status: 'error';
-  message: string;
-};
 export type LogSelectorProps = {
   logs: LogOption[];
   maxHeight?: number;
@@ -55,7 +36,6 @@ export type LogSelectorProps = {
   initialSearchQuery?: string;
   showAllProjects?: boolean;
   onToggleAllProjects?: () => void;
-  onAgenticSearch?: (query: string, logs: LogOption[], signal?: AbortSignal) => Promise<LogOption[]>;
 };
 type LogTreeNode = TreeNode<{
   log: LogOption;
@@ -70,45 +50,6 @@ function normalizeAndTruncateToWidth(text: string, maxWidth: number): string {
 const PARENT_PREFIX_WIDTH = 2; // '▼ ' or '▶ '
 const CHILD_PREFIX_WIDTH = 4; // '  ▸ '
 
-// Deep search constants
-const DEEP_SEARCH_MAX_MESSAGES = 2000;
-const DEEP_SEARCH_CROP_SIZE = 1000;
-const DEEP_SEARCH_MAX_TEXT_LENGTH = 50000; // Cap searchable text per session
-const FUSE_THRESHOLD = 0.3;
-const DATE_TIE_THRESHOLD_MS = 60 * 1000; // 1 minute - use relevance as tie-breaker within this window
-const SNIPPET_CONTEXT_CHARS = 50; // Characters to show before/after match
-
-type Snippet = {
-  before: string;
-  match: string;
-  after: string;
-};
-function formatSnippet({
-  before,
-  match,
-  after
-}: Snippet, highlightColor: (text: string) => string): string {
-  return chalk.dim(before) + highlightColor(match) + chalk.dim(after);
-}
-function extractSnippet(text: string, query: string, contextChars: number): Snippet | null {
-  // Find exact query occurrence (case-insensitive).
-  // Note: Fuse does fuzzy matching, so this may miss some fuzzy matches.
-  // This is acceptable currently - in the future we could use Fuse's includeMatches
-  // option and work with the match indices directly.
-  const matchIndex = text.toLowerCase().indexOf(query.toLowerCase());
-  if (matchIndex === -1) return null;
-  const matchEnd = matchIndex + query.length;
-  const snippetStart = Math.max(0, matchIndex - contextChars);
-  const snippetEnd = Math.min(text.length, matchEnd + contextChars);
-  const beforeRaw = text.slice(snippetStart, matchIndex);
-  const matchText = text.slice(matchIndex, matchEnd);
-  const afterRaw = text.slice(matchEnd, snippetEnd);
-  return {
-    before: (snippetStart > 0 ? '…' : '') + beforeRaw.replace(/\s+/g, ' ').trimStart(),
-    match: matchText.trim(),
-    after: afterRaw.replace(/\s+/g, ' ').trimEnd() + (snippetEnd < text.length ? '…' : '')
-  };
-}
 function buildLogLabel(log: LogOption, maxLabelWidth: number, options?: {
   isGroupHeader?: boolean;
   isChild?: boolean;
@@ -178,8 +119,7 @@ export function LogSelector(t0) {
     onLoadMore,
     initialSearchQuery,
     showAllProjects: t2,
-    onToggleAllProjects,
-    onAgenticSearch
+    onToggleAllProjects
   } = t0;
   const maxHeight = t1 === undefined ? Infinity : t1;
   const showAllProjects = t2 === undefined ? false : t2;
@@ -195,27 +135,6 @@ export function LogSelector(t0) {
     t3 = $[0];
   }
   const isResumeWithRenameEnabled = t3;
-  const isDeepSearchEnabled = false;
-  const [themeName] = useTheme();
-  let t4;
-  if ($[1] !== themeName) {
-    t4 = getTheme(themeName);
-    $[1] = themeName;
-    $[2] = t4;
-  } else {
-    t4 = $[2];
-  }
-  const theme = t4;
-  let t5;
-  if ($[3] !== theme.warning) {
-    t5 = text => applyColor(text, theme.warning as Color);
-    $[3] = theme.warning;
-    $[4] = t5;
-  } else {
-    t5 = $[4];
-  }
-  const highlightColor = t5;
-  const isAgenticSearchEnabled = false;
   const [currentBranch, setCurrentBranch] = React.useState(null);
   const [branchFilterEnabled, setBranchFilterEnabled] = React.useState(false);
   const [showAllWorktrees, setShowAllWorktrees] = React.useState(false);
@@ -244,19 +163,7 @@ export function LogSelector(t0) {
   const [previewLog, setPreviewLog] = React.useState(null);
   const prevFocusedIdRef = React.useRef(null);
   const [selectedTagIndex, setSelectedTagIndex] = React.useState(0);
-  let t8;
-  if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-    t8 = {
-      status: "idle"
-    };
-    $[7] = t8;
-  } else {
-    t8 = $[7];
-  }
-  const [agenticSearchState, setAgenticSearchState] = React.useState(t8);
-  const [isAgenticSearchOptionFocused, setIsAgenticSearchOptionFocused] = React.useState(false);
-  const agenticSearchAbortRef = React.useRef(null);
-  const t9 = viewMode === "search" && agenticSearchState.status !== "searching";
+  const t9 = viewMode === "search";
   let t10;
   let t11;
   let t12;
@@ -303,30 +210,6 @@ export function LogSelector(t0) {
     setQuery: setSearchQuery,
     cursorOffset: searchCursorOffset
   } = useSearchInput(t14);
-  const deferredSearchQuery = React.useDeferredValue(searchQuery);
-  const [debouncedDeepSearchQuery, setDebouncedDeepSearchQuery] = React.useState("");
-  let t15;
-  let t16;
-  if ($[14] !== deferredSearchQuery) {
-    t15 = () => {
-      if (!deferredSearchQuery) {
-        setDebouncedDeepSearchQuery("");
-        return;
-      }
-      const timeoutId = setTimeout(setDebouncedDeepSearchQuery, 300, deferredSearchQuery);
-      return () => clearTimeout(timeoutId);
-    };
-    t16 = [deferredSearchQuery];
-    $[14] = deferredSearchQuery;
-    $[15] = t15;
-    $[16] = t16;
-  } else {
-    t15 = $[15];
-    t16 = $[16];
-  }
-  React.useEffect(t15, t16);
-  const [deepSearchResults, setDeepSearchResults] = React.useState(null);
-  const [isSearching, setIsSearching] = React.useState(false);
   let t17;
   let t18;
   if ($[17] === Symbol.for("react.memo_cache_sentinel")) {
@@ -344,7 +227,6 @@ export function LogSelector(t0) {
     t18 = $[18];
   }
   React.useEffect(t17, t18);
-  const searchableTextByLog = new Map(logs.map(_temp));
   let t19;
   t19 = null;
   let t20;
@@ -467,125 +349,8 @@ export function LogSelector(t0) {
     t22 = t23;
   }
   const titleFilteredLogs = t22;
-  let t23;
-  let t24;
-  if ($[42] !== debouncedDeepSearchQuery || $[43] !== deferredSearchQuery) {
-    t23 = () => {
-      if (false && deferredSearchQuery && deferredSearchQuery !== debouncedDeepSearchQuery) {
-        setIsSearching(true);
-      }
-    };
-    t24 = [deferredSearchQuery, debouncedDeepSearchQuery, false];
-    $[42] = debouncedDeepSearchQuery;
-    $[43] = deferredSearchQuery;
-    $[44] = t23;
-    $[45] = t24;
-  } else {
-    t23 = $[44];
-    t24 = $[45];
-  }
-  React.useEffect(t23, t24);
-  let t25;
-  let t26;
-  if ($[46] !== debouncedDeepSearchQuery) {
-    t25 = () => {
-      if (true || !debouncedDeepSearchQuery || true) {
-        setDeepSearchResults(null);
-        setIsSearching(false);
-        return;
-      }
-      const timeoutId_0 = setTimeout(_temp5, 0, null, debouncedDeepSearchQuery, setDeepSearchResults, setIsSearching);
-      return () => {
-        clearTimeout(timeoutId_0);
-      };
-    };
-    t26 = [debouncedDeepSearchQuery, null, false];
-    $[46] = debouncedDeepSearchQuery;
-    $[47] = t25;
-    $[48] = t26;
-  } else {
-    t25 = $[47];
-    t26 = $[48];
-  }
-  React.useEffect(t25, t26);
-  let filtered_0;
-  let snippetMap;
-  if ($[49] !== debouncedDeepSearchQuery || $[50] !== deepSearchResults || $[51] !== titleFilteredLogs) {
-    snippetMap = new Map();
-    filtered_0 = titleFilteredLogs;
-    if (deepSearchResults && debouncedDeepSearchQuery && deepSearchResults.query === debouncedDeepSearchQuery) {
-      for (const result of deepSearchResults.results) {
-        if (result.searchableText) {
-          const snippet = extractSnippet(result.searchableText, debouncedDeepSearchQuery, SNIPPET_CONTEXT_CHARS);
-          if (snippet) {
-            snippetMap.set(result.log, snippet);
-          }
-        }
-      }
-      let t27;
-      if ($[54] !== filtered_0) {
-        t27 = new Set(filtered_0.map(_temp6));
-        $[54] = filtered_0;
-        $[55] = t27;
-      } else {
-        t27 = $[55];
-      }
-      const titleMatchIds = t27;
-      let t28;
-      if ($[56] !== deepSearchResults.results || $[57] !== filtered_0 || $[58] !== titleMatchIds) {
-        let t29;
-        if ($[60] !== titleMatchIds) {
-          t29 = log_7 => !titleMatchIds.has(log_7.messages[0]?.uuid);
-          $[60] = titleMatchIds;
-          $[61] = t29;
-        } else {
-          t29 = $[61];
-        }
-        const transcriptOnlyMatches = deepSearchResults.results.map(_temp7).filter(t29);
-        t28 = [...filtered_0, ...transcriptOnlyMatches];
-        $[56] = deepSearchResults.results;
-        $[57] = filtered_0;
-        $[58] = titleMatchIds;
-        $[59] = t28;
-      } else {
-        t28 = $[59];
-      }
-      filtered_0 = t28;
-    }
-    $[49] = debouncedDeepSearchQuery;
-    $[50] = deepSearchResults;
-    $[51] = titleFilteredLogs;
-    $[52] = filtered_0;
-    $[53] = snippetMap;
-  } else {
-    filtered_0 = $[52];
-    snippetMap = $[53];
-  }
-  let t27;
-  if ($[62] !== filtered_0 || $[63] !== snippetMap) {
-    t27 = {
-      filteredLogs: filtered_0,
-      snippets: snippetMap
-    };
-    $[62] = filtered_0;
-    $[63] = snippetMap;
-    $[64] = t27;
-  } else {
-    t27 = $[64];
-  }
-  const {
-    filteredLogs,
-    snippets
-  } = t27;
-  let t28;
-  bb1: {
-    if (agenticSearchState.status === "results" && agenticSearchState.results.length > 0) {
-      t28 = agenticSearchState.results;
-      break bb1;
-    }
-    t28 = filteredLogs;
-  }
-  const displayedLogs = t28;
+  const filteredLogs = titleFilteredLogs;
+  const displayedLogs = filteredLogs;
   const maxLabelWidth = Math.max(30, columns - 4);
   let t29;
   bb2: {
@@ -601,14 +366,12 @@ export function LogSelector(t0) {
       break bb2;
     }
     let t30;
-    if ($[66] !== displayedLogs || $[67] !== highlightColor || $[68] !== maxLabelWidth || $[69] !== showAllProjects || $[70] !== snippets) {
+    if ($[66] !== displayedLogs || $[68] !== maxLabelWidth || $[69] !== showAllProjects) {
       const sessionGroups = groupLogsBySessionId(displayedLogs);
       t30 = Array.from(sessionGroups.entries()).map(t31 => {
         const [sessionId, groupLogs] = t31;
         const latestLog = groupLogs[0];
         const indexInFiltered = displayedLogs.indexOf(latestLog);
-        const snippet_0 = snippets.get(latestLog);
-        const snippetStr = snippet_0 ? formatSnippet(snippet_0, highlightColor) : null;
         if (groupLogs.length === 1) {
           const metadata = buildLogMetadata(latestLog, {
             showProjectPath: showAllProjects
@@ -620,15 +383,13 @@ export function LogSelector(t0) {
               indexInFiltered
             },
             label: buildLogLabel(latestLog, maxLabelWidth),
-            description: snippetStr ? `${metadata}\n  ${snippetStr}` : metadata,
+            description: metadata,
             dimDescription: true
           };
         }
         const forkCount = groupLogs.length - 1;
         const children = groupLogs.slice(1).map((log_8, index) => {
           const childIndexInFiltered = displayedLogs.indexOf(log_8);
-          const childSnippet = snippets.get(log_8);
-          const childSnippetStr = childSnippet ? formatSnippet(childSnippet, highlightColor) : null;
           const childMetadata = buildLogMetadata(log_8, {
             isChild: true,
             showProjectPath: showAllProjects
@@ -642,7 +403,7 @@ export function LogSelector(t0) {
             label: buildLogLabel(log_8, maxLabelWidth, {
               isChild: true
             }),
-            description: childSnippetStr ? `${childMetadata}\n      ${childSnippetStr}` : childMetadata,
+            description: childMetadata,
             dimDescription: true
           };
         });
@@ -659,16 +420,14 @@ export function LogSelector(t0) {
             isGroupHeader: true,
             forkCount
           }),
-          description: snippetStr ? `${parentMetadata}\n  ${snippetStr}` : parentMetadata,
+          description: parentMetadata,
           dimDescription: true,
           children
         };
       });
       $[66] = displayedLogs;
-      $[67] = highlightColor;
       $[68] = maxLabelWidth;
       $[69] = showAllProjects;
-      $[70] = snippets;
       $[71] = t30;
     } else {
       t30 = $[71];
@@ -690,38 +449,32 @@ export function LogSelector(t0) {
       break bb3;
     }
     let t31;
-    if ($[73] !== displayedLogs || $[74] !== highlightColor || $[75] !== maxLabelWidth || $[76] !== showAllProjects || $[77] !== snippets) {
+    if ($[73] !== displayedLogs || $[75] !== maxLabelWidth || $[76] !== showAllProjects) {
       let t32;
-      if ($[79] !== highlightColor || $[80] !== maxLabelWidth || $[81] !== showAllProjects || $[82] !== snippets) {
+      if ($[80] !== maxLabelWidth || $[81] !== showAllProjects) {
         t32 = (log_9, index_0) => {
           const rawSummary = getLogDisplayTitle(log_9);
           const summaryWithSidechain = rawSummary + (log_9.isSidechain ? " (sidechain)" : "");
           const summary = normalizeAndTruncateToWidth(summaryWithSidechain, maxLabelWidth);
           const baseDescription = formatLogMetadata(log_9);
           const projectSuffix = showAllProjects && log_9.projectPath ? ` · ${log_9.projectPath}` : "";
-          const snippet_1 = snippets.get(log_9);
-          const snippetStr_0 = snippet_1 ? formatSnippet(snippet_1, highlightColor) : null;
           return {
             label: summary,
-            description: snippetStr_0 ? `${baseDescription}${projectSuffix}\n  ${snippetStr_0}` : baseDescription + projectSuffix,
+            description: baseDescription + projectSuffix,
             dimDescription: true,
             value: index_0.toString()
           };
         };
-        $[79] = highlightColor;
         $[80] = maxLabelWidth;
         $[81] = showAllProjects;
-        $[82] = snippets;
         $[83] = t32;
       } else {
         t32 = $[83];
       }
       t31 = displayedLogs.map(t32);
       $[73] = displayedLogs;
-      $[74] = highlightColor;
       $[75] = maxLabelWidth;
       $[76] = showAllProjects;
-      $[77] = snippets;
       $[78] = t31;
     } else {
       t31 = $[78];
@@ -812,143 +565,6 @@ export function LogSelector(t0) {
     t34 = $[93];
   }
   const enterSearchMode = t34;
-  let t35;
-  if ($[94] !== logs || $[95] !== onAgenticSearch || $[96] !== searchQuery) {
-    t35 = async () => {
-      if (!searchQuery.trim() || !onAgenticSearch || true) {
-        return;
-      }
-      agenticSearchAbortRef.current?.abort();
-      const abortController = new AbortController();
-      agenticSearchAbortRef.current = abortController;
-      setAgenticSearchState({
-        status: "searching"
-      });
-      logEvent("tengu_agentic_search_started", {
-        query_length: searchQuery.length
-      });
-      ;
-      try {
-        const results_0 = await onAgenticSearch(searchQuery, logs, abortController.signal);
-        if (abortController.signal.aborted) {
-          return;
-        }
-        setAgenticSearchState({
-          status: "results",
-          results: results_0,
-          query: searchQuery
-        });
-        logEvent("tengu_agentic_search_completed", {
-          query_length: searchQuery.length,
-          results_count: results_0.length
-        });
-      } catch (t36) {
-        const error = t36;
-        if (abortController.signal.aborted) {
-          return;
-        }
-        setAgenticSearchState({
-          status: "error",
-          message: error instanceof Error ? error.message : "Search failed"
-        });
-        logEvent("tengu_agentic_search_error", {
-          query_length: searchQuery.length
-        });
-      }
-    };
-    $[94] = logs;
-    $[95] = onAgenticSearch;
-    $[96] = searchQuery;
-    $[97] = t35;
-  } else {
-    t35 = $[97];
-  }
-  const handleAgenticSearch = t35;
-  let t36;
-  if ($[98] !== agenticSearchState.query || $[99] !== agenticSearchState.status || $[100] !== searchQuery) {
-    t36 = () => {
-      if (agenticSearchState.status !== "idle" && agenticSearchState.status !== "searching") {
-        if (agenticSearchState.status === "results" && agenticSearchState.query !== searchQuery || agenticSearchState.status === "error") {
-          setAgenticSearchState({
-            status: "idle"
-          });
-        }
-      }
-    };
-    $[98] = agenticSearchState.query;
-    $[99] = agenticSearchState.status;
-    $[100] = searchQuery;
-    $[101] = t36;
-  } else {
-    t36 = $[101];
-  }
-  let t37;
-  if ($[102] !== agenticSearchState || $[103] !== searchQuery) {
-    t37 = [searchQuery, agenticSearchState];
-    $[102] = agenticSearchState;
-    $[103] = searchQuery;
-    $[104] = t37;
-  } else {
-    t37 = $[104];
-  }
-  React.useEffect(t36, t37);
-  let t38;
-  let t39;
-  if ($[105] === Symbol.for("react.memo_cache_sentinel")) {
-    t38 = () => () => {
-      agenticSearchAbortRef.current?.abort();
-    };
-    t39 = [];
-    $[105] = t38;
-    $[106] = t39;
-  } else {
-    t38 = $[105];
-    t39 = $[106];
-  }
-  React.useEffect(t38, t39);
-  const prevAgenticStatusRef = React.useRef(agenticSearchState.status);
-  let t40;
-  if ($[107] !== agenticSearchState.status || $[108] !== displayedLogs[0] || $[109] !== displayedLogs.length || $[110] !== treeNodes) {
-    t40 = () => {
-      const prevStatus = prevAgenticStatusRef.current;
-      prevAgenticStatusRef.current = agenticSearchState.status;
-      if (prevStatus === "searching" && agenticSearchState.status === "results") {
-        if (isResumeWithRenameEnabled && treeNodes.length > 0) {
-          setFocusedNode(treeNodes[0]);
-        } else {
-          if (!isResumeWithRenameEnabled && displayedLogs.length > 0) {
-            const firstLog = displayedLogs[0];
-            setFocusedNode({
-              id: "0",
-              value: {
-                log: firstLog,
-                indexInFiltered: 0
-              },
-              label: ""
-            });
-          }
-        }
-      }
-    };
-    $[107] = agenticSearchState.status;
-    $[108] = displayedLogs[0];
-    $[109] = displayedLogs.length;
-    $[110] = treeNodes;
-    $[111] = t40;
-  } else {
-    t40 = $[111];
-  }
-  let t41;
-  if ($[112] !== agenticSearchState.status || $[113] !== displayedLogs || $[114] !== treeNodes) {
-    t41 = [agenticSearchState.status, isResumeWithRenameEnabled, treeNodes, displayedLogs];
-    $[112] = agenticSearchState.status;
-    $[113] = displayedLogs;
-    $[114] = treeNodes;
-    $[115] = t41;
-  } else {
-    t41 = $[115];
-  }
-  React.useEffect(t40, t41);
   let t42;
   if ($[116] !== displayedLogs) {
     t42 = value => {
@@ -989,32 +605,6 @@ export function LogSelector(t0) {
     t43 = $[119];
   }
   const handleTreeSelectFocus = t43;
-  let t44;
-  if ($[120] === Symbol.for("react.memo_cache_sentinel")) {
-    t44 = () => {
-      agenticSearchAbortRef.current?.abort();
-      setAgenticSearchState({
-        status: "idle"
-      });
-      logEvent("tengu_agentic_search_cancelled", {});
-    };
-    $[120] = t44;
-  } else {
-    t44 = $[120];
-  }
-  const t45 = viewMode !== "preview" && agenticSearchState.status === "searching";
-  let t46;
-  if ($[121] !== t45) {
-    t46 = {
-      context: "Confirmation",
-      isActive: t45
-    };
-    $[121] = t45;
-    $[122] = t46;
-  } else {
-    t46 = $[122];
-  }
-  useKeybinding("confirm:no", t44, t46);
   let t47;
   if ($[123] === Symbol.for("react.memo_cache_sentinel")) {
     t47 = () => {
@@ -1025,7 +615,7 @@ export function LogSelector(t0) {
   } else {
     t47 = $[123];
   }
-  const t48 = viewMode === "rename" && agenticSearchState.status !== "searching";
+  const t48 = viewMode === "rename";
   let t49;
   if ($[124] !== t48) {
     t49 = {
@@ -1038,71 +628,18 @@ export function LogSelector(t0) {
     t49 = $[125];
   }
   useKeybinding("confirm:no", t47, t49);
-  let t50;
-  if ($[126] !== onCancel || $[127] !== setSearchQuery) {
-    t50 = () => {
-      setSearchQuery("");
-      setIsAgenticSearchOptionFocused(false);
-      onCancel?.();
-    };
-    $[126] = onCancel;
-    $[127] = setSearchQuery;
-    $[128] = t50;
-  } else {
-    t50 = $[128];
-  }
-  const t51 = viewMode !== "preview" && viewMode !== "rename" && viewMode !== "search" && isAgenticSearchOptionFocused && agenticSearchState.status !== "searching";
-  let t52;
-  if ($[129] !== t51) {
-    t52 = {
-      context: "Confirmation",
-      isActive: t51
-    };
-    $[129] = t51;
-    $[130] = t52;
-  } else {
-    t52 = $[130];
-  }
-  useKeybinding("confirm:no", t50, t52);
   let t53;
-  if ($[131] !== agenticSearchState.status || $[132] !== branchFilterEnabled || $[133] !== focusedLog || $[134] !== handleAgenticSearch || $[135] !== hasMultipleWorktrees || $[136] !== hasTags || $[137] !== isAgenticSearchOptionFocused || $[138] !== onAgenticSearch || $[139] !== onToggleAllProjects || $[140] !== searchQuery || $[141] !== setSearchQuery || $[142] !== showAllProjects || $[143] !== showAllWorktrees || $[144] !== tagTabs || $[145] !== uniqueTags || $[146] !== viewMode) {
+  if ($[132] !== branchFilterEnabled || $[133] !== focusedLog || $[135] !== hasMultipleWorktrees || $[136] !== hasTags || $[139] !== onToggleAllProjects || $[141] !== setSearchQuery || $[142] !== showAllProjects || $[143] !== showAllWorktrees || $[144] !== tagTabs || $[145] !== uniqueTags || $[146] !== viewMode) {
     t53 = (input, key) => {
       if (viewMode === "preview") {
-        return;
-      }
-      if (agenticSearchState.status === "searching") {
         return;
       }
       if (viewMode === "rename") {} else {
         if (viewMode === "search") {
           if (input.toLowerCase() === "n" && key.ctrl) {
             exitSearchMode();
-          } else {
-            if (key.return || key.downArrow) {
-              if (searchQuery.trim() && onAgenticSearch && false && agenticSearchState.status !== "results") {
-                setIsAgenticSearchOptionFocused(true);
-              }
-            }
           }
         } else {
-          if (isAgenticSearchOptionFocused) {
-            if (key.return) {
-              handleAgenticSearch();
-              setIsAgenticSearchOptionFocused(false);
-              return;
-            } else {
-              if (key.downArrow) {
-                setIsAgenticSearchOptionFocused(false);
-                return;
-              } else {
-                if (key.upArrow) {
-                  setViewMode("search");
-                  setIsAgenticSearchOptionFocused(false);
-                  return;
-                }
-              }
-            }
-          }
           if (hasTags && key.tab) {
             const offset = key.shift ? -1 : 1;
             setSelectedTagIndex(prev => {
@@ -1173,16 +710,11 @@ export function LogSelector(t0) {
         }
       }
     };
-    $[131] = agenticSearchState.status;
     $[132] = branchFilterEnabled;
     $[133] = focusedLog;
-    $[134] = handleAgenticSearch;
     $[135] = hasMultipleWorktrees;
     $[136] = hasTags;
-    $[137] = isAgenticSearchOptionFocused;
-    $[138] = onAgenticSearch;
     $[139] = onToggleAllProjects;
-    $[140] = searchQuery;
     $[141] = setSearchQuery;
     $[142] = showAllProjects;
     $[143] = showAllWorktrees;
@@ -1331,58 +863,11 @@ export function LogSelector(t0) {
   } else {
     t64 = $[184];
   }
-  let t65;
-  if ($[185] !== agenticSearchState.status) {
-    t65 = agenticSearchState.status === "searching" && <Box paddingLeft={1} flexShrink={0}><Spinner /><Text> Searching…</Text></Box>;
-    $[185] = agenticSearchState.status;
-    $[186] = t65;
-  } else {
-    t65 = $[186];
-  }
-  let t66;
-  if ($[187] !== agenticSearchState.results || $[188] !== agenticSearchState.status) {
-    t66 = agenticSearchState.status === "results" && agenticSearchState.results.length > 0 && <Box paddingLeft={1} marginBottom={1} flexShrink={0}><Text dimColor={true} italic={true}>AgenC found these results:</Text></Box>;
-    $[187] = agenticSearchState.results;
-    $[188] = agenticSearchState.status;
-    $[189] = t66;
-  } else {
-    t66 = $[189];
-  }
-  let t67;
-  if ($[190] !== agenticSearchState.results || $[191] !== agenticSearchState.status || $[192] !== filteredLogs) {
-    t67 = agenticSearchState.status === "results" && agenticSearchState.results.length === 0 && filteredLogs.length === 0 && <Box paddingLeft={1} marginBottom={1} flexShrink={0}><Text dimColor={true} italic={true}>No matching sessions found.</Text></Box>;
-    $[190] = agenticSearchState.results;
-    $[191] = agenticSearchState.status;
-    $[192] = filteredLogs;
-    $[193] = t67;
-  } else {
-    t67 = $[193];
-  }
-  let t68;
-  if ($[194] !== agenticSearchState.status || $[195] !== filteredLogs) {
-    t68 = agenticSearchState.status === "error" && filteredLogs.length === 0 && <Box paddingLeft={1} marginBottom={1} flexShrink={0}><Text dimColor={true} italic={true}>No matching sessions found.</Text></Box>;
-    $[194] = agenticSearchState.status;
-    $[195] = filteredLogs;
-    $[196] = t68;
-  } else {
-    t68 = $[196];
-  }
-  let t69;
-  if ($[197] !== agenticSearchState.status || $[198] !== isAgenticSearchOptionFocused || $[199] !== onAgenticSearch || $[200] !== searchQuery) {
-    t69 = Boolean(searchQuery.trim()) && onAgenticSearch && false && agenticSearchState.status !== "searching" && agenticSearchState.status !== "results" && agenticSearchState.status !== "error" && <Box flexShrink={0} flexDirection="column"><Box flexDirection="row" gap={1}><Text color={isAgenticSearchOptionFocused ? "suggestion" : undefined}>{isAgenticSearchOptionFocused ? figures.pointer : " "}</Text><Text color={isAgenticSearchOptionFocused ? "suggestion" : undefined} bold={isAgenticSearchOptionFocused}>Search deeply using AgenC →</Text></Box><Box height={1} /></Box>;
-    $[197] = agenticSearchState.status;
-    $[198] = isAgenticSearchOptionFocused;
-    $[199] = onAgenticSearch;
-    $[200] = searchQuery;
-    $[201] = t69;
-  } else {
-    t69 = $[201];
-  }
   let t70;
-  if ($[202] !== agenticSearchState.status || $[203] !== branchFilterEnabled || $[204] !== columns || $[205] !== displayedLogs || $[206] !== expandedGroupSessionIds || $[207] !== flatOptions || $[208] !== focusedLog || $[209] !== focusedNode?.id || $[210] !== handleFlatOptionsSelectFocus || $[211] !== handleRenameSubmit || $[212] !== handleTreeSelectFocus || $[213] !== isAgenticSearchOptionFocused || $[214] !== onCancel || $[215] !== onSelect || $[216] !== renameCursorOffset || $[217] !== renameValue || $[218] !== treeNodes || $[219] !== viewMode || $[220] !== visibleCount) {
-    t70 = agenticSearchState.status === "searching" ? null : viewMode === "rename" && focusedLog ? <Box paddingLeft={2} flexDirection="column"><Text bold={true}>Rename session:</Text><Box paddingTop={1}><TextInput value={renameValue} onChange={setRenameValue} onSubmit={handleRenameSubmit} placeholder={getLogDisplayTitle(focusedLog, "Enter new session name")} columns={columns} cursorOffset={renameCursorOffset} onChangeCursorOffset={setRenameCursorOffset} showCursor={true} /></Box></Box> : isResumeWithRenameEnabled ? <TreeSelect nodes={treeNodes} onSelect={node_0 => {
+  if ($[203] !== branchFilterEnabled || $[204] !== columns || $[205] !== displayedLogs || $[206] !== expandedGroupSessionIds || $[207] !== flatOptions || $[208] !== focusedLog || $[209] !== focusedNode?.id || $[210] !== handleFlatOptionsSelectFocus || $[211] !== handleRenameSubmit || $[212] !== handleTreeSelectFocus || $[214] !== onCancel || $[215] !== onSelect || $[216] !== renameCursorOffset || $[217] !== renameValue || $[218] !== treeNodes || $[219] !== viewMode || $[220] !== visibleCount) {
+    t70 = viewMode === "rename" && focusedLog ? <Box paddingLeft={2} flexDirection="column"><Text bold={true}>Rename session:</Text><Box paddingTop={1}><TextInput value={renameValue} onChange={setRenameValue} onSubmit={handleRenameSubmit} placeholder={getLogDisplayTitle(focusedLog, "Enter new session name")} columns={columns} cursorOffset={renameCursorOffset} onChangeCursorOffset={setRenameCursorOffset} showCursor={true} /></Box></Box> : isResumeWithRenameEnabled ? <TreeSelect nodes={treeNodes} onSelect={node_0 => {
       onSelect(node_0.value.log);
-    }} onFocus={handleTreeSelectFocus} onCancel={onCancel} focusNodeId={focusedNode?.id} visibleOptionCount={visibleCount} layout="expanded" isDisabled={viewMode === "search" || isAgenticSearchOptionFocused} hideIndexes={false} isNodeExpanded={nodeId => {
+    }} onFocus={handleTreeSelectFocus} onCancel={onCancel} focusNodeId={focusedNode?.id} visibleOptionCount={visibleCount} layout="expanded" isDisabled={viewMode === "search"} hideIndexes={false} isNodeExpanded={nodeId => {
       if (viewMode === "search" || branchFilterEnabled) {
         return true;
       }
@@ -1409,8 +894,7 @@ export function LogSelector(t0) {
       if (log_13) {
         onSelect(log_13);
       }
-    }} visibleOptionCount={visibleCount} onCancel={onCancel} onFocus={handleFlatOptionsSelectFocus} defaultFocusValue={focusedNode?.id.toString()} layout="expanded" isDisabled={viewMode === "search" || isAgenticSearchOptionFocused} onUpFromFirstItem={enterSearchMode} />;
-    $[202] = agenticSearchState.status;
+    }} visibleOptionCount={visibleCount} onCancel={onCancel} onFocus={handleFlatOptionsSelectFocus} defaultFocusValue={focusedNode?.id.toString()} layout="expanded" isDisabled={viewMode === "search"} onUpFromFirstItem={enterSearchMode} />;
     $[203] = branchFilterEnabled;
     $[204] = columns;
     $[205] = displayedLogs;
@@ -1421,7 +905,6 @@ export function LogSelector(t0) {
     $[210] = handleFlatOptionsSelectFocus;
     $[211] = handleRenameSubmit;
     $[212] = handleTreeSelectFocus;
-    $[213] = isAgenticSearchOptionFocused;
     $[214] = onCancel;
     $[215] = onSelect;
     $[216] = renameCursorOffset;
@@ -1434,16 +917,13 @@ export function LogSelector(t0) {
     t70 = $[221];
   }
   let t71;
-  if ($[222] !== agenticSearchState.status || $[223] !== currentBranch || $[224] !== exitState.keyName || $[225] !== exitState.pending || $[226] !== getExpandCollapseHint || $[227] !== hasMultipleWorktrees || $[228] !== isAgenticSearchOptionFocused || $[229] !== isSearching || $[230] !== onToggleAllProjects || $[231] !== showAllProjects || $[232] !== showAllWorktrees || $[233] !== viewMode) {
-    t71 = <Box paddingLeft={2}>{exitState.pending ? <Text dimColor={true}>Press {exitState.keyName} again to exit</Text> : viewMode === "rename" ? <Text dimColor={true}><Byline><KeyboardShortcutHint shortcut="Enter" action="save" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline></Text> : agenticSearchState.status === "searching" ? <Text dimColor={true}><Byline><Text>Searching with AgenC…</Text><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline></Text> : isAgenticSearchOptionFocused ? <Text dimColor={true}><Byline><KeyboardShortcutHint shortcut="Enter" action="search" /><KeyboardShortcutHint shortcut={"\u2193"} action="skip" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline></Text> : viewMode === "search" ? <Text dimColor={true}><Byline><Text>{isSearching && false ? "Searching\u2026" : "Type to Search"}</Text><KeyboardShortcutHint shortcut="Enter" action="select" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="clear" /></Byline></Text> : <Text dimColor={true}><Byline>{onToggleAllProjects && <KeyboardShortcutHint shortcut="Ctrl+A" action={`show ${showAllProjects ? "current dir" : "all projects"}`} />}{currentBranch && <KeyboardShortcutHint shortcut="Ctrl+B" action="toggle branch" />}{hasMultipleWorktrees && <KeyboardShortcutHint shortcut="Ctrl+W" action={`show ${showAllWorktrees ? "current worktree" : "all worktrees"}`} />}<KeyboardShortcutHint shortcut="Ctrl+V" action="preview" /><KeyboardShortcutHint shortcut="Ctrl+R" action="rename" /><Text>Type to search</Text><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />{getExpandCollapseHint() && <Text>{getExpandCollapseHint()}</Text>}</Byline></Text>}</Box>;
-    $[222] = agenticSearchState.status;
+  if ($[223] !== currentBranch || $[224] !== exitState.keyName || $[225] !== exitState.pending || $[226] !== getExpandCollapseHint || $[227] !== hasMultipleWorktrees || $[230] !== onToggleAllProjects || $[231] !== showAllProjects || $[232] !== showAllWorktrees || $[233] !== viewMode) {
+    t71 = <Box paddingLeft={2}>{exitState.pending ? <Text dimColor={true}>Press {exitState.keyName} again to exit</Text> : viewMode === "rename" ? <Text dimColor={true}><Byline><KeyboardShortcutHint shortcut="Enter" action="save" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline></Text> : viewMode === "search" ? <Text dimColor={true}><Byline><Text>Type to Search</Text><KeyboardShortcutHint shortcut="Enter" action="select" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="clear" /></Byline></Text> : <Text dimColor={true}><Byline>{onToggleAllProjects && <KeyboardShortcutHint shortcut="Ctrl+A" action={`show ${showAllProjects ? "current dir" : "all projects"}`} />}{currentBranch && <KeyboardShortcutHint shortcut="Ctrl+B" action="toggle branch" />}{hasMultipleWorktrees && <KeyboardShortcutHint shortcut="Ctrl+W" action={`show ${showAllWorktrees ? "current worktree" : "all worktrees"}`} />}<KeyboardShortcutHint shortcut="Ctrl+V" action="preview" /><KeyboardShortcutHint shortcut="Ctrl+R" action="rename" /><Text>Type to search</Text><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" />{getExpandCollapseHint() && <Text>{getExpandCollapseHint()}</Text>}</Byline></Text>}</Box>;
     $[223] = currentBranch;
     $[224] = exitState.keyName;
     $[225] = exitState.pending;
     $[226] = getExpandCollapseHint;
     $[227] = hasMultipleWorktrees;
-    $[228] = isAgenticSearchOptionFocused;
-    $[229] = isSearching;
     $[230] = onToggleAllProjects;
     $[231] = showAllProjects;
     $[232] = showAllWorktrees;
@@ -1453,17 +933,12 @@ export function LogSelector(t0) {
     t71 = $[234];
   }
   let t72;
-  if ($[235] !== t57 || $[236] !== t60 || $[237] !== t62 || $[238] !== t63 || $[239] !== t65 || $[240] !== t66 || $[241] !== t67 || $[242] !== t68 || $[243] !== t69 || $[244] !== t70 || $[245] !== t71) {
-    t72 = <Box flexDirection="column" height={t57}>{t58}{t59}{t60}{t62}{t63}{t64}{t65}{t66}{t67}{t68}{t69}{t70}{t71}</Box>;
+  if ($[235] !== t57 || $[236] !== t60 || $[237] !== t62 || $[238] !== t63 || $[244] !== t70 || $[245] !== t71) {
+    t72 = <Box flexDirection="column" height={t57}>{t58}{t59}{t60}{t62}{t63}{t64}{t70}{t71}</Box>;
     $[235] = t57;
     $[236] = t60;
     $[237] = t62;
     $[238] = t63;
-    $[239] = t65;
-    $[240] = t66;
-    $[241] = t67;
-    $[242] = t68;
-    $[243] = t69;
     $[244] = t70;
     $[245] = t71;
     $[246] = t72;
@@ -1473,41 +948,6 @@ export function LogSelector(t0) {
   return t72;
 }
 
-/**
- * Extracts searchable text content from a message.
- * Handles both string content and structured content blocks.
- */
-function _temp7(r_0) {
-  return r_0.log;
-}
-function _temp6(log_6) {
-  return log_6.messages[0]?.uuid;
-}
-function _temp5(fuseIndex_0, debouncedDeepSearchQuery_0, setDeepSearchResults_0, setIsSearching_0) {
-  const results = fuseIndex_0.search(debouncedDeepSearchQuery_0);
-  results.sort(_temp3);
-  setDeepSearchResults_0({
-    results: results.map(_temp4),
-    query: debouncedDeepSearchQuery_0
-  });
-  setIsSearching_0(false);
-}
-function _temp4(r) {
-  return {
-    log: r.item.log,
-    score: r.score,
-    searchableText: r.item.searchableText
-  };
-}
-function _temp3(a, b) {
-  const aTime = new Date(a.item.log.modified).getTime();
-  const bTime = new Date(b.item.log.modified).getTime();
-  const timeDiff = bTime - aTime;
-  if (Math.abs(timeDiff) > DATE_TIE_THRESHOLD_MS) {
-    return timeDiff;
-  }
-  return (a.score ?? 1) - (b.score ?? 1);
-}
 function _temp2(log_1) {
   const currentSessionId = getSessionId();
   const logSessionId = getSessionIdFromLog(log_1);
@@ -1526,46 +966,6 @@ function _temp2(log_1) {
     return true;
   }
   return false;
-}
-function _temp(log) {
-  return [log, buildSearchableText(log)];
-}
-function extractSearchableText(message: SerializedMessage): string {
-  // Only extract from user and assistant messages that have content
-  if (message.type !== 'user' && message.type !== 'assistant') {
-    return '';
-  }
-  const content = 'message' in message ? message.message?.content : undefined;
-  if (!content) return '';
-
-  // Handle string content (simple messages)
-  if (typeof content === 'string') {
-    return content;
-  }
-
-  // Handle array of content blocks
-  if (Array.isArray(content)) {
-    return content.map(block => {
-      if (typeof block === 'string') return block;
-      if ('text' in block && typeof block.text === 'string') return block.text;
-      return '';
-      // we don't return thinking blocks and tool names here;
-      // they're not useful for search, as they can add noise to the fuzzy matching
-    }).filter(Boolean).join(' ');
-  }
-  return '';
-}
-
-/**
- * Builds searchable text for a log including messages, titles, summaries, and metadata.
- * Crops long transcripts to first/last N messages for performance.
- */
-function buildSearchableText(log: LogOption): string {
-  const searchableMessages = log.messages.length <= DEEP_SEARCH_MAX_MESSAGES ? log.messages : [...log.messages.slice(0, DEEP_SEARCH_CROP_SIZE), ...log.messages.slice(-DEEP_SEARCH_CROP_SIZE)];
-  const messageText = searchableMessages.map(extractSearchableText).filter(Boolean).join(' ');
-  const metadata = [log.customTitle, log.summary, log.firstPrompt, log.gitBranch, log.tag, log.prNumber ? `PR #${log.prNumber}` : undefined, log.prRepository].filter(Boolean).join(' ');
-  const fullText = `${metadata} ${messageText}`.trim();
-  return fullText.length > DEEP_SEARCH_MAX_TEXT_LENGTH ? fullText.slice(0, DEEP_SEARCH_MAX_TEXT_LENGTH) : fullText;
 }
 function groupLogsBySessionId(filteredLogs: LogOption[]): Map<string, LogOption[]> {
   const groups = new Map<string, LogOption[]>();
