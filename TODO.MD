@@ -642,7 +642,7 @@ Remaining partitions:
 | 572 | ScrollBox migration residue | ScrollBox should be AgenC-owned code without moved-source scaffolding. | `ScrollBox.tsx` starts with `@ts-nocheck` and a moved-source note. | LEGACY | `runtime/src/tui/ink/components/ScrollBox.tsx:1`, `runtime/src/tui/ink/components/ScrollBox.tsx:2` | This is the live scroll container used by fullscreen rendering. | P3 |
 | 573 | Keybinding context migration residue | The live keybinding context should be AgenC-owned code without moved-source scaffolding. | `KeybindingContext.tsx` starts with `@ts-nocheck` and a moved-source note. | LEGACY | `runtime/src/tui/keybindings/KeybindingContext.tsx:1`, `runtime/src/tui/keybindings/KeybindingContext.tsx:2` | This is the shared keybinding provider. | P3 |
 | 574 | Terminal focus context migration residue | Terminal focus context should be AgenC-owned code without moved-source scaffolding. | `TerminalFocusContext.tsx` starts with `@ts-nocheck` and a moved-source note. | LEGACY | `runtime/src/tui/ink/components/TerminalFocusContext.tsx:1`, `runtime/src/tui/ink/components/TerminalFocusContext.tsx:2` | This is active focus-state context. | P3 |
-| 575 | Scroll keybinding handler migration residue | Scroll keybinding infrastructure should be AgenC-owned code without moved-source scaffolding. | `ScrollKeybindingHandler.tsx` starts with `@ts-nocheck` and a moved-source note. | LEGACY | `runtime/src/tui/components/ScrollKeybindingHandler.tsx:1`, `runtime/src/tui/components/ScrollKeybindingHandler.tsx:2` | This is live scroll and selection input routing. | P3 |
+| 575 | Scroll keybinding handler migration residue | Scroll keybinding infrastructure should be AgenC-owned code without moved-source scaffolding. | `ScrollKeybindingHandler.tsx` now starts with live source imports and is covered by the moved-source marker regression test. | OK | `runtime/src/tui/components/ScrollKeybindingHandler.tsx:1`, `runtime/src/tui/moved-source-markers.test.ts:11`, `runtime/src/tui/moved-source-markers.test.ts:36` | Focused marker coverage rejects both `@ts-nocheck` and moved-source notes on the scroll handler. | None |
 | 576 | Width/wrap helpers migration residue | Width and wrapping helpers should be AgenC-owned code without moved-source scaffolding. | `stringWidth.ts` and `wrapAnsi.ts` start with `@ts-nocheck` and moved-source notes. | LEGACY | `runtime/src/tui/ink/stringWidth.ts:1`, `runtime/src/tui/ink/stringWidth.ts:2`, `runtime/src/tui/ink/wrapAnsi.ts:1`, `runtime/src/tui/ink/wrapAnsi.ts:2` | These helpers directly affect all text measurement and wrapping. | P3 |
 | 577 | Raw mode activation | Focused input should enable raw mode once, refcount nested input hooks, and restore terminal state when the last raw-mode owner unmounts. | `useInput` increments raw-mode refcount through layout effect, and the internal Ink App enables or disables raw mode based on `rawModeCount`. | OK | `runtime/src/tui/ink/hooks/use-input.ts:42`, `runtime/src/tui/ink/hooks/use-input.ts:60`, `runtime/src/tui/ink/components/App.tsx:221`, `runtime/src/tui/ink/components/App.tsx:299` | Raw-mode ownership is centralized. | None |
 | 578 | Stdin readable versus data mode | Input processing should prefer deterministic readable polling while preserving a data-event fallback for runtimes that need it. | The internal Ink App defaults `stdinMode` to readable, optionally enables data mode, and wires both handlers through raw-mode setup. | OK | `runtime/src/tui/ink/components/App.tsx:121`, `runtime/src/tui/ink/components/App.tsx:124`, `runtime/src/tui/ink/components/App.tsx:243`, `runtime/src/tui/ink/components/App.tsx:247` | Both input modes share the same key processing path. | None |
@@ -714,13 +714,9 @@ Remaining partitions:
 
 Generated from the completed audit matrix. Contains only BUG, MISSING, and LEGACY rows. Grouping key is the first cited file in each row; the row keeps its full citation list.
 
-Totals: 71 active rows: 35 BUG, 2 MISSING, 34 LEGACY.
+Totals: 70 active rows: 35 BUG, 2 MISSING, 33 LEGACY.
 
 ### P3
-
-#### `runtime/src/tui/components/ScrollKeybindingHandler.tsx`
-
-- #575 LEGACY: Scroll keybinding handler migration residue. Citations: `runtime/src/tui/components/ScrollKeybindingHandler.tsx:1`, `runtime/src/tui/components/ScrollKeybindingHandler.tsx:2`
 
 #### `runtime/src/tui/components/SearchBox.tsx`
 

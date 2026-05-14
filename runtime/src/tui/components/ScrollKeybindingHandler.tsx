@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { type RefObject, useEffect, useRef } from 'react';
 import { useNotifications } from '../context/notifications';
 import { useCopyOnSelect, useSelectionBgColor } from '../hooks/useCopyOnSelect';
