@@ -33,4 +33,25 @@ describe('PreviewBox', () => {
     expect(output).toContain('└──┘')
     expect(output).not.toContain('ERROR')
   })
+
+  it('uses ascii borders and truncation labels when requested', async () => {
+    const previousGlyphMode = process.env.AGENC_TUI_GLYPHS
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+    try {
+      const output = await renderToString(
+        <PreviewBox content={'one\ntwo\nthree'} maxLines={1} maxWidth={20} minWidth={4} />,
+        20,
+      )
+
+      expect(output).toContain('+------')
+      expect(output).toContain('cut')
+      expect(output).not.toMatch(/[┌┐└┘─│✂]/u)
+    } finally {
+      if (previousGlyphMode === undefined) {
+        delete process.env.AGENC_TUI_GLYPHS
+      } else {
+        process.env.AGENC_TUI_GLYPHS = previousGlyphMode
+      }
+    }
+  })
 })

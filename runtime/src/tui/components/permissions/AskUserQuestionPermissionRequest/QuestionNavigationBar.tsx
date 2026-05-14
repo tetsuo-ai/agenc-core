@@ -1,11 +1,11 @@
 import { c as _c } from "react-compiler-runtime";
-import figures from 'figures';
 import React, { useMemo } from 'react';
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import { stringWidth } from '../../../ink/stringWidth.js';
 import { Box, Text } from '../../../ink.js';
 import type { AskUserQuestion as Question } from 'src/tools/ask-user-question/tool.js';
 import { truncateToWidth } from '../../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { selectAskUserQuestionGlyphs } from './glyphs.js';
 type Props = {
   questions: Question[];
   currentQuestionIndex: number;
@@ -24,11 +24,12 @@ export function QuestionNavigationBar(t0) {
   const {
     columns
   } = useTerminalSize();
+  const glyphs = selectAskUserQuestionGlyphs();
   let t2;
   if ($[0] !== columns || $[1] !== currentQuestionIndex || $[2] !== hideSubmitTab || $[3] !== questions) {
     bb0: {
-      const submitText = hideSubmitTab ? "" : ` ${figures.tick} Submit `;
-      const fixedWidth = stringWidth("\u2190 ") + stringWidth(" \u2192") + stringWidth(submitText);
+      const submitText = hideSubmitTab ? "" : ` ${glyphs.statusSuccess} Submit `;
+      const fixedWidth = stringWidth(`${glyphs.arrowLeft} `) + stringWidth(` ${glyphs.arrowRight}`) + stringWidth(submitText);
       const availableForTabs = columns - fixedWidth;
       if (availableForTabs <= 0) {
         let t3;
@@ -99,7 +100,7 @@ export function QuestionNavigationBar(t0) {
   const hideArrows = questions.length === 1 && hideSubmitTab;
   let t3;
   if ($[14] !== currentQuestionIndex || $[15] !== hideArrows) {
-    t3 = !hideArrows && <Text color={currentQuestionIndex === 0 ? "inactive" : undefined}>←{" "}</Text>;
+    t3 = !hideArrows && <Text color={currentQuestionIndex === 0 ? "inactive" : undefined}>{glyphs.arrowLeft}{" "}</Text>;
     $[14] = currentQuestionIndex;
     $[15] = hideArrows;
     $[16] = t3;
@@ -113,7 +114,7 @@ export function QuestionNavigationBar(t0) {
       t5 = (q_1, index_2) => {
         const isSelected = index_2 === currentQuestionIndex;
         const isAnswered = q_1?.question && !!answers[q_1.question];
-        const checkbox = isAnswered ? figures.checkboxOn : figures.checkboxOff;
+        const checkbox = isAnswered ? glyphs.checkboxOn : glyphs.checkboxOff;
         const displayText = tabDisplayTexts[index_2] || q_1?.header || `Q${index_2 + 1}`;
         return <Box key={q_1?.question || `question-${index_2}`}>{isSelected ? <Text backgroundColor="permission" color="inverseText">{" "}{checkbox} {displayText}{" "}</Text> : <Text>{" "}{checkbox} {displayText}{" "}</Text>}</Box>;
       };
@@ -135,7 +136,7 @@ export function QuestionNavigationBar(t0) {
   }
   let t5;
   if ($[26] !== currentQuestionIndex || $[27] !== hideSubmitTab || $[28] !== questions.length) {
-    t5 = !hideSubmitTab && <Box key="submit">{currentQuestionIndex === questions.length ? <Text backgroundColor="permission" color="inverseText">{" "}{figures.tick} Submit{" "}</Text> : <Text> {figures.tick} Submit </Text>}</Box>;
+    t5 = !hideSubmitTab && <Box key="submit">{currentQuestionIndex === questions.length ? <Text backgroundColor="permission" color="inverseText">{" "}{glyphs.statusSuccess} Submit{" "}</Text> : <Text> {glyphs.statusSuccess} Submit </Text>}</Box>;
     $[26] = currentQuestionIndex;
     $[27] = hideSubmitTab;
     $[28] = questions.length;
@@ -145,7 +146,7 @@ export function QuestionNavigationBar(t0) {
   }
   let t6;
   if ($[30] !== currentQuestionIndex || $[31] !== hideArrows || $[32] !== questions.length) {
-    t6 = !hideArrows && <Text color={currentQuestionIndex === questions.length ? "inactive" : undefined}>{" "}→</Text>;
+    t6 = !hideArrows && <Text color={currentQuestionIndex === questions.length ? "inactive" : undefined}>{" "}{glyphs.arrowRight}</Text>;
     $[30] = currentQuestionIndex;
     $[31] = hideArrows;
     $[32] = questions.length;

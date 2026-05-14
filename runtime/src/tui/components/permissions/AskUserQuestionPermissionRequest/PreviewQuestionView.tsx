@@ -1,4 +1,3 @@
-import figures from 'figures';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTerminalSize } from '../../../hooks/useTerminalSize';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
@@ -15,6 +14,7 @@ import { PermissionRequestTitle } from '../PermissionRequestTitle';
 import { PreviewBox } from './PreviewBox';
 import { QuestionNavigationBar } from './QuestionNavigationBar';
 import type { QuestionState } from './use-multiple-choice-state';
+import { selectAskUserQuestionGlyphs } from './glyphs.js';
 type Props = {
   question: Question;
   questions: Question[];
@@ -70,6 +70,7 @@ export function PreviewQuestionView({
   const [cursorOffset, setCursorOffset] = useState(0);
   const editor = getExternalEditor();
   const editorName = editor ? toIDEDisplayName(editor) : null;
+  const glyphs = selectAskUserQuestionGlyphs();
   const questionText = question.question;
   const questionState = questionStates[questionText];
 
@@ -277,13 +278,13 @@ export function PreviewQuestionView({
               const isFocused = focusedIndex === index_0;
               const isSelected = selectedValue === option_0.label;
               return <Box key={option_0.label} flexDirection="row">
-                    {isFocused ? <Text color="suggestion">{figures.pointer}</Text> : <Text> </Text>}
+                    {isFocused ? <Text color="suggestion">{glyphs.pointer}</Text> : <Text> </Text>}
                     <Text dimColor> {index_0 + 1}.</Text>
                     <Text color={isSelected ? 'success' : isFocused ? 'suggestion' : undefined} bold={isFocused}>
                       {' '}
                       {option_0.label}
                     </Text>
-                    {isSelected && <Text color="success"> {figures.tick}</Text>}
+                    {isSelected && <Text color="success"> {glyphs.statusSuccess}</Text>}
                   </Box>;
             })}
             </Box>
@@ -293,7 +294,7 @@ export function PreviewQuestionView({
               <PreviewBox content={previewContent || 'No preview available'} maxLines={previewMaxLines} minWidth={minContentWidth} maxWidth={previewMaxWidth} />
               <Box marginTop={1} flexDirection="row" gap={1}>
                 <Text color="suggestion">Notes:</Text>
-                {isInNotesInput ? <TextInput value={notesValue} placeholder="Add notes on this design…" onChange={value => {
+                {isInNotesInput ? <TextInput value={notesValue} placeholder={`Add notes on this design${glyphs.ellipsis}`} onChange={value => {
                 onUpdateQuestionState(questionText, {
                   textInputValue: value
                 }, false);
@@ -308,13 +309,13 @@ export function PreviewQuestionView({
           <Box flexDirection="column" marginTop={1}>
             <Divider color="inactive" />
             <Box flexDirection="row" gap={1}>
-              {isFooterFocused && footerIndex === 0 ? <Text color="suggestion">{figures.pointer}</Text> : <Text> </Text>}
+              {isFooterFocused && footerIndex === 0 ? <Text color="suggestion">{glyphs.pointer}</Text> : <Text> </Text>}
               <Text color={isFooterFocused && footerIndex === 0 ? 'suggestion' : undefined}>
                 Chat about this
               </Text>
             </Box>
             {isInPlanMode && <Box flexDirection="row" gap={1}>
-                {isFooterFocused && footerIndex === 1 ? <Text color="suggestion">{figures.pointer}</Text> : <Text> </Text>}
+                {isFooterFocused && footerIndex === 1 ? <Text color="suggestion">{glyphs.pointer}</Text> : <Text> </Text>}
                 <Text color={isFooterFocused && footerIndex === 1 ? 'suggestion' : undefined}>
                   Skip interview and plan immediately
                 </Text>
@@ -322,11 +323,11 @@ export function PreviewQuestionView({
           </Box>
           <Box marginTop={1}>
             <Text color="inactive" dimColor>
-              Enter to select · {figures.arrowUp}/{figures.arrowDown} to
-              navigate · n to add notes
-              {questions.length > 1 && <> · Tab to switch questions</>}
-              {isInNotesInput && editorName && <> · ctrl+g to edit in {editorName}</>}{' '}
-              · Esc to cancel
+              Enter to select {glyphs.separator} {glyphs.arrowUp}/{glyphs.arrowDown} to
+              navigate {glyphs.separator} n to add notes
+              {questions.length > 1 && <> {glyphs.separator} Tab to switch questions</>}
+              {isInNotesInput && editorName && <> {glyphs.separator} ctrl+g to edit in {editorName}</>}{' '}
+              {glyphs.separator} Esc to cancel
             </Text>
           </Box>
         </Box>

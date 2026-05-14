@@ -7,6 +7,7 @@ import { Ansi, Box, Text, useTheme } from '../../../ink.js';
 import { type CliHighlight, getCliHighlightPromise } from '../../../../utils/cliHighlight.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { applyMarkdown } from '../../../../utils/markdown.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import sliceAnsi from '../../../../utils/sliceAnsi.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getPreviewBoxTruncationLabel, selectAskUserQuestionGlyphs } from './glyphs.js';
 type PreviewBoxProps = {
   /** The preview content to display. Markdown is rendered with syntax highlighting
    * for code blocks (```ts, ```py, etc.). Also supports plain multi-line text. */
@@ -19,16 +20,6 @@ type PreviewBoxProps = {
   minWidth?: number;
   /** Maximum width available for this box (e.g., the container width). */
   maxWidth?: number;
-};
-const BOX_CHARS = {
-  topLeft: '┌',
-  topRight: '┐',
-  bottomLeft: '└',
-  bottomRight: '┘',
-  horizontal: '─',
-  vertical: '│',
-  teeLeft: '├',
-  teeRight: '┤'
 };
 const MIN_BOX_WIDTH = 4;
 
@@ -97,6 +88,8 @@ function PreviewBoxBody(t0) {
     columns: terminalWidth
   } = useTerminalSize();
   const [theme] = useTheme();
+  const glyphs = selectAskUserQuestionGlyphs();
+  const boxGlyphs = glyphs.previewBox;
   const effectiveMaxWidth = Math.max(MIN_BOX_WIDTH, maxWidth ?? terminalWidth - 4);
   const effectiveMaxLines = Math.max(1, maxLines ?? 20);
   let t2;
@@ -128,28 +121,28 @@ function PreviewBoxBody(t0) {
     const innerWidth = Math.max(0, boxWidth - 4);
     let t6;
     if ($[15] !== boxWidth) {
-      t6 = BOX_CHARS.horizontal.repeat(boxWidth - 2);
+      t6 = boxGlyphs.horizontal.repeat(boxWidth - 2);
       $[15] = boxWidth;
       $[16] = t6;
     } else {
       t6 = $[16];
     }
-    const topBorder = `${BOX_CHARS.topLeft}${t6}${BOX_CHARS.topRight}`;
+    const topBorder = `${boxGlyphs.topLeft}${t6}${boxGlyphs.topRight}`;
     let t7;
     if ($[17] !== boxWidth) {
-      t7 = BOX_CHARS.horizontal.repeat(boxWidth - 2);
+      t7 = boxGlyphs.horizontal.repeat(boxWidth - 2);
       $[17] = boxWidth;
       $[18] = t7;
     } else {
       t7 = $[18];
     }
-    bottomBorder = `${BOX_CHARS.bottomLeft}${t7}${BOX_CHARS.bottomRight}`;
+    bottomBorder = `${boxGlyphs.bottomLeft}${t7}${boxGlyphs.bottomRight}`;
     truncationBar = isTruncated ? (() => {
       const hiddenCount = contentLines.length - effectiveMaxLines;
-      const label = `${BOX_CHARS.horizontal.repeat(3)} \u2702 ${BOX_CHARS.horizontal.repeat(3)} ${hiddenCount} lines hidden `;
+      const label = getPreviewBoxTruncationLabel(hiddenCount);
       const labelWidth = stringWidth(label);
       const fillWidth = Math.max(0, boxWidth - 2 - labelWidth);
-      return `${BOX_CHARS.teeLeft}${label}${BOX_CHARS.horizontal.repeat(fillWidth)}${BOX_CHARS.teeRight}`;
+      return `${boxGlyphs.teeLeft}${label}${boxGlyphs.horizontal.repeat(fillWidth)}${boxGlyphs.teeRight}`;
     })() : null;
     T0 = Box;
     t3 = "column";
@@ -166,7 +159,7 @@ function PreviewBoxBody(t0) {
         const lineWidth = stringWidth(line_0);
         const displayLine = lineWidth > innerWidth ? sliceAnsi(line_0, 0, innerWidth) : line_0;
         const padding = " ".repeat(Math.max(0, innerWidth - stringWidth(displayLine)));
-        return <Box key={index} flexDirection="row"><Text dimColor={true}>{BOX_CHARS.vertical} </Text><Ansi>{displayLine}</Ansi><Text dimColor={true}>{padding} {BOX_CHARS.vertical}</Text></Box>;
+        return <Box key={index} flexDirection="row"><Text dimColor={true}>{boxGlyphs.vertical} </Text><Ansi>{displayLine}</Ansi><Text dimColor={true}>{padding} {boxGlyphs.vertical}</Text></Box>;
       };
       $[21] = innerWidth;
       $[22] = t8;
