@@ -2,7 +2,7 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { createEmptyToolPermissionContext } from '../../../../permissions/types.js'
 import { SESSION_ALLOWED_ROOTS_ARG } from '../../../../tools/system/filesystem.js'
@@ -74,5 +74,43 @@ describe('useFilePermissionDialog allow input handling', () => {
     )
 
     expect(result[SESSION_ALLOWED_ROOTS_ARG]).toBeUndefined()
+  })
+
+  test('allow input wrapper does not mutate the shared confirmation callback', async () => {
+    const { file } = await makeFile()
+    const context = createEmptyToolPermissionContext()
+    const originalOnAllow = vi.fn()
+    const toolUseConfirm = {
+      input: { file_path: file, content: 'raw content' },
+      onAllow: originalOnAllow,
+    } as any
+
+    const wrapped = __useFilePermissionDialogTest.withMergedAllowInput(
+      toolUseConfirm,
+      { file_path: file, content: 'parsed content' },
+      file,
+      context,
+    )
+
+    expect(toolUseConfirm.onAllow).toBe(originalOnAllow)
+
+    const contentBlocks = [{ type: 'text', text: 'extra' }]
+    wrapped.onAllow(
+      { file_path: file, content: 'raw content' },
+      [],
+      'feedback',
+      contentBlocks as any,
+    )
+
+    expect(originalOnAllow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file_path: file,
+        content: 'parsed content',
+        [SESSION_ALLOWED_ROOTS_ARG]: expect.arrayContaining([expect.any(String)]),
+      }),
+      [],
+      'feedback',
+      contentBlocks,
+    )
   })
 })

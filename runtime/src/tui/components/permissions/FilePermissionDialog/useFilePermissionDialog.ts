@@ -6,7 +6,6 @@ import {
   logEvent,
 } from '../../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../../services/analytics/metadata.js'
-import type { PermissionUpdate } from '../../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { CompletionType } from '../../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { SESSION_ALLOWED_ROOTS_ARG } from '../../../../tools/system/filesystem.js'
 import { getPathsForPermissionCheck } from '../../../../utils/fsOperations.js'
@@ -106,6 +105,30 @@ function mergeAllowInput<T extends ToolInput>(
   return withTransientAllowedRoot(mergedInput, filePath, toolPermissionContext)
 }
 
+function withMergedAllowInput<T extends ToolInput>(
+  toolUseConfirm: ToolUseConfirm,
+  parsedInput: T,
+  filePath: string,
+  toolPermissionContext: ToolPermissionContext,
+): ToolUseConfirm {
+  return {
+    ...toolUseConfirm,
+    onAllow(updatedInput, permissionUpdates, feedback, contentBlocks) {
+      toolUseConfirm.onAllow(
+        mergeAllowInput(
+          parsedInput,
+          updatedInput,
+          filePath,
+          toolPermissionContext,
+        ),
+        permissionUpdates,
+        feedback,
+        contentBlocks,
+      )
+    },
+  }
+}
+
 /**
  * Hook for handling file permission dialogs with common logic
  */
@@ -159,35 +182,27 @@ export function useFilePermissionDialog<T extends ToolInput>({
         operationType,
       }
 
-      // Override the input in toolUseConfirm to pass the parsed input
-      const originalOnAllow = toolUseConfirm.onAllow
-      toolUseConfirm.onAllow = (
-        updatedInput: unknown,
-        permissionUpdates: PermissionUpdate[],
-        feedback?: string,
-      ) => {
-        originalOnAllow(
-          mergeAllowInput(
+      const handler = PERMISSION_HANDLERS[option.type]
+      handler(
+        {
+          ...params,
+          toolUseConfirm: withMergedAllowInput(
+            toolUseConfirm,
             input,
-            updatedInput,
             filePath,
             toolPermissionContext,
           ),
-          permissionUpdates,
+        },
+        {
           feedback,
-        )
-      }
-
-      const handler = PERMISSION_HANDLERS[option.type]
-      handler(params, {
-        feedback,
-        hasFeedback: !!feedback,
-        enteredFeedbackMode:
-          option.type === 'accept-once'
-            ? yesFeedbackModeEntered
-            : noFeedbackModeEntered,
-        scope: option.type === 'accept-session' ? option.scope : undefined,
-      })
+          hasFeedback: !!feedback,
+          enteredFeedbackMode:
+            option.type === 'accept-once'
+              ? yesFeedbackModeEntered
+              : noFeedbackModeEntered,
+          scope: option.type === 'accept-session' ? option.scope : undefined,
+        },
+      )
     },
     [
       filePath,
@@ -281,5 +296,6 @@ export function useFilePermissionDialog<T extends ToolInput>({
 
 export const __useFilePermissionDialogTest = {
   mergeAllowInput,
+  withMergedAllowInput,
   withTransientAllowedRoot,
 }
