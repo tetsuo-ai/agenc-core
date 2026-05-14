@@ -4,6 +4,10 @@ import type {
   ParsedBinding,
   ParsedKeystroke,
 } from './types.js'
+import {
+  resolveAgenCTuiGlyphMode,
+  selectAgenCTuiGlyphs,
+} from '../glyphs.js'
 
 /**
  * Parse a keystroke string like "ctrl+shift+k" into a ParsedKeystroke.
@@ -102,7 +106,12 @@ export function keystrokeToString(ks: ParsedKeystroke): string {
 /**
  * Map internal key names to human-readable display names.
  */
-function keyToDisplayName(key: string): string {
+function keyToDisplayName(
+  key: string,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const glyphs = selectAgenCTuiGlyphs(env)
+  const isAscii = resolveAgenCTuiGlyphMode(env) === 'ascii'
   switch (key) {
     case 'escape':
       return 'Esc'
@@ -117,13 +126,13 @@ function keyToDisplayName(key: string): string {
     case 'delete':
       return 'Delete'
     case 'up':
-      return '↑'
+      return isAscii ? 'up' : glyphs.arrowUp
     case 'down':
-      return '↓'
+      return isAscii ? 'down' : glyphs.arrowDown
     case 'left':
-      return '←'
+      return isAscii ? 'left' : glyphs.arrowLeft
     case 'right':
-      return '→'
+      return isAscii ? 'right' : glyphs.arrowRight
     case 'pageup':
       return 'PageUp'
     case 'pagedown':
@@ -157,6 +166,7 @@ type DisplayPlatform = 'macos' | 'windows' | 'linux' | 'wsl' | 'unknown'
 export function keystrokeToDisplayString(
   ks: ParsedKeystroke,
   platform: DisplayPlatform = 'linux',
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
 ): string {
   const parts: string[] = []
   if (ks.ctrl) parts.push('ctrl')
@@ -170,7 +180,7 @@ export function keystrokeToDisplayString(
     parts.push(platform === 'macos' ? 'cmd' : 'super')
   }
   // Use readable names for display
-  const displayKey = keyToDisplayName(ks.key)
+  const displayKey = keyToDisplayName(ks.key, env)
   parts.push(displayKey)
   return parts.join('+')
 }
@@ -181,8 +191,9 @@ export function keystrokeToDisplayString(
 export function chordToDisplayString(
   chord: Chord,
   platform: DisplayPlatform = 'linux',
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
 ): string {
-  return chord.map(ks => keystrokeToDisplayString(ks, platform)).join(' ')
+  return chord.map(ks => keystrokeToDisplayString(ks, platform, env)).join(' ')
 }
 
 /**

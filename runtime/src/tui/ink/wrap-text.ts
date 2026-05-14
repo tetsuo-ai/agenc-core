@@ -2,8 +2,18 @@ import sliceAnsi from '../../utils/sliceAnsi.js'
 import { stringWidth } from './stringWidth.js'
 import type { Styles } from './styles.js'
 import { wrapAnsi } from './wrapAnsi.js'
+import { selectAgenCTuiGlyphs } from '../glyphs.js'
 
-const ELLIPSIS = '…'
+function getTruncationMarker(): string {
+  return selectAgenCTuiGlyphs().ellipsis
+}
+
+function getTruncationMarkerForWidth(columns: number): string {
+  const marker = getTruncationMarker()
+  const markerWidth = stringWidth(marker)
+  if (markerWidth <= columns) return marker
+  return marker.slice(0, Math.max(0, columns))
+}
 
 // sliceAnsi may include a boundary-spanning wide char (e.g. CJK at position
 // end-1 with width 2 overshoots by 1). Retry with a tighter bound once.
@@ -18,23 +28,27 @@ function truncate(
   position: 'start' | 'middle' | 'end',
 ): string {
   if (columns < 1) return ''
-  if (columns === 1) return ELLIPSIS
+  const ellipsis = getTruncationMarkerForWidth(columns)
+  const ellipsisWidth = stringWidth(ellipsis)
+  if (ellipsisWidth >= columns) return ellipsis
 
   const length = stringWidth(text)
   if (length <= columns) return text
 
   if (position === 'start') {
-    return ELLIPSIS + sliceFit(text, length - columns + 1, length)
+    return ellipsis + sliceFit(text, length - columns + ellipsisWidth, length)
   }
   if (position === 'middle') {
-    const half = Math.floor(columns / 2)
+    const contentColumns = columns - ellipsisWidth
+    const leadingColumns = Math.floor(contentColumns / 2)
+    const trailingColumns = contentColumns - leadingColumns
     return (
-      sliceFit(text, 0, half) +
-      ELLIPSIS +
-      sliceFit(text, length - (columns - half) + 1, length)
+      sliceFit(text, 0, leadingColumns) +
+      ellipsis +
+      sliceFit(text, length - trailingColumns, length)
     )
   }
-  return sliceFit(text, 0, columns - 1) + ELLIPSIS
+  return sliceFit(text, 0, columns - ellipsisWidth) + ellipsis
 }
 
 export default function wrapText(

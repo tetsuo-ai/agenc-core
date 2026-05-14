@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 /**
  * Shared utilities for displaying task status across different task types.
  */
@@ -9,7 +7,7 @@ import type { TaskStatus } from '../../../tasks/Task.js';
 import type { InProcessTeammateTaskState } from '../../../tasks/InProcessTeammateTask/types.js';
 import { isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../types/utils.js';
-import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { summarizeRecentActivities } from '../../../utils/collapseReadSearch.js';
 
 /**
  * Returns true if the given task status represents a terminal (finished) state.

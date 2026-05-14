@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import emojiRegex from 'emoji-regex'
 import { eastAsianWidth } from 'get-east-asian-width'
 import stripAnsi from 'strip-ansi'
@@ -76,14 +74,13 @@ function stringWidthJavaScript(str: string): number {
       continue
     }
 
-    // Calculate width for non-emoji graphemes
-    // For grapheme clusters (like Devanagari conjuncts with virama+ZWJ), only count
-    // the first non-zero-width character's width since the cluster renders as one glyph
+    // Calculate width for non-emoji graphemes. Terminals allocate cells by the
+    // wcwidth sum of each spacing code point, even when a complex-script
+    // cluster renders as one visible ligature.
     for (const char of grapheme) {
       const codePoint = char.codePointAt(0)!
       if (!isZeroWidth(codePoint)) {
         width += eastAsianWidth(codePoint, { ambiguousAsWide: false })
-        break
       }
     }
   }
@@ -212,10 +209,17 @@ function isZeroWidth(codePoint: number): boolean {
 //
 // Bun.stringWidth is resolved once at module scope rather than checked on every
 // call — typeof guards deopt property access and this is a hot path (~100k calls/frame).
+type BunStringWidth = (
+  input: string,
+  options?: { readonly ambiguousIsNarrow?: boolean },
+) => number
+
+const bunApi =
+  typeof Bun !== 'undefined'
+    ? (Bun as unknown as { readonly stringWidth?: BunStringWidth })
+    : undefined
 const bunStringWidth =
-  typeof Bun !== 'undefined' && typeof Bun.stringWidth === 'function'
-    ? Bun.stringWidth
-    : null
+  typeof bunApi?.stringWidth === 'function' ? bunApi.stringWidth : null
 
 const BUN_STRING_WIDTH_OPTS = { ambiguousIsNarrow: true } as const
 

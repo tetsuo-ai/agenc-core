@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 /**
  * Component that registers keybinding handlers for command bindings.
@@ -15,7 +13,7 @@ import { useMemo } from 'react';
 import { useIsModalOverlayActive } from '../context/overlayContext';
 import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
-import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js';
 import type { VimRoutingState } from '../input/processTextPrompt.js';
 type Props = {
   // onSubmit accepts additional parameters beyond what we pass here,

@@ -1,7 +1,5 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { createContext, useMemo, useSyncExternalStore } from 'react';
+import { createContext, type ReactNode, useSyncExternalStore } from 'react';
 import { getTerminalFocused, getTerminalFocusState, subscribeTerminalFocus, type TerminalFocusState } from '../terminal-focus-state.js';
 export type { TerminalFocusState };
 export type TerminalFocusContextProps = {
@@ -19,7 +17,7 @@ TerminalFocusContext.displayName = 'TerminalFocusContext';
 // Separate component so App.tsx doesn't re-render on focus changes.
 // Children are a stable prop reference, so they don't re-render either —
 // only components that consume the context will re-render.
-export function TerminalFocusProvider(t0) {
+export function TerminalFocusProvider(t0: { readonly children: ReactNode }) {
   const $ = _c(6);
   const {
     children

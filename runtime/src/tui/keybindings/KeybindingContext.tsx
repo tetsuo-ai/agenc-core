@@ -1,7 +1,5 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import React, { createContext, type RefObject, useContext, useLayoutEffect, useMemo } from 'react';
+import { createContext, type ReactNode, type RefObject, useContext, useLayoutEffect } from 'react';
 import type { Key } from '../ink.js';
 import { type ChordResolveResult, getBindingDisplayText, resolveKeyWithChordState } from './resolver.js';
 import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './types.js';
@@ -56,9 +54,9 @@ type ProviderProps = {
   unregisterActiveContext: (context: KeybindingContextName) => void;
   /** Ref to handler registry (used by ChordInterceptor) */
   handlerRegistryRef: RefObject<Map<string, Set<HandlerRegistration>>>;
-  children: React.ReactNode;
+  children: ReactNode;
 };
-export function KeybindingProvider(t0) {
+export function KeybindingProvider(t0: ProviderProps) {
   const $ = _c(24);
   const {
     bindings,
@@ -73,7 +71,7 @@ export function KeybindingProvider(t0) {
   } = t0;
   let t1;
   if ($[0] !== bindings) {
-    t1 = (action, context) => getBindingDisplayText(action, context, bindings);
+    t1 = (action: string, context: KeybindingContextName) => getBindingDisplayText(action, context, bindings);
     $[0] = bindings;
     $[1] = t1;
   } else {
@@ -82,7 +80,7 @@ export function KeybindingProvider(t0) {
   const getDisplay = t1;
   let t2;
   if ($[2] !== handlerRegistryRef) {
-    t2 = registration => {
+    t2 = (registration: HandlerRegistration) => {
       const registry = handlerRegistryRef.current;
       if (!registry) {
         return _temp;
@@ -90,7 +88,7 @@ export function KeybindingProvider(t0) {
       if (!registry.has(registration.action)) {
         registry.set(registration.action, new Set());
       }
-      registry.get(registration.action).add(registration);
+      registry.get(registration.action)!.add(registration);
       return () => {
         const handlers = registry.get(registration.action);
         if (handlers) {
@@ -109,7 +107,7 @@ export function KeybindingProvider(t0) {
   const registerHandler = t2;
   let t3;
   if ($[4] !== activeContexts || $[5] !== handlerRegistryRef) {
-    t3 = action_0 => {
+    t3 = (action_0: string) => {
       const registry_0 = handlerRegistryRef.current;
       if (!registry_0) {
         return false;
@@ -135,7 +133,7 @@ export function KeybindingProvider(t0) {
   const invokeAction = t3;
   let t4;
   if ($[7] !== bindings || $[8] !== pendingChordRef) {
-    t4 = (input, key, contexts) => resolveKeyWithChordState(input, key, contexts, bindings, pendingChordRef.current);
+    t4 = (input: string, key: Key, contexts: KeybindingContextName[]) => resolveKeyWithChordState(input, key, contexts, bindings, pendingChordRef.current);
     $[7] = bindings;
     $[8] = pendingChordRef;
     $[9] = t4;
@@ -214,7 +212,7 @@ export function useOptionalKeybindingContext() {
  * }
  * ```
  */
-export function useRegisterKeybindingContext(context, t0) {
+export function useRegisterKeybindingContext(context: KeybindingContextName, t0?: boolean) {
   const $ = _c(5);
   const isActive = t0 === undefined ? true : t0;
   const keybindingContext = useOptionalKeybindingContext();

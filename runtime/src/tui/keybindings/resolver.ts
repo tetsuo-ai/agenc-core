@@ -1,6 +1,6 @@
 import type { Key } from '../ink.js'
 import { getKeyName, matchesBinding } from './match.js'
-import { chordToString } from './parser.js'
+import { chordToDisplayString, chordToString } from './parser.js'
 import type {
   KeybindingContextName,
   ParsedBinding,
@@ -73,7 +73,7 @@ export function getBindingDisplayText(
   const binding = bindings.findLast(
     b => b.action === action && b.context === context,
   )
-  return binding ? chordToString(binding.chord) : undefined
+  return binding ? chordToDisplayString(binding.chord) : undefined
 }
 
 /**

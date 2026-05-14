@@ -13,6 +13,7 @@ vi.mock("../context/notifications.js", () => ({
 
 import {
   createChordInputHandler,
+  formatKeybindingWarningNotification,
   formatKeybindingWarningSummary,
 } from "./KeybindingProviderSetup.js";
 import { DEFAULT_BINDINGS } from "./defaultBindings.js";
@@ -84,6 +85,14 @@ describe("KeybindingProviderSetup", () => {
         { type: "reserved", severity: "warning", message: "reserved" },
       ]),
     ).toBe("Found 1 keybinding error and 1 warning");
+  });
+
+  test("uses ASCII-safe warning notification separators in ASCII glyph mode", () => {
+    expect(
+      formatKeybindingWarningNotification("Found 1 keybinding error", {
+        AGENC_TUI_GLYPHS: "ascii",
+      }),
+    ).toBe("Found 1 keybinding error - /doctor for details");
   });
 
   test("intercepts chord prefixes and invokes registered handlers on completion", () => {

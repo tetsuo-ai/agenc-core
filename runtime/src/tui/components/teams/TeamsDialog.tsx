@@ -14,19 +14,19 @@ import { type AppState, useAppState, useSetAppState } from '../../state/AppState
 import { getEmptyToolPermissionContext } from '../../../tools/Tool';
 import { AGENT_COLOR_TO_THEME_COLOR } from 'src/tools/AgentTool/agentColorManager.js';
 import { logForDebugging } from 'src/utils/debug.js';
-import { errorMessage } from '../../../utils/errors.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { execFileNoThrow } from '../../../utils/execFileNoThrow.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../utils/slowOperations.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getLeaderPaneId, IT2_COMMAND, isInsideTmuxSync } from '../../../utils/swarm/backends/detection.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { ensureBackendsRegistered, getBackendByType, getCachedBackend } from '../../../utils/swarm/backends/registry.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import type { PaneBackendType } from '../../../utils/swarm/backends/types.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSwarmSocketName, SWARM_SESSION_NAME, SWARM_VIEW_WINDOW_NAME, TMUX_COMMAND } from '../../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam, setMemberMode, setMultipleMemberModes } from '../../../utils/swarm/teamHelpers.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { listTasks, type Task, unassignTeammateTasks } from '../../../utils/tasks.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../utils/teamDiscovery.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { createModeSetRequestMessage, sendShutdownRequestToMailbox, writeToMailbox } from '../../../utils/teammateMailbox.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { errorMessage } from '../../../utils/errors.js';
+import { execFileNoThrow } from '../../../utils/execFileNoThrow.js';
+import { getNextPermissionMode } from '../../../utils/permissions/getNextPermissionMode.js';
+import { getModeColor, type PermissionMode, permissionModeFromString, permissionModeSymbol } from '../../../utils/permissions/PermissionMode.js';
+import { jsonStringify } from '../../../utils/slowOperations.js';
+import { getLeaderPaneId, IT2_COMMAND, isInsideTmuxSync } from '../../../utils/swarm/backends/detection.js';
+import { ensureBackendsRegistered, getBackendByType, getCachedBackend } from '../../../utils/swarm/backends/registry.js';
+import type { PaneBackendType } from '../../../utils/swarm/backends/types.js';
+import { getSwarmSocketName, SWARM_SESSION_NAME, SWARM_VIEW_WINDOW_NAME, TMUX_COMMAND } from '../../../utils/swarm/constants.js';
+import { addHiddenPaneId, removeHiddenPaneId, removeMemberFromTeam, setMemberMode, setMultipleMemberModes } from '../../../utils/swarm/teamHelpers.js';
+import { listTasks, type Task, unassignTeammateTasks } from '../../../utils/tasks.js';
+import { getTeammateStatuses, type TeammateStatus, type TeamSummary } from '../../../utils/teamDiscovery.js';
+import { createModeSetRequestMessage, sendShutdownRequestToMailbox, writeToMailbox } from '../../../utils/teammateMailbox.js';
 import { Dialog } from '../design-system/Dialog';
 import ThemedText from '../design-system/ThemedText';
 import {
@@ -656,8 +656,7 @@ async function toggleTeammateVisibility(teammate: TeammateStatus, teamName: stri
 }
 
 /**
- * Hide a teammate pane using the backend abstraction.
- * Only available for ant users (gated for dead code elimination in external builds)
+ * Hide a teammate pane using the AgenC backend abstraction.
  */
 async function hideTeammate(teammate: TeammateStatus, teamName: string): Promise<TeamActionResult> {
   if (!teammate.tmuxPaneId || !teammate.backendType) {
@@ -693,8 +692,7 @@ export function resolveTeammateShowTargetPane(teammatePaneId: string): string | 
 }
 
 /**
- * Show a previously hidden teammate pane using the backend abstraction.
- * Only available for ant users (gated for dead code elimination in external builds)
+ * Show a previously hidden teammate pane using the AgenC backend abstraction.
  */
 async function showTeammate(teammate: TeammateStatus, teamName: string): Promise<TeamActionResult> {
   if (!teammate.tmuxPaneId || !teammate.backendType) {

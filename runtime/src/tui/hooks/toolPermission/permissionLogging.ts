@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // Centralized analytics/telemetry logging for tool permission decisions.
 // All permission approve/reject events flow through logPermissionDecision(),
 // which fans out to Statsig analytics, OTel telemetry, and code-edit metrics.
@@ -9,15 +7,15 @@ import {
   logEvent,
 } from '../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
-import { getCodeEditToolDecisionCounter } from '../../../bootstrap/state'
-import type { Tool as ToolType, ToolUseContext } from '../../../tools/Tool'
-import { getLanguageName } from '../../../utils/cliHighlight' // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime' // upstream-import: keep target is owned by another Z-PURGE item
-import { logOTelEvent } from '../../../utils/telemetry/events' // upstream-import: keep target is owned by another Z-PURGE item
+import { getCodeEditToolDecisionCounter } from '../../../bootstrap/state.js'
+import type { Tool as ToolType, ToolUseContext } from '../../../tools/Tool.js'
+import { getLanguageName } from '../../../utils/cliHighlight.js'
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'
+import { logOTelEvent } from '../../../utils/telemetry/events.js'
 import type {
   PermissionApprovalSource,
   PermissionRejectionSource,
-} from './PermissionContext'
+} from './PermissionContext.js'
 
 type PermissionLogContext = {
   tool: ToolType
@@ -115,7 +113,7 @@ function logApprovalEvent(
   if (source === 'config') {
     // Auto-approved by allowlist in settings -- no user wait time
     logEvent(
-      'tengu_tool_use_granted_in_config',
+      'agenc_tool_use_granted_in_config',
       baseMetadata(messageId, tool.name, undefined),
     )
     return
@@ -125,7 +123,7 @@ function logApprovalEvent(
     source.type === 'classifier'
   ) {
     logEvent(
-      'tengu_tool_use_granted_by_classifier',
+      'agenc_tool_use_granted_by_classifier',
       baseMetadata(messageId, tool.name, waitMs),
     )
     return
@@ -134,13 +132,13 @@ function logApprovalEvent(
     case 'user':
       logEvent(
         source.permanent
-          ? 'tengu_tool_use_granted_in_prompt_permanent'
-          : 'tengu_tool_use_granted_in_prompt_temporary',
+          ? 'agenc_tool_use_granted_in_prompt_permanent'
+          : 'agenc_tool_use_granted_in_prompt_temporary',
         baseMetadata(messageId, tool.name, waitMs),
       )
       break
     case 'hook':
-      logEvent('tengu_tool_use_granted_by_permission_hook', {
+      logEvent('agenc_tool_use_granted_by_permission_hook', {
         ...baseMetadata(messageId, tool.name, waitMs),
         permanent: source.permanent ?? false,
       })
@@ -160,12 +158,12 @@ function logRejectionEvent(
   if (source === 'config') {
     // Denied by denylist in settings
     logEvent(
-      'tengu_tool_use_denied_in_config',
+      'agenc_tool_use_denied_in_config',
       baseMetadata(messageId, tool.name, undefined),
     )
     return
   }
-  logEvent('tengu_tool_use_rejected_in_prompt', {
+  logEvent('agenc_tool_use_rejected_in_prompt', {
     ...baseMetadata(messageId, tool.name, waitMs),
     // Distinguish hook rejections from user rejections via separate fields
     ...(source.type === 'hook'

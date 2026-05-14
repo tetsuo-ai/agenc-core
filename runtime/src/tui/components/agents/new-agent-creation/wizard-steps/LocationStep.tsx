@@ -1,12 +1,13 @@
 import { c as _c } from "react-compiler-runtime";
 import React, { type ReactNode } from 'react';
 import { Box } from '../../../../ink.js';
-import type { SettingSource } from '../../../../../utils/settings/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { SettingSource } from '../../../../../utils/settings/constants.js';
 import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Select } from '../../../CustomSelect/select';
 import { Byline } from '../../../design-system/Byline';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint';
 import { useWizard } from '../../../wizard/index';
+import { getWizardNavigationShortcut } from '../../../wizard/WizardNavigationFooter.js';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
 import type { AgentWizardData } from '../types';
 export function LocationStep() {
@@ -39,7 +40,7 @@ export function LocationStep() {
   const locationOptions = t1;
   let t2;
   if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Byline><KeyboardShortcutHint shortcut={"\u2191\u2193"} action="navigate" /><KeyboardShortcutHint shortcut="Enter" action="select" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline>;
+    t2 = <Byline><KeyboardShortcutHint shortcut={getWizardNavigationShortcut()} action="navigate" /><KeyboardShortcutHint shortcut="Enter" action="select" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline>;
     $[2] = t2;
   } else {
     t2 = $[2];

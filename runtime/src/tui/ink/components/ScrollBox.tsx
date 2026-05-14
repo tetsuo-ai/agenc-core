@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import React, { type PropsWithChildren, type Ref, useImperativeHandle, useRef, useState } from 'react';
 import type { Except } from 'type-fest';
 import { markScrollActivity } from '../../../bootstrap/state.js';
@@ -216,23 +214,28 @@ function ScrollBox({
   // stickyScroll is passed as a DOM attribute (via ink-box directly) so it's
   // available on the first render — ref callbacks fire after the initial
   // commit, which is too late for the first frame.
-  return <ink-box ref={el => {
+  const inkBoxProps = {
+    ref: (el: DOMElement | null) => {
     domRef.current = el;
     if (el) el.scrollTop ??= 0;
-  }} style={{
-    flexWrap: 'nowrap',
-    flexDirection: style.flexDirection ?? 'row',
-    flexGrow: style.flexGrow ?? 0,
-    flexShrink: style.flexShrink ?? 1,
-    ...style,
-    overflowX: 'scroll',
-    overflowY: 'scroll'
-  }} {...stickyScroll ? {
-    stickyScroll: true
-  } : {}}>
+    },
+    style: {
+      flexWrap: 'nowrap',
+      flexDirection: style.flexDirection ?? 'row',
+      flexGrow: style.flexGrow ?? 0,
+      flexShrink: style.flexShrink ?? 1,
+      ...style,
+      overflowX: 'scroll',
+      overflowY: 'scroll'
+    },
+    ...(stickyScroll ? {
+      stickyScroll: true
+    } : {})
+  };
+  return React.createElement('ink-box', inkBoxProps,
       <Box flexDirection="column" flexGrow={1} flexShrink={0} width="100%">
         {children}
       </Box>
-    </ink-box>;
+    );
 }
 export default ScrollBox;

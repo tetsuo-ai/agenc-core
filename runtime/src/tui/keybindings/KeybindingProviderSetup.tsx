@@ -15,6 +15,7 @@ import type { InputEvent } from '../ink/events/input-event.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings
 import { type Key, useInput } from '../ink.js';
 import { logForDebugging } from '../../utils/debug.js';
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import { KeybindingProvider } from './KeybindingContext.js';
 import { initializeKeybindingWatcher, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
 import { resolveKeyWithChordState } from './resolver.js';
@@ -54,6 +55,14 @@ export function formatKeybindingWarningSummary(warnings: readonly KeybindingWarn
     return `Found ${errorCount} keybinding ${pluralize(errorCount, "error")}`;
   }
   return `Found ${warnCount} keybinding ${pluralize(warnCount, "warning")}`;
+}
+
+export function formatKeybindingWarningNotification(
+  messageBase: string,
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return `${messageBase} ${glyphs.separator} /doctor for details`;
 }
 
 /**
@@ -99,8 +108,7 @@ function useKeybindingWarnings(
       const errorCount = countWarnings(warnings, "error");
       const messageBase = formatKeybindingWarningSummary(warnings);
       if (messageBase === null) return;
-      let message = messageBase;
-      message = message + " \xB7 /doctor for details";
+      const message = formatKeybindingWarningNotification(messageBase);
       addNotification({
         key: "keybinding-config-warning",
         text: message,

@@ -1,10 +1,8 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { type FSWatcher, watch } from 'fs'
 import { useEffect, useSyncExternalStore } from 'react'
-import { useAppState, useSetAppState } from '../state/AppState.js'
-import { createSignal } from '../../utils/signal'
-import type { Task } from '../../utils/tasks.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { type AppState, useAppState, useSetAppState } from '../state/AppState.js'
+import { createSignal } from '../../utils/signal.js'
+import type { Task } from '../../utils/tasks.js'
 import {
   getTaskListId,
   getTasksDir,
@@ -12,8 +10,8 @@ import {
   listTasks,
   onTasksUpdated,
   resetTaskList,
-} from '../../utils/tasks.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { isTeamLead } from '../../utils/teammate.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../utils/tasks.js'
+import { isTeamLead } from '../../utils/teammate.js'
 
 const HIDE_DELAY_MS = 5000
 const DEBOUNCE_MS = 50
@@ -218,7 +216,7 @@ const NOOP_SNAPSHOT = (): undefined => undefined
  * Hides the list after 5 seconds if there are no open tasks.
  */
 export function useTasksV2(): Task[] | undefined {
-  const teamContext = useAppState(s => s.teamContext)
+  const teamContext = useAppState((s: AppState) => s.teamContext)
 
   const enabled = isTodoV2Enabled() && (!teamContext || isTeamLead(teamContext))
 

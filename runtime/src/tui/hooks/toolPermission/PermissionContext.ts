@@ -10,37 +10,37 @@ import type {
   ToolPermissionContext,
   Tool as ToolType,
   ToolUseContext,
-} from '../../../tools/Tool'
-import { awaitClassifierAutoApproval } from '../../../tools/BashTool/bashPermissions'
-import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName'
-import type { AssistantMessage } from '../../../types/message'
+} from '../../../tools/Tool.js'
+import { awaitClassifierAutoApproval } from '../../../tools/BashTool/bashPermissions.js'
+import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName.js'
+import type { AssistantMessage } from '../../../types/message.js'
 import type {
   PendingClassifierCheck,
   PermissionAllowDecision,
   PermissionDecisionReason,
   PermissionDenyDecision,
-} from '../../../types/permissions'
-import { setClassifierApproval } from '../../../utils/classifierApprovals' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../types/permissions.js'
+import { setClassifierApproval } from '../../../utils/classifierApprovals.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { executePermissionRequestHooks } from '../../../utils/hooks.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { executePermissionRequestHooks } from '../../../utils/hooks.js'
 import {
   REJECT_MESSAGE,
   REJECT_MESSAGE_WITH_REASON_PREFIX,
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
   withMemoryCorrectionHint,
-} from '../../../utils/messages.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/messages.js'
+import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js'
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
   supportsPersistence,
-} from '../../../utils/permissions/PermissionUpdate.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/PermissionUpdate.js'
+import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
 import {
   logPermissionDecision,
   type PermissionDecisionArgs,
-} from './permissionLogging'
+} from './permissionLogging.js'
 
 type PermissionApprovalSource =
   | { type: 'hook'; permanent?: boolean }

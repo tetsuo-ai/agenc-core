@@ -5,6 +5,7 @@ import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint';
 import { useWizard } from '../../../wizard/index';
+import { getWizardNavigationShortcut } from '../../../wizard/WizardNavigationFooter.js';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
 import { ToolSelector } from '../../ToolSelector';
 import type { AgentWizardData } from '../types';
@@ -40,7 +41,7 @@ export function ToolsStep(t0) {
   const initialTools = wizardData.selectedTools;
   let t2;
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Byline><KeyboardShortcutHint shortcut="Enter" action="toggle selection" /><KeyboardShortcutHint shortcut={"\u2191\u2193"} action="navigate" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="go back" /></Byline>;
+    t2 = <Byline><KeyboardShortcutHint shortcut="Enter" action="toggle selection" /><KeyboardShortcutHint shortcut={getWizardNavigationShortcut()} action="navigate" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="go back" /></Byline>;
     $[3] = t2;
   } else {
     t2 = $[3];

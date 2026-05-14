@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import wrapAnsiNpm from 'wrap-ansi'
 
 type WrapAnsiOptions = {
@@ -9,14 +7,14 @@ type WrapAnsiOptions = {
 }
 
 const wrapAnsiBun =
-  typeof Bun !== 'undefined' && typeof Bun.wrapAnsi === 'function'
-    ? Bun.wrapAnsi
-    : null
+  typeof Bun !== 'undefined'
+    ? (Bun as unknown as { readonly wrapAnsi?: typeof wrapAnsiNpm }).wrapAnsi
+    : undefined
 
 const wrapAnsi: (
   input: string,
   columns: number,
   options?: WrapAnsiOptions,
-) => string = wrapAnsiBun ?? wrapAnsiNpm
+) => string = typeof wrapAnsiBun === 'function' ? wrapAnsiBun : wrapAnsiNpm
 
 export { wrapAnsi }

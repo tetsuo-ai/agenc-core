@@ -6,22 +6,23 @@ import {
 } from '../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
 import { BashTool } from '../../../tools/BashTool/BashTool.js'
-import { splitCommand_DEPRECATED } from '../../../utils/bash/commands.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { splitCommand_DEPRECATED } from '../../../utils/bash/commands.js'
 import type {
   PermissionDecisionReason,
   PermissionResult,
-} from '../../../utils/permissions/PermissionResult.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/PermissionResult.js'
 import {
   extractRules,
   hasRules,
-} from '../../../utils/permissions/PermissionUpdate.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js' // upstream-import: keep target is owned by another Z-PURGE item
+} from '../../../utils/permissions/PermissionUpdate.js'
+import { permissionRuleValueToString } from '../../../utils/permissions/permissionRuleParser.js'
+import { SandboxManager } from '../../../utils/sandbox/sandbox-runtime.js'
 import type { ToolUseConfirm } from './PermissionRequest.js'
 import { useSetAppState } from '../../state/AppState.js'
-import { env } from '../../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { jsonStringify } from '../../../utils/slowOperations.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { type CompletionType, logUnaryEvent } from '../../../utils/unaryLogging.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { isAntEmployee } from '../../../utils/buildConfig.js'
+import { env } from '../../../utils/env.js'
+import { jsonStringify } from '../../../utils/slowOperations.js'
+import { type CompletionType, logUnaryEvent } from '../../../utils/unaryLogging.js'
 
 export type UnaryEvent = {
   completion_type: CompletionType
@@ -107,7 +108,7 @@ export function usePermissionRequestLogging(
   // changes during a single dialog's lifetime (e.g., parent re-renders with a
   // fresh object). Without this, the unconditional setAppState below can
   // cascade into an infinite microtask loop — each re-fire does another
-  // setAppState spread + (ant builds) splitCommand → shell-quote regex,
+    // setAppState spread + internal telemetry parsing work,
   // pegging CPU at 100% and leaking ~500MB/min in JSRopeString/RegExp allocs.
   // The component is keyed by toolUseID, so this ref resets on remount —
   // we only need to dedupe re-fires WITHIN one dialog instance.
@@ -129,7 +130,7 @@ export function usePermissionRequestLogging(
     }))
 
     // Log analytics event
-    logEvent('tengu_tool_use_show_permission_request', {
+    logEvent('agenc_tool_use_show_permission_request', {
       messageID: toolUseConfirm.assistantMessage.message
         .id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       toolName: sanitizeToolNameForAnalytics(toolUseConfirm.tool.name),
@@ -139,7 +140,7 @@ export function usePermissionRequestLogging(
       sandboxEnabled: SandboxManager.isSandboxingEnabled(),
     })
 
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAntEmployee()) {
       const permissionResult = toolUseConfirm.permissionResult
       if (
         toolUseConfirm.tool.name === BashTool.name &&
@@ -147,7 +148,7 @@ export function usePermissionRequestLogging(
         !hasRules(permissionResult.suggestions)
       ) {
         // Log if no rule suggestions ("always allow") are provided
-        logEvent('tengu_internal_tool_use_permission_request_no_always_allow', {
+        logEvent('agenc_internal_tool_use_permission_request_no_always_allow', {
           messageID: toolUseConfirm.assistantMessage.message
             .id as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           toolName: sanitizeToolNameForAnalytics(toolUseConfirm.tool.name),
@@ -166,7 +167,7 @@ export function usePermissionRequestLogging(
 
     // [internal-only] Log bash tool calls, so we can categorize
     // & burn down calls that should have been allowed
-    if (process.env.USER_TYPE === 'ant') {
+    if (isAntEmployee()) {
       const parsedInput = BashTool.inputSchema.safeParse(toolUseConfirm.input)
       if (
         toolUseConfirm.tool.name === BashTool.name &&
@@ -180,7 +181,7 @@ export function usePermissionRequestLogging(
         } catch {
           // Ignore parse errors here - just log the full command
         }
-        logEvent('tengu_internal_bash_tool_use_permission_request', {
+        logEvent('agenc_internal_bash_tool_use_permission_request', {
           parts: jsonStringify(
             split,
           ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,

@@ -1,6 +1,4 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import React, { PureComponent, type ReactNode } from 'react';
+import { PureComponent, type ReactNode } from 'react';
 import { updateLastInteractionTime } from '../../../bootstrap/state.js';
 import { stopCapturingEarlyInput } from '../../../utils/earlyInput.js';
 import { isEnvTruthy } from '../../../utils/envUtils.js';

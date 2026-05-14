@@ -7,6 +7,7 @@ import { ConfigurableShortcutHint } from '../../../ConfigurableShortcutHint';
 import { Byline } from '../../../design-system/Byline';
 import { KeyboardShortcutHint } from '../../../design-system/KeyboardShortcutHint';
 import { useWizard } from '../../../wizard/index';
+import { getWizardNavigationShortcut } from '../../../wizard/WizardNavigationFooter.js';
 import { WizardDialogLayout } from '../../../wizard/WizardDialogLayout';
 import { ColorPicker } from '../../ColorPicker';
 import type { AgentWizardData } from '../types';
@@ -64,7 +65,7 @@ export function ColorStep() {
   const handleConfirm = t1;
   let t2;
   if ($[10] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = <Byline><KeyboardShortcutHint shortcut={"\u2191\u2193"} action="navigate" /><KeyboardShortcutHint shortcut="Enter" action="select" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="go back" /></Byline>;
+    t2 = <Byline><KeyboardShortcutHint shortcut={getWizardNavigationShortcut()} action="navigate" /><KeyboardShortcutHint shortcut="Enter" action="select" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="go back" /></Byline>;
     $[10] = t2;
   } else {
     t2 = $[10];
