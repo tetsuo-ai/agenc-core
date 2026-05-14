@@ -9,7 +9,9 @@ import { getFsImplementation } from '../../../../utils/fsOperations.js'; // upst
 import { Text } from '../../../ink.js';
 import { BashTool } from '../../../../tools/BashTool/BashTool.js';
 import { applySedSubstitution, type SedEditInfo } from '../../../../tools/BashTool/sedEditParser.js';
+import { LoadingState } from '../../design-system/LoadingState.js';
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
+import { PermissionDialog } from '../PermissionDialog.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 type SedEditPermissionRequestProps = PermissionRequestProps & {
   sedInfo: SedEditInfo;
@@ -57,7 +59,22 @@ export function SedEditPermissionRequest(t0: SedEditPermissionRequestProps) {
   const contentPromise = t1 as Promise<FileReadResult>;
   let t2;
   if ($[5] !== contentPromise || $[6] !== props || $[7] !== sedInfo) {
-    t2 = <Suspense fallback={null}><SedEditPermissionRequestInner sedInfo={sedInfo} contentPromise={contentPromise} {...props} /></Suspense>;
+    t2 = (
+      <Suspense
+        fallback={
+          <SedEditLoadingPermissionDialog
+            sedInfo={sedInfo}
+            workerBadge={props.workerBadge}
+          />
+        }
+      >
+        <SedEditPermissionRequestInner
+          sedInfo={sedInfo}
+          contentPromise={contentPromise}
+          {...props}
+        />
+      </Suspense>
+    );
     $[5] = contentPromise;
     $[6] = props;
     $[7] = sedInfo;
@@ -66,6 +83,26 @@ export function SedEditPermissionRequest(t0: SedEditPermissionRequestProps) {
     t2 = $[8];
   }
   return t2;
+}
+export function SedEditLoadingPermissionDialog({
+  sedInfo,
+  workerBadge,
+}: Pick<SedEditPermissionRequestProps, 'sedInfo' | 'workerBadge'>) {
+  const { filePath } = sedInfo;
+  const fileName = basename(filePath);
+
+  return (
+    <PermissionDialog
+      title="Edit file"
+      subtitle={relative(getCwd(), filePath)}
+      workerBadge={workerBadge}
+    >
+      <Text>
+        Preparing edit preview for <Text bold={true}>{fileName}</Text>
+      </Text>
+      <LoadingState message="Loading edit preview..." dimColor={true} />
+    </PermissionDialog>
+  );
 }
 function _temp(e: unknown): FileReadResult {
   if (!isENOENT(e)) {
