@@ -16,6 +16,7 @@ import type { Theme } from '../../utils/theme.js';
 import type { AppState } from '../state/AppStateStore.js';
 import FullWidthRow from './design-system/FullWidthRow.js';
 import ThemedText from './design-system/ThemedText.js';
+import { selectAgenCTuiGlyphs } from '../glyphs.js';
 type Props = {
   tasks: Task[];
   isStandalone?: boolean;
@@ -27,6 +28,19 @@ export function getTaskListTextWidth(columns: number, ownerWidth = 0): number {
   const normalizedColumns = Number.isFinite(columns) ? Math.max(0, Math.trunc(columns)) : 0;
   const normalizedOwnerWidth = Number.isFinite(ownerWidth) ? Math.max(0, Math.trunc(ownerWidth)) : 0;
   return Math.max(1, normalizedColumns - TASK_ROW_RESERVED_COLUMNS - normalizedOwnerWidth);
+}
+
+export function getTaskListV2GlyphText(
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): {
+  hiddenSummaryPrefix: string;
+  activityContinuation: string;
+} {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  return {
+    hiddenSummaryPrefix: ` ${glyphs.ellipsis} +`,
+    activityContinuation: glyphs.ellipsis,
+  };
 }
 
 function byIdAsc(a: Task, b: Task): number {
@@ -177,6 +191,7 @@ export function TaskListV2({
     visibleTasks = [...tasks].sort(byIdAsc);
     hiddenTasks = [];
   }
+  const taskListGlyphText = getTaskListV2GlyphText();
   let hiddenSummary = '';
   if (hiddenTasks.length > 0) {
     const parts: string[] = [];
@@ -192,10 +207,10 @@ export function TaskListV2({
     if (hiddenCompleted > 0) {
       parts.push(`${hiddenCompleted} completed`);
     }
-    hiddenSummary = ` … +${parts.join(', ')}`;
+    hiddenSummary = `${taskListGlyphText.hiddenSummaryPrefix}${parts.join(', ')}`;
   }
   const content = <>
-      {visibleTasks.map(task_0 => <TaskItem key={task_0.id} task={task_0} ownerColor={task_0.owner ? teammateColors[task_0.owner] : undefined} openBlockers={task_0.blockedBy.filter(id_3 => unresolvedTaskIds.has(id_3))} activity={task_0.owner ? teammateActivity[task_0.owner] : undefined} ownerActive={task_0.owner ? activeTeammates.has(task_0.owner) : false} columns={columns} />)}
+      {visibleTasks.map(task_0 => <TaskItem key={task_0.id} task={task_0} ownerColor={task_0.owner ? teammateColors[task_0.owner] : undefined} openBlockers={task_0.blockedBy.filter(id_3 => unresolvedTaskIds.has(id_3))} activity={task_0.owner ? teammateActivity[task_0.owner] : undefined} ownerActive={task_0.owner ? activeTeammates.has(task_0.owner) : false} columns={columns} activityContinuation={taskListGlyphText.activityContinuation} />)}
       {maxDisplay > 0 && hiddenSummary && <FullWidthRow><Text dimColor>{hiddenSummary}</Text></FullWidthRow>}
     </>;
   if (isStandalone) {
@@ -224,6 +239,7 @@ type TaskItemProps = {
   ownerColor?: keyof Theme;
   openBlockers: string[];
   activity?: string;
+  activityContinuation: string;
   ownerActive: boolean;
   columns: number;
 };
@@ -250,12 +266,13 @@ function getTaskIcon(status: Task['status']): {
   }
 }
 function TaskItem(t0: TaskItemProps): React.ReactNode {
-  const $ = _c(37);
+  const $ = _c(38);
   const {
     task,
     ownerColor,
     openBlockers,
     activity,
+    activityContinuation,
     ownerActive,
     columns
   } = t0;
@@ -360,22 +377,23 @@ function TaskItem(t0: TaskItemProps): React.ReactNode {
     t10 = $[30];
   }
   let t11;
-  if ($[31] !== displayActivity || $[32] !== showActivity) {
-    t11 = showActivity && displayActivity && <FullWidthRow><Text dimColor={true}>{"  "}{displayActivity}{figures.ellipsis}</Text></FullWidthRow>;
-    $[31] = displayActivity;
-    $[32] = showActivity;
-    $[33] = t11;
+  if ($[31] !== activityContinuation || $[32] !== displayActivity || $[33] !== showActivity) {
+    t11 = showActivity && displayActivity && <FullWidthRow><Text dimColor={true}>{"  "}{displayActivity}{activityContinuation}</Text></FullWidthRow>;
+    $[31] = activityContinuation;
+    $[32] = displayActivity;
+    $[33] = showActivity;
+    $[34] = t11;
   } else {
-    t11 = $[33];
+    t11 = $[34];
   }
   let t12;
-  if ($[34] !== t10 || $[35] !== t11) {
+  if ($[35] !== t10 || $[36] !== t11) {
     t12 = <Box flexDirection="column" width="100%">{t10}{t11}</Box>;
-    $[34] = t10;
-    $[35] = t11;
-    $[36] = t12;
+    $[35] = t10;
+    $[36] = t11;
+    $[37] = t12;
   } else {
-    t12 = $[36];
+    t12 = $[37];
   }
   return t12;
 }

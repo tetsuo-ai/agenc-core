@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { getTaskListTextWidth } from './TaskListV2.js'
+import { getTaskListTextWidth, getTaskListV2GlyphText } from './TaskListV2.js'
 
 describe('getTaskListTextWidth', () => {
   test('clamps text width to one column for tiny terminals', () => {
@@ -17,5 +17,21 @@ describe('getTaskListTextWidth', () => {
   test('normalizes invalid dimensions', () => {
     expect(getTaskListTextWidth(Number.NaN)).toBe(1)
     expect(getTaskListTextWidth(80, Number.NaN)).toBe(65)
+  })
+})
+
+describe('getTaskListV2GlyphText', () => {
+  test('uses ASCII-safe continuation text when ASCII glyph mode is requested', () => {
+    expect(getTaskListV2GlyphText({ AGENC_TUI_GLYPHS: 'ascii' })).toEqual({
+      hiddenSummaryPrefix: ' ... +',
+      activityContinuation: '...',
+    })
+  })
+
+  test('preserves Unicode continuation text by default', () => {
+    expect(getTaskListV2GlyphText({})).toEqual({
+      hiddenSummaryPrefix: ' … +',
+      activityContinuation: '…',
+    })
   })
 })
