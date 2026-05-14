@@ -1,5 +1,3 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from '../context/notifications.js';
@@ -19,16 +17,16 @@ import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { useAppState, useAppStateStore } from '../state/AppState.js';
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js';
 import type { InlineGhostText, PromptInputMode } from '../../types/textInputTypes';
-import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled'; // upstream-import: keep target is owned by another Z-PURGE item
+import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled';
 import { generateProgressiveArgumentHint, parseArguments } from '../slash/argument-substitution.js';
-import { getShellCompletions, type ShellCompletionType } from '../../utils/bash/shellCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { formatLogMetadata } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSessionIdFromLog, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput, isCommandMetadata } from '../../utils/suggestions/commandSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '../../utils/suggestions/directoryCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getShellHistoryCompletion } from '../../utils/suggestions/shellHistoryCompletion.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getSlackChannelSuggestions, hasSlackMcpServer } from '../../utils/suggestions/slackChannelSuggestions.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getShellCompletions, type ShellCompletionType } from '../../utils/bash/shellCompletion.js';
+import { formatLogMetadata } from '../../utils/format.js';
+import { getSessionIdFromLog, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js';
+import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput, isCommandMetadata } from '../../utils/suggestions/commandSuggestions.js';
+import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '../../utils/suggestions/directoryCompletion.js';
+import { getShellHistoryCompletion } from '../../utils/suggestions/shellHistoryCompletion.js';
+import { getSlackChannelSuggestions, hasSlackMcpServer } from '../../utils/suggestions/slackChannelSuggestions.js';
+import { TEAM_LEAD_NAME } from '../../utils/swarm/constants.js';
 import { applyFileSuggestion, findLongestCommonPrefix, onIndexBuildComplete, startBackgroundCacheRefresh } from './fileSuggestions';
 import { generateUnifiedSuggestions } from './unifiedSuggestions';
 import {

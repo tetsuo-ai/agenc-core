@@ -4,11 +4,11 @@ import { expect, test } from 'bun:test'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 
-import { createRoot } from '../../../tui/ink.js'
-import { AppStateProvider } from '../../../tui/state/AppState.js'
-import { maskTextWithVisibleEdges } from '../../utils/Cursor' // branding-scan: allow upstream mirror import path pending purge
-import TextInput from './TextInput'
-import VimTextInput from './VimTextInput'
+import { createRoot } from '../ink.js'
+import { AppStateProvider } from '../state/AppState.js'
+import { maskTextWithVisibleEdges } from '../../utils/TextCursor.js'
+import TextInput from './TextInput.js'
+import VimTextInput from './VimTextInput.js'
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'

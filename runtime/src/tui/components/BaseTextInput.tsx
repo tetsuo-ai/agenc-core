@@ -1,11 +1,12 @@
 import { c as _c } from "react-compiler-runtime";
 import React from 'react';
-import { renderPlaceholder } from '../hooks/renderPlaceholder';
-import { usePasteHandler } from '../hooks/usePasteHandler';
+import { renderPlaceholder } from '../hooks/renderPlaceholder.js';
+import { usePasteHandler } from '../hooks/usePasteHandler.js';
 import { useDeclaredCursor } from '../ink/hooks/use-declared-cursor.js';
 import { Ansi, Box, Text, useInput } from '../ink.js';
-import type { BaseInputState, BaseTextInputProps } from '../../types/textInputTypes';
-import type { TextHighlight } from '../../utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { Key } from '../ink.js';
+import type { BaseInputState, BaseTextInputProps } from '../../types/textInputTypes.js';
+import type { TextHighlight } from '../../utils/textHighlighting.js';
 import { HighlightedInput } from './PromptInput/ShimmeredInput.js';
 type BaseTextInputComponentProps = BaseTextInputProps & {
   inputState: BaseInputState;
@@ -19,7 +20,7 @@ type BaseTextInputComponentProps = BaseTextInputProps & {
 /**
  * A base component for text inputs that handles rendering and basic input
  */
-export function BaseTextInput(t0) {
+export function BaseTextInput(t0: BaseTextInputComponentProps) {
   const $ = _c(14);
   const {
     inputState,
@@ -58,7 +59,7 @@ export function BaseTextInput(t0) {
     isPasting: t3
   } = usePasteHandler({
     onPaste: props.onPaste,
-    onInput: (input, key) => {
+    onInput: (input: string, key: Key) => {
       if (isPasting && key.return) {
         return;
       }
@@ -92,12 +93,12 @@ export function BaseTextInput(t0) {
   });
   const commandWithoutArgs = value && value.trim().indexOf(" ") === -1 || value && value.endsWith(" ");
   const showArgumentHint = Boolean(props.argumentHint && value && commandWithoutArgs && value.startsWith("/"));
-  const cursorFiltered = props.showCursor && props.highlights ? props.highlights.filter(h => h.dimColor || offset < h.start || offset >= h.end) : props.highlights;
+  const cursorFiltered = props.showCursor && props.highlights ? props.highlights.filter((h: TextHighlight) => h.dimColor || offset < h.start || offset >= h.end) : props.highlights;
   const {
     viewportCharOffset,
     viewportCharEnd
   } = inputState;
-  const filteredHighlights = cursorFiltered && viewportCharOffset > 0 ? cursorFiltered.filter(h_0 => h_0.end > viewportCharOffset && h_0.start < viewportCharEnd).map(h_1 => ({
+  const filteredHighlights = cursorFiltered && viewportCharOffset > 0 ? cursorFiltered.filter((h_0: TextHighlight) => h_0.end > viewportCharOffset && h_0.start < viewportCharEnd).map((h_1: TextHighlight) => ({
     ...h_1,
     start: Math.max(0, h_1.start - viewportCharOffset),
     end: h_1.end - viewportCharOffset

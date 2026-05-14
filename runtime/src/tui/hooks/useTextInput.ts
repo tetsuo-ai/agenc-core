@@ -2,13 +2,13 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { isInputModeCharacter } from '../components/PromptInput/inputModes.js'
 import { useNotifications } from '../context/notifications.js'
 import stripAnsi from 'strip-ansi'
-import { markBackslashReturnUsed } from '../../commands/terminalSetup/terminalSetup'
+import { markBackslashReturnUsed } from '../../commands/terminalSetup/terminalSetup.js'
 import { addToHistory } from '../history/history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
   TextInputState,
-} from '../../types/textInputTypes'
+} from '../../types/textInputTypes.js'
 import {
   TextCursor,
   getLastKill,
@@ -18,12 +18,12 @@ import {
   resetYankState,
   updateYankLength,
   yankPop,
-} from '../../utils/TextCursor.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { env } from '../../utils/env.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { ImageDimensions } from '../../utils/imageResizer.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { isModifierPressed, prewarmModifiers } from '../../utils/modifiers.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { useDoublePress } from './useDoublePress'
+} from '../../utils/TextCursor.js'
+import { env } from '../../utils/env.js'
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
+import type { ImageDimensions } from '../../utils/imageResizer.js'
+import { isModifierPressed, prewarmModifiers } from '../../utils/modifiers.js'
+import { useDoublePress } from './useDoublePress.js'
 
 type MaybeCursor = void | TextCursor
 type InputHandler = (input: string) => MaybeCursor
@@ -172,7 +172,7 @@ export function useTextInput({
   const { addNotification, removeNotification } = useNotifications()
 
   const handleCtrlC = useDoublePress(
-    show => {
+    (show: boolean) => {
       onExitMessage?.(show, 'Ctrl-C')
     },
     () => onExit?.(),
@@ -224,7 +224,7 @@ export function useTextInput({
   )
 
   const handleEmptyCtrlD = useDoublePress(
-    show => {
+    (show: boolean) => {
       if (getLiveValue() !== '') {
         return
       }
@@ -324,7 +324,7 @@ export function useTextInput({
     ['y', handleYankPop],
   ])
 
-  function handleEnter(key: Key) {
+  function handleEnter(key: Key): MaybeCursor {
     const cursor = getLiveCursor()
     const currentValue = getLiveValue()
     if (

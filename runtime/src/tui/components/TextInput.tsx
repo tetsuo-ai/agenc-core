@@ -1,18 +1,16 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle';
 import chalk from 'chalk';
 import React, { useMemo, useRef } from 'react';
-import { useVoiceState } from '../context/voice';
-import { useClipboardImageHint } from '../hooks/useClipboardImageHint';
-import { useSettings } from '../hooks/useSettings';
-import { useTextInput } from '../hooks/useTextInput';
+import { useVoiceState, type VoiceState } from '../context/voice.js';
+import { useClipboardImageHint } from '../hooks/useClipboardImageHint.js';
+import { useSettings } from '../hooks/useSettings.js';
+import { useTextInput } from '../hooks/useTextInput.js';
 import { Box, color, useAnimationFrame, useTerminalFocus, useTheme } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
-import type { BaseTextInputProps } from '../../types/textInputTypes';
-import { isEnvTruthy } from '../../utils/envUtils';
-import type { TextHighlight } from '../../utils/textHighlighting.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { BaseTextInput } from './BaseTextInput';
+import type { BaseTextInputProps } from '../../types/textInputTypes.js';
+import { isEnvTruthy } from '../../utils/envUtils.js';
+import type { TextHighlight } from '../../utils/textHighlighting.js';
+import { BaseTextInput } from './BaseTextInput.js';
 import { hueToRgb } from './spinner/utils.js';
 
 // Mini waveform cursor width
@@ -43,11 +41,11 @@ export default function TextInput(props: Props): React.ReactNode {
   const reducedMotion = settings?.prefersReducedMotion ?? false;
   const voiceState = feature('VOICE_MODE') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useVoiceState(s => s.voiceState) : 'idle' as const;
+  useVoiceState((s: VoiceState) => s.voiceState) : 'idle' as const;
   const isVoiceRecording = voiceState === 'recording';
   const audioLevels = feature('VOICE_MODE') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useVoiceState(s_0 => s_0.voiceAudioLevels) : [];
+  useVoiceState((s_0: VoiceState) => s_0.voiceAudioLevels) : [];
   const smoothedRef = useRef<number[]>(new Array(CURSOR_WAVEFORM_WIDTH).fill(0));
   const needsAnimation = isVoiceRecording && !reducedMotion;
   const [animRef, animTime] = feature('VOICE_MODE') ?

@@ -1,18 +1,16 @@
-// @ts-nocheck
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import React from 'react';
-import { useClipboardImageHint } from '../hooks/useClipboardImageHint';
-import { useVimInput } from '../hooks/useVimInput';
+import { useClipboardImageHint } from '../hooks/useClipboardImageHint.js';
+import { useVimInput } from '../hooks/useVimInput.js';
 import { Box, color, useTerminalFocus, useTheme } from '../ink.js';
-import type { VimTextInputProps } from '../../types/textInputTypes';
-import type { TextHighlight } from '../../utils/textHighlighting'; // upstream-import: keep target is owned by another Z-PURGE item
-import { BaseTextInput } from './BaseTextInput';
+import type { VimTextInputProps } from '../../types/textInputTypes.js';
+import type { TextHighlight } from '../../utils/textHighlighting.js';
+import { BaseTextInput } from './BaseTextInput.js';
 export type Props = VimTextInputProps & {
   highlights?: TextHighlight[];
 };
-export default function VimTextInput(props) {
+export default function VimTextInput(props: Props): React.ReactNode {
   const $ = _c(38);
   const [theme] = useTheme();
   const isTerminalFocused = useTerminalFocus();
@@ -136,6 +134,6 @@ export default function VimTextInput(props) {
   }
   return t19;
 }
-function _temp(text) {
+function _temp(text: string): string {
   return text;
 }
