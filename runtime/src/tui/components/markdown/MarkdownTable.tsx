@@ -6,6 +6,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { wrapAnsi } from '../../ink/wrapAnsi.js';
 import { Ansi, useTheme } from '../../ink.js';
+import { resolveAgenCTuiGlyphMode } from '../../glyphs.js';
 import type { CliHighlight } from '../../../utils/cliHighlight.js';
 import { formatToken, padAligned } from '../../../utils/markdown.js';
 
@@ -28,6 +29,34 @@ const MAX_ROW_LINES = 4;
 /** ANSI escape codes for text formatting */
 const ANSI_BOLD_START = '\x1b[1m';
 const ANSI_BOLD_END = '\x1b[22m';
+type TableBorderType = 'top' | 'middle' | 'bottom';
+type TableGlyphs = {
+  vertical: string;
+  horizontal: string;
+  borders: Record<TableBorderType, [string, string, string]>;
+};
+function getMarkdownTableGlyphs(): TableGlyphs {
+  if (resolveAgenCTuiGlyphMode() === 'ascii') {
+    return {
+      vertical: '|',
+      horizontal: '-',
+      borders: {
+        top: ['+', '+', '+'],
+        middle: ['+', '+', '+'],
+        bottom: ['+', '+', '+']
+      }
+    };
+  }
+  return {
+    vertical: '│',
+    horizontal: '─',
+    borders: {
+      top: ['┌', '┬', '┐'],
+      middle: ['├', '┼', '┤'],
+      bottom: ['└', '┴', '┘']
+    }
+  };
+}
 type Props = {
   token: Tokens.Table;
   highlight: CliHighlight | null;
@@ -80,6 +109,7 @@ export function MarkdownTable({
     columns: actualTerminalWidth
   } = useTerminalSize();
   const terminalWidth = forceWidth ?? actualTerminalWidth;
+  const tableGlyphs = getMarkdownTableGlyphs();
 
   // Format cell content to ANSI string
   function formatCell(tokens: Token[] | undefined): string {
@@ -122,9 +152,9 @@ export function MarkdownTable({
   });
 
   // Step 2: Calculate available space
-  // Border overhead: │ content │ content │ = 1 + (width + 3) per column
+  // Border overhead: one vertical border plus padding and separators per column
   const numCols = token.header.length;
-  const borderOverhead = 1 + numCols * 3; // │ + (2 padding + 1 border) per col
+  const borderOverhead = 1 + numCols * 3;
   // Account for SAFETY_MARGIN to avoid triggering the fallback safety check
   const availableWidth = Math.max(terminalWidth - borderOverhead - SAFETY_MARGIN, numCols * MIN_COLUMN_WIDTH);
 
@@ -207,7 +237,7 @@ export function MarkdownTable({
     // Build each line of the row as a single string
     const result: string[] = [];
     for (let lineIdx = 0; lineIdx < maxLines_0; lineIdx++) {
-      let line = '│';
+      let line = tableGlyphs.vertical;
       for (let colIndex_2 = 0; colIndex_2 < cells.length; colIndex_2++) {
         const lines_1 = cellLines[colIndex_2]!;
         const offset = verticalOffsets[colIndex_2]!;
@@ -216,7 +246,7 @@ export function MarkdownTable({
         const width_0 = columnWidths[colIndex_2]!;
         // Headers always centered; data uses table alignment
         const align = isHeader ? 'center' : token.align?.[colIndex_2] ?? 'left';
-        line += ' ' + padAligned(lineText, stringWidth(lineText), width_0, align) + ' │';
+        line += ' ' + padAligned(lineText, stringWidth(lineText), width_0, align) + ` ${tableGlyphs.vertical}`;
       }
       result.push(line);
     }
@@ -224,15 +254,11 @@ export function MarkdownTable({
   }
 
   // Render horizontal border as a single string
-  function renderBorderLine(type: 'top' | 'middle' | 'bottom'): string {
-    const [left, mid, cross, right] = {
-      top: ['┌', '─', '┬', '┐'],
-      middle: ['├', '─', '┼', '┤'],
-      bottom: ['└', '─', '┴', '┘']
-    }[type] as [string, string, string, string];
+  function renderBorderLine(type: TableBorderType): string {
+    const [left, cross, right] = tableGlyphs.borders[type];
     let line_0 = left;
     columnWidths.forEach((width_1, colIndex_3) => {
-      line_0 += mid.repeat(width_1 + 2);
+      line_0 += tableGlyphs.horizontal.repeat(width_1 + 2);
       line_0 += colIndex_3 < columnWidths.length - 1 ? cross : right;
     });
     return line_0;
@@ -243,7 +269,7 @@ export function MarkdownTable({
     const lines_2: string[] = [];
     const headers = token.header.map(h => getPlainText(h.tokens));
     const separatorWidth = Math.min(terminalWidth - 1, 40);
-    const separator = '─'.repeat(separatorWidth);
+    const separator = tableGlyphs.horizontal.repeat(separatorWidth);
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
     token.rows.forEach((row_2, rowIndex) => {

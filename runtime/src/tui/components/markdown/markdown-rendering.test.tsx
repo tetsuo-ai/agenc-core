@@ -11,6 +11,7 @@ import { MarkdownTable } from './MarkdownTable.js'
 const settingsMock = vi.hoisted(() => ({
   syntaxHighlightingDisabled: true,
 }))
+const originalGlyphMode = process.env.AGENC_TUI_GLYPHS
 
 const colorFileMock = vi.hoisted(() => ({
   instances: [] as Array<{ code: string; filePath: string }>,
@@ -61,6 +62,11 @@ describe('markdown rendering components', () => {
   beforeEach(() => {
     settingsMock.syntaxHighlightingDisabled = true
     colorFileMock.instances.length = 0
+    if (originalGlyphMode === undefined) {
+      delete process.env.AGENC_TUI_GLYPHS
+    } else {
+      process.env.AGENC_TUI_GLYPHS = originalGlyphMode
+    }
   })
 
   test('renders markdown text while stripping prompt XML tags', async () => {
@@ -124,6 +130,29 @@ describe('markdown rendering components', () => {
     expect(output).toContain('Beta')
     expect(output).toMatch(/│\s+7\s+│/)
     expect(output).toMatch(/│\s+42\s+│/)
+  })
+
+  test('renders MarkdownTable with ASCII borders when ASCII glyphs are requested', async () => {
+    process.env.AGENC_TUI_GLYPHS = 'ascii'
+    const token = parseTable([
+      '| Item | Count |',
+      '| :--- | ---: |',
+      '| Alpha wraps over several words | 7 |',
+      '| Beta | 42 |',
+    ].join('\n'))
+
+    const output = await renderToString(
+      <MarkdownTable token={token} highlight={null} forceWidth={34} />,
+      80,
+    )
+
+    expect(output).toContain('+')
+    expect(output).toContain('-')
+    expect(output).toMatch(/\|\s+7\s+\|/)
+    expect(output).toMatch(/\|\s+42\s+\|/)
+    expect(output).not.toContain('┌')
+    expect(output).not.toContain('┘')
+    expect(output).not.toContain('│')
   })
 
   test('renders HighlightedCode through the disabled fallback path', async () => {
