@@ -7,10 +7,6 @@
  *     from AppState task kinds.
  *   - Output paths use the in-process task-output URI shape because the live
  *     runtime does not own the donor disk-output layout.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Workflow, MCP monitor, and dream task kinds are not shipped by the live
- *     runtime.
  */
 
 import { randomInt } from "node:crypto";
@@ -24,11 +20,6 @@ export type TaskType =
 export type LifecycleOnlyTaskType = "monitor" | "generic";
 
 export type AgenCBackgroundTaskType = TaskType | LifecycleOnlyTaskType;
-
-export type DroppedDonorTaskType =
-  | "local_workflow"
-  | "monitor_mcp"
-  | "dream";
 
 export type TaskStatus =
   | "pending"
@@ -205,12 +196,6 @@ const BACKGROUND_TASK_TYPES = new Set<string>([
   "generic",
 ]);
 
-const DROPPED_DONOR_TASK_TYPES = new Set<string>([
-  "local_workflow",
-  "monitor_mcp",
-  "dream",
-]);
-
 export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return status === "completed" || status === "failed" || status === "killed";
 }
@@ -227,12 +212,6 @@ export function isAgenCBackgroundTaskType(
   type: string,
 ): type is AgenCBackgroundTaskType {
   return BACKGROUND_TASK_TYPES.has(type);
-}
-
-export function isDroppedDonorTaskType(
-  type: string,
-): type is DroppedDonorTaskType {
-  return DROPPED_DONOR_TASK_TYPES.has(type);
 }
 
 export function generateTaskId(type: AgenCBackgroundTaskType): string {

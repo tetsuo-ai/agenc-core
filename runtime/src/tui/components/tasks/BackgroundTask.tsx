@@ -5,7 +5,6 @@ import type { BackgroundTaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from '../../../types/utils.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { toInkColor } from '../../../utils/ink.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../../constants/figures'; // upstream-import: keep target is owned by another Z-PURGE item
 import { RemoteSessionProgress } from './RemoteSessionProgress';
 import { ShellProgress, TaskStatusText } from './ShellProgress';
@@ -15,7 +14,7 @@ type Props = {
   maxActivityWidth?: number;
 };
 export function BackgroundTask(t0) {
-  const $ = _c(92);
+  const $ = _c(54);
   const {
     task,
     maxActivityWidth
@@ -213,130 +212,6 @@ export function BackgroundTask(t0) {
           $[53] = t6;
         } else {
           t6 = $[53];
-        }
-        return t6;
-      }
-    case "local_workflow":
-      {
-        const t1 = task.workflowName ?? task.summary ?? task.description;
-        let t2;
-        if ($[54] !== activityLimit || $[55] !== t1) {
-          t2 = truncate(t1, activityLimit, true);
-          $[54] = activityLimit;
-          $[55] = t1;
-          $[56] = t2;
-        } else {
-          t2 = $[56];
-        }
-        let t3;
-        if ($[57] !== task.agentCount || $[58] !== task.status) {
-          t3 = task.status === "running" ? `${task.agentCount} ${plural(task.agentCount, "agent")}` : task.status === "completed" ? "done" : undefined;
-          $[57] = task.agentCount;
-          $[58] = task.status;
-          $[59] = t3;
-        } else {
-          t3 = $[59];
-        }
-        const t4 = task.status === "completed" && !task.notified ? ", unread" : undefined;
-        let t5;
-        if ($[60] !== t3 || $[61] !== t4 || $[62] !== task.status) {
-          t5 = <TaskStatusText status={task.status} label={t3} suffix={t4} />;
-          $[60] = t3;
-          $[61] = t4;
-          $[62] = task.status;
-          $[63] = t5;
-        } else {
-          t5 = $[63];
-        }
-        let t6;
-        if ($[64] !== t2 || $[65] !== t5) {
-          t6 = <Text>{t2}{" "}{t5}</Text>;
-          $[64] = t2;
-          $[65] = t5;
-          $[66] = t6;
-        } else {
-          t6 = $[66];
-        }
-        return t6;
-      }
-    case "monitor_mcp":
-      {
-        let t1;
-        if ($[67] !== activityLimit || $[68] !== task.description) {
-          t1 = truncate(task.description, activityLimit, true);
-          $[67] = activityLimit;
-          $[68] = task.description;
-          $[69] = t1;
-        } else {
-          t1 = $[69];
-        }
-        const t2 = task.status === "completed" ? "done" : undefined;
-        const t3 = task.status === "completed" && !task.notified ? ", unread" : undefined;
-        let t4;
-        if ($[70] !== t2 || $[71] !== t3 || $[72] !== task.status) {
-          t4 = <TaskStatusText status={task.status} label={t2} suffix={t3} />;
-          $[70] = t2;
-          $[71] = t3;
-          $[72] = task.status;
-          $[73] = t4;
-        } else {
-          t4 = $[73];
-        }
-        let t5;
-        if ($[74] !== t1 || $[75] !== t4) {
-          t5 = <Text>{t1}{" "}{t4}</Text>;
-          $[74] = t1;
-          $[75] = t4;
-          $[76] = t5;
-        } else {
-          t5 = $[76];
-        }
-        return t5;
-      }
-    case "dream":
-      {
-        const n = task.filesTouched.length;
-        let t1;
-        if ($[77] !== n || $[78] !== task.phase || $[79] !== task.sessionsReviewing) {
-          t1 = task.phase === "updating" && n > 0 ? `${n} ${plural(n, "file")}` : `${task.sessionsReviewing} ${plural(task.sessionsReviewing, "session")}`;
-          $[77] = n;
-          $[78] = task.phase;
-          $[79] = task.sessionsReviewing;
-          $[80] = t1;
-        } else {
-          t1 = $[80];
-        }
-        const detail = t1;
-        let t2;
-        if ($[81] !== detail || $[82] !== task.phase) {
-          t2 = <Text dimColor={true}>· {task.phase} · {detail}</Text>;
-          $[81] = detail;
-          $[82] = task.phase;
-          $[83] = t2;
-        } else {
-          t2 = $[83];
-        }
-        const t3 = task.status === "completed" ? "done" : undefined;
-        const t4 = task.status === "completed" && !task.notified ? ", unread" : undefined;
-        let t5;
-        if ($[84] !== t3 || $[85] !== t4 || $[86] !== task.status) {
-          t5 = <TaskStatusText status={task.status} label={t3} suffix={t4} />;
-          $[84] = t3;
-          $[85] = t4;
-          $[86] = task.status;
-          $[87] = t5;
-        } else {
-          t5 = $[87];
-        }
-        let t6;
-        if ($[88] !== t2 || $[89] !== t5 || $[90] !== task.description) {
-          t6 = <Text>{task.description}{" "}{t2}{" "}{t5}</Text>;
-          $[88] = t2;
-          $[89] = t5;
-          $[90] = task.description;
-          $[91] = t6;
-        } else {
-          t6 = $[91];
         }
         return t6;
       }

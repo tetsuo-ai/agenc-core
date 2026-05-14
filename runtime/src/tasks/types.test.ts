@@ -5,7 +5,6 @@ import {
   generateTaskId,
   isAgenCBackgroundTaskType,
   isBackgroundTask,
-  isDroppedDonorTaskType,
   isStoppableTaskStatus,
   isTaskType,
   isTerminalTaskStatus,
@@ -34,9 +33,10 @@ describe("task discriminator types", () => {
     expect(isAgenCBackgroundTaskType("monitor")).toBe(true);
     expect(isAgenCBackgroundTaskType("generic")).toBe(true);
 
-    expect(isTaskType("local_workflow")).toBe(false);
-    expect(isAgenCBackgroundTaskType("monitor_mcp")).toBe(false);
-    expect(isDroppedDonorTaskType("dream")).toBe(true);
+    for (const droppedType of ["local_workflow", "monitor_mcp", "dream"]) {
+      expect(isTaskType(droppedType)).toBe(false);
+      expect(isAgenCBackgroundTaskType(droppedType)).toBe(false);
+    }
   });
 
   it("keeps donor-compatible task status helpers", () => {
