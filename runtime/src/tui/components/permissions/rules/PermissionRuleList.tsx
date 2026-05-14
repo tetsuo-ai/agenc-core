@@ -33,6 +33,24 @@ import { RecentDenialsTab } from './RecentDenialsTab';
 import { RemoveWorkspaceDirectory } from './RemoveWorkspaceDirectory';
 import { WorkspaceTab } from './WorkspaceTab';
 type TabType = 'recent' | 'allow' | 'ask' | 'deny' | 'workspace';
+const RESERVED_RULE_SEARCH_KEYS = new Set(["j", "k", "m", "i", "r", " "]);
+
+export function getPermissionRuleSearchSeed(key: string, modifiers: {
+  ctrl?: boolean;
+  meta?: boolean;
+}): string | null {
+  if (modifiers.ctrl || modifiers.meta) {
+    return null;
+  }
+  if (key === "/") {
+    return "";
+  }
+  if (key.length === 1 && !RESERVED_RULE_SEARCH_KEYS.has(key)) {
+    return key;
+  }
+  return null;
+}
+
 type RuleSourceTextProps = {
   rule: PermissionRule;
 };
@@ -338,7 +356,7 @@ function RulesTabContent(props) {
   const t7 = isSearchMode || headerFocused;
   let t8;
   if ($[15] !== focusHeader || $[16] !== lastFocusedRuleKey || $[17] !== onCancel || $[18] !== onSelect || $[19] !== options || $[20] !== t6 || $[21] !== t7) {
-    t8 = <Select options={options} onChange={onSelect} onCancel={onCancel} visibleOptionCount={t6} isDisabled={t7} defaultFocusValue={lastFocusedRuleKey} onUpFromFirstItem={focusHeader} />;
+    t8 = <Select options={options} onChange={onSelect} onCancel={onCancel} visibleOptionCount={t6} isDisabled={t7} disableSelection="numeric" defaultFocusValue={lastFocusedRuleKey} onUpFromFirstItem={focusHeader} />;
     $[15] = focusHeader;
     $[16] = lastFocusedRuleKey;
     $[17] = onCancel;
@@ -681,19 +699,12 @@ export function PermissionRuleList(t0) {
       if (isSearchMode) {
         return;
       }
-      if (e.ctrl || e.meta) {
-        return;
-      }
-      if (e.key === "/") {
+      const searchSeed = getPermissionRuleSearchSeed(e.key, e);
+      if (searchSeed !== null) {
         e.preventDefault();
+        e.stopPropagation();
         setIsSearchMode(true);
-        setSearchQuery("");
-      } else {
-        if (e.key.length === 1 && e.key !== "j" && e.key !== "k" && e.key !== "m" && e.key !== "i" && e.key !== "r" && e.key !== " ") {
-          e.preventDefault();
-          setIsSearchMode(true);
-          setSearchQuery(e.key);
-        }
+        setSearchQuery(searchSeed);
       }
     };
     $[18] = isSearchMode;
