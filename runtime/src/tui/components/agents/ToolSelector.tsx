@@ -16,10 +16,17 @@ import { WebFetchTool } from '../../../tools/WebFetchTool/WebFetchTool.js';
 import { WebSearchTool } from '../../../tools/WebSearchTool/WebSearchTool.js';
 import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../ink.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { plural } from '../../../utils/stringUtils.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Divider } from '../design-system/Divider';
+import {
+  getToolSelectorContentColumns,
+  getToolSelectorDividerColumns,
+  getToolSelectorVisibleItemLimit,
+  getToolSelectorVisibleWindow,
+} from './ToolSelector.layout';
 type Props = {
   tools: Tools;
   initialTools: string[] | undefined;
@@ -120,6 +127,13 @@ export function ToolSelector(t0) {
   const [selectedTools, setSelectedTools] = useState(expandedInitialTools);
   const [focusIndex, setFocusIndex] = useState(0);
   const [showIndividualTools, setShowIndividualTools] = useState(false);
+  const {
+    columns,
+    rows
+  } = useTerminalSize();
+  const contentWidth = getToolSelectorContentColumns(columns);
+  const dividerWidth = getToolSelectorDividerColumns(columns);
+  const visibleItemLimit = getToolSelectorVisibleItemLimit(rows);
   let t3;
   if ($[5] !== customAgentTools) {
     t3 = new Set(customAgentTools.map(_temp2));
@@ -480,55 +494,22 @@ export function ToolSelector(t0) {
   } else {
     t16 = $[55];
   }
-  let t17;
-  if ($[56] === Symbol.for("react.memo_cache_sentinel")) {
-    t17 = <Divider width={40} />;
-    $[56] = t17;
-  } else {
-    t17 = $[56];
-  }
-  let t18;
-  if ($[57] !== navigableItems) {
-    t18 = navigableItems.slice(1);
-    $[57] = navigableItems;
-    $[58] = t18;
-  } else {
-    t18 = $[58];
-  }
-  let t19;
-  if ($[59] !== focusIndex || $[60] !== t18) {
-    t19 = t18.map((item_0, index) => {
-      const isCurrentlyFocused = index + 1 === focusIndex;
+  const t17 = <Divider width={dividerWidth} />;
+  const visibleWindow = getToolSelectorVisibleWindow(navigableItems, focusIndex, visibleItemLimit);
+  const t18 = visibleWindow.visibleItems;
+  const t19 = <>{visibleWindow.hiddenAbove > 0 && <Text dimColor={true}>{figures.arrowUp} {visibleWindow.hiddenAbove} more above</Text>}{t18.map(t23 => {
+      const {
+        item: item_0,
+        index
+      } = t23;
+      const isCurrentlyFocused = index === focusIndex;
       const isToggleButton = item_0.isToggle;
       const isHeader = item_0.isHeader;
-      return <React.Fragment key={item_0.id}>{isToggleButton && <Divider width={40} />}{isHeader && index > 0 && <Box marginTop={1} />}<Text color={isHeader ? undefined : isCurrentlyFocused ? "suggestion" : undefined} dimColor={isHeader} bold={isToggleButton && isCurrentlyFocused}>{isHeader ? "" : isCurrentlyFocused ? `${figures.pointer} ` : "  "}{isToggleButton ? `[ ${item_0.label} ]` : item_0.label}</Text></React.Fragment>;
-    });
-    $[59] = focusIndex;
-    $[60] = t18;
-    $[61] = t19;
-  } else {
-    t19 = $[61];
-  }
+      return <React.Fragment key={item_0.id}>{isToggleButton && <Divider width={dividerWidth} />}{isHeader && index > 1 && <Box marginTop={1} />}<Box width={contentWidth}><Text color={isHeader ? undefined : isCurrentlyFocused ? "suggestion" : undefined} dimColor={isHeader} bold={isToggleButton && isCurrentlyFocused} wrap="truncate-end">{isHeader ? "" : isCurrentlyFocused ? `${figures.pointer} ` : "  "}{isToggleButton ? `[ ${item_0.label} ]` : item_0.label}</Text></Box></React.Fragment>;
+    })}{visibleWindow.hiddenBelow > 0 && <Text dimColor={true}>{figures.arrowDown} {visibleWindow.hiddenBelow} more below</Text>}</>;
   const t20 = isAllSelected ? "All tools selected" : `${selectedSet.size} of ${customAgentTools.length} tools selected`;
-  let t21;
-  if ($[62] !== t20) {
-    t21 = <Box marginTop={1} flexDirection="column"><Text dimColor={true}>{t20}</Text></Box>;
-    $[62] = t20;
-    $[63] = t21;
-  } else {
-    t21 = $[63];
-  }
-  let t22;
-  if ($[64] !== handleKeyDown || $[65] !== t16 || $[66] !== t19 || $[67] !== t21) {
-    t22 = <Box flexDirection="column" marginTop={1} tabIndex={0} autoFocus={true} onKeyDown={handleKeyDown}>{t16}{t17}{t19}{t21}</Box>;
-    $[64] = handleKeyDown;
-    $[65] = t16;
-    $[66] = t19;
-    $[67] = t21;
-    $[68] = t22;
-  } else {
-    t22 = $[68];
-  }
+  const t21 = <Box marginTop={1} flexDirection="column"><Text dimColor={true}>{t20}</Text></Box>;
+  const t22 = <Box flexDirection="column" marginTop={1} tabIndex={0} autoFocus={true} onKeyDown={handleKeyDown}>{t16}{t17}{t19}{t21}</Box>;
   return t22;
 }
 function _temp8() {}
