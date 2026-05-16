@@ -722,6 +722,22 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.error).toContain("Onboarding is active");
     expect(result.state.error).toContain("/exit");
   });
+
+  test("reports onboarding-only input for dollar skill commands", async () => {
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    const state = createInitialFirstRunOnboardingState(context);
+
+    const result = await submitFirstRunOnboardingInput(
+      state,
+      "$python-game make game.py",
+      context,
+    );
+
+    expect(result.completed).toBe(false);
+    expect(result.state.currentStepId).toBe("preflight");
+    expect(result.state.error).toContain("Finish setup before loading $skills");
+  });
 });
 
 describe("project onboarding counterpart steps", () => {

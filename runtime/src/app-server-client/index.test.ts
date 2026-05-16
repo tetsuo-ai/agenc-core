@@ -162,6 +162,9 @@ describe("app-server-client daemon helpers", () => {
       await startAgenCDaemonPromptAgent({
         prompt: "describe this",
         cwd: "/workspace",
+        provider: "grok",
+        model: "grok-4.3",
+        profile: "fast",
         initialContent: [
           { type: "text", text: "describe this" },
           {
@@ -176,6 +179,9 @@ describe("app-server-client daemon helpers", () => {
           objective: "describe this",
           instructions: "describe this",
           cwd: "/workspace",
+          provider: "grok",
+          model: "grok-4.3",
+          profile: "fast",
           initialContent: [
             { type: "text", text: "describe this" },
             {
@@ -210,6 +216,41 @@ describe("app-server-client daemon helpers", () => {
         context.baseSession.services.permissionModeRegistry.current();
       expect(permissionContext.mode).toBe("bypassPermissions");
       expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("applies daemon-only TUI provider and model startup overrides", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-tui-context-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-model-tui-workspace-"));
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
+      null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: {
+          ...process.env,
+          AGENC_HOME: agencHome,
+          HOME: agencHome,
+          XAI_API_KEY: "test-key",
+        },
+        cwd: workspace,
+        conversationId: "agenc-tui-model-test",
+        provider: "grok",
+        model: "grok-4.3",
+      });
+
+      expect(context.model).toBe("grok-4.3");
+      expect(context.configStore.current()).toMatchObject({
+        model_provider: "grok",
+        model: "grok-4.3",
+      });
+      expect(context.baseSession.sessionConfiguration).toMatchObject({
+        provider: { slug: "grok" },
+        collaborationMode: { model: "grok-4.3" },
+      });
     } finally {
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });

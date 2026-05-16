@@ -123,6 +123,16 @@ function isExitSlashCommand(raw: string): boolean {
   return parsed?.name === "exit" || parsed?.name === "quit";
 }
 
+function isOnboardingSlashAlias(raw: string): boolean {
+  const parsed = raw.trim().startsWith("/") ? parseSlashCommand(raw) : null;
+  return (
+    parsed?.name === "next" ||
+    parsed?.name === "skip" ||
+    parsed?.name === "done" ||
+    parsed?.name === "test"
+  );
+}
+
 function extractUserMessageText(message: unknown): string | null {
   if (!message || typeof message !== "object") return null;
   const maybeMessage = message as {
@@ -2200,6 +2210,9 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     return <Box flexDirection="column" width="100%">
         <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
         <Onboarding state={onboarding.state} steps={onboarding.steps} currentStep={onboarding.currentStep} context={onboardingContext} />
+      {toolJSX !== null ? <Box flexDirection="column" width="100%">
+          {toolJSX.jsx}
+        </Box> : null}
       <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
         if (isExitSlashCommand(value_0)) {
           setInput("");
@@ -2207,6 +2220,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           helpers.resetHistory();
           helpers.setCursorOffset(0);
           handleExit();
+          return;
+        }
+        if (
+          value_0.trim().startsWith("/") &&
+          !isOnboardingSlashAlias(value_0)
+        ) {
+          await submitViaElicitationPrompt(elicitation, submit, value_0, helpers);
           return;
         }
         if (await onboarding.submit(value_0)) {

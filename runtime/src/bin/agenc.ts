@@ -272,6 +272,8 @@ export function formatCliHelpText(): string {
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --profile <name>                         Use a named config profile",
+    "  --provider <name>                        Override provider for this session",
+    "  --model <id|provider:id>                 Override model for this session",
     "  --permission-mode <mode>                 Override the startup permission mode",
     "  --autonomous                            Enable autonomous tick mode",
     "  --dangerously-bypass-approvals-and-sandbox",
@@ -1672,6 +1674,9 @@ async function runDaemonOneShotPrompt(params: {
   readonly prompt: string;
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?:
     | "default"
@@ -1695,6 +1700,9 @@ async function runDaemonOneShotPrompt(params: {
       objective: params.prompt,
       instructions: params.prompt,
       cwd: params.cwd,
+      ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.provider !== undefined ? { provider: params.provider } : {}),
+      ...(params.profile !== undefined ? { profile: params.profile } : {}),
       ...(params.initialContent !== undefined
         ? { initialContent: params.initialContent }
         : {}),
@@ -1857,6 +1865,11 @@ export async function oneShotCLI(
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
     await configStore.reload();
+    const startup = resolveStartupSelection({
+      config: configStore.current(),
+      env: process.env,
+      argv: process.argv,
+    });
     const promptPreparation = await prepareOneShotPromptForDaemon({
       prompt: resolvedUserMessage,
       configStore,
@@ -1901,6 +1914,9 @@ export async function oneShotCLI(
       prompt: daemonPrompt,
       env: process.env,
       cwd: daemonCwd,
+      model: startup.model,
+      provider: startup.provider,
+      ...(startup.profileName !== undefined ? { profile: startup.profileName } : {}),
       ...(initialContent !== undefined ? { initialContent } : {}),
       ...(isYoloOneShot
         ? { permissionMode: "bypassPermissions" as const }
@@ -2299,6 +2315,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly env: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly clientId: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
 }): Promise<{ readonly session: unknown; readonly close: () => Promise<void> }> {
   let liveSession: TuiSessionShape | null = null;
   let liveSessionPromise: Promise<TuiSessionShape | null> | null = null;
@@ -2353,6 +2372,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
           prompt,
           env: params.env,
           cwd: params.cwd,
+          ...(params.model !== undefined ? { model: params.model } : {}),
+          ...(params.provider !== undefined ? { provider: params.provider } : {}),
+          ...(params.profile !== undefined ? { profile: params.profile } : {}),
           initialContent:
             content.length === 1 && content[0]?.type === "text"
               ? content[0].text
@@ -2645,6 +2667,7 @@ type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
 export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
+  const startupCliFlags = readStartupCliFlags(process.argv);
   const cliCwd = resolveCliCwdForStartup(process.env);
   if (!cliCwd.ok) {
     return writeUnavailableCliCwd();
@@ -2717,6 +2740,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         env: process.env,
         cwd: daemonCwd,
         conversationId: `agenc-tui-idle-${process.pid}`,
+        ...(startupCliFlags.provider !== undefined ? { provider: startupCliFlags.provider } : {}),
+        ...(startupCliFlags.model !== undefined ? { model: startupCliFlags.model } : {}),
+        ...(startupCliFlags.profile !== undefined ? { profile: startupCliFlags.profile } : {}),
         ...(isYoloIdle
           ? { permissionMode: "bypassPermissions" as const }
           : {}),
@@ -2731,6 +2757,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         env: process.env,
         cwd: workspaceRoot,
         clientId: `agenc-tui-${process.pid}`,
+        ...(startupCliFlags.provider !== undefined ? { provider: startupCliFlags.provider } : {}),
+        ...(startupCliFlags.model !== undefined ? { model: startupCliFlags.model } : {}),
+        ...(startupCliFlags.profile !== undefined ? { profile: startupCliFlags.profile } : {}),
       });
       const boot = await loadBootTUI();
       try {
@@ -2762,6 +2791,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
     await configStore.reload();
+    const startup = resolveStartupSelection({
+      config: configStore.current(),
+      env: process.env,
+      argv: process.argv,
+    });
     const promptPreparation =
       initialPrompt !== undefined && initialPrompt.length > 0
         ? await prepareOneShotPromptForDaemon({
@@ -2800,6 +2834,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       prompt: preparedObjective,
       env: process.env,
       cwd: daemonCwd,
+      model: startup.model,
+      provider: startup.provider,
+      ...(startup.profileName !== undefined ? { profile: startup.profileName } : {}),
       ...(initialContent !== undefined ? { initialContent } : {}),
       ...(isYoloFromCli
         ? { permissionMode: "bypassPermissions" as const }
@@ -3094,25 +3131,6 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
 export async function main(): Promise<number> {
   initializeCliRuntime();
   const argv = process.argv.slice(2);
-  // The --provider / --model flags appear in help text and in the
-  // STARTUP_VALUE_FLAGS strip-list, but no caller consumed them — they
-  // were silently dropped. Until the daemon-bridged session API accepts
-  // per-call model/provider overrides, surface a clear error pointing at
-  // the supported configuration paths instead of silently honouring the
-  // user's main config.toml setting.
-  const unsupportedOverride = argv.find(
-    (a) => a === "--provider" || a === "--model",
-  );
-  if (unsupportedOverride !== undefined) {
-    process.stderr.write(
-      `agenc: ${unsupportedOverride} is not yet supported as a CLI flag.\n` +
-        `Set the model and provider in ~/.agenc/config.toml:\n` +
-        `  model = "<model-id>"\n` +
-        `  model_provider = "<provider-name>"\n` +
-        `Or use \`agenc config set model <id>\` and \`agenc config set model_provider <name>\`.\n`,
-    );
-    return 2;
-  }
   const initCommand = parseAgenCInitCliArgs(argv);
   if (initCommand !== null) {
     return runAgenCInitCli(initCommand);

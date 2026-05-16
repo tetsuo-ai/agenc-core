@@ -154,14 +154,33 @@ export async function collectMcpServerStatus(
 
 export function formatMcpServerStatus(
   servers: ReadonlyArray<McpServerStatus>,
+  toolsByServer?: ReadonlyMap<string, readonly McpToolStatus[]>,
 ): string {
-  if (servers.length === 0) return "MCP servers: none configured.";
+  if (servers.length === 0) {
+    return [
+      "MCP servers: none configured.",
+      "Use `/mcp add <server> <command> [args...]` for this session, or `agenc mcp add` to persist one.",
+    ].join("\n");
+  }
   const lines = ["MCP servers:"];
   for (const server of servers) {
     const state = server.enabled ? "connected" : "disconnected";
     const required = server.required ? " required" : "";
     const target = server.url ?? server.command ?? "local";
-    lines.push(`  ${server.name}: ${state}${required} (${target})`);
+    const tools = toolsByServer?.get(server.name);
+    const toolCount =
+      tools !== undefined
+        ? `, ${tools.length} ${tools.length === 1 ? "tool" : "tools"}`
+        : "";
+    lines.push(`  ${server.name}: ${state}${required} (${target}${toolCount})`);
+    if (tools !== undefined && tools.length > 0) {
+      const preview = tools.slice(0, 3).map((tool) => tool.name).join(", ");
+      const overflow = tools.length > 3 ? `, +${tools.length - 3} more` : "";
+      lines.push(`    tools: ${preview}${overflow}`);
+    }
+  }
+  if (toolsByServer !== undefined) {
+    lines.push("Use `/mcp tools [server]` for descriptions.");
   }
   return lines.join("\n");
 }
@@ -205,6 +224,27 @@ export function collectMcpToolStatus(
     throw new Error("MCP tool listing is not available for this session.");
   }
   return tools.map(toolStatusFromTool).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function collectMcpToolStatusByServer(
+  session: Session,
+  servers: ReadonlyArray<McpServerStatus>,
+): ReadonlyMap<string, readonly McpToolStatus[]> {
+  const getToolsByServer = session.services.mcpManager.getToolsByServer?.bind(
+    session.services.mcpManager,
+  );
+  if (getToolsByServer === undefined) return new Map();
+
+  const toolsByServer = new Map<string, McpToolStatus[]>();
+  for (const server of servers) {
+    toolsByServer.set(
+      server.name,
+      getToolsByServer(server.name)
+        .map(toolStatusFromTool)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    );
+  }
+  return toolsByServer;
 }
 
 export function formatMcpToolStatus(
@@ -273,7 +313,13 @@ export const mcpCommand: SlashCommand = {
       }
       if (parsed.kind === "status") {
         const servers = await collectMcpServerStatus(ctx.session);
-        return { kind: "text", text: formatMcpServerStatus(servers) };
+        return {
+          kind: "text",
+          text: formatMcpServerStatus(
+            servers,
+            collectMcpToolStatusByServer(ctx.session, servers),
+          ),
+        };
       }
       if (parsed.kind === "tools") {
         const tools = collectMcpToolStatus(ctx.session, parsed.serverName);

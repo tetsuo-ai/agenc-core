@@ -1860,8 +1860,10 @@ describe("main() smoke", () => {
   it("bootTUIEntry starts a daemon prompt agent on first ordinary TUI input", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
+    const prevArgv = process.argv;
     const prevEnv = { ...process.env };
 
+    process.argv = ["node", "agenc", "--provider", "grok", "--model", "grok-4.3"];
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "stub-key-for-test";
@@ -1906,6 +1908,8 @@ describe("main() smoke", () => {
         expect.objectContaining({
           prompt: "hello daemon",
           cwd: tmpCwd,
+          provider: "grok",
+          model: "grok-4.3",
           initialContent: "hello daemon",
         }),
       );
@@ -1917,6 +1921,7 @@ describe("main() smoke", () => {
       for (const key of Object.keys(process.env)) {
         if (!(key in prevEnv)) delete process.env[key];
       }
+      process.argv = prevArgv;
       Object.assign(process.env, prevEnv);
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
@@ -2150,7 +2155,15 @@ describe("main() smoke", () => {
       process.stdin,
       "isTTY",
     );
-    process.argv = [process.argv[0] ?? "node", "agenc-test-entry", "hi"];
+    process.argv = [
+      process.argv[0] ?? "node",
+      "agenc-test-entry",
+      "--provider",
+      "grok",
+      "--model",
+      "grok-4.3",
+      "hi",
+    ];
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "stub-key-for-test";
@@ -2183,6 +2196,8 @@ describe("main() smoke", () => {
           objective: "hi",
           instructions: "hi",
           cwd: tmpCwd,
+          provider: "grok",
+          model: "grok-4.3",
           metadata: { source: "agenc.prompt", mode: "one-shot" },
         }),
       });

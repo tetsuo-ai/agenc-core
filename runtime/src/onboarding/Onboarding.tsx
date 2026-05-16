@@ -335,6 +335,7 @@ function normalizeOnboardingCommand(raw: string): string {
   if (input === "/next") return "next";
   if (input === "/skip") return "skip";
   if (input === "/done") return "done";
+  if (input === "/test") return "test";
   return raw;
 }
 
@@ -346,6 +347,9 @@ function approvalAnswer(command: string): "yes" | "no" | null {
 
 function onboardingSlashCommandError(raw: string): string | null {
   const input = raw.trim();
+  if (input.startsWith("$") && input.length > 1) {
+    return "Onboarding is active. Finish setup before loading $skills, or use /exit, Ctrl-C twice, or Ctrl-D twice to leave.";
+  }
   if (!input.startsWith("/") || input.length <= 1) return null;
   return "Onboarding is active. Type next or skip to continue setup, or use /exit, Ctrl-C twice, or Ctrl-D twice to leave.";
 }

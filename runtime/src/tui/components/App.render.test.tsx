@@ -2311,6 +2311,73 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("routes non-onboarding slash commands while first-run onboarding is active", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const dispatcher = await import("../../commands/dispatcher.js");
+    const dispatchSpy = vi
+      .spyOn(dispatcher, "dispatchSlashCommand")
+      .mockResolvedValue({
+        result: { kind: "text", text: "Skills output: use $python-game" },
+        immediate: true,
+        command: {
+          name: "skills",
+          description: "Show skills",
+          immediate: true,
+          execute: vi.fn(),
+        },
+        trace: {
+          name: "skills",
+          aliasUsed: "skills",
+          argsRaw: "",
+          sensitive: false,
+          immediate: true,
+          isMcp: false,
+          resultKind: "text",
+        },
+      } as never);
+    const session = {
+      ...createSession(),
+      submit: vi.fn(async () => {}),
+    };
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    providerProbe.promptSubmits.length = 0;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          isInteractive={true}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+        async ({ output }) => {
+          const onSubmit = providerProbe.promptSubmits.at(-1);
+          expect(onSubmit).toBeDefined();
+
+          await onSubmit!("/skills", helpers);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(dispatchSpy).toHaveBeenCalled();
+          expect(session.submit).not.toHaveBeenCalled();
+          expect(helpers.clearBuffer).toHaveBeenCalledTimes(1);
+          expect(helpers.resetHistory).toHaveBeenCalledTimes(1);
+          expect(output()).toContain("Skills output");
+          expect(output()).toContain("$python-game");
+        },
+      );
+    } finally {
+      dispatchSpy.mockRestore();
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("routes composer submissions through onboarding and stages provider switch on completion", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const session = {

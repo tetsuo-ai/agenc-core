@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import mcpCommand, {
+  collectMcpToolStatusByServer,
   collectMcpToolStatus,
   collectMcpServerStatus,
   formatMcpServerStatus,
@@ -49,7 +50,8 @@ describe("mcpCommand", () => {
   });
 
   it("formats no configured servers explicitly", () => {
-    expect(formatMcpServerStatus([])).toBe("MCP servers: none configured.");
+    expect(formatMcpServerStatus([])).toContain("MCP servers: none configured.");
+    expect(formatMcpServerStatus([])).toContain("/mcp add");
   });
 
   it("parses management subcommands and quoted add args", () => {
@@ -76,6 +78,15 @@ describe("mcpCommand", () => {
     const result = await mcpCommand.execute({
       session: stubSession(
         new Map([["local", { enabled: true, required: false, command: "node" }]]),
+        {
+          getToolsByServer: (name: string) =>
+            name === "local"
+              ? [
+                  { name: "mcp.local.game_tip", description: "Game tip" },
+                  { name: "mcp.local.score_hint", description: "Score hint" },
+                ]
+              : [],
+        },
       ),
       argsRaw: "status",
       cwd: "/tmp/ws",
@@ -85,7 +96,10 @@ describe("mcpCommand", () => {
     expect(result.kind).toBe("text");
     if (result.kind === "text") {
       expect(result.text).toContain("local: connected");
-      expect(result.text).toContain("(node)");
+      expect(result.text).toContain("(node, 2 tools)");
+      expect(result.text).toContain("mcp.local.game_tip");
+      expect(result.text).toContain("mcp.local.score_hint");
+      expect(result.text).toContain("/mcp tools [server]");
     }
   });
 
@@ -107,6 +121,15 @@ describe("mcpCommand", () => {
     ]);
     expect(formatMcpToolStatus(collectMcpToolStatus(session, "git"), "git"))
       .toContain("mcp.git.status - Git status");
+    expect(
+      collectMcpToolStatusByServer(session, [
+        {
+          name: "git",
+          enabled: true,
+          required: false,
+        },
+      ]).get("git")?.map((tool) => tool.name),
+    ).toEqual(["mcp.git.status"]);
 
     const result = await mcpCommand.execute({
       session,

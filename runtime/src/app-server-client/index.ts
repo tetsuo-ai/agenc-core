@@ -22,6 +22,7 @@ import type {
 } from "../app-server/protocol/index.js";
 import { resolveAgencHome } from "../config/env.js";
 import { ConfigStore } from "../config/store.js";
+import { resolveStartupSelection } from "../bin/startup-selection.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
@@ -47,6 +48,9 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly prompt: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly cwd?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly metadata?: JsonObject;
   /** See `AgentCreateParams.permissionMode`. Forwarded verbatim. */
@@ -87,6 +91,9 @@ export async function startAgenCDaemonPromptAgent(
     objective: prompt,
     instructions: prompt,
     cwd: options.cwd ?? processCwd(),
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    ...(options.profile !== undefined ? { profile: options.profile } : {}),
     ...(options.initialContent !== undefined
       ? { initialContent: options.initialContent }
       : {}),
@@ -157,6 +164,9 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly conversationId: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
   /**
    * Initial permission mode for the bridge session's PermissionModeRegistry.
    * Forwarded from the CLI when `--yolo` (or its deprecated aliases) was on
@@ -189,16 +199,33 @@ export async function createAgenCDaemonOnlyTuiContext(
     onWarn: (message) => process.stderr.write(`${message}\n`),
   });
   const config = await configStore.reload();
+  const startupArgv = [
+    "node",
+    "agenc",
+    ...(options.provider !== undefined ? ["--provider", options.provider] : []),
+    ...(options.model !== undefined ? ["--model", options.model] : []),
+    ...(options.profile !== undefined ? ["--profile", options.profile] : []),
+  ];
+  const startup = resolveStartupSelection({
+    config,
+    env,
+    argv: startupArgv,
+  });
+  const effectiveConfig = {
+    ...startup.config,
+    model: startup.model,
+    model_provider: startup.provider,
+  };
   const configStoreLike: ConfigStoreLike = {
     agencHome,
-    current: () => configStore.current(),
+    current: () => effectiveConfig,
     subscribe: (listener) => configStore.subscribe(listener),
     warnings: () => configStore.warnings(),
   };
   const skillsServices = createLocalSkillsServices({
     agencHome,
     workspaceRoot: options.cwd,
-    config,
+    config: effectiveConfig,
     env: {
       HOME: env.HOME,
       AGENC_MANAGED_HOME: env.AGENC_MANAGED_HOME,
@@ -206,7 +233,7 @@ export async function createAgenCDaemonOnlyTuiContext(
   });
   await skillsServices.skillsWatcher.start();
   const mcpRuntimeManager = await createSessionMcpManagerFromSources(
-    config,
+    effectiveConfig,
     env,
     {
       cwd: options.cwd,
@@ -219,8 +246,8 @@ export async function createAgenCDaemonOnlyTuiContext(
   let nextEventId = 0;
   const sessionConfiguration = {
     cwd: options.cwd,
-    provider: { slug: config.model_provider },
-    collaborationMode: { model: config.model },
+    provider: { slug: startup.provider },
+    collaborationMode: { model: startup.model },
   };
   const session: AgenCBridgeSession = {
     conversationId: options.conversationId,
@@ -242,7 +269,7 @@ export async function createAgenCDaemonOnlyTuiContext(
       skillsWatcher: skillsServices.skillsWatcher,
       authManager: { mode: "local_no_auth" },
     },
-    config,
+    config: effectiveConfig,
     state: {
       unsafePeek: () => ({
         sessionConfiguration,
@@ -266,7 +293,7 @@ export async function createAgenCDaemonOnlyTuiContext(
   return {
     configStore: configStoreLike,
     baseSession: session,
-    model: config.model,
+    model: startup.model,
     workspaceRoot: options.cwd,
     close: async () => {
       await skillsServices.skillsWatcher?.stop?.();
