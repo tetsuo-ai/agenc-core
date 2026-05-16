@@ -81,6 +81,7 @@ export interface LLMMessage {
       readonly hiddenFromTranscript: true;
       readonly kind:
         | "input_validation"
+        | "mcp_tool_not_shell_command"
         | "shell_workspace_write_policy";
     };
   };

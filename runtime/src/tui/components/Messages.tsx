@@ -105,6 +105,19 @@ export function shouldShowStreamingThinking(streamingThinking: StreamingThinking
   return (getStreamingThinkingExpiryDelayMs(streamingThinking, now) ?? 0) > 0;
 }
 
+export function shouldRenderStreamingThinking(
+  streamingThinking: StreamingThinking | null | undefined,
+  screen: Screen,
+  verbose: boolean,
+  now = Date.now(),
+): boolean {
+  if (!streamingThinking) return false;
+  if (screen === 'transcript' || verbose) {
+    return shouldShowStreamingThinking(streamingThinking, now);
+  }
+  return streamingThinking.isStreaming === true;
+}
+
 import { VirtualMessageList } from './VirtualMessageList.js';
 export { dropTextInBriefTurns, filterForBriefTool } from './messagesBriefFiltering.js';
 type Props = {
@@ -620,11 +633,11 @@ const MessagesImpl = ({
           </Box>
         </Box>}
 
-      {isStreamingThinkingVisible && streamingThinking && !isBriefOnly && <Box marginTop={1}>
+      {shouldRenderStreamingThinking(streamingThinking, screen, verbose) && streamingThinking && !isBriefOnly && <Box marginTop={1}>
           <AssistantThinkingMessage param={{
         type: 'thinking',
         thinking: streamingThinking.thinking
-      }} addMargin={false} isTranscriptMode={true} verbose={verbose} hideInTranscript={false} />
+      }} addMargin={false} isTranscriptMode={isTranscriptMode} verbose={verbose} hideInTranscript={false} />
         </Box>}
     </>;
 };

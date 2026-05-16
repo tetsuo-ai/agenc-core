@@ -34,6 +34,9 @@ export interface ExecCommandToolConfig extends BashToolConfig {
 
 const PLAIN_INTERACTIVE_SHELL_RE =
   /^\s*(?:(?:\/[\w.-]+)+\/)?(?:bash|dash|ksh|sh|zsh)(?:\s+-[A-Za-z]*[il][A-Za-z]*)*\s*$/u;
+const MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/u;
+const DIRECT_MCP_TOOL_COMMAND_RE =
+  /^\s*mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+(?:\s|$|\()/u;
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
@@ -53,6 +56,19 @@ function asBoolean(value: unknown): boolean | undefined {
 
 function isPlainInteractiveShellCommand(command: string): boolean {
   return PLAIN_INTERACTIVE_SHELL_RE.test(command);
+}
+
+function isMcpShellPlaceholderCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (DIRECT_MCP_TOOL_COMMAND_RE.test(trimmed)) return true;
+  if (/\battempting\s+direct\s+mcp\s+call\b/iu.test(trimmed)) return true;
+  if (/\bdirect\s+(?:mcp\s+)?call\s+simulation\b/iu.test(trimmed)) {
+    return true;
+  }
+  return (
+    MCP_TOOL_NAME_RE.test(trimmed) &&
+    /\b(simulat(?:e|ed|ion)|fake|placeholder|stand[- ]?in|direct)\b/iu.test(trimmed)
+  );
 }
 
 export function runtimeSandboxForExec(
@@ -244,7 +260,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       properties: {
         cmd: {
           type: "string",
-          description: "Shell command to execute.",
+          description:
+            "Shell command to execute. MCP tool names such as mcp.server.tool are not shell commands; call those tools directly.",
         },
         command: {
           type: "string",
@@ -335,6 +352,19 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const workdir = asString(args.workdir) ?? asString(args.cwd);
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
+
+      if (isMcpShellPlaceholderCommand(cmd)) {
+        return {
+          content: safeStringify({
+            error:
+              "MCP tools are not shell commands. Load the tool with system.searchTools if needed, then call the mcp.<server>.<tool> tool directly with JSON arguments. Do not simulate MCP results with exec_command.",
+          }),
+          isError: true,
+          metadata: buildRecoverableToolFailureMetadata(
+            "mcp_tool_not_shell_command",
+          ),
+        };
+      }
 
       if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
         const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({

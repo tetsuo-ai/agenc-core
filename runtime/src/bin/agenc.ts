@@ -2230,6 +2230,9 @@ type TuiSessionShape = {
   clearDaemonSession?: () => Promise<void>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
   getInitialTranscriptEvents?: () => readonly unknown[];
+  activeTurn?: {
+    unsafePeek?: () => { readonly turnId: string } | null;
+  } | null;
 };
 
 type LocalTuiSlashOutcome =
@@ -2451,6 +2454,23 @@ async function createDeferredDaemonPromptTuiSession(params: {
         return undefined;
       }
       return live.getDaemonSessionSnapshot();
+    },
+    activeTurn: {
+      unsafePeek: () =>
+        liveSession?.activeTurn?.unsafePeek?.() ??
+        (
+          typeof (
+            base.activeTurn as
+              | { readonly unsafePeek?: () => { readonly turnId: string } | null }
+              | undefined
+          )?.unsafePeek === "function"
+            ? (
+                base.activeTurn as {
+                  readonly unsafePeek: () => { readonly turnId: string } | null;
+                }
+              ).unsafePeek()
+            : null
+        ),
     },
     submit: async (message, opts) => {
       // User-message rendering is driven entirely by daemon events:

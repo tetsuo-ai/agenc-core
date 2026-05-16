@@ -10,6 +10,7 @@ import {
 } from './messagesBriefFiltering.js'
 import {
   getStreamingThinkingExpiryDelayMs,
+  shouldRenderStreamingThinking,
   shouldShowStreamingThinking,
   STREAMING_THINKING_GRACE_MS,
 } from './Messages.js'
@@ -147,5 +148,29 @@ describe('streaming thinking visibility', () => {
       thinking,
       streamingEndedAt + STREAMING_THINKING_GRACE_MS,
     )).toBe(0)
+  })
+
+  it('does not render ended thinking on the main screen after tool output', () => {
+    const streamingEndedAt = 2_000
+    const thinking = {
+      thinking: 'Wrong. I need to use a different tool.',
+      isStreaming: false,
+      streamingEndedAt,
+    }
+
+    expect(
+      shouldRenderStreamingThinking(thinking, 'main', false, streamingEndedAt + 1),
+    ).toBe(false)
+    expect(
+      shouldRenderStreamingThinking(
+        thinking,
+        'transcript',
+        false,
+        streamingEndedAt + 1,
+      ),
+    ).toBe(true)
+    expect(
+      shouldRenderStreamingThinking(thinking, 'main', true, streamingEndedAt + 1),
+    ).toBe(true)
   })
 })

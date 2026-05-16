@@ -204,6 +204,48 @@ describe("exec_command tool", () => {
     });
   });
 
+  test("blocks MCP tool names and simulation placeholders from exec_command", async () => {
+    const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+      async () => completedExecOutput("ran"),
+    );
+    const manager: UnifiedExecProcessManagerLike = {
+      maxTimeoutMs: 30_000,
+      execCommand,
+      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
+        async () => completedExecOutput(""),
+      ),
+      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+    };
+    const tool = createExecCommandTool({
+      cwd: root,
+      allowedPaths: [root],
+      unifiedExecManager: manager,
+    });
+
+    await expect(
+      tool.execute({ cmd: "mcp.audit-ping.ping", workdir: root }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("MCP tools are not shell commands"),
+    });
+    await expect(
+      tool.execute({ cmd: 'echo "Attempting direct MCP call"', workdir: root }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("Do not simulate MCP results"),
+    });
+    await expect(
+      tool.execute({
+        cmd: 'python3 -c "print(\'Direct call simulation\')"',
+        workdir: root,
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("Do not simulate MCP results"),
+    });
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
   test("returns AgenC-style visible exit status for failed commands", async () => {
     const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
       async () => failedExecOutput("compiler failed\n", 2),

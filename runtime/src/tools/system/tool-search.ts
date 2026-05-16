@@ -1,4 +1,5 @@
 import type { Tool, ToolCatalogEntry } from "../types.js";
+import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
 import {
   codingToolMetadata,
   MAX_RESULTS,
@@ -73,6 +74,16 @@ function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
 function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string): boolean {
   if (!query) return true;
   return scoreCatalogEntry(entry, query) < 99;
+}
+
+function mcpUseHint(toolName: string): string | undefined {
+  if (!toolName.startsWith("mcp.")) return undefined;
+  const wireName = encodeMcpToolNameForWire(toolName);
+  const nameHint =
+    wireName === toolName
+      ? `Call the selected MCP tool through the tool-call interface as ${toolName}, with JSON arguments.`
+      : `Call the selected MCP tool through the tool-call interface using the available function ${wireName}; the runtime maps it to ${toolName}.`;
+  return `${nameHint} It is not a shell command and not a skill. Do not use exec_command, Skill, or any shell/script simulation as an MCP placeholder.`;
 }
 
 function normalizeSelections(args: Record<string, unknown>): readonly string[] {
@@ -196,10 +207,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
             entry.metadata.deferred && !selectedEntries.some((selected) => selected.name === entry.name)
               ? `Call system.searchTools with select:${entry.name} to load this deferred tool.`
               : undefined,
-          useHint:
-            entry.name.startsWith("mcp.")
-              ? `If you need this MCP tool, invoke ${entry.name} directly after it is selected. Do not use exec_command or any shell command as an MCP placeholder.`
-              : undefined,
+          useHint: mcpUseHint(entry.name),
         })),
       });
     },

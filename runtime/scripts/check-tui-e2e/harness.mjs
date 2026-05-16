@@ -381,9 +381,8 @@ export function renderPtyScreen(raw, { cols = 140, rows = 40 } = {}) {
 export function normalizePtyOutput(raw, opts = {}) {
   const plain = stripAnsi(raw).trimEnd();
   const screen = renderPtyScreen(raw, opts).trimEnd();
-  if (screen.length === 0 || screen === plain) return plain;
-  if (plain.length === 0) return screen;
-  return `${plain}\n${screen}`;
+  if (screen.length > 0) return screen;
+  return plain;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

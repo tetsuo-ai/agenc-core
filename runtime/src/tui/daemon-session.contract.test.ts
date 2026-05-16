@@ -338,6 +338,43 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("exposes daemon turn activity through activeTurn for prompt busy state", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+
+    await session.submit("use the MCP tool");
+    expect(session.activeTurn?.unsafePeek()?.turnId).toMatch(/^tui_1:/u);
+
+    client.emit("session_1", {
+      method: "event.agent_status",
+      params: {
+        eventId: "status_1",
+        turnId: "turn_1",
+        status: "running",
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({ turnId: "turn_1" });
+
+    client.emit("session_1", {
+      method: "event.agent_status",
+      params: {
+        eventId: "status_2",
+        turnId: "turn_1",
+        status: "idle",
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    unsubscribe();
+  });
+
   it("sends TUI user input through message.stream", async () => {
     const client = createClient();
     const abortController = new AbortController();

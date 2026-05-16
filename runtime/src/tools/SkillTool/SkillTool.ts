@@ -359,7 +359,9 @@ export const inputSchema = lazySchema(() =>
   z.object({
     skill: z
       .string()
-      .describe('The skill name. E.g., "commit", "review-pr", or "pdf"'),
+      .describe(
+        'The skill name only. E.g., "commit", "review-pr", or "pdf". Do not pass tool names such as "mcp.server.tool".',
+      ),
     args: z.string().optional().describe('Optional arguments for the skill'),
   }),
 )
@@ -447,6 +449,16 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const normalizedCommandName = hasLeadingSlash
       ? trimmed.substring(1)
       : trimmed
+
+    if (normalizedCommandName.startsWith('mcp.')) {
+      return {
+        result: false,
+        message:
+          `${normalizedCommandName} is an MCP tool name, not a skill. ` +
+          'Load it with system.searchTools if needed, then call the MCP tool directly with JSON arguments. Do not use Skill or exec_command for MCP tools.',
+        errorCode: 2,
+      }
+    }
 
     // Remote canonical skill handling (internal-only experimental). Intercept
     // `_canonical_<slug>` names before local command lookup since remote

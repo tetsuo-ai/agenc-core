@@ -93,6 +93,9 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindConversationToMessageResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
+  readonly activeTurn?: {
+    unsafePeek(): { readonly turnId: string } | null;
+  } | null;
   submit?(
     message: string,
     opts?: { readonly displayUserMessage?: string | null },
@@ -233,9 +236,39 @@ export function createDaemonTuiSession<
   const realtimeThreadId = options.realtimeThreadId ?? conversationId;
   const queuedInputs: MessageContentBlock[] = [];
   const eventSubscribers = new Set<(event: unknown) => void>();
+  let activeTurnSnapshot: { readonly turnId: string } | null = null;
   let queuedInputCount = 0;
   let unsubscribeDaemonEvents: (() => void) | null = null;
+  const noteDaemonActivity = (event: unknown): void => {
+    if (
+      typeof event !== "object" ||
+      event === null ||
+      (event as { readonly type?: unknown }).type !== "background_agent_status"
+    ) {
+      return;
+    }
+    const payload = (event as { readonly payload?: unknown }).payload;
+    if (typeof payload !== "object" || payload === null) return;
+    const status = (payload as { readonly status?: unknown }).status;
+    const turnId = (payload as { readonly turnId?: unknown }).turnId;
+    if (typeof status !== "string") return;
+    if (
+      status === "idle" ||
+      status === "completed" ||
+      status === "failed" ||
+      status === "error" ||
+      status === "cancelled" ||
+      status === "canceled"
+    ) {
+      activeTurnSnapshot = null;
+      return;
+    }
+    activeTurnSnapshot = {
+      turnId: typeof turnId === "string" && turnId.length > 0 ? turnId : "daemon-turn",
+    };
+  };
   const broadcastDaemonEvent = (event: unknown): void => {
+    noteDaemonActivity(event);
     for (const subscriber of [...eventSubscribers]) {
       subscriber(event);
     }
@@ -274,10 +307,16 @@ export function createDaemonTuiSession<
     ...baseSession,
     conversationId,
     realtime,
+    activeTurn: {
+      unsafePeek: () =>
+        activeTurnSnapshot ?? baseSession.activeTurn?.unsafePeek?.() ?? null,
+    },
     submit: async (message, opts) => {
       const queued = queuedInputs.splice(0);
       queuedInputCount = 0;
       if (queued.length === 0 && message.length === 0) return;
+      const streamId = `${clientId}:${Date.now()}`;
+      activeTurnSnapshot = { turnId: streamId };
       const content =
         queued.length === 0
           ? message
@@ -287,14 +326,19 @@ export function createDaemonTuiSession<
                 ? [{ type: "text", text: message } as MessageContentBlock]
                 : []),
             ];
-      await client.request("message.stream", {
-        sessionId,
-        content,
-        ...(opts?.displayUserMessage !== undefined
-          ? { metadata: { displayUserMessage: opts.displayUserMessage } }
-          : {}),
-        streamId: `${clientId}:${Date.now()}`,
-      } satisfies MessageStreamParams);
+      try {
+        await client.request("message.stream", {
+          sessionId,
+          content,
+          ...(opts?.displayUserMessage !== undefined
+            ? { metadata: { displayUserMessage: opts.displayUserMessage } }
+            : {}),
+          streamId,
+        } satisfies MessageStreamParams);
+      } catch (error) {
+        activeTurnSnapshot = null;
+        throw error;
+      }
     },
     enqueueIdleInput: (input) => {
       const blocks = queuedInputBlocks(input);

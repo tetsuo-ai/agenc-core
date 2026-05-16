@@ -57,7 +57,7 @@ describe("system.searchTools", () => {
     });
   });
 
-  test("MCP search results tell the model to invoke the MCP tool directly", async () => {
+  test("MCP search results tell the model to use the encoded provider function", async () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],
       persistenceRootDir: process.cwd(),
@@ -71,8 +71,10 @@ describe("system.searchTools", () => {
     expect(payload.results[0]).toMatchObject({
       name: "mcp.audit-ping.ping",
       selected: true,
-      useHint: expect.stringContaining("invoke mcp.audit-ping.ping directly"),
+      useHint: expect.stringContaining("mcp__audit-ping__ping"),
     });
+    expect(payload.results[0].useHint).toContain("maps it to mcp.audit-ping.ping");
     expect(payload.results[0].useHint).toContain("Do not use exec_command");
+    expect(payload.results[0].useHint).toContain("Skill");
   });
 });

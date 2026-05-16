@@ -256,12 +256,13 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   if (enabledTools.has("Skill")) {
     items.push(
       `When creating or editing project skills under .agenc/skills/<name>/SKILL.md, include useful non-empty frontmatter. Set allowed-tools to the narrow tool names the skill actually needs (for example FileRead, Grep, Glob, Edit, Write, exec_command) instead of [] when the skill expects tool access.`,
+      `Skill is only for skills. Do not pass MCP tool names such as mcp.<server>.<tool> to Skill.`,
     );
   }
 
   if (hasMcpTool) {
     items.push(
-      `When the user asks you to use an MCP tool, call the MCP tool directly. Do not simulate MCP results with shell commands or scripts, and do not run a shell command whose purpose is to fake or stand in for an MCP call.`,
+      `MCP tools named mcp.<server>.<tool> are neither shell commands nor skills. When the user asks you to use an MCP tool, load it with system.searchTools if needed, then call the selected MCP tool through the tool-call interface with JSON arguments. If the available function list shows an encoded MCP name like mcp__server__tool, call that available function; the runtime maps it back to mcp.<server>.<tool>. Do not pass MCP tools to Skill, do not run them through ${shellName}. Do not simulate MCP results with shell commands or scripts.`,
     );
   }
 

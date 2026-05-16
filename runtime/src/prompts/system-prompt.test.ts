@@ -256,6 +256,7 @@ describe("static section emitters", () => {
     expect(s).toContain(".agenc/skills/<name>/SKILL.md");
     expect(s).toContain("allowed-tools");
     expect(s).toContain("instead of []");
+    expect(s).toContain("Skill is only for skills");
   });
 
   test("using_your_tools tells models not to simulate MCP calls through the shell", () => {
@@ -263,9 +264,11 @@ describe("static section emitters", () => {
       new Set(["exec_command", "mcp.audit-ping.ping"]),
     );
 
-    expect(s).toContain("call the MCP tool directly");
+    expect(s).toContain("call the selected MCP tool through the tool-call interface");
+    expect(s).toContain("mcp__server__tool");
     expect(s).toContain("Do not simulate MCP results");
-    expect(s).toContain("do not run a shell command");
+    expect(s).toContain("Do not pass MCP tools to Skill");
+    expect(s).toContain("do not run them through exec_command");
   });
 
   test("using_your_tools gives MCP shell-simulation guidance when only deferred tool search is visible", () => {
@@ -273,7 +276,7 @@ describe("static section emitters", () => {
       new Set(["exec_command", "system.searchTools"]),
     );
 
-    expect(s).toContain("call the MCP tool directly");
+    expect(s).toContain("call the selected MCP tool through the tool-call interface");
     expect(s).toContain("Do not simulate MCP results");
   });
 

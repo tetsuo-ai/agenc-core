@@ -10,6 +10,10 @@ assert.match(
   normalizePtyOutput(cursorRepaint, { cols: 20, rows: 4 }),
   /hell!/u,
 );
+assert.equal(
+  normalizePtyOutput(cursorRepaint, { cols: 20, rows: 4 }),
+  "hell!",
+);
 
 const positioned = "\x1b[2J\x1b[3;5HCreate\x1b[1Cskill";
 assert.equal(

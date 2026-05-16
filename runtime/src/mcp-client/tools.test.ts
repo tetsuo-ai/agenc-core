@@ -43,6 +43,26 @@ function permissionContext(): ToolEvaluatorContext {
 }
 
 describe("createToolBridge — T6 gap #119 observer wiring", () => {
+  test("describes encoded model-facing MCP tool names next to canonical names", async () => {
+    const bridge = await createToolBridge(
+      {
+        listTools: async () => ({
+          tools: [{ name: "ping", description: "Test ping tool" }],
+        }),
+        callTool: async () => ({ content: [{ type: "text", text: "pong" }] }),
+        close: async () => {},
+      },
+      "audit-ping",
+    );
+
+    expect(bridge.tools[0]?.description).toContain(
+      "Model-facing function name: mcp__audit-ping__ping",
+    );
+    expect(bridge.tools[0]?.description).toContain(
+      "Canonical MCP tool name: mcp.audit-ping.ping",
+    );
+  });
+
   test("records MCP call spans, metrics, and result span metadata", async () => {
     const spans: Array<{
       name: string;

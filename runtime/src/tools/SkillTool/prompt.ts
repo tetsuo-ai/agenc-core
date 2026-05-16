@@ -191,6 +191,7 @@ Important:
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
+- Do not use this tool for MCP tools or names beginning with \`mcp.\`. MCP tools must be called directly as tools after discovery, not loaded as skills.
 - If you see a <${COMMAND_NAME_TAG}> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
 `
 })

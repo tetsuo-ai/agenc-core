@@ -56,6 +56,7 @@ import {
   toMetricTags,
   type TelemetrySpan,
 } from "../observability/telemetry.js";
+import { encodeMcpToolNameForWire } from "../llm/wire/mcp-tool-naming.js";
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -114,6 +115,23 @@ function perMcpToolApprovalMode(
   return isValidPermissionDefaultMode(config?.defaultToolsApprovalMode)
     ? config.defaultToolsApprovalMode
     : undefined;
+}
+
+function modelFacingMcpToolDescription(
+  namespacedName: string,
+  rawToolName: string,
+  rawDescription: string | undefined,
+): string {
+  const baseDescription =
+    rawDescription && rawDescription.trim().length > 0
+      ? rawDescription.trim()
+      : `MCP tool: ${rawToolName}`;
+  const wireName = encodeMcpToolNameForWire(namespacedName);
+  const nameHint =
+    wireName === namespacedName
+      ? `Canonical MCP tool name: ${namespacedName}.`
+      : `Model-facing function name: ${wireName}. Canonical MCP tool name: ${namespacedName}.`;
+  return `${baseDescription}\n\n${nameHint} Call this only through the tool-call interface; do not use Skill or shell commands as a substitute.`;
 }
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
@@ -764,7 +782,11 @@ export async function createToolBridge(
 
     const bridgeTool: Tool = {
       name: namespacedName,
-      description: mcpTool.description ?? `MCP tool: ${mcpTool.name}`,
+      description: modelFacingMcpToolDescription(
+        namespacedName,
+        mcpTool.name,
+        mcpTool.description,
+      ),
       inputSchema: (mcpTool.inputSchema ?? { type: "object", properties: {} }) as JSONSchema,
       serverId: serverName,
       mcpInfo: { serverName, toolName: mcpTool.name },

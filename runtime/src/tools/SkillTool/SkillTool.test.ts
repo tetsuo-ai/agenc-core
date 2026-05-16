@@ -51,6 +51,22 @@ describe('SkillTool missing parameter handling', () => {
 
     expect(parsed.success).toBe(true)
   })
+
+  test('validateInput rejects MCP tool names before command lookup', async () => {
+    const result = await SkillTool.validateInput?.(
+      { skill: 'mcp.audit-ping.ping' } as never,
+      {
+        options: { tools: [] },
+        messages: [],
+      } as never,
+    )
+
+    expect(result).toEqual({
+      result: false,
+      message: expect.stringContaining('is an MCP tool name, not a skill'),
+      errorCode: 2,
+    })
+  })
 })
 
 describe('SkillTool renderToolUseMessage', () => {

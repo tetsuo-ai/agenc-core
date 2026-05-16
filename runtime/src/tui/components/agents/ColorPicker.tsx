@@ -60,7 +60,7 @@ export function ColorPicker(t0) {
   if ($[5] !== selectedIndex) {
     t4 = COLOR_OPTIONS.map((option, index) => {
       const isSelected = index === selectedIndex;
-      return <Box key={option} flexDirection="row" gap={1}><Text color={isSelected ? "suggestion" : undefined}>{isSelected ? figures.pointer : " "}</Text>{option === "automatic" ? <Text bold={isSelected}>Automatic color</Text> : <Box gap={1}><Text backgroundColor={AGENT_COLOR_TO_THEME_COLOR[option]} color="inverseText">{" "}</Text><Text bold={isSelected}>{capitalize(option)}</Text></Box>}</Box>;
+      return <Box key={option} flexDirection="row" width="100%"><Text color={isSelected ? "suggestion" : undefined}>{isSelected ? figures.pointer : " "}</Text><Text> </Text>{option === "automatic" ? <Text bold={isSelected}>Automatic color</Text> : <><Text backgroundColor={AGENT_COLOR_TO_THEME_COLOR[option]} color="inverseText">{"  "}</Text><Text> </Text><Text bold={isSelected}>{capitalize(option)}</Text></>}<Box flexGrow={1} height={1} backgroundColor="background" /></Box>;
     });
     $[5] = selectedIndex;
     $[6] = t4;
@@ -69,7 +69,7 @@ export function ColorPicker(t0) {
   }
   let t5;
   if ($[7] !== t4) {
-    t5 = <Box flexDirection="column">{t4}</Box>;
+    t5 = <Box flexDirection="column" width="100%">{t4}</Box>;
     $[7] = t4;
     $[8] = t5;
   } else {
@@ -93,7 +93,7 @@ export function ColorPicker(t0) {
   }
   let t8;
   if ($[13] !== handleKeyDown || $[14] !== t5 || $[15] !== t7) {
-    t8 = <Box flexDirection="column" gap={1} tabIndex={0} autoFocus={true} onKeyDown={handleKeyDown}>{t5}{t7}</Box>;
+    t8 = <Box flexDirection="column" gap={1} width="100%" tabIndex={0} autoFocus={true} onKeyDown={handleKeyDown}>{t5}{t7}</Box>;
     $[13] = handleKeyDown;
     $[14] = t5;
     $[15] = t7;

@@ -23,6 +23,7 @@ export interface FileMutationMetadataInput {
 
 export type RecoverableToolFailureKind =
   | "input_validation"
+  | "mcp_tool_not_shell_command"
   | "shell_workspace_write_policy";
 
 export interface RecoverableToolFailureMetadata {
@@ -50,6 +51,7 @@ export function recoverableFailureKind(
   if (metadata.recoverable !== true) return null;
   if (metadata.hiddenFromTranscript !== true) return null;
   return metadata.kind === "input_validation" ||
+    metadata.kind === "mcp_tool_not_shell_command" ||
     metadata.kind === "shell_workspace_write_policy"
     ? metadata.kind
     : null;
@@ -68,6 +70,8 @@ export function compactRecoverableToolFailureMessage(
   switch (kind) {
     case "input_validation":
       return "Invalid tool parameters";
+    case "mcp_tool_not_shell_command":
+      return "MCP tool used as shell command";
     case "shell_workspace_write_policy":
       return "Shell write blocked";
     default:
