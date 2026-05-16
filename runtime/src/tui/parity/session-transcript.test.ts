@@ -1588,6 +1588,45 @@ describe("AgenC TUI session transcript", () => {
       expect(JSON.stringify(transcript.messages)).not.toContain("raw collab result");
     });
 
+    test("omits non-final spawn status that becomes stale after wait_agent", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "spawn-end",
+          msg: {
+            type: "collab_agent_spawn_end",
+            payload: {
+              callId: "agent-1",
+              newThreadId: "thread-1",
+              newAgentPath: "/root/bug_review",
+              newAgentNickname: "Cyberia",
+              status: { status: "pending_init" },
+            },
+          },
+        },
+        {
+          id: "wait-end",
+          msg: {
+            type: "collab_waiting_end",
+            payload: {
+              callId: "wait-1",
+              timedOut: false,
+              agentStatuses: [
+                {
+                  threadId: "thread-1",
+                  status: { status: "completed", lastMessage: "done" },
+                },
+              ],
+            },
+          },
+        },
+      ]);
+
+      const allText = JSON.stringify(transcript.messages);
+      expect(allText).toContain("Spawned Cyberia");
+      expect(allText).not.toContain("status: Pending init");
+      expect(allText).toContain("Cyberia: Completed - done");
+    });
+
     test("buffers tool input deltas until their start event arrives", () => {
       const transcript = adaptTranscriptEvents([
         {

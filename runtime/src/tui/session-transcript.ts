@@ -808,6 +808,18 @@ function spawnRequestDetail(payload: Record<string, unknown>): string | null {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
+function collabSpawnStatusDetail(status: unknown): string | null {
+  if (!status || typeof status !== "object") return null;
+  const value = (status as { status?: unknown }).status;
+  return value === "completed" ||
+    value === "errored" ||
+    value === "interrupted" ||
+    value === "shutdown" ||
+    value === "not_found"
+    ? `status: ${collabStatusSummary(status)}`
+    : null;
+}
+
 function collabStatusState(status: unknown): CollabAgentMessageState {
   if (!status || typeof status !== "object") return "info";
   switch ((status as { status?: unknown }).status) {
@@ -1931,7 +1943,7 @@ export function adaptTranscriptEvents(
           promptDetail(payload.prompt),
           spawnTaskDetail(payload),
           spawnRequestDetail(payload),
-          `status: ${collabStatusSummary(status)}`,
+          collabSpawnStatusDetail(status),
           agentInteractionHint(collabAgents, payload.newThreadId, payload),
         ].filter((detail): detail is string => detail !== null);
         out.push(
