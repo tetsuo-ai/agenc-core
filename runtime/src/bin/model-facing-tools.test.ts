@@ -1871,6 +1871,159 @@ describe("model-facing tools", () => {
     expect(JSON.parse(hiddenModel.content).error).toBe(
       "Unknown model `codex-auto-review` for spawn_agent. Available models: test-model", // branding-scan: allow OpenAI model identifier
     );
+
+    const fullHistoryWithOverride = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      agent_type: "runner",
+      fork_turns: "all",
+    });
+    expect(fullHistoryWithOverride.isError).toBe(true);
+    expect(JSON.parse(fullHistoryWithOverride.content).error).toContain(
+      "Full-history forked agents inherit",
+    );
+  });
+
+  it("uses a clean fork by default for plain spawn_agent calls", async () => {
+    const session = fakeSession();
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-reviewer",
+          agentPath: "/root/reviewer",
+          nickname: "Reviewer",
+          role: { name: "default" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-reviewer",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-reviewer",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "review game.py",
+      task_name: "reviewer",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parent: session,
+        parentPath: "/root",
+        taskPrompt: "review game.py",
+        agentName: "reviewer",
+        runInBackground: true,
+      }),
+    );
+    expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
+  });
+
+  it("uses a full-history fork only when spawn_agent explicitly requests all turns", async () => {
+    const session = fakeSession();
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-reviewer",
+          agentPath: "/root/reviewer",
+          nickname: "Reviewer",
+          role: { name: "default" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-reviewer",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-reviewer",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "continue context-heavy work",
+      task_name: "reviewer",
+      fork_turns: "all",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forkMode: { kind: "full_history" },
+      }),
+    );
+  });
+
+  it("uses a clean fork by default when spawn_agent has role or effort overrides", async () => {
+    const session = fakeSession();
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-reviewer",
+          agentPath: "/root/reviewer",
+          nickname: "Reviewer",
+          role: { name: "worker" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-reviewer",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-reviewer",
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "review game.py",
+      task_name: "reviewer",
+      agent_type: "runner",
+      reasoning_effort: "xhigh",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "worker",
+        reasoningEffort: "xhigh",
+      }),
+    );
+    expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
   });
 
   it("rejects subagent spawn_agent and emits a begin/end-errored lifecycle pair", async () => {

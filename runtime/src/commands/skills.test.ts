@@ -133,7 +133,46 @@ describe("skillsCommand", () => {
         availableSkills: [],
         effectiveSkillRoots: [],
       }),
-    ).toBe("Skills:\n  available: none\n  invoked: none\n  plugin roots: none");
+    ).toBe(
+      [
+        "Skills:",
+        "  use: $skill-name [args] (slash commands use /, file mentions use @)",
+        "  available: none",
+        "  invoked: none",
+        "  plugin roots: none",
+      ].join("\n"),
+    );
+  });
+
+  it("formats skills with dollar prefixes, descriptions, and source tags", () => {
+    expect(
+      formatSkillsSnapshot({
+        invokedSkills: ["debug"],
+        availableSkills: [
+          {
+            name: "debug",
+            description: "Debug a failing workflow",
+            loadedFrom: "skills",
+          },
+          {
+            name: "mcp__Docs_Server__reviewer",
+            description: "Remote review skill",
+            loadedFrom: "mcp",
+          },
+        ],
+        effectiveSkillRoots: ["/skills"],
+      }),
+    ).toBe(
+      [
+        "Skills:",
+        "  use: $skill-name [args] (slash commands use /, file mentions use @)",
+        "  available:",
+        "    $debug - Debug a failing workflow [skills]",
+        "    $mcp__Docs_Server__reviewer - Remote review skill [mcp]",
+        "  invoked: $debug",
+        "  plugin roots: /skills",
+      ].join("\n"),
+    );
   });
 
   it("executes /skills list", async () => {
@@ -150,8 +189,8 @@ describe("skillsCommand", () => {
 
     expect(result.kind).toBe("text");
     if (result.kind === "text") {
-      expect(result.text).toContain("available: debug");
-      expect(result.text).toContain("invoked: debug");
+      expect(result.text).toContain("$debug");
+      expect(result.text).toContain("invoked: $debug");
       expect(result.text).toContain("plugin roots: /skills");
     }
   });

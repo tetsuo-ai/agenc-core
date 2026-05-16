@@ -1,10 +1,8 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { c as _c } from "react-compiler-runtime";
 import capitalize from 'lodash-es/capitalize.js';
 import * as React from 'react';
-import { useMemo } from 'react';
-import { type Command, type CommandBase, type CommandResultDisplay, getCommandName, type PromptCommand } from '../../../commands.js';
+import { type Command, type CommandBase, type CommandResultDisplay, type PromptCommand } from '../../../commands.js';
 import { Box, Text } from '../../ink.js';
 import { estimateSkillFrontmatterTokens, getSkillsPath } from '../../../skills/loadSkillsDir';
 import { getDisplayPath } from '../../../utils/file'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -48,192 +46,122 @@ function getSourceSubtitle(source: SkillSource, skills: SkillCommand[]): string 
 }
 function getSkillListLabel(skill: SkillCommand): string {
   const leafName = skill.name.split(':').pop() ?? skill.name;
-  return leafName === skill.name ? skill.name : `${skill.name} - ${leafName}`;
+  const command = `$${skill.name}`;
+  return leafName === skill.name ? command : `${command} - ${leafName}`;
 }
-export function SkillsMenu(t0) {
-  const $ = _c(35);
-  const {
-    onExit,
-    commands
-  } = t0;
-  let t1;
-  if ($[0] !== commands) {
-    t1 = commands.filter(_temp);
-    $[0] = commands;
-    $[1] = t1;
-  } else {
-    t1 = $[1];
+
+function getSkillDescription(skill: SkillCommand): string {
+  const parts = [skill.description, skill.whenToUse].filter((part): part is string => typeof part === "string" && part.trim().length > 0);
+  const description = parts.join(" - ").replace(/\s+/g, " ").trim();
+  if (description.length <= 120) {
+    return description;
   }
-  const skills = t1;
-  let groups;
-  if ($[2] !== skills) {
-    groups = {
-      policySettings: [],
-      userSettings: [],
-      projectSettings: [],
-      localSettings: [],
-      flagSettings: [],
-      plugin: [],
-      mcp: []
-    };
-    for (const skill of skills) {
-      const source = skill.source as SkillSource;
-      if (source in groups) {
-        groups[source].push(skill);
-      }
+  return `${description.slice(0, 119).trimEnd()}...`;
+}
+
+function getSkillMeta(skill: SkillCommand): string {
+  const estimatedTokens = estimateSkillFrontmatterTokens(skill);
+  const tokenDisplay = `~${formatTokens(estimatedTokens)} desc`;
+  const pluginName = skill.source === "plugin" ? skill.pluginInfo?.pluginManifest.name : undefined;
+  const tools = skill.allowedTools?.length ? `${skill.allowedTools.length} ${plural(skill.allowedTools.length, "tool")}` : undefined;
+  const context = skill.context === "fork" ? "forked" : undefined;
+  const model = skill.model ? `model ${skill.model}` : undefined;
+  return [pluginName, tokenDisplay, tools, context, model].filter((part): part is string => part !== undefined).join(" · ");
+}
+
+function renderSkill(skill: SkillCommand) {
+  const description = getSkillDescription(skill);
+  const meta = getSkillMeta(skill);
+  return <Box flexDirection="column" key={`${skill.name}-${skill.source}`}>
+      <FullWidthRow>
+        <Text bold={true}>{getSkillListLabel(skill)}</Text>
+        {meta && <Text dimColor={true}>{meta}</Text>}
+      </FullWidthRow>
+      {description && <FullWidthRow>
+          <Text dimColor={true}>{description}</Text>
+        </FullWidthRow>}
+    </Box>;
+}
+
+export function SkillsMenu({
+  onExit,
+  commands
+}: Props) {
+  const skills = commands.filter(_temp);
+  const skillsBySource: Record<SkillSource, SkillCommand[]> = {
+    policySettings: [],
+    userSettings: [],
+    projectSettings: [],
+    localSettings: [],
+    flagSettings: [],
+    plugin: [],
+    mcp: []
+  };
+  for (const skill of skills) {
+    const source = skill.source as SkillSource;
+    if (source in skillsBySource) {
+      skillsBySource[source].push(skill);
     }
-    for (const group of Object.values(groups)) {
-      group.sort(_temp2);
-    }
-    $[2] = skills;
-    $[3] = groups;
-  } else {
-    groups = $[3];
   }
-  const skillsBySource = groups;
-  let t2;
-  if ($[4] !== onExit) {
-    t2 = () => {
-      onExit("Skills dialog dismissed", {
-        display: "system"
-      });
-    };
-    $[4] = onExit;
-    $[5] = t2;
-  } else {
-    t2 = $[5];
+  for (const group of Object.values(skillsBySource)) {
+    group.sort(_temp2);
   }
-  const handleCancel = t2;
+
+  const handleCancel = () => {
+    onExit("Skills dialog dismissed", {
+      display: "system"
+    });
+  };
+
+  const closeHint = <FullWidthRow>
+      <Text dimColor={true} italic={true}>
+        <ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="close" />
+      </Text>
+    </FullWidthRow>;
+
   if (skills.length === 0) {
-    let t3;
-    if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
-      t3 = <FullWidthRow><Text dimColor={true}>Create skills in .agenc/skills/ or ~/.agenc/skills/</Text></FullWidthRow>;
-      $[6] = t3;
-    } else {
-      t3 = $[6];
+    return <Dialog title="Skills" subtitle="No skills found" onCancel={handleCancel} hideInputGuide={true}>
+        <FullWidthRow><Text dimColor={true}>Create project skills in .agenc/skills/ or user skills in ~/.agenc/skills/.</Text></FullWidthRow>
+        <FullWidthRow><Text dimColor={true}>Each skill needs a SKILL.md file with name and description frontmatter.</Text></FullWidthRow>
+        {closeHint}
+      </Dialog>;
+  }
+
+  const renderSkillGroup = (source: SkillSource) => {
+    const groupSkills = skillsBySource[source];
+    if (groupSkills.length === 0) {
+      return null;
     }
-    let t4;
-    if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
-      t4 = <FullWidthRow><Text dimColor={true} italic={true}><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="close" /></Text></FullWidthRow>;
-      $[7] = t4;
-    } else {
-      t4 = $[7];
-    }
-    let t5;
-    if ($[8] !== handleCancel) {
-      t5 = <Dialog title="Skills" subtitle="No skills found" onCancel={handleCancel} hideInputGuide={true}>{t3}{t4}</Dialog>;
-      $[8] = handleCancel;
-      $[9] = t5;
-    } else {
-      t5 = $[9];
-    }
-    return t5;
-  }
-  const renderSkill = _temp3;
-  let t3;
-  if ($[10] !== skillsBySource) {
-    t3 = source_0 => {
-      const groupSkills = skillsBySource[source_0];
-      if (groupSkills.length === 0) {
-        return null;
-      }
-      const title = getSourceTitle(source_0);
-      const subtitle = getSourceSubtitle(source_0, groupSkills);
-      return <Box flexDirection="column" key={source_0}><FullWidthRow><Text bold={true} dimColor={true}>{title}</Text>{subtitle && <Text dimColor={true}> ({subtitle})</Text>}</FullWidthRow>{groupSkills.map(skill_1 => renderSkill(skill_1))}</Box>;
-    };
-    $[10] = skillsBySource;
-    $[11] = t3;
-  } else {
-    t3 = $[11];
-  }
-  const renderSkillGroup = t3;
-  const t4 = skills.length;
-  let t5;
-  if ($[12] !== skills.length) {
-    t5 = plural(skills.length, "skill");
-    $[12] = skills.length;
-    $[13] = t5;
-  } else {
-    t5 = $[13];
-  }
-  const t6 = `${t4} ${t5}`;
-  let t7;
-  if ($[14] !== renderSkillGroup) {
-    t7 = renderSkillGroup("projectSettings");
-    $[14] = renderSkillGroup;
-    $[15] = t7;
-  } else {
-    t7 = $[15];
-  }
-  let t8;
-  if ($[16] !== renderSkillGroup) {
-    t8 = renderSkillGroup("userSettings");
-    $[16] = renderSkillGroup;
-    $[17] = t8;
-  } else {
-    t8 = $[17];
-  }
-  let t9;
-  if ($[18] !== renderSkillGroup) {
-    t9 = renderSkillGroup("policySettings");
-    $[18] = renderSkillGroup;
-    $[19] = t9;
-  } else {
-    t9 = $[19];
-  }
-  let t10;
-  if ($[20] !== renderSkillGroup) {
-    t10 = renderSkillGroup("plugin");
-    $[20] = renderSkillGroup;
-    $[21] = t10;
-  } else {
-    t10 = $[21];
-  }
-  let t11;
-  if ($[22] !== renderSkillGroup) {
-    t11 = renderSkillGroup("mcp");
-    $[22] = renderSkillGroup;
-    $[23] = t11;
-  } else {
-    t11 = $[23];
-  }
-  let t12;
-  if ($[24] !== t10 || $[25] !== t11 || $[26] !== t7 || $[27] !== t8 || $[28] !== t9) {
-    t12 = <Box flexDirection="column" gap={1}>{t7}{t8}{t9}{t10}{t11}</Box>;
-    $[24] = t10;
-    $[25] = t11;
-    $[26] = t7;
-    $[27] = t8;
-    $[28] = t9;
-    $[29] = t12;
-  } else {
-    t12 = $[29];
-  }
-  let t13;
-  if ($[30] === Symbol.for("react.memo_cache_sentinel")) {
-    t13 = <FullWidthRow><Text dimColor={true} italic={true}><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="close" /></Text></FullWidthRow>;
-    $[30] = t13;
-  } else {
-    t13 = $[30];
-  }
-  let t14;
-  if ($[31] !== handleCancel || $[32] !== t12 || $[33] !== t6) {
-    t14 = <Dialog title="Skills" subtitle={t6} onCancel={handleCancel} hideInputGuide={true}>{t12}{t13}</Dialog>;
-    $[31] = handleCancel;
-    $[32] = t12;
-    $[33] = t6;
-    $[34] = t14;
-  } else {
-    t14 = $[34];
-  }
-  return t14;
+    const title = getSourceTitle(source);
+    const subtitle = getSourceSubtitle(source, groupSkills);
+    return <Box flexDirection="column" key={source}>
+        <FullWidthRow>
+          <Text bold={true} color="success">{title}</Text>
+          {subtitle && <Text dimColor={true}>{subtitle}</Text>}
+        </FullWidthRow>
+        {groupSkills.map(skill => renderSkill(skill))}
+      </Box>;
+  };
+
+  const subtitle = `${skills.length} ${plural(skills.length, "skill")}`;
+  return <Dialog title="Skills" subtitle={subtitle} onCancel={handleCancel} hideInputGuide={true}>
+      <Box flexDirection="column">
+        <FullWidthRow><Text dimColor={true}>Use $skill-name to load a skill. Slash commands stay under /, mentions stay under @.</Text></FullWidthRow>
+        <FullWidthRow><Text dimColor={true}>Project skills live in .agenc/skills/. User skills live in ~/.agenc/skills/.</Text></FullWidthRow>
+      </Box>
+      <Box flexDirection="column" gap={1}>
+        {renderSkillGroup("projectSettings")}
+        {renderSkillGroup("userSettings")}
+        {renderSkillGroup("policySettings")}
+        {renderSkillGroup("localSettings")}
+        {renderSkillGroup("flagSettings")}
+        {renderSkillGroup("plugin")}
+        {renderSkillGroup("mcp")}
+      </Box>
+      {closeHint}
+    </Dialog>;
 }
-function _temp3(skill_0) {
-  const estimatedTokens = estimateSkillFrontmatterTokens(skill_0);
-  const tokenDisplay = `~${formatTokens(estimatedTokens)}`;
-  const pluginName = skill_0.source === "plugin" ? skill_0.pluginInfo?.pluginManifest.name : undefined;
-  return <FullWidthRow key={`${skill_0.name}-${skill_0.source}`}><Text>{getSkillListLabel(skill_0)}</Text><Text dimColor={true}>{pluginName ? ` · ${pluginName}` : ""} · {tokenDisplay} description tokens</Text></FullWidthRow>;
-}
+
 function _temp2(a, b) {
   return a.name.localeCompare(b.name);
 }

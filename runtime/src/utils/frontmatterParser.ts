@@ -25,8 +25,8 @@ export type FrontmatterData = {
   model?: string | null
   // Comma-separated list of skill names to preload (only applicable to agents)
   skills?: string | null
-  // Whether users can invoke this skill by typing /skill-name
-  // 'true' = user can type /skill-name to invoke
+  // Whether users can invoke this skill by typing $skill-name
+  // 'true' = user can type $skill-name to invoke
   // 'false' = only model can invoke via Skill tool
   // Default depends on source: commands/ defaults to true, skills/ defaults to false
   'user-invocable'?: string | null

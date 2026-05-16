@@ -1,5 +1,8 @@
 import type { Tool, ToolCatalogEntry } from "../types.js";
-import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
+import {
+  decodeMcpToolNameFromWire,
+  encodeMcpToolNameForWire,
+} from "../../llm/wire/mcp-tool-naming.js";
 import {
   codingToolMetadata,
   MAX_RESULTS,
@@ -102,6 +105,32 @@ function normalizeSelections(args: Record<string, unknown>): readonly string[] {
     .filter((entry, index, all) => entry.length > 0 && all.indexOf(entry) === index);
 }
 
+function mcpServerPrefixForSelection(selection: string): string | undefined {
+  if (!selection.startsWith("mcp.") && !selection.includes(".")) {
+    return `mcp.${selection}.`;
+  }
+  if (selection.startsWith("mcp.") && selection.slice("mcp.".length).split(".").length === 1) {
+    return `${selection}.`;
+  }
+  return undefined;
+}
+
+function resolveSelection(
+  selection: string,
+  catalog: readonly ToolCatalogEntry[],
+): ToolCatalogEntry | undefined {
+  const decoded = decodeMcpToolNameFromWire(selection);
+  const exact = catalog.find((entry) => entry.name === decoded);
+  if (exact) return exact;
+
+  const mcpServerPrefix = mcpServerPrefixForSelection(decoded);
+  if (!mcpServerPrefix) return undefined;
+  const mcpServerMatches = catalog.filter((entry) =>
+    entry.name.startsWith(mcpServerPrefix),
+  );
+  return mcpServerMatches.length === 1 ? mcpServerMatches[0] : undefined;
+}
+
 export function createToolSearchTool(config: CodingToolConfig): Tool {
   return {
     name: "system.searchTools",
@@ -143,10 +172,10 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       const query = parsedQuery.query;
       const explicitSelections = normalizeSelections(args);
       const selectedEntries = explicitSelections
-        .map((name) => catalog.find((entry) => entry.name === name))
+        .map((name) => resolveSelection(name, catalog))
         .filter((entry): entry is ToolCatalogEntry => entry !== undefined);
       const missingSelections = explicitSelections.filter(
-        (name) => !selectedEntries.some((entry) => entry.name === name),
+        (name) => resolveSelection(name, catalog) === undefined,
       );
       const family = toOptionalString(args.family);
       const source = toOptionalString(args.source);

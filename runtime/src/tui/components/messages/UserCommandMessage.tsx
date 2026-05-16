@@ -51,7 +51,7 @@ export function UserCommandMessage(t0) {
     }
     let t6;
     if ($[5] !== commandMessage) {
-      t6 = <Text>{t5}<Text color="text">Skill({commandMessage})</Text></Text>;
+      t6 = <Text>{t5}<Text color="text">${commandMessage}</Text></Text>;
       $[5] = commandMessage;
       $[6] = t6;
     } else {

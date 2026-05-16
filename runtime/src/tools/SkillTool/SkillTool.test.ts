@@ -80,7 +80,7 @@ describe('SkillTool renderToolUseMessage', () => {
           commands: [],
         },
       ),
-    ).toBe(pluginSkillName)
+    ).toBe(`$${pluginSkillName}`)
 
     expect(
       renderToolUseMessage(
@@ -94,7 +94,7 @@ describe('SkillTool renderToolUseMessage', () => {
           ],
         },
       ),
-    ).toBe(pluginSkillName)
+    ).toBe(`$${pluginSkillName}`)
   })
 
   test('legacy commands still render with a slash prefix when metadata is present', () => {
@@ -110,5 +110,33 @@ describe('SkillTool renderToolUseMessage', () => {
         },
       ),
     ).toBe('/legacy-command')
+  })
+
+  test('summarizes structured args without dumping raw JSON', () => {
+    expect(
+      renderToolUseMessage(
+        {
+          skill: 'python-game',
+          args: '{"file":"game.py","type":"number_guessing"}',
+        },
+        {
+          commands: [],
+        },
+      ),
+    ).toBe('$python-game · file game.py, type number_guessing')
+  })
+
+  test('recovers nested JSON skill names from provider string arguments', () => {
+    expect(
+      renderToolUseMessage(
+        {
+          skill:
+            '{"skill":"python-game","name":"create","args":"{\\"file\\":\\"game.py\\"}"}',
+        },
+        {
+          commands: [],
+        },
+      ),
+    ).toBe('$python-game · file game.py')
   })
 })

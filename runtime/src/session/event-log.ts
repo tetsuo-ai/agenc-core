@@ -309,6 +309,8 @@ export interface CollabAgentSpawnBeginEvent {
   readonly callId: string;
   readonly senderThreadId: string;
   readonly prompt: string;
+  readonly taskName?: string;
+  readonly agentType?: string;
   readonly model: string;
   readonly reasoningEffort?: string;
 }
@@ -317,10 +319,13 @@ export interface CollabAgentSpawnEndEvent {
   readonly callId: string;
   readonly senderThreadId: string;
   readonly newThreadId?: string;
+  readonly newAgentPath?: string;
   readonly newAgentNickname?: string;
   readonly newAgentRole?: string;
   readonly newAgentRoleDisplayName?: string;
   readonly prompt: string;
+  readonly taskName?: string;
+  readonly agentType?: string;
   readonly model: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus;

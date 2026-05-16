@@ -14,6 +14,7 @@ import {
   getCommandName,
   isBridgeSafeCommand,
   isCommandEnabled,
+  type Command,
   type LocalCommandResult,
   type LocalJSXCommandContext,
 } from '../../commands.js'
@@ -57,9 +58,21 @@ import {
   createUserMessage,
   prepareUserContent,
 } from '../../utils/messages.js'
+import {
+  COMMAND_ARGS_TAG,
+  COMMAND_MESSAGE_TAG,
+  COMMAND_NAME_TAG,
+} from '../../constants/xml.js'
 import { escapeXml } from '../../utils/xml.js'
 import { queryCheckpoint } from '../../utils/queryProfiler.js'
 import { parseSlashCommand } from '../slash/slash-command-parsing.js'
+import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js'
+import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
+import { registerSkillHooks } from '../../utils/hooks/registerSkillHooks.js'
+import {
+  isRestrictedToPluginOnly,
+  isSourceAdminTrusted,
+} from '../../utils/settings/pluginOnlyPolicy.js'
 import {
   finalizeVimInputForRouting,
   processTextPrompt,
@@ -318,6 +331,93 @@ function localCommandResultToPromptInputResult(
   }
 }
 
+export function parseDollarSkillCommand(input: string): {
+  commandName: string
+  args: string
+} | null {
+  const lines = input.split('\n')
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]!.trim().length > 0) return null
+  }
+  let first = lines[0]!
+  if (first.endsWith('\r')) first = first.slice(0, -1)
+  first = first.trim()
+  const match = first.match(/^\$([A-Za-z][A-Za-z0-9_:-]*)(?:\s+(.*))?$/)
+  if (!match) return null
+  return {
+    commandName: match[1]!,
+    args: (match[2] ?? '').trim(),
+  }
+}
+
+function formatDollarSkillInputTags(commandName: string, args: string): string {
+  return `<${COMMAND_NAME_TAG}>$${commandName}</${COMMAND_NAME_TAG}>
+            <${COMMAND_MESSAGE_TAG}>${commandName}</${COMMAND_MESSAGE_TAG}>
+            <${COMMAND_ARGS_TAG}>${args}</${COMMAND_ARGS_TAG}>
+            <skill-format>true</skill-format>`
+}
+
+function isSkillCommand(command: unknown): command is Extract<Command, { type: 'prompt' }> {
+  return !!command &&
+    typeof command === 'object' &&
+    (command as Command).type === 'prompt' &&
+    ((command as Command).loadedFrom === 'skills' ||
+      (command as Command).loadedFrom === 'plugin' ||
+      (command as Command).loadedFrom === 'mcp')
+}
+
+async function processDollarSkillInput(
+  parsed: { commandName: string; args: string },
+  command: Extract<Command, { type: 'prompt' }>,
+  context: PromptInputContext,
+  uuid?: string,
+  attachmentMessages: AttachmentMessage[] = [],
+): Promise<PromptInputResult> {
+  const blocks = await command.getPromptForCommand(parsed.args, context)
+  const skillContent = blocks
+    .filter((block): block is Extract<ContentBlockParam, { type: 'text' }> => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n')
+  const skillPath = command.skillRoot
+    ? `${command.skillRoot}:${command.name}`
+    : command.source
+      ? `${command.source}:${command.name}`
+      : command.name
+
+  addInvokedSkill(command.name, skillPath, skillContent, null)
+
+  const hooksAllowedForThisSkill =
+    !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source)
+  if (command.hooks && hooksAllowedForThisSkill) {
+    registerSkillHooks(
+      context.setAppState,
+      getSessionId(),
+      command.hooks,
+      command.name,
+      command.skillRoot,
+    )
+  }
+
+  return {
+    messages: [
+      createUserMessage({
+        content: formatDollarSkillInputTags(command.name, parsed.args),
+        uuid,
+      }),
+      ...attachmentMessages,
+      createUserMessage({
+        content: blocks,
+        isMeta: true,
+      }),
+    ],
+    shouldQuery: true,
+    allowedTools: parseToolListFromCLI(command.allowedTools ?? []),
+    model: command.model,
+    effort: command.effort,
+    resultText: `Loaded $${command.name}`,
+  }
+}
+
 async function processRegistrySlashInput(
   inputString: string,
   precedingInputBlocks: ContentBlockParam[],
@@ -335,8 +435,8 @@ async function processRegistrySlashInput(
       { type: 'text', value: 'Commands are in the form `/command [args]`' },
     )
   }
-
   const command = findCommand(parsed.commandName, context.options.commands)
+
   if (!command || command.type !== 'local') {
     return localCommandResultToPromptInputResult(
       inputString,
@@ -624,6 +724,48 @@ async function processPromptInputBase(
       ),
       imageMetadataTexts,
     )
+  }
+
+  // Skill commands. User-facing skills use `$skill [args]`; slash stays
+  // reserved for local commands and `@` stays reserved for mentions.
+  if (
+    inputString !== null &&
+    mode === 'prompt' &&
+    !effectiveSkipSlash &&
+    inputString.trim().startsWith('$')
+  ) {
+    const parsedSkill = parseDollarSkillCommand(inputString)
+    if (parsedSkill) {
+      const command = findCommand(parsedSkill.commandName, context.options.commands)
+      if (isSkillCommand(command)) {
+        return addImageMetadataMessage(
+          await processDollarSkillInput(
+            parsedSkill,
+            command,
+            context,
+            uuid,
+            attachmentMessages,
+          ),
+          imageMetadataTexts,
+        )
+      }
+      if (command?.type === 'local') {
+        return localCommandResultToPromptInputResult(
+          inputString,
+          precedingInputBlocks,
+          attachmentMessages,
+          uuid,
+          { type: 'text', value: `Use /${parsedSkill.commandName} for commands. Skills use $skill.` },
+        )
+      }
+      return localCommandResultToPromptInputResult(
+        inputString,
+        precedingInputBlocks,
+        attachmentMessages,
+        uuid,
+        { type: 'text', value: `Unknown skill: $${parsedSkill.commandName}` },
+      )
+    }
   }
 
   // Slash commands

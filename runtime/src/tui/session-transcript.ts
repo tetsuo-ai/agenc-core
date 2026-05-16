@@ -597,6 +597,7 @@ function formatAgentStatus(status: unknown): string {
 
 interface CollabAgentDisplay {
   threadId: string;
+  agentPath?: string;
   agentNickname?: string;
   agentRole?: string;
   agentRoleDisplayName?: string;
@@ -711,7 +712,7 @@ function updateCollabAgent(
     threadId: id,
     ...(previous ?? {}),
   };
-  for (const key of ["agentNickname", "agentRole", "agentRoleDisplayName"] as const) {
+  for (const key of ["agentPath", "agentNickname", "agentRole", "agentRoleDisplayName"] as const) {
     const value = nonEmptyString(metadata[key]);
     if (value !== undefined) {
       next[key] = value;
@@ -725,12 +726,14 @@ function updateCollabAgentFromPayload(
   payload: Record<string, unknown>,
   threadKey: string,
   keys: {
+    readonly path?: string;
     readonly nickname?: string;
     readonly role?: string;
     readonly roleDisplayName?: string;
   },
 ): void {
   updateCollabAgent(agents, payload[threadKey], {
+    agentPath: keys.path ? nonEmptyString(payload[keys.path]) : undefined,
     agentNickname: keys.nickname ? nonEmptyString(payload[keys.nickname]) : undefined,
     agentRole: keys.role ? nonEmptyString(payload[keys.role]) : undefined,
     agentRoleDisplayName: keys.roleDisplayName
@@ -746,6 +749,7 @@ function updateCollabAgentFromRef(
   if (!value || typeof value !== "object") return;
   const ref = value as Record<string, unknown>;
   updateCollabAgent(agents, ref.threadId, {
+    agentPath: nonEmptyString(ref.agentPath),
     agentNickname: nonEmptyString(ref.agentNickname),
     agentRole: nonEmptyString(ref.agentRole),
     agentRoleDisplayName: nonEmptyString(ref.agentRoleDisplayName),
@@ -770,6 +774,28 @@ function collabAgentLabel(
 function promptDetail(prompt: unknown): string | null {
   const value = nonEmptyString(prompt);
   return value ? truncatePreview(value) : null;
+}
+
+function spawnTaskDetail(payload: Record<string, unknown>): string | null {
+  const path = nonEmptyString(payload.newAgentPath);
+  if (path) return `agent ${path}`;
+  const taskName = nonEmptyString(payload.taskName);
+  return taskName ? `task ${taskName}` : null;
+}
+
+function agentInteractionHint(
+  agents: Map<string, CollabAgentDisplay>,
+  threadId: unknown,
+  payload: Record<string, unknown>,
+): string | null {
+  const id = nonEmptyString(threadId);
+  const path =
+    (id ? agents.get(id)?.agentPath : undefined) ??
+    nonEmptyString(payload.newAgentPath);
+  if (!path) {
+    return "manage: agents menu, wait_agent, or send_message";
+  }
+  return `manage: agents menu, wait_agent, or send_message ${path}`;
 }
 
 function spawnRequestDetail(payload: Record<string, unknown>): string | null {
@@ -1882,6 +1908,7 @@ export function adaptTranscriptEvents(
         openTools.add(callId);
         const details = [
           promptDetail(payload.prompt),
+          spawnTaskDetail(payload),
           spawnRequestDetail(payload),
         ].filter((detail): detail is string => detail !== null);
         out.push(makeCollabAgentMessage("Spawning agent", details, "running"));
@@ -1893,6 +1920,7 @@ export function adaptTranscriptEvents(
         if (callId === null) break;
         openTools.delete(callId);
         updateCollabAgentFromPayload(collabAgents, payload, "newThreadId", {
+          path: "newAgentPath",
           nickname: "newAgentNickname",
           role: "newAgentRole",
           roleDisplayName: "newAgentRoleDisplayName",
@@ -1901,8 +1929,10 @@ export function adaptTranscriptEvents(
         const status = payload.status;
         const details = [
           promptDetail(payload.prompt),
+          spawnTaskDetail(payload),
           spawnRequestDetail(payload),
           `status: ${collabStatusSummary(status)}`,
+          agentInteractionHint(collabAgents, payload.newThreadId, payload),
         ].filter((detail): detail is string => detail !== null);
         out.push(
           makeCollabAgentMessage(

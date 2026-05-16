@@ -36,6 +36,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.
 - Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.
 - Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.
+- For reviewer, tester, or verifier agents, first create the artifact they are supposed to inspect and do the smallest local check that it exists. Agents asked to review missing files waste the user's time and produce confusing output.
 
 ### Designing delegated subtasks
 - Subtasks must be concrete, well-defined, and self-contained.
@@ -47,6 +48,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 - The spawned agent inherits its working directory from the parent session and receives the same Environment section. Do NOT embed absolute filesystem paths from memory in the \`message\` body and do NOT invent project root paths. Refer to files relative to the cwd the spawned agent will already know.
+- Omit \`fork_turns\` for the default clean fork. Use \`fork_turns: "all"\` only when the new agent must inherit the full parent conversation; full-history forks inherit the parent role/model/effort and cannot be combined with \`agent_type\`, \`model\`, or \`reasoning_effort\` overrides.
 
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
@@ -97,7 +99,8 @@ function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
 }
 
 function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
-  const raw = value === undefined ? "all" : value;
+  if (value === undefined) return undefined;
+  const raw = value;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     if (trimmed.toLowerCase() === "none") return undefined;
@@ -239,6 +242,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
       return json({ error: "invalid reasoning_effort" }, true);
     }
+    const rawTaskName = stringValue(args.task_name);
     const forkMode = parseForkTurns(args.fork_turns);
     if (forkMode !== undefined && "content" in forkMode) return forkMode;
     if (
@@ -261,6 +265,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         callId,
         senderThreadId: current.threadId,
         prompt,
+        taskName: rawTaskName,
+        agentType: role,
         model: model ?? session.sessionConfiguration.collaborationMode.model,
         reasoningEffort:
           reasoningEffort ??
@@ -275,6 +281,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           callId,
           senderThreadId: current.threadId,
           prompt,
+          taskName: rawTaskName,
+          agentType: role,
           model: model ?? session.sessionConfiguration.collaborationMode.model,
           reasoningEffort:
             reasoningEffort ??
@@ -325,7 +333,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(overrideReason);
       return overrideError;
     }
-    const taskName = stringValue(args.task_name);
+    const taskName = rawTaskName;
     if (!taskName) {
       return failSpawn("task_name is required");
     }
@@ -361,6 +369,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           callId,
           senderThreadId: current.threadId,
           prompt,
+          taskName,
+          agentType: role,
           model: model ?? session.sessionConfiguration.collaborationMode.model,
           reasoningEffort:
             reasoningEffort ??
@@ -410,6 +420,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         callId,
         senderThreadId: current.threadId,
         newThreadId: live.agentId,
+        newAgentPath: live.agentPath,
         newAgentNickname: live.nickname,
         newAgentRole: live.role.name,
         newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),

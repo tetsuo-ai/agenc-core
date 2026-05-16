@@ -77,7 +77,7 @@ export function formatAgenCMcpCliHelpText(): string {
     "Options:",
     "  serve --transport <stdio|sse>       Transport for serve",
     "  add -t, --transport <stdio|sse|http> Transport for add",
-    "  -s, --scope <scope>        Config scope for add/remove/import commands",
+    "  -s, --scope <scope>        Config scope for add/remove/import commands (default: user for add/add-json)",
     "  -e, --env <KEY=value>      Environment variable for stdio add",
     "  -H, --header <K: V>        Header for HTTP/SSE add",
     "  --client-secret           Prompt for remote MCP OAuth client secret",

@@ -78,4 +78,53 @@ describe("system.searchTools", () => {
     expect(payload.results[0].useHint).toContain("echo");
     expect(payload.results[0].useHint).toContain("Skill");
   });
+
+  test("selecting a server name loads its single matching MCP tool", async () => {
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()],
+      persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [deferredCatalogEntry("mcp.game-helper.game_tip")],
+      onDiscoverTools: (names) => {
+        discovered.push([...names]);
+      },
+    });
+
+    const result = await tool.execute({
+      query: "game-helper",
+      select: ["game-helper"],
+    });
+
+    const payload = JSON.parse(result.content);
+    expect(payload.missingSelections).toEqual([]);
+    expect(payload.loaded).toEqual(["mcp.game-helper.game_tip"]);
+    expect(payload.results[0]).toMatchObject({
+      name: "mcp.game-helper.game_tip",
+      selected: true,
+      useHint: expect.stringContaining("mcp__game-helper__game_tip"),
+    });
+    expect(discovered).toEqual([["mcp.game-helper.game_tip"]]);
+  });
+
+  test("ambiguous MCP server-name selections stay unresolved", async () => {
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()],
+      persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [
+        deferredCatalogEntry("mcp.game-helper.game_tip"),
+        deferredCatalogEntry("mcp.game-helper.score"),
+      ],
+      onDiscoverTools: () => {},
+    });
+
+    const result = await tool.execute({ select: "game-helper" });
+
+    const payload = JSON.parse(result.content);
+    expect(payload.loaded).toEqual([]);
+    expect(payload.missingSelections).toEqual(["game-helper"]);
+    expect(payload.results.map((entry: { name: string }) => entry.name)).toEqual([
+      "mcp.game-helper.game_tip",
+      "mcp.game-helper.score",
+    ]);
+  });
 });

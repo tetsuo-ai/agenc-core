@@ -229,6 +229,7 @@ describe("AgenC MCP management CLI parsing", () => {
     expect(help).toContain("doctor");
     expect(help).toContain("xaa");
     expect(help).toContain("--transport <stdio|sse|http>");
+    expect(help).toContain("default: user for add/add-json");
   });
 
   test("management runner reports command usage errors", async () => {

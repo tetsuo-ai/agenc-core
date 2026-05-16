@@ -352,7 +352,7 @@ export async function mcpAddJsonHandler(name: string, json: string, options: {
   clientSecret?: true;
 }): Promise<void> {
   try {
-    const scope = ensureConfigScope(options.scope);
+    const scope = ensureConfigScope(options.scope ?? 'user');
     const parsedJson = safeParseJSON(json);
 
     // Read secret before writing config so cancellation doesn't leave partial state

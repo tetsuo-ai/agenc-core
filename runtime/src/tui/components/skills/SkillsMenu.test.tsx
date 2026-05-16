@@ -10,4 +10,12 @@ describe("SkillsMenu command sources", () => {
     expect(source).toContain('cmd.loadedFrom === "plugin"');
     expect(source).toContain('cmd.loadedFrom === "mcp"');
   });
+
+  test("shows skill descriptions, locations, and invocation guidance", () => {
+    expect(source).toContain("getSkillDescription");
+    expect(source).toContain("Use $skill-name to load a skill");
+    expect(source).toContain("Project skills live in .agenc/skills/");
+    expect(source).toContain("User skills live in ~/.agenc/skills/");
+    expect(source).toContain("allowedTools");
+  });
 });

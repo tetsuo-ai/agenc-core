@@ -100,6 +100,24 @@ function mergeAvailableSkills(
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function formatSourceTag(skill: AvailableSkillSnapshot): string {
+  const source = skill.loadedFrom ?? skill.scope;
+  return source ? ` [${source}]` : "";
+}
+
+function formatSkillReference(name: string): string {
+  return `$${name}`;
+}
+
+function formatAvailableSkill(skill: AvailableSkillSnapshot): string {
+  const description = skill.description?.trim();
+  const sourceTag = formatSourceTag(skill);
+  if (description) {
+    return `    ${formatSkillReference(skill.name)} - ${description}${sourceTag}`;
+  }
+  return `    ${formatSkillReference(skill.name)}${sourceTag}`;
+}
+
 export async function collectSkillsSnapshot(
   session: Session,
   appStateBridge?: SlashCommandAppStateBridge,
@@ -136,18 +154,22 @@ export async function collectSkillsSnapshot(
 
 export function formatSkillsSnapshot(snapshot: SkillsSnapshot): string {
   const lines: string[] = ["Skills:"];
+  lines.push(
+    "  use: $skill-name [args] (slash commands use /, file mentions use @)",
+  );
   if (snapshot.availableSkills.length === 0) {
     lines.push("  available: none");
   } else {
-    lines.push(
-      `  available: ${snapshot.availableSkills.map((skill) => skill.name).join(", ")}`,
-    );
+    lines.push("  available:");
+    lines.push(...snapshot.availableSkills.map(formatAvailableSkill));
   }
 
   if (snapshot.invokedSkills.length === 0) {
     lines.push("  invoked: none");
   } else {
-    lines.push(`  invoked: ${snapshot.invokedSkills.join(", ")}`);
+    lines.push(
+      `  invoked: ${snapshot.invokedSkills.map(formatSkillReference).join(", ")}`,
+    );
   }
 
   if (snapshot.effectiveSkillRoots.length === 0) {

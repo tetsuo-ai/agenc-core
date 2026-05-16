@@ -175,7 +175,8 @@ export const getPrompt = memoize(async (_cwd: string): Promise<string> => {
 
 When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
 
-When users reference a skill by a slash-looking name (e.g., "/commit" or "/review-pr"), use the skill name without the leading slash.
+When users reference a skill by a dollar-prefixed name (e.g., "$commit" or "$review-pr"), use the skill name without the leading "$".
+The user-facing convention is "$skill" for skills, "/command" for commands, and "@" for mentions.
 
 How to invoke:
 - Use this tool with the skill name and optional arguments
@@ -188,6 +189,9 @@ How to invoke:
 Important:
 - Available skills are listed in system-reminder messages in the conversation
 - When a skill matches the user's request, this is a BLOCKING REQUIREMENT: invoke the relevant Skill tool BEFORE generating any other response about the task
+- The Skill tool loads instructions only. It does not create files, run commands, or complete the user's task by itself. After the tool returns, carry out the task with the loaded instructions.
+- Treat args as optional context for the loaded instructions, not as an action schema. Do not invent extra fields such as \`name\` or \`action\`.
+- If the user asks for reviewer/tester agents, create and verify the artifact locally first, then spawn agents to inspect the existing artifact. Never send agents to review or test a file that has not been created yet.
 - NEVER mention a skill without actually calling this tool
 - Do not invoke a skill that is already running
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)

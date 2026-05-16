@@ -62,7 +62,9 @@ vi.mock("../exit.js", () => ({
   cliOk: vi.fn(),
 }));
 
-import { mcpGetHandler } from "./mcp.js";
+import { addMcpConfig } from "../../services/mcp/config.js";
+import { ensureConfigScope } from "../../services/mcp/utils.js";
+import { mcpAddJsonHandler, mcpGetHandler } from "./mcp.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -79,6 +81,21 @@ function captureConsole(): string[] {
 }
 
 describe("MCP CLI redaction", () => {
+  test("mcp add-json defaults to user scope", async () => {
+    await mcpAddJsonHandler(
+      "game-helper",
+      JSON.stringify({ type: "stdio", command: "node", args: ["server.js"] }),
+      {},
+    );
+
+    expect(ensureConfigScope).toHaveBeenCalledWith("user");
+    expect(addMcpConfig).toHaveBeenCalledWith(
+      "game-helper",
+      { type: "stdio", command: "node", args: ["server.js"] },
+      "user",
+    );
+  });
+
   test("mcp get redacts remote headers", async () => {
     const lines = captureConsole();
     mcpState.server = {

@@ -674,7 +674,7 @@ function UserMessageOption(t0) {
         const isSkillFormat = extractTag(messageText, "skill-format") === "true";
         if (commandMessage) {
           if (isSkillFormat) {
-            t6 = <Box flexDirection="row" width="100%"><Text color={color} dimColor={dimColor}>Skill({commandMessage})</Text></Box>;
+            t6 = <Box flexDirection="row" width="100%"><Text color={color} dimColor={dimColor}>${commandMessage}</Text></Box>;
             break bb0;
           } else {
             t6 = <Box flexDirection="row" width="100%"><Text color={color} dimColor={dimColor}>/{commandMessage} {args}</Text></Box>;

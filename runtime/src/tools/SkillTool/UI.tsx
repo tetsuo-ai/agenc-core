@@ -18,6 +18,79 @@ import type { inputSchema, Output, Progress } from './SkillTool.js';
 type Input = z.infer<ReturnType<typeof inputSchema>>;
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
 const INITIALIZING_TEXT = 'Initializing…';
+const MAX_ARGS_PREVIEW = 72;
+
+function compactSkillPreview(value: string): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (compact.length <= MAX_ARGS_PREVIEW) {
+    return compact;
+  }
+  return `${compact.slice(0, MAX_ARGS_PREVIEW - 1).trimEnd()}…`;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSkillInput(input: Partial<Input>): {
+  skill?: string;
+  args?: string;
+} {
+  const rawSkill = input.skill;
+  if (typeof rawSkill !== 'string') {
+    return {
+      args: input.args
+    };
+  }
+  const parsedSkill = parseJsonObject(rawSkill);
+  if (parsedSkill) {
+    const nestedSkill = typeof parsedSkill.skill === 'string' ? parsedSkill.skill : rawSkill;
+    const nestedArgs = typeof parsedSkill.args === 'string' ? parsedSkill.args : input.args;
+    return {
+      skill: nestedSkill,
+      args: nestedArgs
+    };
+  }
+  return {
+    skill: rawSkill,
+    args: input.args
+  };
+}
+
+function summarizeSkillArgs(args: string | undefined): string | null {
+  if (!args || args.trim().length === 0) {
+    return null;
+  }
+  const parsed = parseJsonObject(args);
+  if (parsed) {
+    const parts = Object.entries(parsed).flatMap(([key, value]) => {
+      if (value === undefined || value === null) {
+        return [];
+      }
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return [`${key} ${String(value)}`];
+      }
+      return [`${key} ${JSON.stringify(value)}`];
+    });
+    if (parts.length > 0) {
+      return compactSkillPreview(parts.join(', '));
+    }
+  }
+  return compactSkillPreview(args);
+}
+
+function formatDollarSkillName(skill: string): string {
+  if (skill.startsWith('$')) {
+    return skill;
+  }
+  return `$${skill.replace(/^\/+/, '')}`;
+}
+
 export function renderToolResultMessage(output: Output): React.ReactNode {
   // Handle forked skill result
   if ('status' in output && output.status === 'forked') {
@@ -44,22 +117,31 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
     </MessageResponse>;
 }
 export function renderToolUseMessage({
-  skill
+  skill,
+  args
 }: Partial<Input>, {
   commands
 }: {
   commands?: Command[];
 }): React.ReactNode {
-  if (!skill) {
+  const normalized = normalizeSkillInput({
+    skill,
+    args
+  });
+  if (!normalized.skill) {
     return null;
   }
   // Only compatibility /commands_DEPRECATED entries need the command lookup so we can
-  // preserve the slash-prefixed display. Plugin skills already carry the
+  // preserve command-style display. Plugin skills already carry the
   // invoked skill name in `skill`, so transcript/history rendering does not
   // need plugin command metadata.
-  const command = commands?.find(c => c.name === skill);
-  const displayName = command?.loadedFrom === 'commands_DEPRECATED' ? `/${skill}` : skill;
-  return displayName;
+  const command = commands?.find(c => c.name === normalized.skill);
+  const displayName =
+    command?.loadedFrom === 'commands_DEPRECATED'
+      ? `/${normalized.skill.replace(/^\/+/, '')}`
+      : formatDollarSkillName(normalized.skill);
+  const argsPreview = summarizeSkillArgs(normalized.args);
+  return argsPreview ? `${displayName} · ${argsPreview}` : displayName;
 }
 export function renderToolUseProgressMessage(progressMessages: ProgressMessage<Progress>[], {
   tools,
