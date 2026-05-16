@@ -383,6 +383,58 @@ function searchToolsSummary(record: Record<string, unknown>): string {
   return "Search tools";
 }
 
+function formatDollarSkillName(skill: string): string {
+  const trimmed = skill.trim().replace(/^\/+/, "").replace(/^\$+/, "");
+  return trimmed.length > 0 ? `$${trimmed}` : "$skill";
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function skillInputParts(record: Record<string, unknown>): {
+  readonly displayName: string;
+  readonly argsPreview: string;
+} {
+  const rawSkill =
+    typeof record.skill === "string"
+      ? record.skill
+      : typeof record.name === "string"
+        ? record.name
+        : "";
+  const parsedSkill = parseJsonRecord(rawSkill);
+  const skill =
+    typeof parsedSkill?.skill === "string"
+      ? parsedSkill.skill
+      : rawSkill;
+  const rawArgs =
+    typeof parsedSkill?.args === "string"
+      ? parsedSkill.args
+      : typeof record.args === "string"
+        ? record.args
+        : "";
+  const parsedArgs = parseJsonRecord(rawArgs);
+  const argsPreview =
+    parsedArgs !== null
+      ? Object.entries(parsedArgs)
+          .flatMap(([key, value]) =>
+            value === undefined || value === null
+              ? []
+              : [`${key} ${truncateInline(String(value), 72)}`],
+          )
+          .join(", ")
+      : truncateInline(rawArgs, 72);
+  return {
+    displayName: formatDollarSkillName(skill),
+    argsPreview,
+  };
+}
+
 function isMcpToolName(name: string): boolean {
   return name.startsWith("mcp.");
 }
@@ -403,6 +455,10 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   }
   if (name === "system.searchTools") {
     return searchToolsSummary(record);
+  }
+  if (name === "Skill") {
+    const { displayName, argsPreview } = skillInputParts(record);
+    return argsPreview.length > 0 ? `${displayName}: ${argsPreview}` : displayName;
   }
   if (isMcpToolName(name)) {
     return mcpInputSummary(record);
@@ -447,12 +503,24 @@ function userFacingNameForTool(name: string): string {
   return name;
 }
 
+function userFacingNameForInput(name: string, input: unknown): string {
+  if (name === "Skill") {
+    return skillInputParts(objectFromUnknown(input)).displayName;
+  }
+  return userFacingNameForTool(name);
+}
+
+function skillToolUseMessage(input: unknown): string {
+  return skillInputParts(objectFromUnknown(input)).argsPreview;
+}
+
 function activityDescriptionForTool(name: string, input: unknown): string {
   const summary = toolUseSummaryForInput(name, input);
   if (name === "exec_command") {
     return summary.length > 0 ? `Run: ${summary}` : "Run command";
   }
   if (name === "system.searchTools") return summary;
+  if (name === "Skill") return summary.length > 0 ? `Load ${summary}` : "Load skill";
   if (isMcpToolName(name)) {
     return summary.length > 0 ? `${name} ${summary}` : name;
   }
@@ -520,14 +588,16 @@ export function createTuiTool(name: string): any {
     toAutoClassifierInput(input: unknown) {
       return input;
     },
-    userFacingName() {
-      return userFacingNameForTool(name);
+    userFacingName(input: unknown) {
+      return userFacingNameForInput(name, input);
     },
     getActivityDescription(input: unknown) {
       return activityDescriptionForTool(name, input);
     },
     renderToolUseMessage(input: unknown) {
-      return toolUseSummaryForInput(name, input);
+      return name === "Skill"
+        ? skillToolUseMessage(input)
+        : toolUseSummaryForInput(name, input);
     },
     renderToolResultMessage(
       content: unknown,

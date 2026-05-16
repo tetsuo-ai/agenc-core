@@ -121,6 +121,39 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     ).toBe("Select tool: mcp.audit-ping.ping");
   });
 
+  test("Skill cards show $skill invocation instead of raw JSON", () => {
+    const tool = createTuiTool("Skill");
+
+    expect(tool.userFacingName({ skill: "python-game" })).toBe("$python-game");
+    expect(
+      tool.renderToolUseMessage({
+        skill: "python-game",
+        args: "create a tiny terminal dodge game in game.py",
+      }),
+    ).toBe("create a tiny terminal dodge game in game.py");
+    expect(
+      tool.getActivityDescription({
+        skill: "python-game",
+        args: '{"file":"game.py","type":"dodge"}',
+      }),
+    ).toBe("Load $python-game: file game.py, type dodge");
+  });
+
+  test("Skill cards recover nested JSON-shaped skill input", () => {
+    const tool = createTuiTool("Skill");
+
+    expect(
+      tool.userFacingName({
+        skill: '{"skill":"python-game","args":"{\\"file\\":\\"game.py\\"}"}',
+      }),
+    ).toBe("$python-game");
+    expect(
+      tool.renderToolUseMessage({
+        skill: '{"skill":"python-game","args":"{\\"file\\":\\"game.py\\"}"}',
+      }),
+    ).toBe("file game.py");
+  });
+
   test("dynamic MCP cards hide empty JSON input", () => {
     const tool = createTuiTool("mcp.audit-ping.ping");
 
