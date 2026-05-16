@@ -464,16 +464,16 @@ async function stopAgenCDaemon(
   const pid = await readAgenCDaemonPid(pidPath);
   if (pid === null) {
     if (!options.quietWhenStopped) {
-      io.stdout.write("AgenC daemon stopped\n");
+      io.stdout.write("AgenC daemon already stopped\n");
     }
-    return 1;
+    return 0;
   }
   if (!host.isPidRunning(pid)) {
     await removeAgenCDaemonPid(pidPath);
     if (!options.quietWhenStopped) {
-      io.stdout.write("AgenC daemon stopped\n");
+      io.stdout.write("AgenC daemon already stopped (removed stale pid)\n");
     }
-    return 1;
+    return 0;
   }
 
   host.terminatePid(pid);

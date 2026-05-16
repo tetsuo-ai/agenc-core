@@ -678,6 +678,43 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("treats stop with no daemon as already stopped", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+
+    await expect(
+      runAgenCDaemonCli({ kind: "command", action: "stop" }, { host, io }),
+    ).resolves.toBe(0);
+
+    expect(io.stdoutText()).toContain("AgenC daemon already stopped");
+    expect(io.stderrText()).toBe("");
+    expect(host.terminatedPids).toEqual([]);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("treats stop with a stale pid as already stopped and cleans the pid file", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await writeAgenCDaemonPid(pidPath, 4400);
+
+    await expect(
+      runAgenCDaemonCli({ kind: "command", action: "stop" }, { host, io }),
+    ).resolves.toBe(0);
+
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(io.stdoutText()).toContain(
+      "AgenC daemon already stopped (removed stale pid)",
+    );
+    expect(io.stderrText()).toBe("");
+    expect(host.terminatedPids).toEqual([]);
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("restart tolerates a stopped daemon and starts a fresh pid", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
