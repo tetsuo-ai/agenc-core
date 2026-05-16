@@ -53,6 +53,10 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
+function compactTaskId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}...` : id;
+}
+
 function firstLine(value: string): string {
   return value.split(/\r?\n/u)[0]?.trim() ?? "";
 }
@@ -179,8 +183,13 @@ export function formatTaskSummary(rows: readonly TaskSummaryRow[]): string {
     `  total: ${rows.length}`,
   ];
   for (const row of rows) {
+    const compactId = compactTaskId(row.id);
+    const subject =
+      row.title === row.id || row.title === compactId
+        ? compactId
+        : `${row.title} (${compactId})`;
     lines.push(
-      `  ${row.status} ${taskTypeLabel(row.type)} ${row.id} - ${row.title}`,
+      `  ${row.status} ${taskTypeLabel(row.type)} ${subject}`,
     );
     if (row.detail) {
       lines.push(`    ${row.detail}`);

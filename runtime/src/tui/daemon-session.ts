@@ -895,6 +895,12 @@ function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
     payload: {
       turnId,
       status,
+      ...(typeof params.agentId === "string" && params.agentId.length > 0
+        ? { agentId: params.agentId }
+        : {}),
+      ...(typeof params.runStatus === "string" && params.runStatus.length > 0
+        ? { runStatus: params.runStatus }
+        : {}),
       ...(typeof params.message === "string"
         ? { message: params.message }
         : {}),

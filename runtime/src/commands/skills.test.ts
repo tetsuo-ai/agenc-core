@@ -388,7 +388,7 @@ describe("skillsCommand", () => {
         text: [
           "Created skill: .agenc/skills/frontend/react/form/SKILL.md",
           "Invoke it with: $frontend:react:form",
-          "Edit SKILL.md, then run /skills frontend:react:form.",
+          "Edit SKILL.md, then run $frontend:react:form.",
         ].join("\n"),
       });
       expect(

@@ -745,6 +745,12 @@ describe("tool-registry dynamic and deferred catalog", () => {
       inputSchema: expect.objectContaining({
         required: ["message", "task_name"],
         additionalProperties: false,
+        properties: expect.objectContaining({
+          agent_type: expect.objectContaining({
+            enum: expect.arrayContaining(["netrunner", "scanner", "runner"]),
+            description: expect.stringContaining("For implementation, edits, or tests use `runner`"),
+          }),
+        }),
       }),
     });
   });

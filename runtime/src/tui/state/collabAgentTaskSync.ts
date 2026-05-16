@@ -12,6 +12,7 @@ type EventLike = {
 type CollabAgentTaskPatch = {
   readonly id: string;
   readonly status: TaskStatus;
+  readonly requiresExisting?: boolean;
   readonly title?: string;
   readonly prompt?: string;
   readonly role?: string;
@@ -66,6 +67,43 @@ function collabStatusError(status: unknown): string | undefined {
   return isRecord(status) ? stringField(status, "error") : undefined;
 }
 
+function daemonStatusToTaskStatus(payload: Record<string, unknown>): TaskStatus {
+  const runStatus = stringField(payload, "runStatus")
+    ?.toLowerCase()
+    .replaceAll("_", "-");
+  switch (runStatus) {
+    case "pending":
+      return "pending";
+    case "running":
+    case "working":
+    case "paused":
+    case "blocked":
+    case "suspended":
+      return "running";
+    case "completed":
+      return "completed";
+    case "errored":
+      return "failed";
+    case "stopped":
+      return "killed";
+  }
+
+  const status = stringField(payload, "status")?.toLowerCase();
+  switch (status) {
+    case "running":
+      return "running";
+    case "error":
+      return "failed";
+    case "stopping":
+    case "stopped":
+      return "killed";
+    case "idle":
+      return "completed";
+    default:
+      return "running";
+  }
+}
+
 function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
   if (!isRecord(event)) return null;
   const { type, payload } = event as EventLike;
@@ -113,7 +151,46 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
     };
   }
 
+  if (type === "background_agent_status") {
+    const id = stringField(payload, "agentId");
+    if (!id) return null;
+    const status = daemonStatusToTaskStatus(payload);
+    return {
+      id,
+      status,
+      requiresExisting: true,
+      ...(status === "failed" ? { error: stringField(payload, "message") } : {}),
+    };
+  }
+
   return null;
+}
+
+function patchesFromWaitingEnd(payload: Record<string, unknown>): CollabAgentTaskPatch[] {
+  const statuses = payload.agentStatuses;
+  if (!Array.isArray(statuses)) return [];
+  return statuses.flatMap((entry): CollabAgentTaskPatch[] => {
+    if (!isRecord(entry)) return [];
+    const id = stringField(entry, "threadId");
+    if (!id) return [];
+    return [
+      {
+        id,
+        status: collabStatusToTaskStatus(entry.status),
+        error: collabStatusError(entry.status),
+        requiresExisting: true,
+      },
+    ];
+  });
+}
+
+function patchesFromEvent(event: unknown): CollabAgentTaskPatch[] {
+  const patch = patchFromEvent(event);
+  if (patch !== null) return [patch];
+  if (!isRecord(event)) return [];
+  const { type, payload } = event as EventLike;
+  if (type !== "collab_waiting_end" || !isRecord(payload)) return [];
+  return patchesFromWaitingEnd(payload);
 }
 
 function outputUri(id: string): string {
@@ -129,6 +206,10 @@ function applyPatch(
     previous?.type === "local_agent" ? (previous as LocalAgentTaskState) : undefined;
   const title = patch.title ?? previousAgent?.description ?? patch.id;
   const prompt = patch.prompt ?? previousAgent?.prompt ?? title;
+  const ended =
+    patch.status === "completed" ||
+    patch.status === "failed" ||
+    patch.status === "killed";
   return {
     id: patch.id,
     type: "local_agent",
@@ -153,7 +234,11 @@ function applyPatch(
     diskLoaded: previousAgent?.diskLoaded ?? false,
     selectedAgent: previousAgent?.selectedAgent ?? { name: title },
     ...(previousAgent?.progress !== undefined ? { progress: previousAgent.progress } : {}),
-    ...(previousAgent?.endTime !== undefined ? { endTime: previousAgent.endTime } : {}),
+    ...(ended
+      ? { endTime: previousAgent?.endTime ?? now }
+      : previousAgent?.endTime !== undefined
+        ? { endTime: previousAgent.endTime }
+        : {}),
     ...(previousAgent?.abortController !== undefined
       ? { abortController: previousAgent.abortController }
       : {}),
@@ -172,17 +257,29 @@ export function syncCollabAgentEventToAppState(
   setAppState: SetAppStateWithTasks,
   now: number = Date.now(),
 ): void {
-  const patch = patchFromEvent(event);
-  if (patch === null) return;
+  const patches = patchesFromEvent(event);
+  if (patches.length === 0) return;
   setAppState((prev) => {
     if (prev === null || typeof prev !== "object") return prev;
-    const tasks = prev.tasks ?? {};
-    return {
-      ...prev,
-      tasks: {
+    let tasks = prev.tasks ?? {};
+    let changed = false;
+    for (const patch of patches) {
+      if (
+        patch.requiresExisting === true &&
+        tasks[patch.id]?.type !== "local_agent"
+      ) {
+        continue;
+      }
+      tasks = {
         ...tasks,
         [patch.id]: applyPatch(tasks[patch.id], patch, now),
-      },
+      };
+      changed = true;
+    }
+    if (!changed) return prev;
+    return {
+      ...prev,
+      tasks,
     };
   });
 }

@@ -219,7 +219,7 @@ export async function createProjectSkill(
     text: [
       `Created skill: ${relative(cwd, skillFile)}`,
       `Invoke it with: $${name}`,
-      `Edit SKILL.md, then run /skills ${name}.`,
+      `Edit SKILL.md, then run $${name}.`,
     ].join("\n"),
   };
 }

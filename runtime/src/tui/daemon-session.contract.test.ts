@@ -1229,7 +1229,9 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         eventId: "turn_1",
+        agentId: "agent_1",
         status: "running",
+        runStatus: "running",
         turnId: "turn_1",
       },
     });
@@ -1239,7 +1241,9 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         eventId: "turn_1_done",
+        agentId: "agent_1",
         status: "idle",
+        runStatus: "completed",
         turnId: "turn_1",
         message: "done",
       },
@@ -1273,12 +1277,23 @@ describe("AgenC TUI daemon session adapter", () => {
       {
         id: "turn_1",
         type: "background_agent_status",
-        payload: { turnId: "turn_1", status: "running" },
+        payload: {
+          turnId: "turn_1",
+          status: "running",
+          agentId: "agent_1",
+          runStatus: "running",
+        },
       },
       {
         id: "turn_1_done",
         type: "background_agent_status",
-        payload: { turnId: "turn_1", status: "idle", message: "done" },
+        payload: {
+          turnId: "turn_1",
+          status: "idle",
+          agentId: "agent_1",
+          runStatus: "completed",
+          message: "done",
+        },
       },
       { id: "raw_1", type: "custom", payload: { ok: true } },
     ]);

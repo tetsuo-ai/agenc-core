@@ -5,8 +5,12 @@ import { delegate } from "../delegate.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
 import { assertValidAgentName, ROOT_AGENT_PATH } from "../registry.js";
-import { requireAgentRole } from "../role.js";
-import { canonicalAgentRoleName, formatAgentRoleLabel } from "../role-presentation.js";
+import { formatRoleList, listAgentRoles, requireAgentRole } from "../role.js";
+import {
+  canonicalAgentRoleName,
+  formatAgentRoleLabel,
+  formatAgentRolePublicName,
+} from "../role-presentation.js";
 import {
   BackgroundTaskError,
   backgroundTaskLifecycle,
@@ -175,6 +179,12 @@ async function validateSpawnModelOverrides(opts: {
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
+  const roleNames = [...new Set(
+    listAgentRoles().flatMap((role) => [
+      formatAgentRolePublicName(role.name) ?? role.name,
+      role.name,
+    ]),
+  )].sort();
   const spawnAgentSchema = {
     type: "object",
     properties: {
@@ -186,8 +196,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       },
       agent_type: {
         type: "string",
+        enum: roleNames,
         description:
-          "Optional role name. Accepts any registered built-in or user-defined role; defaults to `default` when omitted.",
+          [
+            formatRoleList(listAgentRoles()),
+            "Use only a listed role name. For implementation, edits, or tests use `runner`. For codebase reconnaissance use `scanner`. Omit this field for a general `netrunner` fork. Do not invent role names such as `code-implementer` or `reviewer` unless they are listed here.",
+          ].join("\n\n"),
       },
       model: { type: "string" },
       reasoning_effort: { type: "string" },

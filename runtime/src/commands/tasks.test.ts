@@ -93,8 +93,8 @@ describe("/tasks", () => {
 
     const output = text(await tasksCommand.execute(contextWithAppState(appState)));
     expect(output).toContain("active: 1");
-    expect(output).toContain("running agent a-live - inspect visible task UX");
-    expect(output).toContain("completed shell b-old - npm test -- --run src/example.test.ts");
+    expect(output).toContain("running agent inspect visible task UX (a-live)");
+    expect(output).toContain("completed shell npm test -- --run src/example.test.ts (b-old)");
     expect(output).toContain("Enter for details");
   });
 

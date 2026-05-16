@@ -79,6 +79,100 @@ describe("syncCollabAgentEventToAppState", () => {
     });
   });
 
+  it("updates existing daemon-backed agent tasks from daemon status events", () => {
+    const spawned = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "Librarian",
+        status: { status: "pending_init" },
+      },
+    });
+
+    const running = applyEvent(spawned, {
+      type: "background_agent_status",
+      payload: {
+        agentId: "agent_1",
+        turnId: "turn_1",
+        status: "running",
+        runStatus: "running",
+      },
+    });
+
+    const completed = applyEvent(running, {
+      type: "background_agent_status",
+      payload: {
+        agentId: "agent_1",
+        turnId: "turn_1",
+        status: "idle",
+        runStatus: "completed",
+        message: "Done",
+      },
+    });
+
+    expect(running.tasks.agent_1).toMatchObject({
+      status: "running",
+      description: "Librarian",
+    });
+    expect(completed.tasks.agent_1).toMatchObject({
+      status: "completed",
+      description: "Librarian",
+      endTime: 1234,
+    });
+  });
+
+  it("updates spawned agents from collab wait completion summaries", () => {
+    const firstSpawn = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "ChromeRider",
+        status: { status: "pending_init" },
+      },
+    });
+    const secondSpawn = applyEvent(firstSpawn, {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_2",
+        newAgentNickname: "Quickhack",
+        status: { status: "pending_init" },
+      },
+    });
+
+    const completed = applyEvent(secondSpawn, {
+      type: "collab_waiting_end",
+      payload: {
+        agentStatuses: [
+          {
+            threadId: "agent_1",
+            status: { status: "completed", turnId: "turn_1" },
+          },
+          {
+            threadId: "agent_2",
+            status: { status: "errored", error: "review failed" },
+          },
+          {
+            threadId: "missing",
+            status: { status: "completed", turnId: "turn_3" },
+          },
+        ],
+      },
+    });
+
+    expect(completed.tasks.agent_1).toMatchObject({
+      status: "completed",
+      description: "ChromeRider",
+      endTime: 1234,
+    });
+    expect(completed.tasks.agent_2).toMatchObject({
+      status: "failed",
+      description: "Quickhack",
+      error: "review failed",
+      endTime: 1234,
+    });
+    expect(completed.tasks.missing).toBeUndefined();
+  });
+
   it("ignores unrelated events", () => {
     const state = baseState();
     const next = applyEvent(state, {
@@ -97,6 +191,21 @@ describe("syncCollabAgentEventToAppState", () => {
         turnId: "turn-completed-54-15550",
         status: "idle",
         message: "The spawned agent id is `/root/task_visibility_probe`.",
+      },
+    });
+
+    expect(next).toBe(state);
+  });
+
+  it("does not invent tasks from daemon status for unknown agent ids", () => {
+    const state = baseState();
+    const next = applyEvent(state, {
+      type: "background_agent_status",
+      payload: {
+        agentId: "agent_1",
+        turnId: "turn_1",
+        status: "idle",
+        runStatus: "completed",
       },
     });
 
