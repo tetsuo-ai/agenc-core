@@ -14,9 +14,10 @@ describe("agent spinner activity helpers", () => {
     const tasks = {
       shell: { id: "shell", type: "local_bash", status: "running" },
       done: { id: "done", type: "local_agent", status: "completed", description: "Done" },
-      zed: { id: "zed", type: "local_agent", status: "running", description: "Zed" },
-      ada: { id: "ada", type: "local_agent", status: "pending", description: "Ada" },
-      blocked: { id: "blocked", type: "local_agent", status: "blocked", description: "Blocked" },
+      zed: { id: "zed", type: "local_agent", status: "running", description: "Zed", isBackgrounded: false },
+      ada: { id: "ada", type: "local_agent", status: "pending", description: "Ada", isBackgrounded: false },
+      blocked: { id: "blocked", type: "local_agent", status: "blocked", description: "Blocked", isBackgrounded: false },
+      background: { id: "background", type: "local_agent", status: "running", description: "Background", isBackgrounded: true },
     };
 
     expect(getActiveLocalAgentTasks(tasks).map(formatLocalAgentName)).toEqual([

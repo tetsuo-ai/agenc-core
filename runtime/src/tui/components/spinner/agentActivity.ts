@@ -7,6 +7,7 @@ export type ActiveLocalAgentTask = {
   readonly description?: unknown;
   readonly agentId?: unknown;
   readonly agentType?: unknown;
+  readonly isBackgrounded?: unknown;
   readonly progress?: {
     readonly tokenCount?: unknown;
     readonly lastActivity?: {
@@ -88,6 +89,7 @@ export function getActiveLocalAgentTasks(
         typeof task === "object" &&
         task !== null &&
         (task as ActiveLocalAgentTask).type === "local_agent" &&
+        (task as ActiveLocalAgentTask).isBackgrounded === false &&
         isActiveLocalAgentStatus((task as ActiveLocalAgentTask).status),
     )
     .sort((left, right) =>

@@ -3,6 +3,7 @@ import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useStat
 import { FpsMetricsProvider, useFpsMetrics } from "../context/fpsMetrics.js";
 import { StatsProvider, type StatsStore } from "../context/stats.js";
 import { onChangeAppState } from "../state/onChangeAppState.js";
+import { syncCollabAgentEventToAppState } from "../state/collabAgentTaskSync.js";
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import { formatTuiBackpressureWarning, getTuiBackpressureSnapshot, subscribeTuiBackpressure } from "../backpressure.js";
 import type { FpsMetrics } from "../../utils/fpsTracker.js";
@@ -1420,6 +1421,13 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   });
   const setAppState = useSetAppState();
   const appStateStore = useAppStateStore();
+  useEffect(() => {
+    const subscribe = props.session.subscribeToEvents;
+    if (typeof subscribe !== "function") return;
+    return subscribe((event: unknown) => {
+      syncCollabAgentEventToAppState(event, setAppState);
+    });
+  }, [props.session, setAppState]);
   const [toolPermissionContext, setToolPermissionContext] = useSyncedPermissionContext(props.session);
   const config = useMemo(() => props.configStore.current?.() ?? defaultConfig(), [props.configStore]);
   const agencHome = props.configStore.agencHome ?? config.agenc_home ?? props.session.home;
