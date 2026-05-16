@@ -29,14 +29,14 @@ export function configuredModelForProvider(
   if (configuredProvider && configuredProvider !== provider) {
     return undefined;
   }
-  if (!configuredProvider && provider !== "grok" && configuredModel === "grok-4-fast") {
+  if (!configuredProvider && provider !== "grok" && configuredModel === "grok-4.3") {
     return undefined;
   }
   return configuredModel;
 }
 
 export function defaultModelForProvider(provider: ProviderSlug): string {
-  return BUILT_IN_PROVIDER_DEFAULT_MODELS[provider] ?? "grok-4-fast";
+  return BUILT_IN_PROVIDER_DEFAULT_MODELS[provider] ?? "grok-4.3";
 }
 
 export function resolveModelSelection(params: {
@@ -70,7 +70,7 @@ export function resolveModelSelection(params: {
     return configuredModel;
   }
 
-  return "grok-4-fast";
+  return "grok-4.3";
 }
 
 export function resolveDisambiguatedModelSelection(params: {

@@ -63,7 +63,7 @@ describe("first-run onboarding state", () => {
       markFirstRunOnboardingComplete({
         agencHome,
         selectedProvider: "grok",
-        selectedModel: "grok-4-fast",
+        selectedModel: "grok-4.3",
         selectedTheme: "dark",
         completedStepIds: ["preflight"],
         now: new Date("2026-01-01T00:00:00.000Z"),
@@ -184,7 +184,7 @@ describe("first-run onboarding wizard", () => {
           fetchImpl: remoteFetch,
         },
         "grok",
-        "grok-4-fast",
+        "grok-4.3",
       ),
     ).resolves.toMatchObject({
       ok: true,
@@ -201,7 +201,7 @@ describe("first-run onboarding wizard", () => {
       checkOnboardingProviderConnection(
         { config, env: {} },
         "grok",
-        "grok-4-fast",
+        "grok-4.3",
       ),
     ).resolves.toMatchObject({
       ok: false,
@@ -217,7 +217,7 @@ describe("first-run onboarding wizard", () => {
           fetchImpl: async () => new Response("unauthorized", { status: 401 }),
         },
         "grok",
-        "grok-4-fast",
+        "grok-4.3",
       ),
     ).resolves.toMatchObject({
       ok: false,
@@ -268,7 +268,7 @@ describe("first-run onboarding wizard", () => {
       currentStepId: "api-key" as const,
       connection: {
         provider: "grok",
-        model: "grok-4-fast",
+        model: "grok-4.3",
         status: "ready" as const,
         ok: true,
         detail: "Provider credential found via XAI_API_KEY.",

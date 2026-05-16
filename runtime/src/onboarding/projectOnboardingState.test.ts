@@ -57,7 +57,7 @@ describe("first-run onboarding display state", () => {
       markFirstRunOnboardingComplete({
         agencHome,
         selectedProvider: "grok",
-        selectedModel: "grok-4-fast",
+        selectedModel: "grok-4.3",
         selectedTheme: "dark",
         completedStepIds: ["preflight", "theme"],
         now: new Date("2026-01-03T00:00:00.000Z"),
@@ -67,7 +67,7 @@ describe("first-run onboarding display state", () => {
         completed: true,
         completedAt: "2026-01-03T00:00:00.000Z",
         selectedProvider: "grok",
-        selectedModel: "grok-4-fast",
+        selectedModel: "grok-4.3",
         selectedTheme: "dark",
         completedStepIds: ["preflight", "theme"],
       });

@@ -841,6 +841,12 @@ function formatBackgroundAgentStatus(payload: Record<string, unknown>): string {
     : `Background agent ${status}`;
 }
 
+function shouldRenderBackgroundAgentStatus(
+  payload: Record<string, unknown>,
+): boolean {
+  return normalizeBackgroundStatus(payload.status) !== "idle";
+}
+
 function collabStatusSummary(status: unknown): string {
   if (!status || typeof status !== "object") return String(status ?? "unavailable");
   const value = status as Record<string, unknown>;
@@ -1818,6 +1824,7 @@ export function adaptTranscriptEvents(
         break;
       }
       case "background_agent_status":
+        if (!shouldRenderBackgroundAgentStatus(payload)) break;
         out.push(makeSystemMessage(formatBackgroundAgentStatus(payload), "info"));
         break;
       case "error":

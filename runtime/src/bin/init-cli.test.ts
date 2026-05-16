@@ -109,7 +109,7 @@ describe("agenc init CLI", () => {
       sandbox?: { mode?: string };
     };
     expect(config.model_provider).toBe("grok");
-    expect(config.model).toBe("grok-4-fast");
+    expect(config.model).toBe("grok-4.3");
     expect(config.sandbox?.mode).toBe("workspace-write");
     expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
       "# Repository Guidelines",
@@ -156,7 +156,7 @@ describe("agenc init CLI", () => {
     expect(io.stdoutText()).toContain("overwrote .agenc/config.json");
     expect(io.stdoutText()).toContain("overwrote AGENC.md");
     expect(readFileSync(configPath(cwd), "utf8")).toContain(
-      "\"model\": \"grok-4-fast\"",
+      "\"model\": \"grok-4.3\"",
     );
     expect(readFileSync(instructionsPath(cwd), "utf8")).toContain(
       "## Operational Notes",

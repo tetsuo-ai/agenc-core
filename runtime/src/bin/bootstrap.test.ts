@@ -93,7 +93,7 @@ function writeRecordedThreadForBootstrap(params: {
       cwd: params.workspace,
       originator: "bootstrap-personality-migration-test",
       agencVersion: "0.2.0",
-      model: "grok-4-fast",
+      model: "grok-4.3",
       modelProvider: params.provider,
     });
     const threadStore = new FileThreadStore({
@@ -106,7 +106,7 @@ function writeRecordedThreadForBootstrap(params: {
         threadId: params.threadId,
         rolloutStore,
         cwd: params.workspace,
-        model: "grok-4-fast",
+        model: "grok-4.3",
         modelProvider: params.provider,
       });
       threadStore.appendItems({
@@ -464,7 +464,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.agencHome).toBe(home);
       expect(boot.workspaceRoot).toBe(workspace);
       expect(boot.resolvedProvider).toBe("grok");
-      expect(boot.model).toBe("grok-4-fast");
+      expect(boot.model).toBe("grok-4.3");
       expect(boot.registry.tools.some((tool) => tool.name === extraTool.name)).toBe(
         true,
       );
@@ -499,7 +499,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "test-key",
-          model: "grok-4-fast",
+          model: "grok-4.3",
           tools: expect.any(Array),
         }),
       );
@@ -1275,7 +1275,7 @@ describe("bootstrapLocalRuntimeSession", () => {
 
       expect(boot.resolvedProvider).toBe("openai");
       // Note: when `AGENC_PROVIDER` overrides `model_provider` while the
-      // base config still carries the default `model: "grok-4-fast"`,
+      // base config still carries the default `model: "grok-4.3"`,
       // `configuredModelForProvider` keeps that explicit model rather
       // than falling back to the openai default. The test focuses on
       // provider + api-key resolution, not model defaulting.
@@ -1417,7 +1417,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "managed-key",
-          model: "grok-4-fast",
+          model: "grok-4.3",
         }),
       );
       expect(calls).toEqual([
@@ -1534,7 +1534,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "saved-xai-key",
-          model: "grok-4-fast",
+          model: "grok-4.3",
         }),
       );
       expect(vendSpy).not.toHaveBeenCalled();
@@ -1672,7 +1672,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "grok",
         expect.objectContaining({
           apiKey: "saved-default-xai-key",
-          model: "grok-4-fast",
+          model: "grok-4.3",
         }),
       );
     } finally {
@@ -1702,7 +1702,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         );
         return {
           provider: "agenc",
-          model: "grok-4-fast",
+          model: "grok-4.3",
           subscriptionTier,
         };
       },
@@ -1753,12 +1753,12 @@ describe("bootstrapLocalRuntimeSession", () => {
 
       expect(boot.authSubscriptionTier).toBe("team");
       expect(boot.resolvedProvider).toBe("grok");
-      expect(boot.model).toBe("grok-4-fast");
+      expect(boot.model).toBe("grok-4.3");
       expect(createProviderSpy).toHaveBeenCalledWith(
         "grok",
         expect.objectContaining({
           apiKey: "managed-key",
-          model: "grok-4-fast",
+          model: "grok-4.3",
         }),
       );
       expect(calls).toEqual([
@@ -1802,7 +1802,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         );
         return {
           provider: "grok",
-          model: "grok-4-fast",
+          model: "grok-4.3",
           subscriptionTier,
         };
       },
@@ -1851,15 +1851,15 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = boot.shutdown;
 
       expect(boot.resolvedProvider).toBe("agenc");
-      expect(boot.model).toBe("grok-4-fast");
-      expect(boot.config.model).toBe("grok-4-fast");
-      expect(boot.modelInfo.slug).toBe("grok-4-fast");
-      expect(boot.ctx.modelInfo.slug).toBe("grok-4-fast");
+      expect(boot.model).toBe("grok-4.3");
+      expect(boot.config.model).toBe("grok-4.3");
+      expect(boot.modelInfo.slug).toBe("grok-4.3");
+      expect(boot.ctx.modelInfo.slug).toBe("grok-4.3");
       expect(boot.initialState.sessionConfiguration.provider).toEqual({
         slug: "agenc",
       });
       expect(boot.initialState.sessionConfiguration.collaborationMode.model).toBe(
-        "grok-4-fast",
+        "grok-4.3",
       );
       expect(createProviderSpy).toHaveBeenCalledWith(
         "agenc",

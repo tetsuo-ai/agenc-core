@@ -75,6 +75,7 @@ describe("system.searchTools", () => {
     });
     expect(payload.results[0].useHint).toContain("maps it to mcp.audit-ping.ping");
     expect(payload.results[0].useHint).toContain("Do not use exec_command");
+    expect(payload.results[0].useHint).toContain("echo");
     expect(payload.results[0].useHint).toContain("Skill");
   });
 });

@@ -16,6 +16,8 @@ import { plural } from '../../utils/stringUtils.js';
 import { modelDisplayString } from '../../utils/model/model.js';
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
+import { permissionModeFooterChrome } from './PromptInput/permissionModeChrome.js';
+import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
 import { useAppState } from '../state/AppState.js';
 
@@ -513,36 +515,48 @@ function trimMiddle(value: string, maxWidth: number): string {
   return `${value.slice(0, left)}…${value.slice(value.length - right)}`;
 }
 
-function DesignTopChrome({ columns, noColor }: { columns: number; noColor: boolean }): React.ReactNode {
+export function DesignTopChrome({ columns, noColor }: { columns: number; noColor: boolean }): React.ReactNode {
   const cwdName = React.useMemo(() => process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace', []);
   const title = trimMiddle(`agenc - ${cwdName}`, Math.max(12, Math.floor(columns * 0.44)));
   const showTask = columns >= 84;
   const glyphs = selectAgenCTuiGlyphs();
-  const statusLabels = noColor ? ['ERR', 'WARN', 'OK'] : [glyphs.statusDot, glyphs.statusDot, glyphs.statusDot];
   return <Box flexDirection="column" flexShrink={0} width="100%">
       <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="surfaceBackground">
         <Box gap={1} flexShrink={0}>
-          <Text color={noColor ? undefined : "error"}>{statusLabels[0]}</Text>
-          <Text color={noColor ? undefined : "warning"}>{statusLabels[1]}</Text>
-          <Text color={noColor ? undefined : "success"}>{statusLabels[2]}</Text>
+          {noColor ? null : <>
+            <Text color="error">{glyphs.statusDot}</Text>
+            <Text color="warning">{glyphs.statusDot}</Text>
+            <Text color="success">{glyphs.statusDot}</Text>
+          </>}
           {columns >= 56 ? <Text dimColor> agenc</Text> : null}
           {columns >= 64 ? <Text color={noColor ? undefined : "success"}>{noColor ? 'OK orchestrator' : `${glyphs.statusDot} orchestrator`}</Text> : null}
         </Box>
         <Text dimColor wrap="truncate">{title}</Text>
         <Box flexShrink={0}>
-          {showTask ? <Text dimColor>TASK SYSTEMIC</Text> : null}
+          {showTask ? <Text dimColor>LIVE SESSION</Text> : null}
         </Box>
       </Box>
       <Text color="promptBorder">{glyphs.horizontal.repeat(Math.max(0, columns))}</Text>
     </Box>;
 }
 
+export function formatDesignBottomChromeLabels(
+  columns: number,
+  modelLabel: string,
+  mode: PermissionMode,
+): { readonly left: string; readonly right: string } {
+  const modeLabel = permissionModeFooterChrome(mode).label;
+  return {
+    left: columns >= 70 ? `MODEL ${modelLabel}` : modelLabel,
+    right: columns >= 70 ? `MODE ${modeLabel}  CONTEXT live` : modeLabel,
+  };
+}
+
 function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
   const model = useAppState(state => state.mainLoopModel);
   const mode = useAppState(state => state.toolPermissionContext.mode);
   const modelLabel = modelDisplayString(model);
-  const left = columns >= 70 ? `MODEL ${modelLabel}` : modelLabel;
-  const right = columns >= 70 ? `MODE ${mode}  CTX live` : mode;
+  const { left, right } = formatDesignBottomChromeLabels(columns, modelLabel, mode);
   const glyphs = selectAgenCTuiGlyphs();
   return <Box flexDirection="column" flexShrink={0} width="100%">
       <Text color="promptBorder">{glyphs.horizontal.repeat(Math.max(0, columns))}</Text>

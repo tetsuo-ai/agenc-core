@@ -22,7 +22,7 @@ describe("assertProviderStructuredOutputCompatibility", () => {
     expect(() =>
       assertProviderStructuredOutputCompatibility({
         providerName: "grok",
-        model: "grok-4-fast",
+        model: "grok-4.3",
         structuredOutput,
         toolsRequested: true,
         api: "responses",

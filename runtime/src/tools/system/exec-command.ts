@@ -65,6 +65,12 @@ function isMcpShellPlaceholderCommand(command: string): boolean {
   if (/\bdirect\s+(?:mcp\s+)?call\s+simulation\b/iu.test(trimmed)) {
     return true;
   }
+  if (
+    /\bmcp\b/iu.test(trimmed) &&
+    /\b(simulat(?:e|ed|ion)|fake|placeholder|stand[- ]?in|actual\s+mcp\s+tool|need\s+to\s+call)\b/iu.test(trimmed)
+  ) {
+    return true;
+  }
   return (
     MCP_TOOL_NAME_RE.test(trimmed) &&
     /\b(simulat(?:e|ed|ion)|fake|placeholder|stand[- ]?in|direct)\b/iu.test(trimmed)
@@ -238,7 +244,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   return {
     name: "exec_command",
     description:
-      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits.",
+      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits. Never use this to print commentary, placeholders, or reminders to yourself; call the relevant tool directly instead.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -261,7 +267,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         cmd: {
           type: "string",
           description:
-            "Shell command to execute. MCP tool names such as mcp.server.tool are not shell commands; call those tools directly.",
+            "Shell command to execute. MCP tool names such as mcp.server.tool are not shell commands; call those tools directly. Do not use echo/printf placeholders like \"I need to call the MCP tool\".",
         },
         command: {
           type: "string",

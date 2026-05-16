@@ -243,6 +243,15 @@ describe("exec_command tool", () => {
       isError: true,
       content: expect.stringContaining("Do not simulate MCP results"),
     });
+    await expect(
+      tool.execute({
+        cmd: 'echo "This is a placeholder, I need to call the actual MCP tool"',
+        workdir: root,
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("Do not simulate MCP results"),
+    });
     expect(execCommand).not.toHaveBeenCalled();
   });
 

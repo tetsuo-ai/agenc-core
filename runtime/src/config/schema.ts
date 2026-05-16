@@ -659,7 +659,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
 export function defaultConfig(): AgenCConfig {
   return Object.freeze({
     configVersion: 1,
-    model: "grok-4-fast",
+    model: "grok-4.3",
     model_provider: "grok",
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,

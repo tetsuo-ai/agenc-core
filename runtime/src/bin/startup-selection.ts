@@ -14,7 +14,7 @@ import { resolveProfileName } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { extractFlagValue } from "./route.js";
 
-export const DEFAULT_MODEL = "grok-4-fast";
+export const DEFAULT_MODEL = "grok-4.3";
 
 export const PROVIDER_MODEL_CATALOG = BUILT_IN_PROVIDER_MODEL_CATALOG;
 

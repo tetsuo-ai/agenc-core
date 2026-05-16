@@ -333,7 +333,7 @@ describe("Session.setPendingProviderSwitch", () => {
     const session = buildSession();
     const pending: PendingProviderSwitch = {
       provider: "xai",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     };
     session.setPendingProviderSwitch(pending);
     expect(session.pendingProviderSwitch).toEqual(pending);
@@ -343,7 +343,7 @@ describe("Session.setPendingProviderSwitch", () => {
     const session = buildSession();
     session.setPendingProviderSwitch({
       provider: "xai",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(session.pendingProviderSwitch).not.toBeNull();
     session.setPendingProviderSwitch(null);
@@ -354,7 +354,7 @@ describe("Session.setPendingProviderSwitch", () => {
     const session = buildSession();
     session.setPendingProviderSwitch({
       provider: "xai",
-      model: "grok-4-fast",
+      model: "grok-4.3",
       profile: "coding",
     });
     expect(session.pendingProviderSwitch?.profile).toBe("coding");
@@ -663,7 +663,7 @@ describe("Session.consumePendingProviderSwitch", () => {
     });
     session.setPendingProviderSwitch({
       provider: "xai",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
 
     const applied = await session.consumePendingProviderSwitch();
@@ -672,14 +672,14 @@ describe("Session.consumePendingProviderSwitch", () => {
     expect(applied).toEqual({
       applied: true,
       provider: "grok",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(state.sessionConfiguration.provider).toEqual({ slug: "grok" });
     expect(state.sessionConfiguration.collaborationMode.model).toBe(
-      "grok-4-fast",
+      "grok-4.3",
     );
-    expect(session.config.model).toBe("grok-4-fast");
-    expect(session.modelInfo.slug).toBe("grok-4-fast");
+    expect(session.config.model).toBe("grok-4.3");
+    expect(session.modelInfo.slug).toBe("grok-4.3");
     expect(isFactoryProvider(session.services.provider)).toBe(true);
     expect(session.pendingProviderSwitch).toBeNull();
     const emitted = session.txEvent.tryRecv();
@@ -776,7 +776,7 @@ describe("Session.consumePendingProviderSwitch", () => {
                     api_key_env: "TARGET_OPENAI_KEY",
                     base_url: "http://127.0.0.1:8000/v1",
                     fallback: {
-                      targets: [{ provider: "grok", model: "grok-4-fast" }],
+                      targets: [{ provider: "grok", model: "grok-4.3" }],
                       max_failures: 2,
                     },
                   },
@@ -806,7 +806,7 @@ describe("Session.consumePendingProviderSwitch", () => {
             providerFallback: {
               provider: "openai",
               model: "gpt-5",
-              targets: [{ provider: "grok", model: "grok-4-fast" }],
+              targets: [{ provider: "grok", model: "grok-4.3" }],
               maxFailures: 2,
             },
           },
@@ -943,7 +943,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       vendKey,
       inferAgencModel: () => ({
         provider: "grok",
-        model: "grok-4-fast",
+        model: "grok-4.3",
       }),
       getSubscriptionTier: () => "free",
     };

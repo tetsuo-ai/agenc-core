@@ -212,7 +212,7 @@ export function resolveProviderBaseURL(
 
 /** Model slug from env, falling back to `defaultModel`. */
 export function resolveModel(
-  defaultModel = "grok-4-fast",
+  defaultModel = "grok-4.3",
   env: EnvSnapshot = process.env,
 ): string {
   const e = readEnv(env);

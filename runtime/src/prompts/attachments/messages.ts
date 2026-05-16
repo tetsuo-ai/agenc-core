@@ -152,8 +152,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "deferred_tools_delta": {
       const parts: string[] = [];
       if (attachment.addedNames.length > 0) {
+        const mcpReminder = attachment.addedNames.some((name) =>
+          name.startsWith("mcp."),
+        )
+          ? "\n\nMCP tools are now callable as tool functions. If the user asked for one, call the MCP tool directly next. Do not use exec_command, Skill, echo, or shell/script placeholders as notes to yourself."
+          : "";
         parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${attachment.addedLines.join("\n")}`,
+          `The following deferred tools are now available via ToolSearch:\n${attachment.addedLines.join("\n")}${mcpReminder}`,
         );
       }
       if (attachment.removedNames.length > 0) {

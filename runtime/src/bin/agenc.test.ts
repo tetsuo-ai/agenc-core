@@ -271,7 +271,7 @@ function installDaemonCliDepsForTest(
         agencHome: params.env?.AGENC_HOME ?? "/tmp/agenc-test-home",
         current: () => ({
           ...defaultConfig(),
-          model: "grok-4-fast",
+          model: "grok-4.3",
           model_provider: "xai",
         }),
         subscribe: () => () => undefined,
@@ -299,7 +299,7 @@ function installDaemonCliDepsForTest(
         nextInternalSubId: () => "daemon-test-sub",
         listMcpClients: () => [],
       },
-      model: "grok-4-fast",
+      model: "grok-4.3",
       workspaceRoot: params.cwd,
     };
   });
@@ -494,8 +494,8 @@ describe("initializeCliRuntime", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("PROVIDER_MODEL_CATALOG", () => {
-  it("advertises grok models including the default grok-4-fast", () => {
-    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4-fast");
+  it("advertises grok models including the default grok-4.3", () => {
+    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4.3");
     expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4");
     expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-code-fast-1");
   });
@@ -503,9 +503,9 @@ describe("PROVIDER_MODEL_CATALOG", () => {
 
 describe("I-60: resolveModelOrExit hard-fail", () => {
   it("returns {provider, model} for an unambiguous bare slug", () => {
-    const result = resolveModelOrExit("grok-4-fast", PROVIDER_MODEL_CATALOG);
+    const result = resolveModelOrExit("grok-4.3", PROVIDER_MODEL_CATALOG);
     expect(result.provider).toBe("grok");
-    expect(result.model).toBe("grok-4-fast");
+    expect(result.model).toBe("grok-4.3");
   });
 
   it("accepts explicit provider:model form", () => {
@@ -564,12 +564,12 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: cfg,
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(sc.approvalPolicy.value).toBe("never");
     expect(sc.sandboxPolicy.value).toBe("read_only");
     expect(sc.cwd).toBe("/tmp/ws");
-    expect(sc.collaborationMode.model).toBe("grok-4-fast");
+    expect(sc.collaborationMode.model).toBe("grok-4.3");
     expect(sc.sessionSource).toBe("cli_main");
   });
 
@@ -577,7 +577,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: { ...defaultConfig(), approval_policy: undefined },
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     // defaultConfig provides "on-request" → "on_request"
     expect(sc.approvalPolicy.value).toBe("on_request");
@@ -589,7 +589,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: { ...defaultConfig(), approval_policy: "on-failure" as const },
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(sc.approvalPolicy.value).toBe("on_failure");
   });
@@ -598,7 +598,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: { ...defaultConfig(), approval_policy: "never" as const },
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
       projectTrust: "untrusted",
     });
     expect(sc.approvalPolicy.value).toBe("untrusted");
@@ -608,7 +608,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: { ...defaultConfig(), approval_policy: "never" as const },
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
       projectTrust: "trusted",
     });
     expect(sc.approvalPolicy.value).toBe("never");
@@ -624,7 +624,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: cfg,
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(sc.personality).toBe("friendly");
     expect(sc.modelReasoningSummary).toBe("detailed");
@@ -643,7 +643,7 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: override,
       workspaceRoot: "/tmp/ws",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(sc.personality).toBeUndefined();
     expect(sc.modelReasoningSummary).toBeUndefined();
@@ -688,7 +688,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     });
     expect(result.reloaded).toBe(true);
     if (result.reloaded) {
-      expect(result.previous.model).toBe("grok-4-fast");
+      expect(result.previous.model).toBe("grok-4.3");
       expect(result.next.model).toBe("grok-4");
     }
     expect(latch.requested).toBe(false);
@@ -723,7 +723,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     const arg = emit.mock.calls[0]![0];
     expect(arg.msg.type).toBe("warning");
     expect(arg.msg.payload.cause).toBe("config_reloaded");
-    expect(arg.msg.payload.message).toMatch(/grok-4-fast/);
+    expect(arg.msg.payload.message).toMatch(/grok-4.3/);
     expect(arg.msg.payload.message).toMatch(/grok-4/);
   });
 
@@ -820,7 +820,7 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
         config: base,
         configSnapshot: base,
         cwd: "/tmp",
-        modelInfo: { slug: "grok-4-fast" },
+        modelInfo: { slug: "grok-4.3" },
       } as never,
     });
     expect(__systemPromptSectionCacheSize()).toBeGreaterThan(0);
@@ -1080,7 +1080,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
         config: cfg,
         configSnapshot: cfg,
         cwd: "/tmp",
-        modelInfo: { slug: "grok-4-fast" },
+        modelInfo: { slug: "grok-4.3" },
       } as never,
       projectInstructions: "## project\n\nFollow repo AGENC.md guidance.",
       memoryPrompt: "# Memory\n\nCurrent memory guidance.",
@@ -1098,7 +1098,7 @@ describe("ConfigStore integration shape", () => {
       const store = new ConfigStore({ home, env: {} });
       await store.reload();
       const cur = store.current();
-      expect(cur.model).toBe("grok-4-fast");
+      expect(cur.model).toBe("grok-4.3");
       // AgenCConfig is deep-frozen — direct writes should throw in strict.
       expect(Object.isFrozen(cur)).toBe(true);
     } finally {
@@ -1568,7 +1568,7 @@ describe("main() smoke", () => {
         expect.objectContaining({
           session: expect.any(Object),
           configStore: expect.any(Object),
-          model: "grok-4-fast",
+          model: "grok-4.3",
         }),
       );
       expect(capturedSession).not.toBeNull();

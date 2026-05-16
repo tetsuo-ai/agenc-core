@@ -83,7 +83,7 @@ describe("schema: defaultConfig", () => {
   test("returns frozen snapshot with sane defaults", () => {
     const cfg = defaultConfig();
     expect(cfg.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
-    expect(cfg.model).toBe("grok-4-fast");
+    expect(cfg.model).toBe("grok-4.3");
     expect(cfg.model_provider).toBe("grok");
     expect(resolveProviderSelection({ config: cfg })).toBe("grok");
     expect(cfg.approval_policy).toBe("on-request");
@@ -729,7 +729,7 @@ describe("schema: permissions block (T11)", () => {
 
   test("normalizeRawConfig preserves permissions on the typed path, not _unknown", () => {
     const out = normalizeRawConfig({
-      model: "grok-4-fast",
+      model: "grok-4.3",
       permissions: {
         allow: ["Read(*)"],
         deny: ["Bash(rm -rf *)"],
@@ -905,7 +905,7 @@ describe("schema: closed config block validators (CF-13)", () => {
     const out = validateProviderConfig({
       grok: {
         api_key_env: "XAI_API_KEY",
-        default_model: "grok-4-fast",
+        default_model: "grok-4.3",
         context_window_tokens: 256_000,
         max_output_tokens: 32_000,
         capability_overrides: {
@@ -1104,14 +1104,14 @@ describe("schema: closed config block validators (CF-13)", () => {
       normalizeRawConfig({
         auth: { backend: "local" },
         agent: { retention: { completed_days: 7 } },
-        providers: { grok: { default_model: "grok-4-fast" } },
+        providers: { grok: { default_model: "grok-4.3" } },
         plugins: { enabled: { local: true } },
         mcp: { server: { enabled: true, transport: "sse", port: 4444 } },
       }),
     );
     expect(out.auth?.backend).toBe("local");
     expect(out.agent?.retention?.completed_days).toBe(7);
-    expect(out.providers?.grok?.default_model).toBe("grok-4-fast");
+    expect(out.providers?.grok?.default_model).toBe("grok-4.3");
     expect(out.plugins?.plugins?.local).toBe(true);
     expect(out.mcp?.server).toEqual({
       enabled: true,
@@ -1201,8 +1201,8 @@ describe("schema: hooks block", () => {
 
 describe("schema: resolveModelDisambiguated (I-60)", () => {
   const catalog: Record<string, readonly string[]> = {
-    xai: ["grok-4-fast", "grok-3"],
-    openrouter: ["grok-4-fast", "gpt-4o"],
+    xai: ["grok-4.3", "grok-3"],
+    openrouter: ["grok-4.3", "gpt-4o"],
     openai: ["gpt-4o", "o1"],
     "amazon-bedrock": ["amazon.nova-pro-v1:0"],
   };
@@ -1215,7 +1215,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
   test("ambiguous slug throws AmbiguousModelError with candidates", () => {
     let caught: unknown;
     try {
-      resolveModelDisambiguated("grok-4-fast", catalog);
+      resolveModelDisambiguated("grok-4.3", catalog);
     } catch (e) {
       caught = e;
     }
@@ -1226,8 +1226,8 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
       "openrouter",
       "xai",
     ]);
-    expect(err.message).toContain("xai:grok-4-fast");
-    expect(err.message).toContain("openrouter:grok-4-fast");
+    expect(err.message).toContain("xai:grok-4.3");
+    expect(err.message).toContain("openrouter:grok-4.3");
   });
 
   test("unknown slug throws UnknownModelError", () => {
@@ -1237,8 +1237,8 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
   });
 
   test("provider:model form short-circuits", () => {
-    const out = resolveModelDisambiguated("xai:grok-4-fast", catalog);
-    expect(out).toEqual({ provider: "xai", model: "grok-4-fast" });
+    const out = resolveModelDisambiguated("xai:grok-4.3", catalog);
+    expect(out).toEqual({ provider: "xai", model: "grok-4.3" });
   });
 
   test("provider model IDs may contain colons", () => {
@@ -1251,7 +1251,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
 
   test("provider:model with invalid provider throws UnknownModelError", () => {
     expect(() =>
-      resolveModelDisambiguated("bogus:grok-4-fast", catalog),
+      resolveModelDisambiguated("bogus:grok-4.3", catalog),
     ).toThrow(UnknownModelError);
   });
 
@@ -1303,7 +1303,7 @@ describe("loader: parseToml", () => {
     const out = parseToml(
       `
 # comment
-model = "grok-4-fast"
+model = "grok-4.3"
 max_turns = 100
 
 [tools_config]
@@ -1311,7 +1311,7 @@ web_search = true
 view_image = false
       `,
     );
-    expect(out.model).toBe("grok-4-fast");
+    expect(out.model).toBe("grok-4.3");
     expect(out.max_turns).toBe(100);
     expect((out.tools_config as Record<string, unknown>).web_search).toBe(true);
   });
@@ -1364,12 +1364,12 @@ matcher = "edit"
     const out = parseToml(
       `
 [profiles.fast]
-model = "grok-4-fast"
+model = "grok-4.3"
 approval_policy = "never"
       `,
     );
     const profiles = out.profiles as Record<string, Record<string, unknown>>;
-    expect(profiles.fast?.model).toBe("grok-4-fast");
+    expect(profiles.fast?.model).toBe("grok-4.3");
     expect(profiles.fast?.approval_policy).toBe("never");
   });
 
@@ -1453,7 +1453,7 @@ describe("loader: loadConfig", () => {
   test("missing file returns defaults with exists:false", async () => {
     const out = await loadConfig({ home: dir });
     expect(out.exists).toBe(false);
-    expect(out.config.model).toBe("grok-4-fast");
+    expect(out.config.model).toBe("grok-4.3");
   });
 
   test("corrupt TOML warns + falls back to defaults with parseError set", async () => {
@@ -1463,7 +1463,7 @@ describe("loader: loadConfig", () => {
     expect(out.exists).toBe(true);
     expect(out.parseError).toBeTruthy();
     expect(warnings.length).toBeGreaterThan(0);
-    expect(out.config.model).toBe("grok-4-fast"); // defaulted
+    expect(out.config.model).toBe("grok-4.3"); // defaulted
   });
 
   test("valid TOML merges onto defaults", async () => {
@@ -1476,7 +1476,7 @@ experimental_realtime_start_instructions = "custom realtime handoff"
 experimental_realtime_ws_backend_prompt = "custom realtime backend"
 
 [profiles.fast]
-model = "grok-4-fast"
+model = "grok-4.3"
       `,
     );
     const out = await loadConfig({ home: dir });
@@ -1492,7 +1492,7 @@ model = "grok-4-fast"
       .toBe(true);
     expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_ws_backend_prompt"))
       .toBe(true);
-    expect(out.config.profiles?.fast?.model).toBe("grok-4-fast");
+    expect(out.config.profiles?.fast?.model).toBe("grok-4.3");
   });
 
   test("migrates config.json before loading config.toml", async () => {
@@ -1546,7 +1546,7 @@ replBridgeEnabled = true
 provider = "xai"
 
 [providers.xai]
-default_model = "grok-4-fast"
+default_model = "grok-4.3"
       `,
     );
 
@@ -1555,7 +1555,7 @@ default_model = "grok-4-fast"
     expect(out.config.remoteControlAtStartup).toBe(true);
     expect(out.config.profiles?.fast?.model_provider).toBe("grok");
     expect(out.config.providers).toEqual({
-      grok: { default_model: "grok-4-fast" },
+      grok: { default_model: "grok-4.3" },
     });
     expect(out.config._unknown?.provider).toBeUndefined();
     expect(out.config._unknown?.replBridgeEnabled).toBeUndefined();
@@ -1902,7 +1902,7 @@ web_search = true
   test("duplicate key warns via onWarn, keeps last-write-wins", async () => {
     writeFileSync(
       join(dir, "config.toml"),
-      `model = "grok-3"\nmodel = "grok-4-fast"\n`,
+      `model = "grok-3"\nmodel = "grok-4.3"\n`,
     );
     const warnings: string[] = [];
     const out = await loadConfig({
@@ -1911,7 +1911,7 @@ web_search = true
     });
     expect(out.exists).toBe(true);
     expect(out.parseError).toBeUndefined();
-    expect(out.config.model).toBe("grok-4-fast");
+    expect(out.config.model).toBe("grok-4.3");
     expect(
       warnings.some(
         (w) => w.includes("duplicate key") && w.includes(`"model"`),
@@ -1944,7 +1944,7 @@ describe("profiles: resolveProfile", () => {
     return mergeConfigs(defaultConfig(), {
       profiles: {
         fast: {
-          model: "grok-4-fast",
+          model: "grok-4.3",
           approval_policy: "never",
           reasoning_effort: "low",
           personality: "friendly",
@@ -1966,7 +1966,7 @@ describe("profiles: resolveProfile", () => {
   test("named profile overrides allowed fields", () => {
     const cfg = withProfiles();
     const out = resolveProfile(cfg, "fast");
-    expect(out.model).toBe("grok-4-fast");
+    expect(out.model).toBe("grok-4.3");
     expect(out.approval_policy).toBe("never");
     expect(out.reasoning_effort).toBe("low");
     expect(out.personality).toBe("friendly");
@@ -1998,13 +1998,13 @@ describe("profiles: resolveProfile", () => {
     const cfg = mergeConfigs(defaultConfig(), {
       profiles: {
         remote: {
-          model: "grok-4-fast",
+          model: "grok-4.3",
           model_provider: "openrouter",
         },
       },
     });
     const out = resolveProfile(cfg, "remote");
-    expect(out.model).toBe("grok-4-fast");
+    expect(out.model).toBe("grok-4.3");
     expect(out.model_provider).toBe("openrouter");
   });
 
@@ -2073,10 +2073,10 @@ describe("env: resolvers", () => {
     expect(resolveProvider({})).toBeUndefined();
     expect(resolveProfileName({ AGENC_PROFILE: "fast" })).toBe("fast");
     expect(resolveProfileName({})).toBeUndefined();
-    expect(resolveModel("grok-4-fast", { AGENC_MODEL: "grok-3" })).toBe(
+    expect(resolveModel("grok-4.3", { AGENC_MODEL: "grok-3" })).toBe(
       "grok-3",
     );
-    expect(resolveModel("grok-4-fast", {})).toBe("grok-4-fast");
+    expect(resolveModel("grok-4.3", {})).toBe("grok-4.3");
     expect(resolveWorkspace({ AGENC_WORKSPACE: "/work" })).toBe("/work");
     expect(resolveWorkspace({})).toBeUndefined();
     expect(resolveSimpleMode({ AGENC_SIMPLE: "1" })).toBe(true);
@@ -2087,8 +2087,8 @@ describe("env: resolvers", () => {
 
   test("applyEnvOverrides — AGENC_MODEL wins over TOML model", () => {
     const base = mergeConfigs(defaultConfig(), { model: "grok-3" });
-    const out = applyEnvOverrides(base, { AGENC_MODEL: "grok-4-fast" });
-    expect(out.model).toBe("grok-4-fast");
+    const out = applyEnvOverrides(base, { AGENC_MODEL: "grok-4.3" });
+    expect(out.model).toBe("grok-4.3");
   });
 
   test("applyEnvOverrides — AGENC_PROVIDER wins over TOML model_provider", () => {

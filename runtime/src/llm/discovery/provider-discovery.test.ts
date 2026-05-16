@@ -32,7 +32,7 @@ function authBackend(
     })),
     inferAgencModel: overrides.inferAgencModel ?? (() => ({
       provider: "grok",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     })),
     getSubscriptionTier: overrides.getSubscriptionTier ?? (() => tier),
   };

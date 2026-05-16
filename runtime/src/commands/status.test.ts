@@ -58,7 +58,7 @@ describe("statusCommand", () => {
       stubSession({
         id: "abc",
         history: [{}, {}, {}],
-        model: "grok-4-fast",
+        model: "grok-4.3",
         provider: "xai",
         approval: "on_request",
         permissionModeRegistry: registry,
@@ -69,7 +69,7 @@ describe("statusCommand", () => {
     const flat = Object.fromEntries(lines.map((l) => [l.key, l.value]));
     expect(flat["Session ID"]).toBe("abc");
     expect(flat["CWD"]).toBe("/ws");
-    expect(flat["Model"]).toBe("grok-4-fast");
+    expect(flat["Model"]).toBe("grok-4.3");
     expect(flat["Provider"]).toBe("xai");
     expect(flat["Turn count"]).toBe("3");
     expect(flat["Uptime (ms)"]).toBe("4000");

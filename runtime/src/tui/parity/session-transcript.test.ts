@@ -1210,6 +1210,22 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).toContain("Background agent failed");
     });
 
+    test("suppresses idle background agent status rows from the visible transcript", () => {
+      const transcript = adaptTranscriptEvents([
+        {
+          id: "agent-idle",
+          msg: {
+            type: "background_agent_status",
+            payload: { status: "idle", message: "done" },
+          },
+        },
+      ]);
+
+      expect(JSON.stringify(transcript.messages)).not.toContain(
+        "Background agent idle",
+      );
+    });
+
     test("suppresses warnings with no cause field (post-#50 allow-list policy)", () => {
       // Post-BLOCKER-#50: the warning surface is allow-list driven.
       // A warning with no `cause` field cannot be matched against the

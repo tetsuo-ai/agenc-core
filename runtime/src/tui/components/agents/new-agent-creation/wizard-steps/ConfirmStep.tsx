@@ -299,27 +299,7 @@ export function ConfirmStep(t0) {
   } else {
     t20 = $[61];
   }
-  let t21;
-  if ($[62] === Symbol.for("react.memo_cache_sentinel")) {
-    t21 = <Text bold={true}>s</Text>;
-    $[62] = t21;
-  } else {
-    t21 = $[62];
-  }
-  let t22;
-  if ($[63] === Symbol.for("react.memo_cache_sentinel")) {
-    t22 = <Text bold={true}>Enter</Text>;
-    $[63] = t22;
-  } else {
-    t22 = $[63];
-  }
-  let t23;
-  if ($[64] === Symbol.for("react.memo_cache_sentinel")) {
-    t23 = <Box marginTop={2}><Text color="success">Press {t21} or {t22} to save</Text></Box>;
-    $[64] = t23;
-  } else {
-    t23 = $[64];
-  }
+  const t23 = null;
   let t24;
   if ($[65] !== T0 || $[66] !== t10 || $[67] !== t11 || $[68] !== t12 || $[69] !== t13 || $[70] !== t14 || $[71] !== t15 || $[72] !== t16 || $[73] !== t17 || $[74] !== t20 || $[75] !== t3 || $[76] !== t4 || $[77] !== t5 || $[78] !== t6 || $[79] !== t7 || $[80] !== t8 || $[81] !== t9) {
     t24 = <T0 flexDirection={t3} tabIndex={t4} autoFocus={t5} onKeyDown={t6}>{t7}{t8}{t9}{t10}{t11}{t12}{t13}{t14}{t15}{t16}{t17}{t20}{t23}</T0>;

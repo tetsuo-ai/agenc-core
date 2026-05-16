@@ -83,7 +83,7 @@ function mcpUseHint(toolName: string): string | undefined {
     wireName === toolName
       ? `Call the selected MCP tool through the tool-call interface as ${toolName}, with JSON arguments.`
       : `Call the selected MCP tool through the tool-call interface using the available function ${wireName}; the runtime maps it to ${toolName}.`;
-  return `${nameHint} It is not a shell command and not a skill. Do not use exec_command, Skill, or any shell/script simulation as an MCP placeholder.`;
+  return `${nameHint} The selected MCP function is now available; make that tool call directly as your next action when the user asked for it. It is not a shell command and not a skill. Do not use exec_command, Skill, echo, or any shell/script placeholder as a note to yourself before calling it.`;
 }
 
 function normalizeSelections(args: Record<string, unknown>): readonly string[] {

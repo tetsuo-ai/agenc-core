@@ -12,7 +12,7 @@ export const DEFAULT_REQUEST_MAX_RETRIES = 4;
 export const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 
 export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
-  grok: "grok-4-fast",
+  grok: "grok-4.3",
   openai: "gpt-5",
   anthropic: "claude-opus-4-7",
   ollama: "llama3.3",
@@ -76,6 +76,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   Record<BuiltInProviderSlug, readonly string[]>
 > = Object.freeze({
   grok: Object.freeze([
+    "grok-4.3",
     "grok-4-fast",
     "grok-4",
     "grok-3",

@@ -260,6 +260,21 @@ describe("attachmentsToMessages", () => {
     expect(out[0]?.content).toContain("system.symbolSearch");
   });
 
+  test("renders MCP-specific deferred tool guidance", () => {
+    const out = attachmentsToMessages([
+      {
+        kind: "deferred_tools_delta",
+        addedNames: ["mcp.audit-ping.ping"],
+        addedLines: ["mcp.audit-ping.ping: Test ping tool"],
+        removedNames: [],
+      },
+    ]);
+
+    expect(out[0]?.content).toContain("call the MCP tool directly next");
+    expect(out[0]?.content).toContain("Do not use exec_command");
+    expect(out[0]?.content).toContain("echo");
+  });
+
   test("renders agent_listing_delta in initial vs delta modes", () => {
     const initial = attachmentsToMessages([
       {

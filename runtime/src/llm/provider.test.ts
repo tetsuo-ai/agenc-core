@@ -58,7 +58,7 @@ describe("createProvider", () => {
     vendKey: (provider, sessionId) => ({ provider, sessionId, apiKey: "key" }),
     inferAgencModel: () => ({
       provider: "grok",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     }),
     getSubscriptionTier: () => "team",
   };
@@ -66,7 +66,7 @@ describe("createProvider", () => {
   test("routes 'grok' to GrokProvider", () => {
     const provider = createProvider("grok", {
       apiKey: "test-key",
-      model: "grok-4-fast",
+      model: "grok-4.3",
     });
     expect(provider).toBeInstanceOf(GrokProvider);
     expect(isFactoryProvider(provider)).toBe(true);
@@ -217,7 +217,7 @@ describe("createProvider", () => {
   });
 
   test.each([
-    { name: "grok", model: "grok-4-fast" },
+    { name: "grok", model: "grok-4.3" },
     { name: "openai", model: "gpt-5" },
     { name: "anthropic", model: "claude-opus-4-7" },
     { name: "lmstudio", model: "gpt-4o-mini" },
@@ -645,7 +645,7 @@ describe("createProvider", () => {
 
   test("preserves optional provider hooks on AuthBackend-vended providers that support them", () => {
     const grok = createProvider("grok", {
-      model: "grok-4-fast",
+      model: "grok-4.3",
       extra: {
         authBackend,
         sessionId: "session-hooks",
@@ -1748,7 +1748,7 @@ describe("createProvider", () => {
       },
       () => {
         expect(() =>
-          createProvider("grok", { model: "grok-4-fast" }),
+          createProvider("grok", { model: "grok-4.3" }),
         ).toThrow(/XAI_API_KEY|apiKey/i);
       },
     );
@@ -1762,7 +1762,7 @@ describe("createProvider", () => {
       () => createProvider("grok", { apiKey: "test-key" }),
     );
 
-    expect(readProviderFactoryOptions(provider).model).toBe("grok-4-fast");
+    expect(readProviderFactoryOptions(provider).model).toBe("grok-4.3");
   });
 
   test("'openai' without apiKey throws explanatory error", () => {
