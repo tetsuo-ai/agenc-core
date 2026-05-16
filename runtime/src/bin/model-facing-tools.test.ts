@@ -1933,6 +1933,54 @@ describe("model-facing tools", () => {
     expect(delegateMock.mock.calls.at(-1)?.[0]).not.toHaveProperty("forkMode");
   });
 
+  it("normalizes common hyphenated spawn_agent task names", async () => {
+    const session = fakeSession();
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "thread-reviewer",
+          agentPath: "/root/bug_review",
+          nickname: "Bug Review",
+          role: { name: "default" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-reviewer",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: "thread-reviewer",
+          durationMs: 3,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const result = await tools.find((tool) => tool.name === "spawn_agent")!.execute({
+      message: "review game.py",
+      task_name: "bug-review",
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content)).toEqual({
+      task_name: "/root/bug_review",
+      nickname: "Bug Review",
+    });
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentName: "bug_review",
+      }),
+    );
+  });
+
   it("uses a full-history fork only when spawn_agent explicitly requests all turns", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({

@@ -116,6 +116,19 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
   );
 }
 
+function normalizeSpawnTaskName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return trimmed;
+  const normalized = trimmed
+    .toLowerCase()
+    .replace(/[\s-]+/gu, "_")
+    .replace(/[^a-z0-9_]/gu, "_")
+    .replace(/_+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+  return normalized.length > 0 ? normalized : trimmed;
+}
+
 async function validateSpawnModelOverrides(opts: {
   readonly session: Session;
   readonly model?: string;
@@ -169,7 +182,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       task_name: {
         type: "string",
         description:
-          "Task name for the new agent. Use lowercase letters, digits, and underscores.",
+          "Task name for the new agent. Lowercase letters, digits, and underscores are canonical; hyphens and spaces are accepted and normalized to underscores.",
       },
       agent_type: {
         type: "string",
@@ -243,6 +256,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return json({ error: "invalid reasoning_effort" }, true);
     }
     const rawTaskName = stringValue(args.task_name);
+    const taskName = normalizeSpawnTaskName(rawTaskName);
     const forkMode = parseForkTurns(args.fork_turns);
     if (forkMode !== undefined && "content" in forkMode) return forkMode;
     if (
@@ -265,7 +279,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         callId,
         senderThreadId: current.threadId,
         prompt,
-        taskName: rawTaskName,
+        taskName,
         agentType: role,
         model: model ?? session.sessionConfiguration.collaborationMode.model,
         reasoningEffort:
@@ -281,7 +295,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           callId,
           senderThreadId: current.threadId,
           prompt,
-          taskName: rawTaskName,
+          taskName,
           agentType: role,
           model: model ?? session.sessionConfiguration.collaborationMode.model,
           reasoningEffort:
@@ -333,7 +347,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       emitSpawnFailureEnd(overrideReason);
       return overrideError;
     }
-    const taskName = rawTaskName;
     if (!taskName) {
       return failSpawn("task_name is required");
     }
