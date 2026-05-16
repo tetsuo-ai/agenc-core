@@ -15,6 +15,15 @@ export function getAgentNavigationFooterInstructions(
   }
   return `Press ${glyphs.arrowUp}${glyphs.arrowDown} to navigate ${glyphs.separator} Enter to select ${glyphs.separator} Esc to go back`;
 }
+export function getAgentCloseFooterInstructions(
+  env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
+): string {
+  const glyphs = selectAgenCTuiGlyphs(env);
+  if (resolveAgenCTuiGlyphMode(env) === 'ascii') {
+    return 'Press up/down to navigate - Enter to select - Esc to close';
+  }
+  return `Press ${glyphs.arrowUp}${glyphs.arrowDown} to navigate ${glyphs.separator} Enter to select ${glyphs.separator} Esc to close`;
+}
 export function getAgentDeleteFooterInstructions(
   env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
 ): string {

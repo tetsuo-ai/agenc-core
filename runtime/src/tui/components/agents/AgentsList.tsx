@@ -275,7 +275,7 @@ export function AgentsList(t0) {
         }
         let t29;
         if ($[69] !== onBack || $[70] !== sourceTitle || $[71] !== t28) {
-          t29 = <Dialog title={sourceTitle} subtitle="No agents found" onCancel={onBack} hideInputGuide={true}>{t28}</Dialog>;
+          t29 = <Dialog title={sourceTitle} subtitle="No custom agents found" onCancel={onBack} hideInputGuide={true}>{t28}</Dialog>;
           $[69] = onBack;
           $[70] = sourceTitle;
           $[71] = t28;

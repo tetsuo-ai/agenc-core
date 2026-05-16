@@ -793,9 +793,9 @@ function agentInteractionHint(
     (id ? agents.get(id)?.agentPath : undefined) ??
     nonEmptyString(payload.newAgentPath);
   if (!path) {
-    return "manage: agents menu, wait_agent, or send_message";
+    return "manage: wait_agent, send_message, or close_agent";
   }
-  return `manage: agents menu, wait_agent, or send_message ${path}`;
+  return `manage: wait_agent, send_message, or close_agent ${path}`;
 }
 
 function spawnRequestDetail(payload: Record<string, unknown>): string | null {

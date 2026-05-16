@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import {
+  getAgentCloseFooterInstructions,
   getAgentDeleteFooterInstructions,
   getAgentNavigationFooterInstructions,
 } from './AgentNavigationFooter.js';
@@ -12,6 +13,9 @@ describe('AgentNavigationFooter instructions', () => {
     expect(getAgentNavigationFooterInstructions(env)).toBe(
       'Press up/down to navigate - Enter to select - Esc to go back',
     );
+    expect(getAgentCloseFooterInstructions(env)).toBe(
+      'Press up/down to navigate - Enter to select - Esc to close',
+    );
     expect(getAgentDeleteFooterInstructions(env)).toBe(
       'Press up/down to navigate, Enter to select, Esc to cancel',
     );
@@ -20,6 +24,7 @@ describe('AgentNavigationFooter instructions', () => {
   test('preserves Unicode navigation instructions by default', () => {
     expect(getAgentNavigationFooterInstructions({})).toContain('↑↓');
     expect(getAgentNavigationFooterInstructions({})).toContain('·');
+    expect(getAgentCloseFooterInstructions({})).toContain('Esc to close');
     expect(getAgentDeleteFooterInstructions({})).toContain('↑↓');
   });
 });

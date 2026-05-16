@@ -28,8 +28,8 @@ describe('AgentsList empty state', () => {
       100,
     )
 
-    expect(output).toContain('No agents found')
+    expect(output).toContain('No custom agents found')
     expect(output).toContain('Create specialized agents')
-    expect(output).not.toContain('No agents found. Create specialized agents')
+    expect(output).not.toContain('No custom agents found. Create specialized agents')
   })
 })

@@ -22,7 +22,7 @@ import { AgentDetail } from './AgentDetail';
 // @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { AgentEditor } from './AgentEditor';
 // @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
-import { AgentNavigationFooter, getAgentDeleteFooterInstructions } from './AgentNavigationFooter';
+import { AgentNavigationFooter, getAgentCloseFooterInstructions, getAgentDeleteFooterInstructions } from './AgentNavigationFooter';
 // @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
 import { AgentsList } from './AgentsList';
 // @ts-expect-error Existing TUI bundler resolves extensionless imports in this agent-management subtree.
@@ -278,7 +278,7 @@ export function AgentsMenu(t0: Props): React.ReactNode {
         }
         let t19;
         if ($[46] === Symbol.for("react.memo_cache_sentinel")) {
-          t19 = <AgentNavigationFooter />;
+          t19 = <AgentNavigationFooter instructions={getAgentCloseFooterInstructions()} />;
           $[46] = t19;
         } else {
           t19 = $[46];

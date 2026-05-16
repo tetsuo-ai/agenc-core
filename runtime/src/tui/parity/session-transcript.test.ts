@@ -1624,6 +1624,9 @@ describe("AgenC TUI session transcript", () => {
       const allText = JSON.stringify(transcript.messages);
       expect(allText).toContain("Spawned Cyberia");
       expect(allText).not.toContain("status: Pending init");
+      expect(allText).toContain(
+        "manage: wait_agent, send_message, or close_agent /root/bug_review",
+      );
       expect(allText).toContain("Cyberia: Completed - done");
     });
 
