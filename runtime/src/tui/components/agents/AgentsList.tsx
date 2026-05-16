@@ -20,7 +20,7 @@ type Props = {
   changes?: string[];
 };
 export function AgentsList(t0) {
-  const $ = _c(96);
+  const $ = _c(97);
   const {
     source,
     agents,
@@ -119,8 +119,13 @@ export function AgentsList(t0) {
   }
   React.useEffect(t5, t6);
   let t7;
-  if ($[17] !== isCreateNewSelected || $[18] !== onCreateNew || $[19] !== onSelect || $[20] !== selectableAgentsInOrder || $[21] !== selectedAgent) {
+  if ($[17] !== isCreateNewSelected || $[18] !== onCreateNew || $[19] !== onSelect || $[20] !== selectableAgentsInOrder || $[21] !== selectedAgent || $[96] !== onBack) {
     t7 = e => {
+      if (e.key === "escape") {
+        e.preventDefault();
+        onBack();
+        return;
+      }
       if (e.key === "return") {
         e.preventDefault();
         if (isCreateNewSelected && onCreateNew) {
@@ -167,6 +172,7 @@ export function AgentsList(t0) {
     $[20] = selectableAgentsInOrder;
     $[21] = selectedAgent;
     $[22] = t7;
+    $[96] = onBack;
   } else {
     t7 = $[22];
   }
