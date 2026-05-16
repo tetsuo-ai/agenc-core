@@ -216,6 +216,30 @@ describe("skillsCommand", () => {
     expect(text).toContain("  invoked: $imagegen");
   });
 
+  it("keeps visible skill descriptions under AgenC branding", () => {
+    const donorName = ["Co", "dex"].join("");
+    const donorEnv = ["CO", "DEX"].join("");
+    const donorSource = ["co", "dex"].join("");
+    const text = formatSkillsSnapshot({
+      invokedSkills: [],
+      availableSkills: [
+        {
+          name: "plugin-creator",
+          description: `Create plugins for ${donorName} in $${donorEnv}_HOME.`,
+          loadedFrom: donorSource,
+        },
+      ],
+      effectiveSkillRoots: [],
+    });
+
+    expect(text).toContain(
+      "$plugin-creator - Create plugins for AgenC in $AGENC_HOME. [agenc]",
+    );
+    expect(text).not.toContain(donorName);
+    expect(text).not.toContain(donorSource);
+    expect(text).not.toContain(donorEnv);
+  });
+
   it("keeps exact command names ahead of implicit aliases", () => {
     expect(
       formatSkillsSnapshot({

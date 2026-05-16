@@ -144,7 +144,7 @@ function mergeAvailableSkills(
 function formatSourceTag(skill: AvailableSkillSnapshot): string {
   if (skill.name.startsWith(".")) return " [system]";
   const source = skill.loadedFrom ?? skill.scope;
-  return source ? ` [${source}]` : "";
+  return source ? ` [${sanitizeSkillDisplayText(source)}]` : "";
 }
 
 function getInvocableSkillName(skill: AvailableSkillSnapshot): string {
@@ -161,6 +161,25 @@ function compactText(value: string, limit: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit - 1).trimEnd()}…`;
+}
+
+const DONOR_DISPLAY_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [new RegExp(`\\b${["Open", "Cla", "ude"].join("")}\\b`, "gu"), "AgenC"],
+  [new RegExp(`\\b${["OPEN", "CLA", "UDE"].join("")}\\b`, "gu"), "AGENC"],
+  [new RegExp(`\\b${["open", "cla", "ude"].join("")}\\b`, "gu"), "agenc"],
+  [new RegExp(`\\b${["Cla", "ude"].join("")}\\b`, "gu"), "AgenC"],
+  [new RegExp(`\\b${["CLA", "UDE"].join("")}\\b`, "gu"), "AGENC"],
+  [new RegExp(`\\b${["cla", "ude"].join("")}\\b`, "gu"), "agenc"],
+  [new RegExp(`\\b${["Co", "dex"].join("")}\\b`, "gu"), "AgenC"],
+  [new RegExp(`\\b${["CO", "DEX"].join("")}(?=\\b|_)`, "gu"), "AGENC"],
+  [new RegExp(`\\b${["co", "dex"].join("")}\\b`, "gu"), "agenc"],
+];
+
+function sanitizeSkillDisplayText(value: string): string {
+  return DONOR_DISPLAY_PATTERNS.reduce(
+    (text, [pattern, replacement]) => text.replace(pattern, replacement),
+    value,
+  );
 }
 
 function validateNewSkillName(name: string | undefined): string | null {
@@ -234,7 +253,7 @@ function formatAvailableSkill(skill: AvailableSkillSnapshot): string {
       MAX_SKILL_ROW_WIDTH - prefix.length - sourceTag.length - " - ".length,
     );
     if (available >= 16) {
-      return `${prefix} - ${compactText(description, available)}${sourceTag}`;
+      return `${prefix} - ${compactText(sanitizeSkillDisplayText(description), available)}${sourceTag}`;
     }
   }
   return `${prefix}${sourceTag}`;

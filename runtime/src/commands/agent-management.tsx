@@ -36,7 +36,7 @@ export const agentsCommand: SlashCommand = {
         : [];
       setToolJSX({
         isLocalJSXCommand: true,
-        shouldHidePromptInput: false,
+        shouldHidePromptInput: true,
         jsx: (
           <AgentsMenu
             tools={tools as never}

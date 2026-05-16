@@ -946,12 +946,14 @@ export function shouldShowPromptInputState(options: {
   readonly permissionRequestCount: number;
   readonly hasElicitationPrompt: boolean;
   readonly completionPipelineOwnsPrompt: boolean;
+  readonly toolShouldHidePromptInput?: boolean;
 }): boolean {
   return (
     !options.isMessageSelectorVisible &&
     options.permissionRequestCount === 0 &&
     !options.hasElicitationPrompt &&
-    !options.completionPipelineOwnsPrompt
+    !options.completionPipelineOwnsPrompt &&
+    options.toolShouldHidePromptInput !== true
   );
 }
 
@@ -2328,7 +2330,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     isMessageSelectorVisible,
     permissionRequestCount: permissionRequests.length,
     hasElicitationPrompt: elicitation.prompt !== null,
-    completionPipelineOwnsPrompt: completionPipelineActive
+    completionPipelineOwnsPrompt: completionPipelineActive,
+    toolShouldHidePromptInput: toolJSX?.shouldHidePromptInput === true
   });
   const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
     if (isLocalJSXCommandActive) {

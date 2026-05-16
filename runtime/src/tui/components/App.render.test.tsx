@@ -2080,7 +2080,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
-  test("keeps /agents wizard input out of the main composer submit path", async () => {
+  test("hides the main composer while the /agents wizard owns input", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const dispatcher = await import("../../commands/dispatcher.js");
     const dispatchSpy = vi
@@ -2088,7 +2088,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       .mockImplementation(async (_parsed, ctx) => {
         ctx.appState?.setToolJSX?.({
           isLocalJSXCommand: true,
-          shouldHidePromptInput: false,
+          shouldHidePromptInput: true,
           jsx: React.createElement("ink-text", null, "agents wizard"),
         });
         return {
@@ -2136,20 +2136,14 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           const openAgents = providerProbe.promptSubmits.at(-1);
           expect(openAgents).toBeDefined();
           const messageRenderCount = providerProbe.messageProps.length;
+          const promptRenderCount = providerProbe.promptProps.length;
 
           await openAgents!("/agents", helpers);
           await new Promise((resolve) => setTimeout(resolve, 25));
 
-          expect(providerProbe.promptProps.at(-1)?.isLocalJSXCommandActive).toBe(true);
           expect(output()).toContain("agents wizard");
           expect(providerProbe.messageProps.length).toBe(messageRenderCount);
-          expect(submit).not.toHaveBeenCalled();
-
-          const blockedMainSubmit = providerProbe.promptSubmits.at(-1);
-          expect(blockedMainSubmit).toBeDefined();
-          await blockedMainSubmit!(wizardDescription, helpers);
-          await new Promise((resolve) => setTimeout(resolve, 25));
-
+          expect(providerProbe.promptProps.length).toBe(promptRenderCount);
           expect(submit).not.toHaveBeenCalled();
           expect(JSON.stringify(providerProbe.historyEntries)).not.toContain(
             wizardDescription,

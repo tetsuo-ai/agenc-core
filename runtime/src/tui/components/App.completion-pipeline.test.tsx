@@ -35,4 +35,16 @@ describe("App completion pipeline prompt ownership", () => {
       }),
     ).toBe(false);
   });
+
+  test("hides prompt input while a tool-owned JSX surface requests it", () => {
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: false,
+        permissionRequestCount: 0,
+        hasElicitationPrompt: false,
+        completionPipelineOwnsPrompt: false,
+        toolShouldHidePromptInput: true,
+      }),
+    ).toBe(false);
+  });
 });
