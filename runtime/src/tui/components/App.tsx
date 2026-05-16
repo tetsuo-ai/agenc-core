@@ -2362,7 +2362,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const body = <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers screen={screen as any} setScreen={setScreen as any} showAllInTranscript={showAllInTranscript} setShowAllInTranscript={setShowAllInTranscript} messageCount={transcript.messages.length} />
-      <ScrollKeybindingHandler scrollRef={scrollRef} isActive={fullscreen && permissionRequests.length === 0 && !isLocalJSXCommandActive} />
+      <ScrollKeybindingHandler scrollRef={scrollRef} isActive={fullscreen && permissionRequests.length === 0} />
       <CancelRequestHandler
     // Daemon-mode no-op: permission requests are owned by the daemon
     // and resolved via session.cancelTurn cascade.

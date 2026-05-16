@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import skillsCommand, {
   collectSkillsSnapshot,
@@ -341,34 +341,6 @@ describe("skillsCommand", () => {
       expect(result.text).toContain("invoked: $debug");
       expect(result.text).toContain("plugin roots: /skills");
     }
-  });
-
-  it("opens a persistent skills menu in the interactive TUI", async () => {
-    const setToolJSX = vi.fn();
-    const result = await skillsCommand.execute({
-      session: stubSession({
-        invokedSkills: ["debug"],
-        availableSkills: [{ name: "debug", description: "Debug failures" }],
-        roots: ["/skills"],
-      }),
-      argsRaw: "",
-      cwd: "/tmp/ws",
-      home: "/home/test",
-      appState: {
-        setToolJSX,
-      },
-    });
-
-    expect(result).toEqual({ kind: "skip" });
-    expect(setToolJSX).toHaveBeenCalledTimes(1);
-    const surface = setToolJSX.mock.calls[0]?.[0] as {
-      isLocalJSXCommand?: boolean;
-      shouldHidePromptInput?: boolean;
-      jsx?: { props?: { snapshot?: { availableSkills?: readonly { name: string }[] } } };
-    };
-    expect(surface.isLocalJSXCommand).toBe(true);
-    expect(surface.shouldHidePromptInput).toBe(true);
-    expect(surface.jsx?.props?.snapshot?.availableSkills?.[0]?.name).toBe("debug");
   });
 
   it("treats extra /skills text as a filter instead of an error", async () => {

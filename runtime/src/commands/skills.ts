@@ -11,7 +11,6 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { createElement } from "react";
 
 import type { Session } from "../session/session.js";
 import {
@@ -389,28 +388,6 @@ export const skillsCommand: SlashCommand = {
         return { kind: "text", text: result.text };
       }
       const snapshot = await collectSkillsSnapshot(ctx.session, ctx.appState);
-      const setToolJSX = ctx.appState?.setToolJSX;
-      if (typeof setToolJSX === "function") {
-        const { SkillsMenu } = await import(
-          "../tui/components/skills/SkillsMenu.js"
-        );
-        setToolJSX({
-          isLocalJSXCommand: true,
-          shouldHidePromptInput: true,
-          jsx: createElement(SkillsMenu, {
-            snapshot,
-            query: parsed.query,
-            onExit: () => {
-              setToolJSX({
-                jsx: null,
-                shouldHidePromptInput: false,
-                clearLocalJSX: true,
-              });
-            },
-          }),
-        });
-        return { kind: "skip" };
-      }
       return {
         kind: "text",
         text: formatSkillsSnapshot(snapshot, parsed),
