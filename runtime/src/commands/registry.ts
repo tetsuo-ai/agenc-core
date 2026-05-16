@@ -25,6 +25,7 @@ import providerCommand from "./provider.js";
 import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
 import agentsCommand from "./agent-management.js";
+import tasksCommand from "./tasks.js";
 import { compactCommand } from "./session-compact.js";
 
 /**
@@ -122,8 +123,8 @@ function commandSupportsSurface(
  * Build the default user-invocable slash registry.
  *
  * Presentation order matches the runtime stabilization minimal surface:
- * /help, /status, /model, /provider, /permissions, /plan, /agents, /config,
- * /hooks, /skills, /mcp, /clear, /compact, /diff, /exit.
+ * /help, /status, /model, /provider, /permissions, /plan, /agents, /tasks,
+ * /config, /hooks, /skills, /mcp, /clear, /compact, /diff, /exit.
  */
 export function buildDefaultRegistry(
   options: BuildDefaultRegistryOptions = {},
@@ -136,6 +137,7 @@ export function buildDefaultRegistry(
     permissionsCommand,
     planCommand,
     agentsCommand,
+    tasksCommand,
     configCommand,
     hooksCommand,
     skillsCommand,

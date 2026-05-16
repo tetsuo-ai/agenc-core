@@ -29,6 +29,7 @@ const MINIMAL_NAMES = [
   "permissions",
   "plan",
   "agents",
+  "tasks",
   "config",
   "hooks",
   "skills",
@@ -101,6 +102,8 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("help")).toBe(true);
     expect(names.has("provider")).toBe(true);
     expect(names.has("agents")).toBe(true);
+    expect(names.has("tasks")).toBe(true);
+    expect(names.has("jobs")).toBe(true);
     expect(names.has("plan")).toBe(true);
     expect(names.has("files")).toBe(false);
     expect(names.has("reload-plugins")).toBe(false);

@@ -20,6 +20,7 @@ const MINIMAL_TUI_NAMES = [
   "permissions",
   "plan",
   "agents",
+  "tasks",
   "config",
   "hooks",
   "skills",
@@ -36,6 +37,7 @@ const DAEMON_TUI_NAMES = [
   "permissions",
   "plan",
   "agents",
+  "tasks",
   "config",
   "skills",
   "mcp",
@@ -118,6 +120,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
       "reset",
       "new",
     ]);
+    expect(projected.get("tasks")?.aliases).toEqual(["jobs", "bashes"]);
     expect(projected.get("exit")?.aliases).toEqual(["quit"]);
   });
 
@@ -137,6 +140,8 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(names.has("reload-plugins")).toBe(false);
     expect(names.has("history")).toBe(false);
     expect(names.has("agents")).toBe(true);
+    expect(names.has("tasks")).toBe(true);
+    expect(names.has("bashes")).toBe(true);
     expect(names.has("plan")).toBe(true);
   });
 
