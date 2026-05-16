@@ -1309,7 +1309,7 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "Skill",
     description:
-      "Execute a skill within the main conversation. When a skill matches the user's request, call this tool before responding. Pass the skill name and optional arguments; available skills are listed in system reminders.",
+      "Execute a skill within the main conversation. When a skill matches the user's request, call this tool before responding. Pass the skill name and optional arguments; available skills are listed in system reminders. Do not use this for MCP tools or names like mcp.server.tool; call MCP tools through their own tool function after system.searchTools discovery.",
     metadata: toolMetadata("skill", {
       keywords: ["skill", "instructions", "capability"],
     }),
@@ -1318,8 +1318,16 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
     inputSchema: {
       type: "object",
       properties: {
-        skill: { type: "string" },
-        name: { type: "string" },
+        skill: {
+          type: "string",
+          description:
+            "Skill name only. Do not pass MCP tool names such as mcp.server.tool.",
+        },
+        name: {
+          type: "string",
+          description:
+            "Compatibility alias for skill. Do not pass MCP tool names such as mcp.server.tool.",
+        },
         args: { type: "string" },
       },
       additionalProperties: false,
@@ -1331,6 +1339,9 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
         stringValue(args.skill) ?? stringValue(args.name) ?? "",
       );
       if (!skillName) return json({ error: "skill is required" }, true);
+      if (isMcpToolName(skillName)) {
+        return json({ error: mcpToolUsedAsSkillMessage(skillName) }, true);
+      }
       const sessionOrError = getSessionOrError(opts);
       if (!("conversationId" in sessionOrError)) return sessionOrError;
       const rendered =
@@ -1376,6 +1387,14 @@ function normalizeSkillName(name: string): string {
   return trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
 }
 
+function isMcpToolName(name: string): boolean {
+  return /^mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/u.test(name);
+}
+
+function mcpToolUsedAsSkillMessage(toolName: string): string {
+  return `${toolName} is an MCP tool name, not a skill. Load it with system.searchTools if needed, then call the MCP tool through its own tool function with JSON arguments. Do not use Skill or shell commands for MCP tools.`;
+}
+
 function formatLoadedSkillForModel(skillName: string, content: string): string {
   return `<command-name>${skillName}</command-name>\n${content}`;
 }
@@ -1396,6 +1415,16 @@ async function checkSkillPermissions(
       decisionReason: {
         type: "other" as const,
         reason: "missing skill name",
+      },
+    };
+  }
+  if (isMcpToolName(skillName)) {
+    return {
+      behavior: "deny" as const,
+      message: mcpToolUsedAsSkillMessage(skillName),
+      decisionReason: {
+        type: "other" as const,
+        reason: "mcp tool used as skill",
       },
     };
   }

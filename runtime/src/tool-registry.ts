@@ -100,6 +100,7 @@ export interface ToolRegistry {
     toolCall: CodeModeNestedToolDispatch,
   ): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  discoverToolNames?(toolNames: readonly string[]): void;
 }
 
 function toolToLLMTool(tool: Tool): LLMTool {
@@ -882,6 +883,9 @@ export function buildToolRegistry(
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
+    },
+    discoverToolNames(toolNames: readonly string[]): void {
+      markDiscovered(toolNames);
     },
     async dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult> {
       const router = buildRouter();

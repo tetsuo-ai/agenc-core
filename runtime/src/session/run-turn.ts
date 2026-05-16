@@ -2125,6 +2125,24 @@ function extractLastUserText(messages: ReadonlyArray<LLMMessage>): string | null
   return null;
 }
 
+const DIRECT_MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/gu;
+
+export function extractDirectMcpToolNameMentions(
+  text: string | null | undefined,
+): readonly string[] {
+  if (!text) return [];
+  return [...new Set(text.match(DIRECT_MCP_TOOL_NAME_RE) ?? [])];
+}
+
+function discoverDirectMcpToolMentions(
+  session: Session,
+  text: string | null,
+): void {
+  const directMcpToolNames = extractDirectMcpToolNameMentions(text);
+  if (directMcpToolNames.length === 0) return;
+  session.services.registry.discoverToolNames?.(directMcpToolNames);
+}
+
 export function builtTools(session: Session, _ctx: TurnContext): ReadonlyArray<LLMTool> {
   return session.services.registry.toLLMTools();
 }
@@ -2278,9 +2296,11 @@ async function tryRunSamplingRequest(
   const fileMentionAllowedRoots = extractMentionAllowedRoots(
     currentConfig,
   );
+  const userInput = extractLastUserText(state.messagesForQuery);
+  discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
-    userInput: extractLastUserText(state.messagesForQuery),
+    userInput,
     loadedTools: builtTools(session, ctx),
     discoveredToolNames:
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),

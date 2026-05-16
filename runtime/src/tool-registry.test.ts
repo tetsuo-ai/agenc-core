@@ -839,6 +839,29 @@ describe("tool-registry dynamic and deferred catalog", () => {
     );
   });
 
+  test("SkillTool invocation rejects MCP tool names", async () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: createModelFacingTools({
+        workspaceRoot: "/tmp",
+        getSession: () => createSkillSession(),
+      }),
+    });
+
+    const result = await registry.dispatch({
+      id: "skill-mcp-name",
+      name: "Skill",
+      arguments: JSON.stringify({
+        skill: "mcp.audit-ping.ping",
+        name: "",
+        args: "",
+      }),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("is an MCP tool name, not a skill");
+  });
+
   test("spawn_agent dispatch maps string arguments and rejects retired AgentTool aliases", async () => {
     const receivedArgs: Record<string, unknown>[] = [];
     const spawnAgentTool: Tool = {
@@ -1429,5 +1452,32 @@ describe("tool-registry dynamic and deferred catalog", () => {
         arguments: "{}",
       }),
     ).resolves.toEqual({ content: "lookup-result", isError: undefined });
+  });
+
+  test("explicit registry discovery makes a named MCP tool model-visible", () => {
+    const mcpTool: Tool = {
+      name: "mcp.audit-ping.ping",
+      description: "Test ping tool.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+      execute: async () => ({ content: "pong" }),
+    };
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      mcpToolsProvider: { getTools: () => [mcpTool] },
+    });
+
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
+      mcpTool.name,
+    );
+
+    registry.discoverToolNames?.([mcpTool.name]);
+
+    expect(registry.getDiscoveredToolNames?.().has(mcpTool.name)).toBe(true);
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
+      mcpTool.name,
+    );
   });
 });
