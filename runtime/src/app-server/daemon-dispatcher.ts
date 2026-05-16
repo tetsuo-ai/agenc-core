@@ -70,6 +70,7 @@ import {
   type SessionAttachResult,
   type SessionCancelTurnParams,
   type SessionClearParams,
+  type SessionMcpAddServerParams,
   type SessionSnapshotParams,
   type SessionCreateParams,
   type SessionDetachParams,
@@ -135,6 +136,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "denyTool"
     | "clearSessionHistory"
     | "snapshotSession"
+    | "addMcpServerToSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
     | "respondToElicitation"
@@ -197,6 +199,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "denyTool"
     | "clearSessionHistory"
     | "snapshotSession"
+    | "addMcpServerToSession"
     | "partialCompactFromMessage"
     | "rewindConversationToMessage"
     | "respondToElicitation"
@@ -470,6 +473,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.cancelSessionTurn(
             validateSessionCancelTurnParams(params),
+          ),
+        );
+      case "session.mcp.addServer":
+        return successResponse(
+          id,
+          await this.#agentManager.addMcpServerToSession(
+            validateSessionMcpAddServerParams(params),
           ),
         );
       case "session.partialCompactFromMessage":
@@ -1188,7 +1198,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "permissionMode",
     ],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
-    objectFields: ["metadata"],
+    objectFields: ["metadata", "envOverrides"],
     valueFields: ["initialContent"],
   });
   if (validated.initialContent !== undefined) {
@@ -1210,6 +1220,13 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
         `agent.create param 'permissionMode' must be one of "default" | "plan" | "acceptEdits" | "bypassPermissions"`,
       );
     }
+  }
+  if (validated.envOverrides !== undefined) {
+    validateStringRecord(
+      validated.envOverrides as JsonObject,
+      "agent.create",
+      "envOverrides",
+    );
   }
   return validated as AgentCreateParams;
 }
@@ -1353,6 +1370,49 @@ function validateSessionCancelTurnParams(
   });
   validateRequiredString(validated, "session.cancelTurn", "sessionId");
   return validated as SessionCancelTurnParams;
+}
+
+function validateSessionMcpAddServerParams(
+  params: JsonObject,
+): SessionMcpAddServerParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.mcp.addServer",
+    stringFields: ["sessionId"],
+    objectFields: ["config"],
+  });
+  validateRequiredString(validated, "session.mcp.addServer", "sessionId");
+  const config = validated.config;
+  if (!isPlainJsonObject(config)) {
+    throw invalidParams("session.mcp.addServer requires config");
+  }
+  validateObjectShape(config, {
+    methodName: "session.mcp.addServer.config",
+    stringFields: ["name", "transport", "command", "endpoint"],
+    stringArrayFields: ["args"],
+    valueFields: ["enabled", "required"],
+  });
+  validateRequiredString(config, "session.mcp.addServer.config", "name");
+  if (
+    config.transport !== undefined &&
+    config.transport !== "stdio" &&
+    config.transport !== "sse" &&
+    config.transport !== "http" &&
+    config.transport !== "websocket" &&
+    config.transport !== "ws"
+  ) {
+    throw invalidParams(
+      "session.mcp.addServer.config transport must be stdio, sse, http, websocket, or ws",
+    );
+  }
+  for (const field of ["enabled", "required"] as const) {
+    const value = config[field];
+    if (value !== undefined && typeof value !== "boolean") {
+      throw invalidParams(
+        `session.mcp.addServer.config param '${field}' must be a boolean`,
+      );
+    }
+  }
+  return validated as SessionMcpAddServerParams;
 }
 
 function validateSessionPartialCompactFromMessageParams(
@@ -1955,6 +2015,25 @@ function validateObjectShape(
     }
   }
   return params;
+}
+
+function validateStringRecord(
+  value: JsonObject,
+  methodName: string,
+  field: string,
+): void {
+  for (const [key, entry] of Object.entries(value)) {
+    if (key.trim().length === 0) {
+      throw invalidParams(
+        `${methodName} param '${field}' keys must be non-empty`,
+      );
+    }
+    if (typeof entry !== "string") {
+      throw invalidParams(
+        `${methodName} param '${field}.${key}' must be a string`,
+      );
+    }
+  }
 }
 
 function isPlainJsonObject(value: unknown): value is JsonObject {

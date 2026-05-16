@@ -60,7 +60,10 @@ import {
   type ReviewDecision,
 } from "../permissions/review-decision.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
-import type { Session } from "../session/session.js";
+import type {
+  McpServerMutationResult,
+  Session,
+} from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
   respondToSessionElicitation,
@@ -74,6 +77,7 @@ import type {
   JsonValue,
   MessageContent,
   PermissionListResult,
+  SessionMcpServerConfig,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageResult,
@@ -186,6 +190,11 @@ export interface AgenCBackgroundAgentSnapshotSessionParams {
   readonly sessionId: string;
 }
 
+export interface AgenCBackgroundAgentMcpAddServerParams {
+  readonly sessionId: string;
+  readonly config: SessionMcpServerConfig;
+}
+
 export interface AgenCBackgroundAgentPartialCompactParams {
   readonly sessionId: string;
   readonly messageOrdinal: number;
@@ -239,6 +248,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentSnapshotSessionParams,
   ): Promise<SessionSnapshotResult>;
+  addMcpServer?(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpAddServerParams,
+  ): Promise<McpServerMutationResult>;
   partialCompactFromMessage?(
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
@@ -927,6 +940,27 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         timestamp: Number.isFinite(clearedAtMs) ? clearedAtMs : Date.now(),
       },
     });
+  }
+
+  async addMcpServer(
+    agentId: string,
+    params: AgenCBackgroundAgentMcpAddServerParams,
+  ): Promise<McpServerMutationResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const addServer = active.bootstrap.session.services.mcpManager.addServer;
+    if (typeof addServer !== "function") {
+      throw new Error("MCP addServer is not available for this daemon session.");
+    }
+    const result = await addServer(params.config);
+    return {
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
   }
 
   async snapshotAgentSession(

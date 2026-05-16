@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
@@ -422,6 +422,81 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     ]);
   });
 
+  it("routes session.mcp.addServer through the active daemon agent runtime", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_mcp",
+      agentId: "agent_mcp",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "use MCP",
+    });
+    const addMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 1,
+    }));
+    const agentManager = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        addMcpServer,
+      },
+    });
+    await agentManager.restoreAgent({
+      agentId: "agent_mcp",
+      objective: "use MCP",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_mcp"],
+      runtimeAvailable: true,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager,
+      sessionManager: sessions,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection);
+
+    await expect(
+      connection.dispatch(
+        request("add-mcp", "session.mcp.addServer", {
+          sessionId: "session_mcp",
+          config: {
+            name: "audit-ping",
+            transport: "stdio",
+            command: "node",
+            args: [".agenc/mcp/audit-ping.mjs"],
+            enabled: true,
+          },
+        }),
+      ),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "add-mcp",
+      result: {
+        sessionId: "session_mcp",
+        serverName: "audit-ping",
+        success: true,
+        toolCount: 1,
+      },
+    });
+    expect(addMcpServer).toHaveBeenCalledWith("agent_mcp", {
+      sessionId: "session_mcp",
+      config: {
+        name: "audit-ping",
+        transport: "stdio",
+        command: "node",
+        args: [".agenc/mcp/audit-ping.mjs"],
+        enabled: true,
+      },
+    });
+  });
+
   it("preserves unrelated routes when detach targets an unowned client on another session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1", "session_2"]),
@@ -554,6 +629,35 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       error: {
         code: -32602,
         message: "session.terminate requires sessionId",
+      },
+    });
+    await expect(
+      connection.dispatch(
+        request("bad-mcp-missing-config", "session.mcp.addServer", {
+          sessionId: "session_1",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message: "session.mcp.addServer requires config",
+      },
+    });
+    await expect(
+      connection.dispatch(
+        request("bad-mcp-transport", "session.mcp.addServer", {
+          sessionId: "session_1",
+          config: {
+            name: "audit-ping",
+            transport: "ftp",
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      error: {
+        code: -32602,
+        message:
+          "session.mcp.addServer.config transport must be stdio, sse, http, websocket, or ws",
       },
     });
   });

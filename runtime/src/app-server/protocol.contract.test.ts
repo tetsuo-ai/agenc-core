@@ -71,7 +71,9 @@ const expectedMethods = [
   "session.detach",
   "session.terminate",
   "session.clear",
+  "session.snapshot",
   "session.cancelTurn",
+  "session.mcp.addServer",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -335,6 +337,9 @@ describe("AgenC daemon protocol surface", () => {
           model: "grok-4",
           unattendedAllow: ["FileRead", "Grep"],
           unattendedDeny: ["exec_command"],
+          envOverrides: {
+            AGENC_MCP_SERVERS: "[]",
+          },
         },
       },
       {
@@ -400,12 +405,39 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 12,
+        method: "session.snapshot",
+        params: { sessionId: "session_1" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 13,
+        method: "session.cancelTurn",
+        params: { sessionId: "session_1", reason: "user_interrupt" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 14,
+        method: "session.mcp.addServer",
+        params: {
+          sessionId: "session_1",
+          config: {
+            name: "audit-ping",
+            transport: "stdio",
+            command: "node",
+            args: [".agenc/mcp/audit-ping.mjs"],
+            enabled: true,
+          },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 15,
         method: "message.send",
         params: { sessionId: "session_1", content: "Run tests" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 13,
+        id: 16,
         method: "message.stream",
         params: {
           sessionId: "session_1",

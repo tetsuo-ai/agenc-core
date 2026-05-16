@@ -38,6 +38,8 @@ import type {
   SessionCancelTurnResult,
   SessionClearParams,
   SessionClearResult,
+  SessionMcpAddServerParams,
+  SessionMcpAddServerResult,
   SessionSnapshotParams,
   SessionSnapshotResult,
   SessionPartialCompactFromMessageParams,
@@ -1160,6 +1162,38 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async addMcpServerToSession(
+    params: SessionMcpAddServerParams,
+  ): Promise<SessionMcpAddServerResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.mcp.addServer requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.addMcpServer === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.mcp.addServer requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMcpAddServer: true },
+    );
+    const result = await this.#runner.addMcpServer(agentId, {
+      sessionId: params.sessionId,
+      config: params.config,
+    });
+    return {
+      sessionId: params.sessionId,
+      serverName: result.serverName,
+      success: result.success,
+      toolCount: result.toolCount,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+    };
+  }
+
   async snapshotSession(
     params: SessionSnapshotParams,
   ): Promise<SessionSnapshotResult> {
@@ -1177,6 +1211,7 @@ export class AgenCDaemonAgentManager {
     }
     const agentId = await this.#resolveActiveAgentIdForSession(
       params.sessionId,
+      { allowSnapshot: true },
     );
     return this.#runner.snapshotAgentSession(agentId, {
       sessionId: params.sessionId,
@@ -1406,6 +1441,8 @@ export class AgenCDaemonAgentManager {
       readonly allowListPermissions?: boolean;
       readonly allowPartialCompact?: boolean;
       readonly allowConversationRewind?: boolean;
+      readonly allowMcpAddServer?: boolean;
+      readonly allowSnapshot?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -1433,6 +1470,12 @@ export class AgenCDaemonAgentManager {
     const hasConversationRewindRunner =
       options.allowConversationRewind === true &&
       this.#runner?.rewindConversationToMessage !== undefined;
+    const hasMcpAddServerRunner =
+      options.allowMcpAddServer === true &&
+      this.#runner?.addMcpServer !== undefined;
+    const hasSnapshotRunner =
+      options.allowSnapshot === true &&
+      this.#runner?.snapshotAgentSession !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
@@ -1440,7 +1483,9 @@ export class AgenCDaemonAgentManager {
       !hasClearSessionRunner &&
       !hasPermissionListRunner &&
       !hasPartialCompactRunner &&
-      !hasConversationRewindRunner
+      !hasConversationRewindRunner &&
+      !hasMcpAddServerRunner &&
+      !hasSnapshotRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",

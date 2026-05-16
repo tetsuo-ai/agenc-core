@@ -21,7 +21,9 @@
     "session.detach",
     "session.terminate",
     "session.clear",
+    "session.snapshot",
     "session.cancelTurn",
+    "session.mcp.addServer",
     "message.send",
     "message.stream",
     "thread/realtime/start",
@@ -225,6 +227,12 @@
         },
         "metadata": {
           "$ref": "#/definitions/JsonObject"
+        },
+        "envOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
@@ -384,6 +392,17 @@
       },
       "required": ["sessionId"]
     },
+    "SessionSnapshotParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
     "SessionCancelTurnParams": {
       "type": "object",
       "additionalProperties": false,
@@ -397,6 +416,53 @@
         }
       },
       "required": ["sessionId"]
+    },
+    "SessionMcpServerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "sse", "http", "websocket", "ws"]
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": ["name"]
+    },
+    "SessionMcpAddServerParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config": {
+          "$ref": "#/definitions/SessionMcpServerConfig"
+        }
+      },
+      "required": ["sessionId", "config"]
     },
     "MessageSendParams": {
       "type": "object",
@@ -1552,7 +1618,13 @@
           "$ref": "#/definitions/SessionClearRequest"
         },
         {
+          "$ref": "#/definitions/SessionSnapshotRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCancelTurnRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionMcpAddServerRequest"
         },
         {
           "$ref": "#/definitions/MessageSendRequest"
@@ -2183,6 +2255,25 @@
       },
       "required": ["jsonrpc", "id", "method", "params"]
     },
+    "SessionSnapshotRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.snapshot"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionSnapshotParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
     "SessionCancelTurnRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -2198,6 +2289,25 @@
         },
         "params": {
           "$ref": "#/definitions/SessionCancelTurnParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionMcpAddServerRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.mcp.addServer"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionMcpAddServerParams"
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]

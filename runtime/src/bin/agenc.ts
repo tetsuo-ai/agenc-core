@@ -2370,7 +2370,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       try {
         const started = await params.deps.startPromptAgent({
           prompt,
-          env: params.env,
+          env: envWithBridgeMcpServers(params.baseSession, params.env),
           cwd: params.cwd,
           ...(params.model !== undefined ? { model: params.model } : {}),
           ...(params.provider !== undefined ? { provider: params.provider } : {}),
@@ -2570,6 +2570,27 @@ async function createDeferredDaemonPromptTuiSession(params: {
 function isLocalSlashCommandInput(message: string): boolean {
   const trimmed = message.trimStart();
   return trimmed.startsWith("/") && !/[\r\n]/.test(message);
+}
+
+function envWithBridgeMcpServers(
+  baseSession: unknown,
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const manager = (
+    baseSession as {
+      readonly services?: {
+        readonly mcpManager?: {
+          readonly getConfiguredServers?: () => readonly unknown[];
+        };
+      };
+    }
+  ).services?.mcpManager;
+  const configs = manager?.getConfiguredServers?.();
+  if (!Array.isArray(configs) || configs.length === 0) return env;
+  return {
+    ...env,
+    AGENC_MCP_SERVERS: JSON.stringify(configs),
+  };
 }
 
 async function prepareDaemonTuiPrompt(params: {

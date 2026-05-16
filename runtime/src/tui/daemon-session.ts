@@ -16,6 +16,8 @@ import type {
   MessageStreamParams,
   RequestId,
   SessionAttachParams,
+  SessionMcpAddServerParams,
+  SessionMcpServerConfig,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRewindConversationToMessageParams,
@@ -42,6 +44,7 @@ import type {
   StartRealtimeAudioCapture,
 } from "./realtime/audio.js";
 import type { AgenCCompactProgressControls } from "./session-types.js";
+import type { McpServerMutationResult } from "../session/session.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -303,9 +306,18 @@ export function createDaemonTuiSession<
     unsubscribeDaemonEvents();
     unsubscribeDaemonEvents = null;
   };
+  const services = baseSession.services as MutableBridgeServices;
+  if (services.mcpManager !== undefined) {
+    services.mcpManager = createDaemonMirroredMcpManager(
+      services.mcpManager,
+      client,
+      sessionId,
+    );
+  }
   return {
     ...baseSession,
     conversationId,
+    services,
     realtime,
     activeTurn: {
       unsafePeek: () =>
@@ -409,6 +421,55 @@ export function createDaemonTuiSession<
       ...connectionNoticeEvents(client.getConnectionState?.() ?? null),
     ],
   } as AgenCDaemonBackedTuiSession<Session>;
+}
+
+type McpManagerLike = NonNullable<AgenCTuiBridgeSession["services"]["mcpManager"]> & {
+  addServer?(
+    config: SessionMcpServerConfig,
+  ): Promise<McpServerMutationResult>;
+};
+
+interface MutableBridgeServices {
+  mcpManager?: unknown;
+  [key: string]: unknown;
+}
+
+function createDaemonMirroredMcpManager(
+  baseManager: unknown,
+  client: AgenCDaemonTuiClient,
+  sessionId: string,
+): unknown {
+  if (typeof baseManager !== "object" || baseManager === null) {
+    return baseManager;
+  }
+  const manager = baseManager as McpManagerLike;
+  return {
+    ...manager,
+    addServer: async (
+      config: SessionMcpServerConfig,
+    ): Promise<McpServerMutationResult> => {
+      const remote = await client.request("session.mcp.addServer", {
+        sessionId,
+        config,
+      } satisfies SessionMcpAddServerParams);
+      if (remote.success && typeof manager.addServer === "function") {
+        const local = await manager.addServer(config);
+        const alreadyConfigured =
+          local.success === false &&
+          typeof local.error === "string" &&
+          /already configured/i.test(local.error);
+        if (!local.success && !alreadyConfigured) {
+          return local;
+        }
+      }
+      return {
+        serverName: remote.serverName,
+        success: remote.success,
+        toolCount: remote.toolCount,
+        ...(remote.error !== undefined ? { error: remote.error } : {}),
+      };
+    },
+  };
 }
 
 function queuedInputBlocks(input: unknown): MessageContentBlock[] {

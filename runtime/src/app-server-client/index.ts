@@ -61,8 +61,7 @@ export interface AgenCDaemonPromptAgentOptions {
     | "bypassPermissions";
 }
 
-// (`collectEnvOverrides` removed — the daemon's validateAgentCreateParams
-// rejects the field. Will reinstate once the daemon accepts envOverrides.)
+const DAEMON_PROMPT_ENV_OVERRIDE_KEYS = ["AGENC_MCP_SERVERS"] as const;
 
 export interface StopAgenCDaemonPromptAgentOptions {
   readonly agentId: string;
@@ -80,13 +79,7 @@ export async function startAgenCDaemonPromptAgent(
   const env = options.env ?? process.env;
   await defaultEnsureDaemonReady(env)();
   const client = createAgenCJsonLineDaemonClient({ env });
-  // envOverrides was sent here previously but the daemon's
-  // `validateAgentCreateParams` rejects unknown fields with
-  // "agent.create does not accept param 'envOverrides'", which made
-  // EVERY agent.create call fail and broke the TUI's first-message
-  // submit path. The validator allow-list lives at the daemon side
-  // and adding the field there is a separate piece of work. Until
-  // that lands, do not send the param.
+  const envOverrides = collectDaemonPromptEnvOverrides(env);
   return client.createAgent({
     objective: prompt,
     instructions: prompt,
@@ -100,11 +93,25 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }
       : {}),
+    ...(Object.keys(envOverrides).length > 0 ? { envOverrides } : {}),
     metadata: {
       source: "agenc.prompt",
       ...(options.metadata ?? {}),
     },
   });
+}
+
+function collectDaemonPromptEnvOverrides(
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  for (const key of DAEMON_PROMPT_ENV_OVERRIDE_KEYS) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      overrides[key] = value;
+    }
+  }
+  return overrides;
 }
 
 export async function stopAgenCDaemonPromptAgent(

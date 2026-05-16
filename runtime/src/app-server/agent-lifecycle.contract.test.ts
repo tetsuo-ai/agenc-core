@@ -712,6 +712,69 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("routes session.mcp.addServer to the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-mcp-restored",
+      agentId: "agent-mcp-restored",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "continue work",
+    });
+    const addMcpServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 1,
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        addMcpServer,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-mcp-restored",
+      objective: "continue work",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-mcp-restored"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.addMcpServerToSession({
+        sessionId: "session-mcp-restored",
+        config: {
+          name: "audit-ping",
+          transport: "stdio",
+          command: "node",
+          args: [".agenc/mcp/audit-ping.mjs"],
+          enabled: true,
+        },
+      }),
+    ).resolves.toEqual({
+      sessionId: "session-mcp-restored",
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 1,
+    });
+    expect(addMcpServer).toHaveBeenCalledWith("agent-mcp-restored", {
+      sessionId: "session-mcp-restored",
+      config: {
+        name: "audit-ping",
+        transport: "stdio",
+        command: "node",
+        args: [".agenc/mcp/audit-ping.mjs"],
+        enabled: true,
+      },
+    });
+  });
+
   it("routes session.cancelTurn to the runner's interruptAgentTurn for an active session", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({
@@ -1658,7 +1721,7 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
-  it("refreshes active list status and omits agents no longer active", async () => {
+  it("refreshes active list status while retaining runner-missing agents", async () => {
     const snapshots = new Map<string, AgenCBackgroundAgentSnapshot | null>();
     const ids = ["agent_active", "agent_done"];
     let startIndex = 0;
@@ -1708,9 +1771,25 @@ describe("AgenC background agent lifecycle", () => {
             unattendedDeny: [],
           },
         },
+        {
+          agentId: "agent_done",
+          objective: "finish quickly",
+          status: "running",
+          createdAt: "2026-05-01T12:00:01.000Z",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          lastActiveAt: "2026-05-01T12:00:00.500Z",
+          cwd: "/workspace",
+          metadata: {
+            unattendedAllow: [],
+            unattendedDeny: [],
+          },
+        },
       ],
     });
-    await expect(agents.getAgent("agent_done")).resolves.toBeNull();
+    await expect(agents.getAgent("agent_done")).resolves.toMatchObject({
+      agentId: "agent_done",
+      status: "running",
+    });
   });
 
   it("paginates active agents by stable id boundary under churn", async () => {
@@ -2265,13 +2344,15 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
-  it("rejects agent attach for missing agents and inactive sessions", async () => {
+  it("rejects agent attach for missing and closed sessions", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1", "session_2"]),
+      createAttachmentId: sequence(["attachment_inactive"]),
       now: sequence([
         "2026-05-01T12:00:00.000Z",
         "2026-05-01T12:00:01.000Z",
         "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:03.000Z",
       ]),
     });
     let active = true;
@@ -2311,7 +2392,12 @@ describe("AgenC background agent lifecycle", () => {
     await agents.createAgent({ objective: "inactive before attach" });
     await expect(
       agents.attachAgent({ agentId: "agent_inactive" }),
-    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+    ).resolves.toMatchObject({
+      agentId: "agent_inactive",
+      attachmentId: "attachment_inactive",
+      sessionIds: ["session_2"],
+      runtimeSessionId: "agent_inactive",
+    });
   });
 
   it("does not report running when no background runner is available", async () => {
@@ -2827,6 +2913,26 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message: "agent.create param 'metadata' must be an object",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-env-overrides",
+        method: "agent.create",
+        params: {
+          objective: "ship",
+          envOverrides: { AGENC_MCP_SERVERS: [] },
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-env-overrides",
+      error: {
+        code: -32602,
+        message:
+          "agent.create param 'envOverrides.AGENC_MCP_SERVERS' must be a string",
         data: { code: "INVALID_ARGUMENT" },
       },
     });

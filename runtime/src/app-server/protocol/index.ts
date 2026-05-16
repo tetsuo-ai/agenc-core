@@ -50,6 +50,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.clear",
   "session.snapshot",
   "session.cancelTurn",
+  "session.mcp.addServer",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -272,6 +273,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Interrupt the active turn for a daemon-owned session. Fires the agent's AbortController and signals run-turn to abort with reason='interrupted'.",
+  },
+  "session.mcp.addServer": {
+    method: "session.mcp.addServer",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Add an MCP server to the daemon-owned runtime session so ToolSearch and model tool calls can use it immediately.",
   },
   "message.send": {
     method: "message.send",
@@ -713,6 +722,21 @@ export interface SessionSnapshotParams extends JsonObject {
 export interface SessionCancelTurnParams extends JsonObject {
   readonly sessionId: string;
   readonly reason?: string;
+}
+
+export interface SessionMcpServerConfig extends JsonObject {
+  readonly name: string;
+  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly endpoint?: string;
+  readonly enabled?: boolean;
+  readonly required?: boolean;
+}
+
+export interface SessionMcpAddServerParams extends JsonObject {
+  readonly sessionId: string;
+  readonly config: SessionMcpServerConfig;
 }
 
 export interface SessionPartialCompactFromMessageParams extends JsonObject {
@@ -1172,6 +1196,7 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
   | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
+  | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<
@@ -1393,6 +1418,14 @@ export interface SessionCancelTurnResult extends JsonObject {
   readonly reason?: string;
 }
 
+export interface SessionMcpAddServerResult extends JsonObject {
+  readonly sessionId: string;
+  readonly serverName: string;
+  readonly success: boolean;
+  readonly toolCount: number;
+  readonly error?: string;
+}
+
 export interface SessionPartialCompactFromMessageResult extends JsonObject {
   readonly sessionId: string;
   readonly ok: boolean;
@@ -1558,6 +1591,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.clear": SessionClearResult;
   readonly "session.snapshot": SessionSnapshotResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
+  readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
   readonly "thread/realtime/start": ThreadRealtimeStartResponse;

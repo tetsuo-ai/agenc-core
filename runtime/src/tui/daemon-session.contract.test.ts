@@ -338,6 +338,83 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("mirrors daemon-backed MCP additions to the runtime session", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.addServer") {
+        return {
+          sessionId: "session_1",
+          serverName: "audit-ping",
+          success: true,
+          toolCount: 1,
+        } as never;
+      }
+      return {} as never;
+    };
+    const localAddServer = vi.fn(async () => ({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 1,
+    }));
+    const baseSession = createBaseSession();
+    baseSession.services.mcpManager = {
+      addServer: localAddServer,
+    };
+
+    const session = await attachDaemonTuiSession({
+      baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const result = await (
+      session.services.mcpManager as {
+        addServer(config: {
+          name: string;
+          transport: "stdio";
+          command: string;
+          args: readonly string[];
+        }): Promise<unknown>;
+      }
+    ).addServer({
+      name: "audit-ping",
+      transport: "stdio",
+      command: "node",
+      args: ["/tmp/audit-ping.mjs"],
+    });
+
+    expect(result).toEqual({
+      serverName: "audit-ping",
+      success: true,
+      toolCount: 1,
+    });
+    expect(client.requests).toEqual([
+      {
+        method: "session.attach",
+        params: { sessionId: "session_1", clientId: "tui_1" },
+      },
+      {
+        method: "session.mcp.addServer",
+        params: {
+          sessionId: "session_1",
+          config: {
+            name: "audit-ping",
+            transport: "stdio",
+            command: "node",
+            args: ["/tmp/audit-ping.mjs"],
+          },
+        },
+      },
+    ]);
+    expect(localAddServer).toHaveBeenCalledWith({
+      name: "audit-ping",
+      transport: "stdio",
+      command: "node",
+      args: ["/tmp/audit-ping.mjs"],
+    });
+  });
+
   it("exposes daemon turn activity through activeTurn for prompt busy state", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({

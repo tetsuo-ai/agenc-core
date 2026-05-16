@@ -199,6 +199,52 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
+  it("passes daemon prompt MCP env overrides through agent.create", async () => {
+    vi.resetModules();
+    const createAgent = vi.fn(async (params: unknown) => ({
+      agentId: "agent_mcp_env",
+      objective: "use MCP",
+      status: "running" as const,
+      createdAt: "2026-05-06T00:00:00.000Z",
+      sessionId: "session_mcp_env",
+      params,
+    }));
+    vi.doMock("../app-server/agent-cli.js", async (importActual) => {
+      const actual =
+        await importActual<typeof import("../app-server/agent-cli.js")>();
+      return {
+        ...actual,
+        defaultEnsureDaemonReady: vi.fn(() => vi.fn(async () => {})),
+        createAgenCJsonLineDaemonClient: vi.fn(() => ({ createAgent })),
+      };
+    });
+
+    try {
+      const mcpServers = JSON.stringify([
+        { name: "audit-ping", command: "node", args: [".agenc/mcp/audit.mjs"] },
+      ]);
+      const { startAgenCDaemonPromptAgent } = await import("./index.js");
+      await startAgenCDaemonPromptAgent({
+        prompt: "use MCP",
+        cwd: "/workspace",
+        env: {
+          ...process.env,
+          AGENC_MCP_SERVERS: mcpServers,
+          SHOULD_NOT_FORWARD: "ignored",
+        },
+      });
+
+      expect(createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          envOverrides: { AGENC_MCP_SERVERS: mcpServers },
+        }),
+      );
+    } finally {
+      vi.doUnmock("../app-server/agent-cli.js");
+      vi.resetModules();
+    }
+  });
+
   it("seeds daemon-only TUI context with bypass permissions for yolo launch", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-context-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-workspace-"));

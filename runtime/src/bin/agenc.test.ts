@@ -124,6 +124,7 @@ function installDaemonCliDepsForTest(
     readonly oneShotEvents?: readonly unknown[];
     readonly createConnectedTuiClientError?: Error;
     readonly requestErrors?: Partial<Record<string, Error>>;
+    readonly mcpManager?: unknown;
   } = {},
 ): {
   readonly agentId: string;
@@ -289,6 +290,9 @@ function installDaemonCliDepsForTest(
           permissionModeRegistry: new PermissionModeRegistry(
             createEmptyToolPermissionContext(),
           ),
+          ...(options.mcpManager !== undefined
+            ? { mcpManager: options.mcpManager }
+            : {}),
         },
         abortController,
         abortTerminal: (reason?: unknown) => {
@@ -1916,6 +1920,78 @@ describe("main() smoke", () => {
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
       ]);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      process.argv = prevArgv;
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry carries pre-start /mcp additions into the daemon prompt agent", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+
+    process.argv = ["node", "agenc", "--provider", "grok", "--model", "grok-4.3"];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const mcpConfig = {
+      name: "audit-ping",
+      transport: "stdio",
+      command: "node",
+      args: [join(tmpCwd, ".agenc/mcp/audit-ping.mjs")],
+      enabled: true,
+    };
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_tui_mcp",
+      sessionId: "session_tui_mcp",
+      cwd: tmpCwd,
+      mcpManager: {
+        getConfiguredServers: () => [mcpConfig],
+      },
+    });
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const pending = bootTUIEntry({});
+      await new Promise((r) => setTimeout(r, 20));
+      expect(capturedSession).not.toBeNull();
+
+      await capturedSession?.submit?.("use the audit MCP tool");
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      const env = daemon.startPromptAgent.mock.calls[0]?.[0].env as
+        | NodeJS.ProcessEnv
+        | undefined;
+      expect(env?.AGENC_MCP_SERVERS).toBe(JSON.stringify([mcpConfig]));
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
