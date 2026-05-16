@@ -46,11 +46,16 @@ import { RealtimePanel } from "../realtime/RealtimePanel.js";
 import { useRealtimeState } from "../realtime/useRealtimeState.js";
 import { AgenCPermissionOverlay as PermissionOverlay, buildToolUseConfirmQueue, usePermissionRequests } from "../permission-requests.js";
 import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
-import { listTuiCommandList } from "../../commands.js";
+import { findCommand, listTuiCommandList } from "../../commands.js";
 import { listAgentRoleDefinitions } from "../../agents/role-definitions.js";
 import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import type { PromptInputContext } from "../input/inputContext.js";
+import {
+  isDollarSkillCommand,
+  loadDollarSkillCommandForTurn,
+  parseDollarSkillCommand,
+} from "../input/processPromptInput.js";
 import type { Command } from "../../commands.js";
 import type { QueuedCommand, VimMode } from "../../types/textInputTypes.js";
 import { installCompactProgressControls, type AgenCTuiProps } from "../session-types.js";
@@ -1651,6 +1656,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       text_0.startsWith("/") && text_0.length > 1
         ? parseSlashCommand(text_0)
         : null;
+    const parsedDollarSkill =
+      text_0.startsWith("$") && text_0.length > 1
+        ? parseDollarSkillCommand(text_0)
+        : null;
     if (
       !options?.fromQueue &&
       parsedSlashCommand !== null &&
@@ -1698,7 +1707,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       effectiveInputBusyRef.current = true;
     };
     setSubmitCount(count => count + 1);
-    if (parsedSlashCommand === null) {
+    if (parsedSlashCommand === null && parsedDollarSkill === null) {
       startPendingSubmission();
     }
     setInput("");
@@ -1854,6 +1863,46 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         // Fall through to the model on dispatch errors so the user
         // doesn't lose their input.
       }
+    }
+    if (parsedDollarSkill !== null) {
+      const command = findCommand(parsedDollarSkill.commandName, commands as unknown as Command[]);
+      if (isDollarSkillCommand(command)) {
+        try {
+          const loaded = await loadDollarSkillCommandForTurn(
+            parsedDollarSkill,
+            command,
+            getToolUseContext(
+              transcript.messages as any[],
+              [],
+              new AbortController(),
+              mainLoopModel,
+            ) as PromptInputContext,
+          );
+          props.session.enqueueIdleInput?.(loaded.metadata);
+          props.session.enqueueIdleInput?.({ content: loaded.blocks });
+          startPendingSubmission();
+          await props.session.submit?.("", { displayUserMessage: text_0 });
+        } catch (err_1) {
+          const message_0 = err_1 instanceof Error ? err_1.message : String(err_1);
+          showTransientResult(message_0, {
+            display: "error"
+          });
+          setPendingSubmission(false);
+        }
+        return;
+      }
+      if (command?.type === "local") {
+        showTransientResult(`Use /${parsedDollarSkill.commandName} for commands. Skills use $skill-name.`, {
+          display: "error"
+        });
+        setPendingSubmission(false);
+        return;
+      }
+      showTransientResult(`Unknown skill: $${parsedDollarSkill.commandName}\nUse /skills to list skills or /skills new ${parsedDollarSkill.commandName} to create one.`, {
+        display: "error"
+      });
+      setPendingSubmission(false);
+      return;
     }
     if (parsedSlashCommand !== null) {
       startPendingSubmission();

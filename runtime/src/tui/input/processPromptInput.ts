@@ -350,14 +350,14 @@ export function parseDollarSkillCommand(input: string): {
   }
 }
 
-function formatDollarSkillInputTags(commandName: string, args: string): string {
+export function formatDollarSkillInputTags(commandName: string, args: string): string {
   return `<${COMMAND_NAME_TAG}>$${commandName}</${COMMAND_NAME_TAG}>
             <${COMMAND_MESSAGE_TAG}>${commandName}</${COMMAND_MESSAGE_TAG}>
             <${COMMAND_ARGS_TAG}>${args}</${COMMAND_ARGS_TAG}>
             <skill-format>true</skill-format>`
 }
 
-function isSkillCommand(command: unknown): command is Extract<Command, { type: 'prompt' }> {
+export function isDollarSkillCommand(command: unknown): command is Extract<Command, { type: 'prompt' }> {
   return !!command &&
     typeof command === 'object' &&
     (command as Command).type === 'prompt' &&
@@ -366,13 +366,18 @@ function isSkillCommand(command: unknown): command is Extract<Command, { type: '
       (command as Command).loadedFrom === 'mcp')
 }
 
-async function processDollarSkillInput(
+export async function loadDollarSkillCommandForTurn(
   parsed: { commandName: string; args: string },
   command: Extract<Command, { type: 'prompt' }>,
   context: PromptInputContext,
-  uuid?: string,
-  attachmentMessages: AttachmentMessage[] = [],
-): Promise<PromptInputResult> {
+): Promise<{
+  metadata: string
+  blocks: ContentBlockParam[]
+  skillContent: string
+  allowedTools?: string[]
+  model?: string
+  effort?: EffortValue
+}> {
   const blocks = await command.getPromptForCommand(parsed.args, context)
   const skillContent = blocks
     .filter((block): block is Extract<ContentBlockParam, { type: 'text' }> => block.type === 'text')
@@ -399,21 +404,40 @@ async function processDollarSkillInput(
   }
 
   return {
+    metadata: formatDollarSkillInputTags(command.name, parsed.args),
+    blocks,
+    skillContent,
+    allowedTools: parseToolListFromCLI(command.allowedTools ?? []),
+    model: command.model,
+    effort: command.effort,
+  }
+}
+
+async function processDollarSkillInput(
+  parsed: { commandName: string; args: string },
+  command: Extract<Command, { type: 'prompt' }>,
+  context: PromptInputContext,
+  uuid?: string,
+  attachmentMessages: AttachmentMessage[] = [],
+): Promise<PromptInputResult> {
+  const loaded = await loadDollarSkillCommandForTurn(parsed, command, context)
+
+  return {
     messages: [
       createUserMessage({
-        content: formatDollarSkillInputTags(command.name, parsed.args),
+        content: loaded.metadata,
         uuid,
       }),
       ...attachmentMessages,
       createUserMessage({
-        content: blocks,
+        content: loaded.blocks,
         isMeta: true,
       }),
     ],
     shouldQuery: true,
-    allowedTools: parseToolListFromCLI(command.allowedTools ?? []),
-    model: command.model,
-    effort: command.effort,
+    allowedTools: loaded.allowedTools,
+    model: loaded.model,
+    effort: loaded.effort,
     resultText: `Loaded $${command.name}`,
   }
 }
@@ -737,7 +761,7 @@ async function processPromptInputBase(
     const parsedSkill = parseDollarSkillCommand(inputString)
     if (parsedSkill) {
       const command = findCommand(parsedSkill.commandName, context.options.commands)
-      if (isSkillCommand(command)) {
+      if (isDollarSkillCommand(command)) {
         return addImageMetadataMessage(
           await processDollarSkillInput(
             parsedSkill,
@@ -755,7 +779,7 @@ async function processPromptInputBase(
           precedingInputBlocks,
           attachmentMessages,
           uuid,
-          { type: 'text', value: `Use /${parsedSkill.commandName} for commands. Skills use $skill.` },
+          { type: 'text', value: `Use /${parsedSkill.commandName} for commands. Skills use $skill-name.` },
         )
       }
       return localCommandResultToPromptInputResult(
@@ -763,7 +787,10 @@ async function processPromptInputBase(
         precedingInputBlocks,
         attachmentMessages,
         uuid,
-        { type: 'text', value: `Unknown skill: $${parsedSkill.commandName}` },
+        {
+          type: 'text',
+          value: `Unknown skill: $${parsedSkill.commandName}\nUse /skills to list skills or /skills new ${parsedSkill.commandName} to create one.`,
+        },
       )
     }
   }

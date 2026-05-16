@@ -28,6 +28,7 @@ let mockTotalCost = 0;
 let mockHasConsoleBillingAccess = false;
 let mockWorktreeSession: unknown = null;
 let mockGlobalConfig: Record<string, unknown> = {};
+const mockTuiCommandList = vi.hoisted(() => [] as Array<Record<string, any>>);
 
 const providerProbe = {
   fpsGetters: [] as unknown[],
@@ -335,7 +336,9 @@ vi.mock("../state/AppState.js", async () => {
 });
 
 vi.mock("../../commands.js", () => ({
-  listTuiCommandList: () => [],
+  findCommand: (name: string, commands: Array<Record<string, any>> = mockTuiCommandList) =>
+    commands.find((command) => command.name === name || command.aliases?.includes(name)) ?? null,
+  listTuiCommandList: () => mockTuiCommandList,
 }));
 
 vi.mock("../../agents/role-definitions.js", () => ({
@@ -459,6 +462,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       vimMode,
       setVimMode,
       mcpClients,
+      commands,
       getToolUseContext,
       onInputChange,
       isLoading,
@@ -480,6 +484,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       vimMode?: unknown;
       setVimMode?: unknown;
       mcpClients?: unknown;
+      commands?: unknown;
       getToolUseContext?: unknown;
       onInputChange?: (input: string) => void;
       isLoading?: boolean;
@@ -498,6 +503,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         vimMode,
         setVimMode,
         mcpClients,
+        commands,
         getToolUseContext,
         onInputChange,
         isLoading,
@@ -589,6 +595,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.fileHistoryRewind.mockReset?.();
   providerProbe.processBashCommand.mockClear?.();
   providerProbe.historyEntries.length = 0;
+  mockTuiCommandList.length = 0;
   mockTotalCost = 0;
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
@@ -924,6 +931,82 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     } finally {
       dispatchSpy.mockRestore();
     }
+  });
+
+  test("keeps dollar-prefixed local commands out of model submit", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    mockTuiCommandList.push({
+      name: "help",
+      type: "local",
+      load: vi.fn(),
+    });
+    const session = {
+      ...createSession(),
+      enqueueIdleInput: vi.fn(() => 1),
+      submit: vi.fn(async () => {}),
+    } satisfies AgenCBridgeSession;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async ({ output }) => {
+        const onSubmit = providerProbe.promptSubmits.at(-1);
+        expect(onSubmit).toBeDefined();
+
+        await onSubmit!("$help", helpers);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(session.submit).not.toHaveBeenCalled();
+        expect(session.enqueueIdleInput).not.toHaveBeenCalled();
+        expect(output()).toContain("Use /help");
+        expect(output()).toContain("$skill-name");
+      },
+    );
+  });
+
+  test("keeps unknown dollar skills out of model submit", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    resetShellSurfaceProbe();
+    const session = {
+      ...createSession(),
+      enqueueIdleInput: vi.fn(() => 1),
+      submit: vi.fn(async () => {}),
+    } satisfies AgenCBridgeSession;
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
+      async ({ output }) => {
+        const onSubmit = providerProbe.promptSubmits.at(-1);
+        expect(onSubmit).toBeDefined();
+
+        await onSubmit!("$missing-skill now", helpers);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(session.submit).not.toHaveBeenCalled();
+        expect(session.enqueueIdleInput).not.toHaveBeenCalled();
+        expect(output()).toContain("Unknown");
+        expect(output()).toContain("$missing-skill");
+        expect(output()).toContain("/skills");
+      },
+    );
   });
 
   test("shows spinner while a tool runs after buffered assistant text", async () => {

@@ -42,8 +42,9 @@ describe("/tasks", () => {
     expect(formatTaskSummary([])).toEqual([
       "Tasks:",
       "  active: none",
-      "  spawned agents and long-running shell commands appear here while they run.",
-      "  manage: use the footer task pill when it appears; Enter opens details and x stops running tasks.",
+      "  agents and long-running shell commands appear here while they run.",
+      "  manage: Down selects the task pill; Enter opens details.",
+      "          x stops a running task.",
     ].join("\n"));
   });
 
@@ -95,7 +96,27 @@ describe("/tasks", () => {
     expect(output).toContain("active: 1");
     expect(output).toContain("running agent inspect visible task UX (a-live)");
     expect(output).toContain("completed shell npm test -- --run src/example.test.ts (b-old)");
-    expect(output).toContain("Enter for details");
+    expect(output).toContain("Enter opens details");
+    expect(output.split("\n").every((line) => line.length <= 76)).toBe(true);
+  });
+
+  it("keeps long task rows within the summary card width", () => {
+    const output = formatTaskSummary([
+      {
+        id: "01234567-89ab-cdef-0123-456789abcdef",
+        type: "local_agent",
+        status: "completed",
+        title:
+          "Review the Python terminal game created in this directory and report every issue",
+        detail:
+          "12 tools, 999,999 tokens, reading a very long path that should not force the card to wrap awkwardly",
+        startTime: 1,
+      },
+    ]);
+
+    expect(output).toContain("completed agent Review the Python terminal game");
+    expect(output).toContain("(01234567...)");
+    expect(output.split("\n").every((line) => line.length <= 76)).toBe(true);
   });
 
   it("ignores non-task objects in app state", () => {

@@ -32,6 +32,8 @@ export interface TaskSummaryRow {
   readonly startTime: number;
 }
 
+const SUMMARY_LINE_WIDTH = 76;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -55,6 +57,16 @@ function truncate(value: string, maxLength: number): string {
 
 function compactTaskId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}...` : id;
+}
+
+function formatTaskSubject(row: TaskSummaryRow, prefixLength: number): string {
+  const compactId = compactTaskId(row.id);
+  if (row.title === row.id || row.title === compactId) {
+    return truncate(compactId, Math.max(8, SUMMARY_LINE_WIDTH - prefixLength));
+  }
+  const suffix = ` (${compactId})`;
+  const titleWidth = Math.max(8, SUMMARY_LINE_WIDTH - prefixLength - suffix.length);
+  return `${truncate(row.title, titleWidth)}${suffix}`;
 }
 
 function firstLine(value: string): string {
@@ -171,8 +183,9 @@ export function formatTaskSummary(rows: readonly TaskSummaryRow[]): string {
     return [
       "Tasks:",
       "  active: none",
-      "  spawned agents and long-running shell commands appear here while they run.",
-      "  manage: use the footer task pill when it appears; Enter opens details and x stops running tasks.",
+      "  agents and long-running shell commands appear here while they run.",
+      "  manage: Down selects the task pill; Enter opens details.",
+      "          x stops a running task.",
     ].join("\n");
   }
 
@@ -183,19 +196,15 @@ export function formatTaskSummary(rows: readonly TaskSummaryRow[]): string {
     `  total: ${rows.length}`,
   ];
   for (const row of rows) {
-    const compactId = compactTaskId(row.id);
-    const subject =
-      row.title === row.id || row.title === compactId
-        ? compactId
-        : `${row.title} (${compactId})`;
-    lines.push(
-      `  ${row.status} ${taskTypeLabel(row.type)} ${subject}`,
-    );
+    const prefix = `  ${row.status} ${taskTypeLabel(row.type)} `;
+    const subject = formatTaskSubject(row, prefix.length);
+    lines.push(`${prefix}${subject}`);
     if (row.detail) {
-      lines.push(`    ${row.detail}`);
+      lines.push(`    ${truncate(row.detail, SUMMARY_LINE_WIDTH - 4)}`);
     }
   }
-  lines.push("  manage: select the footer task pill with Down, press Enter for details, or x to stop a running task.");
+  lines.push("  manage: Down selects the task pill; Enter opens details.");
+  lines.push("          x stops a running task.");
   return lines.join("\n");
 }
 
@@ -213,7 +222,8 @@ export const tasksCommand: SlashCommand = {
           text: [
             "Tasks:",
             "  live task state is only available inside the interactive TUI.",
-            "  in the TUI, use the footer task pill when it appears; Enter opens details and x stops running tasks.",
+            "  in the TUI, Down selects the task pill; Enter opens details.",
+            "  x stops a running task.",
           ].join("\n"),
         };
       }
