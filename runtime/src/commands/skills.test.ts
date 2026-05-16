@@ -1,10 +1,26 @@
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import skillsCommand, {
   collectSkillsSnapshot,
+  createProjectSkill,
   formatSkillsSnapshot,
 } from "./skills.js";
 import type { Session } from "../session/session.js";
+
+function tmpRoot(): string {
+  return mkdtempSync(join(tmpdir(), "agenc-skills-command-"));
+}
 
 function stubSession(opts: {
   invokedSkills?: readonly string[];
@@ -18,11 +34,13 @@ function stubSession(opts: {
     readonly aliases?: readonly string[];
   }>;
   roots?: unknown;
+  clearSkillCaches?: () => void;
 }): Session {
   return {
     config: { model: "test" },
     services: {
       skillsManager: {
+        clearSkillCaches: opts.clearSkillCaches,
         skillsForConfig: async () => ({
           invokedSkills: opts.invokedSkills ?? [],
           availableSkills: opts.availableSkills ?? [],
@@ -318,6 +336,102 @@ describe("skillsCommand", () => {
       expect(result.text).toContain("filter: python");
       expect(result.text).toContain("$python-game");
       expect(result.text).not.toContain("$debug");
+    }
+  });
+
+  it("creates a project skill and points invocation at the dollar skill form", async () => {
+    const cwd = tmpRoot();
+    let cleared = false;
+    try {
+      const result = await skillsCommand.execute({
+        session: stubSession({
+          clearSkillCaches: () => {
+            cleared = true;
+          },
+        }),
+        argsRaw: "new python-game Create Python terminal games",
+        cwd,
+        home: "/home/test",
+      });
+
+      const skillFile = join(cwd, ".agenc", "skills", "python-game", "SKILL.md");
+      expect(result.kind).toBe("text");
+      if (result.kind === "text") {
+        expect(result.text).toContain(
+          "Created skill: .agenc/skills/python-game/SKILL.md",
+        );
+        expect(result.text).toContain("Invoke it with: $python-game");
+        expect(result.text).not.toContain("Invoke it with: /python-game");
+      }
+      expect(cleared).toBe(true);
+      expect(readFileSync(skillFile, "utf8")).toContain(
+        'description: "Create Python terminal games"',
+      );
+      expect(readFileSync(skillFile, "utf8")).toContain(
+        "Use this skill when the user asks for: Create Python terminal games.",
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("creates namespaced skills as nested directories", async () => {
+    const cwd = tmpRoot();
+    try {
+      const result = await createProjectSkill(
+        cwd,
+        "frontend:react:form",
+        "Build React form flows",
+      );
+
+      expect(result).toEqual({
+        text: [
+          "Created skill: .agenc/skills/frontend/react/form/SKILL.md",
+          "Invoke it with: $frontend:react:form",
+          "Edit SKILL.md, then run /skills frontend:react:form.",
+        ].join("\n"),
+      });
+      expect(
+        existsSync(
+          join(cwd, ".agenc", "skills", "frontend", "react", "form", "SKILL.md"),
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsafe skill names before writing files", async () => {
+    const cwd = tmpRoot();
+    try {
+      const result = await createProjectSkill(cwd, "../bad", "Bad skill");
+
+      expect(result).toEqual({
+        error:
+          "Usage: /skills new <skill-name> [description]\nNames must use letters, numbers, _, -, and optional : namespaces.",
+      });
+      expect(existsSync(join(cwd, ".agenc"))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not overwrite an existing skill", async () => {
+    const cwd = tmpRoot();
+    try {
+      const skillDir = join(cwd, ".agenc", "skills", "existing");
+      mkdirSync(skillDir, { recursive: true });
+      const skillFile = join(skillDir, "SKILL.md");
+      writeFileSync(skillFile, "original", "utf8");
+
+      const result = await createProjectSkill(cwd, "existing", "Replacement");
+
+      expect(result).toEqual({
+        error: "Skill already exists: .agenc/skills/existing/SKILL.md",
+      });
+      expect(readFileSync(skillFile, "utf8")).toBe("original");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 });

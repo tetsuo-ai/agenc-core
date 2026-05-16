@@ -9,6 +9,9 @@
  * @module
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, relative } from "node:path";
+
 import type { Session } from "../session/session.js";
 import {
   safeExecute,
@@ -34,8 +37,11 @@ export interface SkillsSnapshot {
 
 type AvailableSkillSnapshot = SkillsSnapshot["availableSkills"][number];
 interface ParsedSkillsArgs {
+  readonly action: "list" | "new";
   readonly query?: string;
   readonly showAll: boolean;
+  readonly skillName?: string;
+  readonly description?: string;
 }
 
 interface SkillsFormatOptions {
@@ -54,19 +60,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseArgs(argsRaw: string): ParsedSkillsArgs {
   const trimmed = argsRaw.trim();
-  if (trimmed.length === 0) return { showAll: false };
+  if (trimmed.length === 0) return { action: "list", showAll: false };
   const [firstRaw = "", ...rest] = trimmed.split(/\s+/);
   const first = firstRaw.toLowerCase();
-  if (first === "all") return { showAll: true };
+  if (first === "new" || first === "create") {
+    const [skillName, ...descriptionParts] = rest;
+    return {
+      action: "new",
+      showAll: false,
+      skillName,
+      description: descriptionParts.join(" ").trim(),
+    };
+  }
+  if (first === "all") return { action: "list", showAll: true };
   if (first === "list" || first === "status") {
     return rest.length > 0
-      ? { showAll: false, query: rest.join(" ") }
-      : { showAll: false };
+      ? { action: "list", showAll: false, query: rest.join(" ") }
+      : { action: "list", showAll: false };
   }
   if (first === "find" || first === "search") {
-    return { showAll: false, query: rest.join(" ") };
+    return { action: "list", showAll: false, query: rest.join(" ") };
   }
-  return { showAll: false, query: trimmed };
+  return { action: "list", showAll: false, query: trimmed };
 }
 
 function normalizeRoots(value: unknown): string[] {
@@ -146,6 +161,67 @@ function compactText(value: string, limit: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
   return `${normalized.slice(0, limit - 1).trimEnd()}…`;
+}
+
+function validateNewSkillName(name: string | undefined): string | null {
+  if (name === undefined || name.length === 0) return null;
+  const segments = name.split(":");
+  if (
+    segments.length === 0 ||
+    segments.some((segment) => !/^[A-Za-z][A-Za-z0-9_-]*$/u.test(segment))
+  ) {
+    return null;
+  }
+  return segments.join(":");
+}
+
+function yamlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function skillTemplate(name: string, description: string): string {
+  return `---\ndescription: ${yamlString(description)}\n---\n# ${name}\n\nUse this skill when the user asks for: ${description}.\n\n## Instructions\n\n- State what this skill is for.\n- List the concrete steps the agent should follow.\n- Include any validation or output requirements.\n`;
+}
+
+export async function createProjectSkill(
+  cwd: string,
+  nameRaw: string | undefined,
+  descriptionRaw: string | undefined,
+): Promise<{ readonly text: string } | { readonly error: string }> {
+  const name = validateNewSkillName(nameRaw);
+  if (name === null) {
+    return {
+      error:
+        "Usage: /skills new <skill-name> [description]\nNames must use letters, numbers, _, -, and optional : namespaces.",
+    };
+  }
+  const description =
+    descriptionRaw?.trim() || `specialized help for ${name}`;
+  const segments = name.split(":");
+  const skillDir = join(cwd, ".agenc", "skills", ...segments);
+  const skillFile = join(skillDir, "SKILL.md");
+  await mkdir(skillDir, { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(skillFile, skillTemplate(name, description), {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return {
+        error: `Skill already exists: ${relative(cwd, skillFile)}`,
+      };
+    }
+    throw error;
+  }
+  return {
+    text: [
+      `Created skill: ${relative(cwd, skillFile)}`,
+      `Invoke it with: $${name}`,
+      `Edit SKILL.md, then run /skills ${name}.`,
+    ].join("\n"),
+  };
 }
 
 function formatAvailableSkill(skill: AvailableSkillSnapshot): string {
@@ -277,11 +353,21 @@ export function formatSkillsSnapshot(
 
 export const skillsCommand: SlashCommand = {
   name: "skills",
-  description: "Show loaded skills and effective plugin skill roots",
+  description: "Manage project skills and show loaded skill roots",
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const parsed = parseArgs(ctx.argsRaw);
+      if (parsed.action === "new") {
+        const result = await createProjectSkill(
+          ctx.cwd,
+          parsed.skillName,
+          parsed.description,
+        );
+        if ("error" in result) return { kind: "error", message: result.error };
+        ctx.session.services.skillsManager.clearSkillCaches?.();
+        return { kind: "text", text: result.text };
+      }
       const snapshot = await collectSkillsSnapshot(ctx.session, ctx.appState);
       return {
         kind: "text",
