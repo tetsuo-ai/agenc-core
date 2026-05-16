@@ -208,7 +208,7 @@ describe("tool-call correlation contract", () => {
     ]);
   });
 
-  test("collab-end-callid-required: spawn_begin+spawn_end with callId clears spinner state and renders status rows", () => {
+  test("collab-end-callid-required: spawn_begin+spawn_end with callId collapses to the settled status row", () => {
     const transcript = adaptTranscriptEvents([
       {
         id: "spawn-begin",
@@ -233,7 +233,6 @@ describe("tool-call correlation contract", () => {
 
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
     expect(transcript.messages).toMatchObject([
-      { type: "system", subtype: "collab_agent", title: "Spawning agent", state: "running" },
       { type: "system", subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
     ]);
   });
@@ -269,17 +268,11 @@ describe("tool-call correlation contract", () => {
       {
         type: "system",
         subtype: "collab_agent",
-        title: "Spawning agent",
-        state: "running",
-      },
-      {
-        type: "system",
-        subtype: "collab_agent",
         title: "Agent spawn failed",
         state: "error",
       },
     ]);
-    expect(transcript.messages[1]?.details).toContain(
+    expect(transcript.messages[0]?.details).toContain(
       "status: Error - task_name is required",
     );
   });

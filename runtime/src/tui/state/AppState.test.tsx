@@ -26,6 +26,7 @@ vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
 }));
 vi.mock("../../tools/Tool.js", () => ({
+  buildTool: (tool: unknown) => tool,
   getEmptyToolPermissionContext: () => ({
     mode: "default",
     additionalDirectories: [],
@@ -60,6 +61,13 @@ function StatusLineProbe(): React.ReactNode {
   return <Text>{statusLineText}</Text>;
 }
 
+function AllocatingSelectorProbe(): React.ReactNode {
+  const taskIds = useAppState((state) =>
+    Object.values(state.tasks ?? {}).map((task: any) => task.id),
+  );
+  return <Text>{taskIds.join(",")}</Text>;
+}
+
 describe("AppState", () => {
   test("provides selected state from the absorbed TUI state entrypoint", async () => {
     const initialState = {
@@ -75,6 +83,24 @@ describe("AppState", () => {
     );
 
     expect(output).toContain("state-ready");
+  });
+
+  test("caches selector snapshots that allocate during render", async () => {
+    const initialState = {
+      tasks: {
+        agent_1: { id: "agent_1", type: "local_agent", status: "running" },
+      },
+      toolPermissionContext: { isBypassPermissionsModeAvailable: false },
+    } as AppState;
+
+    const output = await renderToString(
+      <AppStateProvider initialState={initialState}>
+        <AllocatingSelectorProbe />
+      </AppStateProvider>,
+      80,
+    );
+
+    expect(output).toContain("agent_1");
   });
 
   test("notifies store subscribers when state changes", () => {

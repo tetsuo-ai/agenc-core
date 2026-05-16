@@ -957,6 +957,20 @@ function parseSubagentNotification(message: string): {
   }
 }
 
+function collectSettledCollabSpawnCallIds(
+  events: readonly SessionTranscriptEvent[],
+): ReadonlySet<string> {
+  const callIds = new Set<string>();
+  for (const raw of events) {
+    const event = unwrap(raw);
+    if (event.type !== "collab_agent_spawn_end") continue;
+    const payload = payloadRecord(event.payload);
+    const callId = payload.callId;
+    if (typeof callId === "string") callIds.add(callId);
+  }
+  return callIds;
+}
+
 function formatElicitationSummary(type: string, payload: Record<string, unknown>): string {
   if (type === "request_user_input") {
     const questions = Array.isArray(payload.questions)
@@ -1294,6 +1308,8 @@ export function adaptTranscriptEvents(
   events: readonly SessionTranscriptEvent[],
   startupMessages: readonly LLMMessage[] = [],
 ): AdaptedTranscript {
+  const orderedEvents = orderSequencedEvents(events);
+  const settledCollabSpawnCallIds = collectSettledCollabSpawnCallIds(orderedEvents);
   const out: any[] = startupMessages.map((message) => makeUserMessage(message.content));
   const seen = new Set<string>();
   const openTools = new Set<string>();
@@ -1333,7 +1349,7 @@ export function adaptTranscriptEvents(
     streamingText = "";
   };
 
-  for (const raw of orderSequencedEvents(events)) {
+  for (const raw of orderedEvents) {
     const event = unwrap(raw);
     if (seen.has(event.key)) continue;
     seen.add(event.key);
@@ -1917,6 +1933,7 @@ export function adaptTranscriptEvents(
         const callId =
           typeof payload.callId === "string" ? payload.callId : null;
         if (callId === null) break;
+        if (settledCollabSpawnCallIds.has(callId)) break;
         openTools.add(callId);
         const details = [
           promptDetail(payload.prompt),
