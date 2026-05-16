@@ -136,13 +136,40 @@ export function useAppState(selector) {
   const store = useAppStore();
   const selectorRef = React.useRef(selector);
   const storeRef = React.useRef(store);
+  const snapshotRef = React.useRef({
+    hasValue: false,
+    selector: null as unknown,
+    state: null as unknown,
+    store: null as unknown,
+    value: undefined as unknown,
+  });
   // Update refs during render so get() always calls the latest selector/store
   // without creating a new function identity that would trigger useSyncExternalStore
   // to re-sync and cause re-render loops.
   selectorRef.current = selector;
   storeRef.current = store;
   const get = React.useCallback(() => {
-    return selectorRef.current(storeRef.current.getState());
+    const currentStore = storeRef.current;
+    const currentSelector = selectorRef.current;
+    const currentState = currentStore.getState();
+    const cached = snapshotRef.current;
+    if (
+      cached.hasValue &&
+      cached.store === currentStore &&
+      cached.selector === currentSelector &&
+      Object.is(cached.state, currentState)
+    ) {
+      return cached.value;
+    }
+    const value = currentSelector(currentState);
+    snapshotRef.current = {
+      hasValue: true,
+      selector: currentSelector,
+      state: currentState,
+      store: currentStore,
+      value,
+    };
+    return value;
   }, []);
   return useSyncExternalStore(store.subscribe, get, get);
 }
@@ -172,12 +199,40 @@ export function useAppStateMaybeOutsideOfProvider(selector) {
   const store = useContext(AppStoreContext);
   const selectorRef = React.useRef(selector);
   const storeRef = React.useRef(store);
+  const snapshotRef = React.useRef({
+    hasValue: false,
+    selector: null as unknown,
+    state: null as unknown,
+    store: null as unknown,
+    value: undefined as unknown,
+  });
   // Update refs during render so get() always calls the latest selector/store
   // without creating a new function identity.
   selectorRef.current = selector;
   storeRef.current = store;
   const get = React.useCallback(() => {
-    return storeRef.current ? selectorRef.current(storeRef.current.getState()) : undefined;
+    const currentStore = storeRef.current;
+    if (!currentStore) return undefined;
+    const currentSelector = selectorRef.current;
+    const currentState = currentStore.getState();
+    const cached = snapshotRef.current;
+    if (
+      cached.hasValue &&
+      cached.store === currentStore &&
+      cached.selector === currentSelector &&
+      Object.is(cached.state, currentState)
+    ) {
+      return cached.value;
+    }
+    const value = currentSelector(currentState);
+    snapshotRef.current = {
+      hasValue: true,
+      selector: currentSelector,
+      state: currentState,
+      store: currentStore,
+      value,
+    };
+    return value;
   }, []);
   return useSyncExternalStore(store ? store.subscribe : NOOP_SUBSCRIBE, get);
 }
