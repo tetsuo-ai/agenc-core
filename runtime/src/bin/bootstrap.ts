@@ -28,7 +28,7 @@ import { initializeToolPermissionContext } from "../permissions/settings.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
 import {
-  createSessionMcpManagerFromConfig,
+  createSessionMcpManagerFromSources,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
 import type {
@@ -1006,9 +1006,13 @@ export async function bootstrapLocalRuntimeSession(
     model: providerModel,
     settings: runtimeProviderSettings,
   });
-  const mcpManager = createSessionMcpManagerFromConfig(
+  const mcpManager = await createSessionMcpManagerFromSources(
     configStore.current(),
     env,
+    {
+      cwd: workspaceRoot,
+      includeProjectMcpServers: cli.allowDangerouslySkipPermissions,
+    },
   );
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,

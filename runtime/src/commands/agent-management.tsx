@@ -7,8 +7,6 @@
  * render.
  */
 
-import * as React from "react";
-
 import {
   safeExecute,
   type SlashCommand,
@@ -38,11 +36,16 @@ export const agentsCommand: SlashCommand = {
         : [];
       setToolJSX({
         isLocalJSXCommand: true,
+        shouldHidePromptInput: false,
         jsx: (
           <AgentsMenu
             tools={tools as never}
             onExit={() => {
-              setToolJSX(null);
+              setToolJSX({
+                jsx: null,
+                shouldHidePromptInput: false,
+                clearLocalJSX: true,
+              });
             }}
           />
         ),

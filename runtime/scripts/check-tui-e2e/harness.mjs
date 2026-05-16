@@ -216,6 +216,176 @@ export function stripAnsi(s) {
     .replace(/\x1bP([^\x1b]*)\x1b\\/g, "$1");
 }
 
+function emptyGrid(rows, cols) {
+  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => " "));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function parseCsiParams(sequence) {
+  const raw = sequence.slice(0, -1).replace(/^\?/, "");
+  if (raw.length === 0) return [0];
+  return raw.split(";").map((part) => {
+    const value = Number.parseInt(part, 10);
+    return Number.isFinite(value) ? value : 0;
+  });
+}
+
+function findSequenceEnd(s, start, terminator) {
+  const idx = s.indexOf(terminator, start);
+  return idx === -1 ? s.length - 1 : idx + terminator.length - 1;
+}
+
+function printableChar(ch) {
+  return ch >= " " && ch !== "\x7f";
+}
+
+export function renderPtyScreen(raw, { cols = 140, rows = 40 } = {}) {
+  const grid = emptyGrid(rows, cols);
+  let row = 0;
+  let col = 0;
+  let wrapPending = false;
+
+  const scrollUp = (count = 1) => {
+    for (let idx = 0; idx < count; idx += 1) {
+      grid.shift();
+      grid.push(Array.from({ length: cols }, () => " "));
+    }
+  };
+
+  const lineFeed = () => {
+    if (row >= rows - 1) {
+      scrollUp();
+    } else {
+      row += 1;
+    }
+  };
+
+  const clearLine = (line, from, to) => {
+    const target = grid[clamp(line, 0, rows - 1)];
+    for (let idx = clamp(from, 0, cols - 1); idx <= clamp(to, 0, cols - 1); idx += 1) {
+      target[idx] = " ";
+    }
+  };
+
+  const put = (ch) => {
+    if (wrapPending) {
+      col = 0;
+      lineFeed();
+      wrapPending = false;
+    }
+    if (row < 0 || row >= rows || col < 0 || col >= cols) return;
+    grid[row][col] = ch;
+    if (col >= cols - 1) {
+      wrapPending = true;
+    } else {
+      col += 1;
+    }
+  };
+
+  const moveCursor = (nextRow, nextCol) => {
+    row = clamp(nextRow, 0, rows - 1);
+    col = clamp(nextCol, 0, cols - 1);
+    wrapPending = false;
+  };
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (ch === "\x1b") {
+      const next = raw[i + 1];
+      if (next === "]") {
+        const bell = raw.indexOf("\x07", i + 2);
+        const escTerm = raw.indexOf("\x1b\\", i + 2);
+        const end = bell === -1
+          ? escTerm === -1 ? raw.length - 1 : escTerm + 1
+          : escTerm === -1 ? bell : Math.min(bell, escTerm + 1);
+        i = end;
+        continue;
+      }
+      if (next === "P") {
+        i = findSequenceEnd(raw, i + 2, "\x1b\\");
+        continue;
+      }
+      if (next === "[") {
+        let end = i + 2;
+        while (end < raw.length && !/[@-~]/u.test(raw[end])) end += 1;
+        const sequence = raw.slice(i + 2, end + 1);
+        const final = sequence.at(-1);
+        const params = parseCsiParams(sequence);
+        const first = params[0] || 1;
+        if (final === "A") moveCursor(row - first, col);
+        else if (final === "B") moveCursor(row + first, col);
+        else if (final === "C") moveCursor(row, col + first);
+        else if (final === "D") moveCursor(row, col - first);
+        else if (final === "G") moveCursor(row, first - 1);
+        else if (final === "H" || final === "f") {
+          moveCursor((params[0] || 1) - 1, (params[1] || 1) - 1);
+        } else if (final === "J") {
+          const mode = params[0] ?? 0;
+          if (mode === 2 || mode === 3) {
+            for (let r = 0; r < rows; r += 1) clearLine(r, 0, cols - 1);
+            row = 0;
+            col = 0;
+            wrapPending = false;
+          } else if (mode === 0) {
+            clearLine(row, col, cols - 1);
+            for (let r = row + 1; r < rows; r += 1) clearLine(r, 0, cols - 1);
+          } else if (mode === 1) {
+            for (let r = 0; r < row; r += 1) clearLine(r, 0, cols - 1);
+            clearLine(row, 0, col);
+          }
+        } else if (final === "K") {
+          const mode = params[0] ?? 0;
+          if (mode === 0) clearLine(row, col, cols - 1);
+          else if (mode === 1) clearLine(row, 0, col);
+          else if (mode === 2) clearLine(row, 0, cols - 1);
+        } else if (final === "S") {
+          scrollUp(first);
+        }
+        i = end;
+        continue;
+      }
+      if (next === "(" || next === ")") {
+        i += 2;
+        continue;
+      }
+      if (next === "=" || next === ">") {
+        i += 1;
+        continue;
+      }
+    }
+    if (ch === "\r") {
+      col = 0;
+      wrapPending = false;
+    } else if (ch === "\n") {
+      lineFeed();
+      col = 0;
+      wrapPending = false;
+    } else if (ch === "\b") {
+      moveCursor(row, col - 1);
+    } else if (ch === "\t") {
+      moveCursor(row, col + (8 - (col % 8)));
+    } else if (printableChar(ch)) {
+      put(ch);
+    }
+  }
+
+  return grid
+    .map((line) => line.join("").trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .join("\n");
+}
+
+export function normalizePtyOutput(raw, opts = {}) {
+  const plain = stripAnsi(raw).trimEnd();
+  const screen = renderPtyScreen(raw, opts).trimEnd();
+  if (screen.length === 0 || screen === plain) return plain;
+  if (plain.length === 0) return screen;
+  return `${plain}\n${screen}`;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class TuiSession {
@@ -336,7 +506,10 @@ export class TuiSession {
     const re = pattern instanceof RegExp ? pattern : new RegExp(pattern);
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      const slice = stripAnsi(this.buffer.slice(this.watermark));
+      const slice = normalizePtyOutput(this.buffer.slice(this.watermark), {
+        cols: this.cols,
+        rows: this.rows,
+      });
       if (re.test(slice)) {
         // Match found: advance watermark to current end so subsequent
         // waitFor calls scan only future bytes.
@@ -543,7 +716,15 @@ export class TuiSession {
    * Plain-text view of the captured output for ad-hoc assertions.
    */
   get text() {
+    return normalizePtyOutput(this.buffer, { cols: this.cols, rows: this.rows });
+  }
+
+  get plainText() {
     return stripAnsi(this.buffer);
+  }
+
+  get latestFrame() {
+    return renderPtyScreen(this.buffer, { cols: this.cols, rows: this.rows });
   }
 
   /**

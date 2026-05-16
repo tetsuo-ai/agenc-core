@@ -250,6 +250,33 @@ describe("static section emitters", () => {
     );
   });
 
+  test("using_your_tools tells models to create project skills with non-empty allowed-tools", () => {
+    const s = getUsingYourToolsSection(new Set(["exec_command", "Skill"]));
+
+    expect(s).toContain(".agenc/skills/<name>/SKILL.md");
+    expect(s).toContain("allowed-tools");
+    expect(s).toContain("instead of []");
+  });
+
+  test("using_your_tools tells models not to simulate MCP calls through the shell", () => {
+    const s = getUsingYourToolsSection(
+      new Set(["exec_command", "mcp.audit-ping.ping"]),
+    );
+
+    expect(s).toContain("call the MCP tool directly");
+    expect(s).toContain("Do not simulate MCP results");
+    expect(s).toContain("do not run a shell command");
+  });
+
+  test("using_your_tools gives MCP shell-simulation guidance when only deferred tool search is visible", () => {
+    const s = getUsingYourToolsSection(
+      new Set(["exec_command", "system.searchTools"]),
+    );
+
+    expect(s).toContain("call the MCP tool directly");
+    expect(s).toContain("Do not simulate MCP results");
+  });
+
   test("agent_tool does not advertise legacy system.agent.delegate", () => {
     const s = getAgentToolSection(new Set(["system.agent.delegate"]));
     expect(s).toBeNull();

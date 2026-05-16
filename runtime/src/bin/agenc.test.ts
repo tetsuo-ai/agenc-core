@@ -27,14 +27,17 @@ import {
   __setActiveInkUnmountForTest,
   bootTUIEntry,
   detectStartupShortCircuit,
+  formatUnavailableCliCwdMessage,
   formatCliHelpText,
   initializeCliRuntime,
   installInitSignalHandlers,
   installSignalHandlers,
+  isUnavailableCliCwdError,
   main,
   maybeReloadConfigBetweenTurns,
   oneShotCLI,
   prepareTurnRuntimeInputs,
+  resolveCliCwdForStartup,
   resolveModelOrExit,
   resumeTUIEntry,
   runSingleTurn,
@@ -898,6 +901,50 @@ describe("validateAgencHome", () => {
         ),
       ).toThrow(new RegExp(`not writable \\(${code}\\)`));
     }
+  });
+});
+
+describe("resolveCliCwdForStartup", () => {
+  it("uses AGENC_WORKSPACE when the shell directory is unavailable", () => {
+    const result = resolveCliCwdForStartup(
+      { AGENC_WORKSPACE: "/tmp/agenc-workspace" },
+      {
+        cwdFn: () => {
+          throw Object.assign(new Error("ENOENT: no such file or directory, uv_cwd"), {
+            syscall: "uv_cwd",
+          });
+        },
+      },
+    );
+
+    expect(result).toEqual({ ok: true, cwd: "/tmp/agenc-workspace" });
+  });
+
+  it("returns the concise deleted-directory message when no workspace is configured", () => {
+    const result = resolveCliCwdForStartup(
+      {},
+      {
+        cwdFn: () => {
+          throw Object.assign(new Error("ENOENT: no such file or directory, uv_cwd"), {
+            syscall: "uv_cwd",
+          });
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      message: formatUnavailableCliCwdMessage(),
+    });
+  });
+
+  it("recognizes raw Node uv_cwd errors for the direct-invocation fallback", () => {
+    const error = Object.assign(
+      new Error("ENOENT: no such file or directory, uv_cwd"),
+      { syscall: "uv_cwd" },
+    );
+
+    expect(isUnavailableCliCwdError(error)).toBe(true);
   });
 });
 

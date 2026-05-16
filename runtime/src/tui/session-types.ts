@@ -44,6 +44,7 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly authManager?: SessionServices["authManager"];
     readonly mcpManager?: SessionServices["mcpManager"];
     readonly skillsManager?: SessionServices["skillsManager"];
+    readonly skillsWatcher?: SessionServices["skillsWatcher"];
     readonly pluginsManager?: SessionServices["pluginsManager"];
     readonly hooks?: {
       readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];

@@ -6,6 +6,9 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MCPManager } from "../mcp-client/manager.js";
 import {
   projectMcpManagerToConnections,
@@ -22,12 +25,14 @@ import {
   createSessionMcpManager,
   createSessionMcpManagerFromConfig,
   createSessionMcpManagerFromEnv,
+  createSessionMcpManagerFromSources,
   createSessionMcpService,
   getMcpConfigFromConfig,
   getMcpConfigFromEnv,
   refreshMcpManagerFromConfig,
   requiredMcpServerNames,
   resolveSessionMcpConfig,
+  resolveSessionMcpConfigFromSources,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
@@ -342,6 +347,82 @@ describe("mcp-startup session-owned manager helpers", () => {
         required: true,
       }),
     ]);
+  });
+
+  it("loads project .mcp.json servers when bypass-mode startup opts in", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-project-mcp-"));
+    try {
+      writeFileSync(
+        join(cwd, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            audit: {
+              type: "stdio",
+              command: "node",
+              args: ["server.js"],
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      await expect(
+        resolveSessionMcpConfigFromSources(
+          undefined,
+          {} as NodeJS.ProcessEnv,
+          {
+            cwd,
+            includeProjectMcpServers: true,
+          },
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          name: "audit",
+          transport: "stdio",
+          command: "node",
+          args: ["server.js"],
+        }),
+      ]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps AGENC_MCP_SERVERS as a complete override over project .mcp.json", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-project-mcp-"));
+    try {
+      writeFileSync(
+        join(cwd, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            project: {
+              type: "stdio",
+              command: "project-mcp",
+            },
+          },
+        }),
+        "utf8",
+      );
+
+      const manager = await createSessionMcpManagerFromSources(
+        undefined,
+        {
+          AGENC_MCP_SERVERS: JSON.stringify([
+            { name: "env", command: "env-mcp" },
+          ]),
+        } as NodeJS.ProcessEnv,
+        {
+          cwd,
+          includeProjectMcpServers: true,
+        },
+      );
+
+      expect(manager.getConfiguredServers()).toEqual([
+        expect.objectContaining({ name: "env", command: "env-mcp" }),
+      ]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("exposes runtime readiness and routing off the real manager", () => {

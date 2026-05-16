@@ -21,6 +21,7 @@ vi.mock("../tui/ink.js", async () => {
 import {
   checkOnboardingProviderConnection,
   createInitialFirstRunOnboardingState,
+  detailLinesForStep,
   submitFirstRunOnboardingInput,
 } from "./Onboarding.js";
 import {
@@ -255,6 +256,63 @@ describe("first-run onboarding wizard", () => {
     });
   });
 
+  test("describes verified provider credentials without asking users to add them later", () => {
+    const config = defaultConfig();
+    const context = {
+      config,
+      env: { XAI_API_KEY: "xai-test-key" },
+      checkLocalProviders: false,
+    };
+    const state = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "api-key" as const,
+      connection: {
+        provider: "grok",
+        model: "grok-4-fast",
+        status: "ready" as const,
+        ok: true,
+        detail: "Provider credential found via XAI_API_KEY.",
+        keyEnvVar: "XAI_API_KEY",
+      },
+    };
+
+    const lines = detailLinesForStep(state, context);
+
+    expect(lines).toContain("Provider credential found via XAI_API_KEY.");
+    expect(lines).toContain(
+      "XAI_API_KEY is present and verified. Type next to continue, or paste a replacement key.",
+    );
+    expect(lines.join("\n")).not.toContain("add it later");
+  });
+
+  test("makes --yolo permission and sandbox behavior explicit", () => {
+    const config = defaultConfig();
+    const context = {
+      config,
+      env: {},
+      permissionMode: "bypassPermissions",
+      sandboxMode: "workspace-write",
+      checkLocalProviders: false,
+    };
+    const state = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "security" as const,
+    };
+
+    const lines = detailLinesForStep(state, context);
+
+    expect(lines).toContain(
+      "Permission mode: bypassPermissions (--yolo skips tool approval prompts).",
+    );
+    expect(lines).toContain(
+      "Sandbox: danger-full-access (--yolo disables workspace sandboxing for this session).",
+    );
+    expect(lines.join("\n")).not.toContain("Sandbox: workspace-write");
+    expect(lines).toContain(
+      "Type next to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+    );
+  });
+
   test("rejects invalid theme, provider, and connection-test input", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
@@ -352,12 +410,69 @@ describe("first-run onboarding wizard", () => {
       expect(result.state.currentStepId).toBe("api-key");
       expect(result.state.pendingApiKeyApproval).toBeNull();
       expect(result.state.error).toContain("Provider rejected");
+      expect(result.state.error).toContain("next or skip");
       await expect(
         new LocalAuthBackend({ agencHome }).readByokKey("grok"),
       ).resolves.toBeUndefined();
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
+  });
+
+  test("lets users skip a failed existing credential check without getting stuck", async () => {
+    const config = defaultConfig();
+    const context = {
+      config,
+      env: { XAI_API_KEY: "xai-bad-env-key" },
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response("bad request", { status: 400 }),
+      ),
+      checkLocalProviders: false,
+    };
+    let state = await advanceToApiKey(context);
+
+    expect(state.connection).toMatchObject({
+      ok: false,
+      status: "provider-unreachable",
+      keyEnvVar: "XAI_API_KEY",
+    });
+    expect(detailLinesForStep(state, context).join("\n")).toContain(
+      "Type next or skip",
+    );
+
+    let result = await submitFirstRunOnboardingInput(
+      state,
+      "xai-still-bad",
+      context,
+    );
+    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.error).toContain("next or skip");
+
+    result = await submitFirstRunOnboardingInput(
+      result.state,
+      "/skip",
+      context,
+    );
+    expect(result.state.currentStepId).toBe("security");
+  });
+
+  test("accepts slash aliases for onboarding navigation", async () => {
+    const config = defaultConfig();
+    const context = { config, env: {}, checkLocalProviders: false };
+    let state = createInitialFirstRunOnboardingState(context);
+
+    state = (
+      await submitFirstRunOnboardingInput(state, "/next", context)
+    ).state;
+    expect(state.currentStepId).toBe("theme");
+
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
+    state = (
+      await submitFirstRunOnboardingInput(state, "/skip", context)
+    ).state;
+    expect(state.currentStepId).toBe("security");
   });
 
   test("does not persist verified BYOK keys declined at approval", async () => {
@@ -604,7 +719,8 @@ describe("first-run onboarding wizard", () => {
 
     expect(result.completed).toBe(false);
     expect(result.state.currentStepId).toBe("preflight");
-    expect(result.state.error).toContain("slash commands unlock after setup");
+    expect(result.state.error).toContain("Onboarding is active");
+    expect(result.state.error).toContain("/exit");
   });
 });
 

@@ -10,6 +10,7 @@ import {
   resolveAttachTargetTrustRoot,
   runProjectTrustPreflightForTui,
 } from "./agenc.js";
+import { YOLO_TRUST_COPY } from "../permissions/trust/TrustDialog.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 
 function makeEnv(home: string, workspace: string): NodeJS.ProcessEnv {
@@ -383,6 +384,12 @@ describe("project trust preflight", () => {
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("explains both approval bypass and sandbox bypass in --yolo trust copy", () => {
+    expect(YOLO_TRUST_COPY).toContain("skips tool approval prompts");
+    expect(YOLO_TRUST_COPY).toContain("disables workspace sandboxing");
+    expect(YOLO_TRUST_COPY).toContain("project trust still requires confirmation");
   });
 
   it("prompts for interactive agent start trust before daemon readiness", async () => {

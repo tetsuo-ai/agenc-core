@@ -59,11 +59,6 @@ export function ConfirmStep(t0) {
       if (e.key === "s" || e.key === "return") {
         e.preventDefault();
         onSave();
-      } else {
-        if (e.key === "e") {
-          e.preventDefault();
-          onSaveAndEdit();
-        }
       }
     };
     $[1] = onSave;
@@ -126,7 +121,7 @@ export function ConfirmStep(t0) {
     T1 = WizardDialogLayout;
     t18 = "Confirm and save";
     if ($[34] === Symbol.for("react.memo_cache_sentinel")) {
-      t19 = <Byline><KeyboardShortcutHint shortcut="s/Enter" action="save" /><KeyboardShortcutHint shortcut="e" action="edit in your editor" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline>;
+      t19 = <Byline><KeyboardShortcutHint shortcut="s/Enter" action="save" /><ConfigurableShortcutHint action="confirm:no" context="Confirmation" fallback="Esc" description="cancel" /></Byline>;
       $[34] = t19;
     } else {
       t19 = $[34];
@@ -320,7 +315,7 @@ export function ConfirmStep(t0) {
   }
   let t23;
   if ($[64] === Symbol.for("react.memo_cache_sentinel")) {
-    t23 = <Box marginTop={2}><Text color="success">Press {t21} or {t22} to save,{" "}<Text bold={true}>e</Text> to save and edit</Text></Box>;
+    t23 = <Box marginTop={2}><Text color="success">Press {t21} or {t22} to save</Text></Box>;
     $[64] = t23;
   } else {
     t23 = $[64];

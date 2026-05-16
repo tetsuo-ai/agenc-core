@@ -5,10 +5,18 @@ import { useCallback, useEffect, useRef } from 'react'
 
 export const DOUBLE_PRESS_TIMEOUT_MS = 800
 
+type SharedDoublePressState = {
+  lastPress: number
+  token: number
+}
+
+const sharedDoublePressState = new Map<string, SharedDoublePressState>()
+
 export function useDoublePress(
   setPending: (pending: boolean) => void,
   onDoublePress: () => void,
   onFirstPress?: () => void,
+  sharedKey?: string,
 ): () => void {
   const lastPressRef = useRef<number>(0)
   const timeoutRef = useRef<NodeJS.Timeout | undefined>(undefined)
@@ -29,10 +37,17 @@ export function useDoublePress(
 
   return useCallback(() => {
     const now = Date.now()
-    const timeSinceLastPress = now - lastPressRef.current
+    const sharedState =
+      sharedKey !== undefined
+        ? sharedDoublePressState.get(sharedKey) ?? { lastPress: 0, token: 0 }
+        : undefined
+    const lastPress = sharedState?.lastPress ?? lastPressRef.current
+    const timeSinceLastPress = now - lastPress
     const isDoublePress =
       timeSinceLastPress <= DOUBLE_PRESS_TIMEOUT_MS &&
-      timeoutRef.current !== undefined
+      (sharedKey !== undefined
+        ? sharedState !== undefined
+        : timeoutRef.current !== undefined)
 
     if (isDoublePress) {
       // Double press detected
@@ -46,17 +61,30 @@ export function useDoublePress(
 
       // Clear any existing timeout and set new one
       clearTimeoutSafe()
+      const token = (sharedState?.token ?? 0) + 1
+      if (sharedKey !== undefined) {
+        sharedDoublePressState.set(sharedKey, { lastPress: now, token })
+      }
       timeoutRef.current = setTimeout(
-        (setPending, timeoutRef) => {
+        (setPending, timeoutRef, sharedKey, token) => {
           setPending(false)
           timeoutRef.current = undefined
+          if (sharedKey !== undefined) {
+            const shared = sharedDoublePressState.get(sharedKey)
+            if (shared?.token === token) sharedDoublePressState.delete(sharedKey)
+          }
         },
         DOUBLE_PRESS_TIMEOUT_MS,
         setPending,
         timeoutRef,
+        sharedKey,
+        token,
       )
     }
 
     lastPressRef.current = now
-  }, [setPending, onDoublePress, onFirstPress, clearTimeoutSafe])
+    if (sharedKey !== undefined && isDoublePress) {
+      sharedDoublePressState.delete(sharedKey)
+    }
+  }, [setPending, onDoublePress, onFirstPress, clearTimeoutSafe, sharedKey])
 }

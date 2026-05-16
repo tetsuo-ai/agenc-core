@@ -273,6 +273,9 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
   const taskToolName = [TASK_CREATE_TOOL_NAME, TODO_WRITE_TOOL_NAME].find(n =>
     enabledTools.has(n),
   )
+  const hasMcpTool =
+    enabledTools.has('system.searchTools') ||
+    [...enabledTools].some(name => name.startsWith('mcp.'))
 
   // Ant-native builds alias find/grep to embedded bfs/ugrep and remove the
   // dedicated Glob/Grep tools, so skip guidance pointing at them.
@@ -296,6 +299,12 @@ function getUsingYourToolsSection(enabledTools: Set<string>): string {
     providedToolSubitems,
     taskToolName
       ? `Break down and manage your work with the ${taskToolName} tool. These tools are helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with the task. Do not batch up multiple tasks before marking them as completed.`
+      : null,
+    enabledTools.has(SKILL_TOOL_NAME)
+      ? `When creating or editing project skills under .agenc/skills/<name>/SKILL.md, include useful non-empty frontmatter. Set allowed-tools to the narrow tool names the skill actually needs (for example FileRead, Grep, Glob, Edit, Write, exec_command) instead of [] when the skill expects tool access.`
+      : null,
+    hasMcpTool
+      ? `When the user asks you to use an MCP tool, call the MCP tool directly. Do not simulate MCP results with shell commands or scripts, and do not run a shell command whose purpose is to fake or stand in for an MCP call.`
       : null,
     `You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.`,
   ].filter(item => item !== null)

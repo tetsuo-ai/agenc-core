@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -195,24 +195,59 @@ describe("app-server-client daemon helpers", () => {
 
   it("seeds daemon-only TUI context with bypass permissions for yolo launch", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-context-"));
-    const context = await createAgenCDaemonOnlyTuiContext({
-      env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
-      cwd: "/workspace",
-      conversationId: "agenc-tui-idle-test",
-      permissionMode: "bypassPermissions",
-    });
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-workspace-"));
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
+      null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd: workspace,
+        conversationId: "agenc-tui-idle-test",
+        permissionMode: "bypassPermissions",
+      });
 
-    const permissionContext =
-      context.baseSession.services.permissionModeRegistry.current();
-    expect(permissionContext.mode).toBe("bypassPermissions");
-    expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
+      const permissionContext =
+        context.baseSession.services.permissionModeRegistry.current();
+      expect(permissionContext.mode).toBe("bypassPermissions");
+      expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("dispatches daemon-only TUI slash commands without local session services", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-cwd-"));
+    const pidFile = join(agencHome, "mcp", "audit-ping.pid");
+    const fixture = join(
+      process.cwd(),
+      "src/mcp-client/test-fixtures/stdio-pid-server.cjs",
+    );
+    mkdirSync(join(cwd, ".agenc/skills/python-game"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".agenc/skills/python-game/SKILL.md"),
+      "---\nname: python-game\ndescription: Help with the Python game.\n---\n",
+      "utf8",
+    );
+    writeFileSync(
+      join(cwd, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "audit-ping": {
+            type: "stdio",
+            command: process.execPath,
+            args: [fixture, pidFile],
+          },
+        },
+      }),
+      "utf8",
+    );
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
+      null;
     try {
-      const context = await createAgenCDaemonOnlyTuiContext({
+      context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
         cwd,
         conversationId: "agenc-tui-daemon-slash-test",
@@ -257,16 +292,84 @@ describe("app-server-client daemon helpers", () => {
       await expect(run("/mcp")).resolves.toMatchObject({
         result: {
           kind: "text",
-          text: "MCP servers: none configured.",
+          text: expect.stringContaining("audit-ping: connected"),
+        },
+      });
+      await expect(run("/mcp tools")).resolves.toMatchObject({
+        result: {
+          kind: "text",
+          text: expect.stringContaining("mcp.audit-ping.ping"),
         },
       });
       await expect(run("/skills")).resolves.toMatchObject({
         result: {
           kind: "text",
-          text: expect.stringContaining("available: none"),
+          text: expect.stringContaining("python-game"),
         },
       });
     } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes project skills created during the same daemon-only TUI session", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-skills-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-skills-cwd-"));
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
+      null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd,
+        conversationId: "agenc-tui-live-skills-test",
+        permissionMode: "bypassPermissions",
+      });
+      const registry = buildDefaultRegistry();
+      const runSkills = async () => {
+        const parsed = parseSlashCommand("/skills");
+        expect(parsed).not.toBeNull();
+        return dispatchSlashCommand(
+          parsed!,
+          {
+            session: context!.baseSession as SlashCommandContext["session"],
+            argsRaw: parsed!.argsRaw,
+            cwd,
+            home: agencHome,
+            agencHome,
+            configStore: context!.configStore as SlashCommandContext["configStore"],
+            commandRegistry: registry,
+            appState: {
+              getAppState: () => ({ mcp: { commands: [] } }),
+            },
+          },
+          registry,
+        );
+      };
+
+      await expect(runSkills()).resolves.toMatchObject({
+        result: {
+          kind: "text",
+          text: expect.not.stringContaining("late-python-game"),
+        },
+      });
+
+      mkdirSync(join(cwd, ".agenc/skills/late-python-game"), { recursive: true });
+      writeFileSync(
+        join(cwd, ".agenc/skills/late-python-game/SKILL.md"),
+        "---\nname: late-python-game\ndescription: Late skill.\n---\n",
+        "utf8",
+      );
+
+      await expect(runSkills()).resolves.toMatchObject({
+        result: {
+          kind: "text",
+          text: expect.stringContaining("late-python-game"),
+        },
+      });
+    } finally {
+      await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -275,8 +378,10 @@ describe("app-server-client daemon helpers", () => {
   it("dispatches daemon-only TUI plan and agents commands", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-plan-agents-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-plan-agents-cwd-"));
+    let context: Awaited<ReturnType<typeof createAgenCDaemonOnlyTuiContext>> | null =
+      null;
     try {
-      const context = await createAgenCDaemonOnlyTuiContext({
+      context = await createAgenCDaemonOnlyTuiContext({
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
         cwd,
         conversationId: "agenc-tui-plan-agents-test",
@@ -325,9 +430,16 @@ describe("app-server-client daemon helpers", () => {
       });
       expect(toolJSX).toMatchObject({
         isLocalJSXCommand: true,
+        shouldHidePromptInput: false,
         jsx: expect.anything(),
       });
+      (toolJSX as { jsx: { props: { onExit: () => void } } }).jsx.props.onExit();
+      expect(toolJSX).toMatchObject({
+        clearLocalJSX: true,
+        jsx: null,
+      });
     } finally {
+      await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }

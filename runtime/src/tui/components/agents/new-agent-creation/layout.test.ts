@@ -68,4 +68,10 @@ describe('agent confirmation preview layout', () => {
     expect(confirmStepSource).not.toContain('truncateToWidth(agent.whenToUse, 240)')
     expect(confirmStepSource).not.toContain('•')
   })
+
+  it('does not expose a single-key save-and-edit shortcut on the final step', () => {
+    expect(confirmStepSource).not.toContain('shortcut="e"')
+    expect(confirmStepSource).not.toContain('save and edit')
+    expect(confirmStepSource).not.toContain('edit in your editor')
+  })
 })

@@ -196,6 +196,10 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
             entry.metadata.deferred && !selectedEntries.some((selected) => selected.name === entry.name)
               ? `Call system.searchTools with select:${entry.name} to load this deferred tool.`
               : undefined,
+          useHint:
+            entry.name.startsWith("mcp.")
+              ? `If you need this MCP tool, invoke ${entry.name} directly after it is selected. Do not use exec_command or any shell command as an MCP placeholder.`
+              : undefined,
         })),
       });
     },

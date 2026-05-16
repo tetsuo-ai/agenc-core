@@ -185,6 +185,7 @@ export function useTextInput({
         onHistoryReset?.()
       }
     },
+    'app:interrupt',
   )
 
   // NOTE(keybindings): This escape handler is intentionally NOT migrated to the keybindings system.
@@ -236,6 +237,8 @@ export function useTextInput({
       }
       onExit?.()
     },
+    undefined,
+    'app:exit',
   )
 
   function handleCtrlD(): MaybeCursor {

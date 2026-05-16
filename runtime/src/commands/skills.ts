@@ -105,6 +105,7 @@ export async function collectSkillsSnapshot(
   appStateBridge?: SlashCommandAppStateBridge,
 ): Promise<SkillsSnapshot> {
   const services = session.services;
+  services.skillsManager.clearSkillCaches?.();
   const outcome = await services.skillsManager.skillsForConfig(
     session.config,
     null,

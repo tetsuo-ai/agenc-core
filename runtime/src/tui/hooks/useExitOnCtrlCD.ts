@@ -60,12 +60,16 @@ export function useExitOnCtrlCD(
   const handleCtrlCDoublePress = useDoublePress(
     pending => setExitState({ pending, keyName: 'Ctrl-C' }),
     exitFn,
+    undefined,
+    'app:interrupt',
   )
 
   // Double-press handler for ctrl+d
   const handleCtrlDDoublePress = useDoublePress(
     pending => setExitState({ pending, keyName: 'Ctrl-D' }),
     exitFn,
+    undefined,
+    'app:exit',
   )
 
   // Handler for app:interrupt (ctrl+c by default)

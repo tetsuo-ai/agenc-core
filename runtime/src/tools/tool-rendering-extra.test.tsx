@@ -71,6 +71,63 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     expect(names).toContain("FileRead");
     expect(names).not.toContain("Read");
   });
+
+  test("Write tool-use cards summarize long content instead of raw JSON", () => {
+    const tool = createTuiTool("Write");
+    const content = "x".repeat(50_000);
+
+    expect(
+      tool.renderToolUseMessage({ file_path: "game.py", content }),
+    ).toBe("game.py (50000 chars)");
+    expect(tool.getActivityDescription({ file_path: "game.py", content })).toBe(
+      "Write game.py (50000 chars)",
+    );
+  });
+
+  test("Bash tool-use cards show the command rather than JSON input", () => {
+    const tool = createTuiTool("Bash");
+
+    expect(tool.renderToolUseMessage({ command: "python game.py" })).toBe(
+      "python game.py",
+    );
+    expect(tool.renderToolUseMessage({ command: "echo hello\nsleep 1" })).toBe(
+      "echo hello sleep 1",
+    );
+  });
+
+  test("exec_command cards show concise command actions instead of raw JSON", () => {
+    const tool = createTuiTool("exec_command");
+
+    expect(tool.userFacingName({ cmd: "python3 -m py_compile game.py" })).toBe(
+      "Run",
+    );
+    expect(tool.renderToolUseMessage({ cmd: "python3 -m py_compile game.py" })).toBe(
+      "python3 -m py_compile game.py",
+    );
+    expect(tool.getActivityDescription({ cmd: "mkdir -p .agenc/skills/game" })).toBe(
+      "Run: mkdir -p .agenc/skills/game",
+    );
+  });
+
+  test("system.searchTools cards summarize search and selection requests", () => {
+    const tool = createTuiTool("system.searchTools");
+
+    expect(tool.userFacingName({ query: "audit-ping" })).toBe("Tool search");
+    expect(tool.renderToolUseMessage({ query: "audit-ping" })).toBe(
+      "Search tools: audit-ping",
+    );
+    expect(
+      tool.renderToolUseMessage({ select: ["mcp.audit-ping.ping"] }),
+    ).toBe("Select tool: mcp.audit-ping.ping");
+  });
+
+  test("dynamic MCP cards hide empty JSON input", () => {
+    const tool = createTuiTool("mcp.audit-ping.ping");
+
+    expect(tool.userFacingName({})).toBe("mcp.audit-ping.ping");
+    expect(tool.renderToolUseMessage({})).toBe("");
+    expect(tool.getActivityDescription({})).toBe("mcp.audit-ping.ping");
+  });
 });
 
 describe("createTuiTool('FileRead').renderToolResultMessage — end-to-end dispatch", () => {

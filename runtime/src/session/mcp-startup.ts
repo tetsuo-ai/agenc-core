@@ -20,11 +20,15 @@
  * @module
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join, parse } from "node:path";
+
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
 import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
+import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
   attachContextDefaults,
@@ -51,6 +55,11 @@ export interface McpRefreshResult {
 
 export interface CreateSessionMcpServiceOptions {
   readonly env?: NodeJS.ProcessEnv;
+}
+
+export interface ResolveSessionMcpConfigSourcesOptions {
+  readonly cwd?: string;
+  readonly includeProjectMcpServers?: boolean;
 }
 
 type ConfiguredServerWithExtras = MCPServerConfig & {
@@ -169,6 +178,59 @@ function toRuntimeMcpServerConfig(
   } as MCPServerConfig;
 }
 
+function serviceMcpServerToRuntimeConfig(
+  name: string,
+  config: ServiceMcpServerConfig,
+): MCPServerConfig {
+  const raw = config as ServiceMcpServerConfig & Record<string, unknown>;
+  const type = raw.type;
+  if (type === "sse" || type === "http" || type === "ws") {
+    return {
+      ...raw,
+      name,
+      transport: type === "ws" ? "websocket" : type,
+      endpoint: typeof raw.url === "string" ? raw.url : undefined,
+    } as MCPServerConfig;
+  }
+  return {
+    ...raw,
+    name,
+    transport: "stdio",
+    ...(Array.isArray(raw.args) ? { args: [...raw.args] as string[] } : {}),
+    ...(raw.env !== undefined ? { env: cloneRecord(raw.env as Record<string, string>) } : {}),
+  } as MCPServerConfig;
+}
+
+function projectMcpJsonPaths(cwd: string): string[] {
+  const dirs: string[] = [];
+  let current = cwd;
+  for (;;) {
+    dirs.push(current);
+    const parent = dirname(current);
+    if (parent === current || current === parse(current).root) break;
+    current = parent;
+  }
+  return dirs.reverse().map((dir) => join(dir, ".mcp.json"));
+}
+
+function getProjectMcpConfigFromCwd(cwd: string): MCPServerConfig[] {
+  const merged = new Map<string, MCPServerConfig>();
+  for (const filePath of projectMcpJsonPaths(cwd)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    } catch {
+      continue;
+    }
+    const result = McpJsonConfigSchema().safeParse(parsed);
+    if (!result.success) continue;
+    for (const [name, config] of Object.entries(result.data.mcpServers)) {
+      merged.set(name, serviceMcpServerToRuntimeConfig(name, config));
+    }
+  }
+  return [...merged.values()];
+}
+
 /**
  * Read `mcp_servers` from the loaded AgenC config snapshot and convert
  * keyed TOML tables (`[mcp_servers.github]`) into the runtime manager's
@@ -215,6 +277,26 @@ export function resolveSessionMcpConfig(
   return getMcpConfigFromConfig(config);
 }
 
+export async function resolveSessionMcpConfigFromSources(
+  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveSessionMcpConfigSourcesOptions = {},
+): Promise<MCPServerConfig[]> {
+  if (hasMcpEnvOverride(env)) {
+    return getMcpConfigFromEnv(env);
+  }
+  const byName = new Map<string, MCPServerConfig>();
+  for (const server of getMcpConfigFromConfig(config)) {
+    byName.set(server.name, server);
+  }
+  if (options.includeProjectMcpServers === true && options.cwd !== undefined) {
+    for (const server of getProjectMcpConfigFromCwd(options.cwd)) {
+      byName.set(server.name, server);
+    }
+  }
+  return [...byName.values()];
+}
+
 /**
  * Config-backed manager construction for the local runtime path. The
  * env parameter is only the explicit `AGENC_MCP_SERVERS` override.
@@ -224,6 +306,16 @@ export function createSessionMcpManagerFromConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): MCPManager {
   return createSessionMcpManager(resolveSessionMcpConfig(config, env));
+}
+
+export async function createSessionMcpManagerFromSources(
+  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  options: ResolveSessionMcpConfigSourcesOptions = {},
+): Promise<MCPManager> {
+  return createSessionMcpManager(
+    await resolveSessionMcpConfigFromSources(config, env, options),
+  );
 }
 
 /**

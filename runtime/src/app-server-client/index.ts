@@ -24,11 +24,12 @@ import { resolveAgencHome } from "../config/env.js";
 import { ConfigStore } from "../config/store.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import type {
-  McpManager,
-  PluginsManager,
-  SkillsManager,
-} from "../session/session.js";
+import {
+  createSessionMcpManagerFromSources,
+  createSessionMcpService,
+} from "../session/mcp-startup.js";
+import { createLocalSkillsServices } from "../skills/local-loader.js";
+import { projectMcpManagerToConnections } from "../mcp-client/tui-connections.js";
 import type {
   AgenCBridgeSession,
   ConfigStoreLike,
@@ -174,6 +175,7 @@ export interface AgenCDaemonOnlyTuiContext {
   readonly baseSession: AgenCBridgeSession;
   readonly model?: string;
   readonly workspaceRoot: string;
+  close(): Promise<void>;
 }
 
 export async function createAgenCDaemonOnlyTuiContext(
@@ -193,6 +195,26 @@ export async function createAgenCDaemonOnlyTuiContext(
     subscribe: (listener) => configStore.subscribe(listener),
     warnings: () => configStore.warnings(),
   };
+  const skillsServices = createLocalSkillsServices({
+    agencHome,
+    workspaceRoot: options.cwd,
+    config,
+    env: {
+      HOME: env.HOME,
+      AGENC_MANAGED_HOME: env.AGENC_MANAGED_HOME,
+    },
+  });
+  await skillsServices.skillsWatcher.start();
+  const mcpRuntimeManager = await createSessionMcpManagerFromSources(
+    config,
+    env,
+    {
+      cwd: options.cwd,
+      includeProjectMcpServers: options.permissionMode === "bypassPermissions",
+    },
+  );
+  await mcpRuntimeManager.start();
+  const mcpService = createSessionMcpService(mcpRuntimeManager, { env });
   const abortController = new AbortController();
   let nextEventId = 0;
   const sessionConfiguration = {
@@ -214,9 +236,10 @@ export async function createAgenCDaemonOnlyTuiContext(
         }),
       ),
       configStore,
-      mcpManager: createDaemonOnlyMcpManager(),
-      skillsManager: createDaemonOnlySkillsManager(),
-      pluginsManager: createDaemonOnlyPluginsManager(),
+      mcpManager: mcpService,
+      skillsManager: skillsServices.skillsManager,
+      pluginsManager: skillsServices.pluginsManager,
+      skillsWatcher: skillsServices.skillsWatcher,
       authManager: { mode: "local_no_auth" },
     },
     config,
@@ -236,40 +259,18 @@ export async function createAgenCDaemonOnlyTuiContext(
     flushEventLog: () => {},
     emit: () => {},
     nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
-    listMcpClients: () => [],
-    listMcpTools: () => [],
+    listMcpClients: () =>
+      projectMcpManagerToConnections(mcpService as never),
+    listMcpTools: () => mcpService.getTools?.() ?? [],
   };
   return {
     configStore: configStoreLike,
     baseSession: session,
     model: config.model,
     workspaceRoot: options.cwd,
-  };
-}
-
-function createDaemonOnlyMcpManager(): McpManager {
-  return {
-    effectiveServers: async () => new Map(),
-    toolPluginProvenance: async () => null,
-    getTools: () => [],
-    getToolsByServer: () => [],
-    getConfiguredServers: () => [],
-  };
-}
-
-function createDaemonOnlySkillsManager(): SkillsManager {
-  return {
-    skillsForConfig: async () => ({
-      invokedSkills: [],
-      availableSkills: [],
-    }),
-  };
-}
-
-function createDaemonOnlyPluginsManager(): PluginsManager {
-  return {
-    pluginsForConfig: async () => ({
-      effectiveSkillRoots: () => [],
-    }),
+    close: async () => {
+      await skillsServices.skillsWatcher?.stop?.();
+      await mcpRuntimeManager.stop();
+    },
   };
 }

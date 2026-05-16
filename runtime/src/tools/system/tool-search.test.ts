@@ -12,8 +12,8 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
       additionalProperties: false,
     },
     metadata: {
-      family: "coding",
-      source: "builtin",
+      family: name.startsWith("mcp.") ? "mcp" : "coding",
+      source: name.startsWith("mcp.") ? "mcp" : "builtin",
       hiddenByDefault: false,
       mutating: false,
       deferred: true,
@@ -55,5 +55,24 @@ describe("system.searchTools", () => {
       name: "system.deepTool",
       selected: true,
     });
+  });
+
+  test("MCP search results tell the model to invoke the MCP tool directly", async () => {
+    const tool = createToolSearchTool({
+      allowedPaths: [process.cwd()],
+      persistenceRootDir: process.cwd(),
+      getToolCatalog: () => [deferredCatalogEntry("mcp.audit-ping.ping")],
+      onDiscoverTools: () => {},
+    });
+
+    const result = await tool.execute({ select: "mcp.audit-ping.ping" });
+
+    const payload = JSON.parse(result.content);
+    expect(payload.results[0]).toMatchObject({
+      name: "mcp.audit-ping.ping",
+      selected: true,
+      useHint: expect.stringContaining("invoke mcp.audit-ping.ping directly"),
+    });
+    expect(payload.results[0].useHint).toContain("Do not use exec_command");
   });
 });

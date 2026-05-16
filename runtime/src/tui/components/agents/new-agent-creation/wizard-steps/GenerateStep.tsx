@@ -1,6 +1,6 @@
 import React, { type ReactNode, useCallback, useRef, useState } from 'react';
 import { useMainLoopModel } from '../../../../hooks/useMainLoopModel';
-import { Box, Text } from '../../../../ink.js';
+import { Box, Text, useApp } from '../../../../ink.js';
 import { useKeybinding } from '../../../../keybindings/useKeybinding.js';
 import { createAbortController } from '../../../../../utils/abortController.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isAbortError } from '../../../../../utils/errors.js';
@@ -24,8 +24,10 @@ export function GenerateStep(): ReactNode {
   const [prompt, setPrompt] = useState(wizardData.generationPrompt || '');
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exitMessage, setExitMessage] = useState<string | null>(null);
   const [cursorOffset, setCursorOffset] = useState(prompt.length);
   const model = useMainLoopModel();
+  const { exit } = useApp();
   const abortControllerRef = useRef<AbortController | null>(null);
   const inputColumns = useAgentWizardInputColumns(80);
 
@@ -82,7 +84,12 @@ export function GenerateStep(): ReactNode {
       setError('Please describe what the agent should do');
       return;
     }
+    if (trimmedPrompt.startsWith('/')) {
+      setError('Slash commands are not active inside the agent wizard. Press Esc to leave the wizard, then run the command.');
+      return;
+    }
     setError(null);
+    setExitMessage(null);
     setIsGenerating(true);
     updateWizardData({
       generationPrompt: trimmedPrompt,
@@ -110,7 +117,7 @@ export function GenerateStep(): ReactNode {
       if (isAbortError(err)) {
         // User cancelled - no error to show
       } else if (err instanceof Error && !err.message.includes('No assistant message found')) {
-        setError(err.message || 'Failed to generate agent');
+        setError(err.message || 'Failed to generate agent. Press Enter to retry, or press Esc to choose manual setup.');
       }
       updateWizardData({
         isGenerating: false
@@ -136,9 +143,15 @@ export function GenerateStep(): ReactNode {
         </Byline>}>
       <Box flexDirection="column">
         {error && <Box marginBottom={1}>
-            <Text color="error">{error}</Text>
+            <Box flexDirection="column">
+              <Text color="error">{error}</Text>
+              <Text dimColor>Enter retries generation. Esc returns to manual setup.</Text>
+            </Box>
           </Box>}
-        <TextInput value={prompt} onChange={setPrompt} onSubmit={handleGenerate} placeholder="e.g., Help me write unit tests for my code..." columns={inputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus showCursor />
+        {exitMessage && <Box marginBottom={1}>
+            <Text dimColor>{exitMessage}</Text>
+          </Box>}
+        <TextInput value={prompt} onChange={setPrompt} onSubmit={handleGenerate} onExit={exit} onExitMessage={(show, keyName) => setExitMessage(show ? `Press ${keyName} again to exit` : null)} placeholder="e.g., Help me write unit tests for my code..." columns={inputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} focus showCursor />
       </Box>
     </WizardDialogLayout>;
 }

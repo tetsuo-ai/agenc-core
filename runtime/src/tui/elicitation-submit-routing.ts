@@ -8,16 +8,21 @@ export interface ElicitationSubmitTarget {
   submit(value: string): boolean;
 }
 
+function clearComposer(helpers: ComposerSubmitHelpers): void {
+  helpers.clearBuffer();
+  helpers.resetHistory();
+  helpers.setCursorOffset(0);
+}
+
 export async function submitViaElicitationPrompt(
   elicitation: ElicitationSubmitTarget,
   submit: (value: string) => Promise<void>,
   value: string,
   helpers: ComposerSubmitHelpers,
 ): Promise<void> {
-  if (!elicitation.submit(value)) {
+  const handledByElicitation = elicitation.submit(value);
+  clearComposer(helpers);
+  if (!handledByElicitation) {
     await submit(value);
   }
-  helpers.clearBuffer();
-  helpers.resetHistory();
-  helpers.setCursorOffset(0);
 }

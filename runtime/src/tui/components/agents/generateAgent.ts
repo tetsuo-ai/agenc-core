@@ -23,6 +23,38 @@ type GeneratedAgent = {
   systemPrompt: string
 }
 
+const AGENT_GENERATION_JSON_ERROR =
+  'Agent generation response was not valid JSON. Press Enter to retry, or press Esc to choose manual setup.'
+
+export const AGENT_GENERATION_OUTPUT_FORMAT = {
+  type: 'json_schema',
+  schema: {
+    type: 'object',
+    properties: {
+      identifier: {
+        type: 'string',
+        pattern: '^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$',
+        minLength: 3,
+        maxLength: 50,
+        description:
+          'Lowercase letters, numbers, and hyphens only. Typically 2-4 words joined by hyphens.',
+      },
+      whenToUse: {
+        type: 'string',
+        description:
+          "Actionable trigger guidance starting with 'Use this agent when...'. Include concrete examples.",
+      },
+      systemPrompt: {
+        type: 'string',
+        description:
+          "The complete system prompt for the generated agent, written in second person.",
+      },
+    },
+    required: ['identifier', 'whenToUse', 'systemPrompt'],
+    additionalProperties: false,
+  },
+} as const
+
 const AGENT_CREATION_SYSTEM_PROMPT = `You are an elite AI agent architect specializing in crafting high-performance agent configurations. Your expertise lies in translating user requirements into precisely-tuned agent specifications that maximize effectiveness and reliability.
 
 **Important Context**: You may have access to project-specific instructions from AGENC.md files and other context that may include coding standards, project structure, and custom requirements. Consider this context when creating agents to ensure they align with the project's established patterns and practices.
@@ -131,7 +163,7 @@ export async function generateAgent(
       : ''
 
   const prompt = `Create an agent configuration based on this request: "${userPrompt}".${existingList}
-  Return ONLY the JSON object, no other text.`
+  Return exactly one JSON object that validates the required schema. Do not include markdown, commentary, or code fences. The first character must be "{" and the last character must be "}".`
 
   const userMessage = createUserMessage({ content: prompt })
 
@@ -146,6 +178,64 @@ export async function generateAgent(
     ? AGENT_CREATION_SYSTEM_PROMPT + AGENT_MEMORY_INSTRUCTIONS
     : AGENT_CREATION_SYSTEM_PROMPT
 
+  const responseText = await queryGeneratedAgentText({
+    messagesWithContext,
+    systemPrompt,
+    model,
+    abortSignal,
+  })
+
+  let parsed: GeneratedAgent
+  try {
+    parsed = parseGeneratedAgentResponse(responseText)
+  } catch (error) {
+    if (!isGeneratedAgentParseError(error)) throw error
+    const repairMessage = createUserMessage({
+      content: `The previous response did not validate as the required generated-agent JSON object. Convert it into exactly one JSON object with identifier, whenToUse, and systemPrompt only. Do not include markdown or prose.\n\nPrevious response:\n${responseText}`,
+    })
+    const repairText = await queryGeneratedAgentText({
+      messagesWithContext: prependUserContext([repairMessage], userContext),
+      systemPrompt,
+      model,
+      abortSignal,
+    })
+    try {
+      parsed = parseGeneratedAgentResponse(repairText)
+    } catch (repairError) {
+      if (!isGeneratedAgentParseError(repairError)) throw repairError
+      parsed = buildFallbackGeneratedAgent(userPrompt)
+    }
+  }
+
+  const identifier = makeUniqueAgentIdentifier(
+    parsed.identifier,
+    existingIdentifiers,
+  )
+  const agent = {
+    identifier,
+    whenToUse: replaceIdentifier(parsed.whenToUse, parsed.identifier, identifier),
+    systemPrompt: replaceIdentifier(parsed.systemPrompt, parsed.identifier, identifier),
+  }
+
+  logEvent('agenc_agent_definition_generated', {
+    agent_identifier:
+      agent.identifier as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  })
+
+  return agent
+}
+
+async function queryGeneratedAgentText({
+  messagesWithContext,
+  systemPrompt,
+  model,
+  abortSignal,
+}: {
+  readonly messagesWithContext: readonly ReturnType<typeof createUserMessage>[]
+  readonly systemPrompt: string
+  readonly model: ModelName
+  readonly abortSignal: AbortSignal
+}): Promise<string> {
   const response = await queryModelWithoutStreaming({
     messages: normalizeMessagesForAPI(messagesWithContext),
     systemPrompt: asSystemPrompt([systemPrompt]),
@@ -161,37 +251,210 @@ export async function generateAgent(
       hasAppendSystemPrompt: false,
       querySource: 'agent_creation',
       mcpTools: [],
+      outputFormat: AGENT_GENERATION_OUTPUT_FORMAT,
     },
   })
 
   const textBlocks = response.message.content.filter(
     (block): block is ContentBlock & { type: 'text' } => block.type === 'text',
   )
-  const responseText = textBlocks.map(block => block.text).join('\n')
+  return textBlocks.map(block => block.text).join('\n')
+}
 
-  let parsed: GeneratedAgent
-  try {
-    parsed = jsonParse(responseText.trim())
-  } catch {
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      throw new Error('No JSON object found in response')
+export function parseGeneratedAgentResponse(responseText: string): GeneratedAgent {
+  const trimmed = responseText.trim()
+  const candidates = [
+    trimmed,
+    ...(trimmed.match(/\{[\s\S]*\}/g) ?? []),
+  ]
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = jsonParse(candidate) as Partial<GeneratedAgent>
+      if (
+        typeof parsed.identifier === 'string' &&
+        parsed.identifier.trim().length > 0 &&
+        typeof parsed.whenToUse === 'string' &&
+        parsed.whenToUse.trim().length > 0 &&
+        typeof parsed.systemPrompt === 'string' &&
+        parsed.systemPrompt.trim().length > 0
+      ) {
+        return {
+          identifier: parsed.identifier,
+          whenToUse: parsed.whenToUse,
+          systemPrompt: parsed.systemPrompt,
+        }
+      }
+    } catch {
+      // Try the next candidate before surfacing the recoverable wizard error.
     }
-    parsed = jsonParse(jsonMatch[0])
   }
 
-  if (!parsed.identifier || !parsed.whenToUse || !parsed.systemPrompt) {
-    throw new Error('Invalid agent configuration generated')
-  }
+  throw new Error(AGENT_GENERATION_JSON_ERROR)
+}
 
-  logEvent('agenc_agent_definition_generated', {
-    agent_identifier:
-      parsed.identifier as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
+function isGeneratedAgentParseError(error: unknown): boolean {
+  return error instanceof Error && error.message === AGENT_GENERATION_JSON_ERROR
+}
 
+export function buildFallbackGeneratedAgent(userPrompt: string): GeneratedAgent {
+  const identifier = deriveAgentIdentifier(userPrompt)
+  const taskDescription = buildFallbackTaskDescription(userPrompt)
+  const whenClause = buildFallbackWhenClause(taskDescription)
   return {
-    identifier: parsed.identifier,
-    whenToUse: parsed.whenToUse,
-    systemPrompt: parsed.systemPrompt,
+    identifier,
+    whenToUse:
+      `Use this agent when ${whenClause}. ` +
+      `Example: when a request matches this description, use the ${AGENT_TOOL_NAME} tool to launch ${identifier}.`,
+    systemPrompt:
+      `You are ${identifier}, a specialized AgenC agent for ${taskDescription}.\n\n` +
+      `Focus on the user's stated goal, inspect the relevant files before giving advice, keep recommendations concrete, and call out risks or missing verification clearly. ` +
+      `When you produce output, keep it concise, actionable, and grounded in the project context.`,
   }
 }
+
+function buildFallbackTaskDescription(userPrompt: string): string {
+  const prompt = stripTrailingPunctuation(
+    collapseWhitespace(userPrompt),
+  ) || 'custom AgenC work'
+  const roleMatch = prompt.match(
+    /^(?:a|an|the)\s+(architect|auditor|debugger|designer|planner|reviewer|runner|tester|writer)\s+for\s+(.+)$/iu,
+  )
+  const description = roleMatch
+    ? `${ROLE_VERBS[roleMatch[1].toLowerCase() as keyof typeof ROLE_VERBS]} ${roleMatch[2]}`
+    : prompt
+  return stripTrailingPunctuation(
+    description.replace(/\s+that\s+suggests?\s+/iu, ' and suggesting '),
+  )
+}
+
+function buildFallbackWhenClause(taskDescription: string): string {
+  if (/^(architecting|auditing|debugging|designing|planning|reviewing|running|testing|writing)\b/iu.test(taskDescription)) {
+    return taskDescription
+  }
+  return `the user needs focused help with ${taskDescription}`
+}
+
+function deriveAgentIdentifier(userPrompt: string): string {
+  const tokens = collapseWhitespace(userPrompt)
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) ?? []
+  const role = tokens.find(token => ROLE_TOKENS.has(token))
+  const keywords = uniqueTokens(
+    tokens.filter(token => !STOPWORDS.has(token) && !ROLE_TOKENS.has(token)),
+  )
+
+  let selected = keywords.slice(0, role ? 3 : 4)
+  if (tokens.includes('python') && tokens.includes('game')) {
+    selected = ['python', 'game', ...selected.filter(token => token !== 'python' && token !== 'game')]
+      .slice(0, role ? 3 : 4)
+  }
+  if (role) selected = [...selected, role]
+  if (selected.length === 0) selected = ['custom', 'agent']
+  return uniqueTokens(selected).slice(0, 4).join('-')
+}
+
+function makeUniqueAgentIdentifier(
+  identifier: string,
+  existingIdentifiers: readonly string[],
+): string {
+  const existing = new Set(existingIdentifiers.map(value => value.toLowerCase()))
+  const base = normalizeAgentIdentifier(identifier) || 'custom-agent'
+  if (!existing.has(base)) return base
+
+  for (let suffix = 2; suffix < 1000; suffix++) {
+    const suffixText = `-${suffix}`
+    const candidateBase = trimIdentifierEnd(base.slice(0, 50 - suffixText.length))
+    const candidate = `${candidateBase}${suffixText}`
+    if (!existing.has(candidate)) return candidate
+  }
+
+  return `${trimIdentifierEnd(base.slice(0, 46))}-${Date.now().toString(36).slice(-3)}`
+}
+
+function replaceIdentifier(value: string, previous: string, next: string): string {
+  if (previous === next || previous.length === 0) return value
+  return value.split(previous).join(next)
+}
+
+function normalizeAgentIdentifier(identifier: string): string {
+  const value = identifier
+    .toLowerCase()
+    .match(/[a-z0-9]+/g)
+    ?.join('-') ?? ''
+  const normalized = trimIdentifierEnd(value.slice(0, 50))
+  return normalized.length >= 3 ? normalized : ''
+}
+
+function trimIdentifierEnd(identifier: string): string {
+  return identifier.replace(/^-+|-+$/g, '')
+}
+
+function collapseWhitespace(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
+}
+
+function stripTrailingPunctuation(value: string): string {
+  return value.replace(/[.!?]+$/u, '')
+}
+
+function uniqueTokens(tokens: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const token of tokens) {
+    if (seen.has(token)) continue
+    seen.add(token)
+    result.push(token)
+  }
+  return result
+}
+
+const ROLE_TOKENS = new Set([
+  'architect',
+  'auditor',
+  'debugger',
+  'designer',
+  'planner',
+  'reviewer',
+  'runner',
+  'tester',
+  'writer',
+])
+
+const ROLE_VERBS = {
+  architect: 'architecting',
+  auditor: 'auditing',
+  debugger: 'debugging',
+  designer: 'designing',
+  planner: 'planning',
+  reviewer: 'reviewing',
+  runner: 'running',
+  tester: 'testing',
+  writer: 'writing',
+} as const
+
+const STOPWORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'agent',
+  'assistant',
+  'for',
+  'help',
+  'improvement',
+  'improvements',
+  'of',
+  'on',
+  'or',
+  'small',
+  'suggest',
+  'suggests',
+  'that',
+  'the',
+  'this',
+  'tiny',
+  'to',
+  'use',
+  'when',
+  'with',
+])

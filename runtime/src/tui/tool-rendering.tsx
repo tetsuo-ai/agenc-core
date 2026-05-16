@@ -350,6 +350,115 @@ function filePathFromInput(input: unknown): string {
   return typeof filePath === "string" ? filePath : "";
 }
 
+function truncateInline(value: string, limit = 140): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit - 1)}…`;
+}
+
+function contentLengthSummary(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return `${value.length} ${value.length === 1 ? "char" : "chars"}`;
+}
+
+function commandFromExecInput(record: Record<string, unknown>): string | null {
+  const command = record.command ?? record.cmd;
+  return typeof command === "string" && command.trim().length > 0
+    ? truncateInline(command)
+    : null;
+}
+
+function searchToolsSummary(record: Record<string, unknown>): string {
+  const selected =
+    Array.isArray(record.select)
+      ? record.select.filter((value): value is string => typeof value === "string")
+      : typeof record.select === "string"
+        ? [record.select]
+        : [];
+  if (selected.length === 1) return `Select tool: ${selected[0]}`;
+  if (selected.length > 1) return `Select tools: ${selected.join(", ")}`;
+  if (typeof record.query === "string" && record.query.trim().length > 0) {
+    return `Search tools: ${truncateInline(record.query)}`;
+  }
+  return "Search tools";
+}
+
+function isMcpToolName(name: string): boolean {
+  return name.startsWith("mcp.");
+}
+
+function mcpInputSummary(record: Record<string, unknown>): string {
+  const entries = Object.entries(record);
+  if (entries.length === 0) return "";
+  return entries
+    .map(([key, value]) => `${key}: ${shortJson(value)}`)
+    .join(", ");
+}
+
+function toolUseSummaryForInput(name: string, input: unknown): string {
+  const record = objectFromUnknown(input);
+  const path = filePathFromInput(record);
+  if (name === "exec_command") {
+    return commandFromExecInput(record) ?? "command";
+  }
+  if (name === "system.searchTools") {
+    return searchToolsSummary(record);
+  }
+  if (isMcpToolName(name)) {
+    return mcpInputSummary(record);
+  }
+  if (name === "Write") {
+    const size = contentLengthSummary(record.content);
+    if (path.length > 0 && size !== null) return `${path} (${size})`;
+    if (path.length > 0) return path;
+    return size !== null ? `file content (${size})` : "file";
+  }
+  if (name === "Edit") {
+    const oldSize = contentLengthSummary(record.old_string);
+    const newSize = contentLengthSummary(record.new_string);
+    const sizes =
+      oldSize !== null && newSize !== null ? ` (${oldSize} -> ${newSize})` : "";
+    return path.length > 0 ? `${path}${sizes}` : `edit${sizes}`;
+  }
+  if (name === "Bash" && typeof record.command === "string") {
+    return truncateInline(record.command);
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    const size = contentLengthSummary(value);
+    if (
+      size !== null &&
+      (key === "content" || key === "old_string" || key === "new_string")
+    ) {
+      sanitized[key] = `[${size}]`;
+    } else if (typeof value === "string") {
+      sanitized[key] = truncateInline(value);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  const summary = shortJson(sanitized);
+  return summary.length > 0 ? summary : name;
+}
+
+function userFacingNameForTool(name: string): string {
+  if (name === "exec_command") return "Run";
+  if (name === "system.searchTools") return "Tool search";
+  return name;
+}
+
+function activityDescriptionForTool(name: string, input: unknown): string {
+  const summary = toolUseSummaryForInput(name, input);
+  if (name === "exec_command") {
+    return summary.length > 0 ? `Run: ${summary}` : "Run command";
+  }
+  if (name === "system.searchTools") return summary;
+  if (isMcpToolName(name)) {
+    return summary.length > 0 ? `${name} ${summary}` : name;
+  }
+  return `${name} ${summary}`;
+}
+
 export function createTuiTool(name: string): any {
   if (name === "AskUserQuestion") {
     return AskUserQuestionTool;
@@ -412,14 +521,13 @@ export function createTuiTool(name: string): any {
       return input;
     },
     userFacingName() {
-      return name;
+      return userFacingNameForTool(name);
     },
     getActivityDescription(input: unknown) {
-      return `${name} ${shortJson(input)}`;
+      return activityDescriptionForTool(name, input);
     },
     renderToolUseMessage(input: unknown) {
-      const summary = shortJson(input);
-      return summary.length > 0 ? summary : name;
+      return toolUseSummaryForInput(name, input);
     },
     renderToolResultMessage(
       content: unknown,

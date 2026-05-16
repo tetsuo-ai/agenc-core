@@ -75,6 +75,7 @@ export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
 const EMPTY_ONBOARDING_COMMANDS: Command[] = [];
+const BUSY_BLOCKED_SLASH_COMMANDS = new Set(["agents"]);
 const mcpSurfaceObjectIds = new WeakMap<object, number>();
 let nextMcpSurfaceObjectId = 1;
 export type McpFieldParseResult = {
@@ -111,6 +112,15 @@ function queuedCommandInputText(command: QueuedCommand): string {
     }
     return "[image]";
   }).filter(Boolean).join("\n");
+}
+
+function busySlashCommandMessage(commandName: string): string {
+  return `Finish or cancel the current response before opening /${commandName}.`;
+}
+
+function isExitSlashCommand(raw: string): boolean {
+  const parsed = raw.trim().startsWith("/") ? parseSlashCommand(raw) : null;
+  return parsed?.name === "exit" || parsed?.name === "quit";
 }
 
 function extractUserMessageText(message: unknown): string | null {
@@ -1619,6 +1629,23 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     const activePastedContents = options?.pastedContentsOverride ?? pastedContents;
     const hasAttachments = Object.keys(activePastedContents).length > 0;
     if (text_0.length === 0 && !hasAttachments) return;
+    const parsedSlashCommand =
+      text_0.startsWith("/") && text_0.length > 1
+        ? parseSlashCommand(text_0)
+        : null;
+    if (
+      !options?.fromQueue &&
+      parsedSlashCommand !== null &&
+      effectiveInputBusyRef.current &&
+      BUSY_BLOCKED_SLASH_COMMANDS.has(parsedSlashCommand.name)
+    ) {
+      showTransientResult(busySlashCommandMessage(parsedSlashCommand.name), {
+        display: "error",
+      });
+      setInput("");
+      setPastedContents({});
+      return;
+    }
     if (!options?.fromQueue && effectiveInputBusyRef.current) {
       enqueue({
         value: text_0,
@@ -1648,10 +1675,6 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       transientResultTimerRef.current = null;
       setToolJSX(null);
     }
-    const parsedSlashCommand =
-      text_0.startsWith("/") && text_0.length > 1
-        ? parseSlashCommand(text_0)
-        : null;
     const startPendingSubmission = () => {
       setPendingSubmission(true);
       effectiveInputBusyRef.current = true;
@@ -1938,6 +1961,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   });
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating = transcript.isStreaming && permissionRequests.length === 0 && elicitation.prompt === null && toolJSX === null && !onboarding.active;
+  const isLocalJSXCommandActive = toolJSX?.isLocalJSXCommand === true;
   useEffect(() => {
     if (haveShownCostDialog || showCostDialog) return;
     if (getTotalCost() < 5) return;
@@ -2177,6 +2201,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
         <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
         <Onboarding state={onboarding.state} steps={onboarding.steps} currentStep={onboarding.currentStep} context={onboardingContext} />
       <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={EMPTY_ONBOARDING_COMMANDS} agents={agents as any} isLoading={false} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_0, helpers) => {
+        if (isExitSlashCommand(value_0)) {
+          setInput("");
+          helpers.clearBuffer();
+          helpers.resetHistory();
+          helpers.setCursorOffset(0);
+          handleExit();
+          return;
+        }
         if (await onboarding.submit(value_0)) {
           setInput("");
           helpers.clearBuffer();
@@ -2188,7 +2220,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} />
       </Box>;
   }
-  const messagesElement = <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
+  const messagesElement = isLocalJSXCommandActive ? null : <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
   const scrollableContent = <>
       {messagesElement}
       <RealtimePanel state={realtimeState} />
@@ -2221,7 +2253,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     hasElicitationPrompt: elicitation.prompt !== null,
     completionPipelineOwnsPrompt: completionPipelineActive
   });
-  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} onSubmit={async (value_1, helpers_0) => {
+  const promptInputElement = showPromptInput ? <PromptInput debug={false} ideSelection={undefined} toolPermissionContext={toolPermissionContext as any} setToolPermissionContext={setToolPermissionContext as any} apiKeyStatus={"valid" as any} commands={commands as unknown as Command[]} agents={agents as any} isLoading={effectiveInputBusy} verbose={false} messages={transcript.messages as any[]} onAutoUpdaterResult={() => {}} autoUpdaterResult={null} input={input} onInputChange={setInput} mode={mode} onModeChange={setMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={handleShowMessageSelector} mcpClients={mcpClients as never} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onExit={handleExit} getToolUseContext={getToolUseContext} isLocalJSXCommandActive={isLocalJSXCommandActive} onSubmit={async (value_1, helpers_0) => {
+    if (isLocalJSXCommandActive) {
+      return;
+    }
     if (await executeRealtimeComposerCommand(props.session.realtime, value_1)) {
       helpers_0.clearBuffer();
       helpers_0.resetHistory();

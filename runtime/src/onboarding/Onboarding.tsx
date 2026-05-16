@@ -330,6 +330,14 @@ function isSkipApiKeyCommand(command: string): boolean {
   return command === "" || command === "next" || command === "skip";
 }
 
+function normalizeOnboardingCommand(raw: string): string {
+  const input = raw.trim().toLowerCase();
+  if (input === "/next") return "next";
+  if (input === "/skip") return "skip";
+  if (input === "/done") return "done";
+  return raw;
+}
+
 function approvalAnswer(command: string): "yes" | "no" | null {
   if (command === "y" || command === "yes") return "yes";
   if (command === "n" || command === "no" || command === "skip") return "no";
@@ -339,7 +347,12 @@ function approvalAnswer(command: string): "yes" | "no" | null {
 function onboardingSlashCommandError(raw: string): string | null {
   const input = raw.trim();
   if (!input.startsWith("/") || input.length <= 1) return null;
-  return "Onboarding input is active; slash commands unlock after setup. Press Ctrl-C twice to exit.";
+  return "Onboarding is active. Type next or skip to continue setup, or use /exit, Ctrl-C twice, or Ctrl-D twice to leave.";
+}
+
+function apiKeyVerificationErrorMessage(error: string | undefined): string {
+  const base = error?.trim() || "API key verification failed.";
+  return `${base} Type next or skip to continue without saving, or paste a replacement key.`;
 }
 
 function captureApiKeyPaste(
@@ -610,9 +623,10 @@ export async function checkOnboardingProviderConnection(
 
 export async function submitFirstRunOnboardingInput(
   state: FirstRunOnboardingState,
-  raw: string,
+  rawInput: string,
   context: FirstRunOnboardingContext,
 ): Promise<FirstRunOnboardingSubmitResult> {
+  const raw = normalizeOnboardingCommand(rawInput);
   const slashError = onboardingSlashCommandError(raw);
   if (slashError !== null) {
     return {
@@ -782,7 +796,7 @@ export async function submitFirstRunOnboardingInput(
             state: {
               ...state,
               error:
-                "Type next to continue without saving, or paste a single API key without whitespace.",
+                "Type next or skip to continue without saving, or paste a single API key without whitespace.",
             },
             completed: false,
           };
@@ -799,7 +813,7 @@ export async function submitFirstRunOnboardingInput(
           return {
             state: {
               ...state,
-              error: verification.error ?? "API key verification failed.",
+              error: apiKeyVerificationErrorMessage(verification.error),
             },
             completed: false,
           };
@@ -958,7 +972,48 @@ export function useFirstRunOnboardingController(
   };
 }
 
-function detailLinesForStep(
+function apiKeyInstructionForConnection(
+  connection: ProviderConnectionCheck | null,
+): string {
+  if (connection === null) {
+    return "Paste an API key to verify it, or type next to continue without saving.";
+  }
+  if (connection.status === "ready") {
+    if (connection.keyEnvVar !== undefined) {
+      return `${connection.keyEnvVar} is present and verified. Type next to continue, or paste a replacement key.`;
+    }
+    return "Provider credential is verified. Type next to continue, or paste a replacement key.";
+  }
+  if (connection.keyEnvVar === undefined) {
+    return "Paste an API key to verify it, or type next or skip to continue.";
+  }
+  if (
+    connection.status === "auth-failed" ||
+    connection.status === "provider-unreachable"
+  ) {
+    return `${connection.keyEnvVar} did not verify. Type next or skip to continue without saving, or paste a replacement key.`;
+  }
+  return `Paste ${connection.keyEnvVar} to verify it, or type next or skip to add it later.`;
+}
+
+function securityLinesForContext(
+  context: FirstRunOnboardingContext,
+): readonly string[] {
+  if (context.permissionMode === "bypassPermissions") {
+    return [
+      "Permission mode: bypassPermissions (--yolo skips tool approval prompts).",
+      "Sandbox: danger-full-access (--yolo disables workspace sandboxing for this session).",
+      "Type next to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+    ];
+  }
+  return [
+    `Permission mode: ${context.permissionMode ?? "default"}`,
+    `Sandbox: ${context.sandboxMode ?? "workspace-write"}`,
+    "Type next to keep these defaults.",
+  ];
+}
+
+export function detailLinesForStep(
   state: FirstRunOnboardingState,
   context: FirstRunOnboardingContext,
 ): readonly string[] {
@@ -968,9 +1023,9 @@ function detailLinesForStep(
         `Workspace: ${context.cwd ?? process.cwd()}`,
         `AgenC home: ${context.agencHome ?? "not configured"}`,
         ...(context.permissionMode === "bypassPermissions"
-          ? ["--yolo is active for tool approval; first-run setup still needs these choices."]
+          ? ["--yolo is active: tool approvals and workspace sandboxing are bypassed for this session."]
           : []),
-        "Onboarding input only; slash commands unlock after setup.",
+        "Onboarding input only. Use /exit, Ctrl-C twice, or Ctrl-D twice to leave.",
         "Type next to continue.",
       ];
     case "theme":
@@ -1008,20 +1063,14 @@ function detailLinesForStep(
       }
       return [
         connection.detail,
-        connection.keyEnvVar === undefined
-          ? "Paste an API key to verify it, or type next to continue."
-          : `Paste ${connection.keyEnvVar} to verify it, or type next to add it later.`,
+        apiKeyInstructionForConnection(connection),
         ...(state.pastedContents.length > 0
           ? [`Captured ${state.pastedContents.length} large paste privately.`]
           : []),
       ];
     }
     case "security":
-      return [
-        `Permission mode: ${context.permissionMode ?? "default"}`,
-        `Sandbox: ${context.sandboxMode ?? "workspace-write"}`,
-        "Type next to keep these defaults.",
-      ];
+      return securityLinesForContext(context);
     case "terminal-setup":
       return [
         `Terminal: ${context.terminalName ?? "terminal"}`,

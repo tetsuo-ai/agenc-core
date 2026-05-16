@@ -204,6 +204,9 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   const hasGlob = hasTool("Glob");
   const hasGrep = hasTool("Grep");
   const hasTodoWrite = hasTool("TodoWrite");
+  const hasMcpTool =
+    enabledTools.has("system.searchTools") ||
+    [...enabledTools].some((name) => name.startsWith("mcp."));
 
   const items: Array<string | string[]> = [];
 
@@ -247,6 +250,18 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   if (hasTodoWrite) {
     items.push(
       `Break down and manage your work with the TodoWrite tool. These tools are helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with the task. Do not batch up multiple tasks before marking them as completed.`,
+    );
+  }
+
+  if (enabledTools.has("Skill")) {
+    items.push(
+      `When creating or editing project skills under .agenc/skills/<name>/SKILL.md, include useful non-empty frontmatter. Set allowed-tools to the narrow tool names the skill actually needs (for example FileRead, Grep, Glob, Edit, Write, exec_command) instead of [] when the skill expects tool access.`,
+    );
+  }
+
+  if (hasMcpTool) {
+    items.push(
+      `When the user asks you to use an MCP tool, call the MCP tool directly. Do not simulate MCP results with shell commands or scripts, and do not run a shell command whose purpose is to fake or stand in for an MCP call.`,
     );
   }
 

@@ -849,9 +849,64 @@ export async function prepareTurnRuntimeInputs(params: {
 
 function resolveUserHome(
   env: NodeJS.ProcessEnv = process.env,
-  fallback: string = processCwd(),
+  fallback: string = readProcessCwdSafely() ?? ".",
 ): string {
   return env.HOME ?? env.USERPROFILE ?? fallback;
+}
+
+export function formatUnavailableCliCwdMessage(): string {
+  return "current working directory is unavailable. Open a valid directory or set AGENC_WORKSPACE.";
+}
+
+function readProcessCwdSafely(cwdFn: () => string = processCwd): string | null {
+  try {
+    return cwdFn();
+  } catch {
+    return null;
+  }
+}
+
+export function resolveCliCwdForStartup(
+  env: NodeJS.ProcessEnv = process.env,
+  options: {
+    readonly useEnvWorkspace?: boolean;
+    readonly cwdFn?: () => string;
+  } = {},
+):
+  | { readonly ok: true; readonly cwd: string }
+  | { readonly ok: false; readonly message: string } {
+  if (options.useEnvWorkspace !== false) {
+    const workspace = resolveWorkspaceFromEnv(env);
+    if (workspace !== undefined) {
+      return { ok: true, cwd: workspace };
+    }
+  }
+  const cwd = readProcessCwdSafely(options.cwdFn);
+  if (cwd === null) {
+    return { ok: false, message: formatUnavailableCliCwdMessage() };
+  }
+  return { ok: true, cwd };
+}
+
+export function isUnavailableCliCwdError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const nodeError = error as NodeJS.ErrnoException & { readonly syscall?: string };
+  return (
+    nodeError.syscall === "uv_cwd" ||
+    error.message.includes("uv_cwd")
+  );
+}
+
+function cliStartupErrorMessage(error: unknown): string {
+  if (isUnavailableCliCwdError(error)) {
+    return formatUnavailableCliCwdMessage();
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+function writeUnavailableCliCwd(): number {
+  process.stderr.write(`agenc: ${formatUnavailableCliCwdMessage()}\n`);
+  return 1;
 }
 
 function emitFileMentionWarnings(
@@ -1779,18 +1834,23 @@ export async function oneShotCLI(
         : await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
+    const cliCwd = resolveCliCwdForStartup(process.env);
+    if (!cliCwd.ok) {
+      process.stderr.write(`agenc: ${cliCwd.message}\n`);
+      return 1;
+    }
     if (
       !(await requireProjectTrustForTui({
         env: process.env,
         argv: process.argv,
-        cwd: processCwd(),
+        cwd: cliCwd.cwd,
       }))
     ) {
       return 1;
     }
     throwIfAborted("requireProjectTrustForTui");
 
-    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const daemonCwd = cliCwd.cwd;
     const configStore = new ConfigStore({
       home: agencHome,
       env: process.env,
@@ -1858,9 +1918,7 @@ export async function oneShotCLI(
       process.stderr.write(`agenc: ${error.message}\n`);
       return 1;
     }
-    process.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
     return 1;
   } finally {
     uninstallInitSignals();
@@ -2567,11 +2625,15 @@ type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
 export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
+  const cliCwd = resolveCliCwdForStartup(process.env);
+  if (!cliCwd.ok) {
+    return writeUnavailableCliCwd();
+  }
   if (
     !(await requireProjectTrustForTui({
       env: process.env,
       argv: process.argv,
-      cwd: processCwd(),
+      cwd: cliCwd.cwd,
     }))
   ) {
     return 1;
@@ -2613,7 +2675,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     }
     const capturedEarlyInput = consumeEarlyInput();
     const initialPrompt = args.initialPrompt?.trim();
-    const daemonCwd = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const daemonCwd = cliCwd.cwd;
     const startupImages = args.startupImages ?? [];
     if (
       (initialPrompt === undefined || initialPrompt.length === 0) &&
@@ -2630,6 +2692,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         workspaceRoot,
         baseSession,
         model,
+        close: closeTuiContext = async () => undefined,
       } = await deps.createTuiContext({
         env: process.env,
         cwd: daemonCwd,
@@ -2665,6 +2728,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       } finally {
         activeInkUnmount = null;
         await deferred.close();
+        await closeTuiContext();
       }
     }
     const objective =
@@ -2823,6 +2887,7 @@ export async function attachAgentTuiEntry(
       workspaceRoot,
       baseSession,
       model,
+      close: closeTuiContext = async () => undefined,
     } = await daemonCliDeps().createTuiContext({
       env,
       cwd: bootstrapCwd,
@@ -2882,6 +2947,7 @@ export async function attachAgentTuiEntry(
       return 0;
     } finally {
       activeInkUnmount = null;
+      await closeTuiContext();
     }
   } catch (error) {
     if (
@@ -2901,7 +2967,11 @@ export async function attachAgentTuiEntry(
 
 /** Resume a daemon-owned session through the TUI. */
 export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
-  const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+  const cliCwd = resolveCliCwdForStartup(process.env);
+  if (!cliCwd.ok) {
+    return writeUnavailableCliCwd();
+  }
+  const workspaceRoot = cliCwd.cwd;
   const resolved = resolveResumeSessionId(workspaceRoot, args.resumeId);
   switch (resolved.kind) {
     case "ok": {
@@ -2950,7 +3020,11 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
 export async function continueTUIEntry(
   _args: ContinueTUIArgs,
 ): Promise<number> {
-  const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+  const cliCwd = resolveCliCwdForStartup(process.env);
+  if (!cliCwd.ok) {
+    return writeUnavailableCliCwd();
+  }
+  const workspaceRoot = cliCwd.cwd;
   const resolved = resolveLatestSessionId(workspaceRoot);
   if (resolved.kind !== "ok") {
     process.stderr.write("agenc: no previous session found for this project\n");
@@ -3036,7 +3110,13 @@ export async function main(): Promise<number> {
       });
     }
     if (agentCommand.kind === "start") {
-      const agentStartCwd = processCwd();
+      const agentStartCwdResult = resolveCliCwdForStartup(process.env, {
+        useEnvWorkspace: false,
+      });
+      if (!agentStartCwdResult.ok) {
+        return writeUnavailableCliCwd();
+      }
+      const agentStartCwd = agentStartCwdResult.cwd;
       return runAgenCAgentCli(agentCommand, {
         env: process.env,
         cwd: agentStartCwd,
@@ -3107,15 +3187,23 @@ export async function main(): Promise<number> {
   });
   const routeNeedsToolTrust =
     routePlan.kind === "oneShotCLI" || isInteractiveTuiRoutePlan(routePlan);
-  if (
-    routeNeedsToolTrust &&
-    !(await requireProjectTrustForTui({
+  const routeCwd = routeNeedsToolTrust
+    ? resolveCliCwdForStartup(process.env)
+    : null;
+  if (routeCwd !== null && !routeCwd.ok) {
+    return writeUnavailableCliCwd();
+  }
+  if (routeNeedsToolTrust) {
+    if (routeCwd === null) {
+      return writeUnavailableCliCwd();
+    }
+    if (!(await requireProjectTrustForTui({
       env: process.env,
       argv: process.argv,
-      cwd: processCwd(),
-    }))
-  ) {
-    return 1;
+      cwd: routeCwd.cwd,
+    }))) {
+      return 1;
+    }
   }
   if (await resolveAgenCDaemonAutostartEnabled(process.env)) {
     try {
@@ -3171,9 +3259,7 @@ if (isDirectInvocation()) {
       const code = await main();
       process.exit(code);
     } catch (error) {
-      process.stderr.write(
-        `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
+      process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
       process.exit(1);
     }
   })();

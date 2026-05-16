@@ -61,6 +61,7 @@ const providerProbe = {
   inkExit: typeof vi.fn === "function" ? vi.fn() : () => {},
   logEvent: typeof vi.fn === "function" ? vi.fn() : () => {},
   fileHistoryRewind: typeof vi.fn === "function" ? vi.fn() : () => {},
+  historyEntries: [] as unknown[],
 };
 
 vi.mock("bun:bundle", () => ({
@@ -123,6 +124,12 @@ vi.mock("../../utils/fileHistory.js", () => ({
 
 vi.mock("../../utils/worktree.js", () => ({
   getCurrentWorktreeSession: () => mockWorktreeSession,
+}));
+
+vi.mock("../history/history.js", () => ({
+  addToHistory: (entry: unknown) => {
+    providerProbe.historyEntries.push(entry);
+  },
 }));
 
 vi.mock("../context/stats.js", async () => {
@@ -455,6 +462,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       getToolUseContext,
       onInputChange,
       isLoading,
+      isLocalJSXCommandActive,
       pastedContents,
       setPastedContents,
       mode,
@@ -475,6 +483,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       getToolUseContext?: unknown;
       onInputChange?: (input: string) => void;
       isLoading?: boolean;
+      isLocalJSXCommandActive?: boolean;
       pastedContents?: unknown;
       setPastedContents?: unknown;
       mode?: unknown;
@@ -492,6 +501,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         getToolUseContext,
         onInputChange,
         isLoading,
+        isLocalJSXCommandActive,
         pastedContents,
         setPastedContents,
         mode,
@@ -578,6 +588,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.logEvent.mockClear?.();
   providerProbe.fileHistoryRewind.mockReset?.();
   providerProbe.processBashCommand.mockClear?.();
+  providerProbe.historyEntries.length = 0;
   mockTotalCost = 0;
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
@@ -1939,6 +1950,134 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("blocks complex slash menus while the live session is busy", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { getCommandQueue, resetCommandQueue } = await import("../../utils/messageQueueManager.js");
+    const dispatcher = await import("../../commands/dispatcher.js");
+    const dispatchSpy = vi.spyOn(dispatcher, "dispatchSlashCommand");
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      activeTurn: {
+        unsafePeek: () => ({ turnId: "busy-turn" }),
+      },
+      submit,
+    };
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    resetShellSurfaceProbe();
+    resetCommandQueue();
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+        async ({ output }) => {
+          const onSubmit = providerProbe.promptSubmits.at(-1);
+          expect(onSubmit).toBeDefined();
+
+          await onSubmit!("/agents", helpers);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(submit).not.toHaveBeenCalled();
+          expect(dispatchSpy).not.toHaveBeenCalled();
+          expect(getCommandQueue()).toEqual([]);
+          expect(output()).toMatch(/Finish[\s\S]*current[\s\S]*response[\s\S]*\/agents/);
+        },
+      );
+    } finally {
+      dispatchSpy.mockRestore();
+      resetCommandQueue();
+    }
+  });
+
+  test("keeps /agents wizard input out of the main composer submit path", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const dispatcher = await import("../../commands/dispatcher.js");
+    const dispatchSpy = vi
+      .spyOn(dispatcher, "dispatchSlashCommand")
+      .mockImplementation(async (_parsed, ctx) => {
+        ctx.appState?.setToolJSX?.({
+          isLocalJSXCommand: true,
+          shouldHidePromptInput: false,
+          jsx: React.createElement("ink-text", null, "agents wizard"),
+        });
+        return {
+          result: { kind: "skip" },
+          immediate: true,
+          command: {
+            name: "agents",
+            description: "Manage agent configurations",
+            immediate: true,
+            execute: vi.fn(),
+          },
+          trace: {
+            name: "agents",
+            aliasUsed: "agents",
+            argsRaw: "",
+            sensitive: false,
+            immediate: true,
+            isMcp: false,
+            resultKind: "skip",
+          },
+        } as never;
+      });
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      submit,
+    };
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    const wizardDescription =
+      "A reviewer for the tiny Python number guessing game that suggests small improvements.";
+    resetShellSurfaceProbe();
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          configStore={{}}
+          isInteractive={false}
+        />,
+        async ({ output }) => {
+          const openAgents = providerProbe.promptSubmits.at(-1);
+          expect(openAgents).toBeDefined();
+          const messageRenderCount = providerProbe.messageProps.length;
+
+          await openAgents!("/agents", helpers);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(providerProbe.promptProps.at(-1)?.isLocalJSXCommandActive).toBe(true);
+          expect(output()).toContain("agents wizard");
+          expect(providerProbe.messageProps.length).toBe(messageRenderCount);
+          expect(submit).not.toHaveBeenCalled();
+
+          const blockedMainSubmit = providerProbe.promptSubmits.at(-1);
+          expect(blockedMainSubmit).toBeDefined();
+          await blockedMainSubmit!(wizardDescription, helpers);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+
+          expect(submit).not.toHaveBeenCalled();
+          expect(JSON.stringify(providerProbe.historyEntries)).not.toContain(
+            wizardDescription,
+          );
+        },
+      );
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
   test("queues image-only submissions while the live session is busy", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const { getCommandQueue, resetCommandQueue } = await import("../../utils/messageQueueManager.js");
@@ -2130,6 +2269,43 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
       expect(output).toContain("messages:0");
       expect(output).not.toContain("Welcome to AgenC");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("lets /exit leave first-run onboarding immediately", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+    resetShellSurfaceProbe();
+    providerProbe.promptSubmits.length = 0;
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          isInteractive={true}
+          configStore={{
+            agencHome,
+            current: () => defaultConfig(),
+          }}
+        />,
+        async () => {
+          const onSubmit = providerProbe.promptSubmits.at(-1);
+          expect(onSubmit).toBeDefined();
+
+          await onSubmit!("/exit", helpers);
+
+          expect(providerProbe.inkExit).toHaveBeenCalledTimes(1);
+          expect(helpers.clearBuffer).toHaveBeenCalledTimes(1);
+          expect(helpers.resetHistory).toHaveBeenCalledTimes(1);
+        },
+      );
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }

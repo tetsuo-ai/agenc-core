@@ -11,6 +11,9 @@ export interface TrustDialogProps {
 
 type TrustChoice = "trust" | "exit";
 
+export const YOLO_TRUST_COPY =
+  "--yolo skips tool approval prompts and disables workspace sandboxing after trust; project trust still requires confirmation.";
+
 export function TrustDialog(props: TrustDialogProps): React.ReactElement {
   // No pre-selected option. The user must explicitly pick one with
   // arrow / tab / explicit y / n before Enter is meaningful. Pressing
@@ -111,7 +114,7 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
       ? h(
           "ink-text",
           { textStyles: { dimColor: true } },
-          "--yolo skips tool approval after trust; project trust still requires confirmation.",
+          YOLO_TRUST_COPY,
         )
       : null,
     props.riskSources && props.riskSources.length > 0

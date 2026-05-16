@@ -192,6 +192,7 @@ async function expectLiveMcpEndToEnd(params: {
   readonly workspace: string;
   readonly pidFile: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly argv?: readonly string[];
 }): Promise<void> {
   const seenToolNamesByCall: string[][] = [];
   const seenMessagesByCall: LLMMessage[][] = [];
@@ -210,6 +211,7 @@ async function expectLiveMcpEndToEnd(params: {
     boot = await bootstrapLocalRuntimeSession({
       apiKey: "test-key",
       env: params.env,
+      ...(params.argv !== undefined ? { argv: [...params.argv] } : {}),
       cwd: "/ignored-by-env",
     });
 
@@ -336,6 +338,7 @@ describe("bootstrapLocalRuntimeSession live MCP integration", () => {
         AGENC_MCP_SERVERS: JSON.stringify(mcpServers),
         HOME: home,
       },
+      argv: ["node", "agenc", "--yolo"],
     });
   });
 
@@ -366,6 +369,40 @@ timeout = 10000
         AGENC_MCP_SERVERS: "",
         HOME: home,
       },
+      argv: ["node", "agenc", "--yolo"],
+    });
+  });
+
+  it("starts a real stdio MCP server from project .mcp.json in yolo mode", async () => {
+    const home = await makeTempDir("agenc-live-mcp-home-");
+    const workspace = await makeTempDir("agenc-live-mcp-ws-");
+    const pidFile = join(home, "mcp", "live.pid");
+    await writeFile(
+      join(workspace, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          [MCP_SERVER_NAME]: {
+            type: "stdio",
+            command: process.execPath,
+            args: [FIXTURE_PATH, pidFile],
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    await expectLiveMcpEndToEnd({
+      home,
+      workspace,
+      pidFile,
+      env: {
+        ...process.env,
+        AGENC_HOME: home,
+        AGENC_WORKSPACE: workspace,
+        AGENC_MCP_SERVERS: "",
+        HOME: home,
+      },
+      argv: ["node", "agenc", "--yolo"],
     });
   });
 });
