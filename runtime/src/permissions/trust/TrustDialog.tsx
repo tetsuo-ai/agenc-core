@@ -12,7 +12,24 @@ export interface TrustDialogProps {
 type TrustChoice = "trust" | "exit";
 
 export const YOLO_TRUST_COPY =
-  "--yolo skips tool approval prompts and disables workspace sandboxing after trust; project trust still requires confirmation.";
+  "--yolo skips tool approval prompts and uses danger-full-access sandbox mode after trust; project trust still requires confirmation.";
+
+export function trustDialogOptionLabel(
+  id: TrustChoice,
+  choice: TrustChoice | null,
+  pending: boolean,
+): string {
+  if (!pending) {
+    return id === "trust" ? "Yes, I trust this project" : "No, exit";
+  }
+  if (choice === "trust") {
+    return id === "trust" ? "Accepting..." : "No, exit";
+  }
+  if (choice === "exit") {
+    return id === "exit" ? "Exiting..." : "Yes, I trust this project";
+  }
+  return id === "trust" ? "Yes, I trust this project" : "No, exit";
+}
 
 export function TrustDialog(props: TrustDialogProps): React.ReactElement {
   // No pre-selected option. The user must explicitly pick one with
@@ -130,8 +147,8 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     h(
       "ink-box",
       { style: { flexDirection: "column" } },
-      option("trust", pending ? "Accepting..." : "Yes, I trust this project"),
-      option("exit", "No, exit"),
+      option("trust", trustDialogOptionLabel("trust", choice, pending)),
+      option("exit", trustDialogOptionLabel("exit", choice, pending)),
     ),
     h(
       "ink-text",

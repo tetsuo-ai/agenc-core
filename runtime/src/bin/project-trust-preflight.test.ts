@@ -388,7 +388,7 @@ describe("project trust preflight", () => {
 
   it("explains both approval bypass and sandbox bypass in --yolo trust copy", () => {
     expect(YOLO_TRUST_COPY).toContain("skips tool approval prompts");
-    expect(YOLO_TRUST_COPY).toContain("disables workspace sandboxing");
+    expect(YOLO_TRUST_COPY).toContain("danger-full-access sandbox mode");
     expect(YOLO_TRUST_COPY).toContain("project trust still requires confirmation");
   });
 
