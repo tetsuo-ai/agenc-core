@@ -1334,6 +1334,64 @@ autostart = false
     }
   });
 
+  it("keeps message.stream requests alive beyond the generic daemon timeout", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-stream-timeout-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+          return;
+        }
+        if (message.method === "message.stream") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              messageId: "message_delayed",
+              streamId: "stream_delayed",
+              acceptedAt: "2026-05-01T12:00:04.000Z",
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "timeout-cookie",
+      timeoutMs: 50,
+    });
+    try {
+      await expect(
+        client.request("message.stream", {
+          sessionId: "session_delayed",
+          content: "continue",
+          streamId: "stream_delayed",
+        }),
+      ).resolves.toEqual({
+        messageId: "message_delayed",
+        streamId: "stream_delayed",
+        acceptedAt: "2026-05-01T12:00:04.000Z",
+      });
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("notifies persistent TUI clients when the daemon socket drops", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-agent-connection-state-"));
     const socketPath = join(dir, "daemon.sock");

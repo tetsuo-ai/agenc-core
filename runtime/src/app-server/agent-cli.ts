@@ -137,9 +137,13 @@ export interface AgenCJsonLineDaemonClientOptions {
 // invocation with AGENC_DAEMON_REQUEST_TIMEOUT_MS for read-only smoke checks
 // where a faster failure is preferable.
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_DAEMON_STREAM_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const MAX_BUFFERED_SESSION_EVENT_SESSIONS = 50;
 const MAX_BUFFERED_SESSION_EVENTS_PER_SESSION = 20;
+const LONG_RUNNING_DAEMON_METHODS: ReadonlySet<AgenCDaemonMethod> = new Set([
+  "message.stream",
+]);
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -582,6 +586,15 @@ function defaultAgenCAgentAttachClientId(): string {
   return `agenc-agent-cli-${process.pid}`;
 }
 
+function requestTimeoutMsForMethod(
+  method: AgenCDaemonMethod,
+  timeoutMs: number,
+): number {
+  return LONG_RUNNING_DAEMON_METHODS.has(method)
+    ? DEFAULT_DAEMON_STREAM_REQUEST_TIMEOUT_MS
+    : timeoutMs;
+}
+
 function connectPersistentDaemonClient(
   socketPath: string,
   timeoutMs: number,
@@ -680,13 +693,17 @@ function connectPersistentDaemonClient(
               })}\n`,
             );
           };
+          const requestTimeoutMs = requestTimeoutMsForMethod(
+            method,
+            timeoutMs,
+          );
           const requestTimeout = setTimeout(() => {
             pending.delete(id);
             removeAbortListener?.();
             requestReject(
               new Error(`Timed out waiting for daemon response to ${method}`),
             );
-          }, timeoutMs);
+          }, requestTimeoutMs);
           pending.set(id, {
             resolve: (value) => {
               clearTimeout(requestTimeout);
