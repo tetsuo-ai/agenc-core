@@ -32,15 +32,39 @@ export interface SkillsSnapshot {
 }
 
 type AvailableSkillSnapshot = SkillsSnapshot["availableSkills"][number];
+interface ParsedSkillsArgs {
+  readonly query?: string;
+  readonly showAll: boolean;
+}
+
+interface SkillsFormatOptions {
+  readonly query?: string;
+  readonly showAll?: boolean;
+  readonly limit?: number;
+}
+
+const DEFAULT_SKILLS_LIMIT = 12;
+const DESCRIPTION_LIMIT = 96;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function parseArgs(argsRaw: string): "list" | null {
-  const first = argsRaw.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  if (first === "" || first === "list" || first === "status") return "list";
-  return null;
+function parseArgs(argsRaw: string): ParsedSkillsArgs {
+  const trimmed = argsRaw.trim();
+  if (trimmed.length === 0) return { showAll: false };
+  const [firstRaw = "", ...rest] = trimmed.split(/\s+/);
+  const first = firstRaw.toLowerCase();
+  if (first === "all") return { showAll: true };
+  if (first === "list" || first === "status") {
+    return rest.length > 0
+      ? { showAll: false, query: rest.join(" ") }
+      : { showAll: false };
+  }
+  if (first === "find" || first === "search") {
+    return { showAll: false, query: rest.join(" ") };
+  }
+  return { showAll: false, query: trimmed };
 }
 
 function normalizeRoots(value: unknown): string[] {
@@ -109,13 +133,40 @@ function formatSkillReference(name: string): string {
   return `$${name}`;
 }
 
+function compactText(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit - 1).trimEnd()}…`;
+}
+
 function formatAvailableSkill(skill: AvailableSkillSnapshot): string {
-  const description = skill.description?.trim();
+  const description =
+    skill.description !== undefined
+      ? compactText(skill.description, DESCRIPTION_LIMIT)
+      : undefined;
   const sourceTag = formatSourceTag(skill);
   if (description) {
     return `    ${formatSkillReference(skill.name)} - ${description}${sourceTag}`;
   }
   return `    ${formatSkillReference(skill.name)}${sourceTag}`;
+}
+
+function skillMatchesQuery(
+  skill: AvailableSkillSnapshot,
+  query: string | undefined,
+): boolean {
+  if (query === undefined || query.trim().length === 0) return true;
+  const needle = query.trim().toLowerCase();
+  const haystack = [
+    skill.name,
+    skill.description,
+    skill.loadedFrom,
+    skill.scope,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(needle);
 }
 
 export async function collectSkillsSnapshot(
@@ -152,16 +203,41 @@ export async function collectSkillsSnapshot(
   };
 }
 
-export function formatSkillsSnapshot(snapshot: SkillsSnapshot): string {
+export function formatSkillsSnapshot(
+  snapshot: SkillsSnapshot,
+  options: SkillsFormatOptions = {},
+): string {
+  const limit = options.limit ?? DEFAULT_SKILLS_LIMIT;
+  const matchedSkills = snapshot.availableSkills.filter((skill) =>
+    skillMatchesQuery(skill, options.query),
+  );
+  const shownSkills = options.showAll
+    ? matchedSkills
+    : matchedSkills.slice(0, limit);
+  const hiddenCount = Math.max(0, matchedSkills.length - shownSkills.length);
   const lines: string[] = ["Skills:"];
   lines.push(
     "  use: $skill-name [args] (slash commands use /, file mentions use @)",
   );
+  if (options.query !== undefined && options.query.trim().length > 0) {
+    lines.push(`  filter: ${options.query.trim()}`);
+  }
   if (snapshot.availableSkills.length === 0) {
     lines.push("  available: none");
+  } else if (matchedSkills.length === 0) {
+    lines.push("  available: no matches");
   } else {
-    lines.push("  available:");
-    lines.push(...snapshot.availableSkills.map(formatAvailableSkill));
+    const count =
+      hiddenCount > 0
+        ? `showing ${shownSkills.length} of ${matchedSkills.length}`
+        : `${matchedSkills.length}`;
+    lines.push(`  available: ${count}`);
+    lines.push(...shownSkills.map(formatAvailableSkill));
+    if (hiddenCount > 0) {
+      lines.push(
+        `  more: ${hiddenCount} hidden; use /skills all or /skills <search>`,
+      );
+    }
   }
 
   if (snapshot.invokedSkills.length === 0) {
@@ -186,11 +262,12 @@ export const skillsCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      if (parseArgs(ctx.argsRaw) === null) {
-        return { kind: "error", message: "Usage: /skills [list|status]" };
-      }
+      const parsed = parseArgs(ctx.argsRaw);
       const snapshot = await collectSkillsSnapshot(ctx.session, ctx.appState);
-      return { kind: "text", text: formatSkillsSnapshot(snapshot) };
+      return {
+        kind: "text",
+        text: formatSkillsSnapshot(snapshot, parsed),
+      };
     }),
 };
 
