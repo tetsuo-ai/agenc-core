@@ -1,14 +1,30 @@
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import mcpCommand, {
   collectMcpToolStatusByServer,
   collectMcpToolStatus,
   collectMcpServerStatus,
+  createProjectMcpServer,
   formatMcpServerStatus,
   formatMcpToolStatus,
   parseMcpArgs,
 } from "./mcp.js";
 import type { Session } from "../session/session.js";
+
+function tmpRoot(): string {
+  return mkdtempSync(join(tmpdir(), "agenc-mcp-command-"));
+}
 
 function stubSession(
   servers: Map<
@@ -68,6 +84,12 @@ describe("mcpCommand", () => {
       serverName: "local",
       command: "node",
       args: ["server path.js", "--stdio"],
+    });
+    expect(parseMcpArgs("new game-helper --tool game_tip game hints")).toEqual({
+      kind: "new",
+      serverName: "game-helper",
+      toolName: "game_tip",
+      description: "game hints",
     });
     expect(parseMcpArgs("add broken \"unterminated")).toMatchObject({
       kind: "error",
@@ -153,6 +175,26 @@ describe("mcpCommand", () => {
     ]);
 
     expect(text).toContain("mcp.git. status - Runs \\u0394 checks with?bell");
+    expect(text.split("\n")).toHaveLength(2);
+  });
+
+  it("omits model-facing MCP metadata from tool descriptions", async () => {
+    const session = stubSession(new Map(), {
+      getToolsByServer: () => [
+        {
+          name: "mcp.game-helper.game_tip",
+          description:
+            "Suggest one move\nModel-facing function name: mcp__game-helper__game_tip.\nCanonical MCP tool name: mcp.game-helper.game_tip.",
+        },
+      ],
+    });
+
+    const tools = collectMcpToolStatus(session, "game-helper");
+    const text = formatMcpToolStatus(tools, "game-helper");
+
+    expect(text).toContain("mcp.game-helper.game_tip - Suggest one move");
+    expect(text).not.toContain("Model-facing function name");
+    expect(text).not.toContain("Canonical MCP tool name");
     expect(text.split("\n")).toHaveLength(2);
   });
 
@@ -278,6 +320,137 @@ describe("mcpCommand", () => {
     if (result.kind === "text") {
       expect(result.text).toContain('MCP server "local" added for this session');
       expect(result.text).toContain("does not edit config.toml");
+    }
+  });
+
+  it("scaffolds a dependency-free project MCP server", async () => {
+    const cwd = tmpRoot();
+    try {
+      const result = await createProjectMcpServer(
+        cwd,
+        "game-helper",
+        "game_tip",
+        "Suggest one game move",
+      );
+
+      expect(result).toMatchObject({
+        serverName: "game-helper",
+        toolName: "game_tip",
+        relativeScriptFile: ".agenc/mcp/game-helper.mjs",
+      });
+      if ("scriptFile" in result) {
+        const source = readFileSync(result.scriptFile, "utf8");
+        expect(source).toContain(
+          'process.stdout.write(JSON.stringify(message) + "\\n")',
+        );
+        expect(source).toContain('message.method === "tools/list"');
+        expect(source).toContain('const toolName = "game_tip";');
+        expect(source).not.toContain("@modelcontextprotocol/sdk");
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("creates and connects a project MCP server for the current session", async () => {
+    const cwd = tmpRoot();
+    const addServer = vi.fn(async (config) => ({
+      serverName: config.name,
+      success: true,
+      toolCount: 1,
+    }));
+    try {
+      const result = await mcpCommand.execute({
+        session: stubSession(new Map(), { addServer }),
+        argsRaw: "new game-helper --tool game_tip Suggest one game move",
+        cwd,
+        home: "/home/test",
+      });
+
+      expect(addServer).toHaveBeenCalledWith({
+        name: "game-helper",
+        transport: "stdio",
+        command: "node",
+        args: [join(cwd, ".agenc", "mcp", "game-helper.mjs")],
+        enabled: true,
+      });
+      expect(result.kind).toBe("text");
+      if (result.kind === "text") {
+        expect(result.text).toContain(
+          "Created MCP server: .agenc/mcp/game-helper.mjs",
+        );
+        expect(result.text).toContain(
+          "Connected for this session (1 tool): /mcp tools game-helper",
+        );
+        expect(result.text).toContain("Tool: game_tip");
+        expect(result.text).toContain(
+          "Persist later: agenc mcp add game-helper node .agenc/mcp/game-helper.mjs",
+        );
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("creates an MCP file even when live session add is unavailable", async () => {
+    const cwd = tmpRoot();
+    try {
+      const result = await mcpCommand.execute({
+        session: stubSession(new Map()),
+        argsRaw: "new local-helper",
+        cwd,
+        home: "/home/test",
+      });
+
+      expect(result.kind).toBe("text");
+      if (result.kind === "text") {
+        expect(result.text).toContain("Add this session: /mcp add local-helper");
+      }
+      expect(existsSync(join(cwd, ".agenc", "mcp", "local-helper.mjs"))).toBe(
+        true,
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsafe MCP scaffold names before writing files", async () => {
+    const cwd = tmpRoot();
+    try {
+      await expect(
+        createProjectMcpServer(cwd, "../bad", "ping", "Bad"),
+      ).resolves.toEqual({
+        error:
+          "Invalid MCP server name. Use only letters, numbers, hyphens, and underscores.",
+      });
+      await expect(
+        createProjectMcpServer(cwd, "safe", "../bad", "Bad"),
+      ).resolves.toEqual({
+        error:
+          "Invalid MCP tool name. Start with a letter and use only letters, numbers, hyphens, and underscores.",
+      });
+      expect(existsSync(join(cwd, ".agenc"))).toBe(false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not overwrite an existing MCP scaffold", async () => {
+    const cwd = tmpRoot();
+    try {
+      const serverDir = join(cwd, ".agenc", "mcp");
+      mkdirSync(serverDir, { recursive: true });
+      const scriptFile = join(serverDir, "existing.mjs");
+      writeFileSync(scriptFile, "original", "utf8");
+
+      await expect(
+        createProjectMcpServer(cwd, "existing", "ping", "Replacement"),
+      ).resolves.toEqual({
+        error: "MCP server file already exists: .agenc/mcp/existing.mjs",
+      });
+      expect(readFileSync(scriptFile, "utf8")).toBe("original");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 
