@@ -1,8 +1,8 @@
 /**
  * /skills scenario.
  *
- * Lists available skills. Smoke-test that the command loads, renders,
- * and returns to idle.
+ * Lists available skills in a persistent menu. Smoke-test that the command
+ * loads, renders, scrolls when there are more skills than fit, and closes.
  */
 export const meta = {
   description: "/skills renders skill list, returns to idle without crash.",
@@ -13,7 +13,14 @@ export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.submitSlashCommand("/skills");
-  await session.waitFor(/Skills:/, { timeout: 15_000 });
+  await session.waitFor(/Use\s+\$skill-name\s+to\s+load\s+a\s+skill/, { timeout: 15_000 });
+  await session.waitForIdle({ timeout: 15_000 });
+  if (/more below/.test(session.text)) {
+    session.mark();
+    session.send("\x1b[6~"); // PageDown
+    await session.waitFor(/more above/, { timeout: 15_000 });
+  }
+  session.sendEscape();
   await session.waitForIdle({ timeout: 15_000 });
 
   const parts = [

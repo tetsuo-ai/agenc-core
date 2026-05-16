@@ -18,4 +18,11 @@ describe("SkillsMenu command sources", () => {
     expect(source).toContain("User skills live in ~/.agenc/skills/");
     expect(source).toContain("allowedTools");
   });
+
+  test("keeps the skills surface persistent and scrollable", () => {
+    expect(source).toContain("useInput");
+    expect(source).toContain("scrollOffset");
+    expect(source).toContain("more below");
+    expect(source).toContain("PgUp/PgDn");
+  });
 });
