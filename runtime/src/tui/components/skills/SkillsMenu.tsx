@@ -22,6 +22,15 @@ type Props = {
   }) => void;
   commands: Command[];
 };
+const dollarSkillNamePattern = /^[A-Za-z][A-Za-z0-9_:-]*$/u;
+
+function getInvocableSkillName(skill: SkillCommand): string {
+  if (dollarSkillNamePattern.test(skill.name)) {
+    return skill.name;
+  }
+  return skill.aliases?.find(alias => dollarSkillNamePattern.test(alias)) ?? skill.name;
+}
+
 function getSourceTitle(source: SkillSource): string {
   if (source === 'plugin') {
     return 'Plugin skills';
@@ -46,7 +55,11 @@ function getSourceSubtitle(source: SkillSource, skills: SkillCommand[]): string 
 }
 function getSkillListLabel(skill: SkillCommand): string {
   const leafName = skill.name.split(':').pop() ?? skill.name;
-  const command = `$${skill.name}`;
+  const invocableName = getInvocableSkillName(skill);
+  const command = `$${invocableName}`;
+  if (invocableName !== skill.name) {
+    return leafName === invocableName ? command : `${command} - ${leafName}`;
+  }
   return leafName === skill.name ? command : `${command} - ${leafName}`;
 }
 

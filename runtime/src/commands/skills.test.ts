@@ -15,6 +15,7 @@ function stubSession(opts: {
     readonly loadedFrom?: string;
     readonly userInvocable?: boolean;
     readonly disableModelInvocation?: boolean;
+    readonly aliases?: readonly string[];
   }>;
   roots?: unknown;
 }): Session {
@@ -55,6 +56,7 @@ describe("skillsCommand", () => {
           loadedFrom: undefined,
           userInvocable: undefined,
           disableModelInvocation: undefined,
+          aliases: undefined,
         },
         {
           name: "zeta",
@@ -63,6 +65,7 @@ describe("skillsCommand", () => {
           loadedFrom: undefined,
           userInvocable: undefined,
           disableModelInvocation: undefined,
+          aliases: undefined,
         },
       ],
       effectiveSkillRoots: ["/a", "/z"],
@@ -114,6 +117,7 @@ describe("skillsCommand", () => {
         loadedFrom: "skills",
         userInvocable: undefined,
         disableModelInvocation: undefined,
+        aliases: undefined,
       },
       {
         name: "mcp__Docs_Server__reviewer",
@@ -122,6 +126,7 @@ describe("skillsCommand", () => {
         loadedFrom: "mcp",
         userInvocable: true,
         disableModelInvocation: false,
+        aliases: undefined,
       },
     ]);
   });
@@ -175,6 +180,41 @@ describe("skillsCommand", () => {
     );
   });
 
+  it("formats hidden system skills with their invocable aliases", () => {
+    const text = formatSkillsSnapshot({
+      invokedSkills: [".system:imagegen"],
+      availableSkills: [
+        {
+          name: ".system:imagegen",
+          aliases: ["imagegen"],
+          description: "Generate image assets",
+          loadedFrom: "skills",
+        },
+      ],
+      effectiveSkillRoots: [],
+    });
+
+    expect(text).toContain("    $imagegen - Generate image assets [system]");
+    expect(text).toContain("  invoked: $imagegen");
+  });
+
+  it("keeps exact command names ahead of implicit aliases", () => {
+    expect(
+      formatSkillsSnapshot({
+        invokedSkills: [],
+        availableSkills: [
+          {
+            name: ".system:imagegen",
+            aliases: ["imagegen"],
+            loadedFrom: "skills",
+          },
+          { name: "imagegen", description: "Project image skill" },
+        ],
+        effectiveSkillRoots: [],
+      }),
+    ).toContain("    $imagegen - Project image skill");
+  });
+
   it("caps the default skills list and points to filtering", () => {
     const availableSkills = Array.from({ length: 14 }, (_, index) => ({
       name: `skill_${String(index).padStart(2, "0")}`,
@@ -188,10 +228,10 @@ describe("skillsCommand", () => {
       effectiveSkillRoots: [],
     });
 
-    expect(text).toContain("available: showing 12 of 14");
+    expect(text).toContain("available: showing 8 of 14");
     expect(text).toContain("$skill_00 - Skill 0 does useful work [skills]");
     expect(text).not.toContain("$skill_13");
-    expect(text).toContain("more: 2 hidden; use /skills all or /skills <search>");
+    expect(text).toContain("more: 6 hidden; use /skills all or /skills <search>");
   });
 
   it("filters skills by query and truncates long descriptions", () => {

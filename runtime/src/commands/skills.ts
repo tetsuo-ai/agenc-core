@@ -27,6 +27,7 @@ export interface SkillsSnapshot {
     readonly loadedFrom?: string;
     readonly userInvocable?: boolean;
     readonly disableModelInvocation?: boolean;
+    readonly aliases?: readonly string[];
   }>;
   readonly effectiveSkillRoots: ReadonlyArray<string>;
 }
@@ -43,8 +44,9 @@ interface SkillsFormatOptions {
   readonly limit?: number;
 }
 
-const DEFAULT_SKILLS_LIMIT = 12;
-const DESCRIPTION_LIMIT = 96;
+const DEFAULT_SKILLS_LIMIT = 8;
+const MAX_SKILL_ROW_WIDTH = 76;
+const DOLLAR_SKILL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_:-]*$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -125,12 +127,19 @@ function mergeAvailableSkills(
 }
 
 function formatSourceTag(skill: AvailableSkillSnapshot): string {
+  if (skill.name.startsWith(".")) return " [system]";
   const source = skill.loadedFrom ?? skill.scope;
   return source ? ` [${source}]` : "";
 }
 
-function formatSkillReference(name: string): string {
-  return `$${name}`;
+function getInvocableSkillName(skill: AvailableSkillSnapshot): string {
+  if (DOLLAR_SKILL_NAME_PATTERN.test(skill.name)) return skill.name;
+  return skill.aliases?.find((alias) => DOLLAR_SKILL_NAME_PATTERN.test(alias)) ??
+    skill.name;
+}
+
+function formatSkillReference(skill: AvailableSkillSnapshot | string): string {
+  return typeof skill === "string" ? `$${skill}` : `$${getInvocableSkillName(skill)}`;
 }
 
 function compactText(value: string, limit: number): string {
@@ -140,15 +149,19 @@ function compactText(value: string, limit: number): string {
 }
 
 function formatAvailableSkill(skill: AvailableSkillSnapshot): string {
-  const description =
-    skill.description !== undefined
-      ? compactText(skill.description, DESCRIPTION_LIMIT)
-      : undefined;
   const sourceTag = formatSourceTag(skill);
+  const prefix = `    ${formatSkillReference(skill)}`;
+  const description = skill.description?.trim();
   if (description) {
-    return `    ${formatSkillReference(skill.name)} - ${description}${sourceTag}`;
+    const available = Math.max(
+      0,
+      MAX_SKILL_ROW_WIDTH - prefix.length - sourceTag.length - " - ".length,
+    );
+    if (available >= 16) {
+      return `${prefix} - ${compactText(description, available)}${sourceTag}`;
+    }
   }
-  return `    ${formatSkillReference(skill.name)}${sourceTag}`;
+  return `${prefix}${sourceTag}`;
 }
 
 function skillMatchesQuery(
@@ -194,6 +207,7 @@ export async function collectSkillsSnapshot(
         loadedFrom: skill.loadedFrom,
         userInvocable: skill.userInvocable,
         disableModelInvocation: skill.disableModelInvocation,
+        aliases: skill.aliases,
       })),
       mcpSkillsFromAppState(appStateBridge),
     ),
@@ -243,8 +257,13 @@ export function formatSkillsSnapshot(
   if (snapshot.invokedSkills.length === 0) {
     lines.push("  invoked: none");
   } else {
+    const skillsByName = new Map(
+      snapshot.availableSkills.map((skill) => [skill.name, skill]),
+    );
     lines.push(
-      `  invoked: ${snapshot.invokedSkills.map(formatSkillReference).join(", ")}`,
+      `  invoked: ${snapshot.invokedSkills.map((name) => {
+        return formatSkillReference(skillsByName.get(name) ?? name);
+      }).join(", ")}`,
     );
   }
 

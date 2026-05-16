@@ -17,6 +17,13 @@ describe('parseDollarSkillCommand', () => {
     })
   })
 
+  test('supports hidden system skill names', () => {
+    expect(parseDollarSkillCommand('$.system:imagegen make a sprite')).toEqual({
+      commandName: '.system:imagegen',
+      args: 'make a sprite',
+    })
+  })
+
   test('supports MCP-style names with uppercase server segments', () => {
     expect(parseDollarSkillCommand('$mcp__Docs_Server__reviewer review')).toEqual({
       commandName: 'mcp__Docs_Server__reviewer',

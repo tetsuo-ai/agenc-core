@@ -536,6 +536,12 @@ function skillNameForCommandFile(filePath: string, baseDir: string): string {
   return namespace ? `${namespace}:${commandBaseName}` : commandBaseName;
 }
 
+function implicitAliasesForSkillName(name: string): readonly string[] {
+  if (!name.startsWith(".")) return [];
+  const leaf = name.split(":").pop() ?? "";
+  return /^[A-Za-z][A-Za-z0-9_:-]*$/u.test(leaf) ? [leaf] : [];
+}
+
 function splitFrontmatter(raw: string): SplitFrontmatter {
   if (!raw.startsWith("---")) {
     return { frontmatter: {}, markdown: raw };
@@ -720,6 +726,10 @@ async function loadSkillFile(
     source: root.source,
     loadedFrom: root.loadedFrom,
     contentLength: markdown.length,
+    ...(() => {
+      const aliases = implicitAliasesForSkillName(skillName);
+      return aliases.length > 0 ? { aliases } : {};
+    })(),
   };
 
   return { skill, content: markdown, filePath };

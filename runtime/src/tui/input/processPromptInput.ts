@@ -342,7 +342,7 @@ export function parseDollarSkillCommand(input: string): {
   let first = lines[0]!
   if (first.endsWith('\r')) first = first.slice(0, -1)
   first = first.trim()
-  const match = first.match(/^\$([A-Za-z][A-Za-z0-9_:-]*)(?:\s+(.*))?$/)
+  const match = first.match(/^\$([A-Za-z.][A-Za-z0-9_.:-]*)(?:\s+(.*))?$/)
   if (!match) return null
   return {
     commandName: match[1]!,

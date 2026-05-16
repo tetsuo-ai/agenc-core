@@ -179,6 +179,27 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain("ignored");
   });
 
+  it("adds leaf aliases for hidden dot-prefixed skill namespaces", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    writeSkill(
+      join(workspaceRoot, ".agenc", "skills"),
+      ".system/imagegen",
+      "---\ndescription: Generate images\n---\nBody\n",
+    );
+
+    const services = createLocalSkillsServices({
+      agencHome,
+      workspaceRoot,
+      env: {},
+    });
+    await expect(services.skillsManager.resolveSkill?.("imagegen")).resolves
+      .toMatchObject({
+        name: ".system:imagegen",
+        aliases: ["imagegen"],
+      });
+  });
+
   it("parses AgenC frontmatter fields and keeps name as display name", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");

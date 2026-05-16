@@ -487,7 +487,9 @@ export function findCommand(
   return commands.find(
     command =>
       command.name === commandName ||
-      getCommandName(command) === commandName ||
+      getCommandName(command) === commandName,
+  ) ?? commands.find(
+    command =>
       command.aliases?.includes(commandName),
   );
 }
