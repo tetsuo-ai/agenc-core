@@ -278,6 +278,22 @@ describe("Write tool", () => {
     }
   });
 
+  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+    const tool = createFileWriteTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: "/root/game.py",
+      content: "print('hi')\n",
+      cwd: root,
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("agent namespace");
+    expect(String(result.content)).toContain('"game.py"');
+    await expect(stat(join(root, "game.py"))).rejects.toThrow();
+  });
+
   test("error results are plain-text strings, not JSON-wrapped envelopes", async () => {
     const target = join(root, "untouched.txt");
     await writeFile(target, "alpha\n", "utf8");

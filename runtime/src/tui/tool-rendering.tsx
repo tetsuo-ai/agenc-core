@@ -4,6 +4,7 @@ import React from "react";
 
 import { Box, Text } from "./ink.js";
 import { AskUserQuestionTool } from "../tools/ask-user-question/tui-tool.js";
+import { formatToolPathForDisplay } from "../tools/system/agent-path-hints.js";
 import {
   pickToolResultDispatch,
   resultTextForTuiTool,
@@ -350,6 +351,11 @@ function filePathFromInput(input: unknown): string {
   return typeof filePath === "string" ? filePath : "";
 }
 
+function displayFilePathFromInput(input: unknown): string {
+  const filePath = filePathFromInput(input);
+  return filePath.length > 0 ? formatToolPathForDisplay(filePath) : "";
+}
+
 function truncateInline(value: string, limit = 140): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
@@ -450,6 +456,7 @@ function mcpInputSummary(record: Record<string, unknown>): string {
 function toolUseSummaryForInput(name: string, input: unknown): string {
   const record = objectFromUnknown(input);
   const path = filePathFromInput(record);
+  const displayPath = path.length > 0 ? formatToolPathForDisplay(path) : "";
   if (name === "exec_command") {
     return commandFromExecInput(record) ?? "command";
   }
@@ -465,8 +472,8 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
   }
   if (name === "Write") {
     const size = contentLengthSummary(record.content);
-    if (path.length > 0 && size !== null) return `${path} (${size})`;
-    if (path.length > 0) return path;
+    if (displayPath.length > 0 && size !== null) return `${displayPath} (${size})`;
+    if (displayPath.length > 0) return displayPath;
     return size !== null ? `file content (${size})` : "file";
   }
   if (name === "Edit") {
@@ -474,7 +481,7 @@ function toolUseSummaryForInput(name: string, input: unknown): string {
     const newSize = contentLengthSummary(record.new_string);
     const sizes =
       oldSize !== null && newSize !== null ? ` (${oldSize} -> ${newSize})` : "";
-    return path.length > 0 ? `${path}${sizes}` : `edit${sizes}`;
+    return displayPath.length > 0 ? `${displayPath}${sizes}` : `edit${sizes}`;
   }
   if (name === "Bash" && typeof record.command === "string") {
     return truncateInline(record.command);
@@ -538,14 +545,14 @@ export function createTuiTool(name: string): any {
             return filePathFromInput(input);
           },
           getActivityDescription(input: unknown) {
-            const filePath = filePathFromInput(input);
+            const filePath = displayFilePathFromInput(input);
             return filePath.length > 0 ? `Reading ${filePath}` : "Reading file";
           },
           isReadOnly() {
             return true;
           },
           renderToolUseMessage(input: unknown) {
-            return filePathFromInput(input) || "file";
+            return displayFilePathFromInput(input) || "file";
           },
           userFacingName() {
             return "Read";

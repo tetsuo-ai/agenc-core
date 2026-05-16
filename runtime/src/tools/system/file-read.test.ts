@@ -52,6 +52,19 @@ describe("FileRead tool", () => {
     expect(tool.name).toBe(FILE_READ_TOOL_NAME);
   });
 
+  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: "/root/game.py",
+      cwd: root,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("agent namespace");
+    expect(String(result.content)).toContain('"game.py"');
+  });
+
   test("rejects a file that exceeds the token budget", async () => {
     const file = join(root, "big.txt");
     // 4-char token estimate × cap of 100 → need ~401 chars to exceed.

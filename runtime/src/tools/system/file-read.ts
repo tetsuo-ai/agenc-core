@@ -56,6 +56,11 @@ import {
   safePathAllowingSessionPlanFile,
   SESSION_ALLOWED_ROOTS_ARG,
 } from "./filesystem.js";
+import {
+  agentNamespacePathHint,
+  denyAgentNamespacePath,
+  isAgentNamespacePath,
+} from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { roughTokenCountEstimationForFileType } from "../../llm/token-estimation.js";
 
@@ -186,7 +191,7 @@ const FILE_READ_DESCRIPTION = `Reads a file from the local filesystem. You can a
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
+- Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
 - By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
@@ -510,6 +515,9 @@ async function resolveAndCheck(
     typeof args.cwd === "string" && args.cwd.trim().length > 0
       ? args.cwd
       : config.allowedPaths[0] ?? process.cwd();
+  if (isAgentNamespacePath(rawPath)) {
+    return { err: errorResult(agentNamespacePathHint(rawPath, cwdArg)) };
+  }
   const absolute = isAbsolute(rawPath) ? rawPath : resolve(cwdArg, rawPath);
   const safe = await safePathAllowingSessionPlanFile(
     absolute,
@@ -1244,7 +1252,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       properties: {
         file_path: {
           type: "string",
-          description: "Absolute or workspace-relative path.",
+          description:
+            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
         },
         offset: {
           type: "number",
@@ -1276,6 +1285,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         typeof args.cwd === "string" && args.cwd.length > 0
           ? args.cwd
           : config.allowedPaths[0] ?? process.cwd();
+      if (isAgentNamespacePath(filePath)) {
+        return denyAgentNamespacePath(filePath, cwd);
+      }
       const decision = checkToolPathPermission({
         toolName: FILE_READ_TOOL_NAME,
         input: input as Record<string, unknown>,

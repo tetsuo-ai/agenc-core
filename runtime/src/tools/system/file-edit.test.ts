@@ -87,6 +87,33 @@ describe("Edit tool", () => {
     });
   });
 
+  test("rejects agent namespace paths with a workspace-relative hint", async () => {
+    const edit = createFileEditTool({ allowedPaths: [root] });
+    const editResult = await edit.execute({
+      file_path: "/root/game.py",
+      old_string: "alpha",
+      new_string: "beta",
+      cwd: root,
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(editResult.isError).toBe(true);
+    expect(String(editResult.content)).toContain("agent namespace");
+    expect(String(editResult.content)).toContain('"game.py"');
+
+    const multi = createFileMultiEditTool({ allowedPaths: [root] });
+    const multiResult = await multi.execute({
+      file_path: "/root/game.py",
+      edits: [{ old_string: "alpha", new_string: "beta" }],
+      cwd: root,
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+
+    expect(multiResult.isError).toBe(true);
+    expect(String(multiResult.content)).toContain("agent namespace");
+    expect(String(multiResult.content)).toContain('"game.py"');
+  });
+
   test("successful edit on a previously-read file", async () => {
     const file = join(root, "hello.txt");
     await writeFile(file, "hello world\n", "utf8");

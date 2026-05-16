@@ -33,7 +33,7 @@ export function renderPromptTemplate(
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
+- Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
 - By default, it reads up to ${MAX_LINES_TO_READ} lines starting from the beginning of the file${maxSizeInstruction}
 ${offsetInstruction}
 ${lineFormat}

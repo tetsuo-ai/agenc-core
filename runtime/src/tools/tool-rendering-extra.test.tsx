@@ -84,6 +84,18 @@ describe("createTuiTools — pre-seed canonicalization", () => {
     );
   });
 
+  test("file tool-use cards call out agent namespace paths", () => {
+    const write = createTuiTool("Write");
+    const read = createTuiTool("FileRead");
+
+    expect(
+      write.renderToolUseMessage({ file_path: "/root/game.py", content: "x" }),
+    ).toBe("/root/game.py (agent namespace, not a file path) (1 char)");
+    expect(read.renderToolUseMessage({ file_path: "/root/game.py" })).toBe(
+      "/root/game.py (agent namespace, not a file path)",
+    );
+  });
+
   test("Bash tool-use cards show the command rather than JSON input", () => {
     const tool = createTuiTool("Bash");
 

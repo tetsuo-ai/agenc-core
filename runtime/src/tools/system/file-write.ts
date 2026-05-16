@@ -57,6 +57,11 @@ import {
   SESSION_ID_ARG,
   type SessionReadViewKind,
 } from "./filesystem.js";
+import {
+  agentNamespacePathHint,
+  denyAgentNamespacePath,
+  isAgentNamespacePath,
+} from "./agent-path-hints.js";
 import { checkToolPathPermission } from "../../permissions/path-validation.js";
 import { notifyLspFileChanged } from "../../services/lsp/fileNotifications.js";
 
@@ -74,6 +79,7 @@ const FILE_WRITE_DESCRIPTION = `Writes a file to the local filesystem.
 
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
+- Use workspace-relative paths like 'game.py' unless the user provided a real absolute path. Do not use '/root/...'; '/root' is the agent namespace, not the filesystem.
 - If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.
 - Prefer the Edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
 - NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
@@ -191,7 +197,8 @@ export function createFileWriteTool(
       properties: {
         file_path: {
           type: "string",
-          description: "Absolute or workspace-relative path.",
+          description:
+            "Workspace-relative path, or a real absolute filesystem path. Do not use /root; that is the agent namespace.",
         },
         content: {
           type: "string",
@@ -211,6 +218,9 @@ export function createFileWriteTool(
         };
       }
       const cwd = asNonEmptyString(args.cwd) ?? allowedPaths[0] ?? process.cwd();
+      if (isAgentNamespacePath(filePath)) {
+        return denyAgentNamespacePath(filePath, cwd);
+      }
       return checkToolPathPermission({
         toolName: FILE_WRITE_TOOL_NAME,
         input: input as Record<string, unknown>,
@@ -233,6 +243,12 @@ export function createFileWriteTool(
         return errorResult("content must be a string");
       }
 
+      const cwdArg = asNonEmptyString(args.cwd);
+      const cwd = cwdArg ?? allowedPaths[0] ?? process.cwd();
+      if (isAgentNamespacePath(filePath)) {
+        return errorResult(agentNamespacePathHint(filePath, cwd));
+      }
+
       // Notebook redirect — AgenC routes `.ipynb` to NotebookEdit
       // instead of allowing a raw text write that would corrupt the
       // notebook's JSON envelope.
@@ -240,8 +256,6 @@ export function createFileWriteTool(
         return errorResult(NOTEBOOK_REDIRECT_MESSAGE);
       }
 
-      const cwdArg = asNonEmptyString(args.cwd);
-      const cwd = cwdArg ?? allowedPaths[0] ?? process.cwd();
       const absoluteInput = resolve(cwd, filePath);
 
       const safe = await safePathAllowingSessionPlanFile(
