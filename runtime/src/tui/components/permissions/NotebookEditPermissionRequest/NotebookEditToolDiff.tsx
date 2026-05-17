@@ -142,7 +142,7 @@ function NotebookEditToolDiffFrame({
 }): ReactNode {
   return (
     <Box flexDirection="column">
-      <Box borderStyle="round" flexDirection="column" paddingX={1}>
+      <Box borderStyle="single" flexDirection="column" paddingX={1}>
         <Box paddingBottom={1} flexDirection="column">
           <Text bold={true}>{notebookPreviewLabel(notebook_path, verbose)}</Text>
         </Box>
@@ -254,7 +254,7 @@ function NotebookEditToolDiffInner({
 
   return (
     <Box flexDirection="column">
-      <Box borderStyle="round" flexDirection="column" paddingX={1}>
+      <Box borderStyle="single" flexDirection="column" paddingX={1}>
         <Box paddingBottom={1} flexDirection="column">
           <Text bold={true}>{notebookPreviewLabel(notebook_path, verbose)}</Text>
           <Text dimColor={true}>

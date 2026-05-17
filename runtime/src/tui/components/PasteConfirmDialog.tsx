@@ -40,7 +40,7 @@ export function PasteConfirmDialog({ command, onDecide }: Props): React.ReactEle
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
+      borderStyle="single"
       borderColor="warning"
       paddingX={1}
       marginTop={1}
@@ -59,7 +59,7 @@ export function PasteConfirmDialog({ command, onDecide }: Props): React.ReactEle
       <Box marginTop={1}>
         <Text>
           Press <Text bold color="green">y</Text> to run,{' '}
-          <Text bold color="red">n</Text> or <Text bold>Esc</Text> to abort.
+          <Text bold color="error">n</Text> or <Text bold>Esc</Text> to abort.
         </Text>
       </Box>
     </Box>

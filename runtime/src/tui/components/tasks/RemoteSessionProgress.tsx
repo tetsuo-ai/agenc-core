@@ -1,13 +1,10 @@
 import { c as _c } from "react-compiler-runtime";
-import React, { useRef } from 'react';
+import React from 'react';
 import type { RemoteAgentTaskState } from '../../../tasks/RemoteAgentTask/RemoteAgentTask.js';
-import type { DeepImmutable } from '../../../types/utils.js';
-import { useSettings } from '../../hooks/useSettings';
-import { Text, useAnimationFrame } from '../../ink.js';
+import { Text } from '../../ink.js';
 import { count } from '../../../utils/array.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getRainbowColor } from '../../../utils/thinking.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { resolveAgenCTuiGlyphMode, selectAgenCTuiGlyphs } from '../../glyphs.js';
-const TICK_MS = 80;
 type ReviewStage = NonNullable<NonNullable<RemoteAgentTaskState['reviewProgress']>['stage']>;
 export function getRemoteProgressGlyphText(
   env: { readonly AGENC_TUI_GLYPHS?: string } = process.env,
@@ -58,9 +55,8 @@ export function formatReviewStageCounts(stage: ReviewStage | undefined, found: n
   return found > 0 ? `${found} found` : 'finding';
 }
 
-// Per-character rainbow gradient for remote review progress.
-// The phase offset lets the gradient cycle — so the colors sweep along the
-// text on each animation frame instead of being static.
+// Per-character color for remote review progress. This is static under the
+// v2 TUI visual contract; no timer-driven color sweep.
 function RainbowText(t0) {
   const $ = _c(5);
   const {
@@ -88,42 +84,18 @@ function RainbowText(t0) {
   return t3;
 }
 
-// Smooth-tick a count toward target, +1 per frame. Same pattern as the
-// token counter in SpinnerAnimationRow — the ref survives re-renders and
-// the animation clock drives the tick. Target jumps (2→5) display as
-// 2→3→4→5 instead of snapping. When `snap` is set (reduced motion, or
-// the clock is frozen), bypass the tick and jump straight to target —
-// otherwise a frozen `time` would leave the ref stuck at its init value.
-function useSmoothCount(target: number, time: number, snap: boolean): number {
-  const displayed = useRef(target);
-  const lastTick = useRef(time);
-  if (snap || target < displayed.current) {
-    displayed.current = target;
-  } else if (target > displayed.current && time !== lastTick.current) {
-    displayed.current += 1;
-    lastTick.current = time;
-  }
-  return displayed.current;
-}
 function ReviewRainbowLine(t0) {
   const $ = _c(15);
   const {
     session
   } = t0;
-  const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
   const p = session.reviewProgress;
   const running = session.status === "running";
   const remoteGlyphs = getRemoteProgressGlyphText();
-  const [, time] = useAnimationFrame(running && !reducedMotion ? TICK_MS : null);
-  const targetFound = p?.bugsFound ?? 0;
-  const targetVerified = p?.bugsVerified ?? 0;
-  const targetRefuted = p?.bugsRefuted ?? 0;
-  const snap = reducedMotion || !running;
-  const found = useSmoothCount(targetFound, time, snap);
-  const verified = useSmoothCount(targetVerified, time, snap);
-  const refuted = useSmoothCount(targetRefuted, time, snap);
-  const phase = Math.floor(time / (TICK_MS * 3)) % 7;
+  const found = p?.bugsFound ?? 0;
+  const verified = p?.bugsVerified ?? 0;
+  const refuted = p?.bugsRefuted ?? 0;
+  const phase = 0;
   if (session.status === "completed") {
     return <><Text color="background">{remoteGlyphs.completeMarker} </Text><RainbowText text="ultrareview" phase={0} /><Text dimColor={true}> ready{remoteGlyphs.stageSeparator}{remoteGlyphs.viewShortcut} to view</Text></>;
   }

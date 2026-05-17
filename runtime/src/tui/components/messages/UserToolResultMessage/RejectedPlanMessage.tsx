@@ -21,7 +21,7 @@ export function RejectedPlanMessage(t0) {
   }
   let t2;
   if ($[1] !== plan) {
-    t2 = <MessageResponse><Box flexDirection="column">{t1}<Box borderStyle="round" borderColor="planMode" paddingX={1} overflow="hidden"><Markdown>{plan}</Markdown></Box></Box></MessageResponse>;
+    t2 = <MessageResponse><Box flexDirection="column">{t1}<Box borderStyle="single" borderColor="planMode" paddingX={1} overflow="hidden"><Markdown>{plan}</Markdown></Box></Box></MessageResponse>;
     $[1] = plan;
     $[2] = t2;
   } else {

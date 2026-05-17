@@ -1,4 +1,5 @@
 import {
+  mkdirSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -105,11 +106,35 @@ describe('fileSuggestions hidden-file visibility', () => {
   })
 
   test('getHiddenTopLevelMatches marks directories with a trailing separator', async () => {
-    const { mkdirSync } = await import('node:fs')
     mkdirSync(join(tempCwd, '.config'), { recursive: true })
 
     const matches = await getHiddenTopLevelMatches('.config')
     expect(matches).toContain('.config' + sep)
+  })
+
+  test('empty @ query excludes paths ignored by .agencignore', async () => {
+    writeFileSync(join(tempCwd, '.agencignore'), 'ignored.txt\nignored-dir/\n')
+    writeFileSync(join(tempCwd, 'ignored.txt'), '')
+    writeFileSync(join(tempCwd, 'visible.txt'), '')
+    mkdirSync(join(tempCwd, 'ignored-dir'), { recursive: true })
+
+    const items = await generateFileSuggestions('', true)
+    const names = items.map(i => i.displayText)
+
+    expect(names).toContain('visible.txt')
+    expect(names).not.toContain('ignored.txt')
+    expect(names).not.toContain('ignored-dir' + sep)
+  })
+
+  test('dotted prefix query excludes hidden paths ignored by .agencignore', async () => {
+    writeFileSync(join(tempCwd, '.agencignore'), '.hidden-file.txt\n')
+    writeFileSync(join(tempCwd, '.hidden-file.txt'), '')
+    writeFileSync(join(tempCwd, '.hideme'), '')
+
+    const matches = await getHiddenTopLevelMatches('.hid')
+
+    expect(matches).toContain('.hideme')
+    expect(matches).not.toContain('.hidden-file.txt')
   })
 })
 

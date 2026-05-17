@@ -22,7 +22,7 @@ import { useAppState } from '../../state/AppState.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import type { SpinnerMode } from './types.js';
-import { computeBriefRightStatusLayout, getDefaultCharacters, getSpinnerEllipsis } from './utils.js';
+import { computeBriefRightStatusLayout, getSpinnerEllipsis } from './utils.js';
 import { SpinnerAnimationRow } from './SpinnerAnimationRow.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../../../tasks/InProcessTeammateTask/types.js';
@@ -35,33 +35,9 @@ import { TEARDROP_ASTERISK } from '../../../constants/figures.js';
 import figures from 'figures';
 import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../../../bootstrap/state.js';
 import { TeammateSpinnerTree } from './TeammateSpinnerTree.js';
-import { useAnimationFrame } from '../../ink.js';
 import { formatRunningAgentSummary, getActiveLocalAgentTasks } from './agentActivity.js';
 import { SPINNER_AGENT_THEME_COLOR } from './spinnerTheme.js';
 export type { SpinnerMode } from './types.js';
-const DEFAULT_CHARACTERS = getDefaultCharacters();
-const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
-const SHIMMER_INTERVAL_MS = 120;
-
-function computeGlimmerIndex(frame: number, width: number): number {
-  if (width <= 0) return -100;
-  return frame % (width + 6) - 3;
-}
-
-function computeShimmerSegments(text: string, glimmerIndex: number): {
-  before: string;
-  shimmer: string;
-  after: string;
-} {
-  if (glimmerIndex < 0 || glimmerIndex >= text.length) {
-    return { before: text, shimmer: "", after: "" };
-  }
-  return {
-    before: text.slice(0, glimmerIndex),
-    shimmer: text[glimmerIndex],
-    after: text.slice(glimmerIndex + 1),
-  };
-}
 
 type Props = {
   mode: SpinnerMode;
@@ -121,11 +97,8 @@ function SpinnerWithVerbInner({
   const settings = useSettings();
   const reducedMotion = settings?.prefersReducedMotion ?? false;
 
-  // NOTE: useAnimationFrame(50) lives in SpinnerAnimationRow, not here.
-  // This component only re-renders when props or app state change —
-  // it is no longer on the 50ms clock. All `time`-derived values
-  // (frame, glimmer, stalled intensity, token counter, thinking shimmer,
-  // elapsed-time timer) are computed inside the child.
+  // The v2 visual contract keeps this row off the animation clock. It
+  // re-renders from streaming/tool/task state changes rather than a timer.
 
   const tasks = useAppState((s: any) => s.tasks);
   const viewingAgentTaskId = useAppState((s_0: any) => s_0.viewingAgentTaskId);
@@ -327,120 +300,43 @@ type BriefSpinnerProps = {
   overrideMessage?: string | null;
 };
 function BriefSpinner(t0: BriefSpinnerProps) {
-  const $ = _c(31);
   const {
     mode,
     overrideMessage
   } = t0;
-  const settings = useSettings();
-  const reducedMotion = settings?.prefersReducedMotion ?? false;
   const [randomVerb] = useState(_temp4);
   const verb = overrideMessage ?? randomVerb;
   const connStatus = useAppState(_temp5);
-  let t1;
-  let t2;
-  if ($[0] !== mode) {
-    t1 = () => {
+  useEffect(() => {
       const operationId = "spinner-" + mode;
       activityManager.startCLIActivity(operationId);
       return () => {
         activityManager.endCLIActivity(operationId);
       };
-    };
-    t2 = [mode];
-    $[0] = mode;
-    $[1] = t1;
-    $[2] = t2;
-  } else {
-    t1 = $[1];
-    t2 = $[2];
-  }
-  useEffect(t1, t2);
-  const [, time] = useAnimationFrame(reducedMotion ? null : 120);
+  }, [mode]);
   const runningCount = useAppState(_temp6);
   const showConnWarning = connStatus === "reconnecting" || connStatus === "disconnected";
   const connText = connStatus === "reconnecting" ? "Reconnecting" : "Disconnected";
-  const dotFrame = Math.floor(time / 300) % 3;
-  const dots = reducedMotion
-    ? getSpinnerEllipsis().padEnd(3)
-    : ".".repeat(dotFrame + 1).padEnd(3);
-  let t4;
-  if ($[6] !== verb) {
-    t4 = stringWidth(verb);
-    $[6] = verb;
-    $[7] = t4;
-  } else {
-    t4 = $[7];
-  }
-  const verbWidth = t4;
-  let t5;
-  if ($[8] !== reducedMotion || $[9] !== showConnWarning || $[10] !== time || $[11] !== verb || $[12] !== verbWidth) {
-    const glimmerIndex = reducedMotion || showConnWarning ? -100 : computeGlimmerIndex(Math.floor(time / SHIMMER_INTERVAL_MS), verbWidth);
-    t5 = computeShimmerSegments(verb, glimmerIndex);
-    $[8] = reducedMotion;
-    $[9] = showConnWarning;
-    $[10] = time;
-    $[11] = verb;
-    $[12] = verbWidth;
-    $[13] = t5;
-  } else {
-    t5 = $[13];
-  }
-  const {
-    before,
-    shimmer,
-    after
-  } = t5;
+  const leftText = showConnWarning ? `${connText}${getSpinnerEllipsis()}` : `${verb}${getSpinnerEllipsis()}`;
   const {
     columns
   } = useTerminalSize();
   const rightText = runningCount > 0 ? `${runningCount} in background` : "";
-  let t6;
-  if ($[14] !== connText || $[15] !== showConnWarning || $[16] !== verbWidth) {
-    t6 = showConnWarning ? stringWidth(connText) : verbWidth;
-    $[14] = connText;
-    $[15] = showConnWarning;
-    $[16] = verbWidth;
-    $[17] = t6;
-  } else {
-    t6 = $[17];
-  }
-  const leftWidth = t6 + 3;
+  const leftWidth = stringWidth(leftText);
   const briefRightLayout = computeBriefRightStatusLayout(columns, leftWidth, rightText);
   const pad = briefRightLayout.pad;
   const visibleRightText = briefRightLayout.rightText;
-  let t7;
-  if ($[18] !== after || $[19] !== before || $[20] !== connText || $[21] !== dots || $[22] !== shimmer || $[23] !== showConnWarning) {
-    t7 = showConnWarning ? <Text color="error">{connText + dots}</Text> : <>{before ? <Text dimColor={true}>{before}</Text> : null}{shimmer ? <Text>{shimmer}</Text> : null}{after ? <Text dimColor={true}>{after}</Text> : null}<Text dimColor={true}>{dots}</Text></>;
-    $[18] = after;
-    $[19] = before;
-    $[20] = connText;
-    $[21] = dots;
-    $[22] = shimmer;
-    $[23] = showConnWarning;
-    $[24] = t7;
-  } else {
-    t7 = $[24];
-  }
-  let t8;
-  if ($[25] !== pad || $[26] !== visibleRightText) {
-    t8 = visibleRightText ? <><Text>{" ".repeat(pad)}</Text><Text color="subtle">{visibleRightText}</Text></> : null;
-    $[25] = pad;
-    $[26] = visibleRightText;
-    $[27] = t8;
-  } else {
-    t8 = $[27];
-  }
-  let t9;
-  if ($[28] !== t7 || $[29] !== t8) {
-    t9 = <Box flexDirection="row" width="100%" marginTop={1} paddingLeft={2}>{t7}{t8}</Box>;
-    $[28] = t7;
-    $[29] = t8;
-    $[30] = t9;
-  } else {
-    t9 = $[30];
-  }
-  return t9;
+  return (
+    <Box flexDirection="row" width="100%" marginTop={1} paddingLeft={2}>
+      <Text color={showConnWarning ? "error" : "subtle"}>{leftText}</Text>
+      {visibleRightText ? (
+        <>
+          <Text>{" ".repeat(pad)}</Text>
+          <Text color="subtle">{visibleRightText}</Text>
+        </>
+      ) : null}
+    </Box>
+  );
 }
 
 // Idle placeholder for brief mode. Same 2-row [blank, content] footprint
@@ -526,48 +422,7 @@ function _temp7(s: any) {
   return s.remoteConnectionStatus;
 }
 export function Spinner() {
-  const $ = _c(8);
-  const settings = useSettings();
-  const reducedMotion = settings?.prefersReducedMotion ?? false;
-  const [ref, time] = useAnimationFrame(reducedMotion ? null : 120);
-  if (reducedMotion) {
-    let t0;
-    if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-      t0 = <Text color="text">●</Text>;
-      $[0] = t0;
-    } else {
-      t0 = $[0];
-    }
-    let t1;
-    if ($[1] !== ref) {
-      t1 = <Box ref={ref} flexWrap="wrap" height={1} width={2}>{t0}</Box>;
-      $[1] = ref;
-      $[2] = t1;
-    } else {
-      t1 = $[2];
-    }
-    return t1;
-  }
-  const frame = Math.floor(time / 120) % SPINNER_FRAMES.length;
-  const t0 = SPINNER_FRAMES[frame];
-  let t1;
-  if ($[3] !== t0) {
-    t1 = <Text color="text">{t0}</Text>;
-    $[3] = t0;
-    $[4] = t1;
-  } else {
-    t1 = $[4];
-  }
-  let t2;
-  if ($[5] !== ref || $[6] !== t1) {
-    t2 = <Box ref={ref} flexWrap="wrap" height={1} width={2}>{t1}</Box>;
-    $[5] = ref;
-    $[6] = t1;
-    $[7] = t2;
-  } else {
-    t2 = $[7];
-  }
-  return t2;
+  return <Box flexWrap="wrap" height={1} width={2}><Text color="text">◐</Text></Box>;
 }
 function findNextPendingTask(tasks: Task[] | undefined): Task | undefined {
   if (!tasks) {

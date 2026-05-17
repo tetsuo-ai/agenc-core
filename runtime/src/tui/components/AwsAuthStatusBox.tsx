@@ -61,7 +61,7 @@ export function AwsAuthStatusBox() {
   }
   let t6;
   if ($[8] !== t4 || $[9] !== t5) {
-    t6 = <Box flexDirection="column" borderStyle="round" borderColor="permission" paddingX={1} marginY={1}>{t3}{t4}{t5}</Box>;
+    t6 = <Box flexDirection="column" borderStyle="single" borderColor="permission" paddingX={1} marginY={1}>{t3}{t4}{t5}</Box>;
     $[8] = t4;
     $[9] = t5;
     $[10] = t6;

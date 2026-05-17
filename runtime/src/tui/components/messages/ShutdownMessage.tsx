@@ -32,7 +32,7 @@ export function ShutdownRequestDisplay(t0) {
   }
   let t3;
   if ($[4] !== t1 || $[5] !== t2) {
-    t3 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor="warning" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}</Box></Box>;
+    t3 = <Box flexDirection="column" marginY={1}><Box borderStyle="single" borderColor="warning" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}</Box></Box>;
     $[4] = t1;
     $[5] = t2;
     $[6] = t3;
@@ -78,7 +78,7 @@ export function ShutdownRejectedDisplay(t0) {
   }
   let t4;
   if ($[5] !== t1 || $[6] !== t2) {
-    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor="subtle" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
+    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="single" borderColor="subtle" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
     $[5] = t1;
     $[6] = t2;
     $[7] = t4;

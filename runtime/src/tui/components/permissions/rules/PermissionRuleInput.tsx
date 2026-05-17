@@ -103,7 +103,7 @@ export function PermissionRuleInput(t0) {
   }
   let t8;
   if ($[10] !== cursorOffset || $[11] !== handleSubmit || $[12] !== inputValue || $[13] !== textInputColumns) {
-    t8 = <Box flexDirection="column">{t7}<Box borderDimColor={true} borderStyle="round" marginY={1} paddingLeft={1}><TextInput showCursor={true} value={inputValue} onChange={setInputValue} onSubmit={handleSubmit} placeholder={`Enter permission rule${figures.ellipsis}`} columns={textInputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} /></Box></Box>;
+    t8 = <Box flexDirection="column">{t7}<Box borderDimColor={true} borderStyle="single" marginY={1} paddingLeft={1}><TextInput showCursor={true} value={inputValue} onChange={setInputValue} onSubmit={handleSubmit} placeholder={`Enter permission rule${figures.ellipsis}`} columns={textInputColumns} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} /></Box></Box>;
     $[10] = cursorOffset;
     $[11] = handleSubmit;
     $[12] = inputValue;
@@ -114,7 +114,7 @@ export function PermissionRuleInput(t0) {
   }
   let t9;
   if ($[15] !== t3 || $[16] !== t8) {
-    t9 = <Box flexDirection="column" gap={1} borderStyle="round" paddingLeft={1} paddingRight={1} borderColor="permission">{t3}{t8}</Box>;
+    t9 = <Box flexDirection="column" gap={1} borderStyle="single" paddingLeft={1} paddingRight={1} borderColor="permission">{t3}{t8}</Box>;
     $[15] = t3;
     $[16] = t8;
     $[17] = t9;

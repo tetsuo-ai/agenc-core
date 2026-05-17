@@ -150,6 +150,101 @@ describe("AgenC TUI session transcript", () => {
     });
   });
 
+  test("renders protocol events as inline system rows with badge variants", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "claim",
+        seq: 1,
+        msg: {
+          type: "protocol_claim",
+          payload: {
+            taskPda: "5yC9BM8K",
+            claimant: "7nB4",
+            escrowLamports: 2_400_000_000,
+            deadline: "2026-05-12T18:00:00Z",
+            signature: "claimTx",
+          },
+        },
+      },
+      {
+        id: "slash",
+        seq: 2,
+        msg: {
+          type: "protocol_slash",
+          payload: {
+            taskPda: "5yC9BM8K",
+            slashedAgent: "worker/zk-prover",
+            reason: "public input mismatch",
+            stakeDeltaLamports: -800_000_000,
+            reputationDelta: -12,
+            signature: "slashTx",
+          },
+        },
+      },
+      {
+        id: "settle",
+        seq: 3,
+        msg: {
+          type: "protocol_settle",
+          payload: {
+            taskPda: "5yC9BM8K",
+            recipient: "7nB4",
+            escrowLamports: 2_400_000_000,
+            bonusLamports: 400_000_000,
+            reputationDelta: 4,
+            signature: "settleTx",
+          },
+        },
+      },
+      {
+        id: "stake",
+        seq: 4,
+        msg: {
+          type: "protocol_stake",
+          payload: {
+            wallet: "7nB4",
+            stakeDeltaLamports: 1_000_000_000,
+            signature: "stakeTx",
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.messages).toMatchObject([
+      {
+        type: "system",
+        subtype: "protocol_event",
+        protocolKind: "claim",
+        title: "protocol · claim",
+        badgeVariant: "worker",
+      },
+      {
+        type: "system",
+        subtype: "protocol_event",
+        protocolKind: "slash",
+        title: "protocol · slash",
+        badgeVariant: "error",
+        level: "error",
+      },
+      {
+        type: "system",
+        subtype: "protocol_event",
+        protocolKind: "settle",
+        title: "protocol · settle",
+        badgeVariant: "success",
+      },
+      {
+        type: "system",
+        subtype: "protocol_event",
+        protocolKind: "stake",
+        title: "protocol · stake",
+        badgeVariant: "worker",
+      },
+    ]);
+    expect(JSON.stringify(transcript.messages)).toContain("2.4 ◎");
+    expect(JSON.stringify(transcript.messages)).toContain("-0.8 ◎");
+  });
+
   test("finalizes streamed text at turn completion", () => {
     const transcript = adaptTranscriptEvents([
       {
@@ -637,10 +732,8 @@ describe("AgenC TUI session transcript", () => {
       "assistant",
       "user",
       "system",
-      "system",
     ]);
     expect(transcript.messages.slice(2)).toMatchObject([
-      { subtype: "collab_agent", title: "Spawning agent", state: "running" },
       { subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
     ]);
   });
@@ -1407,7 +1500,6 @@ describe("AgenC TUI session transcript", () => {
       expect(transcript.inProgressToolUseIDs.size).toBe(0);
       expect(transcript.messages.filter((m) => m.type === "user")).toHaveLength(0);
       expect(transcript.messages).toMatchObject([
-        { type: "system", subtype: "collab_agent", title: "Spawning agent" },
         { type: "system", subtype: "collab_agent", title: "Spawned thread-1" },
         { type: "system", subtype: "collab_agent", title: "Sent input to thread-1" },
         { type: "system", subtype: "collab_agent", title: "Closed thread-1" },

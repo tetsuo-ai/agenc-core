@@ -26,7 +26,11 @@ import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
 import agentsCommand from "./agent-management.js";
 import tasksCommand from "./tasks.js";
-import { compactCommand } from "./session-compact.js";
+import resumeCommand from "./resume.js";
+import memoryCommand from "./memory/slash.js";
+import pluginsCommand from "./plugins.js";
+import protocolCommands from "./protocol.js";
+import { compactCommand, contextCommand } from "./session-compact.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`.
@@ -124,7 +128,8 @@ function commandSupportsSurface(
  *
  * Presentation order matches the runtime stabilization minimal surface:
  * /help, /status, /model, /provider, /permissions, /plan, /agents, /tasks,
- * /config, /hooks, /skills, /mcp, /clear, /compact, /diff, /exit.
+ * /config, /hooks, /skills, /mcp, /plugins, /memory, /resume,
+ * /clear, /compact, /context, /diff, protocol commands, /exit.
  */
 export function buildDefaultRegistry(
   options: BuildDefaultRegistryOptions = {},
@@ -142,9 +147,14 @@ export function buildDefaultRegistry(
     hooksCommand,
     skillsCommand,
     mcpCommand,
+    pluginsCommand,
+    memoryCommand,
+    resumeCommand,
     clearCommand,
     compactCommand,
+    contextCommand,
     diffCommand,
+    ...protocolCommands,
     exitCommand,
   ].filter((command) => commandSupportsSurface(command, options.surface)));
 }

@@ -25,30 +25,51 @@ const MINIMAL_TUI_NAMES = [
   "hooks",
   "skills",
   "mcp",
+  "plugins",
+  "memory",
+  "resume",
   "clear",
   "compact",
+  "context",
   "diff",
+  "claim",
+  "delegate",
+  "proof",
+  "settle",
+  "stake",
   "exit",
 ] as const;
 
 const DAEMON_TUI_NAMES = [
   "help",
   "status",
+  "model",
+  "model-provider",
   "permissions",
   "plan",
   "agents",
   "tasks",
   "config",
+  "hooks",
   "skills",
   "mcp",
+  "plugins",
+  "memory",
+  "resume",
   "clear",
+  "compact",
+  "context",
   "diff",
+  "claim",
+  "delegate",
+  "proof",
+  "settle",
+  "stake",
   "exit",
 ] as const;
 
 const REMOVED_TUI_NAMES = [
   "commit",
-  "context",
   "copy",
   "cost",
   "doctor",
@@ -57,11 +78,8 @@ const REMOVED_TUI_NAMES = [
   "heapdump",
   "init",
   "keybindings",
-  "memory",
-  "plugin",
   "release-notes",
   "reload-plugins",
-  "resume",
   "review",
   "rewind",
   "stats",
@@ -103,8 +121,8 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     const names = listTuiCommandList(registry).map((cmd) => cmd.name);
 
     expect(names).toEqual(DAEMON_TUI_NAMES);
-    for (const name of ["model", "model-provider", "hooks", "compact"]) {
-      expect(names).not.toContain(name);
+    for (const name of ["model", "model-provider", "hooks", "compact", "context"]) {
+      expect(names).toContain(name);
     }
   });
 
@@ -121,6 +139,9 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
       "new",
     ]);
     expect(projected.get("tasks")?.aliases).toEqual(["jobs", "bashes"]);
+    expect(projected.get("plugins")?.aliases).toEqual(["plugin", "marketplace"]);
+    expect(projected.get("resume")?.aliases).toEqual(["sessions"]);
+    expect(projected.get("context")?.aliases).toEqual(["ctx"]);
     expect(projected.get("exit")?.aliases).toEqual(["quit"]);
   });
 
@@ -139,10 +160,16 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     expect(names.has("quit")).toBe(true);
     expect(names.has("reload-plugins")).toBe(false);
     expect(names.has("history")).toBe(false);
+    expect(names.has("plugins")).toBe(true);
+    expect(names.has("plugin")).toBe(true);
+    expect(names.has("memory")).toBe(true);
+    expect(names.has("resume")).toBe(true);
     expect(names.has("agents")).toBe(true);
     expect(names.has("tasks")).toBe(true);
     expect(names.has("bashes")).toBe(true);
     expect(names.has("plan")).toBe(true);
+    expect(names.has("context")).toBe(true);
+    expect(names.has("ctx")).toBe(true);
   });
 
   it("remote-mode filtering cannot reintroduce removed commands", () => {

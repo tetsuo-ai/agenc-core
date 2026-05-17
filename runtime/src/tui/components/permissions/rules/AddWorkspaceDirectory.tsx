@@ -104,7 +104,7 @@ function DirectoryInput({
   return (
     <Box flexDirection="column">
       <Text>Enter the path to the directory:</Text>
-      <Box borderDimColor={true} borderStyle="round" marginY={1} paddingLeft={1}>
+      <Box borderDimColor={true} borderStyle="single" marginY={1} paddingLeft={1}>
         <TextInput
           showCursor={true}
           placeholder={`Directory path${figures.ellipsis}`}

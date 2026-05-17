@@ -8,6 +8,7 @@ import {
   formatDesignBottomChromeLabels,
   isNoColorEnv,
 } from "./FullscreenLayout.js";
+import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
 import { renderToString } from "../../utils/staticRender.js";
 
 describe("FullscreenLayout modal viewport", () => {
@@ -48,19 +49,40 @@ describe("FullscreenLayout modal viewport", () => {
     expect(isNoColorEnv({ TERM: "xterm-256color" })).toBe(false);
   });
 
-  test("does not render fake error and warning labels in no-color top chrome", async () => {
+  test("renders v2 top chrome without fake error and warning labels", async () => {
     const output = await renderToString(
       <DesignTopChrome columns={100} noColor={true} />,
       100,
     );
 
     expect(output).toContain("agenc");
-    expect(output).toContain("OK orchestrator");
-    expect(output).toContain("LIVE SESSION");
+    expect(output).toContain("agenc · orchestrator");
+    expect(output).toContain("mode · default");
+    expect(output).toContain("task");
     expect(output).not.toContain("ERR");
     expect(output).not.toContain("WARN");
     expect(output).not.toContain("ERR WARN OK");
     expect(output).not.toContain("TASK SYSTEMIC");
+  });
+
+  test("renders the header mode pill from AppState permission mode", async () => {
+    const state = getDefaultAppState();
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...state,
+          toolPermissionContext: {
+            ...state.toolPermissionContext,
+            mode: "plan",
+          },
+        }}
+      >
+        <DesignTopChrome columns={100} noColor={false} />
+      </AppStateProvider>,
+      100,
+    );
+
+    expect(output).toContain("mode · plan");
   });
 
   test("formats bottom chrome with user-facing mode labels", () => {

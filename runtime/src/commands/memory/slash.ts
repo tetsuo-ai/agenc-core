@@ -19,13 +19,39 @@ export const memorySlashCommand: SlashCommand = {
   description: "Open AgenC memory editor",
   userInvocable: true,
   immediate: true,
-  execute: (_ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(async () => ({
-      kind: "text",
-      text:
-        `The ${MEMORY_CLI_SURFACE} editor is available in the interactive TUI. ` +
-        "Run /memory there to choose and edit memory files.",
-    })),
+  execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
+    safeExecute(async () => {
+      const setToolJSX = ctx.appState?.setToolJSX;
+      if (typeof setToolJSX === "function") {
+        const { call } = await import("./memory.js");
+        const close = () => {
+          setToolJSX({
+            jsx: null,
+            shouldHidePromptInput: false,
+            clearLocalJSX: true,
+          });
+        };
+        const jsx = await call(
+          () => {
+            close();
+          },
+          {} as never,
+          ctx.argsRaw,
+        );
+        setToolJSX({
+          isLocalJSXCommand: true,
+          shouldHidePromptInput: true,
+          jsx,
+        });
+        return { kind: "skip" };
+      }
+      return {
+        kind: "text",
+        text:
+          `The ${MEMORY_CLI_SURFACE} editor is available in the interactive TUI. ` +
+          "Run /memory there to choose and edit memory files.",
+      };
+    }),
 };
 
 export default memorySlashCommand;

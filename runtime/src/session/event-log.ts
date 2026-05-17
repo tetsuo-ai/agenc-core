@@ -294,6 +294,57 @@ export interface PlanApprovalCompletedEvent {
   readonly completedAt: number;
 }
 
+export type ProtocolEventFactValue = string | number | boolean;
+
+export interface ProtocolEventFact {
+  readonly label: string;
+  readonly value: ProtocolEventFactValue;
+}
+
+export interface ProtocolClaimEvent {
+  readonly taskPda: string;
+  readonly claimant?: string;
+  readonly escrowLamports?: number;
+  readonly stakeLamports?: number;
+  readonly deadline?: string;
+  readonly signature?: string;
+  readonly message?: string;
+  readonly facts?: ReadonlyArray<ProtocolEventFact>;
+}
+
+export interface ProtocolSettleEvent {
+  readonly taskPda: string;
+  readonly recipient?: string;
+  readonly escrowLamports?: number;
+  readonly bonusLamports?: number;
+  readonly reputationDelta?: number;
+  readonly signature?: string;
+  readonly message?: string;
+  readonly facts?: ReadonlyArray<ProtocolEventFact>;
+}
+
+export interface ProtocolSlashEvent {
+  readonly taskPda: string;
+  readonly slashedAgent?: string;
+  readonly reason: string;
+  readonly stakeDeltaLamports?: number;
+  readonly reputationDelta?: number;
+  readonly signature?: string;
+  readonly message?: string;
+  readonly facts?: ReadonlyArray<ProtocolEventFact>;
+}
+
+export interface ProtocolStakeEvent {
+  readonly wallet?: string;
+  readonly taskPda?: string;
+  readonly stakeLamports?: number;
+  readonly stakeDeltaLamports?: number;
+  readonly reputationDelta?: number;
+  readonly signature?: string;
+  readonly message?: string;
+  readonly facts?: ReadonlyArray<ProtocolEventFact>;
+}
+
 export interface CollabAgentRef {
   readonly threadId: string;
   readonly agentNickname?: string;
@@ -622,6 +673,22 @@ export type EventMsg =
       readonly payload: PlanApprovalCompletedEvent;
     }
   | {
+      readonly type: "protocol_claim";
+      readonly payload: ProtocolClaimEvent;
+    }
+  | {
+      readonly type: "protocol_settle";
+      readonly payload: ProtocolSettleEvent;
+    }
+  | {
+      readonly type: "protocol_slash";
+      readonly payload: ProtocolSlashEvent;
+    }
+  | {
+      readonly type: "protocol_stake";
+      readonly payload: ProtocolStakeEvent;
+    }
+  | {
       readonly type: "collab_agent_spawn_begin";
       readonly payload: CollabAgentSpawnBeginEvent;
     }
@@ -792,6 +859,10 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "review_delegate_completed",
     "plan_approval_requested",
     "plan_approval_completed",
+    "protocol_claim",
+    "protocol_settle",
+    "protocol_slash",
+    "protocol_stake",
     "collab_agent_spawn_begin",
     "collab_agent_spawn_end",
     "collab_agent_interaction_begin",
@@ -827,6 +898,10 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "turn_aborted",
     "error",
     "context_compacted",
+    "protocol_claim",
+    "protocol_settle",
+    "protocol_slash",
+    "protocol_stake",
   ]),
 );
 

@@ -68,6 +68,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openPermissionsMenu } from "./permissions-menu.js";
 
 // ---------------------------------------------------------------------------
 // Helpers: locate the permission registry on session.services.
@@ -580,6 +581,9 @@ export const permissionsCommand: SlashCommand = {
       }
       const raw = ctx.argsRaw.trim();
       if (raw === "") {
+        if (openPermissionsMenu(ctx, registry.current())) {
+          return { kind: "skip" };
+        }
         return { kind: "text", text: formatRuleList(registry.current()) };
       }
       const tokens = splitArgs(raw);
@@ -588,6 +592,9 @@ export const permissionsCommand: SlashCommand = {
 
       switch (sub) {
         case "list":
+          if (openPermissionsMenu(ctx, registry.current())) {
+            return { kind: "skip" };
+          }
           return { kind: "text", text: formatRuleList(registry.current()) };
         case "add":
           return addRuleFromCommand(registry.current(), rest, registry, ctx);

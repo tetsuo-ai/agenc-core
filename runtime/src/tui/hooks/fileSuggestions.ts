@@ -60,7 +60,7 @@ let cachedConfigFiles: string[] = []
 // recompute ~270k path.dirname() calls on each merge
 let cachedTrackedDirs: string[] = []
 
-// Cache for .ignore/.rgignore patterns (keyed by repoRoot:cwd)
+// Cache for project file-picker ignore patterns (keyed by repoRoot:cwd)
 let ignorePatternsCache: ReturnType<typeof ignore> | null = null
 let ignorePatternsCacheKey: string | null = null
 
@@ -197,11 +197,11 @@ async function mergeUntrackedIntoNormalizedCache(
 }
 
 /**
- * Load ripgrep-specific ignore patterns from .ignore or .rgignore files
+ * Load file-picker ignore patterns from .agencignore, .ignore, or .rgignore files
  * Returns an ignore instance if patterns were found, null otherwise
  * Results are cached per repoRoot:cwd combination
  */
-async function loadRipgrepIgnorePatterns(
+async function loadFilePickerIgnorePatterns(
   repoRoot: string,
   cwd: string,
 ): Promise<ReturnType<typeof ignore> | null> {
@@ -213,7 +213,7 @@ async function loadRipgrepIgnorePatterns(
   }
 
   const fs = getFsImplementation()
-  const ignoreFiles = ['.ignore', '.rgignore']
+  const ignoreFiles = ['.agencignore', '.ignore', '.rgignore']
   const directories = [...new Set([repoRoot, cwd])]
 
   const ig = ignore()
@@ -229,7 +229,7 @@ async function loadRipgrepIgnorePatterns(
     if (content === null) continue
     ig.add(content)
     hasPatterns = true
-    logForDebugging(`[FileIndex] loaded ignore patterns from ${paths[i]}`)
+    logForDebugging(`[FileIndex] loaded file-picker ignore patterns from ${paths[i]}`)
   }
 
   const result = hasPatterns ? ig : null
@@ -288,8 +288,8 @@ async function getFilesUsingGit(
     // Normalize paths relative to the current working directory
     let normalizedTracked = normalizeGitPaths(trackedFiles, repoRoot, cwd)
 
-    // Apply .ignore/.rgignore patterns if present (faster than falling back to ripgrep)
-    const ignorePatterns = await loadRipgrepIgnorePatterns(repoRoot, cwd)
+    // Apply .agencignore/.ignore/.rgignore patterns if present.
+    const ignorePatterns = await loadFilePickerIgnorePatterns(repoRoot, cwd)
     if (ignorePatterns) {
       const beforeCount = normalizedTracked.length
       normalizedTracked = ignorePatterns.filter(normalizedTracked)
@@ -347,8 +347,8 @@ async function getFilesUsingGit(
               cwd,
             )
 
-            // Apply .ignore/.rgignore patterns to normalized untracked files
-            const ignorePatterns = await loadRipgrepIgnorePatterns(
+            // Apply .agencignore/.ignore/.rgignore patterns to normalized untracked files.
+            const ignorePatterns = await loadFilePickerIgnorePatterns(
               repoRoot,
               cwd,
             )
@@ -502,7 +502,18 @@ async function getProjectFiles(
   }
 
   const files = await ripGrep(rgArgs, '.', abortSignal)
-  const relativePaths = files.map(f => path.relative(getCwd(), f))
+  let relativePaths = files.map(f => path.relative(getCwd(), f))
+
+  const cwd = getCwd()
+  const repoRoot = findGitRoot(cwd) ?? cwd
+  const ignorePatterns = await loadFilePickerIgnorePatterns(repoRoot, cwd)
+  if (ignorePatterns && relativePaths.length > 0) {
+    const beforeCount = relativePaths.length
+    relativePaths = ignorePatterns.filter(relativePaths)
+    logForDebugging(
+      `[FileIndex] applied file-picker ignore patterns to ripgrep results: ${beforeCount} -> ${relativePaths.length} files`,
+    )
+  }
 
   const duration = Date.now() - startTime
   logForDebugging(
@@ -682,7 +693,11 @@ export async function getHiddenTopLevelMatches(prefix: string): Promise<string[]
       if (!entry.name.startsWith(prefix)) continue
       matches.push(entry.isDirectory() ? entry.name + path.sep : entry.name)
     }
-    return matches
+    const ignorePatterns = await loadFilePickerIgnorePatterns(
+      findGitRoot(cwd) ?? cwd,
+      cwd,
+    )
+    return ignorePatterns ? ignorePatterns.filter(matches) : matches
   } catch {
     return []
   }
@@ -758,12 +773,17 @@ async function getTopLevelPaths(): Promise<string[]> {
 
   try {
     const entries = await fs.readdir(cwd)
-    return entries.map(entry => {
+    const paths = entries.map(entry => {
       const fullPath = path.join(cwd, entry.name)
       const relativePath = path.relative(cwd, fullPath)
       // Add trailing separator for directories
       return entry.isDirectory() ? relativePath + path.sep : relativePath
     })
+    const ignorePatterns = await loadFilePickerIgnorePatterns(
+      findGitRoot(cwd) ?? cwd,
+      cwd,
+    )
+    return ignorePatterns ? ignorePatterns.filter(paths) : paths
   } catch (error) {
     logError(error as Error)
     return []

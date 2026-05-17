@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   collectTaskSummaryRows,
@@ -36,6 +36,23 @@ describe("/tasks", () => {
     const result = await tasksCommand.execute(contextWithAppState());
 
     expect(text(result)).toContain("live task state is only available");
+  });
+
+  it("opens the v2 background task panel when running in the interactive TUI", async () => {
+    const setToolJSX = vi.fn();
+    const result = await tasksCommand.execute({
+      ...contextWithAppState(),
+      appState: { setToolJSX },
+    });
+
+    expect(result).toEqual({ kind: "skip" });
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isLocalJSXCommand: true,
+        shouldHidePromptInput: true,
+        jsx: expect.anything(),
+      }),
+    );
   });
 
   it("formats an empty task list with the management hint", () => {

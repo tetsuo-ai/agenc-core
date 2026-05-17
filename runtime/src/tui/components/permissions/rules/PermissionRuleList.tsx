@@ -219,7 +219,7 @@ function RuleDetails(t0) {
     }
     let t10;
     if ($[18] !== ruleDescription) {
-      t10 = <Box flexDirection="column" gap={1} borderStyle="round" paddingLeft={1} paddingRight={1} borderColor="permission">{t8}{ruleDescription}{t9}</Box>;
+      t10 = <Box flexDirection="column" gap={1} borderStyle="single" paddingLeft={1} paddingRight={1} borderColor="permission">{t8}{ruleDescription}{t9}</Box>;
       $[18] = ruleDescription;
       $[19] = t10;
     } else {
@@ -292,7 +292,7 @@ function RuleDetails(t0) {
   }
   let t14;
   if ($[35] !== ruleDescription || $[36] !== t13 || $[37] !== t9) {
-    t14 = <Box flexDirection="column" gap={1} borderStyle="round" paddingLeft={1} paddingRight={1} borderColor="error">{t9}{ruleDescription}{t10}{t13}</Box>;
+    t14 = <Box flexDirection="column" gap={1} borderStyle="single" paddingLeft={1} paddingRight={1} borderColor="error">{t9}{ruleDescription}{t10}{t13}</Box>;
     $[35] = ruleDescription;
     $[36] = t13;
     $[37] = t9;

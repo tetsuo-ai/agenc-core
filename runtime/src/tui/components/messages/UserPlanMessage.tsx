@@ -30,7 +30,7 @@ export function UserPlanMessage(t0) {
   }
   let t4;
   if ($[3] !== t1 || $[4] !== t3) {
-    t4 = <Box flexDirection="column" borderStyle="round" borderColor="planMode" marginTop={t1} paddingX={1}>{t2}{t3}</Box>;
+    t4 = <Box flexDirection="column" borderStyle="single" borderColor="planMode" marginTop={t1} paddingX={1}>{t2}{t3}</Box>;
     $[3] = t1;
     $[4] = t3;
     $[5] = t4;

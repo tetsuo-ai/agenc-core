@@ -63,6 +63,17 @@ export type Theme = {
    *  which fragmented badly over syntax highlighting. */
   selectionBg: string
   bashMessageBackgroundColor: string
+  agencWash: string
+  worker: string
+  workerWash: string
+  successWash: string
+  errorWash: string
+  text2: string
+  muted3: string
+  line: string
+  lineSoft: string
+  briefLabelWorker: string
+  planModeWash: string
 
   memoryBackgroundColor: string
   rate_limit_fill: string
@@ -167,6 +178,17 @@ const lightTheme: Theme = {
   messageActionsBackground: 'rgb(232, 236, 244)', // cool gray — darker than userMsg 240 (visible on white), slight blue toward `suggestion`
   selectionBg: 'rgb(180, 213, 255)', // classic light-mode selection blue (macOS/VS Code-ish); dark fgs stay readable
   bashMessageBackgroundColor: 'rgb(250, 245, 250)',
+  agencWash: 'rgb(248,236,255)',
+  worker: 'rgb(255,106,47)',
+  workerWash: 'rgb(255,235,226)',
+  successWash: 'rgb(230,248,236)',
+  errorWash: 'rgb(255,232,237)',
+  text2: 'rgb(45,45,45)',
+  muted3: 'rgb(190,190,190)',
+  line: 'rgb(210,210,210)',
+  lineSoft: 'rgb(235,235,235)',
+  briefLabelWorker: 'rgb(234,88,12)',
+  planModeWash: 'rgb(235,248,248)',
 
   memoryBackgroundColor: 'rgb(230, 245, 250)',
   rate_limit_fill: 'rgb(87,105,247)', // Medium blue
@@ -250,6 +272,17 @@ const lightAnsiTheme: Theme = {
   messageActionsBackground: 'ansi:white',
   selectionBg: 'ansi:cyan', // lighter named bg for light-ansi; dark fgs stay readable
   bashMessageBackgroundColor: 'ansi:whiteBright',
+  agencWash: 'ansi:white',
+  worker: 'ansi:redBright',
+  workerWash: 'ansi:whiteBright',
+  successWash: 'ansi:white',
+  errorWash: 'ansi:whiteBright',
+  text2: 'ansi:black',
+  muted3: 'ansi:blackBright',
+  line: 'ansi:white',
+  lineSoft: 'ansi:white',
+  briefLabelWorker: 'ansi:redBright',
+  planModeWash: 'ansi:whiteBright',
 
   memoryBackgroundColor: 'ansi:white',
   rate_limit_fill: 'ansi:yellow',
@@ -332,6 +365,17 @@ const darkAnsiTheme: Theme = {
   messageActionsBackground: 'ansi:blackBright',
   selectionBg: 'ansi:magenta', // darker named bg for dark-ansi; bright fgs stay readable
   bashMessageBackgroundColor: 'ansi:black',
+  agencWash: 'ansi:magenta',
+  worker: 'ansi:redBright',
+  workerWash: 'ansi:black',
+  successWash: 'ansi:black',
+  errorWash: 'ansi:black',
+  text2: 'ansi:white',
+  muted3: 'ansi:blackBright',
+  line: 'ansi:blackBright',
+  lineSoft: 'ansi:black',
+  briefLabelWorker: 'ansi:redBright',
+  planModeWash: 'ansi:black',
 
   memoryBackgroundColor: 'ansi:blackBright',
   rate_limit_fill: 'ansi:yellow',
@@ -414,6 +458,17 @@ const lightDaltonizedTheme: Theme = {
   messageActionsBackground: 'rgb(210, 216, 226)', // cool gray — darker than userMsg 220, slight blue
   selectionBg: 'rgb(180, 213, 255)', // light selection blue; daltonized fgs are yellows/blues, both readable on light blue
   bashMessageBackgroundColor: 'rgb(250, 245, 250)',
+  agencWash: 'rgb(242,235,255)',
+  worker: 'rgb(255,128,0)',
+  workerWash: 'rgb(255,240,224)',
+  successWash: 'rgb(226,242,255)',
+  errorWash: 'rgb(255,232,232)',
+  text2: 'rgb(45,45,45)',
+  muted3: 'rgb(185,185,185)',
+  line: 'rgb(205,205,205)',
+  lineSoft: 'rgb(232,232,232)',
+  briefLabelWorker: 'rgb(255,128,0)',
+  planModeWash: 'rgb(240,246,250)',
 
   memoryBackgroundColor: 'rgb(230, 245, 250)',
   rate_limit_fill: 'rgb(51,102,255)', // Bright blue
@@ -496,6 +551,17 @@ const darkTheme: Theme = {
   messageActionsBackground: 'rgb(44, 27, 61)',
   selectionBg: 'rgb(96, 44, 150)', // violet selection against light text
   bashMessageBackgroundColor: 'rgb(24, 15, 32)',
+  agencWash: 'rgb(36,25,49)',
+  worker: 'rgb(255,106,47)',
+  workerWash: 'rgb(46,26,22)',
+  successWash: 'rgb(19,38,31)',
+  errorWash: 'rgb(46,22,31)',
+  text2: 'rgb(206,205,212)',
+  muted3: 'rgb(64,64,70)',
+  line: 'rgb(52,53,57)',
+  lineSoft: 'rgb(34,35,39)',
+  briefLabelWorker: 'rgb(255,151,72)',
+  planModeWash: 'rgb(46,26,22)',
 
   memoryBackgroundColor: 'rgb(22, 40, 48)',
   rate_limit_fill: 'rgb(178,95,255)',
@@ -578,6 +644,17 @@ const darkDaltonizedTheme: Theme = {
   messageActionsBackground: 'rgb(44, 50, 62)', // cool gray, slight blue
   selectionBg: 'rgb(38, 79, 120)', // classic dark-mode selection blue (VS Code dark default); light fgs stay readable
   bashMessageBackgroundColor: 'rgb(65, 60, 65)',
+  agencWash: 'rgb(35,40,48)',
+  worker: 'rgb(255,178,102)',
+  workerWash: 'rgb(45,39,29)',
+  successWash: 'rgb(18,34,45)',
+  errorWash: 'rgb(46,26,28)',
+  text2: 'rgb(206,205,212)',
+  muted3: 'rgb(64,64,70)',
+  line: 'rgb(52,53,57)',
+  lineSoft: 'rgb(34,35,39)',
+  briefLabelWorker: 'rgb(255,178,102)',
+  planModeWash: 'rgb(45,39,29)',
 
   memoryBackgroundColor: 'rgb(55, 65, 70)',
   rate_limit_fill: 'rgb(153,204,255)', // Light blue

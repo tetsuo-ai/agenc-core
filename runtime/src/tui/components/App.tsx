@@ -1574,7 +1574,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
     }
     const isError = (opts?.display ?? "").toLowerCase() === "error";
     setToolJSX({
-      jsx: <Box flexDirection="column" paddingX={1} borderStyle="round" borderColor={isError ? "red" : "gray"}>
+      jsx: <Box flexDirection="column" paddingX={1} borderStyle="single" borderColor={isError ? "error" : "lineSoft"}>
             <Text>{text}</Text>
           </Box>,
       shouldHidePromptInput: false
@@ -2299,7 +2299,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} />
       </Box>;
   }
-  const messagesElement = isLocalJSXCommandActive ? null : <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
+  const messagesElement = isLocalJSXCommandActive ? null : <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={false} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
   const scrollableContent = <>
       {messagesElement}
       <RealtimePanel state={realtimeState} />

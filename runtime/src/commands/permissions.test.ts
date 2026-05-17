@@ -52,6 +52,7 @@ function stubCtx(
     cwd: overrides.cwd ?? "/tmp",
     home: overrides.home ?? "/home/test",
     configStore: overrides.configStore,
+    ...(overrides.appState ? { appState: overrides.appState } : {}),
   };
 }
 
@@ -206,6 +207,20 @@ describe("permissionsCommand — execute list", () => {
     );
     if (r.kind !== "text") throw new Error("expected text");
     expect(r.text).toContain("Mode:");
+  });
+
+  it("opens the local permissions menu in the TUI", async () => {
+    const registry = new PermissionModeRegistry(seedCtx());
+    const setToolJSX = vi.fn();
+    const r = await permissionsCommand.execute(
+      stubCtx({ registry, appState: { setToolJSX } }),
+    );
+    expect(r.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 
   it("returns an error when no permission registry is configured", async () => {

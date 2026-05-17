@@ -349,7 +349,7 @@ function ShellOutputContent(t0) {
   }
   let t3;
   if ($[7] !== t1 || $[8] !== t2) {
-    t3 = <Box borderStyle="round" paddingX={1} flexDirection="column" height={12} maxWidth={t1}>{t2}</Box>;
+    t3 = <Box borderStyle="single" paddingX={1} flexDirection="column" height={12} maxWidth={t1}>{t2}</Box>;
     $[7] = t1;
     $[8] = t2;
     $[9] = t3;

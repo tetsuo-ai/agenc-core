@@ -125,6 +125,32 @@ describe("mcpCommand", () => {
     }
   });
 
+  it("opens the local MCP menu in the TUI", async () => {
+    const setToolJSX = vi.fn();
+    const result = await mcpCommand.execute({
+      session: stubSession(
+        new Map([["local", { enabled: true, required: false, command: "node" }]]),
+        {
+          getToolsByServer: (name: string) =>
+            name === "local"
+              ? [{ name: "mcp.local.game_tip", description: "Game tip" }]
+              : [],
+        },
+      ),
+      argsRaw: "",
+      cwd: "/tmp/ws",
+      home: "/home/test",
+      appState: { setToolJSX },
+    });
+
+    expect(result.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
+  });
+
   it("lists all MCP tools or tools for one server", async () => {
     const session = stubSession(new Map(), {
       getTools: () => [

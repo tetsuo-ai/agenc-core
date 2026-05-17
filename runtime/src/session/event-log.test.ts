@@ -10,6 +10,7 @@ import {
   ROLLOUT_SCHEMA_VERSION,
   usageToTokenCountEvent,
 } from "./event-log.js";
+import type { EventMsg } from "./event-log.js";
 
 describe("EventLog", () => {
   test("emit assigns monotonic seq (I-27)", () => {
@@ -140,6 +141,10 @@ describe("I-26 forward-compat + schema version", () => {
 
   test("isKnownEventType detects known + unknown", () => {
     expect(isKnownEventType("agent_message")).toBe(true);
+    expect(isKnownEventType("protocol_claim")).toBe(true);
+    expect(isKnownEventType("protocol_settle")).toBe(true);
+    expect(isKnownEventType("protocol_slash")).toBe(true);
+    expect(isKnownEventType("protocol_stake")).toBe(true);
     expect(isKnownEventType("future_variant")).toBe(false);
   });
 
@@ -212,6 +217,22 @@ describe("I-4 durable event classification", () => {
         msg: { type: "agent_message_delta", payload: { delta: "x" } },
       }),
     ).toBe(false);
+  });
+
+  test("protocol events are durable on-chain transcript records", () => {
+    const event: EventMsg = {
+      type: "protocol_slash",
+      payload: {
+        taskPda: "task-47",
+        slashedAgent: "worker/zk-prover",
+        reason: "public input mismatch",
+        stakeDeltaLamports: -800_000_000,
+        reputationDelta: -12,
+        signature: "fM91",
+      },
+    };
+
+    expect(isDurableEvent({ id: "slash", msg: event })).toBe(true);
   });
 });
 

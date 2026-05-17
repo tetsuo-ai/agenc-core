@@ -108,7 +108,7 @@ export function ViewHookMode(t0) {
   }
   let t11;
   if ($[25] !== t10) {
-    t11 = <Box borderStyle="round" borderDimColor={true} paddingLeft={1} paddingRight={1}><Text>{t10}</Text></Box>;
+    t11 = <Box borderStyle="single" borderDimColor={true} paddingLeft={1} paddingRight={1}><Text>{t10}</Text></Box>;
     $[25] = t10;
     $[26] = t11;
   } else {

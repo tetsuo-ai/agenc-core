@@ -15,6 +15,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openHooksMenu } from "./hooks-menu.js";
 
 function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | null {
   return ctx.session.services.hooksRuntime ?? null;
@@ -216,6 +217,9 @@ async function handleHooksCommand(
     case "list":
     case "show-all":
     case "overview":
+      if (args.length === 0 && openHooksMenu(ctx, runtime)) {
+        return { kind: "skip" };
+      }
       return { kind: "text", text: formatOverview(runtime) };
     case "validate": {
       const issues = runtime.issues();
@@ -269,7 +273,7 @@ async function handleHooksCommand(
 const hooksCommand: SlashCommand = {
   name: "hooks",
   description: "Inspect and test AgenC hook configuration",
-  supportedSurfaces: ["runtime"],
+  supportedSurfaces: ["runtime", "daemon-tui"],
   immediate: true,
   execute: (ctx) => safeExecute(() => handleHooksCommand(ctx)),
 };

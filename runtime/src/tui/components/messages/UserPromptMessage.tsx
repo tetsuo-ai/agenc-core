@@ -11,6 +11,7 @@ import { countCharInString } from '../../../utils/stringUtils.js';
 import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { MessageActionsSelectedContext } from '../messageActions';
 import { HighlightedThinkingText } from './HighlightedThinkingText';
+import { Msg } from '../v2/primitives.js';
 type Props = {
   addMargin: boolean;
   param: AgenCTextBlockParam;
@@ -91,6 +92,6 @@ export function UserPromptMessage({
     return null;
   }
   return <Box flexDirection="column" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingRight={useBriefLayout ? 0 : 1}>
-      <HighlightedThinkingText text={displayText} useBriefLayout={useBriefLayout} timestamp={useBriefLayout ? timestamp : undefined} />
+      {useBriefLayout ? <HighlightedThinkingText text={displayText} useBriefLayout timestamp={timestamp} /> : <Msg role="user" label="you" time={timestamp}><HighlightedThinkingText text={displayText} showPointer={false} /></Msg>}
     </Box>;
 }

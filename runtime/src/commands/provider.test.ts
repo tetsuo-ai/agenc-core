@@ -4,7 +4,7 @@ import providerCommand, {
   checkModelHistoryCompat,
 } from "./provider.js";
 import type { Session } from "../session/session.js";
-import type { SlashCommandContext } from "./types.js";
+import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
 import type { ConfigStore } from "../config/store.js";
 
 interface StubSessionOpts {
@@ -62,8 +62,18 @@ function stubSession(opts: StubSessionOpts = {}): Session {
   return s as unknown as Session;
 }
 
-function mkctx(session: Session, argsRaw = ""): SlashCommandContext {
-  return { session, argsRaw, cwd: "/ws", home: "/home/test" };
+function mkctx(
+  session: Session,
+  argsRaw = "",
+  appState?: SlashCommandAppStateBridge,
+): SlashCommandContext {
+  return {
+    session,
+    argsRaw,
+    cwd: "/ws",
+    home: "/home/test",
+    ...(appState ? { appState } : {}),
+  };
 }
 
 describe("providerCommand", () => {
@@ -90,13 +100,32 @@ describe("providerCommand", () => {
     expect(compat.missingCapabilities).toEqual(["thinking history"]);
   });
 
-  it("returns a usage error when args are empty", async () => {
+  it("returns a provider list when args are empty outside the TUI", async () => {
     const session = stubSession();
     const res = await providerCommand.execute(mkctx(session, ""));
-    expect(res.kind).toBe("error");
-    if (res.kind === "error") {
-      expect(res.message).toMatch(/Usage: \/model-provider/);
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toContain("Provider selection");
+      expect(res.text).toContain("Current: grok / grok-4");
+      expect(res.text).toContain("ollama");
     }
+  });
+
+  it("opens the local provider menu when args are empty in the TUI", async () => {
+    const session = stubSession();
+    const setToolJSX = vi.fn();
+    const res = await providerCommand.execute(
+      mkctx(session, "", {
+        getAppState: () => ({ mainLoopModel: "grok-4" }),
+        setToolJSX,
+      }),
+    );
+    expect(res.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 
   it("applies the provider default model immediately when no turn is active", async () => {
@@ -117,6 +146,20 @@ describe("providerCommand", () => {
       pendingProviderSwitch: { provider: string; model: string } | null;
     }).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
+  });
+
+  it("updates TUI model chrome when provider switch selects a model", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+      activeTurn: null,
+    });
+    const setModel = vi.fn();
+    const res = await providerCommand.execute(
+      mkctx(session, "ollama", { setModel }),
+    );
+    expect(res.kind).toBe("text");
+    expect(setModel).toHaveBeenCalledWith("llama3.3");
   });
 
   it("uses an explicit model when the picker submits provider and model", async () => {
@@ -200,6 +243,27 @@ describe("providerCommand", () => {
     expect(pending).toBeNull();
   });
 
+  it("does not update TUI model chrome when provider compatibility blocks the switch", async () => {
+    const session = stubSession({
+      provider: "openai",
+      model: "gpt-5",
+      history: [
+        {
+          role: "assistant",
+          content: [{ type: "reasoning", summary: [] }],
+        },
+      ],
+    });
+    const setModel = vi.fn();
+
+    const res = await providerCommand.execute(
+      mkctx(session, "ollama", { setModel }),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
   it("applyProviderSwitch does not invoke abortTerminal when no turn is active", async () => {
     const abortTerminal = vi.fn();
     const session = stubSession({ abortTerminal });
@@ -211,7 +275,7 @@ describe("providerCommand", () => {
     const res = await providerCommand.execute(
       mkctx(stubSession(), "   "),
     );
-    expect(res.kind).toBe("error");
+    expect(res.kind).toBe("text");
   });
 
   it("does not mention branded references in output strings", async () => {

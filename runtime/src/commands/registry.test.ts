@@ -20,24 +20,46 @@ const MINIMAL_REGISTRY_NAMES = [
   "hooks",
   "skills",
   "mcp",
+  "plugins",
+  "memory",
+  "resume",
   "clear",
   "compact",
+  "context",
   "diff",
+  "claim",
+  "delegate",
+  "proof",
+  "settle",
+  "stake",
   "exit",
 ] as const;
 
 const DAEMON_TUI_REGISTRY_NAMES = [
   "help",
   "status",
+  "model",
+  "model-provider",
   "permissions",
   "plan",
   "agents",
   "tasks",
   "config",
+  "hooks",
   "skills",
   "mcp",
+  "plugins",
+  "memory",
+  "resume",
   "clear",
+  "compact",
+  "context",
   "diff",
+  "claim",
+  "delegate",
+  "proof",
+  "settle",
+  "stake",
   "exit",
 ] as const;
 
@@ -45,7 +67,6 @@ const REMOVED_TUI_COMMANDS = [
   "branch",
   "cache-stats",
   "commit",
-  "context",
   "copy",
   "cost",
   "doctor",
@@ -59,13 +80,10 @@ const REMOVED_TUI_COMMANDS = [
   "install",
   "keybindings",
   "knowledge",
-  "memory",
-  "plugin",
   "pr-comments",
   "release-notes",
   "reload-plugins",
   "rename",
-  "resume",
   "review",
   "rewind",
   "stats",
@@ -148,15 +166,15 @@ describe("CommandRegistry", () => {
     expect(names).toEqual(MINIMAL_REGISTRY_NAMES);
   });
 
-  it("filters runtime-only commands from the daemon TUI surface", () => {
+  it("builds the daemon TUI surface from the unified slash palette", () => {
     const registry = buildDefaultRegistry({ surface: "daemon-tui" });
 
     expect(registry.list().map((command) => command.name)).toEqual(
       DAEMON_TUI_REGISTRY_NAMES,
     );
-    for (const name of ["model", "model-provider", "provider", "hooks", "compact"]) {
-      expect(registry.has(name), `/${name} should not dispatch in daemon TUI`).toBe(
-        false,
+    for (const name of ["model", "model-provider", "provider", "hooks", "compact", "ctx"]) {
+      expect(registry.has(name), `/${name} should dispatch in daemon TUI`).toBe(
+        true,
       );
     }
   });
@@ -169,6 +187,7 @@ describe("CommandRegistry", () => {
     expect(registry.has("quit")).toBe(true);
     expect(registry.has("reset")).toBe(true);
     expect(registry.has("approvals")).toBe(true);
+    expect(registry.find("ctx")?.name).toBe("context");
   });
 
   it("does not register removed TUI slash commands", () => {

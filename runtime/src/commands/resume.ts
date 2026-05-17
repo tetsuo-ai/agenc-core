@@ -24,6 +24,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openResumeMenu } from "./resume-menu.js";
 
 const MAX_SCAN_FILES = 10_000;
 const DEFAULT_LIST_LIMIT = 20;
@@ -255,12 +256,37 @@ export async function runResume(
   return { kind: "text", text: formatEntries(all) };
 }
 
+async function runResumeCommand(
+  ctx: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  const parsed = parseResumeArgs(ctx.argsRaw);
+  const all = listResumableSessions(ctx.cwd);
+
+  if (!parsed.sessionId && !parsed.last && openResumeMenu(ctx, all)) {
+    return { kind: "skip" };
+  }
+  if (parsed.sessionId) {
+    const match = all.find((e) => e.sessionId === parsed.sessionId);
+    if (!match) {
+      return {
+        kind: "text",
+        text: `No session matching id '${parsed.sessionId}' found.`,
+      };
+    }
+    return { kind: "text", text: formatEntries([match]) };
+  }
+  if (parsed.last) {
+    return { kind: "text", text: formatEntries(all.slice(0, 1)) };
+  }
+  return { kind: "text", text: formatEntries(all) };
+}
+
 export const resumeCommand: SlashCommand = {
   name: "resume",
   aliases: ["sessions"],
   description: "List resumable sessions for this project",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(() => runResume(ctx.cwd, ctx.argsRaw)),
+    safeExecute(() => runResumeCommand(ctx)),
 };
 
 export default resumeCommand;

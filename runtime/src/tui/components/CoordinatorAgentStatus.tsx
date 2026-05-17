@@ -75,7 +75,7 @@ export function CoordinatorTaskPanel(): React.ReactNode {
   if (visibleTasks.length === 0) {
     return null;
   }
-  return <Box flexDirection="column" marginTop={1} borderStyle="round" borderColor="promptBorder" paddingX={1} backgroundColor="clawd_background">
+  return <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="promptBorder" paddingX={1} backgroundColor="clawd_background">
       <Box justifyContent="space-between">
         <Text color="inactive" bold={true}>AGENTS</Text>
         <Text color="promptBorder">{visibleTasks.length} active</Text>

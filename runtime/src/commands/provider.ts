@@ -27,6 +27,11 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import {
+  openProviderMenu,
+  providerMenuFallback,
+  readProviderMenuSnapshot,
+} from "./provider-menu.js";
 
 /**
  * Re-export so callers that only pull in `provider.ts` can still reach
@@ -139,30 +144,72 @@ export async function applyProviderSwitch(
   );
 }
 
+function providerSwitchApplied(summary: string): boolean {
+  return (
+    summary.startsWith("Provider switched ") ||
+    summary.startsWith("Provider switch staged:")
+  );
+}
+
+function resolveCommandModelForProvider(
+  session: Session,
+  targetProvider: string,
+  targetModel?: string,
+): string | undefined {
+  const normalizedProvider = normalizeProviderName(targetProvider);
+  if (normalizedProvider === null) return undefined;
+  const config = session.services.configStore?.current();
+  return (
+    targetModel?.trim() ||
+    (config ? configuredModelForProvider(config, normalizedProvider) : undefined) ||
+    defaultModelForProvider(normalizedProvider)
+  );
+}
+
 export const providerCommand: SlashCommand = {
   name: "model-provider",
   aliases: ["provider"],
   description: "Switch the LLM provider for subsequent turns",
-  supportedSurfaces: ["runtime"],
+  supportedSurfaces: ["runtime", "daemon-tui"],
   userInvocable: true,
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const trimmed = ctx.argsRaw.trim();
       if (trimmed.length === 0) {
-        return {
-          kind: "error",
-          message: "Usage: /model-provider <provider> [model]",
-        };
+        const snapshot = readProviderMenuSnapshot(ctx);
+        if (
+          openProviderMenu(ctx, snapshot, async (provider, model) => {
+            const summary = await applyProviderSwitch(ctx.session, provider, model);
+            if (providerSwitchApplied(summary)) {
+              ctx.appState?.setModel?.(model);
+            }
+            return {
+              message: summary,
+              shouldClose: providerSwitchApplied(summary),
+            };
+          })
+        ) {
+          return { kind: "skip" };
+        }
+        return { kind: "text", text: providerMenuFallback(snapshot) };
       }
       const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
       const targetModel =
         modelParts.length > 0 ? modelParts.join(" ").trim() : undefined;
+      const resolvedModel = resolveCommandModelForProvider(
+        ctx.session,
+        targetProvider,
+        targetModel,
+      );
       const summary = await applyProviderSwitch(
         ctx.session,
         targetProvider,
         targetModel,
       );
+      if (resolvedModel !== undefined && providerSwitchApplied(summary)) {
+        ctx.appState?.setModel?.(resolvedModel);
+      }
       return { kind: "text", text: summary };
     }),
 };

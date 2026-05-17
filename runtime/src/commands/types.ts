@@ -95,6 +95,15 @@ export interface SlashCommand {
   readonly userInvocable?: boolean;
   /** Mask `argsRaw` in transcripts (default false). */
   readonly sensitive?: boolean;
+  /** Optional grouping metadata for palette styling and source attribution. */
+  readonly kind?: string;
+  readonly source?: string;
+  readonly loadedFrom?: string;
+  readonly pluginInfo?: {
+    readonly pluginManifest?: {
+      readonly name?: string;
+    };
+  };
   readonly execute: (ctx: SlashCommandContext) => Promise<SlashCommandResult>;
 }
 

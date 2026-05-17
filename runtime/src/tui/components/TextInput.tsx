@@ -5,7 +5,7 @@ import { useVoiceState, type VoiceState } from '../context/voice.js';
 import { useClipboardImageHint } from '../hooks/useClipboardImageHint.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { useTextInput } from '../hooks/useTextInput.js';
-import { Box, color, useAnimationFrame, useTerminalFocus, useTheme } from '../ink.js';
+import { Box, color, useTerminalFocus, useTheme } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
 import type { BaseTextInputProps } from '../../types/textInputTypes.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
@@ -47,19 +47,12 @@ export default function TextInput(props: Props): React.ReactNode {
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useVoiceState((s_0: VoiceState) => s_0.voiceAudioLevels) : [];
   const smoothedRef = useRef<number[]>(new Array(CURSOR_WAVEFORM_WIDTH).fill(0));
-  const needsAnimation = isVoiceRecording && !reducedMotion;
-  const [animRef, animTime] = feature('VOICE_MODE') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useAnimationFrame(needsAnimation ? 50 : null) : [() => {}, 0];
-
   // Show hint when terminal regains focus and clipboard has an image
   useClipboardImageHint(isTerminalFocused, !!props.onImagePaste);
 
   // Caret invert function: mini waveform during voice recording,
-  // standard chalk.inverse otherwise. No warmup pulse — the ~120ms
-  // warmup window is too short for a 1s-period pulse to register, and
-  // driving TextInput re-renders at 50ms during warmup (while spaces
-  // are simultaneously arriving every 30-80ms) causes visible stutter.
+  // standard chalk.inverse otherwise. Voice state updates may change the
+  // cursor bar, but the input no longer owns a timer-driven animation.
   const canShowCursor = isTerminalFocused && !accessibilityEnabled;
   let invert: (text: string) => string;
   if (!canShowCursor) {
@@ -74,7 +67,6 @@ export default function TextInput(props: Props): React.ReactNode {
     const voiceCursorBars = selectAgenCTuiGlyphs().voiceCursorBars;
     const barIndex = Math.max(1, Math.min(Math.round(displayLevel * (voiceCursorBars.length - 1)), voiceCursorBars.length - 1));
     const isSilent = raw < SILENCE_THRESHOLD;
-    const hue = animTime / 1000 * 90 % 360;
     const {
       r,
       g,
@@ -83,7 +75,7 @@ export default function TextInput(props: Props): React.ReactNode {
       r: 128,
       g: 128,
       b: 128
-    } : hueToRgb(hue);
+    } : hueToRgb(120);
     invert = () => chalk.rgb(r, g, b)(voiceCursorBars[barIndex]!);
   } else {
     invert = chalk.inverse;
@@ -116,7 +108,7 @@ export default function TextInput(props: Props): React.ReactNode {
     inlineGhostText: props.inlineGhostText,
     dim: chalk.dim
   });
-  return <Box ref={animRef}>
+  return <Box>
       <BaseTextInput inputState={textInputState} terminalFocus={isTerminalFocused} highlights={props.highlights} invert={invert} hidePlaceholderText={isVoiceRecording} {...props} />
     </Box>;
 }

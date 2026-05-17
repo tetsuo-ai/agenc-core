@@ -19,7 +19,8 @@ import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggest
 import { permissionModeFooterChrome } from './PromptInput/permissionModeChrome.js';
 import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
-import { useAppState } from '../state/AppState.js';
+import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
+import { BrandCells, PlanModeBanner, TuiHeader, StatusBar as V2StatusBar, StatusSegment } from './v2/primitives.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
@@ -444,17 +445,7 @@ export function FullscreenLayout(t0) {
     } else {
       t13 = $[23];
     }
-    let t14;
-    if ($[24] !== t11 || $[25] !== t12 || $[26] !== t13 || $[27] !== t8) {
-      t14 = <Box flexGrow={1} flexDirection="column" overflow="hidden">{t8}{t11}{t12}{t13}</Box>;
-      $[24] = t11;
-      $[25] = t12;
-      $[26] = t13;
-      $[27] = t8;
-      $[28] = t14;
-    } else {
-      t14 = $[28];
-    }
+    const t14 = <Box flexGrow={1} flexDirection="column" overflow="hidden"><DesignBrandBleed columns={columns} />{t8}<DesignPlanModeBanner />{t11}{t12}{t13}</Box>;
     let t15;
     let t16;
     if ($[29] === Symbol.for("react.memo_cache_sentinel")) {
@@ -515,29 +506,30 @@ function trimMiddle(value: string, maxWidth: number): string {
   return `${value.slice(0, left)}…${value.slice(value.length - right)}`;
 }
 
+function DesignPlanModeBanner(): React.ReactNode {
+  const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
+  return mode === 'plan' ? <PlanModeBanner /> : null;
+}
+
+export function DesignBrandBleed({ columns }: { columns: number }): React.ReactNode {
+  if (columns < 72) return null;
+  const compact = columns < 100;
+  return <Box position="absolute" top={0} right={0}>
+      <BrandCells columns={compact ? 18 : 28} rows={compact ? 3 : 5} />
+    </Box>;
+}
+
 export function DesignTopChrome({ columns, noColor }: { columns: number; noColor: boolean }): React.ReactNode {
   const cwdName = React.useMemo(() => process.cwd().split(/[\\/]/u).filter(Boolean).at(-1) ?? 'workspace', []);
-  const title = trimMiddle(`agenc - ${cwdName}`, Math.max(12, Math.floor(columns * 0.44)));
-  const showTask = columns >= 84;
-  const glyphs = selectAgenCTuiGlyphs();
-  return <Box flexDirection="column" flexShrink={0} width="100%">
-      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="surfaceBackground">
-        <Box gap={1} flexShrink={0}>
-          {noColor ? null : <>
-            <Text color="error">{glyphs.statusDot}</Text>
-            <Text color="warning">{glyphs.statusDot}</Text>
-            <Text color="success">{glyphs.statusDot}</Text>
-          </>}
-          {columns >= 56 ? <Text dimColor> agenc</Text> : null}
-          {columns >= 64 ? <Text color={noColor ? undefined : "success"}>{noColor ? 'OK orchestrator' : `${glyphs.statusDot} orchestrator`}</Text> : null}
-        </Box>
-        <Text dimColor wrap="truncate">{title}</Text>
-        <Box flexShrink={0}>
-          {showTask ? <Text dimColor>LIVE SESSION</Text> : null}
-        </Box>
-      </Box>
-      <Text color="promptBorder">{glyphs.horizontal.repeat(Math.max(0, columns))}</Text>
-    </Box>;
+  const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
+  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
+  const activeTask = React.useMemo(() => {
+    const values = Object.values(tasks ?? {});
+    return values.find(task => task?.status === 'running' || task?.status === 'queued') ?? values[0];
+  }, [tasks]);
+  const taskPda = activeTask?.id ? trimMiddle(String(activeTask.id), Math.max(12, Math.floor(columns * 0.18))) : '—';
+  const title = trimMiddle(`~/${cwdName}`, Math.max(12, Math.floor(columns * 0.24)));
+  return <TuiHeader columns={columns} title={title} tabLabel="agenc · orchestrator" tabStatus={activeTask?.status === 'failed' ? 'warn' : 'live'} permissionMode={mode} taskPda={taskPda} />;
 }
 
 export function formatDesignBottomChromeLabels(
@@ -553,18 +545,21 @@ export function formatDesignBottomChromeLabels(
 }
 
 function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
-  const model = useAppState(state => state.mainLoopModel);
-  const mode = useAppState(state => state.toolPermissionContext.mode);
+  const model = useAppStateMaybeOutsideOfProvider(state => state.mainLoopModel) ?? 'agenc';
+  const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
+  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
   const modelLabel = modelDisplayString(model);
   const { left, right } = formatDesignBottomChromeLabels(columns, modelLabel, mode);
-  const glyphs = selectAgenCTuiGlyphs();
-  return <Box flexDirection="column" flexShrink={0} width="100%">
-      <Text color="promptBorder">{glyphs.horizontal.repeat(Math.max(0, columns))}</Text>
-      <Box height={1} width="100%" paddingX={1} justifyContent="space-between" backgroundColor="surfaceBackground">
-        <Text color="inactive" wrap="truncate">{left}</Text>
-        <Text color="inactive" wrap="truncate">{right}</Text>
-      </Box>
-    </Box>;
+  const activeTaskCount = Object.values(tasks ?? {}).filter(task => task?.status === 'running' || task?.status === 'queued').length;
+  const showExpanded = columns >= 70;
+  return <V2StatusBar variant={mode === 'plan' ? 'plan' : mode === 'bypassPermissions' ? 'error' : mode === 'auto' ? 'success' : mode === 'acceptEdits' ? 'accent' : 'neutral'} left={[
+      <StatusSegment key="model" label="MODEL" value={showExpanded ? modelLabel : left} color="agenc" />,
+      ...(showExpanded ? [<StatusSegment key="mode" label="MODE" value={permissionModeFooterChrome(mode).label} color={mode === 'plan' ? 'planMode' : mode === 'bypassPermissions' ? 'error' : 'text2'} />] : []),
+      ...(showExpanded && activeTaskCount > 0 ? [<StatusSegment key="tasks" label="TASKS" value={String(activeTaskCount)} color="worker" />] : []),
+    ]} right={[
+      <StatusSegment key="ctx" label="CTX" value="live" />,
+      ...(showExpanded ? [<StatusSegment key="context" label="CONTEXT" value="session" />] : [<StatusSegment key="right" label="" value={right} />]),
+    ]} />;
 }
 
 // Slack-style pill. Absolute overlay at bottom={0} of the scrollwrap — floats

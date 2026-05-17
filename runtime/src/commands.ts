@@ -234,6 +234,10 @@ export function projectSlashCommand(
     },
     aliases: cmd.aliases ? [...cmd.aliases] : undefined,
     isEnabled: cmd.isEnabled,
+    kind: cmd.kind,
+    source: cmd.source,
+    loadedFrom: cmd.loadedFrom,
+    pluginInfo: cmd.pluginInfo,
     get immediate() {
       return cmd.immediate;
     },

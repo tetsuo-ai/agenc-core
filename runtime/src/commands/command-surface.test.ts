@@ -34,9 +34,18 @@ const MINIMAL_NAMES = [
   "hooks",
   "skills",
   "mcp",
+  "plugins",
+  "memory",
+  "resume",
   "clear",
   "compact",
+  "context",
   "diff",
+  "claim",
+  "delegate",
+  "proof",
+  "settle",
+  "stake",
   "exit",
 ] as const;
 
@@ -105,6 +114,9 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("tasks")).toBe(true);
     expect(names.has("jobs")).toBe(true);
     expect(names.has("plan")).toBe(true);
+    expect(names.has("ctx")).toBe(true);
+    expect(names.has("plugins")).toBe(true);
+    expect(names.has("claim")).toBe(true);
     expect(names.has("files")).toBe(false);
     expect(names.has("reload-plugins")).toBe(false);
   });
@@ -155,7 +167,7 @@ describe("AgenC command surface compatibility", () => {
     });
   });
 
-  it("daemon TUI registry rejects runtime-only command dispatch", async () => {
+  it("daemon TUI registry accepts redesign palette command dispatch", async () => {
     const registry = buildDefaultRegistry({ surface: "daemon-tui" });
     const parsed = parseSlashCommand("/model qwen3.6-27b-fp8");
     expect(parsed).not.toBeNull();
@@ -167,8 +179,8 @@ describe("AgenC command surface compatibility", () => {
     );
 
     expect(outcome.result).toEqual({
-      kind: "error",
-      message: "Unknown command: /model",
+      kind: "text",
+      text: "Model switching from the TUI is not yet supported when running against the daemon. Set `model` in config.toml or use `agenc config set model <name>`.",
     });
   });
 

@@ -59,7 +59,7 @@ export function PermissionDialog(t0: Props) {
   }
   let t6;
   if ($[11] !== color || $[12] !== t4 || $[13] !== t5) {
-    t6 = <Box flexDirection="column" borderStyle="round" borderColor={color} marginTop={1} paddingY={1} backgroundColor="bashMessageBackgroundColor">{t4}{t5}</Box>;
+    t6 = <Box flexDirection="column" borderStyle="single" borderColor={color} marginTop={1} paddingY={1} backgroundColor="bashMessageBackgroundColor">{t4}{t5}</Box>;
     $[11] = color;
     $[12] = t4;
     $[13] = t5;

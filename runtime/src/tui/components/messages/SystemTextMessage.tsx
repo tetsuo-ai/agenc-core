@@ -28,6 +28,7 @@ import { isBackgroundTask, type TaskState } from '../../../tasks/types';
 import { getPillLabel } from '../../../tasks/pillLabel';
 import { useSelectedMessageBg } from '../messageActions';
 import { AGENT_MESSAGE_THEME_COLOR } from './agentMessageTheme.js';
+import { ProtocolEvent } from '../v2/primitives.js';
 type Props = {
   message: SystemMessage;
   addMargin: boolean;
@@ -63,6 +64,9 @@ export function SystemTextMessage(t0) {
     isTranscriptMode
   } = t0;
   const bg = useSelectedMessageBg();
+  if (message.subtype === "protocol_event") {
+    return <ProtocolEventSystemMessage message={message} addMargin={addMargin} />;
+  }
   if (message.subtype === "turn_duration") {
     let t1;
     if ($[0] !== addMargin || $[1] !== message) {
@@ -525,6 +529,43 @@ function SystemTextMessageInner(t0) {
     t7 = $[17];
   }
   return t7;
+}
+
+function ProtocolEventSystemMessage({
+  message,
+  addMargin,
+}: {
+  message: SystemMessage;
+  addMargin: boolean;
+}): React.ReactNode {
+  const bg = useSelectedMessageBg();
+  const marginTop = addMargin ? 1 : 0;
+  const kind =
+    message.protocolKind === "claim" ||
+    message.protocolKind === "settle" ||
+    message.protocolKind === "slash" ||
+    message.protocolKind === "stake"
+      ? message.protocolKind
+      : "claim";
+  const facts = Array.isArray(message.facts)
+    ? message.facts.flatMap((fact: unknown) => {
+        if (!fact || typeof fact !== "object") return [];
+        const record = fact as Record<string, unknown>;
+        if (typeof record.label !== "string") return [];
+        if (typeof record.value !== "string") return [];
+        return [{ label: record.label, value: record.value }];
+      })
+    : [];
+  return (
+    <Box flexDirection="column" marginTop={marginTop} backgroundColor={bg} width="100%">
+      <ProtocolEvent
+        kind={kind}
+        title={String(message.title ?? "protocol")}
+        body={String(message.content ?? "")}
+        facts={facts}
+      />
+    </Box>
+  );
 }
 
 function CollabAgentSystemMessage({

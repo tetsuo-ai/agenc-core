@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import skillsCommand, {
   collectSkillsSnapshot,
@@ -341,6 +341,28 @@ describe("skillsCommand", () => {
       expect(result.text).toContain("invoked: $debug");
       expect(result.text).toContain("plugin roots: /skills");
     }
+  });
+
+  it("opens the local skills menu in the TUI", async () => {
+    const setToolJSX = vi.fn();
+    const result = await skillsCommand.execute({
+      session: stubSession({
+        invokedSkills: ["debug"],
+        availableSkills: [{ name: "debug", description: "Debug failures" }],
+        roots: ["/skills"],
+      }),
+      argsRaw: "",
+      cwd: "/tmp/ws",
+      home: "/home/test",
+      appState: { setToolJSX },
+    });
+
+    expect(result.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 
   it("treats extra /skills text as a filter instead of an error", async () => {

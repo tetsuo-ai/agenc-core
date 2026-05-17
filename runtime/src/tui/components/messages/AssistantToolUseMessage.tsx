@@ -4,8 +4,6 @@ import { selectAgenCTuiGlyphs } from '../../glyphs.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import type { ThemeName } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Command } from '../../../commands.js';
-import { BLACK_CIRCLE } from '../../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, Text, useTheme } from '../../ink.js';
 import { useAppStateMaybeOutsideOfProvider } from '../../state/AppState.js';
 import { findToolByName, type Tool, type ToolProgressData, type Tools } from '../../../tools/Tool';
@@ -17,8 +15,8 @@ import type { AgenCToolUseBlockParam } from '../../../types/message.js';
 import { MessageResponse } from '../MessageResponse';
 import { useSelectedMessageBg } from '../messageActions';
 import { SentryErrorBoundary } from '../SentryErrorBoundary';
-import { ToolUseLoader } from '../ToolUseLoader';
 import { HookProgressMessage } from './HookProgressMessage';
+import { Tool as V2Tool, type ToolKind, type ToolState } from '../v2/primitives.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -57,8 +55,6 @@ export function AssistantToolUseMessage(t0) {
     verbose,
     inProgressToolUseIDs,
     progressMessagesForMessage,
-    shouldAnimate,
-    shouldShowDot,
     inProgressToolCallCount,
     lookups,
     isTranscriptMode
@@ -110,7 +106,6 @@ export function AssistantToolUseMessage(t0) {
     tool: tool_0,
     input: input_0,
     userFacingToolName,
-    userFacingToolNameBackgroundColor,
     isTransparentWrapper
   } = parsed;
   if (!input_0.success) {
@@ -199,39 +194,6 @@ export function AssistantToolUseMessage(t0) {
     return <ToolUseRecoveryMessage addMargin={addMargin} backgroundColor={bg} title="Tool details unavailable" detail="AgenC could not render this tool-use row, but the transcript entry is preserved." toolName={param.name} />;
   }
   const t5 = addMargin ? 1 : 0;
-  const t6 = stringWidth(userFacingToolName) + (shouldShowDot ? 2 : 0);
-  let t7;
-  if ($[31] !== isQueued || $[32] !== isResolved || $[33] !== lookups.erroredToolUseIDs || $[34] !== param.id || $[35] !== shouldAnimate || $[36] !== shouldShowDot) {
-    t7 = shouldShowDot && (isQueued ? <Box minWidth={2}><Text dimColor={isQueued}>{BLACK_CIRCLE}</Text></Box> : <ToolUseLoader shouldAnimate={shouldAnimate} isUnresolved={!isResolved} isError={lookups.erroredToolUseIDs.has(param.id)} />);
-    $[31] = isQueued;
-    $[32] = isResolved;
-    $[33] = lookups.erroredToolUseIDs;
-    $[34] = param.id;
-    $[35] = shouldAnimate;
-    $[36] = shouldShowDot;
-    $[37] = t7;
-  } else {
-    t7 = $[37];
-  }
-  const t8 = userFacingToolNameBackgroundColor ? "inverseText" : undefined;
-  let t9;
-  if ($[38] !== t8 || $[39] !== userFacingToolName || $[40] !== userFacingToolNameBackgroundColor) {
-    t9 = <Box flexShrink={0}><Text bold={true} wrap="truncate-end" backgroundColor={userFacingToolNameBackgroundColor} color={t8}>{userFacingToolName}</Text></Box>;
-    $[38] = t8;
-    $[39] = userFacingToolName;
-    $[40] = userFacingToolNameBackgroundColor;
-    $[41] = t9;
-  } else {
-    t9 = $[41];
-  }
-  let t10;
-  if ($[42] !== renderedToolUseMessage) {
-    t10 = renderedToolUseMessage !== "" && <Box flexWrap="nowrap"><Text>({renderedToolUseMessage})</Text></Box>;
-    $[42] = renderedToolUseMessage;
-    $[43] = t10;
-  } else {
-    t10 = $[43];
-  }
   let t11;
   if ($[44] !== input_0.data || $[45] !== input_0.success || $[46] !== tool_0) {
     t11 = input_0.success && tool_0.renderToolUseTag && tool_0.renderToolUseTag(input_0.data);
@@ -241,18 +203,6 @@ export function AssistantToolUseMessage(t0) {
     $[47] = t11;
   } else {
     t11 = $[47];
-  }
-  let t12;
-  if ($[48] !== t10 || $[49] !== t11 || $[50] !== t6 || $[51] !== t7 || $[52] !== t9) {
-    t12 = <Box flexDirection="row" flexWrap="nowrap" minWidth={t6}>{t7}{t9}{t10}{t11}</Box>;
-    $[48] = t10;
-    $[49] = t11;
-    $[50] = t6;
-    $[51] = t7;
-    $[52] = t9;
-    $[53] = t12;
-  } else {
-    t12 = $[53];
   }
   const t13 = !isResolved && !isQueued && (isWaitingForPermission ? <MessageResponse height={1}><Text dimColor={true}>{getAssistantToolUsePendingText('permission')}</Text></MessageResponse> : isClassifierChecking ? <MessageResponse height={1}><Text dimColor={true}>{isAutoClassifier ? getAssistantToolUsePendingText('auto-classifier') : getAssistantToolUsePendingText('bash-classifier')}</Text></MessageResponse> : renderToolUseProgressMessage(tool_0, tools, lookups, param.id, progressMessagesForMessage, {
       verbose,
@@ -269,22 +219,54 @@ export function AssistantToolUseMessage(t0) {
   } else {
     t14 = $[72];
   }
+  const toolState: ToolState = lookups.erroredToolUseIDs.has(param.id) ? "failed" : isResolved ? "done" : isQueued ? "queued" : "running";
+  const toolArgs = typeof renderedToolUseMessage === "string" && renderedToolUseMessage.length > 0 ? renderedToolUseMessage : summarizeToolInput(input_0.data);
+  const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
   let t15;
-  if ($[73] !== t12 || $[74] !== t13 || $[75] !== t14) {
-    t15 = <Box flexDirection="column">{t12}{t13}{t14}</Box>;
-    $[73] = t12;
-    $[74] = t13;
-    $[75] = t14;
-    $[76] = t15;
+  if ($[73] !== extraDetail || $[74] !== t11 || $[75] !== t13 || $[76] !== t14) {
+    t15 = extraDetail || t11 || t13 || t14 ? <Box flexDirection="column">{extraDetail}{t11}{t13}{t14}</Box> : null;
+    $[73] = extraDetail;
+    $[74] = t11;
+    $[75] = t13;
+    $[76] = t14;
+    $[77] = t15;
   } else {
-    t15 = $[76];
+    t15 = $[77];
   }
-  const toolBorderColor = lookups.erroredToolUseIDs.has(param.id) ? "error" : isResolved ? "success" : "promptBorder";
-  return <Box flexDirection="column" justifyContent="space-between" marginTop={t5} width="100%" borderStyle="round" borderColor={toolBorderColor} paddingX={1} backgroundColor={bg}>{t15}</Box>;
+  return <Box flexDirection="column" marginTop={t5} width="100%" backgroundColor={bg}><V2Tool kind={toolKindForName(param.name, userFacingToolName)} label={userFacingToolName} state={toolState} args={toolArgs} detail={t15} expanded={t15 !== null} /></Box>;
 }
 function _temp3(state_1) {
   return !!state_1.toolPermissionContext.strippedDangerousRules;
 }
+
+function toolKindForName(name: string, label: string): ToolKind {
+  const value = `${name} ${label}`.toLowerCase();
+  if (value.includes("bash") || value.includes("shell") || value.includes("powershell")) return "bash";
+  if (value.includes("grep") || value.includes("glob") || value.includes("search")) return "grep";
+  if (value.includes("edit") || value.includes("write") || value.includes("patch")) return "edit";
+  if (value.includes("delegate") || value.includes("agent") || value.includes("task")) return "delegate";
+  if (value.includes("proof")) return "proof";
+  if (value.includes("claim")) return "claim";
+  if (value.includes("settle")) return "settle";
+  if (value.includes("stake")) return "stake";
+  return "read";
+}
+
+function summarizeToolInput(input: unknown): string {
+  if (input && typeof input === "object") {
+    const record = input as Record<string, unknown>;
+    for (const key of ["command", "file_path", "path", "query", "pattern", "description", "prompt"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0) return value;
+    }
+  }
+  try {
+    return JSON.stringify(input) ?? "";
+  } catch {
+    return String(input);
+  }
+}
+
 function _temp2(state_0) {
   return state_0.toolPermissionContext.mode;
 }
@@ -368,7 +350,7 @@ function ToolUseRecoveryMessage({
   detail: string;
   toolName: string;
 }): React.ReactElement {
-  return <Box flexDirection="column" justifyContent="space-between" marginTop={addMargin ? 1 : 0} width="100%" borderStyle="round" borderColor="error" paddingX={1} backgroundColor={backgroundColor}>
+  return <Box flexDirection="column" justifyContent="space-between" marginTop={addMargin ? 1 : 0} width="100%" borderStyle="single" borderColor="error" paddingX={1} backgroundColor={backgroundColor}>
       <Text bold={true} color="error">{title}</Text>
       <Text dimColor={true}>{detail}</Text>
       <Text dimColor={true}>Tool: {toolName}</Text>

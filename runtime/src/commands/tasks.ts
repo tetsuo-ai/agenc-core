@@ -8,6 +8,7 @@
  * @module
  */
 
+import React from "react";
 import {
   isStoppableTaskStatus,
   isTaskType,
@@ -215,6 +216,25 @@ export const tasksCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
+      const setToolJSX = ctx.appState?.setToolJSX;
+      if (typeof setToolJSX === "function") {
+        const { BackgroundTasksDialog } = await import(
+          "../tui/components/tasks/BackgroundTasksDialog.js"
+        );
+        const close = () => {
+          setToolJSX({
+            jsx: null,
+            shouldHidePromptInput: false,
+            clearLocalJSX: true,
+          });
+        };
+        setToolJSX({
+          isLocalJSXCommand: true,
+          shouldHidePromptInput: true,
+          jsx: React.createElement(BackgroundTasksDialog, { onDone: close }),
+        });
+        return { kind: "skip" };
+      }
       const getAppState = ctx.appState?.getAppState;
       if (typeof getAppState !== "function") {
         return {

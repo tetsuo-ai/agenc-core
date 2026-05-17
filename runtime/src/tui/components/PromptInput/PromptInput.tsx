@@ -108,6 +108,7 @@ import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
+import { ModeSwitcher } from '../v2/primitives.js';
 import { ConfiguredPromptTextInput } from './ConfiguredPromptTextInput.js';
 import { detectModeEntry, getModeFromInput, getValueFromInput } from './inputModes.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
@@ -738,9 +739,18 @@ function PromptInput({
   const [showHistoryPicker, setShowHistoryPicker] = useState(false);
   const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
+  const [showModeSwitcher, setShowModeSwitcher] = useState(false);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] = useState<PermissionMode | null>(null);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => () => {
+    if (modeSwitcherTimeoutRef.current) {
+      clearTimeout(modeSwitcherTimeoutRef.current);
+      modeSwitcherTimeoutRef.current = null;
+    }
+  }, []);
 
   // Check if cursor is on the first line of input
   const isCursorOnFirstLine = useMemo(() => {
@@ -1857,6 +1867,14 @@ function PromptInput({
     // Compute the next mode without triggering side effects first
     logForDebugging(`[auto-mode] handleCycleMode: currentMode=${toolPermissionContext.mode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`);
     const nextMode = getNextPermissionMode(toolPermissionContext, teamContext);
+    setShowModeSwitcher(true);
+    if (modeSwitcherTimeoutRef.current) {
+      clearTimeout(modeSwitcherTimeoutRef.current);
+    }
+    modeSwitcherTimeoutRef.current = setTimeout((setVisible, timeoutRef) => {
+      setVisible(false);
+      timeoutRef.current = null;
+    }, FOOTER_TEMPORARY_STATUS_TIMEOUT, setShowModeSwitcher, modeSwitcherTimeoutRef);
 
     // Check if user is entering auto mode for the first time. Gated on the
     // persistent settings flag (hasAutoModeOptIn) rather than the broader
@@ -2492,6 +2510,12 @@ function PromptInput({
         <ThinkingToggle currentValue={thinkingEnabled ?? true} onSelect={handleThinkingSelect} onCancel={handleThinkingCancel} isMidConversation={messages.some(m => m.type === 'assistant')} />
       </Box>;
   }, [showThinkingToggle, thinkingEnabled, handleThinkingSelect, handleThinkingCancel, messages.length]);
+  const modeSwitcherElement = useMemo(() => {
+    if (!showModeSwitcher) return null;
+    return <Box flexDirection="column" marginTop={1}>
+        <ModeSwitcher currentMode={effectiveToolPermissionContext.mode} bypassAvailable={effectiveToolPermissionContext.isBypassPermissionsModeAvailable} autoAvailable={effectiveToolPermissionContext.isAutoModeAvailable} />
+      </Box>;
+  }, [showModeSwitcher, effectiveToolPermissionContext]);
 
   // Portal dialog to DialogOverlay in fullscreen so it escapes the bottom
   // slot's overflowY:hidden clip (same pattern as SuggestionsOverlay).
@@ -2585,7 +2609,7 @@ function PromptInput({
   };
   const getBorderColor = (): keyof Theme => {
     const modeColors: Record<string, keyof Theme> = {
-      bash: 'bashBorder'
+      bash: 'worker'
     };
 
     // Mode colors take priority, then teammate color, then default
@@ -2595,7 +2619,7 @@ function PromptInput({
 
     // In-process teammates run headless - don't apply teammate colors to leader UI
     if (isInProcessTeammate()) {
-      return 'promptBorder';
+      return 'lineSoft';
     }
 
     // Check for teammate color from environment
@@ -2603,10 +2627,10 @@ function PromptInput({
     if (teammateColorName && AGENT_COLORS.includes(teammateColorName as AgentColorName)) {
       return AGENT_COLOR_TO_THEME_COLOR[teammateColorName as AgentColorName];
     }
-    return 'promptBorder';
+    return 'lineSoft';
   };
   if (isExternalEditorActive) {
-    return <Box flexDirection="row" alignItems="center" justifyContent="center" borderColor={getBorderColor()} borderStyle="round" width="100%" paddingX={1}>
+    return <Box flexDirection="row" alignItems="center" justifyContent="center" borderColor={getBorderColor()} borderStyle="single" width="100%" paddingX={1}>
         <Text dimColor italic>
           Save and close editor to continue...
         </Text>
@@ -2638,12 +2662,13 @@ function PromptInput({
             </Box>
           </Box>
           <Text color={swarmBanner.bgColor}>{promptGlyphs.horizontal.repeat(columns)}</Text>
-        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" width="100%" paddingX={1} borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
+        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="single" width="100%" paddingX={1} backgroundColor={mode === 'bash' ? 'workerWash' : undefined} borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
           <PromptInputModeIndicator mode={mode} permissionMode={effectiveToolPermissionContext.mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
             {textInputElement}
           </Box>
         </Box>}
+      {modeSwitcherElement}
       {/* Round-2 M-NEW6: don't hide "? for shortcuts" on the first
           keystroke — the hint is about discovering keybindings, not
           about typing. Suppress it only when an active dropdown (the

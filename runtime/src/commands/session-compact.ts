@@ -4,6 +4,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import React from "react";
 import type { LLMContentPart, LLMMessage, LLMProvider, LLMTool } from "../llm/types.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { CompactionResult, RuntimeMessage } from "../services/compact/types.js";
@@ -80,7 +81,7 @@ function tryAllocateTurnContext(ctx: SlashCommandContext): {
 export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Compact the current conversation",
-  supportedSurfaces: ["runtime"],
+  supportedSurfaces: ["runtime", "daemon-tui"],
   immediate: true,
   supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
@@ -104,7 +105,9 @@ export const compactCommand: SlashCommand = {
 
 export const contextCommand: SlashCommand = {
   name: "context",
+  aliases: ["ctx"],
   description: "Show current context usage",
+  supportedSurfaces: ["runtime", "daemon-tui"],
   immediate: true,
   supportsNonInteractive: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
@@ -118,12 +121,39 @@ export const contextCommand: SlashCommand = {
         ctx: allocated.turnContext,
         args: ctx.argsRaw,
       });
+      if (await openContextUsageModal(ctx, result.text)) {
+        return { kind: "skip" };
+      }
       return {
         kind: "text",
         text: result.text,
       };
     }),
 };
+
+async function openContextUsageModal(
+  ctx: SlashCommandContext,
+  text: string,
+): Promise<boolean> {
+  const setToolJSX = ctx.appState?.setToolJSX;
+  if (typeof setToolJSX !== "function") return false;
+  const { ContextUsageModal } = await import(
+    "../tui/components/v2/ContextUsageModal.js"
+  );
+  const close = () => {
+    setToolJSX({
+      jsx: null,
+      shouldHidePromptInput: false,
+      clearLocalJSX: true,
+    });
+  };
+  setToolJSX({
+    isLocalJSXCommand: true,
+    shouldHidePromptInput: true,
+    jsx: React.createElement(ContextUsageModal, { text, onDone: close }),
+  });
+  return true;
+}
 
 async function ensureNoActiveTurn(ctx: SlashCommandContext): Promise<void> {
   const activeTurn = (ctx.session as unknown as {

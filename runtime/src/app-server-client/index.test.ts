@@ -517,7 +517,7 @@ describe("app-server-client daemon helpers", () => {
       });
       expect(toolJSX).toMatchObject({
         isLocalJSXCommand: true,
-        shouldHidePromptInput: false,
+        shouldHidePromptInput: true,
         jsx: expect.anything(),
       });
       (toolJSX as { jsx: { props: { onExit: () => void } } }).jsx.props.onExit();

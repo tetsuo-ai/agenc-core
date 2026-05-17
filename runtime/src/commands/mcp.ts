@@ -22,6 +22,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openMcpMenu } from "./mcp-menu.js";
 
 export interface McpServerStatus {
   readonly name: string;
@@ -538,12 +539,13 @@ export const mcpCommand: SlashCommand = {
       }
       if (parsed.kind === "status") {
         const servers = await collectMcpServerStatus(ctx.session);
+        const toolsByServer = collectMcpToolStatusByServer(ctx.session, servers);
+        if (openMcpMenu(ctx, servers, toolsByServer)) {
+          return { kind: "skip" };
+        }
         return {
           kind: "text",
-          text: formatMcpServerStatus(
-            servers,
-            collectMcpToolStatusByServer(ctx.session, servers),
-          ),
+          text: formatMcpServerStatus(servers, toolsByServer),
         };
       }
       if (parsed.kind === "tools") {

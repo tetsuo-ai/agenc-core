@@ -97,7 +97,7 @@ function DiffFrame(t0) {
   }
   let t2;
   if ($[3] !== t1) {
-    t2 = <Box flexDirection="column" marginY={1}><Box borderColor="promptBorder" borderStyle="round" flexDirection="column" paddingX={1} backgroundColor="clawd_background">{t1}</Box></Box>;
+    t2 = <Box flexDirection="column" marginY={1}><Box borderColor="promptBorder" borderStyle="single" flexDirection="column" paddingX={1} backgroundColor="clawd_background">{t1}</Box></Box>;
     $[3] = t1;
     $[4] = t2;
   } else {

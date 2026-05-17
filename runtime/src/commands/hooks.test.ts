@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import hooksCommand from "./hooks.js";
 import type { SlashCommandContext } from "./types.js";
@@ -23,7 +23,11 @@ function runtime(): ConfiguredHooksRuntime {
   return r;
 }
 
-function ctx(argsRaw: string, hooksRuntime = runtime()): SlashCommandContext {
+function ctx(
+  argsRaw: string,
+  hooksRuntime = runtime(),
+  appState?: SlashCommandContext["appState"],
+): SlashCommandContext {
   return {
     session: {
       services: { hooksRuntime },
@@ -32,6 +36,7 @@ function ctx(argsRaw: string, hooksRuntime = runtime()): SlashCommandContext {
     cwd: process.cwd(),
     home: "/tmp",
     agencHome: "/tmp/agenc-test",
+    ...(appState ? { appState } : {}),
   };
 }
 
@@ -44,6 +49,19 @@ describe("/hooks command", () => {
       expect(result.text).toContain("PreToolUse");
       expect(result.text).toContain("printf ok");
     }
+  });
+
+  it("opens the local hooks menu in the TUI", async () => {
+    const setToolJSX = vi.fn();
+    const result = await hooksCommand.execute(
+      ctx("", runtime(), { setToolJSX }),
+    );
+    expect(result.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 
   it("shows one configured hook", async () => {

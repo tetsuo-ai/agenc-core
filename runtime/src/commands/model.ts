@@ -36,6 +36,11 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import {
+  modelMenuFallback,
+  openModelMenu,
+  readModelMenuSnapshot,
+} from "./model-menu.js";
 
 export interface HistoryCompatResult {
   readonly compatible: boolean;
@@ -184,20 +189,39 @@ export async function applyModelSwitch(
   return `Model switched to "${targetModel}" (was "${currentModel}").`;
 }
 
+function modelSwitchApplied(summary: string): boolean {
+  return (
+    summary.startsWith("Model switched ") ||
+    summary.startsWith("Model switch staged:")
+  );
+}
+
 export const modelCommand: SlashCommand = {
   name: "model",
   description: "Switch the model for subsequent turns",
-  supportedSurfaces: ["runtime"],
+  supportedSurfaces: ["runtime", "daemon-tui"],
   userInvocable: true,
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const target = ctx.argsRaw.trim();
       if (target.length === 0) {
-        return {
-          kind: "error",
-          message: "Usage: /model <model-name>",
-        };
+        const snapshot = readModelMenuSnapshot(ctx);
+        if (
+          openModelMenu(ctx, snapshot, async model => {
+            const summary = await applyModelSwitch(ctx.session, model);
+            if (modelSwitchApplied(summary)) {
+              ctx.appState?.setModel?.(model);
+            }
+            return {
+              message: summary,
+              shouldClose: modelSwitchApplied(summary),
+            };
+          })
+        ) {
+          return { kind: "skip" };
+        }
+        return { kind: "text", text: modelMenuFallback(snapshot) };
       }
       const summary = await applyModelSwitch(ctx.session, target);
       // Mirror AgenC's `setAppState({ ...prev, mainLoopModel: model })`
@@ -206,7 +230,9 @@ export const modelCommand: SlashCommand = {
       // the next render rather than waiting for `consumePendingProviderSwitch`
       // on the next user turn. Cosmetic-only; the authoritative state still
       // converges through the turn loop.
-      ctx.appState?.setModel?.(target);
+      if (modelSwitchApplied(summary)) {
+        ctx.appState?.setModel?.(target);
+      }
       return { kind: "text", text: summary };
     }),
 };

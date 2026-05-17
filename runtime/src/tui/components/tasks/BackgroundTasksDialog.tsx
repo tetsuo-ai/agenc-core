@@ -10,9 +10,12 @@ import {
   type TaskState,
 } from "../../../tasks/types.js";
 import { formatNumber, truncateToWidth } from "../../../utils/format.js";
-import { Box, Text, useInput } from "../../ink.js";
+import { Box, useInput } from "../../ink.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useAppState, useSetAppState, type AppState } from "../../state/AppState.js";
+import ThemedBox from "../design-system/ThemedBox.js";
+import ThemedText from "../design-system/ThemedText.js";
+import { KeyHint } from "../v2/primitives.js";
 
 type Props = {
   onDone?: () => void;
@@ -33,7 +36,7 @@ function taskTitle(task: TaskState): string {
   return task.description || task.id;
 }
 
-function taskStatusColor(status: string): string | undefined {
+function taskStatusColor(status: string): "success" | "error" | "agenc" | "inactive" | "subtle" {
   switch (status) {
     case "completed":
       return "success";
@@ -42,9 +45,52 @@ function taskStatusColor(status: string): string | undefined {
       return "error";
     case "running":
     case "pending":
-      return "background";
+      return "agenc";
     default:
-      return undefined;
+      return "subtle";
+  }
+}
+
+function taskKindIcon(task: TaskState): string {
+  switch (task.type) {
+    case "remote_agent":
+      return "◆";
+    case "in_process_teammate":
+      return "∙";
+    case "local_bash":
+      return "$";
+    case "local_agent":
+      return "◇";
+    default:
+      return "·";
+  }
+}
+
+function taskKindLabel(task: TaskState): string {
+  switch (task.type) {
+    case "remote_agent":
+      return "remote";
+    case "in_process_teammate":
+      return "teammate";
+    case "local_bash":
+      return "bash";
+    case "local_agent":
+      return "local";
+    default:
+      return "task";
+  }
+}
+
+function taskKindColor(task: TaskState): "worker" | "agenc" | "text2" | "subtle" {
+  switch (task.type) {
+    case "remote_agent":
+      return "worker";
+    case "in_process_teammate":
+      return "agenc";
+    case "local_bash":
+      return "text2";
+    default:
+      return "subtle";
   }
 }
 
@@ -230,60 +276,108 @@ export function BackgroundTasksDialog({
     }
   });
 
+  const runningCount = sorted.filter(
+    task => task.status === "running" || task.status === "pending",
+  ).length;
+  const finishedCount = sorted.length - runningCount;
+  const summary = `${runningCount} running · ${finishedCount} finished`;
+
   return (
-    <Box flexDirection="column" width="100%" marginTop={1}>
-      <Text bold={true}>Background tasks</Text>
+    <ThemedBox
+      flexDirection="column"
+      width="100%"
+      marginTop={1}
+      borderStyle="single"
+      borderColor="agenc"
+      backgroundColor="clawd_background"
+      overflow="hidden"
+    >
+      <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="agenc" gap={2}>
+        <ThemedText color="agenc">BACKGROUND TASKS</ThemedText>
+        <ThemedText color="text2">{summary}</ThemedText>
+        <Box flexGrow={1} />
+        <ThemedText color="inactive" wrap="truncate-end">↑↓ select · ⏎ open · x stop</ThemedText>
+      </ThemedBox>
       {sorted.length === 0 ? (
-        <Text dimColor={true}>No background tasks</Text>
+        <Box paddingX={1} paddingY={1}>
+          <ThemedText color="subtle">No background tasks</ThemedText>
+        </Box>
       ) : showDetail && selectedTask ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color={taskStatusColor(selectedTask.status)} bold={true}>
+        <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
+          <ThemedText color={taskStatusColor(selectedTask.status)} bold={true}>
             Task details
-          </Text>
-          <Text>
+          </ThemedText>
+          <ThemedText color="text2" wrap="truncate-end">
             {truncateToWidth(`${selectedTask.status} · ${selectedTask.type} · ${taskTitle(selectedTask)}`, taskTextWidth)}
-          </Text>
-          <Text dimColor={true}>{truncateToWidth(`id: ${selectedTask.id}`, taskTextWidth)}</Text>
+          </ThemedText>
+          <ThemedText color="inactive">{truncateToWidth(`id: ${selectedTask.id}`, taskTextWidth)}</ThemedText>
           {selectedTaskDetail ? (
-            <Text dimColor={true}>{truncateToWidth(selectedTaskDetail, taskTextWidth)}</Text>
+            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(selectedTaskDetail, taskTextWidth)}</ThemedText>
           ) : null}
           {"command" in selectedTask && selectedTask.command ? (
-            <Text dimColor={true}>{truncateToWidth(`command: ${selectedTask.command}`, taskTextWidth)}</Text>
+            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`command: ${selectedTask.command}`, taskTextWidth)}</ThemedText>
           ) : null}
           {"prompt" in selectedTask && selectedTask.prompt ? (
-            <Text dimColor={true}>{truncateToWidth(`prompt: ${selectedTask.prompt}`, taskTextWidth)}</Text>
+            <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`prompt: ${selectedTask.prompt}`, taskTextWidth)}</ThemedText>
           ) : null}
-          <Text dimColor={true}>{truncateToWidth(`view output: ${selectedTask.outputFile}`, taskTextWidth)}</Text>
-          <Box marginTop={1}>
-            <Text dimColor={true}>
-              {truncateToWidth(`←/b back · ↑/↓ select · ${taskActionLabel(selectedTask) === "Stop" ? "x stop · " : ""}Esc/q closes`, taskTextWidth)}
-            </Text>
+          <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(`view output: ${selectedTask.outputFile}`, taskTextWidth)}</ThemedText>
+          <Box flexDirection="row" gap={2} flexWrap="wrap">
+            <KeyHint k="←/b" label="back" />
+            <KeyHint k="↑↓" label="select" />
+            {taskActionLabel(selectedTask) === "Stop" ? <KeyHint k="x" label="stop" /> : null}
+            <KeyHint k="esc" label="close" />
           </Box>
           {taskActionLabel(selectedTask) === "Stop unavailable" ? (
-            <Text dimColor={true}>Remote task stop is not available from this session.</Text>
+            <ThemedText color="inactive">Remote task stop is not available from this session.</ThemedText>
           ) : null}
         </Box>
       ) : (
-        sorted.map((task) => {
-          const selected = selectedTaskId === task.id;
-          const detail = taskDetail(task);
-          const color = taskStatusColor(task.status);
-          return (
-            <Box key={task.id} flexDirection="column" marginTop={1}>
-              <Text color={selected ? "suggestion" : color} bold={selected}>
-                {truncateToWidth(`${selected ? "› " : "  "}${task.status} · ${task.type} · ${taskTitle(task)}`, taskTextWidth)}
-              </Text>
-              <Text dimColor={true}>{truncateToWidth(`  id: ${task.id}`, taskTextWidth)}</Text>
-              {detail ? <Text dimColor={true}>{truncateToWidth(`  ${detail}`, indentedTaskTextWidth)}</Text> : null}
-            </Box>
-          );
-        })
+        <Box flexDirection="column">
+          {sorted.map((task) => {
+            const selected = selectedTaskId === task.id;
+            const detail = taskDetail(task);
+            const color = taskStatusColor(task.status);
+            return (
+              <ThemedBox
+                key={task.id}
+                flexDirection="column"
+                backgroundColor={selected ? "agencWash" : undefined}
+                paddingX={1}
+                paddingY={1}
+                borderLeft={selected}
+                borderLeftColor={selected ? "agenc" : undefined}
+              >
+                <Box flexDirection="row" gap={1}>
+                  <ThemedText color={taskKindColor(task)}>{taskKindIcon(task)}</ThemedText>
+                  <ThemedText color={taskKindColor(task)}>{taskKindLabel(task)}</ThemedText>
+                  <ThemedText color={selected ? "agenc" : color} bold={selected} wrap="truncate-end">
+                    {truncateToWidth(`${task.status} · ${task.type} · ${taskTitle(task)}`, taskTextWidth)}
+                  </ThemedText>
+                </Box>
+                <Box flexDirection="row" paddingLeft={2} gap={1}>
+                  <ThemedText color="muted3">⎿</ThemedText>
+                  <ThemedText color="inactive" wrap="truncate-end">{truncateToWidth(`id: ${task.id}`, indentedTaskTextWidth)}</ThemedText>
+                </Box>
+                {detail ? (
+                  <Box flexDirection="row" paddingLeft={2} gap={1}>
+                    <ThemedText color="muted3">⎿</ThemedText>
+                    <ThemedText color="subtle" wrap="truncate-end">{truncateToWidth(detail, indentedTaskTextWidth)}</ThemedText>
+                  </Box>
+                ) : null}
+              </ThemedBox>
+            );
+          })}
+        </Box>
       )}
-      <Box marginTop={1}>
-        <Text dimColor={true}>
+      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2}>
+        <KeyHint k="⏎" label="open" />
+        <KeyHint k="x" label="stop" />
+        <KeyHint k="esc" label="dismiss" />
+        <Box flexGrow={1} />
+        <ThemedText color="inactive" wrap="truncate-end">
           {truncateToWidth(sorted.length === 0 ? "Esc/q closes" : "↑/↓ select · Enter opens details · x stops · Esc/q closes", taskTextWidth)}
-        </Text>
-      </Box>
-    </Box>
+        </ThemedText>
+      </ThemedBox>
+    </ThemedBox>
   );
 }

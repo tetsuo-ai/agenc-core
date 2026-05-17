@@ -20,6 +20,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openSkillsMenu } from "./skills-menu.js";
 
 export interface SkillsSnapshot {
   readonly invokedSkills: ReadonlyArray<string>;
@@ -388,6 +389,13 @@ export const skillsCommand: SlashCommand = {
         return { kind: "text", text: result.text };
       }
       const snapshot = await collectSkillsSnapshot(ctx.session, ctx.appState);
+      if (
+        parsed.query === undefined &&
+        parsed.showAll === false &&
+        openSkillsMenu(ctx, snapshot)
+      ) {
+        return { kind: "skip" };
+      }
       return {
         kind: "text",
         text: formatSkillsSnapshot(snapshot, parsed),

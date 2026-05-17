@@ -75,7 +75,7 @@ const HELP_CATEGORIES: readonly HelpCategory[] = [
   },
   {
     title: "Context & Files",
-    commands: ["diff"],
+    commands: ["context", "diff"],
   },
 ];
 

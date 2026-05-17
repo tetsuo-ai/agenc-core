@@ -303,8 +303,8 @@ export function PromptInputFooterSuggestions({
       justifyContent={overlay ? undefined : 'flex-end'}
       width={width}
       marginX={1}
-      borderStyle="round"
-      borderColor="promptBorder"
+      borderStyle="single"
+      borderColor="agenc"
       paddingX={1}
       backgroundColor="surfaceBackground"
     >
@@ -321,7 +321,7 @@ export function PromptInputFooterSuggestions({
         opaque={true}
         backgroundColor="surfaceBackground"
       >
-        <Text color="promptBorder">{commandHintRow.left}</Text>
+        <Text color="agenc">{commandHintRow.left}</Text>
         <Text color="inactive">
           {commandHintRow.gap}
           {commandHintRow.right}

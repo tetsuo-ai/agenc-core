@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   listResumableSessions,
   parseResumeArgs,
@@ -158,5 +158,32 @@ describe("resumeCommand helpers", () => {
       expect(res.text).not.toMatch(/ a  —/);
       expect(res.text).toMatch(/agenc --resume <sessionId>/);
     }
+  });
+
+  it("resumeCommand opens the local session menu in the TUI", async () => {
+    const projectDir = getProjectDir(workHome);
+    const realSlug = projectDir.split("/").pop()!;
+    writeRollout(
+      realSlug,
+      "sess-menu",
+      "2026-03-01T10-00-00-000Z",
+      [{ role: "user", content: "menu session" }],
+      1_800_000_000,
+    );
+    const setToolJSX = vi.fn();
+    const res = await resumeCommand.execute({
+      session: {} as never,
+      argsRaw: "",
+      cwd: workHome,
+      home: workHome,
+      appState: { setToolJSX },
+    });
+
+    expect(res.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 });

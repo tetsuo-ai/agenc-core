@@ -63,16 +63,16 @@ describe('spinner primitives', () => {
     expect(getSpinnerEllipsis(env)).toBe('...')
   })
 
-  test('computes shimmer positions from render-time hook state', async () => {
+  test('keeps shimmer disabled for the v2 terminal visual contract', async () => {
     expect(await renderToString(
       <ShimmerProbe mode="requesting" message="working" isStalled={false} />,
       80,
-    )).toContain('-10')
+    )).toContain('-100')
 
     expect(await renderToString(
       <ShimmerProbe mode="responding" message="go" isStalled={false} />,
       80,
-    )).toContain('12')
+    )).toContain('-100')
 
     expect(await renderToString(
       <ShimmerProbe mode="thinking" message="working" isStalled />,

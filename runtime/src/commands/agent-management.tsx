@@ -13,6 +13,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import { openAgentsMenu } from "./agents-menu.js";
 
 export const agentsCommand: SlashCommand = {
   name: "agents",
@@ -20,36 +21,12 @@ export const agentsCommand: SlashCommand = {
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const setToolJSX = ctx.appState?.setToolJSX;
-      if (typeof setToolJSX !== "function") {
+      if (!openAgentsMenu(ctx)) {
         return {
           kind: "error",
           message: "/agents requires the interactive TUI.",
         };
       }
-
-      const { AgentsMenu } = await import(
-        "../tui/components/agents/AgentsMenu.js"
-      );
-      const tools = Array.isArray(ctx.appState?.tools)
-        ? ctx.appState.tools
-        : [];
-      setToolJSX({
-        isLocalJSXCommand: true,
-        shouldHidePromptInput: true,
-        jsx: (
-          <AgentsMenu
-            tools={tools as never}
-            onExit={() => {
-              setToolJSX({
-                jsx: null,
-                shouldHidePromptInput: false,
-                clearLocalJSX: true,
-              });
-            }}
-          />
-        ),
-      });
       return { kind: "skip" };
     }),
 };

@@ -46,7 +46,7 @@ export function PlanApprovalRequestDisplay(t0) {
   }
   let t4;
   if ($[6] !== t1 || $[7] !== t2 || $[8] !== t3) {
-    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor="planMode" flexDirection="column" paddingX={1}>{t1}{t2}{t3}</Box></Box>;
+    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="single" borderColor="planMode" flexDirection="column" paddingX={1}>{t1}{t2}{t3}</Box></Box>;
     $[6] = t1;
     $[7] = t2;
     $[8] = t3;
@@ -100,7 +100,7 @@ export function PlanApprovalResponseDisplay(t0) {
     }
     let t3;
     if ($[3] !== t1) {
-      t3 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor="success" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}</Box></Box>;
+      t3 = <Box flexDirection="column" marginY={1}><Box borderStyle="single" borderColor="success" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}</Box></Box>;
       $[3] = t1;
       $[4] = t3;
     } else {
@@ -134,7 +134,7 @@ export function PlanApprovalResponseDisplay(t0) {
   }
   let t4;
   if ($[10] !== t1 || $[11] !== t2) {
-    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor="error" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
+    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="single" borderColor="error" flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
     $[10] = t1;
     $[11] = t2;
     $[12] = t4;

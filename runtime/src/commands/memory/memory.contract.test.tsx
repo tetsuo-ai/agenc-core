@@ -78,14 +78,12 @@ describe("memory command contract", () => {
     );
     expect(registry).toContain('from "./memory/slash.js"');
 
-    // The /memory surface is wired through registry.ts's legacy command
-    // surfaces list (the upstream LOCAL_JSX_COMMAND_OVERRIDES code path
-    // was removed in the legacy-surfaces refactor in commit 3547fde7).
-    // The module is still loadable via tuiModulePath: "./commands/memory/index.js".
-    const memoryRegistryEntry = registry.match(
-      /name:\s*"memory"[^}]*tuiModulePath:\s*"\.\/commands\/memory\/index\.js"/,
+    const memorySlash = readFileSync(
+      resolve(root, "runtime/src/commands/memory/slash.ts"),
+      "utf8",
     );
-    expect(memoryRegistryEntry).not.toBeNull();
+    expect(memorySlash).toContain('await import("./memory.js")');
+    expect(memorySlash).toContain("setToolJSX");
 
     const memoryIndex = readFileSync(
       resolve(root, "runtime/src/commands/memory/index.ts"),
@@ -111,31 +109,45 @@ describe("memory command contract", () => {
     expect(memorySlashCommand.immediate).toBe(true);
   });
 
-  it("clears and primes memory caches before rendering the JSX command body", async () => {
+  it("opens the interactive memory selector from the runtime slash registry in the TUI", async () => {
     const clearMemoryFileCaches = vi.fn();
     const getMemoryFiles = vi.fn().mockResolvedValue([]);
-    const clearMemoryFileSelectorCache = vi.fn();
-    const primeMemoryFileSelectorCache = vi.fn(promise => promise);
     mockMemoryCommandRuntime();
     vi.doMock("../../memory/index.js", () => ({
       clearMemoryFileCaches,
       getMemoryFiles,
     }));
-    vi.doMock("../../tui/components/memory/MemoryFileSelector.js", () => ({
-      clearMemoryFileSelectorCache,
-      MemoryFileSelector: () => React.createElement("memory-file-selector"),
-      primeMemoryFileSelectorCache,
+    const setToolJSX = vi.fn();
+
+    const outcome = await memorySlashCommand.execute({
+      ...fakeContext(),
+      appState: { setToolJSX },
+    });
+
+    expect(outcome).toEqual({ kind: "skip" });
+    expect(clearMemoryFileCaches).toHaveBeenCalledTimes(1);
+    expect(getMemoryFiles).toHaveBeenCalledTimes(1);
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
+  });
+
+  it("clears memory caches and loads files before rendering the v2 JSX command body", async () => {
+    const clearMemoryFileCaches = vi.fn();
+    const getMemoryFiles = vi.fn().mockResolvedValue([]);
+    mockMemoryCommandRuntime();
+    vi.doMock("../../memory/index.js", () => ({
+      clearMemoryFileCaches,
+      getMemoryFiles,
     }));
 
     const { call } = await import("./memory.js");
     const node = await call(vi.fn(), {} as never, "");
 
     expect(clearMemoryFileCaches).toHaveBeenCalledTimes(1);
-    expect(clearMemoryFileSelectorCache).toHaveBeenCalledTimes(1);
     expect(getMemoryFiles).toHaveBeenCalledTimes(1);
-    expect(primeMemoryFileSelectorCache).toHaveBeenCalledWith(
-      getMemoryFiles.mock.results[0]?.value,
-    );
     expect(clearMemoryFileCaches.mock.invocationCallOrder[0]).toBeLessThan(
       getMemoryFiles.mock.invocationCallOrder[0],
     );

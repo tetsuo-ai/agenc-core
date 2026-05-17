@@ -4,7 +4,7 @@ import modelCommand, {
   checkModelHistoryCompat,
 } from "./model.js";
 import type { Session } from "../session/session.js";
-import type { SlashCommandContext } from "./types.js";
+import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
 
 interface StubSessionOpts {
   provider?: string;
@@ -55,8 +55,18 @@ function stubSession(opts: StubSessionOpts = {}): Session {
   return s as unknown as Session;
 }
 
-function mkctx(session: Session, argsRaw = ""): SlashCommandContext {
-  return { session, argsRaw, cwd: "/ws", home: "/home/test" };
+function mkctx(
+  session: Session,
+  argsRaw = "",
+  appState?: SlashCommandAppStateBridge,
+): SlashCommandContext {
+  return {
+    session,
+    argsRaw,
+    cwd: "/ws",
+    home: "/home/test",
+    ...(appState ? { appState } : {}),
+  };
 }
 
 describe("checkModelHistoryCompat", () => {
@@ -129,13 +139,32 @@ describe("modelCommand", () => {
     expect(modelCommand.name).toBe("model");
   });
 
-  it("returns a usage error when args are empty", async () => {
+  it("returns a model list when args are empty outside the TUI", async () => {
     const session = stubSession();
     const res = await modelCommand.execute(mkctx(session, ""));
-    expect(res.kind).toBe("error");
-    if (res.kind === "error") {
-      expect(res.message).toMatch(/Usage: \/model/);
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toContain("Model selection");
+      expect(res.text).toContain("Provider: grok");
+      expect(res.text).toContain("grok-4");
     }
+  });
+
+  it("opens the local model menu when args are empty in the TUI", async () => {
+    const session = stubSession();
+    const setToolJSX = vi.fn();
+    const res = await modelCommand.execute(
+      mkctx(session, "", {
+        getAppState: () => ({ mainLoopModel: "grok-4" }),
+        setToolJSX,
+      }),
+    );
+    expect(res.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 
   it("applies the switch immediately when no turn is active", async () => {
@@ -208,6 +237,30 @@ describe("modelCommand", () => {
     expect(pending).toBeNull();
   });
 
+  it("does not update TUI model chrome when compatibility blocks the switch", async () => {
+    const session = stubSession({
+      provider: "openrouter",
+      model: "gpt-5",
+      history: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "look at this" },
+            { type: "image_url", image_url: { url: "file:///tmp/image.png" } },
+          ],
+        },
+      ],
+    });
+    const setModel = vi.fn();
+
+    const res = await modelCommand.execute(
+      mkctx(session, "openai/gpt-4.1", { setModel }),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
   it("applyModelSwitch does not invoke abortTerminal when no turn is active", async () => {
     const abortTerminal = vi.fn();
     const session = stubSession({ abortTerminal });
@@ -217,7 +270,7 @@ describe("modelCommand", () => {
 
   it("whitespace-only args are treated as empty", async () => {
     const res = await modelCommand.execute(mkctx(stubSession(), "   "));
-    expect(res.kind).toBe("error");
+    expect(res.kind).toBe("text");
   });
 
   it("does not mention provider-specific brands in output strings", async () => {

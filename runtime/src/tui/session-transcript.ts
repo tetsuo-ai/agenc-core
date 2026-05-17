@@ -406,6 +406,44 @@ export function makeCollabAgentMessage(
   };
 }
 
+type ProtocolTranscriptKind = "claim" | "settle" | "slash" | "stake";
+
+type ProtocolBadgeVariant = "worker" | "success" | "error";
+
+interface ProtocolTranscriptMessageOptions {
+  readonly kind: ProtocolTranscriptKind;
+  readonly title: string;
+  readonly content: string;
+  readonly details: readonly string[];
+  readonly badgeVariant: ProtocolBadgeVariant;
+  readonly facts: readonly { readonly label: string; readonly value: string }[];
+}
+
+function makeProtocolEventMessage({
+  kind,
+  title,
+  content,
+  details,
+  badgeVariant,
+  facts,
+}: ProtocolTranscriptMessageOptions): any {
+  return {
+    ...makeSystemMessage(content, badgeVariant === "error" ? "error" : "info"),
+    subtype: "protocol_event",
+    protocolKind: kind,
+    title,
+    details,
+    badgeVariant,
+    facts,
+    state:
+      badgeVariant === "success"
+        ? "success"
+        : badgeVariant === "error"
+          ? "error"
+          : "info",
+  };
+}
+
 function eventKey(event: SessionTranscriptEvent): string {
   if ("seq" in event && typeof event.seq === "number") return `seq:${event.seq}`;
   if ("id" in event && typeof event.id === "string") return `id:${event.id}`;
@@ -607,6 +645,147 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value
     : undefined;
+}
+
+function formatLamports(value: unknown): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const sol = value / 1_000_000_000;
+  const formatted = sol >= 10
+    ? sol.toFixed(2)
+    : sol >= 1
+      ? sol.toFixed(3)
+      : sol.toFixed(6);
+  return `${formatted.replace(/\.?0+$/u, "")} ◎`;
+}
+
+function protocolFact(label: string, value: unknown): { readonly label: string; readonly value: string } | null {
+  if (value === undefined || value === null) return null;
+  const text = typeof value === "string" ? value : String(value);
+  return text.trim().length > 0 ? { label, value: text } : null;
+}
+
+function protocolPayloadFacts(
+  payload: Record<string, unknown>,
+): readonly { readonly label: string; readonly value: string }[] {
+  if (!Array.isArray(payload.facts)) return [];
+  return payload.facts.flatMap((fact) => {
+    if (!fact || typeof fact !== "object") return [];
+    const record = fact as Record<string, unknown>;
+    const label = nonEmptyString(record.label);
+    if (!label) return [];
+    const value = record.value;
+    if (
+      typeof value !== "string" &&
+      typeof value !== "number" &&
+      typeof value !== "boolean"
+    ) {
+      return [];
+    }
+    return [{ label, value: String(value) }];
+  });
+}
+
+function formatProtocolEvent(
+  type: string,
+  payload: Record<string, unknown>,
+): ProtocolTranscriptMessageOptions | null {
+  const taskPda = nonEmptyString(payload.taskPda);
+  const signature = nonEmptyString(payload.signature);
+  const message = nonEmptyString(payload.message);
+  const baseFacts = protocolPayloadFacts(payload);
+
+  if (type === "protocol_claim") {
+    const escrow = formatLamports(payload.escrowLamports);
+    const stake = formatLamports(payload.stakeLamports);
+    const facts = [
+      protocolFact("task", taskPda),
+      protocolFact("claimant", payload.claimant),
+      protocolFact("escrow", escrow),
+      protocolFact("stake", stake),
+      protocolFact("deadline", payload.deadline),
+      protocolFact("tx", signature),
+      ...baseFacts,
+    ].filter((fact): fact is { readonly label: string; readonly value: string } => fact !== null);
+    const content = message ?? `Task ${taskPda ?? "unknown"} claimed${escrow ? ` · escrow ${escrow}` : ""}.`;
+    return {
+      kind: "claim",
+      title: "protocol · claim",
+      content,
+      details: facts.map((fact) => `${fact.label}: ${fact.value}`),
+      badgeVariant: "worker",
+      facts,
+    };
+  }
+
+  if (type === "protocol_settle") {
+    const escrow = formatLamports(payload.escrowLamports);
+    const bonus = formatLamports(payload.bonusLamports);
+    const facts = [
+      protocolFact("task", taskPda),
+      protocolFact("recipient", payload.recipient),
+      protocolFact("escrow", escrow),
+      protocolFact("bonus", bonus),
+      protocolFact("rep", payload.reputationDelta),
+      protocolFact("tx", signature),
+      ...baseFacts,
+    ].filter((fact): fact is { readonly label: string; readonly value: string } => fact !== null);
+    const content = message ?? `Task ${taskPda ?? "unknown"} settled${escrow ? ` · escrow ${escrow} released` : ""}.`;
+    return {
+      kind: "settle",
+      title: "protocol · settle",
+      content,
+      details: facts.map((fact) => `${fact.label}: ${fact.value}`),
+      badgeVariant: "success",
+      facts,
+    };
+  }
+
+  if (type === "protocol_slash") {
+    const stakeDelta = formatLamports(payload.stakeDeltaLamports);
+    const facts = [
+      protocolFact("task", taskPda),
+      protocolFact("agent", payload.slashedAgent),
+      protocolFact("stake delta", stakeDelta),
+      protocolFact("rep", payload.reputationDelta),
+      protocolFact("tx", signature),
+      ...baseFacts,
+    ].filter((fact): fact is { readonly label: string; readonly value: string } => fact !== null);
+    const reason = nonEmptyString(payload.reason) ?? "protocol slashing event";
+    const content = message ?? reason;
+    return {
+      kind: "slash",
+      title: "protocol · slash",
+      content,
+      details: [`reason: ${reason}`, ...facts.map((fact) => `${fact.label}: ${fact.value}`)],
+      badgeVariant: "error",
+      facts,
+    };
+  }
+
+  if (type === "protocol_stake") {
+    const stake = formatLamports(payload.stakeLamports);
+    const stakeDelta = formatLamports(payload.stakeDeltaLamports);
+    const facts = [
+      protocolFact("wallet", payload.wallet),
+      protocolFact("task", taskPda),
+      protocolFact("stake", stake),
+      protocolFact("stake delta", stakeDelta),
+      protocolFact("rep", payload.reputationDelta),
+      protocolFact("tx", signature),
+      ...baseFacts,
+    ].filter((fact): fact is { readonly label: string; readonly value: string } => fact !== null);
+    const content = message ?? `Stake updated${stakeDelta ? ` · ${stakeDelta}` : ""}.`;
+    return {
+      kind: "stake",
+      title: "protocol · stake",
+      content,
+      details: facts.map((fact) => `${fact.label}: ${fact.value}`),
+      badgeVariant: "worker",
+      facts,
+    };
+  }
+
+  return null;
 }
 
 function nonNegativeInteger(value: unknown): number {
@@ -1855,6 +2034,17 @@ export function adaptTranscriptEvents(
       case "token_count":
         out.push(makeSystemMessage(formatTokenCountUpdate(payload), "info"));
         break;
+      case "protocol_claim":
+      case "protocol_settle":
+      case "protocol_slash":
+      case "protocol_stake": {
+        flushStreamingText();
+        const message = formatProtocolEvent(event.type, payload);
+        if (message !== null) {
+          out.push(makeProtocolEventMessage(message));
+        }
+        break;
+      }
       case "warning": {
         // Allow-list of warning causes that surface to the user's
         // transcript. Every other cause stays in the daemon log and

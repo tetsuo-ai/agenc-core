@@ -42,7 +42,7 @@ export function TaskAssignmentDisplay(t0) {
   }
   let t4;
   if ($[7] !== t1 || $[8] !== t2 || $[9] !== t3) {
-    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="round" borderColor={AGENT_MESSAGE_THEME_COLOR} flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
+    t4 = <Box flexDirection="column" marginY={1}><Box borderStyle="single" borderColor={AGENT_MESSAGE_THEME_COLOR} flexDirection="column" paddingX={1} paddingY={1}>{t1}{t2}{t3}</Box></Box>;
     $[7] = t1;
     $[8] = t2;
     $[9] = t3;
