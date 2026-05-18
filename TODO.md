@@ -176,7 +176,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-005 - Finish `/context`, `/ctx`, and `/compact` v2 context surfaces
+### [x] TUI-TODO-005 - Finish `/context`, `/ctx`, and `/compact` v2 context surfaces
 
 Files to inspect:
 

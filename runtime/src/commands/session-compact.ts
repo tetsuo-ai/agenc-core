@@ -40,6 +40,7 @@ import {
   assembleTieredInstructions,
   loadTieredInstructions,
 } from "../prompts/agenc-md.js";
+import { openCompactStatusModal } from "./compact-menu.js";
 
 /**
  * Both /compact and /context allocate a fresh TurnContext via the
@@ -89,6 +90,18 @@ export const compactCommand: SlashCommand = {
       await ensureNoActiveTurn(ctx);
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
+        const contextText = await buildFallbackContextUsageText(
+          ctx,
+          allocated.message,
+        );
+        if (
+          openCompactStatusModal(ctx, {
+            message: allocated.message,
+            contextText,
+          })
+        ) {
+          return { kind: "skip" };
+        }
         return { kind: "error", message: allocated.message };
       }
       const result = await runManualCompact({
@@ -114,7 +127,11 @@ export const contextCommand: SlashCommand = {
     safeExecute(async () => {
       const allocated = tryAllocateTurnContext(ctx);
       if (!allocated.ok) {
-        return { kind: "error", message: allocated.message };
+        const text = await buildFallbackContextUsageText(ctx, allocated.message);
+        if (await openContextUsageModal(ctx, text)) {
+          return { kind: "skip" };
+        }
+        return { kind: "text", text };
       }
       const result = await runContextUsage({
         session: ctx.session,
@@ -153,6 +170,138 @@ async function openContextUsageModal(
     jsx: React.createElement(ContextUsageModal, { text, onDone: close }),
   });
   return true;
+}
+
+export async function buildFallbackContextUsageText(
+  ctx: SlashCommandContext,
+  reason: string,
+): Promise<string> {
+  const snapshot = await readDaemonTokenSnapshot(ctx);
+  const sessionTokenUsage = readSessionTokenUsage(ctx.session, snapshot);
+  const tools = readFallbackTools(ctx.session);
+  const messages = readFallbackMessages(ctx.session);
+  const config = ctx.configStore?.current() ?? ctx.session.services.configStore?.current?.();
+  const model = readFallbackModel(ctx, config);
+  const contextWindowTokens = readFallbackContextWindow(config);
+  const estimated = computeContextUsageBreakdown({
+    messages,
+    tools,
+    ...(model !== undefined ? { model } : {}),
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+    ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
+  });
+  const totalFromEvents = snapshot?.tokenUsage?.totalTokens;
+  const breakdown =
+    typeof totalFromEvents === "number" && Number.isFinite(totalFromEvents)
+      ? {
+          ...estimated,
+          messagesTokens: Math.max(0, totalFromEvents - estimated.toolsTokens),
+          totalUsed: totalFromEvents,
+          freeUntilCompact: Math.max(0, estimated.compactionThreshold - totalFromEvents),
+          freeUntilHardLimit: Math.max(0, estimated.hardLimit - totalFromEvents),
+        }
+      : estimated;
+  return [
+    formatContextUsageReport(breakdown),
+    `  • estimate: ${reason}`,
+  ].join("\n");
+}
+
+async function readDaemonTokenSnapshot(
+  ctx: SlashCommandContext,
+): Promise<{ readonly tokenUsage?: {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly totalTokens?: number;
+  readonly costUsd?: number;
+} } | null> {
+  const getDaemonSnapshot = (
+    ctx.session as unknown as {
+      getDaemonSessionSnapshot?: () => Promise<{
+        readonly tokenUsage?: {
+          readonly inputTokens?: number;
+          readonly outputTokens?: number;
+          readonly totalTokens?: number;
+          readonly costUsd?: number;
+        };
+      }>;
+    }
+  ).getDaemonSessionSnapshot;
+  if (typeof getDaemonSnapshot !== "function") return null;
+  try {
+    return await getDaemonSnapshot();
+  } catch {
+    return null;
+  }
+}
+
+function readSessionTokenUsage(
+  session: Session,
+  snapshot: Awaited<ReturnType<typeof readDaemonTokenSnapshot>>,
+): ContextUsageInputs["sessionTokenUsage"] | undefined {
+  if (snapshot?.tokenUsage?.totalTokens !== undefined) {
+    return {
+      promptTokens: snapshot.tokenUsage.inputTokens ?? snapshot.tokenUsage.totalTokens,
+      cachedInputTokens: 0,
+    };
+  }
+  const unsafePeek = (session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const state = typeof unsafePeek === "function"
+    ? unsafePeek.call((session as unknown as { state?: unknown }).state)
+    : null;
+  const usage = state && typeof state === "object"
+    ? (state as { totalTokenUsage?: ContextUsageInputs["sessionTokenUsage"] }).totalTokenUsage
+    : undefined;
+  return usage;
+}
+
+function readFallbackTools(session: Session): readonly LLMTool[] {
+  try {
+    return session.services.registry?.toLLMTools?.() ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function readFallbackMessages(session: Session): RuntimeMessage[] {
+  try {
+    const snapshotHistoryMessages = (session as unknown as {
+      snapshotHistoryMessages?: () => readonly LLMMessage[];
+    }).snapshotHistoryMessages;
+    return typeof snapshotHistoryMessages === "function"
+      ? toAgenCRuntimeMessages(snapshotHistoryMessages.call(session))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function readFallbackModel(
+  ctx: SlashCommandContext,
+  config: { readonly model?: string } | undefined,
+): string | undefined {
+  const appState = ctx.appState?.getAppState?.();
+  if (appState && typeof appState === "object") {
+    const model = (appState as { readonly mainLoopModel?: unknown }).mainLoopModel;
+    if (typeof model === "string" && model.trim().length > 0) return model;
+  }
+  return config?.model;
+}
+
+function readFallbackContextWindow(
+  config: {
+    readonly model_provider?: string;
+    readonly providers?: Readonly<Record<string, { readonly context_window_tokens?: number }>>;
+  } | undefined,
+): number | undefined {
+  const provider = config?.model_provider;
+  if (!provider) return undefined;
+  const contextWindow = config?.providers?.[provider]?.context_window_tokens;
+  return typeof contextWindow === "number" && contextWindow > 0
+    ? contextWindow
+    : undefined;
 }
 
 async function ensureNoActiveTurn(ctx: SlashCommandContext): Promise<void> {

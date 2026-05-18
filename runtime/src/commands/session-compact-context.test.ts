@@ -8,7 +8,11 @@ vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
 
-import { computeContextUsageBreakdown, contextCommand } from "./session-compact.js";
+import {
+  compactCommand,
+  computeContextUsageBreakdown,
+  contextCommand,
+} from "./session-compact.js";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
 
@@ -367,5 +371,97 @@ describe("/context TUI bridge", () => {
     });
     expect(payload?.jsx?.props?.text).toContain("Context:");
     expect(payload?.jsx?.props?.text).toContain("prompt cache");
+  });
+
+  test("falls back to daemon token usage when no in-process turn context exists", async () => {
+    const setToolJSX = vi.fn();
+    const session = {
+      conversationId: "bridge-session",
+      services: {
+        registry: {
+          toLLMTools: () => [],
+        },
+        configStore: {
+          current: () => ({
+            model: "grok-4",
+            model_provider: "grok",
+            providers: {
+              grok: { context_window_tokens: 200_000 },
+            },
+          }),
+        },
+      },
+      getDaemonSessionSnapshot: async () => ({
+        tokenUsage: {
+          inputTokens: 10_000,
+          outputTokens: 2_000,
+          totalTokens: 12_000,
+        },
+      }),
+    };
+
+    const result = await contextCommand.execute({
+      session: session as never,
+      argsRaw: "",
+      cwd: "/tmp/agenc-context",
+      home: "/home/test",
+      appState: {
+        setToolJSX,
+        getAppState: () => ({ mainLoopModel: "grok-4" }),
+      },
+    });
+
+    expect(result).toEqual({ kind: "skip" });
+    const payload = setToolJSX.mock.calls[0]?.[0];
+    expect(payload?.jsx?.props?.text).toContain("Context: 12,000 / 200,000");
+    expect(payload?.jsx?.props?.text).toContain("estimate:");
+  });
+});
+
+describe("/compact TUI bridge", () => {
+  test("opens a v2 blocked compact modal with context estimate when turn context is unavailable", async () => {
+    const setToolJSX = vi.fn();
+    const session = {
+      conversationId: "bridge-session",
+      services: {
+        registry: {
+          toLLMTools: () => [],
+        },
+        configStore: {
+          current: () => ({
+            model: "grok-4",
+            model_provider: "grok",
+            providers: {
+              grok: { context_window_tokens: 200_000 },
+            },
+          }),
+        },
+      },
+      getDaemonSessionSnapshot: async () => ({
+        tokenUsage: {
+          totalTokens: 12_000,
+        },
+      }),
+    };
+
+    const result = await compactCommand.execute({
+      session: session as never,
+      argsRaw: "",
+      cwd: "/tmp/agenc-context",
+      home: "/home/test",
+      appState: {
+        setToolJSX,
+        getAppState: () => ({ mainLoopModel: "grok-4" }),
+      },
+    });
+
+    expect(result).toEqual({ kind: "skip" });
+    const payload = setToolJSX.mock.calls[0]?.[0];
+    expect(payload).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
+    expect(payload?.jsx?.props?.contextText).toContain("Context: 12,000 / 200,000");
+    expect(payload?.jsx?.props?.message).toContain("requires the in-process runtime");
   });
 });
