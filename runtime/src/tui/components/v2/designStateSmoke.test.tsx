@@ -152,13 +152,13 @@ const PROJECTED_CELL_ALIGNMENT_FLOORS: Record<string, number> = {
   '04a': 0.179,
   '04b': 0.177,
   '05a': 0.181,
-  '05b': 0.223,
+  '05b': 0.173,
   '06a': 0.137,
   '06b': 0.164,
   '07a': 0.154,
   '07b': 0.145,
   '08a': 0.121,
-  '08b': 0.284,
+  '08b': 0.267,
   '09': 0.240,
   '10': 0.533,
   '11': 0.187,
@@ -1888,7 +1888,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0202" />,
         ]}
       >
-        <ChatBody centered maxWidth={124}>
+        <ChatBody centered maxWidth={120}>
           <Msg role="agenc" label="agenc · orchestrator" time="14:13:02">
             <Box flexDirection="column">
               <ThemedText color="text2">

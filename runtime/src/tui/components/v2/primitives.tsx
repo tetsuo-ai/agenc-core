@@ -813,7 +813,7 @@ export function Msg({
     system: 'subtle',
   }
   return (
-    <Box flexDirection="row" gap={1}>
+    <Box flexDirection="row" gap={2}>
       <ThemedText color={colors[role]}>{role === 'system' ? '∙' : '▮'}</ThemedText>
       <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" gap={1}>
