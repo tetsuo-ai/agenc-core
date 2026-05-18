@@ -687,19 +687,20 @@ export function WelcomeColdPanel({
         <Box flexDirection="row" flexWrap="wrap">
           <ThemedText color="subtle">agenc </ThemedText>
           <ThemedText color="text">{version}</ThemedText>
-          <ThemedText color="muted3"> · build </ThemedText>
+          <ThemedText color="muted3">· build  </ThemedText>
           <ThemedText color="text">{build}</ThemedText>
-          <ThemedText color="muted3"> · solana </ThemedText>
+          <ThemedText color="muted3">· solana  </ThemedText>
           <ThemedText color="text">{network}</ThemedText>
         </Box>
+        <Box minHeight={1} />
         <Box flexDirection="row" flexWrap="wrap">
           <ThemedText color="inactive">cwd </ThemedText>
           <ThemedText color="subtle" wrap="truncate-middle">
             {cwd}
           </ThemedText>
-          <ThemedText color="inactive"> · git </ThemedText>
+          <ThemedText color="inactive">· git </ThemedText>
           <ThemedText color="subtle">{gitBranch}</ThemedText>
-          <ThemedText color="inactive"> · {gitState}</ThemedText>
+          <ThemedText color="inactive">· {gitState}</ThemedText>
         </Box>
       </Box>
 
@@ -710,7 +711,7 @@ export function WelcomeColdPanel({
         backgroundColor="surfaceBackground"
         flexWrap="wrap"
       >
-        {stats.map((stat, index) => (
+        {stats.map(stat => (
           <ThemedBox
             key={stat.label}
             flexDirection="column"
@@ -718,8 +719,6 @@ export function WelcomeColdPanel({
             flexGrow={1}
             paddingX={1}
             paddingY={1}
-            borderLeft={index > 0}
-            borderLeftColor="lineSoft"
           >
             <ThemedText color="inactive" wrap="truncate-end">
               {stat.label}
@@ -733,10 +732,10 @@ export function WelcomeColdPanel({
 
       <Box flexDirection="column">
         <ThemedText color="subtle">ready.</ThemedText>
-        <Box flexDirection="row" gap={1} flexWrap="wrap">
-          <ThemedText color="inactive">type</ThemedText>
+        <Box flexDirection="row" flexWrap="wrap">
+          <ThemedText color="inactive">type </ThemedText>
           <ThemedText color="agenc">/help</ThemedText>
-          <ThemedText color="inactive">for commands ·</ThemedText>
+          <ThemedText color="inactive">for commands ·  </ThemedText>
           <ThemedText color="agenc">/claim</ThemedText>
           <ThemedText color="inactive">to pick a task off the marketplace</ThemedText>
         </Box>

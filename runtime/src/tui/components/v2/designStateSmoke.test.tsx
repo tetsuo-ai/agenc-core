@@ -1475,7 +1475,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.000" />,
         ]}
       >
-        <ChatBody centered maxWidth={112}>
+        <ChatBody centered maxWidth={108}>
           <WelcomeColdPanel />
         </ChatBody>
       </Frame>
@@ -1504,7 +1504,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0041" />,
         ]}
       >
-        <ChatBody centered maxWidth={112}>
+        <ChatBody centered maxWidth={108}>
           <Msg role="system" label="system" time="14:18:02">
             session 0x9c4f resumed · last active 23m ago
           </Msg>
