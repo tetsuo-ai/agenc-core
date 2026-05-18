@@ -16,6 +16,7 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import React from "react";
 
 interface HelpCategory {
   readonly title: string;
@@ -248,6 +249,32 @@ async function loadHelpCommandSurface(
   };
 }
 
+async function openHelpMenu(
+  ctx: SlashCommandContext,
+  commands: readonly HelpCommand[],
+): Promise<boolean> {
+  const setToolJSX = ctx.appState?.setToolJSX;
+  if (typeof setToolJSX !== "function") return false;
+
+  const { HelpV2 } = await import("../tui/components/HelpV2/HelpV2.js");
+  const close = () => {
+    setToolJSX({
+      jsx: null,
+      shouldHidePromptInput: false,
+      clearLocalJSX: true,
+    });
+  };
+  setToolJSX({
+    isLocalJSXCommand: true,
+    shouldHidePromptInput: true,
+    jsx: React.createElement(HelpV2, {
+      commands: commands as never,
+      onClose: close,
+    }),
+  });
+  return true;
+}
+
 export const helpCommand: SlashCommand = {
   name: "help",
   description: "Show help and available commands",
@@ -266,6 +293,9 @@ export const helpCommand: SlashCommand = {
         return { kind: "text", text: "registry pending" };
       }
       const surface = await loadHelpCommandSurface(ctx.cwd, reg);
+      if (await openHelpMenu(ctx, surface.commands)) {
+        return { kind: "skip" };
+      }
       return {
         kind: "text",
         text: formatHelpCommands(surface.commands, {

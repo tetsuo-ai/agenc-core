@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDefaultRegistry } from "./registry.js";
 import helpCommand, {
   formatHelp,
@@ -195,6 +195,23 @@ describe("helpCommand", () => {
       expect(res.text).toContain("/help - Show help and available commands");
       expect(res.text).not.toContain("Custom Commands:");
     }
+  });
+
+  it("opens persistent TUI help when a local JSX surface is available", async () => {
+    const setToolJSX = vi.fn();
+    const registry = buildDefaultRegistry({ surface: "daemon-tui" });
+
+    const res = await helpCommand.execute(makeCtx({
+      commandRegistry: registry,
+      appState: { setToolJSX },
+    }));
+
+    expect(res.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
   });
 
   it("formats custom commands separately when built-in names are supplied", () => {

@@ -1,6 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
-import * as React from 'react';
 import { Box, Text } from '../../ink.js';
 import { getPlatform } from '../../../utils/platform.js';
 import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBindings.js';
@@ -27,7 +26,7 @@ type Props = {
   gap?: number;
   paddingX?: number;
 };
-export function PromptInputHelpMenu(props) {
+export function PromptInputHelpMenu(props: Props) {
   const $ = _c(99);
   const {
     dimColor,

@@ -1,11 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
-import * as React from 'react';
-import { useMemo } from 'react';
 import { type Command, formatDescriptionWithSource } from '../../../commands.js';
 import { Box, Text } from '../../ink.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { Select } from '../CustomSelect/select';
-import { useTabHeaderFocus } from '../design-system/Tabs';
+import { Select } from '../CustomSelect/select.js';
+import { useTabHeaderFocus } from '../design-system/Tabs.js';
 import { calculateCommandVisibleOptionCount } from './layout.js';
 type Props = {
   commands: Command[];
@@ -15,7 +13,7 @@ type Props = {
   onCancel: () => void;
   emptyMessage?: string;
 };
-export function Commands(t0) {
+export function Commands(t0: Props) {
   const $ = _c(14);
   const {
     commands,
@@ -33,10 +31,10 @@ export function Commands(t0) {
   const visibleCount = calculateCommandVisibleOptionCount(maxHeight);
   let t1;
   if ($[0] !== commands || $[1] !== maxWidth) {
-    const seen = new Set();
+    const seen = new Set<string>();
     let t2;
     if ($[3] !== maxWidth) {
-      t2 = cmd_0 => ({
+      t2 = (cmd_0: Command) => ({
         label: `/${cmd_0.name}`,
         value: cmd_0.name,
         description: truncate(formatDescriptionWithSource(cmd_0), maxWidth, true)
@@ -46,7 +44,7 @@ export function Commands(t0) {
     } else {
       t2 = $[4];
     }
-    t1 = commands.filter(cmd => {
+    t1 = commands.filter((cmd: Command) => {
       if (seen.has(cmd.name)) {
         return false;
       }
@@ -77,6 +75,6 @@ export function Commands(t0) {
   }
   return t2;
 }
-function _temp(a, b) {
+function _temp(a: Command, b: Command) {
   return a.name.localeCompare(b.name);
 }

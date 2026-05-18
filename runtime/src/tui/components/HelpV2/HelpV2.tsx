@@ -3,14 +3,14 @@ import * as React from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { builtInCommandNames, type Command, type CommandResultDisplay } from '../../../commands.js';
-import { useIsInsideModal } from '../../context/modalContext';
-import { useTerminalSize } from '../../hooks/useTerminalSize';
+import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Link, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { Pane } from '../design-system/Pane';
-import { Tab, Tabs } from '../design-system/Tabs';
-import { Commands } from './Commands';
-import { General } from './General';
+import { Pane } from '../design-system/Pane.js';
+import { Tab, Tabs } from '../design-system/Tabs.js';
+import { Commands } from './Commands.js';
+import { General } from './General.js';
 import { calculateHelpBodyHeight } from './layout.js';
 type Props = {
   onClose: (result?: string, options?: {
@@ -27,7 +27,7 @@ export function HelpV2(t0: Props): React.ReactNode {
   const {
     rows,
     columns
-  } = useTerminalSize();
+  } = useModalOrTerminalSize(useTerminalSize());
   const maxHeight = calculateHelpBodyHeight(rows);
   const insideModal = useIsInsideModal();
   let t1;
