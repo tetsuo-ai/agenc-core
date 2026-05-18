@@ -423,7 +423,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-013 - Finish `/memory` v2 management flow
+### [x] TUI-TODO-013 - Finish `/memory` v2 management flow
 
 Files to inspect:
 

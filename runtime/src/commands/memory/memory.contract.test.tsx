@@ -43,11 +43,6 @@ function mockMemoryCommandRuntime(): void {
   vi.doMock("../../tui/components/memory/MemoryUpdateNotification.js", () => ({
     getRelativeMemoryPath: (path: string) => `relative:${path}`,
   }));
-  vi.doMock("../../tui/components/memory/MemoryFileSelector.js", () => ({
-    clearMemoryFileSelectorCache: vi.fn(),
-    MemoryFileSelector: () => React.createElement("memory-file-selector"),
-    primeMemoryFileSelectorCache: vi.fn(promise => promise),
-  }));
   vi.doMock("../../utils/editor.js", () => ({
     openFileInExternalEditor: vi.fn(() => true),
   }));
@@ -58,7 +53,6 @@ describe("memory command contract", () => {
     vi.restoreAllMocks();
     vi.resetModules();
     vi.doUnmock("../../memory/index.js");
-    vi.doUnmock("../../tui/components/memory/MemoryFileSelector.js");
     vi.doUnmock("../../tui/components/memory/MemoryUpdateNotification.js");
     vi.doUnmock("../../tui/components/design-system/Dialog.js");
     vi.doUnmock("../../tui/ink.js");
@@ -90,9 +84,18 @@ describe("memory command contract", () => {
       "utf8",
     );
     expect(memoryIndex).toContain('import("./memory.js")');
+
+    const memoryBody = readFileSync(
+      resolve(root, "runtime/src/commands/memory/memory.tsx"),
+      "utf8",
+    );
+    expect(memoryBody).not.toContain("components/memory/MemoryFileSelector");
+    expect(
+      existsSync(resolve(root, "runtime/src/tui/components/memory/MemoryFileSelector.tsx")),
+    ).toBe(false);
   });
 
-  it("exposes /memory as the interactive local JSX command in the TUI list", () => {
+  it("keeps old local JSX loaders pointed at the v2 memory body", () => {
     expect(memoryLocalCommand.type).toBe("local-jsx");
     expect(memoryLocalCommand.description).toBe("Edit AgenC memory files");
     expect(memoryLocalCommand.name).toBe("memory");
@@ -332,19 +335,27 @@ describe("memory command contract", () => {
           label: "Project memory",
           description: "Checked in at ./AGENC.md",
           value: "/repo/AGENC.md",
+          kind: "project",
+          state: "present",
         }),
         expect.objectContaining({
           label: "User memory",
           description: "Saved in ~/.agenc/AGENC.md",
           value: "/tmp/.agenc/AGENC.md",
+          kind: "user",
+          state: "absent",
         }),
         expect.objectContaining({
           description: "@-imported",
           value: "/repo/docs/AGENC.md",
+          kind: "import",
+          state: "present",
         }),
         expect.objectContaining({
           label: "Open auto-memory folder",
           value: `${OPEN_FOLDER_PREFIX}/tmp/.agenc/auto-memory`,
+          kind: "folder",
+          state: "folder",
         }),
       ]),
     );
@@ -357,6 +368,46 @@ describe("memory command contract", () => {
     expect(getInitialMemoryPath(options, "/missing/AGENC.md")).toBe(
       options[0]?.value,
     );
+  });
+
+  it("formats v2 memory states distinctly for project, user, absent, and folder rows", async () => {
+    mockMemoryCommandRuntime();
+    vi.doMock("../../memory/index.js", () => ({
+      clearMemoryFileCaches: vi.fn(),
+      getMemoryFiles: vi.fn().mockResolvedValue([]),
+    }));
+    const {
+      memoryOptionKind,
+      memoryOptionState,
+      memoryPreviewText,
+    } = await import("./memory.js");
+    const options = buildMemoryFileSelectorOptions({
+      existingMemoryFiles: [
+        { path: "/repo/AGENC.md", type: "Project", content: "project note" },
+      ],
+      userMemoryPath: "/tmp/.agenc/AGENC.md",
+      projectMemoryPath: "/repo/AGENC.md",
+      autoMemoryEnabled: true,
+      autoMemoryPath: "/tmp/.agenc/auto-memory",
+      teamMemoryEnabled: false,
+      activeAgents: [],
+      projectInGitRepo: true,
+      displayPathFor: path => path,
+      agentMemoryDirFor: (agentType, scope) =>
+        `/repo/.agenc/agent-memory/${agentType}/${scope}`,
+    });
+
+    const project = options.find(option => option.kind === "project");
+    const user = options.find(option => option.kind === "user");
+    const folder = options.find(option => option.kind === "folder");
+
+    expect(project && memoryOptionKind(project)).toBe("project");
+    expect(project && memoryOptionState(project)).toBe("project file");
+    expect(user && memoryOptionKind(user)).toBe("user");
+    expect(user && memoryOptionState(user)).toBe("absent");
+    expect(user && memoryPreviewText(user, [])).toContain("Press Enter to create");
+    expect(folder && memoryOptionState(folder)).toBe("folder");
+    expect(folder && memoryPreviewText(folder, [])).toContain("Folder shortcut");
   });
 
   it("records MM-06 parity evidence for every donor source", () => {

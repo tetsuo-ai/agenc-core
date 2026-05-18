@@ -19,6 +19,8 @@ export type MemorySelectorOption = {
   label: string;
   value: string;
   description: string;
+  kind: 'user' | 'project' | 'import' | 'memory' | 'folder' | 'agent';
+  state: 'present' | 'absent' | 'folder';
 };
 
 type ExtendedMemoryFileInfo = MemorySelectorFileInfo & {
@@ -117,6 +119,27 @@ function memoryFileDescription(
   return '';
 }
 
+function memoryFileKind(
+  file: ExtendedMemoryFileInfo,
+  userMemoryPath: string,
+  projectMemoryPath: string,
+): MemorySelectorOption['kind'] {
+  if (file.type === 'User' && !file.isNested && file.path === userMemoryPath) {
+    return 'user';
+  }
+  if (
+    file.type === 'Project' &&
+    !file.isNested &&
+    file.path === projectMemoryPath
+  ) {
+    return 'project';
+  }
+  if (file.parent) {
+    return 'import';
+  }
+  return 'memory';
+}
+
 export function buildMemoryFileSelectorOptions({
   existingMemoryFiles,
   userMemoryPath,
@@ -164,7 +187,7 @@ export function buildMemoryFileSelectorOptions({
   ];
 
   const depths = new Map<string, number>();
-  const memoryOptions = allMemoryFiles.map(file => {
+  const memoryOptions: MemorySelectorOption[] = allMemoryFiles.map((file): MemorySelectorOption => {
     const depth = memoryFileDepth(file, depths);
     return {
       label: memoryFileLabel(
@@ -181,6 +204,8 @@ export function buildMemoryFileSelectorOptions({
         projectMemoryFileName,
         projectInGitRepo,
       ),
+      kind: memoryFileKind(file, userMemoryPath, projectMemoryPath),
+      state: file.exists ? 'present' : 'absent',
     };
   });
 
@@ -192,6 +217,8 @@ export function buildMemoryFileSelectorOptions({
     label: 'Open auto-memory folder',
     value: `${OPEN_FOLDER_PREFIX}${autoMemoryPath}`,
     description: '',
+    kind: 'folder',
+    state: 'folder',
   });
 
   if (teamMemoryEnabled && teamMemoryPath) {
@@ -199,6 +226,8 @@ export function buildMemoryFileSelectorOptions({
       label: 'Open team memory folder',
       value: `${OPEN_FOLDER_PREFIX}${teamMemoryPath}`,
       description: '',
+      kind: 'folder',
+      state: 'folder',
     });
   }
 
@@ -209,6 +238,8 @@ export function buildMemoryFileSelectorOptions({
       label: `Open ${agent.agentType} agent memory`,
       value: `${OPEN_FOLDER_PREFIX}${agentDir}`,
       description: `${agent.memory} scope`,
+      kind: 'agent',
+      state: 'folder',
     });
   }
 

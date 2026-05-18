@@ -5,15 +5,10 @@ type LocalJsxCommandModule = Awaited<
 >;
 
 /**
- * Ports the TUI source reference `src/commands/memory/index.ts` command
- * descriptor onto AgenC's local JSX command surface.
+ * Legacy local-JSX adapter for old command loaders.
  *
- * Why this lives here / shape difference from upstream:
- *   - The interactive command stays local-JSX so the TUI can render the
- *     memory-file selector instead of routing through a plain-text dispatcher.
- *
- * Cross-cuts deliberately NOT carried:
- *   - None; the feature-gated memory folders remain inside the selector.
+ * The runtime slash registry owns `/memory`; this descriptor only points
+ * older local-JSX loading paths at the v2 memory command body.
  */
 const memoryCommand = {
   type: "local-jsx",

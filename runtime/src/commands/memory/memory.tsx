@@ -153,25 +153,37 @@ function compactText(value: string, limit = 96): string {
   return `${normalized.slice(0, limit - 1).trimEnd()}...`;
 }
 
-function optionKind(option: MemorySelectorOption): string {
-  if (option.value.startsWith(OPEN_FOLDER_PREFIX)) return 'folder';
-  if (option.label.toLowerCase().includes('user')) return 'user';
-  if (option.label.toLowerCase().includes('project')) return 'project';
-  if (option.description.includes('@-imported')) return 'import';
-  return 'memory';
+export function memoryOptionKind(option: MemorySelectorOption): string {
+  return option.kind;
 }
 
-function previewText(
+export function memoryOptionState(option: MemorySelectorOption): string {
+  if (option.state === 'absent') return 'absent';
+  if (option.state === 'folder') return 'folder';
+  const fileType = option.kind === 'user' ? 'user' : option.kind === 'project' ? 'project' : '';
+  return fileType ? `${fileType} file` : 'present';
+}
+
+export function memoryPreviewText(
   option: MemorySelectorOption | undefined,
   files: readonly MemorySelectorFileInfo[],
 ): string {
   if (!option) return 'No memory file selected.';
   if (option.value.startsWith(OPEN_FOLDER_PREFIX)) {
-    return option.value.slice(OPEN_FOLDER_PREFIX.length);
+    return [
+      'Folder shortcut.',
+      option.value.slice(OPEN_FOLDER_PREFIX.length),
+    ].join('\n');
+  }
+  if (option.state === 'absent') {
+    return [
+      'Absent memory file.',
+      'Press Enter to create and open it in your editor.',
+    ].join('\n');
   }
   const file = files.find(entry => entry.path === option.value);
   if (!file || file.content.trim().length === 0) {
-    return 'New or empty memory file.';
+    return 'Present but empty.';
   }
   return file.content
     .split(/\r?\n/u)
@@ -218,7 +230,13 @@ function MemoryCommand({
   const rows =
     memoryOptions.length > 0
       ? memoryOptions
-      : [{ label: 'No memory files', value: '', description: 'none available' }];
+      : [{
+          label: 'No memory files',
+          value: '',
+          description: 'none available',
+          kind: 'memory' as const,
+          state: 'absent' as const,
+        }];
 
   const selected = rows[activeIndex] ?? rows[0];
   const closeWithCancel = React.useCallback(() => {
@@ -258,14 +276,17 @@ function MemoryCommand({
       count={`${memoryOptions.length} entries`}
       summary="AGENC.md, imports, and agent memory"
       headerRight="↑↓ select · ⏎ open · q close"
-      columns={[3, 20, 18, 54]}
-      headers={['', 'kind', 'path', 'description']}
+      columns={[3, 10, 12, 24, 46]}
+      headers={['', 'scope', 'state', 'path', 'description']}
       items={rows}
       activeIndex={activeIndex}
       renderRow={(option, _index, active) => [
         <ThemedText key="mark" color={active ? 'agenc' : 'inactive'}>{active ? '◆' : '·'}</ThemedText>,
         <ThemedText key="kind" color={option.value.startsWith(OPEN_FOLDER_PREFIX) ? 'worker' : 'agenc'} wrap="truncate-end">
-          {optionKind(option)}
+          {memoryOptionKind(option)}
+        </ThemedText>,
+        <ThemedText key="state" color={option.state === 'absent' ? 'worker' : option.state === 'folder' ? 'subtle' : 'success'} wrap="truncate-end">
+          {memoryOptionState(option)}
         </ThemedText>,
         <ThemedText key="path" color={active ? 'agenc' : 'text2'} wrap="truncate-middle">
           {option.label}
@@ -277,12 +298,15 @@ function MemoryCommand({
       preview={
         <Box flexDirection="column" gap={1}>
           <ThemedText color="agenc">{selected?.label ?? 'Memory'}</ThemedText>
+          <ThemedText color={selected?.state === 'absent' ? 'worker' : selected?.state === 'folder' ? 'subtle' : 'success'} wrap="truncate-end">
+            {selected ? `${memoryOptionKind(selected)} · ${memoryOptionState(selected)}` : 'memory'}
+          </ThemedText>
           <ThemedText color="inactive" wrap="truncate-middle">
             {selected?.value.startsWith(OPEN_FOLDER_PREFIX)
               ? selected.value.slice(OPEN_FOLDER_PREFIX.length)
               : selected?.value ?? ''}
           </ThemedText>
-          {previewText(selected, existingMemoryFiles).split(/\r?\n/u).map((line, index) => (
+          {memoryPreviewText(selected, existingMemoryFiles).split(/\r?\n/u).map((line, index) => (
             <ThemedText key={index} color={index === 0 ? 'text2' : 'subtle'} wrap="truncate-end">
               {index === 0 ? compactText(firstLine(line), 80) : compactText(line, 80)}
             </ThemedText>
@@ -290,7 +314,7 @@ function MemoryCommand({
         </Box>
       }
       footer={[
-        { keyName: '⏎', label: 'open' },
+        { keyName: '⏎', label: selected?.state === 'absent' ? 'create' : 'open' },
         { keyName: 'q', label: 'close' },
       ]}
       hint="memory edits open in $VISUAL or $EDITOR"
