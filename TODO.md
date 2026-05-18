@@ -145,7 +145,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-004 - Port `/plan` to the v2 plan-mode banner and accept flow
+### [x] TUI-TODO-004 - Port `/plan` to the v2 plan-mode banner and accept flow
 
 Files to inspect:
 

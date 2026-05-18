@@ -38,6 +38,7 @@ import {
   PermissionModeRegistry,
   transitionPermissionMode,
 } from "../permissions/permission-mode.js";
+import type { PermissionMode } from "../permissions/types.js";
 import {
   formatPlanText,
   clearAllPlanSlugs,
@@ -56,6 +57,10 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import {
+  createPlanDashboardSnapshot,
+  openPlanDashboard,
+} from "./plan-menu.js";
 
 export {
   clearAllPlanSlugs,
@@ -136,6 +141,26 @@ function planFileContext(ctx: SlashCommandContext): PlanFileContext {
   };
 }
 
+function maybeOpenPlanDashboard(
+  ctx: SlashCommandContext,
+  params: {
+    readonly mode: "plan";
+    readonly previousMode?: PermissionMode;
+    readonly planText: string | null;
+  },
+): boolean {
+  const fileCtx = planFileContext(ctx);
+  return openPlanDashboard(
+    ctx,
+    createPlanDashboardSnapshot({
+      mode: params.mode,
+      ...(params.previousMode !== undefined ? { previousMode: params.previousMode } : {}),
+      planPath: getPlanFilePath(fileCtx),
+      planText: params.planText,
+    }),
+  );
+}
+
 export const planCommand: SlashCommand = {
   name: "plan",
   description:
@@ -173,6 +198,15 @@ export const planCommand: SlashCommand = {
           // kicks the model with plan-mode context.
           return { kind: "prompt", content: argsTrimmed };
         }
+        if (
+          maybeOpenPlanDashboard(ctx, {
+            mode: "plan",
+            previousMode: currentMode,
+            planText: getPlan(planFileContext(ctx)),
+          })
+        ) {
+          return { kind: "skip" };
+        }
         return {
           kind: "text",
           text: "Enabled plan mode",
@@ -183,6 +217,15 @@ export const planCommand: SlashCommand = {
       const fileCtx = planFileContext(ctx);
       const plan = getPlan(fileCtx);
       if (!plan) {
+        if (
+          maybeOpenPlanDashboard(ctx, {
+            mode: "plan",
+            previousMode: currentCtx.prePlanMode,
+            planText: null,
+          })
+        ) {
+          return { kind: "skip" };
+        }
         return {
           kind: "text",
           text: "Already in plan mode. No plan written yet.",
@@ -203,6 +246,15 @@ export const planCommand: SlashCommand = {
           kind: "text",
           text: `Opened plan in editor: ${path}`,
         };
+      }
+      if (
+        maybeOpenPlanDashboard(ctx, {
+          mode: "plan",
+          previousMode: currentCtx.prePlanMode,
+          planText: plan,
+        })
+      ) {
+        return { kind: "skip" };
       }
       return {
         kind: "text",

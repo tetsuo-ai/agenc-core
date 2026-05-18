@@ -5,7 +5,7 @@
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import planCommand, {
   clearAllPlanSlugs,
   formatPlanText,
@@ -16,6 +16,7 @@ import planCommand, {
   setPlanSlug,
   writePlan,
 } from "./plan.js";
+import { createPlanDashboardSnapshot, planItemsFromText } from "./plan-menu.js";
 import type { SlashCommandContext } from "./types.js";
 import type { Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
@@ -35,6 +36,7 @@ function mkHarness(opts: {
   readonly cwd?: string;
   readonly argsRaw?: string;
   readonly withoutRegistry?: boolean;
+  readonly appState?: SlashCommandContext["appState"];
 } = {}): Harness {
   const cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), "agenc-plan-cwd-"));
   const agencHome = mkdtempSync(join(tmpdir(), "agenc-plan-home-"));
@@ -65,6 +67,7 @@ function mkHarness(opts: {
     cwd,
     home: "/home/test-plan",
     agencHome,
+    appState: opts.appState,
   };
   return { ctx, registry, events, cwd, agencHome };
 }
@@ -197,6 +200,24 @@ describe("planCommand.execute", () => {
     }
   });
 
+  it("transitions default -> plan and opens v2 dashboard when TUI app state is wired", async () => {
+    const setToolJSX = vi.fn();
+    const h = mkHarness({
+      initialMode: "default",
+      appState: { setToolJSX },
+    });
+    const res = await planCommand.execute(h.ctx);
+    expect(h.registry.current().mode).toBe("plan");
+    expect(res).toEqual({ kind: "skip" });
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isLocalJSXCommand: true,
+        shouldHidePromptInput: true,
+        jsx: expect.anything(),
+      }),
+    );
+  });
+
   it("forwards non-empty args as a user prompt when entering plan mode", async () => {
     const h = mkHarness({
       initialMode: "default",
@@ -242,6 +263,22 @@ describe("planCommand.execute", () => {
     }
   });
 
+  it("`/plan` while in plan mode with a persisted plan opens v2 dashboard in TUI", async () => {
+    const setToolJSX = vi.fn();
+    const h = mkHarness({ initialMode: "plan", appState: { setToolJSX } });
+    setPlanSlug(planCtx(h), "render-plan");
+    await writePlan(planCtx(h), "## Context\n\n- [ ] Do things.\n");
+    const res = await planCommand.execute(h.ctx);
+    expect(res.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isLocalJSXCommand: true,
+        shouldHidePromptInput: true,
+        jsx: expect.anything(),
+      }),
+    );
+  });
+
   it("`/plan open` in plan mode falls back gracefully when no $EDITOR", async () => {
     const h = mkHarness({ initialMode: "plan", argsRaw: "open" });
     setPlanSlug(planCtx(h), "open-plan");
@@ -285,5 +322,31 @@ describe("planCommand.execute", () => {
     await planCommand.execute(h.ctx);
     expect(h.registry.current().mode).toBe("plan");
     expect(h.registry.current().prePlanMode).toBe("acceptEdits");
+  });
+});
+
+describe("plan dashboard snapshot", () => {
+  it("extracts markdown checklist items for the v2 plan list", () => {
+    expect(planItemsFromText("## Plan\n\n- [x] Done\n- [ ] Next\n")).toEqual([
+      { state: "active", text: "Plan" },
+      { state: "done", text: "Done" },
+      { state: "pending", text: "Next" },
+    ]);
+  });
+
+  it("records mode, path, message, and fallback empty-plan item", () => {
+    const snapshot = createPlanDashboardSnapshot({
+      mode: "plan",
+      previousMode: "default",
+      planPath: "/tmp/plan.md",
+      planText: null,
+    });
+    expect(snapshot.previousMode).toBe("default");
+    expect(snapshot.planPath).toBe("/tmp/plan.md");
+    expect(snapshot.items[0]).toEqual({
+      state: "pending",
+      text: "No plan written yet.",
+    });
+    expect(snapshot.message).toContain("Plan mode is active");
   });
 });
