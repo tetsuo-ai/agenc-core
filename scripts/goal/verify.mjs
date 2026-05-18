@@ -3554,17 +3554,22 @@ if (skipValidate) {
 } else {
   beginCompletionPipelineGate("tui_validate");
   header("agenc-tui-validate");
-  // branding-scan: allow real on-disk skill path under user home
-  const skillBase = path.join(process.env.HOME || "", ".claude/skills/agenc-tui-validate/scripts");
-  const skillRunner = [path.join(skillBase, "run.mjs"), path.join(skillBase, "run-tui-validate.mjs")].find(
-    (p) => existsSync(p),
-  );
+  const home = process.env.HOME || "";
+  const skillBases = [
+    path.join(home, ".agenc/skills/agenc-tui-validate/scripts"),
+  ];
+  const skillRunner = skillBases
+    .flatMap((skillBase) => [
+      path.join(skillBase, "run.mjs"),
+      path.join(skillBase, "run-tui-validate.mjs"),
+    ])
+    .find((p) => existsSync(p));
   if (skillRunner) {
     inlineTuiValidate();
     pass(`agenc-tui-validate passed (${path.basename(skillRunner)} startup gate)`);
   } else {
     process.stdout.write(
-      `${YELLOW}!${RESET} agenc-tui-validate skill runner not found under ${skillBase}; falling back to inline build check.\n`,
+      `${YELLOW}!${RESET} agenc-tui-validate skill runner not found under ${skillBases.join(", ")}; falling back to inline build check.\n`,
     );
     inlineTuiValidate();
   }

@@ -207,7 +207,7 @@ const BARE_SHELL_PREFIXES = new Set([
 /**
  * UI-only fallback: extract the first word alone when getSimpleCommandPrefix
  * declines. In external builds TREE_SITTER_BASH is off, so the async
- * tree-sitter refinement in BashPermissionRequest never fires — without this,
+ * tree-sitter refinement in the approval UI never fires — without this,
  * pipes and compounds (`python3 file.py 2>&1 | tail -20`) dump into the
  * editable field verbatim.
  *

@@ -8,7 +8,7 @@ vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
 
-import { computeContextUsageBreakdown } from "./session-compact.js";
+import { computeContextUsageBreakdown, contextCommand } from "./session-compact.js";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
 
@@ -300,5 +300,72 @@ describe("/context display: computeContextUsageBreakdown", () => {
         process.env.AGENC_DISABLE_COMPACT = original;
       }
     }
+  });
+});
+
+describe("/context TUI bridge", () => {
+  test("opens the v2 context usage modal from the slash command", async () => {
+    const setToolJSX = vi.fn();
+    const session = {
+      abortController: new AbortController(),
+      conversationId: "session-1",
+      newDefaultTurnWithSubId: () => ({
+        cwd: "/tmp/agenc-context",
+        config: {},
+        modelInfo: {
+          slug: "grok-4",
+          contextWindow: 200_000,
+          effectiveContextWindowPercent: 100,
+        },
+        modelProviderId: "xai",
+        options: {},
+      }),
+      nextInternalSubId: () => "sub-1",
+      snapshotHistoryMessages: () => [],
+      state: {
+        unsafePeek: () => ({
+          totalTokenUsage: {
+            promptTokens: 1_000,
+            cachedInputTokens: 250,
+          },
+        }),
+      },
+      permissionModeRegistry: {
+        current: () => undefined,
+      },
+      services: {
+        registry: {
+          toLLMTools: () => [],
+          allSpecs: () => [],
+        },
+        configStore: {
+          current: () => ({}),
+        },
+        permissionModeRegistry: {
+          current: () => undefined,
+        },
+        provider: {},
+      },
+      emit: vi.fn(),
+      clearProviderResponseId: vi.fn(),
+    };
+
+    const result = await contextCommand.execute({
+      session: session as never,
+      argsRaw: "",
+      cwd: "/tmp/agenc-context",
+      home: "/home/test",
+      appState: { setToolJSX },
+    });
+
+    expect(result).toEqual({ kind: "skip" });
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    const payload = setToolJSX.mock.calls[0]?.[0];
+    expect(payload).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
+    expect(payload?.jsx?.props?.text).toContain("Context:");
+    expect(payload?.jsx?.props?.text).toContain("prompt cache");
   });
 });

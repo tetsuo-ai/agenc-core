@@ -13,7 +13,7 @@ import { getCwd } from '../../../utils/cwd.js';
 import { enqueue, isQueuedCommandEditable, popAllEditable } from '../../../utils/messageQueueManager.js';
 import stripAnsi from 'strip-ansi';
 import { type Command, hasCommand } from '../../../commands.js';
-import { useIsModalOverlayActive } from '../../context/overlayContext.js';
+import { useIsModalOverlayActive, useRegisterOverlay } from '../../context/overlayContext.js';
 import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';
 import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../history/history.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
@@ -105,7 +105,7 @@ import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
-import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js';
+import { BackgroundTasksPanel } from '../tasks/BackgroundTasksPanel.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
 import { ModeSwitcher } from '../v2/primitives.js';
@@ -602,7 +602,7 @@ function PromptInput({
   // shouldHidePromptInput: false. Those dialogs don't register in the overlay
   // system, so treat them as a modal overlay here to stop navigation keys from
   // leaking into TextInput/footer handlers and stacking a second dialog.
-  const isModalOverlayActive = useIsModalOverlayActive() || isLocalJSXCommandActive;
+  const upstreamModalOverlayActive = useIsModalOverlayActive() || isLocalJSXCommandActive;
   const [isAutoUpdating, setIsAutoUpdating] = useState(false);
   const [exitMessage, setExitMessage] = useState<{
     show: boolean;
@@ -740,6 +740,8 @@ function PromptInput({
   const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
+  const promptModalOverlayActive =
+    upstreamModalOverlayActive || showModeSwitcher || Boolean(showBashesDialog);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
   const [previousModeBeforeAuto, setPreviousModeBeforeAuto] = useState<PermissionMode | null>(null);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1430,7 +1432,7 @@ function PromptInput({
           }
         });
       };
-      // UserBashInputMessage extracts <bash-input>...</bash-input>;
+      // ShellInputMessage extracts <bash-input>...</bash-input>;
       // UserBashOutputMessage extracts <bash-stdout>/<bash-stderr>.
       emitTranscriptText(`<bash-input>${trimmedBash}</bash-input>`);
       try {
@@ -2069,7 +2071,7 @@ function PromptInput({
   // stopImmediatePropagation on Enter, blocking autocomplete from seeing the key.
   const keybindingContext = useOptionalKeybindingContext();
   useEffect(() => {
-    if (!keybindingContext || isModalOverlayActive) return;
+    if (!keybindingContext || promptModalOverlayActive) return;
     return keybindingContext.registerHandler({
       action: 'chat:submit',
       context: 'Chat',
@@ -2077,7 +2079,7 @@ function PromptInput({
         void onSubmit(input);
       }
     });
-  }, [keybindingContext, isModalOverlayActive, onSubmit, input]);
+  }, [keybindingContext, promptModalOverlayActive, onSubmit, input]);
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as
@@ -2096,20 +2098,20 @@ function PromptInput({
   }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
-    isActive: !isModalOverlayActive
+    isActive: !promptModalOverlayActive
   });
 
   // Shift+↑ enters message-actions cursor. Separate isActive so ctrl+r search
   // doesn't leave stale isSearchingHistory on cursor-exit remount.
   useKeybinding('chat:messageActions', () => onMessageActionsEnter?.(), {
     context: 'Chat',
-    isActive: !isModalOverlayActive && !isSearchingHistory
+    isActive: !promptModalOverlayActive && !isSearchingHistory
   });
 
   // Fast mode keybinding is only active when fast mode is enabled and available
   useKeybinding('chat:fastMode', handleFastModePicker, {
     context: 'Chat',
-    isActive: !isModalOverlayActive && isFastModeEnabled() && isFastModeAvailable()
+    isActive: !promptModalOverlayActive && isFastModeEnabled() && isFastModeAvailable()
   });
 
   // Handle help:dismiss keybinding (ESC closes help menu)
@@ -2125,7 +2127,7 @@ function PromptInput({
   // Quick Open / Global Search. Hook calls are unconditional (Rules of Hooks);
   // the handler body is feature()-gated so the setState calls and component
   // references get tree-shaken in external builds.
-  const quickSearchActive = feature('QUICK_SEARCH') ? !isModalOverlayActive : false;
+  const quickSearchActive = feature('QUICK_SEARCH') ? !promptModalOverlayActive : false;
   useKeybinding('app:quickOpen', () => {
     if (feature('QUICK_SEARCH')) {
       setShowQuickOpen(true);
@@ -2151,7 +2153,7 @@ function PromptInput({
     }
   }, {
     context: 'Global',
-    isActive: feature('HISTORY_PICKER') ? !isModalOverlayActive : false
+    isActive: feature('HISTORY_PICKER') ? !promptModalOverlayActive : false
   });
 
   // Handle Ctrl+C to abort speculation when idle (not loading)
@@ -2253,7 +2255,7 @@ function PromptInput({
     }
   }, {
     context: 'Footer',
-    isActive: !!footerItemSelected && !isModalOverlayActive
+    isActive: !!footerItemSelected && !promptModalOverlayActive
   });
   useInput((char, key, event) => {
     // Skip all input handling when a full-screen dialog is open. These dialogs
@@ -2512,19 +2514,25 @@ function PromptInput({
   }, [showThinkingToggle, thinkingEnabled, handleThinkingSelect, handleThinkingCancel, messages.length]);
   const modeSwitcherElement = useMemo(() => {
     if (!showModeSwitcher) return null;
-    return <Box flexDirection="column" marginTop={1}>
-        <ModeSwitcher currentMode={effectiveToolPermissionContext.mode} bypassAvailable={effectiveToolPermissionContext.isBypassPermissionsModeAvailable} autoAvailable={effectiveToolPermissionContext.isAutoModeAvailable} />
-      </Box>;
+    return <ModeSwitcher currentMode={effectiveToolPermissionContext.mode} bypassAvailable={effectiveToolPermissionContext.isBypassPermissionsModeAvailable} autoAvailable={effectiveToolPermissionContext.isAutoModeAvailable} />;
   }, [showModeSwitcher, effectiveToolPermissionContext]);
+  const backgroundTasksDialogElement = useMemo(() => {
+    if (!showBashesDialog) return null;
+    return <BackgroundTasksPanel onDone={() => setShowBashesDialog(false)} toolUseContext={getToolUseContext(messages, [], new AbortController(), mainLoopModel)} initialDetailTaskId={typeof showBashesDialog === 'string' ? showBashesDialog : undefined} />;
+  }, [showBashesDialog, setShowBashesDialog, getToolUseContext, messages, mainLoopModel]);
 
   // Portal dialog to DialogOverlay in fullscreen so it escapes the bottom
   // slot's overflowY:hidden clip (same pattern as SuggestionsOverlay).
   // Must be called before early returns below to satisfy rules-of-hooks.
   // Memoized so the portal useEffect doesn't churn on every PromptInput render.
   const autoModeOptInDialog = useMemo(() => feature('TRANSCRIPT_CLASSIFIER') && showAutoModeOptIn ? <AutoModeOptInDialog onAccept={handleAutoModeOptInAccept} onDecline={handleAutoModeOptInDecline} /> : null, [showAutoModeOptIn, handleAutoModeOptInAccept, handleAutoModeOptInDecline]);
-  useSetPromptOverlayDialog(isFullscreenEnvEnabled() ? autoModeOptInDialog : null);
-  if (showBashesDialog) {
-    return <BackgroundTasksDialog onDone={() => setShowBashesDialog(false)} toolUseContext={getToolUseContext(messages, [], new AbortController(), mainLoopModel)} initialDetailTaskId={typeof showBashesDialog === 'string' ? showBashesDialog : undefined} />;
+  const fullscreenPromptDialog = isFullscreenEnvEnabled()
+    ? backgroundTasksDialogElement ?? modeSwitcherElement ?? autoModeOptInDialog
+    : null;
+  useSetPromptOverlayDialog(fullscreenPromptDialog);
+  useRegisterOverlay('prompt-overlay-dialog', fullscreenPromptDialog !== null);
+  if (showBashesDialog && !isFullscreenEnvEnabled()) {
+    return backgroundTasksDialogElement;
   }
   if (isAgentSwarmsEnabled() && showTeamsDialog) {
     return <TeamsDialog initialTeams={cachedTeams} onDone={() => {
@@ -2592,7 +2600,7 @@ function PromptInput({
     onChangeCursorOffset: setCursorOffset,
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
-    focus: !isSearchingHistory && !isModalOverlayActive && !footerItemSelected,
+    focus: !isSearchingHistory && !promptModalOverlayActive && !footerItemSelected,
     showCursor: !footerItemSelected && !isSearchingHistory && !cursorAtImageChip,
     argumentHint: commandArgumentHint,
     onUndo: canUndo ? () => {
@@ -2668,7 +2676,7 @@ function PromptInput({
             {textInputElement}
           </Box>
         </Box>}
-      {modeSwitcherElement}
+      {!isFullscreenEnvEnabled() && modeSwitcherElement ? <Box flexDirection="column" marginTop={1}>{modeSwitcherElement}</Box> : null}
       {/* Round-2 M-NEW6: don't hide "? for shortcuts" on the first
           keystroke — the hint is about discovering keybindings, not
           about typing. Suppress it only when an active dropdown (the

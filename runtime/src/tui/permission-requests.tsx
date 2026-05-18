@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { PermissionRequest } from "./components/permissions/PermissionRequest.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import {
@@ -19,6 +18,9 @@ import { makeToolUseMessage } from "./session-transcript.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
+import { Box, Text, useInput } from "./ink.js";
+import { useKeybindings } from "./keybindings/useKeybinding.js";
+import { ApprovalCard, KeyHint } from "./components/v2/primitives.js";
 
 export { createSessionAppStateBridge };
 
@@ -170,6 +172,22 @@ export function buildToolUseConfirm(
   };
 }
 
+type ProjectedToolUseConfirm = NonNullable<ReturnType<typeof buildToolUseConfirm>> & {
+  readonly tool: {
+    readonly name: string;
+    userFacingName?(input: unknown): string;
+  };
+  readonly description: string;
+  readonly input: unknown;
+  onAllow(
+    updatedInput: unknown,
+    permissionUpdates?: readonly unknown[],
+    feedback?: string,
+  ): void;
+  onReject(feedback?: string): void;
+  onAbort(): void;
+};
+
 export function buildToolUseConfirmQueue(
   requests: readonly PendingRequest[],
   tools: readonly { readonly name: string }[],
@@ -239,9 +257,6 @@ export function usePermissionRequests(
 export function AgenCPermissionOverlay({
   request,
   tools,
-  mcpClients = [],
-  isNonInteractiveSession = false,
-  debug = false,
 }: {
   readonly request: PendingRequest | undefined;
   readonly tools: readonly any[];
@@ -249,37 +264,152 @@ export function AgenCPermissionOverlay({
   readonly isNonInteractiveSession?: boolean;
   readonly debug?: boolean;
 }) {
-  return useMemo(() => {
+  const toolUseConfirm = useMemo(() => {
     if (!request) return null;
-    const toolUseConfirm = buildToolUseConfirm(request, tools);
-    if (toolUseConfirm === null) return null;
-    // The legacy stub `toolUseContext={{} as any}` crashed every
-    // PermissionRequest component that read `toolUseContext.options.*`
-    // — most visibly FilePermissionDialog/useDiffInIDE on
-    // `options.mcpClients`. Populate the minimum shape consumers
-    // expect; the App.tsx render path doesn't run a real model loop
-    // here, so empty `tools`/`mcpClients` and quiet `debug` are
-    // semantically correct (the overlay just renders + sends
-    // approve/deny back to the daemon). See GAP-TUI-WRITE-MCP-CLIENTS-CRASH.
-    const toolUseContext = {
-      options: {
-        tools,
-        mcpClients,
-        isNonInteractiveSession,
-        debug,
-        commands: [],
-        verbose: true,
+    return buildToolUseConfirm(request, tools) as ProjectedToolUseConfirm | null;
+  }, [request, tools]);
+
+  if (request === undefined || toolUseConfirm === null) {
+    return null;
+  }
+  return <AgenCApprovalOverlay request={request} toolUseConfirm={toolUseConfirm} />;
+}
+
+function inputValue(input: unknown): string {
+  if (input === null || input === undefined) return "";
+  if (typeof input === "string") return input;
+  if (typeof input !== "object") return String(input);
+  const record = input as Record<string, unknown>;
+  for (const key of ["command", "cmd", "input", "query", "path", "file_path"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  try {
+    return JSON.stringify(record, null, 2);
+  } catch {
+    return String(input);
+  }
+}
+
+function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
+  const fromTool = toolUseConfirm.tool.userFacingName?.(toolUseConfirm.input);
+  if (fromTool && fromTool.trim().length > 0) return fromTool;
+  return toolUseConfirm.tool.name;
+}
+
+function isHighRisk(request: PendingRequest, toolUseConfirm: ProjectedToolUseConfirm): boolean {
+  const haystack = [
+    request.ctx.toolName,
+    toolUseConfirm.tool.name,
+    toolUseConfirm.description,
+    inputValue(toolUseConfirm.input),
+  ].join(" ").toLowerCase();
+  return /\b(mainnet|settle|stake|transfer|slash|escrow|solana\s+transfer)\b/u.test(haystack);
+}
+
+function typedConfirmationWord(toolUseConfirm: ProjectedToolUseConfirm): string {
+  const haystack = [
+    toolUseConfirm.tool.name,
+    toolUseConfirm.description,
+    inputValue(toolUseConfirm.input),
+  ].join(" ").toLowerCase();
+  if (/\bsettle\b/u.test(haystack)) return "settle";
+  if (/\bstake\b/u.test(haystack)) return "stake";
+  if (/\btransfer\b/u.test(haystack)) return "transfer";
+  return "yes";
+}
+
+function AgenCApprovalOverlay({
+  request,
+  toolUseConfirm,
+}: {
+  readonly request: PendingRequest;
+  readonly toolUseConfirm: ProjectedToolUseConfirm;
+}) {
+  const highRisk = isHighRisk(request, toolUseConfirm);
+  const requiredWord = typedConfirmationWord(toolUseConfirm);
+  const [typed, setTyped] = useState("");
+  const approve = useCallback(() => {
+    toolUseConfirm.onAllow(toolUseConfirm.input, []);
+  }, [toolUseConfirm]);
+  const reject = useCallback(() => {
+    toolUseConfirm.onReject();
+  }, [toolUseConfirm]);
+  const abort = useCallback(() => {
+    toolUseConfirm.onAbort();
+  }, [toolUseConfirm]);
+
+  useKeybindings(
+    {
+      "confirm:yes": () => {
+        if (highRisk) return false;
+        approve();
       },
-    };
-    return (
-      <PermissionRequest
-        toolUseConfirm={toolUseConfirm as never}
-        toolUseContext={toolUseContext as any}
-        onDone={() => {}}
-        onReject={() => {}}
-        verbose={true}
-        workerBadge={undefined}
+      "confirm:no": reject,
+      "app:interrupt": abort,
+    },
+    { context: "Confirmation" },
+  );
+
+  useInput(
+    (input, key, event) => {
+      if (!highRisk) return;
+      event.stopImmediatePropagation();
+      if (key.return) {
+        if (typed === requiredWord) approve();
+        return;
+      }
+      if (key.escape) {
+        reject();
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setTyped(value => value.slice(0, -1));
+        return;
+      }
+      if (input.length === 1 && !key.ctrl && !key.meta) {
+        setTyped(value => (value + input).slice(0, requiredWord.length));
+      }
+    },
+    { isActive: highRisk },
+  );
+
+  const name = toolLabel(toolUseConfirm);
+  const command = inputValue(toolUseConfirm.input);
+  const typedReady = typed === requiredWord;
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <ApprovalCard
+        risk={highRisk ? "high" : "low"}
+        title={`tool · ${name} · ${highRisk ? "high-risk approval" : "needs approval"}`}
+        command={command.length > 0 ? command : toolUseConfirm.description}
+        facts={[
+          { label: "tool", value: name },
+          {
+            label: "scope",
+            value: highRisk ? "mainnet / protocol" : "session",
+            color: highRisk ? "error" : "text2",
+          },
+          { label: "request", value: request.id },
+          { label: "confirmation", value: highRisk ? `type ${requiredWord}` : "enter" },
+        ]}
+        note={toolUseConfirm.description}
+        confirmLabel={highRisk ? `type '${requiredWord}' to approve` : "⏎ approve"}
+        requireTypedConfirmation={highRisk}
       />
-    );
-  }, [request, tools, mcpClients, isNonInteractiveSession, debug]);
+      {highRisk ? (
+        <Box flexDirection="row" gap={1}>
+          <Text color={typedReady ? "success" : "error"}>
+            {typed.length > 0 ? typed : " "}
+          </Text>
+          <Text dimColor={true}>/ {requiredWord}</Text>
+          <Box flexGrow={1} />
+          <KeyHint k="esc" label="cancel" />
+        </Box>
+      ) : null}
+    </Box>
+  );
 }

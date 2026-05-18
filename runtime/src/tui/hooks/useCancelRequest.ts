@@ -13,7 +13,7 @@ import {
   useSetAppState,
 } from '../state/AppState.js'
 import { isVimModeEnabled } from '../components/PromptInput/utils.js'
-import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
+import type { ToolUseConfirm } from '../permission-types.js'
 import type { SpinnerMode } from '../components/spinner/types.js'
 import { useNotifications } from '../context/notifications'
 import { useIsOverlayActive } from '../context/overlayContext'

@@ -16,7 +16,7 @@ import { extractTag } from '../../../utils/messages'; // upstream-import: keep t
 import { Byline } from '../design-system/Byline';
 import { Dialog } from '../design-system/Dialog';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint';
-import { UserPlanMessage } from '../messages/UserPlanMessage';
+import { PlanMessage } from '../v2/messagePrimitives.js';
 import { renderToolActivity } from './renderToolActivity';
 import { getTaskStatusColor, getTaskStatusIcon } from './taskStatusUtils';
 import {
@@ -183,7 +183,7 @@ export function AsyncAgentDetailDialog(t0) {
   }
   let t16;
   if ($[37] !== contentColumns || $[38] !== displayPrompt || $[39] !== planContent) {
-    t16 = planContent ? <Box marginTop={1} width={contentColumns}><UserPlanMessage addMargin={false} planContent={planContent} /></Box> : <Box flexDirection="column" marginTop={1} width={contentColumns}><Text bold={true} dimColor={true}>Prompt</Text><Text wrap="wrap">{displayPrompt}</Text></Box>;
+    t16 = planContent ? <Box marginTop={1} width={contentColumns}><PlanMessage addMargin={false} planContent={planContent} /></Box> : <Box flexDirection="column" marginTop={1} width={contentColumns}><Text bold={true} dimColor={true}>Prompt</Text><Text wrap="wrap">{displayPrompt}</Text></Box>;
     $[37] = contentColumns;
     $[38] = displayPrompt;
     $[39] = planContent;

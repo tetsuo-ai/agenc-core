@@ -3,6 +3,23 @@
 This file records the design-handoff decisions from `TUI-RUNTIME-SYNC.md`
 so the next implementation pass does not need to rediscover them.
 
+## Design Source Provenance
+
+- The implemented source snapshot is the local design handoff bundle at
+  `/tmp/agenc-design.bundle`, sha256
+  `752001a77e6b125c385fd6abf8c5fe35e77cad534c51b4278a55a873c6bc1068`.
+- The bundle README, chat transcript, `TUI-RUNTIME-SYNC.md`,
+  `TUI-IMPLEMENTATION.md`, `TUI-UX-RESEARCH.md`, `AgenC TUI.html`, and JSX
+  sources were read from that snapshot.
+- Direct access to the handoff URL is not available with the credentials on
+  this machine: unauthenticated API GET returns `404`, local OAuth API GET
+  returns `403 insufficient OAuth scopes`, API `HEAD` returns `405`, API
+  `POST` returns `404`, API path variants under `/v1/designs/` return
+  `404`, browser URL variants stop on Cloudflare `403`, and the web-fetch
+  CLI reports `404 Not Found`. Treat a fresh design-scoped
+  credential/current handoff URL or an explicit user decision to accept the
+  local snapshot as the remaining source-provenance requirement.
+
 ## Design Handoff Open Questions
 
 1. **Theme token overlap.** The existing theme already had the base role
@@ -35,10 +52,11 @@ so the next implementation pass does not need to rediscover them.
 
 5. **Typed confirmation.** The existing `Confirmation` keybinding context has
    `confirm:yes`, `confirm:no`, navigation, toggles, and field traversal, but
-   it does not yet enforce high-risk typed confirmation by itself. The v2
-   `ApprovalCard` exposes `requireTypedConfirmation`; the next permission UI
-   pass still needs to bind that flag to an input field for mainnet protocol
-   writes.
+   it does not enforce high-risk typed confirmation by itself. The live daemon
+   permission overlay now renders through the v2 `ApprovalCard` and binds
+   `requireTypedConfirmation` to an input field for high-risk protocol writes;
+   low-risk approvals still use the existing permission-engine allow/reject
+   callbacks and `confirm:yes` shortcut.
 
 ## Runtime Binding Notes
 
@@ -54,7 +72,51 @@ so the next implementation pass does not need to rediscover them.
   `AppStateProvider`.
 - Plan mode now has a v2 banner rendered above scrollback whenever
   `permissionMode === "plan"`.
-- `BackgroundTasksDialog` remains bound to `AppStateStore.tasks`; only its
+- `BackgroundTasksPanel` remains bound to `AppStateStore.tasks`; only its
   visual layer was replaced with the v2 background-tasks panel chrome. Stop
   actions still route through the existing task helpers and optional
   tool-use-context `setAppState`.
+
+## Runtime Mismatch Notes
+
+- The archived handoff source uses `CLAUDE.md` in its memory and hooks mock
+  rows. AgenC's live instruction surface is `AGENC.md`, so the runtime smoke
+  fixture intentionally renders `AGENC.md` and records a source-marker alias in
+  `designStateSmoke.test.tsx` for the archived text.
+- The design handoff said the previous `runtime/src/tui/components/` tree,
+  except `App.tsx`, was being deleted. In the live runtime, that directory is
+  still the home for shared controls used by `App.tsx`, command UIs, tool UIs,
+  screens, hooks, and the `runtime/src/tui/ink.ts` Box/Text export layer.
+  This pass deleted the legacy `messages/` and `permissions/` visual
+  subtrees and moved their live transcript/permission rendering behind the v2
+  primitives, but it intentionally did not delete shared controls that remain
+  imported by live runtime paths.
+
+## Validation Notes
+
+- Numbered design-state viewport smoke:
+  `cd runtime && npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'renders numbered design state without overflow'`
+- Source-backed numbered design-state suite:
+  `cd runtime && AGENC_TUI_DESIGN_HTML='/tmp/agenc-tui-handoff/agenc-tui/project/AgenC TUI.html' npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
+- Browser-backed local design extraction:
+  `cd runtime && AGENC_TUI_DESIGN_HTML='/tmp/agenc-tui-handoff/agenc-tui/project/AgenC TUI.html' AGENC_TUI_DESIGN_BROWSER=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps live browser-rendered design text broadly aligned when enabled'`
+- Curated browser marker anchor check:
+  `cd runtime && AGENC_TUI_DESIGN_BROWSER_REPORT=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps curated browser marker anchors close to their design cells'`
+- Browser-derived text fixture parity:
+  `cd runtime && AGENC_TUI_DESIGN_BROWSER_REPORT=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps projected browser text cells aligned at exact grid positions'`
+- Anchored browser text-cell parity:
+  `cd runtime && npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps found browser text markers intact at rendered cell positions'`
+- Completion-grade exact projected cell gate:
+  `cd runtime && AGENC_TUI_DESIGN_EXACT_CELLS=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'fails closed on projected browser text-cell drift when exact parity is requested'`
+  This gate is intentionally fail-closed and must pass before claiming the
+  strict "no visual drift" acceptance criterion.
+- Focused v2 TUI suite:
+  `cd runtime && npx vitest run src/tui/components/v2/ContextUsageModal.test.tsx src/tui/components/v2/primitives.test.tsx src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
+- Slash-command and v2 panel suites:
+  `cd runtime && npx vitest run src/commands/registry.test.ts src/commands/command-surface.test.ts src/commands/tui-command-list.test.ts src/tui/components/PromptInput/slashCommandSuggestions.test.ts src/tui/components/tasks/BackgroundTasksPanel.test.tsx src/tui/components/v2/ContextUsageModal.test.tsx src/tui/components/v2/primitives.test.tsx src/tui/components/v2/messagePrimitives.test.tsx --reporter=dot`
+- Typecheck:
+  `cd runtime && npm run typecheck`
+- Repo hygiene:
+  `git diff --check && node scripts/branding-scan.mjs --changed`
+- Full TUI gate after runtime-code changes:
+  `node /home/tetsuo/.agenc/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full`

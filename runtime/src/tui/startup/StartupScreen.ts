@@ -1,5 +1,5 @@
 /**
- * AgenC startup screen — filled-block text logo with signal gradient.
+ * AgenC startup screen — filled-block text logo with theme-owned ANSI colors.
  * Called once at CLI startup before the Ink UI renders.
  *
  * Addresses: issue #55
@@ -10,6 +10,7 @@ import { getLocalOpenAICompatibleProviderLabel } from '../../utils/providerDisco
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
 import { containsExactZaiGlmModelId, isZaiBaseUrl } from '../../utils/zaiProvider.js'
+import { getTheme, themeColorToAnsi, type Theme } from '../../utils/theme.js'
 
 declare const MACRO: { VERSION: string; DISPLAY_VERSION?: string }
 
@@ -17,53 +18,27 @@ const ESC = '\x1b['
 const RESET = `${ESC}0m`
 const DIM = `${ESC}2m`
 
-type RGB = [number, number, number]
-const rgb = (r: number, g: number, b: number) => `${ESC}38;2;${r};${g};${b}m`
+const STARTUP_THEME = getTheme('dark')
 
-function lerp(a: RGB, b: RGB, t: number): RGB {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ]
+type StartupColor = keyof Pick<
+  Theme,
+  | 'agenc'
+  | 'briefLabelWorker'
+  | 'success'
+  | 'error'
+  | 'inactive'
+  | 'text2'
+  | 'line'
+  | 'worker'
+>
+
+function ansi(color: StartupColor): string {
+  return themeColorToAnsi(STARTUP_THEME[color])
 }
 
-function gradAt(stops: RGB[], t: number): RGB {
-  const c = Math.max(0, Math.min(1, t))
-  const s = c * (stops.length - 1)
-  const i = Math.floor(s)
-  if (i >= stops.length - 1) return stops[stops.length - 1]
-  return lerp(stops[i], stops[i + 1], s - i)
+function paintLine(text: string, color: StartupColor): string {
+  return `${ansi(color)}${text}${RESET}`
 }
-
-function paintLine(text: string, stops: RGB[], lineT: number): string {
-  let out = ''
-  for (let i = 0; i < text.length; i++) {
-    const t = text.length > 1 ? lineT * 0.5 + (i / (text.length - 1)) * 0.5 : lineT
-    const [r, g, b] = gradAt(stops, t)
-    out += `${rgb(r, g, b)}${text[i]}`
-  }
-  return out + RESET
-}
-
-// ─── Colors ───────────────────────────────────────────────────────────────────
-
-const SUNSET_GRAD: RGB[] = [
-  [255, 79, 122],
-  [221, 82, 255],
-  [178, 95, 255],
-  [130, 86, 255],
-  [82, 214, 255],
-  [44, 214, 139],
-]
-
-const ACCENT: RGB = [206, 92, 255]
-const CREAM: RGB = [239, 229, 255]
-const DIMCOL: RGB = [139, 120, 157]
-const BORDER: RGB = [129, 55, 176]
-const GREEN: RGB = [44, 214, 139]
-const RED: RGB = [255, 79, 122]
-const ORANGE: RGB = [255, 151, 72]
 
 // ─── Filled Block Text Logo ───────────────────────────────────────────────────
 
@@ -173,7 +148,7 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
 
 function boxRow(content: string, width: number, rawLen: number): string {
   const pad = Math.max(0, width - 2 - rawLen)
-  return `${rgb(...BORDER)}\u2502${RESET}${content}${' '.repeat(pad)}${rgb(...BORDER)}\u2502${RESET}`
+  return `${ansi('line')}\u2502${RESET}${content}${' '.repeat(pad)}${ansi('line')}\u2502${RESET}`
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -187,37 +162,39 @@ export function printStartupScreen(modelOverride?: string): void {
   const out: string[] = []
 
   out.push('')
-  out.push(`${rgb(...RED)}●${RESET} ${rgb(...ORANGE)}●${RESET} ${rgb(...GREEN)}●${RESET} ${DIM}${rgb(...DIMCOL)} agenc - orchestrator${RESET}`)
-  out.push(`${rgb(...BORDER)}${'─'.repeat(W)}${RESET}`)
+  out.push(`${ansi('error')}●${RESET} ${ansi('worker')}●${RESET} ${ansi('success')}●${RESET} ${DIM}${ansi('inactive')} agenc - orchestrator${RESET}`)
+  out.push(`${ansi('line')}${'─'.repeat(W)}${RESET}`)
   out.push('')
 
-  // Gradient logo
   const allLogo = LOGO_AGENC
-  const total = allLogo.length
-  for (let i = 0; i < total; i++) {
-    const t = total > 1 ? i / (total - 1) : 0
+  const logoColors: readonly StartupColor[] = [
+    'agenc',
+    'worker',
+    'briefLabelWorker',
+  ]
+  for (let i = 0; i < allLogo.length; i++) {
     if (allLogo[i] === '') {
       out.push('')
     } else {
-      out.push(paintLine(allLogo[i], SUNSET_GRAD, t))
+      out.push(paintLine(allLogo[i], logoColors[i % logoColors.length]!))
     }
   }
 
   out.push('')
 
   // Tagline
-  out.push(`  ${rgb(...ACCENT)}\u2726${RESET} ${rgb(...CREAM)}Orchestrator online. Multi-agent terminal ready.${RESET} ${rgb(...ACCENT)}\u2726${RESET}`)
+  out.push(`  ${ansi('agenc')}\u2726${RESET} ${ansi('text2')}Orchestrator online. Multi-agent terminal ready.${RESET} ${ansi('agenc')}\u2726${RESET}`)
   out.push('')
 
   // Provider info box
-  out.push(`${rgb(...BORDER)}\u2554${'\u2550'.repeat(W - 2)}\u2557${RESET}`)
+  out.push(`${ansi('line')}\u2554${'\u2550'.repeat(W - 2)}\u2557${RESET}`)
 
-  const lbl = (k: string, v: string, c: RGB = CREAM): [string, number] => {
+  const lbl = (k: string, v: string, c: StartupColor = 'text2'): [string, number] => {
     const padK = k.padEnd(9)
-    return [` ${DIM}${rgb(...DIMCOL)}${padK}${RESET} ${rgb(...c)}${v}${RESET}`, ` ${padK} ${v}`.length]
+    return [` ${DIM}${ansi('inactive')}${padK}${RESET} ${ansi(c)}${v}${RESET}`, ` ${padK} ${v}`.length]
   }
 
-  const provC: RGB = p.isLocal ? GREEN : ACCENT
+  const provC: StartupColor = p.isLocal ? 'success' : 'agenc'
   let [r, l] = lbl('Provider', p.name, provC)
   out.push(boxRow(r, W, l))
   ;[r, l] = lbl('Model', p.model)
@@ -226,16 +203,16 @@ export function printStartupScreen(modelOverride?: string): void {
   ;[r, l] = lbl('Endpoint', ep)
   out.push(boxRow(r, W, l))
 
-  out.push(`${rgb(...BORDER)}\u2560${'\u2550'.repeat(W - 2)}\u2563${RESET}`)
+  out.push(`${ansi('line')}\u2560${'\u2550'.repeat(W - 2)}\u2563${RESET}`)
 
-  const sC: RGB = p.isLocal ? GREEN : ACCENT
+  const sC: StartupColor = p.isLocal ? 'success' : 'agenc'
   const sL = p.isLocal ? 'local' : 'cloud'
-  const sRow = ` ${rgb(...sC)}\u25cf${RESET} ${DIM}${rgb(...DIMCOL)}${sL}${RESET}    ${DIM}${rgb(...DIMCOL)}Ready :: type ${RESET}${rgb(...ACCENT)}/help${RESET}${DIM}${rgb(...DIMCOL)} to begin${RESET}`
+  const sRow = ` ${ansi(sC)}\u25cf${RESET} ${DIM}${ansi('inactive')}${sL}${RESET}    ${DIM}${ansi('inactive')}Ready :: type ${RESET}${ansi('agenc')}/help${RESET}${DIM}${ansi('inactive')} to begin${RESET}`
   const sLen = ` \u25cf ${sL}    Ready :: type /help to begin`.length
   out.push(boxRow(sRow, W, sLen))
 
-  out.push(`${rgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
-  out.push(`  ${DIM}${rgb(...DIMCOL)}agenc ${RESET}${rgb(...ACCENT)}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
+  out.push(`${ansi('line')}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
+  out.push(`  ${DIM}${ansi('inactive')}agenc ${RESET}${ansi('agenc')}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
   out.push('')
 
   process.stdout.write(out.join('\n') + '\n')

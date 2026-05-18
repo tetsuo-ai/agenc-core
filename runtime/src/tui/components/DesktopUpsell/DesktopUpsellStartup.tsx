@@ -9,7 +9,7 @@ import {
 } from '../../../utils/config.js';
 import { Select } from '../CustomSelect/select.js';
 import { DesktopHandoff } from '../DesktopHandoff.js';
-import { PermissionDialog } from '../permissions/PermissionDialog.js';
+import { PermissionDialog } from '../v2/permissionPrimitives.js';
 
 type DesktopUpsellConfig = {
   enable_shortcut_tip: boolean;

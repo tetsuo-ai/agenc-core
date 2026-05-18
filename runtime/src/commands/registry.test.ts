@@ -179,6 +179,22 @@ describe("CommandRegistry", () => {
     }
   });
 
+  it("registers protocol commands as the bundled agenc-core plugin surface", () => {
+    const registry = buildDefaultRegistry({ surface: "daemon-tui" });
+
+    for (const name of ["claim", "delegate", "proof", "settle", "stake"]) {
+      const command = registry.find(name);
+
+      expect(command, `/${name} should be registered`).toBeDefined();
+      expect(command?.kind).toBe("protocol");
+      expect(command?.source).toBe("plugin");
+      expect(command?.loadedFrom).toBe("plugin");
+      expect(command?.pluginInfo?.pluginManifest?.name).toBe("agenc-core");
+      expect(command?.supportedSurfaces).toEqual(["runtime", "daemon-tui"]);
+      expect(command?.immediate).toBe(true);
+    }
+  });
+
   it("keeps only expected aliases for retained commands", () => {
     const registry = buildDefaultRegistry();
 

@@ -37,10 +37,11 @@ import type { UnseenDivider } from './FullscreenLayout.js';
 import { StreamingMarkdown } from './markdown/Markdown.js';
 import { hasContentAfterIndex, MessageRow } from './MessageRow.js';
 import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from './messageActions.js';
-import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js';
-import { isNullRenderingAttachment } from './messages/nullRenderingAttachments.js';
+import { ThinkingMessage as AssistantThinkingMessage } from './v2/messagePrimitives.js';
+import { WelcomeColdPanel } from './v2/primitives.js';
+import { isNullRenderingAttachment } from '../message-visibility.js';
 import { OffscreenFreeze } from './OffscreenFreeze.js';
-import type { ToolUseConfirm } from './permissions/PermissionRequest.js';
+import type { ToolUseConfirm } from '../permission-types.js';
 import { StatusNotices } from '../startup/StatusNotices.js';
 import type { JumpHandle } from './VirtualMessageList.js';
 import {
@@ -62,27 +63,13 @@ import {
 // subscribe to useAppState/useSettings for their own updates.
 const LogoHeader = React.memo(function LogoHeader(t0: {
   readonly agentDefinitions?: AgentDefinitionsResult;
+  readonly showWelcome?: boolean;
 }) {
-  const $ = _c(3);
   const {
-    agentDefinitions
+    agentDefinitions,
+    showWelcome = false,
   } = t0;
-  let t1;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = null;
-    $[0] = t1;
-  } else {
-    t1 = $[0];
-  }
-  let t2;
-  if ($[1] !== agentDefinitions) {
-    t2 = <OffscreenFreeze><Box flexDirection="column" gap={1}>{t1}<React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense></Box></OffscreenFreeze>;
-    $[1] = agentDefinitions;
-    $[2] = t2;
-  } else {
-    t2 = $[2];
-  }
-  return t2;
+  return <OffscreenFreeze><Box flexDirection="column" gap={1}>{showWelcome ? <WelcomeColdPanel /> : null}<React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense></Box></OffscreenFreeze>;
 });
 
 // Dead code elimination: conditional import for brief mode
@@ -598,7 +585,7 @@ const MessagesImpl = ({
   }, [tools, lookups_0]);
   return <>
       {/* Logo */}
-      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} />}
+      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
 
       {/* Truncation indicator */}
       {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={columns} />}

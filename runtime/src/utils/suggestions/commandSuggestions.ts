@@ -276,6 +276,7 @@ function createCommandSuggestionItem(
   const aliasText = matchedAlias ? ` (${matchedAlias})` : ''
 
   const isWorkflow = cmd.type === 'prompt' && cmd.kind === 'workflow'
+  const isProtocol = cmd.kind === 'protocol'
   const fullDescription =
     (isWorkflow ? cmd.description : formatDescriptionWithSource(cmd)) +
     (cmd.type === 'prompt' && cmd.argNames?.length
@@ -285,9 +286,10 @@ function createCommandSuggestionItem(
   return {
     id: getCommandId(cmd),
     displayText: `/${commandName}${aliasText}`,
-    tag: isWorkflow ? 'workflow' : undefined,
+    tag: isWorkflow ? 'workflow' : isProtocol ? '◆' : undefined,
     description: fullDescription,
     metadata: cmd,
+    color: isProtocol ? 'worker' : undefined,
   }
 }
 

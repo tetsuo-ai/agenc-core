@@ -85,14 +85,12 @@ describe("project-instructions (T10-B)", () => {
     expect(p).toBe(join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE));
   });
 
-  test("resolveInstructionFile falls back to AGENTS.md then CLAUDE.md", async () => {
+  test("resolveInstructionFile uses AGENTS.md fallback and ignores legacy donor instructions", async () => {
     const dir = join(root, "d");
     mkdirSync(dir);
     writeFileSync(join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE), "old");
 
-    expect(await resolveInstructionFile(dir)).toBe(
-      join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE),
-    );
+    expect(await resolveInstructionFile(dir)).toBeNull();
 
     writeFileSync(join(dir, AGENTS_PROJECT_INSTRUCTION_FILE), "agents");
 

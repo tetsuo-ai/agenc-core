@@ -88,7 +88,7 @@ describe('project-memory API', () => {
 
   it('re-exports project memory file and pattern detection helpers', () => {
     expect(isMemoryFilePath(join('/repo', 'AGENTS.md'))).toBe(true)
-    expect(isMemoryFilePath(join('/repo', 'CLAUDE.md'))).toBe(true)
+    expect(isMemoryFilePath(join('/repo', 'CLAUDE.md'))).toBe(false)
     expect(isMemoryFilePath(join('/repo', '.agenc', 'rules', 'style.md'))).toBe(
       true,
     )

@@ -3,7 +3,7 @@
 import { randomUUID } from 'crypto'
 import { useCallback, useEffect, useRef } from 'react'
 import { useInterval } from 'usehooks-ts'
-import type { ToolUseConfirm } from '../components/permissions/PermissionRequest.js'
+import type { ToolUseConfirm } from '../permission-types.js'
 import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { useTerminalNotification } from '../ink/useTerminalNotification.js'
 import { sendNotification } from '../../services/notifier'
@@ -267,8 +267,7 @@ export function useInboxPoller({
 
         if (setToolUseConfirmQueue) {
           // Route through the standard ToolUseConfirmQueue so tmux workers
-          // get the same tool-specific UI (BashPermissionRequest, FileEditToolDiff, etc.)
-          // as in-process teammates.
+          // get the same approval overlay and diff previews as in-process teammates.
           const tool = findToolByName(getAllBaseTools(), parsed.tool_name)
           if (!tool) {
             logForDebugging(

@@ -588,7 +588,7 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     expect(tiers.project?.content).toContain("<!-- @include extra.md -->");
   });
 
-  test("loadTieredInstructions prefers AGENC.md and falls back to AGENTS.md or CLAUDE.md", async () => {
+  test("loadTieredInstructions prefers AGENC.md and falls back to AGENTS.md only", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");
     const nested = join(repoRoot, "nested");
@@ -617,8 +617,7 @@ describe("agenc-md (T10-B tiered + @include)", () => {
       homeDir: home,
       managedPath: join(tmp, "none"),
     });
-    expect(tiers.project?.content).toContain("ROOT-OLD");
-    expect(tiers.project?.path).toBe(join(repoRoot, "CLAUDE.md"));
+    expect(tiers.project).toBeNull();
   });
 
   test("loadTieredInstructions walks project docs from root to cwd", async () => {

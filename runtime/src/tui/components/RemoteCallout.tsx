@@ -7,7 +7,7 @@ import { getAgenCAIOAuthTokens } from '../../utils/auth.js'; // upstream-import:
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { OptionWithDescription } from './CustomSelect/select';
 import { Select } from './CustomSelect/select';
-import { PermissionDialog } from './permissions/PermissionDialog';
+import { PermissionDialog } from './v2/permissionPrimitives.js';
 type RemoteCalloutSelection = 'enable' | 'dismiss';
 type Props = {
   onDone: (selection: RemoteCalloutSelection) => void;

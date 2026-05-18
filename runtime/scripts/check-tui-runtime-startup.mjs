@@ -17,7 +17,8 @@
  * Hard requirements implemented here:
  *   - Import `runtime/dist/tui/main.js` and confirm it exposes `bootTUI`.
  *   - Spawn `agenc` and `agenc --yolo` under a real pseudo-terminal
- *     through the required `node-pty` dependency.
+ *     through the required `node-pty` dependency at the design-handoff
+ *     viewport sizes.
  *   - Inject XTVERSION + DA1 replies after first-paint, wait for the
  *     post-reply tick, then send SIGTERM and collect output.
  *   - Scan stdout/stderr for fatal startup patterns. Exit non-zero on
@@ -41,6 +42,11 @@ const BIN_AGENC_PATH = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
 const FIRST_PAINT_MS = 1500;
 const POST_REPLY_MS = 1500;
 const SIGTERM_GRACE_MS = 1000;
+const VIEWPORTS = [
+  { cols: 148, rows: 40 },
+  { cols: 120, rows: 30 },
+  { cols: 80, rows: 24 },
+];
 
 // Bytes to inject. XTVERSION is the secondary device-attribute query that the
 // upstream-mirrored debug-import flow has historically crashed on; DA1 is the
@@ -137,16 +143,16 @@ function scanOutput(buffer) {
   return matches;
 }
 
-async function ptyStartupSmoke(label, args) {
+async function ptyStartupSmoke(label, args, viewport) {
   const pty = loadPtyModule();
 
   console.log(
-    `[2/3] PTY spawn ${label}: ${args.join(" ") || "(no args)"} (real PTY)`,
+    `[2/3] PTY spawn ${label} ${viewport.cols}x${viewport.rows}: ${args.join(" ") || "(no args)"} (real PTY)`,
   );
   const term = pty.spawn(process.execPath, [BIN_AGENC_PATH, ...args], {
     name: "xterm-256color",
-    cols: 120,
-    rows: 30,
+    cols: viewport.cols,
+    rows: viewport.rows,
     cwd: RUNTIME_DIR,
     env: {
       ...process.env,
@@ -167,7 +173,11 @@ async function ptyStartupSmoke(label, args) {
   term.write(DA1_REPLY);
   await delay(POST_REPLY_MS);
 
-  return await collectAndKill(label, () => buffer, () => term.kill("SIGTERM"));
+  return await collectAndKill(
+    `${label} ${viewport.cols}x${viewport.rows}`,
+    () => buffer,
+    () => term.kill("SIGTERM"),
+  );
 }
 
 async function collectAndKill(label, getBuffer, killFn) {
@@ -208,10 +218,13 @@ async function main() {
     process.exit(1);
   }
 
-  const agencOk = await ptyStartupSmoke("agenc", []);
-  const yoloOk = await ptyStartupSmoke("agenc --yolo", ["--yolo"]);
+  const results = [];
+  for (const viewport of VIEWPORTS) {
+    results.push(await ptyStartupSmoke("agenc", [], viewport));
+    results.push(await ptyStartupSmoke("agenc --yolo", ["--yolo"], viewport));
+  }
 
-  if (agencOk && yoloOk) {
+  if (results.every(Boolean)) {
     console.log(green("[3/3] TUI runtime startup smoke passed"));
     process.exit(0);
   }

@@ -5,7 +5,7 @@ import {
   logEvent,
 } from '../../../services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js'
-import type { ToolUseConfirm } from '../../components/permissions/PermissionRequest.js'
+import type { ToolUseConfirm } from '../../permission-types.js'
 import type {
   ToolPermissionContext,
   Tool as ToolType,

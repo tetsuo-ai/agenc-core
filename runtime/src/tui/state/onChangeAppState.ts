@@ -51,7 +51,7 @@ export function onChangeAppState({
   // Prior to this block, mode changes were relayed to CCR by only 2 of 8+
   // mutation paths: a bespoke setAppState wrapper in print.ts (headless/SDK
   // mode only) and a manual notify in the set_permission_mode handler.
-  // Every other path — Shift+Tab cycling, ExitPlanModePermissionRequest
+  // Every other path — Shift+Tab cycling, plan approval
   // dialog options, the /plan slash command, rewind, the REPL bridge's
   // onSetPermissionMode — mutated AppState without telling
   // CCR, leaving external_metadata.permission_mode stale and the web UI out

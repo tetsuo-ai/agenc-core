@@ -12,7 +12,7 @@ import { updateSettingsForSource } from '../../utils/settings/settings.js'; // u
 import type { OptionWithDescription } from './CustomSelect/select';
 import { Select } from './CustomSelect/select';
 import { effortLevelToSymbol } from './EffortIndicator';
-import { PermissionDialog } from './permissions/PermissionDialog';
+import { PermissionDialog } from './v2/permissionPrimitives.js';
 type EffortCalloutSelection = EffortLevel | undefined | 'dismiss';
 type Props = {
   model: string;

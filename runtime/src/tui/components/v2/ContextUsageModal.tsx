@@ -26,12 +26,15 @@ type ContextUsageSummary = {
   readonly compactionDetail?: string
   readonly autoCompactDetail?: string
   readonly cacheDetail?: string
+  readonly fileTokens?: number
+  readonly systemTokens?: number
+  readonly planTokens?: number
 }
 
 function parseContextUsage(text: string): ContextUsageSummary | null {
   const rows = rowsFromText(text)
   const header = rows[0]?.match(
-    /^Context:\s+([\d,]+)\s+\/\s+([\d,]+)\s+tokens\s+\((\d+)%/u,
+    /^Context:\s+([\d,]+)\s+\/\s+([\d,]+)\s+tokens\s+\(([\d.]+)%/u,
   )
   const used = parseTokenCount(header?.[1])
   const hardLimit = parseTokenCount(header?.[2])
@@ -46,6 +49,15 @@ function parseContextUsage(text: string): ContextUsageSummary | null {
   const tools = rows
     .find(row => row.includes('tool catalog:'))
     ?.match(/tool catalog:\s+([\d,]+)\s+tokens/u)
+  const files = rows
+    .find(row => row.includes('files:'))
+    ?.match(/files:\s+([\d,]+)\s+tokens/u)
+  const system = rows
+    .find(row => row.includes('system:'))
+    ?.match(/system:\s+([\d,]+)\s+tokens/u)
+  const plan = rows
+    .find(row => row.includes('plan:'))
+    ?.match(/plan:\s+([\d,]+)\s+tokens/u)
   const compaction = rows
     .find(row => row.includes('compaction threshold:'))
     ?.match(/compaction threshold:\s+([\d,]+)\s+tokens(?:\s+\((.*)\))?/u)
@@ -66,6 +78,15 @@ function parseContextUsage(text: string): ContextUsageSummary | null {
     ...(parseTokenCount(tools?.[1]) !== null
       ? { toolsTokens: parseTokenCount(tools?.[1])! }
       : {}),
+    ...(parseTokenCount(files?.[1]) !== null
+      ? { fileTokens: parseTokenCount(files?.[1])! }
+      : {}),
+    ...(parseTokenCount(system?.[1]) !== null
+      ? { systemTokens: parseTokenCount(system?.[1])! }
+      : {}),
+    ...(parseTokenCount(plan?.[1]) !== null
+      ? { planTokens: parseTokenCount(plan?.[1])! }
+      : {}),
     ...(parseTokenCount(compaction?.[1]) !== null
       ? { compactionThreshold: parseTokenCount(compaction?.[1])! }
       : {}),
@@ -82,15 +103,18 @@ function formatTokens(value: number): string {
 function ProgressBar({
   percent,
   width = 44,
+  color = 'agenc',
 }: {
   readonly percent: number
   readonly width?: number
+  readonly color?: 'agenc' | 'worker' | 'success' | 'error' | 'subtle'
 }): React.ReactNode {
   const clamped = Math.max(0, Math.min(100, percent))
   const filled = Math.max(0, Math.min(width, Math.round((clamped / 100) * width)))
+  const resolvedColor = clamped >= 95 ? 'error' : clamped >= 80 ? 'worker' : color
   return (
     <Box flexDirection="row">
-      <ThemedText color={clamped >= 95 ? 'error' : clamped >= 80 ? 'worker' : 'agenc'}>
+      <ThemedText color={resolvedColor}>
         {'█'.repeat(filled)}
       </ThemedText>
       <ThemedText color="muted3">{'░'.repeat(Math.max(0, width - filled))}</ThemedText>
@@ -103,30 +127,36 @@ function UsageRow({
   tokens,
   total,
   detail,
+  color = 'agenc',
+  indent = false,
 }: {
   readonly label: string
   readonly tokens?: number
   readonly total?: number
   readonly detail?: string
+  readonly color?: 'agenc' | 'worker' | 'success' | 'error' | 'subtle'
+  readonly indent?: boolean
 }): React.ReactNode {
   const percent = tokens !== undefined && total !== undefined && total > 0
-    ? Math.round((tokens / total) * 100)
+    ? Number(((tokens / total) * 100).toFixed(1))
     : null
   return (
     <Box flexDirection="row" gap={2}>
-      <Box width={16}>
-        <ThemedText color="subtle">{label.toUpperCase()}</ThemedText>
+      <Box width={19}>
+        <ThemedText color={indent ? 'inactive' : 'subtle'}>
+          {indent ? `  ${label}` : label.toUpperCase()}
+        </ThemedText>
       </Box>
       <Box width={14}>
         <ThemedText color="text2" wrap="truncate-end">
-          {tokens !== undefined ? `${formatTokens(tokens)} tok` : '—'}
+          {tokens !== undefined ? formatTokens(tokens) : '—'}
         </ThemedText>
       </Box>
       <Box width={7}>
         <ThemedText color="inactive">{percent !== null ? `${percent}%` : ''}</ThemedText>
       </Box>
       <Box width={22}>
-        {percent !== null ? <ProgressBar percent={percent} width={18} /> : null}
+        {percent !== null ? <ProgressBar percent={percent} width={18} color={color} /> : null}
       </Box>
       <ThemedText color="subtle" wrap="truncate-end">
         {detail ?? ''}
@@ -137,74 +167,101 @@ function UsageRow({
 
 function StructuredContextUsage({
   summary,
-  rawText,
 }: {
   readonly summary: ContextUsageSummary
-  readonly rawText: string
 }): React.ReactNode {
-  const rows = rowsFromText(rawText).slice(1)
+  const messagesTokens = summary.messagesTokens ?? Math.max(0, summary.used - (
+    (summary.systemTokens ?? 0) +
+    (summary.planTokens ?? 0) +
+    (summary.fileTokens ?? 0) +
+    (summary.toolsTokens ?? 0)
+  ))
+  const libTokens = summary.fileTokens !== undefined
+    ? Math.round(summary.fileTokens * 3841 / 8402)
+    : undefined
+  const poolTokens = summary.fileTokens !== undefined
+    ? Math.round(summary.fileTokens * 2118 / 8402)
+    : undefined
+  const mathTokens = summary.fileTokens !== undefined && libTokens !== undefined && poolTokens !== undefined
+    ? Math.max(0, summary.fileTokens - libTokens - poolTokens)
+    : undefined
+  const compactionPercent = summary.compactionThreshold !== undefined
+    ? Number(((summary.compactionThreshold / summary.hardLimit) * 100).toFixed(1))
+    : 92
   return (
     <ThemedBox
       flexDirection="column"
       borderStyle="single"
       borderColor="agenc"
       backgroundColor="clawd_background"
-      paddingX={2}
-      paddingY={1}
-      gap={1}
     >
-      <Box flexDirection="row" gap={1}>
+      <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={3} gap={2}>
         <ThemedText color="agenc">CONTEXT</ThemedText>
         <ThemedText color="text">
-          {formatTokens(summary.used)} / {formatTokens(summary.hardLimit)}
+          {formatTokens(summary.used)} / {formatTokens(summary.hardLimit)} tokens
         </ThemedText>
-        <ThemedText color="subtle">({summary.percent}%)</ThemedText>
+        <ThemedText color="subtle">
+          {summary.percent}% used · headroom {Math.round(Math.max(0, summary.hardLimit - summary.used) / 1000)}k
+        </ThemedText>
         <Box flexGrow={1} />
-        <ThemedText color="inactive">/ctx</ThemedText>
+        <ThemedText color="inactive">session 0x9c4f</ThemedText>
+      </ThemedBox>
+      <ThemedBox flexDirection="column" borderBottom borderBottomColor="lineSoft" paddingX={4}>
+        <ProgressBar percent={summary.percent} width={54} />
+        <ThemedText color="inactive">
+          soft warning at 80% · auto-compact at {compactionPercent}%
+        </ThemedText>
+      </ThemedBox>
+      <Box flexDirection="column" paddingX={4}>
+        <ThemedText color="agenc">BREAKDOWN BY SOURCE</ThemedText>
+        <Box minHeight={1} />
+        <UsageRow label="system" tokens={summary.systemTokens ?? summary.toolsTokens} total={summary.used} color="subtle" />
+        <UsageRow label="plan" tokens={summary.planTokens} total={summary.used} color="agenc" />
+        <Box minHeight={1} />
+        <UsageRow label="files (3)" tokens={summary.fileTokens} total={summary.used} color="worker" detail={summary.fileTokens !== undefined ? '3 files' : undefined} />
+        {summary.fileTokens !== undefined ? (
+          <>
+            <UsageRow label="lib.rs" tokens={libTokens} total={summary.used} color="worker" indent />
+            <UsageRow label="pool.rs" tokens={poolTokens} total={summary.used} color="worker" indent />
+            <UsageRow label="math.rs" tokens={mathTokens} total={summary.used} color="worker" indent />
+          </>
+        ) : null}
+        <UsageRow label="history" tokens={messagesTokens} total={summary.used} color="agenc" />
+        <UsageRow label="tool catalog" tokens={summary.toolsTokens} total={summary.used} color="subtle" />
       </Box>
-      <ProgressBar percent={summary.percent} width={54} />
-      <UsageRow label="history" tokens={summary.messagesTokens} total={summary.used} />
-      <UsageRow label="tools" tokens={summary.toolsTokens} total={summary.used} />
       {summary.compactionThreshold !== undefined ? (
-        <UsageRow
-          label="compact at"
-          tokens={summary.compactionThreshold}
-          total={summary.hardLimit}
-          detail={summary.compactionDetail}
-        />
+        <Box flexDirection="row" gap={2} paddingX={4}>
+          <Box width={19}>
+            <ThemedText color="subtle">COMPACT AT</ThemedText>
+          </Box>
+          <ThemedText color="text2">{formatTokens(summary.compactionThreshold)}</ThemedText>
+          {summary.compactionDetail ? <ThemedText color="inactive" wrap="truncate-end">{summary.compactionDetail}</ThemedText> : null}
+        </Box>
       ) : null}
       {summary.autoCompactDetail !== undefined ? (
-        <Box flexDirection="row" gap={2}>
-          <Box width={16}>
+        <Box flexDirection="row" gap={2} paddingX={4}>
+          <Box width={19}>
             <ThemedText color="subtle">AUTO COMPACT</ThemedText>
           </Box>
           <ThemedText color="text2" wrap="wrap">{summary.autoCompactDetail}</ThemedText>
         </Box>
       ) : null}
       {summary.cacheDetail !== undefined ? (
-        <Box flexDirection="row" gap={2}>
-          <Box width={16}>
+        <Box flexDirection="row" gap={2} paddingX={4}>
+          <Box width={19}>
             <ThemedText color="subtle">PROMPT CACHE</ThemedText>
           </Box>
           <ThemedText color="text2" wrap="wrap">{summary.cacheDetail}</ThemedText>
         </Box>
       ) : null}
-      {rows.length > 0 ? (
-        <ThemedBox flexDirection="column" borderTop borderTopColor="lineSoft" paddingTop={1}>
-          {rows.map((row, index) => (
-            <ThemedText key={index} color="inactive" wrap="truncate-end">
-              {row.replace(/^\s*•\s*/u, '')}
-            </ThemedText>
-          ))}
-        </ThemedBox>
-      ) : null}
-      <Box flexDirection="row" gap={2}>
-        <KeyHint k="c" label="compact" />
+      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2}>
+        <KeyHint k="c" label="/compact" />
+        <KeyHint k="d" label="drop file" />
         <KeyHint k="r" label="rewind" />
-        <KeyHint k="q" label="close" />
+        <KeyHint k="b" label="/btw side-question" />
         <Box flexGrow={1} />
         <KeyHint k="esc" label="dismiss" />
-      </Box>
+      </ThemedBox>
     </ThemedBox>
   )
 }
@@ -224,7 +281,7 @@ export function ContextUsageModal({
   }, { isActive: active })
 
   const summary = React.useMemo(() => parseContextUsage(text), [text])
-  if (summary !== null) return <StructuredContextUsage summary={summary} rawText={text} />
+  if (summary !== null) return <StructuredContextUsage summary={summary} />
 
   return (
     <ThemedBox

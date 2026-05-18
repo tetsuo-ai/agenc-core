@@ -158,7 +158,6 @@ export async function findProjectRoot(
  *   1. `AGENC.override.md`
  *   2. `AGENC.md`
  *   3. `AGENTS.md`
- *   4. `CLAUDE.md`
  * Returns `null` if no usable regular text file exists.
  */
 export async function resolveInstructionFile(dir: string): Promise<string | null> {

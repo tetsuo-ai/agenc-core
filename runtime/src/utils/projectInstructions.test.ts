@@ -44,7 +44,7 @@ describe('projectInstructions', () => {
     expect(filePath).toBe(join(dir, FALLBACK_PROJECT_INSTRUCTION_FILE))
   })
 
-  test('falls back to CLAUDE.md when AGENC.md and AGENTS.md are absent', () => {
+  test('does not fall back to legacy donor instruction files', () => {
     const dir = '/repo'
     const existingPaths = new Set([join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE)])
 
@@ -53,7 +53,10 @@ describe('projectInstructions', () => {
       path => existingPaths.has(path),
     )
 
-    expect(filePath).toBe(join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE))
+    expect(filePath).toBe(join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE))
+    expect(hasProjectInstructionFile(dir, path => existingPaths.has(path))).toBe(
+      false,
+    )
   })
 
   test('skips non-regular candidates when a usable predicate is provided', () => {
@@ -90,7 +93,6 @@ describe('projectInstructions', () => {
     expect(getProjectInstructionFilePaths(dir)).toEqual([
       join(dir, PRIMARY_PROJECT_INSTRUCTION_FILE),
       join(dir, AGENTS_PROJECT_INSTRUCTION_FILE),
-      join(dir, CLAUDE_PROJECT_INSTRUCTION_FILE),
     ])
   })
 
@@ -112,7 +114,7 @@ describe('projectInstructions', () => {
       true,
     )
     expect(isProjectInstructionFileName(CLAUDE_PROJECT_INSTRUCTION_FILE)).toBe(
-      true,
+      false,
     )
     expect(isProjectInstructionFileName('README.md')).toBe(false)
   })

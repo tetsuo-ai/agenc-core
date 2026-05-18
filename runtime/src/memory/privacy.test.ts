@@ -14,10 +14,10 @@ vi.mock('../utils/settings/settings.js', () => ({
   getInitialSettings: () => ({ autoMemoryEnabled: true }),
   getSettingsForSource: () => undefined,
 }))
-vi.mock('../tui/components/messages/CollapsedReadSearchContent.tsx', () => ({
+vi.mock('../tui/message-renderers/CollapsedReadSearchContent.tsx', () => ({
   CollapsedReadSearchContent: () => null,
 }))
-vi.mock('../tui/components/messages/SystemTextMessage.tsx', () => ({
+vi.mock('../tui/message-renderers/SystemTextMessage.tsx', () => ({
   SystemTextMessage: () => null,
 }))
 vi.mock('../tools.js', () => ({}))

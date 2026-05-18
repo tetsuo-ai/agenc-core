@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { logEvent } from '../../services/analytics/index.js'
 import { readFileSync } from '../../utils/fileRead.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { expandPath } from '../../utils/path.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { PermissionOption } from '../components/permissions/FilePermissionDialog/permissionOptions.js'
+import type { PermissionOption } from '../permission-options.js'
 import type {
   MCPServerConnection,
   McpSSEIDEServerConfig,

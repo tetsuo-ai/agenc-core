@@ -120,7 +120,7 @@ const PERMISSION_POLL_INTERVAL_MS = 500
  *
  * Always uses the leader's ToolUseConfirm dialog with a worker badge when
  * the bridge is available, giving teammates the same tool-specific UI
- * (BashPermissionRequest, FileEditToolDiff, etc.) as the leader's own tools.
+ * approval overlay and diff previews as the leader's own tools.
  *
  * Falls back to the mailbox system when the bridge is unavailable:
  * sends a permission request to the leader's inbox, waits for the response

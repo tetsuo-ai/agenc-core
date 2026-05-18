@@ -24,10 +24,11 @@ describe('ContextUsageModal', () => {
     expect(output).toContain('CONTEXT')
     expect(output).toContain('22,841 / 200,000')
     expect(output).toContain('HISTORY')
-    expect(output).toContain('12,625 tok')
-    expect(output).toContain('TOOLS')
+    expect(output).toContain('12,625')
+    expect(output).toContain('TOOL CATALOG')
     expect(output).toContain('COMPACT AT')
     expect(output).toContain('PROMPT CACHE')
+    expect(output).toContain('/btw side-question')
   })
 
   it('falls back to raw rows when context text is unstructured', async () => {

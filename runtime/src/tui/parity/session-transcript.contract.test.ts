@@ -237,6 +237,66 @@ describe("tool-call correlation contract", () => {
     ]);
   });
 
+  test("collab-v2 raw spawn_agent tool events do not duplicate the structured agent row", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "raw-spawn-begin",
+        msg: {
+          type: "tool_call_started",
+          payload: {
+            callId: "agent-10",
+            toolName: "spawn_agent",
+            input: {
+              task_name: "reviewer",
+              message: "review the diff",
+            },
+          },
+        },
+      },
+      {
+        id: "spawn-begin",
+        msg: {
+          type: "collab_agent_spawn_begin",
+          payload: {
+            callId: "agent-10",
+            prompt: "review the diff",
+            agentRole: "reviewer",
+          },
+        },
+      },
+      {
+        id: "raw-spawn-end",
+        msg: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "agent-10",
+            toolName: "spawn_agent",
+            result: { agentId: "thread-10" },
+          },
+        },
+      },
+      {
+        id: "spawn-end",
+        msg: {
+          type: "collab_agent_spawn_end",
+          payload: {
+            callId: "agent-10",
+            newThreadId: "thread-10",
+            newAgentNickname: "reviewer",
+            status: { status: "completed" },
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.inProgressToolUseIDs.size).toBe(0);
+    expect([...transcript.toolNames]).toEqual([]);
+    expect(transcript.messages).toMatchObject([
+      { type: "system", subtype: "collab_agent", title: "Spawned reviewer", state: "success" },
+    ]);
+    expect(transcript.messages).toHaveLength(1);
+  });
+
   test("collab-spawn-failure: spawn_end error is visible and clears running state", () => {
     const transcript = adaptTranscriptEvents([
       {

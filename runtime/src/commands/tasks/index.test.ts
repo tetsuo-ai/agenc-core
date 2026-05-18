@@ -21,7 +21,7 @@ describe("tasks command metadata", () => {
 
   it("declares a load() function for lazy import of the dialog", () => {
     // The module the load() returns can't be imported in vitest because
-    // BackgroundTasksDialog pulls in the full Ink + daemon-task tree.
+    // BackgroundTasksPanel pulls in the full Ink + daemon-task tree.
     // Asserting that load is a function is enough to verify the
     // command-spec contract is satisfied; the actual JSX render is
     // covered by the PTY scenario.

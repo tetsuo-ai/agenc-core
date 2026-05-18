@@ -59,7 +59,7 @@ export function collapseBackgroundBashNotifications(
       if (count === 1) {
         result.push(msg)
       } else {
-        // Synthesize a task-notification that UserAgentNotificationMessage
+        // Synthesize a task-notification that the v2 agent notification row
         // already knows how to render — no new renderer needed.
         result.push({
           ...msg,

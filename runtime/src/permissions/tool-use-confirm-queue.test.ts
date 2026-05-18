@@ -8,9 +8,6 @@ import {
   APPROVED_FOR_SESSION,
   DENIED,
 } from "./review-decision.js";
-vi.mock("../tui/components/permissions/PermissionRequest.js", () => ({
-  PermissionRequest: () => null,
-}));
 import { buildToolUseConfirmQueue } from "../tui/permission-requests.js";
 import { clearAskUserQuestionResponsesForTest, createAskUserQuestionTool } from "../tools/ask-user-question/tool.js";
 import type { AskUserQuestionInput } from "../tools/ask-user-question/tool.js";
@@ -255,11 +252,13 @@ describe("buildToolUseConfirmQueue (TUI multi-approval queue)", () => {
     expect(got).toEqual([]);
   });
 
-  it("falls back to the first registry tool when none match the request", () => {
-    const r = makeRequest("MissingTool", "call-1", () => {});
+  it("fails closed when none of the registered tools match the request", () => {
+    let resolved: ReviewDecision | null = null;
+    const r = makeRequest("MissingTool", "call-1", (decision) => {
+      resolved = decision;
+    });
     const got = buildToolUseConfirmQueue([r as never], [{ name: "Bash" }]);
-    expect(got).toHaveLength(1);
-    expect((got[0] as { tool: { name: string } }).tool.name).toBe("Bash");
-    expect((got[0] as { toolUseID: string }).toolUseID).toBe("call-1");
+    expect(got).toEqual([]);
+    expect(resolved).toBe(DENIED);
   });
 });

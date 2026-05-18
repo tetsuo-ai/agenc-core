@@ -5,7 +5,7 @@ import React from 'react';
 import { Box } from '../ink.js';
 import { BashTool } from '../../tools/BashTool/BashTool';
 import type { ShellProgress } from '../../types/tools';
-import { UserBashInputMessage } from './messages/UserBashInputMessage';
+import { ShellInputMessage } from './v2/messagePrimitives.js';
 import { ShellProgressMessage } from './shell/ShellProgressMessage';
 type Props = {
   input: string;
@@ -22,7 +22,7 @@ export function BashModeProgress(t0) {
   const t1 = `<bash-input>${input}</bash-input>`;
   let t2;
   if ($[0] !== t1) {
-    t2 = <UserBashInputMessage addMargin={false} param={{
+    t2 = <ShellInputMessage addMargin={false} param={{
       text: t1,
       type: "text"
     }} />;

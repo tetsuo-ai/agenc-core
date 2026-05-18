@@ -39,7 +39,7 @@ export function SearchBox(t0: Props): React.ReactNode {
   const prefix = t2 === undefined ? searchBoxDefaults.prefix : t2;
   const borderless = t3 === undefined ? false : t3;
   const offset = cursorOffset ?? query.length;
-  const t4 = borderless ? undefined : "round";
+  const t4 = borderless ? undefined : "single";
   const t5 = isFocused ? "suggestion" : undefined;
   const t6 = !isFocused;
   const t7 = borderless ? 0 : 1;

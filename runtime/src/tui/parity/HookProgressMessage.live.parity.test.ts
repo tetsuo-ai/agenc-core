@@ -4,7 +4,7 @@ import { describe, expect, test } from "vitest";
 
 const HOOK_PROGRESS_SOURCE = path.resolve(
   import.meta.dirname,
-  "../components/messages/HookProgressMessage.tsx",
+  "../message-renderers/HookProgressMessage.tsx",
 );
 
 function readSource(): string {

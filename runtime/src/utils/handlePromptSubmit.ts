@@ -510,7 +510,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
         // Derive origin from mode for task-notifications — mirrors the origin
         // derivation at messages.ts (case 'queued_command'); intentionally
         // does NOT mirror its isMeta:true so idle-dequeued notifications stay
-        // visible in the transcript via UserAgentNotificationMessage.
+        // visible in the transcript via the v2 agent notification row.
         const origin =
           cmd.origin ??
           (cmd.mode === 'task-notification'

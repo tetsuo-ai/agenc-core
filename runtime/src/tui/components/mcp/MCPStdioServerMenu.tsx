@@ -99,7 +99,7 @@ export function MCPStdioServerMenu({
       </Box>;
   }
   return <Box flexDirection="column">
-      <Box flexDirection="column" paddingX={1} borderStyle={borderless ? undefined : 'round'}>
+      <Box flexDirection="column" paddingX={1} borderStyle={borderless ? undefined : 'single'}>
         <Box marginBottom={1}>
           <Text bold>{capitalizedServerName} MCP Server</Text>
         </Box>

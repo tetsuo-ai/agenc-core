@@ -7,7 +7,7 @@ import React, { useEffect } from 'react';
 import { getAdditionalDirectoriesForAgenCMd, setAdditionalDirectoriesForAgenCMd } from '../../bootstrap/state.js';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import { MessageResponse } from '../../tui/components/MessageResponse.js';
-import { AddWorkspaceDirectory } from '../../tui/components/permissions/rules/AddWorkspaceDirectory.js';
+import { AddWorkspaceDirectory } from '../../tui/permission-rules/AddWorkspaceDirectory.js';
 import { Box, Text } from '../../tui/ink.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { applyPermissionUpdate, persistPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js';

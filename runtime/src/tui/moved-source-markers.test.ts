@@ -24,12 +24,7 @@ const files = [
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
-  "runtime/src/tui/components/permissions/PermissionRequest.tsx",
-  "runtime/src/tui/components/permissions/BashPermissionRequest/BashPermissionRequest.tsx",
-  "runtime/src/tui/components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.tsx",
-  "runtime/src/tui/components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx",
-  "runtime/src/tui/components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx",
-  "runtime/src/tui/components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.tsx",
+  "runtime/src/tui/components/v2/permissionPrimitives.tsx",
 ];
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
@@ -117,28 +112,24 @@ describe("moved-source marker cleanup", () => {
     expect(source).not.toContain("upstream-import");
   });
 
-  test("owned message renderers do not import provider SDK block types directly", () => {
+  test("owned message renderers do not keep donor import markers or provider SDK block types", () => {
     for (const file of [
       "runtime/src/tui/components/Message.tsx",
-      "runtime/src/tui/components/messages/AssistantTextMessage.tsx",
-      "runtime/src/tui/components/messages/AssistantThinkingMessage.tsx",
-      "runtime/src/tui/components/messages/AssistantToolUseMessage.tsx",
-      "runtime/src/tui/components/messages/GroupedToolUseContent.tsx",
-      "runtime/src/tui/components/messages/UserAgentNotificationMessage.tsx",
-      "runtime/src/tui/components/messages/UserBashInputMessage.tsx",
-      "runtime/src/tui/components/messages/UserChannelMessage.tsx",
-      "runtime/src/tui/components/messages/UserCommandMessage.tsx",
-      "runtime/src/tui/components/messages/UserPromptMessage.tsx",
-      "runtime/src/tui/components/messages/UserResourceUpdateMessage.tsx",
-      "runtime/src/tui/components/messages/UserTeammateMessage.tsx",
-      "runtime/src/tui/components/messages/UserTextMessage.tsx",
-      "runtime/src/tui/components/messages/UserToolResultMessage/UserToolErrorMessage.tsx",
-      "runtime/src/tui/components/messages/UserToolResultMessage/UserToolResultMessage.tsx",
-      "runtime/src/tui/components/messages/UserToolResultMessage/utils.tsx",
+      "runtime/src/tui/message-renderers/AssistantTextMessage.tsx",
+      "runtime/src/tui/message-renderers/AssistantToolUseMessage.tsx",
+      "runtime/src/tui/message-renderers/GroupedToolUseContent.tsx",
+      "runtime/src/tui/components/v2/messagePrimitives.tsx",
+      "runtime/src/tui/message-renderers/UserPromptMessage.tsx",
+      "runtime/src/tui/message-renderers/UserTeammateMessage.tsx",
+      "runtime/src/tui/message-renderers/UserTextMessage.tsx",
+      "runtime/src/tui/message-renderers/UserToolResultMessage/UserToolErrorMessage.tsx",
+      "runtime/src/tui/message-renderers/UserToolResultMessage/UserToolResultMessage.tsx",
+      "runtime/src/tui/message-renderers/UserToolResultMessage/utils.tsx",
       "runtime/src/utils/groupToolUses.ts",
     ]) {
       const source = readFileSync(`${repoRoot}${file}`, "utf8");
 
+      expect(source).not.toContain("upstream-import");
       expect(source).not.toContain("@anthropic-ai/sdk");
     }
   });

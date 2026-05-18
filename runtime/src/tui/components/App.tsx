@@ -1379,6 +1379,7 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const completionPipelineRows = formatCompletionPipelineRows(completionPipelineState);
   const completionPipelineActive = completionPipelineOwnsPrompt(completionPipelineState);
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
+  const modalScrollRef = useRef<ScrollBoxHandle | null>(null);
   const fullscreen = isFullscreenEnvEnabled();
   // SpinnerWithVerb wall-clock timer state. Refs (not state) so the spinner's
   // 50ms animation tick doesn't re-render AgenCTuiShell — SpinnerAnimationRow
@@ -2299,7 +2300,10 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
       }} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={helpOpen} setHelpOpen={setHelpOpen} />
       </Box>;
   }
-  const messagesElement = isLocalJSXCommandActive ? null : <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={false} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
+  const messagesElement = isLocalJSXCommandActive ? null : <Messages messages={transcript.messages as any[]} tools={tools as any} commands={commands as unknown as Command[]} verbose={screen === "transcript"} toolJSX={toolJSX as any} toolUseConfirmQueue={toolUseConfirmQueue as never[]} inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={props.session.conversationId} screen={screen as any} streamingToolUses={transcript.streamingToolUses} showAllInTranscript={showAllInTranscript} isLoading={isLoading} streamingText={transcript.streamingText} streamingThinking={transcript.streamingThinking as never} hidePastThinking={screen === "transcript"} scrollRef={fullscreen ? scrollRef : undefined} trackStickyPrompt={fullscreen ? true : undefined} />;
+  const toolOwnsPrompt = toolJSX?.isLocalJSXCommand === true && toolJSX.shouldHidePromptInput === true;
+  const inlineToolJSX = toolJSX !== null && !toolOwnsPrompt ? toolJSX.jsx : null;
+  const modalToolJSX = toolOwnsPrompt ? toolJSX.jsx : null;
   const scrollableContent = <>
       {messagesElement}
       <RealtimePanel state={realtimeState} />
@@ -2311,8 +2315,8 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
           {compactProgress.responseLength > 0 ? <Text dimColor>{` · ${compactProgress.responseLength} chars`}</Text> : null}
         </Box> : null}
       {renderHealthWarning !== null ? <Text color="warning" wrap="truncate">{renderHealthWarning}</Text> : null}
-      {toolJSX !== null ? <Box flexDirection="column" width="100%">
-          {toolJSX.jsx}
+      {inlineToolJSX !== null ? <Box flexDirection="column" width="100%">
+          {inlineToolJSX}
         </Box> : null}
       {/* flexGrow spacer pushes streaming content to the top of the scroll
           viewport in fullscreen mode. */}
@@ -2362,14 +2366,14 @@ function AgenCTuiShell(props: AgenCTuiProps): React.ReactElement {
   const body = <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
       <GlobalKeybindingHandlers screen={screen as any} setScreen={setScreen as any} showAllInTranscript={showAllInTranscript} setShowAllInTranscript={setShowAllInTranscript} messageCount={transcript.messages.length} />
-      <ScrollKeybindingHandler scrollRef={scrollRef} isActive={fullscreen && permissionRequests.length === 0} />
+      <ScrollKeybindingHandler scrollRef={modalToolJSX !== null ? modalScrollRef : scrollRef} isActive={fullscreen && permissionRequests.length === 0} />
       <CancelRequestHandler
     // Daemon-mode no-op: permission requests are owned by the daemon
     // and resolved via session.cancelTurn cascade.
     setToolUseConfirmQueue={() => {}} onCancel={handleTurnCancel} onAgentsKilled={handleAgentsKilled} isMessageSelectorVisible={isMessageSelectorVisible} screen={screen as never} {...turnAbortController !== null ? {
       abortSignal: turnAbortController.signal
     } : {}} isSearchingHistory={isSearchingHistory} isHelpOpen={helpOpen} inputMode={mode as never} inputValue={input} streamMode={cancelStreamMode as never} />
-      <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} />
+      <FullscreenLayout scrollRef={scrollRef} scrollable={scrollableContent} bottom={bottomContent} overlay={overlayContent ?? undefined} modal={modalToolJSX !== null ? <Box flexDirection="column" width="100%">{modalToolJSX}</Box> : undefined} modalScrollRef={modalScrollRef} />
       {showCostDialog ? <CostThresholdDialog onDone={handleCostThresholdDone} /> : null}
       {exitFlow}
       {isMessageSelectorVisible ? <MessageSelector messages={transcript.messages as any[]} onPreRestore={() => {}} onRestoreMessage={handleRestoreMessage} onRestoreCode={handleRestoreCode} onSummarize={handleSummarize} onClose={handleCloseMessageSelector} /> : null}

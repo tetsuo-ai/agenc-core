@@ -826,7 +826,7 @@ async function checkPermissionsAndCallTool(
 
   // Defense-in-depth: strip _simulatedSedEdit from model-provided Bash input.
   // This field is internal-only — it must only be injected by the permission
-  // system (SedEditPermissionRequest) after user approval. If the model supplies
+  // system after user approval. If the model supplies
   // it, the schema's strictObject should already reject it, but we strip here
   // as a safeguard against future regressions.
   let processedInput = parsedInput.data

@@ -4,11 +4,13 @@ import React from "react";
 import {
   calculateFullscreenLayoutBudget,
   calculateModalViewport,
+  FullscreenLayout,
   DesignTopChrome,
   formatDesignBottomChromeLabels,
   isNoColorEnv,
 } from "./FullscreenLayout.js";
 import { AppStateProvider, getDefaultAppState } from "../state/AppState.js";
+import { Box, Text } from "../ink.js";
 import { renderToString } from "../../utils/staticRender.js";
 
 describe("FullscreenLayout modal viewport", () => {
@@ -65,6 +67,18 @@ describe("FullscreenLayout modal viewport", () => {
     expect(output).not.toContain("TASK SYSTEMIC");
   });
 
+  test("keeps the v2 header wordmark aligned to the design grid", async () => {
+    const output = await renderToString(
+      <DesignTopChrome columns={148} noColor={true} />,
+      148,
+    );
+    const header =
+      output.split(/\r?\n/u).find(line => line.includes("agenc")) ?? "";
+
+    expect(header.indexOf("▮")).toBe(2);
+    expect(header.indexOf("agenc")).toBe(4);
+  });
+
   test("renders the header mode pill from AppState permission mode", async () => {
     const state = getDefaultAppState();
     const output = await renderToString(
@@ -85,6 +99,39 @@ describe("FullscreenLayout modal viewport", () => {
     expect(output).toContain("mode · plan");
   });
 
+  test.each([
+    ["plan", true],
+    ["default", false],
+    ["acceptEdits", false],
+  ] as const)(
+    "renders the plan banner only while permission mode is %s",
+    async (mode, shouldRenderBanner) => {
+      const state = getDefaultAppState();
+      const output = await renderToString(
+        <AppStateProvider
+          initialState={{
+            ...state,
+            toolPermissionContext: {
+              ...state.toolPermissionContext,
+              mode,
+            },
+          }}
+        >
+          <FullscreenLayout
+            scrollable={<Text>proposal body</Text>}
+            bottom={<Text>prompt row</Text>}
+          />
+        </AppStateProvider>,
+        { columns: 120, rows: 30 },
+      );
+
+      expect(output.includes("PLAN MODE")).toBe(shouldRenderBanner);
+      expect(output.includes("AgenC will propose changes first")).toBe(
+        shouldRenderBanner,
+      );
+    },
+  );
+
   test("formats bottom chrome with user-facing mode labels", () => {
     expect(
       formatDesignBottomChromeLabels(100, "grok-4-fast", "bypassPermissions"),
@@ -99,5 +146,40 @@ describe("FullscreenLayout modal viewport", () => {
       left: "grok-4-fast",
       right: "accept edits on",
     });
+  });
+
+  test.each([
+    [148, 40],
+    [120, 30],
+    [80, 24],
+  ])("smoke-renders the v2 frame at %ix%i", async (columns, rows) => {
+    const state = getDefaultAppState();
+    const output = await renderToString(
+      <AppStateProvider initialState={state}>
+        <FullscreenLayout
+          scrollable={
+            <Box flexDirection="column">
+              <Text>ready.</Text>
+              <Text>/help for commands · /claim for protocol tasks</Text>
+            </Box>
+          }
+          bottom={<Text>prompt owns this row</Text>}
+        />
+      </AppStateProvider>,
+      { columns, rows },
+    );
+
+    const lines = output.split(/\r?\n/u);
+    expect(output).toContain("agenc");
+    expect(output).toContain("agenc · orchestrator");
+    expect(output).toContain("mode · default");
+    expect(output).toContain("MODEL");
+    expect(output).toContain("CTX");
+    expect(output).toMatch(/[░▒▓]/u);
+    expect(output).not.toContain("undefined");
+    expect(output).not.toContain("NaN");
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(columns);
+    }
   });
 });

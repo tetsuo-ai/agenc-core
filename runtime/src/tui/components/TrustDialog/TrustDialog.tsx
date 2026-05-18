@@ -14,7 +14,7 @@ import { getCwd } from '../../../utils/cwd'; // upstream-import: keep target is 
 import { getFsImplementation } from '../../../utils/fsOperations'; // upstream-import: keep target is owned by another Z-PURGE item
 import { gracefulShutdownSync } from '../../../utils/gracefulShutdown'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select';
-import { PermissionDialog } from '../permissions/PermissionDialog';
+import { PermissionDialog } from '../v2/permissionPrimitives.js';
 import { getApiKeyHelperSources, getAwsCommandsSources, getBashPermissionSources, getDangerousEnvVarsSources, getGcpCommandsSources, getHooksSources, getOtelHeadersHelperSources } from './utils';
 type Props = {
   onDone(): void;

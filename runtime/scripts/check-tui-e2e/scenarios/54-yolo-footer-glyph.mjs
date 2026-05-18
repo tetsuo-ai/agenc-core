@@ -1,7 +1,7 @@
 /**
  * Yolo footer glyph scenario.
  *
- * Per CLAUDE.md learned rule: AgenC TUI parity must NOT show the local
+ * Per AGENC.md learned rule: AgenC TUI parity must NOT show the local
  * "⚠" permission-mode glyph in the footer. The upstream-derived
  * footer should render correctly. This catches regressions where the
  * old AgenC glyph leaks back in.
@@ -20,7 +20,7 @@ export default async function (session) {
   await sleep(500);
   if (/⚠/.test(session.text)) {
     throw new Error(
-      "footer/prompt contains the banned ⚠ glyph — see CLAUDE.md AgenC TUI Parity rule",
+      "footer/prompt contains the banned ⚠ glyph — see AGENC.md AgenC TUI Parity rule",
     );
   }
 }

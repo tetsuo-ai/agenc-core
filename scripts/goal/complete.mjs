@@ -471,7 +471,7 @@ failIfInFlightJournalsFound();
 // their next `git status` — their on-disk edits are intact, they just
 // need to `git pull --rebase` or `git reset --hard main` after stashing
 // to catch up to the integrated tree. See "Worktree Stomping" gotcha
-// in CLAUDE.md for the failure mode this fix retires.
+// in AGENC.md for the failure mode this fix retires.
 const journalPath = path.join(dir, `IN-FLIGHT-${id}.json`);
 const preMergeHead = gitInMain("rev-parse", "refs/heads/main").stdout.trim();
 const portHead = gitInMain("rev-parse", `refs/heads/${expected}`).stdout.trim();

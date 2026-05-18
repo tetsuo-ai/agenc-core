@@ -349,8 +349,8 @@ async function scanFile(filePath) {
     }
   }
   // Filename check: flag if the path itself contains a banned token.
-  // CLAUDE.md and AGENTS.md are agent-tool instruction files and explicitly
-  // allowed — they are not product-brand leaks.
+  // CLAUDE.md is allowed only as a legacy compatibility instruction filename;
+  // AGENTS.md is a cross-agent instruction filename.
   const baseName = path.basename(filePath);
   // branding-scan: allow filename pattern enumerates the upstream roots
   if (/\b(?:CLAUDE|claude|codex|openclaude|OpenClaude|Codex|Claude)\b/.test(baseName)) {

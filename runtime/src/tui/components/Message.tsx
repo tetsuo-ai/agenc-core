@@ -301,7 +301,7 @@ function MessageImpl(t0: Props): React.ReactNode {
           if (isSnipBoundaryMessage(message)) {
             let t2;
             if ($[65] === Symbol.for("react.memo_cache_sentinel")) {
-              t2 = require("./messages/SnipBoundaryMessage.js");
+              t2 = require("../message-renderers/SnipBoundaryMessage.js");
               $[65] = t2;
             } else {
               t2 = $[65];

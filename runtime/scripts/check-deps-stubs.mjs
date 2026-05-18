@@ -12,7 +12,7 @@
 // `compact/_deps/no-op.ts::getUserContext` for a long time, leaving project
 // memory + date stale after every auto-compact. Real impl lived at
 // `session/_deps/system-prompt.ts::getUserContext`. Fixed in commit
-// f531504, gotcha recorded in agenc-core/.claude/notes/gotchas.md.
+// f531504, gotcha recorded in agenc-core/.agenc/notes/gotchas.md.
 //
 // This script catches the same class of regression statically.
 //

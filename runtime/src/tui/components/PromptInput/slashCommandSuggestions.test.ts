@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Command } from "../../../commands.js";
+import { getCommandsSync, type Command } from "../../../commands.js";
 import { generateCommandSuggestions } from "../../../utils/suggestions/commandSuggestions.js";
 
 function localCommand(opts: {
@@ -47,5 +47,24 @@ describe("slash command suggestions", () => {
     expect(suggestions.map((suggestion) => suggestion.displayText)).toEqual([
       "/model-provider (provider)",
     ]);
+  });
+
+  it("marks protocol extension commands with the protocol glyph", () => {
+    const suggestions = generateCommandSuggestions("/", getCommandsSync());
+    const byName = new Map(
+      suggestions.map((suggestion) => [suggestion.displayText, suggestion]),
+    );
+
+    for (const name of ["claim", "delegate", "proof", "settle", "stake"]) {
+      expect(byName.get(`/${name}`)).toMatchObject({
+        tag: "◆",
+        color: "worker",
+        metadata: expect.objectContaining({
+          kind: "protocol",
+          source: "plugin",
+          loadedFrom: "plugin",
+        }),
+      });
+    }
   });
 });

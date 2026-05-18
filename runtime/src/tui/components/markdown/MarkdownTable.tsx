@@ -6,6 +6,7 @@ import { stringWidth } from '../../ink/stringWidth.js';
 import { wrapAnsi } from '../../ink/wrapAnsi.js';
 import { Ansi, useTheme } from '../../ink.js';
 import { resolveAgenCTuiGlyphMode } from '../../glyphs.js';
+import { color } from '../design-system/color.js';
 import type { CliHighlight } from '../../../utils/cliHighlight.js';
 import { formatToken, padAligned } from '../../../utils/markdown.js';
 
@@ -221,8 +222,9 @@ export function MarkdownTable({
     // Get wrapped lines for each cell (preserving ANSI formatting)
     const cellLines = cells.map((cell, colIndex_1) => {
       const formattedText = formatCell(cell.tokens);
+      const themedText = !isHeader && colIndex_1 === 0 ? color('agenc', theme)(formattedText) : formattedText;
       const width = columnWidths[colIndex_1]!;
-      return wrapText(formattedText, width, {
+      return wrapText(themedText, width, {
         hard: needsHardWrap
       });
     });
@@ -278,7 +280,7 @@ export function MarkdownTable({
       row_2.forEach((cell_0, colIndex_4) => {
         const label = headers[colIndex_4] || `Column ${colIndex_4 + 1}`;
         // Clean value: trim, remove extra internal whitespace/newlines
-        const rawValue = formatCell(cell_0.tokens).trimEnd();
+        const rawValue = (colIndex_4 === 0 ? color('agenc', theme)(formatCell(cell_0.tokens)) : formatCell(cell_0.tokens)).trimEnd();
         const value = rawValue.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
 
         // Wrap value to fit terminal, accounting for label on first line

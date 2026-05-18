@@ -427,6 +427,7 @@ vi.mock("./FullscreenLayout.js", async () => {
       scrollable?: React.ReactNode;
       bottom?: React.ReactNode;
       overlay?: React.ReactNode;
+      modal?: React.ReactNode;
     }) => {
       providerProbe.fullscreenLayoutProps.push(props);
       return React.createElement(
@@ -435,6 +436,7 @@ vi.mock("./FullscreenLayout.js", async () => {
         props.scrollable,
         props.bottom,
         props.overlay,
+        props.modal,
       );
     },
   };
@@ -529,14 +531,6 @@ vi.mock("./spinner/Spinner.js", async () => {
         `spinner:${String(props.mode)}:${String(props.overrideMessage ?? "")}`,
       );
     },
-  };
-});
-
-vi.mock("../components/permissions/PermissionRequest.js", async () => {
-  const React = await import("react");
-  return {
-    PermissionRequest: () =>
-      React.createElement("ink-text", null, "permission-request"),
   };
 });
 
@@ -2142,6 +2136,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await new Promise((resolve) => setTimeout(resolve, 25));
 
           expect(output()).toContain("agents wizard");
+          expect(providerProbe.fullscreenLayoutProps.at(-1)?.modal).toBeDefined();
           expect(providerProbe.messageProps.length).toBe(messageRenderCount);
           expect(providerProbe.promptProps.length).toBe(promptRenderCount);
           expect(submit).not.toHaveBeenCalled();

@@ -2,6 +2,7 @@ import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
 import { useLayoutEffect } from 'react';
 import { PassThrough } from 'stream';
+import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
 import { render, useApp } from '../tui/ink.js';
 
@@ -71,49 +72,79 @@ function extractFirstFrame(output: string): string {
 /**
  * Renders a React node to a string with ANSI escape codes (for terminal output).
  */
-export function renderToAnsiString(node: React.ReactNode, columns?: number): Promise<string> {
+export type StaticRenderViewport =
+  | number
+  | {
+      readonly columns?: number;
+      readonly rows?: number;
+      readonly color?: boolean;
+    };
+
+function normalizeViewport(
+  viewport?: StaticRenderViewport,
+): { readonly columns?: number; readonly rows?: number; readonly color?: boolean } {
+  if (typeof viewport === 'number') {
+    return { columns: viewport };
+  }
+  return viewport ?? {};
+}
+
+export function renderToAnsiString(node: React.ReactNode, viewport?: StaticRenderViewport): Promise<string> {
   return new Promise(async resolve => {
     let output = '';
+    const previousChalkLevel = chalk.level;
 
-    // Capture all writes. Set .columns so Ink (ink.tsx:~165) picks up a
-    // chosen width instead of PassThrough's undefined → 80 fallback —
-    // useful for rendering at terminal width for file dumps that should
-    // match what the user sees on screen.
-    const stream = new PassThrough();
-    if (columns !== undefined) {
-      ;
-      (stream as unknown as {
-        columns: number;
-      }).columns = columns;
+    try {
+      // Capture all writes. Set .columns so Ink (ink.tsx:~165) picks up a
+      // chosen width instead of PassThrough's undefined → 80 fallback —
+      // useful for rendering at terminal width for file dumps that should
+      // match what the user sees on screen.
+      const stream = new PassThrough();
+      const { columns, rows, color } = normalizeViewport(viewport);
+      if (color === true && chalk.level < 3) {
+        chalk.level = 3;
+      }
+      if (columns !== undefined) {
+        (stream as unknown as {
+          columns: number;
+        }).columns = columns;
+      }
+      if (rows !== undefined) {
+        (stream as unknown as {
+          rows: number;
+        }).rows = rows;
+      }
+      stream.on('data', chunk => {
+        output += chunk.toString();
+      });
+
+      // Render the component wrapped in RenderOnceAndExit
+      // Non-TTY stdout (PassThrough) gives full-frame output instead of diffs
+      const instance = await render(<RenderOnceAndExit>{node}</RenderOnceAndExit>, {
+        stdout: stream as unknown as NodeJS.WriteStream,
+        patchConsole: false
+      });
+
+      // Wait for the component to exit naturally, with a timeout guard so
+      // tests never hang indefinitely if a render error prevents exit().
+      await Promise.race([
+        instance.waitUntilExit(),
+        new Promise<void>(resolve => setTimeout(resolve, 3000)),
+      ]);
+
+      // Extract only the first frame's content to avoid duplication
+      // (Ink outputs multiple frames in non-TTY mode)
+      await resolve(extractFirstFrame(output));
+    } finally {
+      chalk.level = previousChalkLevel;
     }
-    stream.on('data', chunk => {
-      output += chunk.toString();
-    });
-
-    // Render the component wrapped in RenderOnceAndExit
-    // Non-TTY stdout (PassThrough) gives full-frame output instead of diffs
-    const instance = await render(<RenderOnceAndExit>{node}</RenderOnceAndExit>, {
-      stdout: stream as unknown as NodeJS.WriteStream,
-      patchConsole: false
-    });
-
-    // Wait for the component to exit naturally, with a timeout guard so
-    // tests never hang indefinitely if a render error prevents exit().
-    await Promise.race([
-      instance.waitUntilExit(),
-      new Promise<void>(resolve => setTimeout(resolve, 3000)),
-    ]);
-
-    // Extract only the first frame's content to avoid duplication
-    // (Ink outputs multiple frames in non-TTY mode)
-    await resolve(extractFirstFrame(output));
   });
 }
 
 /**
  * Renders a React node to a plain text string (ANSI codes stripped).
  */
-export async function renderToString(node: React.ReactNode, columns?: number): Promise<string> {
-  const output = await renderToAnsiString(node, columns);
+export async function renderToString(node: React.ReactNode, viewport?: StaticRenderViewport): Promise<string> {
+  const output = await renderToAnsiString(node, viewport);
   return stripAnsi(output);
 }

@@ -248,7 +248,7 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 }));
 
 // Always omit internal-only fields from the model-facing schema.
-// _simulatedSedEdit is set by SedEditPermissionRequest after the user approves a
+// _simulatedSedEdit is set after the user approves a
 // sed edit preview; exposing it would let the model bypass permission checks and
 // the sandbox by pairing an innocuous command with an arbitrary file write.
 // dangerouslyDisableSandbox is also omitted because sandbox escape must be tied

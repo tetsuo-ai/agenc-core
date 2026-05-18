@@ -47,7 +47,7 @@ const TRUST_FILE = path.join(homedir(), ".agenc", "trusted-projects.json");
  * reply gets fed to that dialog as input, which causes the TUI to exit
  * before the prompt renders.
  *
- * Schema (per CLAUDE.md gotcha note): the `version` field is REQUIRED. The
+ * Schema (per AGENC.md gotcha note): the `version` field is REQUIRED. The
  * trust check uses realpath, so we add both the input path and its realpath
  * form so symlinked roots match on either side.
  */

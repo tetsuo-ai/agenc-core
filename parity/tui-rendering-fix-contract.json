@@ -1367,7 +1367,7 @@
     "node scripts/branding-scan.mjs --changed",
     "cd runtime && npm run build",
     "cd runtime && npm run typecheck",
-    "node ~/.claude/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full"
+    "node ~/.agenc/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full"
   ],
   "sourceSnapshotHash": "957b80b5c8333d28c75eb8ec6060cc580ae4e3dc344a29b6b49e2711bcc5e12e",
   "reviewsDir": "tui-rendering-fix-contract.reviews"

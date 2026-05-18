@@ -218,8 +218,8 @@ export const tasksCommand: SlashCommand = {
     safeExecute(async () => {
       const setToolJSX = ctx.appState?.setToolJSX;
       if (typeof setToolJSX === "function") {
-        const { BackgroundTasksDialog } = await import(
-          "../tui/components/tasks/BackgroundTasksDialog.js"
+        const { BackgroundTasksPanel } = await import(
+          "../tui/components/tasks/BackgroundTasksPanel.js"
         );
         const close = () => {
           setToolJSX({
@@ -231,7 +231,7 @@ export const tasksCommand: SlashCommand = {
         setToolJSX({
           isLocalJSXCommand: true,
           shouldHidePromptInput: true,
-          jsx: React.createElement(BackgroundTasksDialog, { onDone: close }),
+          jsx: React.createElement(BackgroundTasksPanel, { onDone: close }),
         });
         return { kind: "skip" };
       }

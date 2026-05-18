@@ -14,7 +14,7 @@ import { openBrowser, openPath } from '../../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { plural } from '../../utils/stringUtils.js';
 import { modelDisplayString } from '../../utils/model/model.js';
-import { isNullRenderingAttachment } from './messages/nullRenderingAttachments';
+import { isNullRenderingAttachment } from '../message-visibility.js';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
 import { permissionModeFooterChrome } from './PromptInput/permissionModeChrome.js';
 import type { PermissionMode } from '../../permissions/types.js';
@@ -445,7 +445,6 @@ export function FullscreenLayout(t0) {
     } else {
       t13 = $[23];
     }
-    const t14 = <Box flexGrow={1} flexDirection="column" overflow="hidden"><DesignBrandBleed columns={columns} />{t8}<DesignPlanModeBanner />{t11}{t12}{t13}</Box>;
     let t15;
     let t16;
     if ($[29] === Symbol.for("react.memo_cache_sentinel")) {
@@ -457,9 +456,10 @@ export function FullscreenLayout(t0) {
       t15 = $[29];
       t16 = $[30];
     }
+    const t14 = <Box flexGrow={1} flexDirection="column" overflow="hidden"><DesignBrandBleed columns={columns} />{t8}<DesignPlanModeBanner />{t11}{t12}{t13}{t16}</Box>;
     let t17;
     if ($[31] !== bottom || $[38] !== layoutBudget.bottomMaxHeight) {
-      t17 = <Box flexDirection="column" flexShrink={0} width="100%" maxHeight={layoutBudget.bottomMaxHeight}>{t15}{t16}<Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden">{bottom}</Box></Box>;
+      t17 = <Box flexDirection="column" flexShrink={0} width="100%" maxHeight={layoutBudget.bottomMaxHeight}>{t15}<Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden">{bottom}</Box></Box>;
       $[31] = bottom;
       $[38] = layoutBudget.bottomMaxHeight;
       $[32] = t17;
@@ -731,7 +731,7 @@ function DialogOverlay() {
   }
   let t0;
   if ($[0] !== node) {
-    t0 = <Box position="absolute" bottom="100%" left={0} right={0} opaque={true}>{node}</Box>;
+    t0 = <Box position="absolute" top={2} bottom={1} left={4} right={4} flexDirection="column" justifyContent="center" opaque={true}>{node}</Box>;
     $[0] = node;
     $[1] = t0;
   } else {
