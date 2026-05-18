@@ -119,6 +119,8 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("claim")).toBe(true);
     expect(names.has("files")).toBe(false);
     expect(names.has("reload-plugins")).toBe(false);
+    expect(names.has("theme")).toBe(false);
+    expect(names.has("color")).toBe(false);
   });
 
   it("keeps remote and bridge allowlists on the minimal command set", () => {

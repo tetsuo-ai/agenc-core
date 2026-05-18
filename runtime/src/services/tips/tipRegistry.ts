@@ -135,7 +135,7 @@ const builtInTips: readonly Tip[] = [
   {
     id: "color-when-running-multiple-agenc",
     content: async () =>
-      "Running multiple AgenC sessions? Use /color and /rename to tell them apart at a glance.",
+      "Running multiple AgenC sessions? Keep each one in a distinct worktree or terminal tab.",
     cooldownSessions: 10,
     isRelevant: async (context) =>
       (state(context).concurrentSessionCount ?? 0) >= 2,
@@ -189,7 +189,7 @@ const builtInTips: readonly Tip[] = [
   },
   {
     id: "theme-command",
-    content: async () => "Use /theme to change the color theme",
+    content: async () => "Use /config to change the color theme",
     cooldownSessions: 20,
     isRelevant: async () => true,
   },

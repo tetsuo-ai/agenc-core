@@ -581,7 +581,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           effort,
         )
       } else {
-        // Local slash commands that skip messages (e.g., /model, /theme).
+        // Local slash commands that skip messages (for example, /model).
         // Release the guard BEFORE clearing toolJSX to prevent spinner flash —
         // the spinner formula checks: (!toolJSX || showSpinner) && isLoading.
         // If we clear toolJSX while the guard is still reserved, spinner briefly

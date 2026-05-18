@@ -169,8 +169,8 @@ export async function clearConversation({
         ...prev,
         tasks: nextTasks,
         attribution: createEmptyAttributionState(),
-        // Clear standalone agent context (name/color set by /rename, /color)
-        // so the new session doesn't display the old session's identity badge
+        // Clear standalone agent context so the new session doesn't display
+        // the old session's identity badge.
         standaloneAgentContext: undefined,
         fileHistory: {
           snapshots: [],

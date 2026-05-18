@@ -66,6 +66,7 @@ const DAEMON_TUI_REGISTRY_NAMES = [
 const REMOVED_TUI_COMMANDS = [
   "branch",
   "cache-stats",
+  "color",
   "commit",
   "copy",
   "cost",

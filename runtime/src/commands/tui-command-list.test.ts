@@ -69,6 +69,7 @@ const DAEMON_TUI_NAMES = [
 ] as const;
 
 const REMOVED_TUI_NAMES = [
+  "color",
   "commit",
   "copy",
   "cost",
@@ -83,6 +84,7 @@ const REMOVED_TUI_NAMES = [
   "review",
   "rewind",
   "stats",
+  "theme",
   "usage",
   "wiki",
 ] as const;

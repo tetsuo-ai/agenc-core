@@ -452,7 +452,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-014 - Port `/theme` and `/color` to v2 or retire from the registry
+### [x] TUI-TODO-014 - Port `/theme` and `/color` to v2 or retire from the registry
 
 Files to inspect:
 

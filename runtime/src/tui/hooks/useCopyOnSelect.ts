@@ -87,7 +87,7 @@ export function useCopyOnSelect(
  * selection overlay renders a solid blue bg instead of SGR-7 inverse.
  * Ink is theme-agnostic (layering: colorize.ts "theme resolution happens
  * at component layer, not here") — this is the bridge. Fires on mount
- * (before any mouse input is possible) and again whenever /theme flips,
+ * (before any mouse input is possible) and again whenever the theme flips,
  * so the selection color tracks the theme live.
  */
 export function useSelectionBgColor(selection: Selection): void {
