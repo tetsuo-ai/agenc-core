@@ -16,6 +16,5 @@
       "src/*": ["./src/*"]
     }
   },
-  "include": ["src/tui/**/*"],
-  "exclude": ["src/tui/**/*.test.ts", "src/tui/**/*.test.tsx"]
+  "include": ["src/tui/**/*"]
 }

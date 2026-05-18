@@ -10,7 +10,7 @@ describe("tips service contract", () => {
       "runtime/src/services/tips/tipScheduler.ts",
       "runtime/src/services/tips/tipRegistry.ts",
       "runtime/src/services/tips/tipHistory.ts",
-      "runtime/src/services/tips/tips.test.ts",
+      "runtime/tests/services/tips/tips.test.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }

@@ -8,7 +8,7 @@ describe("tool-use summary contract", () => {
   it("keeps the generator, tests, prompt, model, and failure marker live", () => {
     for (const rel of [
       "runtime/src/services/toolUseSummary/toolUseSummaryGenerator.ts",
-      "runtime/src/services/toolUseSummary/toolUseSummaryGenerator.test.ts",
+      "runtime/tests/services/toolUseSummary/toolUseSummaryGenerator.test.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }

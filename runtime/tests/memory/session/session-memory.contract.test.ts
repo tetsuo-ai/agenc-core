@@ -10,7 +10,7 @@ describe("session memory runtime contract", () => {
       "runtime/src/memory/session/sessionMemory.ts",
       "runtime/src/memory/session/sessionMemoryUtils.ts",
       "runtime/src/memory/session/prompts.ts",
-      "runtime/src/memory/session/sessionMemory.test.ts",
+      "runtime/tests/memory/session/sessionMemory.test.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }

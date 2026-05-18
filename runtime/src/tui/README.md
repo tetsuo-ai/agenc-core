@@ -95,25 +95,25 @@ so the next implementation pass does not need to rediscover them.
 ## Validation Notes
 
 - Numbered design-state viewport smoke:
-  `cd runtime && npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'renders numbered design state without overflow'`
+  `cd runtime && npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'renders numbered design state without overflow'`
 - Source-backed numbered design-state suite:
-  `cd runtime && AGENC_TUI_DESIGN_HTML='/tmp/agenc-tui-handoff/agenc-tui/project/AgenC TUI.html' npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
+  `cd runtime && AGENC_TUI_DESIGN_HTML='/tmp/agenc-tui-handoff/agenc-tui/project/AgenC TUI.html' npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
 - Browser-backed local design extraction:
-  `cd runtime && AGENC_TUI_DESIGN_HTML='/tmp/agenc-tui-handoff/agenc-tui/project/AgenC TUI.html' AGENC_TUI_DESIGN_BROWSER=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps live browser-rendered design text broadly aligned when enabled'`
+  `cd runtime && AGENC_TUI_DESIGN_HTML='/tmp/agenc-tui-handoff/agenc-tui/project/AgenC TUI.html' AGENC_TUI_DESIGN_BROWSER=1 npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps live browser-rendered design text broadly aligned when enabled'`
 - Curated browser marker anchor check:
-  `cd runtime && AGENC_TUI_DESIGN_BROWSER_REPORT=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps curated browser marker anchors close to their design cells'`
+  `cd runtime && AGENC_TUI_DESIGN_BROWSER_REPORT=1 npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps curated browser marker anchors close to their design cells'`
 - Browser-derived text fixture parity:
-  `cd runtime && AGENC_TUI_DESIGN_BROWSER_REPORT=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps projected browser text cells aligned at exact grid positions'`
+  `cd runtime && AGENC_TUI_DESIGN_BROWSER_REPORT=1 npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps projected browser text cells aligned at exact grid positions'`
 - Anchored browser text-cell parity:
-  `cd runtime && npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps found browser text markers intact at rendered cell positions'`
+  `cd runtime && npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'keeps found browser text markers intact at rendered cell positions'`
 - Completion-grade exact projected cell gate:
-  `cd runtime && AGENC_TUI_DESIGN_EXACT_CELLS=1 npx vitest run src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'fails closed on projected browser text-cell drift when exact parity is requested'`
+  `cd runtime && AGENC_TUI_DESIGN_EXACT_CELLS=1 npx vitest run tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot --testNamePattern 'fails closed on projected browser text-cell drift when exact parity is requested'`
   This gate is intentionally fail-closed and must pass before claiming the
   strict "no visual drift" acceptance criterion.
 - Focused v2 TUI suite:
-  `cd runtime && npx vitest run src/tui/components/v2/ContextUsageModal.test.tsx src/tui/components/v2/primitives.test.tsx src/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
+  `cd runtime && npx vitest run tests/tui/components/v2/ContextUsageModal.test.tsx tests/tui/components/v2/primitives.test.tsx tests/tui/components/v2/designStateSmoke.test.tsx --reporter=dot`
 - Slash-command and v2 panel suites:
-  `cd runtime && npx vitest run src/commands/registry.test.ts src/commands/command-surface.test.ts src/commands/tui-command-list.test.ts src/tui/components/PromptInput/slashCommandSuggestions.test.ts src/tui/components/tasks/BackgroundTasksPanel.test.tsx src/tui/components/v2/ContextUsageModal.test.tsx src/tui/components/v2/primitives.test.tsx src/tui/components/v2/messagePrimitives.test.tsx --reporter=dot`
+  `cd runtime && npx vitest run tests/commands/registry.test.ts tests/commands/command-surface.test.ts tests/commands/tui-command-list.test.ts tests/tui/components/PromptInput/slashCommandSuggestions.test.ts tests/tui/components/tasks/BackgroundTasksPanel.test.tsx tests/tui/components/v2/ContextUsageModal.test.tsx tests/tui/components/v2/primitives.test.tsx tests/tui/components/v2/messagePrimitives.test.tsx --reporter=dot`
 - Typecheck:
   `cd runtime && npm run typecheck`
 - Repo hygiene:

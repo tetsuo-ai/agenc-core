@@ -6,6 +6,7 @@ const benchmarkLaneEnabled = process.env.AGENC_RUNTIME_BENCHMARKS === '1';
 const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(__dirname, 'src');
+const runtimeTestRoot = resolve(__dirname, 'tests');
 const relocatedUpstreamRoots = [
   {
     runtimeRoot: resolve(runtimeSourceRoot, 'utils'),
@@ -40,8 +41,8 @@ const relocatedTuiSourceRoots = [
   resolve(runtimeSourceRoot, 'tui/hooks'),
 ];
 const movedDonorTestRoots = [
-  resolve(runtimeSourceRoot, 'utils'),
-  resolve(runtimeSourceRoot, 'constants'),
+  resolve(runtimeTestRoot, 'utils'),
+  resolve(runtimeTestRoot, 'constants'),
 ];
 
 function normalizeConfigPath(file: string): string {
@@ -98,6 +99,35 @@ function existingSourceFile(base: string): string | null {
       ),
     ),
   ];
+  return candidates.find((candidate) => {
+    if (!existsSync(candidate)) return false;
+    try {
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
+function existingRuntimeTestFile(base: string): string | null {
+  const hasExtension = /\.[^/\\]+$/.test(base);
+  const candidates = hasExtension
+    ? [
+        base,
+        base.replace(/\.js$/, '.ts'),
+        base.replace(/\.js$/, '.tsx'),
+        base.replace(/\.jsx$/, '.tsx'),
+      ]
+    : [
+        base,
+        `${base}.ts`,
+        `${base}.tsx`,
+        `${base}.mts`,
+        `${base}.cts`,
+        resolve(base, 'index.ts'),
+        resolve(base, 'index.tsx'),
+        resolve(base, 'index.js'),
+      ];
   return candidates.find((candidate) => {
     if (!existsSync(candidate)) return false;
     try {
@@ -233,6 +263,24 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
   return null;
 }
 
+function resolveMovedRuntimeTestSource(importer: string, source: string): string | null {
+  if (!source.startsWith('./') && !source.startsWith('../')) return null;
+  const cleanImporter = importer.split('?')[0] ?? importer;
+  const absoluteImporter = isAbsolute(cleanImporter)
+    ? cleanImporter
+    : resolve(__dirname, cleanImporter);
+  if (!isWithin(runtimeTestRoot, absoluteImporter)) return null;
+
+  const directTestTarget = existingRuntimeTestFile(resolve(dirname(absoluteImporter), source));
+  if (directTestTarget !== null) return null;
+
+  const sourceImporter = resolve(
+    runtimeSourceRoot,
+    relative(runtimeTestRoot, absoluteImporter),
+  );
+  return existingSourceFile(resolve(dirname(sourceImporter), source));
+}
+
 export default defineConfig({
   plugins: [
     {
@@ -261,6 +309,13 @@ export default defineConfig({
         }
         if (
           (source.startsWith('./') || source.startsWith('../')) &&
+          importer !== undefined
+        ) {
+          const movedRuntimeTestSource = resolveMovedRuntimeTestSource(importer, source);
+          if (movedRuntimeTestSource !== null) return movedRuntimeTestSource;
+        }
+        if (
+          (source.startsWith('./') || source.startsWith('../')) &&
           importer !== undefined &&
           (importer.includes('/src/agenc/') ||
             sourceRootForImporter(importer) !== null ||
@@ -283,15 +338,14 @@ export default defineConfig({
     environment: 'node',
     pool: 'forks',
     include: [
-      'src/**/*.test.ts',
-      'src/**/*.test.tsx',
       'tests/**/*.test.ts',
+      'tests/**/*.test.tsx',
     ],
     exclude: [
       'node_modules',
       'dist',
-      'src/agenc/**/*.test.ts',
-      'src/agenc/**/*.test.tsx',
+      'tests/agenc/**/*.test.ts',
+      'tests/agenc/**/*.test.tsx',
       // Moved donor-origin tests were previously hidden under src/agenc.
       // Keep them out of Vitest until their owning items convert them.
       ...movedDonorTestFiles,

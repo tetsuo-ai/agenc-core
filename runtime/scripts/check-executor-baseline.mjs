@@ -7,8 +7,8 @@
  * commit messages. Must finish in under 5 seconds.
  *
  * Checks:
- *   1. Test file count under `runtime/src/**\/*.test.ts` +
- *      `runtime/tests/**\/*.test.ts` is >= MIN_TEST_FILES.
+ *   1. Test file count under `runtime/tests/**\/*.test.ts[x]` is
+ *      >= MIN_TEST_FILES.
  *   2. Total `it(` / `test(` block count across those files is
  *      >= MIN_IT_BLOCKS.
  *   3. The last commit message does NOT contain any of the AI-
@@ -93,7 +93,7 @@ function listTestFiles() {
     cwd: repoRoot,
     encoding: "utf8",
   });
-  const testPathRe = /^runtime\/(src|tests)\/.*\.test\.ts$/;
+  const testPathRe = /^runtime\/tests\/.*\.test\.tsx?$/;
   return out
     .split("\n")
     .map((line) => line.trim())

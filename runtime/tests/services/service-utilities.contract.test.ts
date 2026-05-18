@@ -10,7 +10,7 @@ describe("service utility behavior anchors", () => {
       "runtime/src/services/notifier.ts",
       "runtime/src/services/preventSleep.ts",
       "runtime/src/services/tokenEstimation.ts",
-      "runtime/src/services/service-utilities.test.ts",
+      "runtime/tests/services/service-utilities.test.ts",
     ]) {
       expect(existsSync(resolve(root, rel)), rel).toBe(true);
     }
