@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
+import { sourceUrl } from '../../helpers/source-path.ts'
 
 import {
   getPermissionRuleListAddLabel,
@@ -8,7 +9,7 @@ import {
 } from './PermissionRuleList.js'
 
 const source = readFileSync(
-  new URL('./PermissionRuleList.tsx', import.meta.url),
+  sourceUrl('tui/permission-rules/PermissionRuleList.tsx'),
   'utf8',
 )
 

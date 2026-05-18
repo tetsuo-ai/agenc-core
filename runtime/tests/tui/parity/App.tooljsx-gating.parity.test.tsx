@@ -1,10 +1,10 @@
 import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { sourcePath } from "../../helpers/source-path.ts";
 
 import type { ToolJSXState } from "../tool-jsx-state.js";
 
-const APP_SOURCE_PATH = path.resolve(import.meta.dirname, "../components/App.tsx");
+const APP_SOURCE_PATH = sourcePath("tui/components/App.tsx");
 
 function readSource(): string {
   return fs.readFileSync(APP_SOURCE_PATH, "utf8");

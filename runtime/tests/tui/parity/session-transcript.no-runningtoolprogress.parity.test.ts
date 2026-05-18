@@ -1,15 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { runtimeSourceRootPath, sourcePath } from "../../helpers/source-path.ts";
 
 import { adaptTranscriptEvents } from "../session-transcript.js";
 
-const SESSION_TRANSCRIPT_PATH = path.resolve(
-  import.meta.dirname,
-  "../session-transcript.ts",
-);
+const SESSION_TRANSCRIPT_PATH = sourcePath("tui/session-transcript.ts");
 const TUI_PARITY_DIR = path.resolve(import.meta.dirname);
-const RUNTIME_SRC_DIR = path.resolve(import.meta.dirname, "..", "..");
+const RUNTIME_SRC_DIR = runtimeSourceRootPath;
 
 function readSource(p: string): string {
   return fs.readFileSync(p, "utf8");

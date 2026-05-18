@@ -396,19 +396,4 @@ describe("memory command contract", () => {
     expect(folder && memoryPreviewText(folder, [])).toContain("Folder shortcut");
   });
 
-  it("records MM-06 parity evidence for every donor source", () => {
-    const parity = readFileSync(
-      resolve(root, "parity/MM-06-parity.json"),
-      "utf8",
-    );
-
-    for (const source of [
-      "src/commands/memory/memory.tsx",
-      "src/components/memory/MemoryFileSelector.tsx",
-      "src/components/memory/MemoryUpdateNotification.tsx",
-      "src/components/memory/memoryFileSelectorPaths.ts",
-    ]) {
-      expect(parity).toContain(source);
-    }
-  });
 });

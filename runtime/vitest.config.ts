@@ -61,6 +61,18 @@ function walkTestFiles(dir: string): string[] {
 const movedDonorTestFiles = movedDonorTestRoots
   .flatMap(walkTestFiles)
   .map((file) => normalizeConfigPath(relative(__dirname, file)));
+const bunTestFiles = walkTestFiles(runtimeTestRoot)
+  .filter((file) => readFileSync(file, 'utf8').includes('bun:test'))
+  .map((file) => normalizeConfigPath(relative(__dirname, file)));
+
+function splitModuleId(id: string): { readonly path: string; readonly suffix: string } {
+  const index = id.search(/[?#]/);
+  if (index === -1) return { path: id, suffix: '' };
+  return {
+    path: id.slice(0, index),
+    suffix: id.slice(index),
+  };
+}
 
 function aliasedSourceBases(base: string): string[] {
   const slash = base.lastIndexOf('/');
@@ -265,20 +277,25 @@ function resolveRelativeAgenCSource(importer: string, source: string): string | 
 
 function resolveMovedRuntimeTestSource(importer: string, source: string): string | null {
   if (!source.startsWith('./') && !source.startsWith('../')) return null;
+  const { path: sourcePath, suffix } = splitModuleId(source);
   const cleanImporter = importer.split('?')[0] ?? importer;
   const absoluteImporter = isAbsolute(cleanImporter)
     ? cleanImporter
     : resolve(__dirname, cleanImporter);
   if (!isWithin(runtimeTestRoot, absoluteImporter)) return null;
 
-  const directTestTarget = existingRuntimeTestFile(resolve(dirname(absoluteImporter), source));
+  const directTestTarget = existingRuntimeTestFile(resolve(dirname(absoluteImporter), sourcePath));
   if (directTestTarget !== null) return null;
 
   const sourceImporter = resolve(
     runtimeSourceRoot,
     relative(runtimeTestRoot, absoluteImporter),
   );
-  return existingSourceFile(resolve(dirname(sourceImporter), source));
+  const mirrored = existingSourceFile(resolve(dirname(sourceImporter), sourcePath));
+  if (mirrored !== null) return `${mirrored}${suffix}`;
+
+  const relocated = resolveRelativeAgenCSource(sourceImporter, sourcePath);
+  return relocated === null ? null : `${relocated}${suffix}`;
 }
 
 export default defineConfig({
@@ -346,6 +363,7 @@ export default defineConfig({
       'dist',
       'tests/agenc/**/*.test.ts',
       'tests/agenc/**/*.test.tsx',
+      ...bunTestFiles,
       // Moved donor-origin tests were previously hidden under src/agenc.
       // Keep them out of Vitest until their owning items convert them.
       ...movedDonorTestFiles,

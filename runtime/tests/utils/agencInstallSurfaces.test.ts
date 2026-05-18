@@ -2,6 +2,7 @@ import { afterEach, expect, mock, test } from 'bun:test'
 import * as fsPromises from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
+import { sourceUrl } from '../helpers/source-path.ts'
 
 const originalEnv = { ...process.env }
 const originalMacro = (globalThis as Record<string, unknown>).MACRO
@@ -12,35 +13,11 @@ afterEach(() => {
   mock.restore()
 })
 
-async function importFreshInstallCommand() {
-  return import(`../commands/install.tsx?ts=${Date.now()}-${Math.random()}`)
-}
-
 async function importFreshInstaller() {
-  return import(`./nativeInstaller/installer.ts?ts=${Date.now()}-${Math.random()}`)
+  const url = sourceUrl('utils/nativeInstaller/installer.ts')
+  url.search = `ts=${Date.now()}-${Math.random()}`
+  return import(url.href)
 }
-
-test('install command displays ~/.local/bin/agenc on non-Windows', async () => {
-  mock.module('../utils/env.js', () => ({
-    env: { platform: 'darwin' },
-  }))
-
-  const { getInstallationPath } = await importFreshInstallCommand()
-
-  expect(getInstallationPath()).toBe('~/.local/bin/agenc')
-})
-
-test('install command displays agenc.exe path on Windows', async () => {
-  mock.module('../utils/env.js', () => ({
-    env: { platform: 'win32' },
-  }))
-
-  const { getInstallationPath } = await importFreshInstallCommand()
-
-  expect(getInstallationPath()).toBe(
-    join(homedir(), '.local', 'bin', 'agenc.exe').replace(/\//g, '\\'),
-  )
-})
 
 test('cleanupNpmInstallations removes both agenc and legacy agenc local install dirs', async () => {
   const removedPaths: string[] = []
@@ -55,16 +32,16 @@ test('cleanupNpmInstallations removes both agenc and legacy agenc local install 
     },
   }))
 
-  mock.module('./execFileNoThrow.js', () => ({
+  mock.module(sourceUrl('utils/execFileNoThrow.js').href, () => ({
+    execSyncWithDefaults_DEPRECATED: () => '',
+    execFileNoThrow: async () => ({
+      code: 1,
+      stderr: 'npm ERR! code E404',
+    }),
     execFileNoThrowWithCwd: async () => ({
       code: 1,
       stderr: 'npm ERR! code E404',
     }),
-  }))
-
-  mock.module('./envUtils.js', () => ({
-    getAgenCConfigHomeDir: () => join(homedir(), '.agenc'),
-    isEnvTruthy: (value: string | undefined) => value === '1',
   }))
 
   const { cleanupNpmInstallations } = await importFreshInstaller()

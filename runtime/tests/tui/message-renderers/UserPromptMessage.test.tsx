@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
+import { sourceUrl } from '../../helpers/source-path.ts'
 
 import {
   getUserPromptTruncationNotice,
@@ -7,7 +8,7 @@ import {
 } from './UserPromptMessage.js'
 
 const source = readFileSync(
-  new URL('./UserPromptMessage.tsx', import.meta.url),
+  sourceUrl('tui/message-renderers/UserPromptMessage.tsx'),
   'utf8',
 )
 

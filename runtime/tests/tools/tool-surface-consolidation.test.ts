@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { sourceUrl } from "../helpers/source-path.ts";
 
 import type { ToolUseContext } from "./Tool.js";
 import { applyToolApprovalConfigToPermissionContext } from "../permissions/tool-approval.js";
@@ -86,7 +87,7 @@ function resultText(data: unknown): string {
 
 describe("old-stack tool surface consolidation", () => {
   test("base tools register canonical implementations for duplicated families", () => {
-    const source = readFileSync(new URL("../tools.ts", import.meta.url), "utf8");
+    const source = readFileSync(sourceUrl("tools.ts"), "utf8");
 
     expect(source).toContain("CanonicalBashTool");
     expect(source).toContain("CanonicalFileReadTool");
@@ -102,7 +103,7 @@ describe("old-stack tool surface consolidation", () => {
 
   test("REPL primitive tools use the canonical search and file surfaces", () => {
     const source = readFileSync(
-      new URL("./REPLTool/primitiveTools.ts", import.meta.url),
+      sourceUrl("tools/REPLTool/primitiveTools.ts"),
       "utf8",
     );
 

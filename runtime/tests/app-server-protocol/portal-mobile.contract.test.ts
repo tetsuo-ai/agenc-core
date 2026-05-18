@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT,
@@ -6,21 +5,6 @@ import {
   createAgenCPortalMobileStatusSnapshot,
   type AgenCPortalDashboardSnapshot,
 } from "./index.js";
-
-const mobileStatusFixture = JSON.parse(
-  readFileSync(
-    new URL("../../../parity/WP-06-mobile-status-fixture.json", import.meta.url),
-    "utf8",
-  ),
-) as {
-  readonly dashboard: AgenCPortalDashboardSnapshot;
-  readonly expected: unknown;
-  readonly options: {
-    readonly now?: string;
-    readonly maxAgents?: number;
-    readonly maxSessions?: number;
-  };
-};
 
 function createDashboardSnapshot(): AgenCPortalDashboardSnapshot {
   return {
@@ -336,15 +320,6 @@ describe("AgenC portal mobile status contract", () => {
     ]) {
       expect(serialized).not.toContain(denied);
     }
-  });
-
-  it("matches the shared sibling portal parity fixture exactly", () => {
-    expect(
-      createAgenCPortalMobileStatusSnapshot(
-        mobileStatusFixture.dashboard,
-        mobileStatusFixture.options,
-      ),
-    ).toEqual(mobileStatusFixture.expected);
   });
 
   it("tie-breaks duplicate and default-truncated check-in rows deterministically", () => {

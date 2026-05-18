@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import { sourceUrl } from "../../../helpers/source-path.ts";
 
 const source = readFileSync(
-  new URL("./TrustDialog.tsx", import.meta.url),
+  sourceUrl("tui/components/TrustDialog/TrustDialog.tsx"),
   "utf8",
 );
 

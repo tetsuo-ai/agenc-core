@@ -1,13 +1,10 @@
 import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { sourcePath } from "../../helpers/source-path.ts";
 
 import { adaptTranscriptEvents } from "../session-transcript.js";
 
-const HOOK_SOURCE_PATH = path.resolve(
-  import.meta.dirname,
-  "../session-transcript.ts",
-);
+const HOOK_SOURCE_PATH = sourcePath("tui/session-transcript.ts");
 
 function readSource(): string {
   return fs.readFileSync(HOOK_SOURCE_PATH, "utf8");

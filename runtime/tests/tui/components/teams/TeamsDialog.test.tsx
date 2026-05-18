@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import { sourceUrl } from "../../../helpers/source-path.ts";
 
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { stringWidth } from "../../ink/stringWidth.js";
@@ -10,7 +11,7 @@ import {
 } from "./TeamsDialog.layout.js";
 
 const source = readFileSync(
-  new URL("./TeamsDialog.tsx", import.meta.url),
+  sourceUrl("tui/components/teams/TeamsDialog.tsx"),
   "utf8",
 );
 

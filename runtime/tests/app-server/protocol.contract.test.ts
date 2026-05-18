@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
+import { sourceUrl } from "../helpers/source-path.ts";
 import {
   AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
   AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
@@ -126,7 +127,7 @@ const expectedInternalMethods = [
 
 function readProtocolSchema(): ProtocolSchema {
   return JSON.parse(
-    readFileSync(new URL("./protocol/schema.json", import.meta.url), "utf8"),
+    readFileSync(sourceUrl("app-server/protocol/schema.json"), "utf8"),
   ) as ProtocolSchema;
 }
 

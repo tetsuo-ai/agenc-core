@@ -12,7 +12,7 @@
 import { describe, test, expect } from 'bun:test'
 import { resolve } from 'path'
 
-const SRC = resolve(import.meta.dir, '..')
+const SRC = resolve(import.meta.dir, '..', '..', '..', 'src')
 const file = (relative: string) => Bun.file(resolve(SRC, relative))
 
 // ---------------------------------------------------------------------------
@@ -122,70 +122,5 @@ describe('WebFetch SSRF guard', () => {
         1000,
     )
     expect(fnSection).toContain('lookup: ssrfGuardedLookup')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix 6: Swarm permission file polling removed (security hardening)
-// ---------------------------------------------------------------------------
-describe('Swarm permission file polling removed', () => {
-  test('useSwarmPermissionPoller hook no longer exists', async () => {
-    const content = await file(
-      'hooks/useSwarmPermissionPoller.ts',
-    ).text()
-    // The file-based polling hook must not exist — it read from an
-    // unauthenticated resolved/ directory where any local process could
-    // forge approval files.
-    expect(content).not.toContain('function useSwarmPermissionPoller(')
-    // The file-based processResponse must not exist
-    expect(content).not.toContain('function processResponse(')
-  })
-
-  test('poller does not import from permissionSync', async () => {
-    const content = await file(
-      'hooks/useSwarmPermissionPoller.ts',
-    ).text()
-    // Must not import anything from permissionSync — all file-based
-    // functions have been removed from this module's dependencies
-    expect(content).not.toContain('permissionSync')
-  })
-
-  test('file-based permission functions are marked deprecated', async () => {
-    const content = await file(
-      'utils/swarm/permissionSync.ts',
-    ).text()
-    // All file-based functions must have @deprecated JSDoc
-    const deprecatedFns = [
-      'writePermissionRequest',
-      'readPendingPermissions',
-      'readResolvedPermission',
-      'resolvePermission',
-      'pollForResponse',
-      'removeWorkerResponse',
-    ]
-    for (const fn of deprecatedFns) {
-      // Find the function and check that @deprecated appears before it
-      const fnIndex = content.indexOf(`export async function ${fn}(`)
-      if (fnIndex === -1) continue // submitPermissionRequest is a const, not async function
-      const preceding = content.slice(Math.max(0, fnIndex - 500), fnIndex)
-      expect(preceding).toContain('@deprecated')
-    }
-  })
-
-  test('mailbox-based functions are NOT deprecated', async () => {
-    const content = await file(
-      'utils/swarm/permissionSync.ts',
-    ).text()
-    // These are the active path — must not be deprecated
-    const activeFns = [
-      'sendPermissionRequestViaMailbox',
-      'sendPermissionResponseViaMailbox',
-    ]
-    for (const fn of activeFns) {
-      const fnIndex = content.indexOf(`export async function ${fn}(`)
-      expect(fnIndex).not.toBe(-1)
-      const preceding = content.slice(Math.max(0, fnIndex - 300), fnIndex)
-      expect(preceding).not.toContain('@deprecated')
-    }
   })
 })

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import { sourceUrl } from "../../helpers/source-path.ts";
 
 const dialogSources = [
   "MCPServerApprovalDialog.tsx",
@@ -7,7 +8,7 @@ const dialogSources = [
   "MCPServerMultiselectDialog.tsx",
 ].map((file) => ({
   file,
-  source: readFileSync(new URL(`./${file}`, import.meta.url), "utf8"),
+  source: readFileSync(sourceUrl("tui/components", file), "utf8"),
 }));
 
 describe("MCP server dialog migration cleanup", () => {

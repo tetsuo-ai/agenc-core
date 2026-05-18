@@ -2,8 +2,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { sourceUrl } from "../../helpers/source-path.ts";
 
-const componentsRoot = fileURLToPath(new URL(".", import.meta.url));
+const componentsRoot = fileURLToPath(sourceUrl("tui/components/"));
 const tuiRoot = join(componentsRoot, "..");
 
 function listSourceFiles(dir: string): readonly string[] {

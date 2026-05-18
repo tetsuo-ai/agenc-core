@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
+import { sourceUrl } from "../../helpers/source-path.ts";
 import {
   applyBestEffortPreMainProcessHardening,
   applyPreMainProcessHardening,
@@ -343,7 +344,7 @@ describe("process hardening", () => {
   nativeBuildTest("loads the native hardening path inside a spawned process", () => {
 
     const cacheDir = tempDir("agenc-hardening-test-");
-    const moduleUrl = new URL("./index.ts", import.meta.url).href;
+    const moduleUrl = sourceUrl("sandbox/hardening/index.ts").href;
     const script = `
       import {
         applyPreMainProcessHardening,
@@ -392,7 +393,7 @@ describe("process hardening", () => {
 
   nativeBuildTest("can compile through explicit runtime-build opt-in", () => {
     const cacheDir = tempDir("agenc-hardening-build-opt-in-");
-    const moduleUrl = new URL("./index.ts", import.meta.url).href;
+    const moduleUrl = sourceUrl("sandbox/hardening/index.ts").href;
     const script = `
       import { applyPreMainProcessHardening } from ${JSON.stringify(moduleUrl)};
       const result = applyPreMainProcessHardening({

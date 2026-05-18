@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
+import { sourceUrl } from "../../helpers/source-path.ts";
 import {
   getAPIContextManagement,
 } from "./apiMicrocompact.js";
@@ -71,7 +72,7 @@ describe("compact supporting surfaces", () => {
     expect(getCachedMicrocompactState()).toEqual(disabledState);
     expect(resetCachedMicrocompactState()).toBeUndefined();
     await expect(maybeRunCachedMicrocompact()).resolves.toBeNull();
-    expect(existsSync(fileURLToPath(new URL("./cachedMCConfig.ts", import.meta.url))))
+    expect(existsSync(fileURLToPath(sourceUrl("services/compact/cachedMCConfig.ts"))))
       .toBe(false);
   });
 

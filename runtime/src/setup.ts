@@ -330,8 +330,8 @@ export async function setup(
     }
   })
   // --bare: skip attribution hook install + repo classification +
-  // session-file-access analytics + team memory watcher. These are background
-  // bookkeeping for commit attribution + usage metrics — scripted calls don't
+  // session-file-access analytics. These are background bookkeeping for commit
+  // attribution + usage metrics — scripted calls don't
   // commit code, and the 49ms attribution hook stat check (measured) is pure
   // overhead. NOT an early-return: the --dangerously-skip-permissions safety
   // gate, tengu_started beacon, and apiKeyHelper prefetch below must still run.
@@ -351,11 +351,6 @@ export async function setup(
     void import('./utils/sessionFileAccessHooks.js').then(m =>
       m.registerSessionFileAccessHooks(),
     ) // Register session file access analytics hooks
-    if (feature('TEAMMEM')) {
-      void import('./services/teamMemorySync/watcher.js').then(m =>
-        m.startTeamMemoryWatcher(),
-      ) // Start team memory sync watcher
-    }
   }
   initSinks() // Attach error log + analytics sinks and drain queued events
 

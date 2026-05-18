@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import { describe, expect, test } from "vitest";
+import { sourceUrl } from "../helpers/source-path.ts";
 
 import {
   BudgetTracker,
@@ -51,7 +52,7 @@ describe("token budget prompt text", () => {
 
   test("copied system prompt path uses the shared prompt section", () => {
     const source = readFileSync(
-      new URL("../constants/prompts.ts", import.meta.url),
+      sourceUrl("constants/prompts.ts"),
       "utf8",
     );
 

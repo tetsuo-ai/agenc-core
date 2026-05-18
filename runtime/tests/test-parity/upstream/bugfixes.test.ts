@@ -11,7 +11,7 @@
 import { describe, test, expect } from 'bun:test'
 import { resolve } from 'path'
 
-const SRC = resolve(import.meta.dir, '..')
+const SRC = resolve(import.meta.dir, '..', '..', '..', 'src')
 const file = (relative: string) => Bun.file(resolve(SRC, relative))
 
 // ---------------------------------------------------------------------------

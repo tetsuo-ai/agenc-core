@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { sourceUrl } from '../../../helpers/source-path.ts'
 
 import { formatVimModeIndicator } from './utils.js'
 
@@ -19,11 +20,11 @@ describe('PromptInputFooterLeftSide vim mode indicator', () => {
 
   test('does not retain impossible footer pills', () => {
     const leftSide = readFileSync(
-      new URL('./PromptInputFooterLeftSide.tsx', import.meta.url),
+      sourceUrl('tui/components/PromptInput/PromptInputFooterLeftSide.tsx'),
       'utf8',
     )
     const promptInput = readFileSync(
-      new URL('./PromptInput.tsx', import.meta.url),
+      sourceUrl('tui/components/PromptInput/PromptInput.tsx'),
       'utf8',
     )
 

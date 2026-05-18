@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, test } from "vitest";
+import { sourceUrl } from "../../helpers/source-path.ts";
 
 import {
   AmendError,
@@ -392,7 +393,7 @@ host_executable(name = "git", paths = ["${escapedGitPath}"])
   });
 
   test("loads the carried example policy corpus end-to-end", () => {
-    const fixturePath = new URL("./examples/example.agencpolicy", import.meta.url);
+    const fixturePath = sourceUrl("sandbox/execpolicy/examples/example.agencpolicy");
     const policy = parsePolicy(
       "examples/example.agencpolicy",
       fs.readFileSync(fixturePath, "utf8"),

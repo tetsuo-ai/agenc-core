@@ -1,18 +1,12 @@
 import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { sourcePath } from "../../helpers/source-path.ts";
 
 import type { StreamingToolUse } from "../../llm/types.js";
 import { adaptTranscriptEvents, type AdaptedTranscript } from "../session-transcript.js";
 
-const APP_SOURCE_PATH = path.resolve(
-  import.meta.dirname,
-  "../components/App.tsx",
-);
-const MESSAGE_ADAPTER_SOURCE_PATH = path.resolve(
-  import.meta.dirname,
-  "../session-transcript.ts",
-);
+const APP_SOURCE_PATH = sourcePath("tui/components/App.tsx");
+const MESSAGE_ADAPTER_SOURCE_PATH = sourcePath("tui/session-transcript.ts");
 
 function readSource(p: string): string {
   return fs.readFileSync(p, "utf8");

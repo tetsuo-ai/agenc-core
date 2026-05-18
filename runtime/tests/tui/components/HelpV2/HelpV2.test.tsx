@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import { sourceUrl } from "../../../helpers/source-path.ts";
 import {
   calculateCommandVisibleOptionCount,
   calculateHelpBodyHeight,
 } from "./layout.js";
 
-const source = readFileSync(new URL("./HelpV2.tsx", import.meta.url), "utf8");
+const source = readFileSync(sourceUrl("tui/components/HelpV2/HelpV2.tsx"), "utf8");
 
 describe("HelpV2 tab set", () => {
   test("has no inactive internal-only tab branch", () => {

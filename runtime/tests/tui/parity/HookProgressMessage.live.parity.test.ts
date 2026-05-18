@@ -1,11 +1,8 @@
 import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, test } from "vitest";
+import { sourcePath } from "../../helpers/source-path.ts";
 
-const HOOK_PROGRESS_SOURCE = path.resolve(
-  import.meta.dirname,
-  "../message-renderers/HookProgressMessage.tsx",
-);
+const HOOK_PROGRESS_SOURCE = sourcePath("tui/message-renderers/HookProgressMessage.tsx");
 
 function readSource(): string {
   return fs.readFileSync(HOOK_PROGRESS_SOURCE, "utf8");
