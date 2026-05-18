@@ -1089,6 +1089,9 @@ export function MenuModal<T>({
   footer,
   hint,
   omitTopBorder = false,
+  paddingX = 1,
+  columnGap = 1,
+  modalMinHeight,
   rowMinHeight = 1,
 }: {
   readonly title: string
@@ -1105,6 +1108,9 @@ export function MenuModal<T>({
   readonly footer: readonly { readonly keyName: string; readonly label: string }[]
   readonly hint?: string
   readonly omitTopBorder?: boolean
+  readonly paddingX?: number
+  readonly columnGap?: number
+  readonly modalMinHeight?: number
   readonly rowMinHeight?: number
 }): React.ReactNode {
   const resolvedPreviewWidth = previewWidth ?? '40%'
@@ -1125,8 +1131,9 @@ export function MenuModal<T>({
       borderBottomColor="agenc"
       backgroundColor="clawd_background"
       overflow="hidden"
+      minHeight={modalMinHeight}
     >
-      <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={1} gap={1}>
+      <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={paddingX} gap={columnGap}>
         <Box flexShrink={0}>
           <ThemedText color="agenc" wrap="truncate-end">{title.toUpperCase()}</ThemedText>
         </Box>
@@ -1146,7 +1153,7 @@ export function MenuModal<T>({
           width={resolvedListWidth}
           overflow="hidden"
         >
-          <Box flexDirection="row" paddingX={1} gap={1}>
+          <Box flexDirection="row" paddingX={paddingX} gap={columnGap}>
             {headers.map((header, index) => (
               <ThemedText key={`${index}-${header}`} color="inactive" wrap="truncate-end">
                 {header.padEnd(columns[index] ?? header.length, ' ')}
@@ -1161,8 +1168,8 @@ export function MenuModal<T>({
                 key={index}
                 flexDirection="row"
                 backgroundColor={active ? 'agencWash' : undefined}
-                paddingX={1}
-                gap={1}
+                paddingX={paddingX}
+                gap={columnGap}
                 minHeight={rowMinHeight}
               >
                 {cells.map((cell, cellIndex) => (
@@ -1180,13 +1187,13 @@ export function MenuModal<T>({
             borderLeft
             borderLeftColor="lineSoft"
             width={resolvedPreviewWidth}
-            paddingX={1}
+            paddingX={paddingX}
           >
             {preview}
           </ThemedBox>
         ) : null}
       </Box>
-      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2}>
+      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={paddingX} gap={2}>
         {footer.map(item => (
           <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
         ))}

@@ -1371,6 +1371,9 @@ function MenuState({
   hint,
   activeIndex = 0,
   omitTopBorder = false,
+  paddingX,
+  columnGap,
+  modalMinHeight,
   rowMinHeight,
 }: {
   readonly title: string
@@ -1386,6 +1389,9 @@ function MenuState({
   readonly hint?: string
   readonly activeIndex?: number
   readonly omitTopBorder?: boolean
+  readonly paddingX?: number
+  readonly columnGap?: number
+  readonly modalMinHeight?: number
   readonly rowMinHeight?: number
 }): React.ReactNode {
   return (
@@ -1403,6 +1409,9 @@ function MenuState({
       preview={preview}
       previewWidth={previewWidth}
       omitTopBorder={omitTopBorder}
+      paddingX={paddingX}
+      columnGap={columnGap}
+      modalMinHeight={modalMinHeight}
       rowMinHeight={rowMinHeight}
       renderRow={(row, index, active) => [
         <ThemedText key="marker" color={active ? 'agenc' : 'muted3'}>
@@ -2852,6 +2861,9 @@ const DESIGN_STATES: readonly DesignState[] = [
             footer={menu.footer}
             hint={menu.hint}
             omitTopBorder
+            paddingX={3}
+            columnGap={2}
+            modalMinHeight={30}
             rowMinHeight={2}
             preview={
               menu.id === '12' ? (
