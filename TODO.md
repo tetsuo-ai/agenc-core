@@ -557,7 +557,7 @@ Dependencies:
 
 - Complete the relevant command-specific items first.
 
-### [ ] TUI-TODO-017 - Audit all remaining old `Dialog` usage
+### [x] TUI-TODO-017 - Audit all remaining old `Dialog` usage
 
 Files to inspect:
 
@@ -569,6 +569,15 @@ Current gap:
 
 - Many old `Dialog` usages remain after the v2 frame landed.
 - Some may be acceptable low-level confirmation primitives, while command surfaces should move to v2.
+
+Audit result:
+
+- Port now: none. `rg` found no old `Dialog` imports in the active root slash-command handlers or the v2 command menu modules under `runtime/src/commands/*-menu.tsx`.
+- Keep for now as low-level setup/safety prompts: `runtime/src/tui/components/design-system/Dialog.tsx`, `dialogs/CostThresholdDialog.tsx`, `ApproveApiKey.tsx`, `BypassPermissionsModeDialog.tsx`, `MCPServerApprovalDialog.tsx`, `MCPServerMultiselectDialog.tsx`, `MCPServerDesktopImportDialog.tsx`, `mcp/ElicitationDialog.tsx`, `InvalidConfigDialog.tsx`, `InvalidSettingsDialog.tsx`, `DevChannelsDialog.tsx`, `ChannelDowngradeDialog.tsx`, `AutoModeOptInDialog.tsx`, `IdleReturnDialog.tsx`, `WorktreeExitDialog.tsx`, `AgenCMdExternalIncludesDialog.tsx`, `AgenCInChromeOnboarding.tsx`, `Feedback.tsx`, `OutputStylePicker.tsx`, and `wizard/WizardDialogLayout.tsx`.
+- Keep for now as prompt-level non-slash tools: `teams/TeamsDialog.tsx`, `GlobalSearchDialog.tsx`, `QuickOpenDialog.tsx`, and `HistorySearchDialog.tsx`; these are launched from prompt keybindings, not rich slash-command surfaces.
+- Delete after caller removal under TUI-TODO-019: old component subtrees `Settings/Config.tsx`, `agents/AgentsMenu.tsx`, `agents/AgentsList.tsx`, `skills/SkillsMenu.tsx`, `hooks/HooksConfigMenu.tsx`, `hooks/SelectEventMode.tsx`, `hooks/SelectHookMode.tsx`, `hooks/SelectMatcherMode.tsx`, `hooks/ViewHookMode.tsx`, `mcp/MCPToolListView.tsx`, `mcp/MCPToolDetailView.tsx`, `diff/DiffDialog.tsx`, `tasks/AsyncAgentDetailDialog.tsx`, `tasks/ShellDetailDialog.tsx`, `tasks/InProcessTeammateDetailDialog.tsx`, and the old `runtime/src/commands/plugin/*` interactive subtree.
+- Delete/retire after non-TUI caller audit: `commands/review/UltrareviewOverageDialog.tsx` and `tui/components/ExportDialog.tsx`, because their slash command surfaces are not part of the retained v2 command registry.
+- Retained reason: the surviving old dialogs are modal confirmation/setup primitives outside the v2 slash-command surface. Owner: TUI cleanup backlog, primarily TUI-TODO-019 for unreachable command/component subtrees.
 
 Target:
 
