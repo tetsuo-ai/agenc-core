@@ -711,13 +711,14 @@ export function WelcomeColdPanel({
         backgroundColor="surfaceBackground"
         flexWrap="wrap"
       >
-        {stats.map(stat => (
+        {stats.map((stat, index) => (
           <ThemedBox
             key={stat.label}
             flexDirection="column"
             minWidth={13}
             flexGrow={1}
-            paddingX={1}
+            paddingLeft={index === stats.length - 1 ? 3 : 1}
+            paddingRight={1}
             paddingY={1}
           >
             <ThemedText color="inactive" wrap="truncate-end">
