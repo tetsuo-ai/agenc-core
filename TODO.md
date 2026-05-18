@@ -207,7 +207,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-006 - Finish `/agents` management parity in v2
+### [x] TUI-TODO-006 - Finish `/agents` management parity in v2
 
 Files to inspect:
 

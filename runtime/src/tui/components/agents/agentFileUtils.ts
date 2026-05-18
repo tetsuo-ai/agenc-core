@@ -2,7 +2,7 @@ import { mkdir, open, unlink } from 'fs/promises'
 import { join } from 'path'
 import type { SettingSource } from '../../../utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
 import { getManagedFilePath } from '../../../utils/settings/managedPath.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { AgentMemoryScope } from '../../../tools/AgentTool/agentMemory'
+import type { AgentMemoryScope } from '../../../tools/AgentTool/agentMemory.js'
 import {
   type AgentDefinition,
   isBuiltInAgent,
@@ -10,9 +10,9 @@ import {
 } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { getCwd } from '../../../utils/cwd.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { EffortValue } from '../../../utils/effort.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getAgenCConfigHomeDir } from '../../../utils/envUtils'
+import { getAgenCConfigHomeDir } from '../../../utils/envUtils.js'
 import { getErrnoCode } from '../../../utils/errors.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { AGENT_PATHS } from './types'
+import { AGENT_PATHS } from './types.js'
 
 /**
  * Formats agent data as markdown file content
