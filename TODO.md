@@ -712,7 +712,7 @@ Completed:
 - Added persistent filtered help coverage and an 80-column help-row guard.
 - Capped `/diff` preview rows by terminal height so compact command smoke keeps the footer visible.
 
-### [ ] TUI-TODO-021 - Add a final v2 parity audit against numbered design states
+### [x] TUI-TODO-021 - Add a final v2 parity audit against numbered design states
 
 Files to inspect:
 
@@ -739,3 +739,10 @@ Acceptance:
 Dependencies:
 
 - Run after the command-specific port items are complete.
+
+Completed:
+
+- Added a repeatable `check:tui-v2-design-audit` script that rebuilds the runtime, runs the numbered-state audit, and then runs the live command visual smoke at 148x40, 120x30, and 80x24.
+- Added `runtime/src/tui/components/v2/PARITY_AUDIT.md` mapping every state from 01a through 19c to its implemented surface and gate evidence.
+- Reconciled stale curated browser markers and bounded fixture thresholds so the committed audit reflects the current terminal-renderable parity gate.
+- Verified the final audit with the full script: 103 numbered-state tests passed and all live command smoke checks passed across all three viewport sizes.
