@@ -1089,6 +1089,7 @@ export function MenuModal<T>({
   footer,
   hint,
   omitTopBorder = false,
+  rowMinHeight = 1,
 }: {
   readonly title: string
   readonly count?: string
@@ -1104,6 +1105,7 @@ export function MenuModal<T>({
   readonly footer: readonly { readonly keyName: string; readonly label: string }[]
   readonly hint?: string
   readonly omitTopBorder?: boolean
+  readonly rowMinHeight?: number
 }): React.ReactNode {
   const resolvedPreviewWidth = previewWidth ?? '40%'
   const resolvedListWidth = preview
@@ -1161,6 +1163,7 @@ export function MenuModal<T>({
                 backgroundColor={active ? 'agencWash' : undefined}
                 paddingX={1}
                 gap={1}
+                minHeight={rowMinHeight}
               >
                 {cells.map((cell, cellIndex) => (
                   <Box key={cellIndex} width={columns[cellIndex]} overflow="hidden">

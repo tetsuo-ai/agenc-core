@@ -1371,6 +1371,7 @@ function MenuState({
   hint,
   activeIndex = 0,
   omitTopBorder = false,
+  rowMinHeight,
 }: {
   readonly title: string
   readonly count?: string
@@ -1385,6 +1386,7 @@ function MenuState({
   readonly hint?: string
   readonly activeIndex?: number
   readonly omitTopBorder?: boolean
+  readonly rowMinHeight?: number
 }): React.ReactNode {
   return (
     <MenuModal
@@ -1401,6 +1403,7 @@ function MenuState({
       preview={preview}
       previewWidth={previewWidth}
       omitTopBorder={omitTopBorder}
+      rowMinHeight={rowMinHeight}
       renderRow={(row, index, active) => [
         <ThemedText key="marker" color={active ? 'agenc' : 'muted3'}>
           {active ? '▮' : '·'}
@@ -2849,6 +2852,7 @@ const DESIGN_STATES: readonly DesignState[] = [
             footer={menu.footer}
             hint={menu.hint}
             omitTopBorder
+            rowMinHeight={2}
             preview={
               menu.id === '12' ? (
                 <Box flexDirection="column">
@@ -4330,7 +4334,11 @@ describe('numbered design state smoke coverage', () => {
     const state = DESIGN_STATES.find(candidate => candidate.id === stateId)
     expect(state, `unknown AGENC_TUI_DESIGN_DUMP_STATE=${stateId}`).toBeTruthy()
 
-    const fixtureEntries = BROWSER_TEXT_FIXTURE[state!.id] ?? []
+    const designHtmlPath = process.env.AGENC_TUI_DESIGN_HTML
+    const fixture = process.env.AGENC_TUI_DESIGN_DUMP_LIVE === '1' && designHtmlPath && existsSync(designHtmlPath)
+      ? await extractBrowserTextFixtureFromDesignHtml(designHtmlPath)
+      : BROWSER_TEXT_FIXTURE
+    const fixtureEntries = fixture[state!.id] ?? []
     const rendered = await renderToString(
       <AppStateProvider initialState={getDefaultAppState()}>
         {state!.render({ columns: 148, rows: 40 })}
