@@ -48,7 +48,7 @@ Known v2 work already landed:
 
 ## Goal Items
 
-### [ ] TUI-TODO-001 - Port `/config` and `/settings` to a v2 persistent config surface
+### [x] TUI-TODO-001 - Port `/config` and `/settings` to a v2 persistent config surface
 
 Files to inspect:
 

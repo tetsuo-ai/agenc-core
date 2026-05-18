@@ -11,6 +11,7 @@ import {
   getConfigFilePath,
   editorForEnv,
 } from "./config.js";
+import { readConfigMenuSnapshot } from "./config-menu.js";
 import { ConfigStore } from "../config/store.js";
 import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import type { Session } from "../session/session.js";
@@ -57,6 +58,7 @@ function stubCtx(
     home: overrides.home ?? "/home/test",
     agencHome: overrides.agencHome ?? "/home/test/.agenc",
     configStore: overrides.configStore,
+    appState: overrides.appState,
   };
 }
 
@@ -141,6 +143,30 @@ describe("configCommand — execute show/default", () => {
     expect(r.text).toContain("grok-4-fast");
   });
 
+  it("no args opens a persistent v2 menu when TUI app state is wired", async () => {
+    const store = makeStore({ model: "grok-4-fast" });
+    const setToolJSX = vi.fn();
+    const r = await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        appState: { setToolJSX },
+      }),
+    );
+
+    expect(r.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isLocalJSXCommand: true,
+        shouldHidePromptInput: true,
+        jsx: expect.anything(),
+      }),
+    );
+  });
+
+  it("keeps /settings as an alias for the config surface", () => {
+    expect(configCommand.aliases).toContain("settings");
+  });
+
   it("'show' is an explicit alias", async () => {
     const store = makeStore();
     const r = await configCommand.execute(
@@ -160,6 +186,38 @@ describe("configCommand — execute show/default", () => {
       stubCtx({ configStore: store, argsRaw: "launch-the-rockets" }),
     );
     expect(r.kind).toBe("error");
+  });
+});
+
+describe("config menu snapshot", () => {
+  it("summarizes core settings for the v2 menu", () => {
+    const store = makeStore({
+      model: "grok-4-fast",
+      model_provider: "grok",
+      mcp_servers: {
+        local: { command: "agenc-mcp" },
+      },
+      profiles: {
+        dev: { model: "grok-dev" },
+      },
+    });
+    const snapshot = readConfigMenuSnapshot(stubCtx({ configStore: store }));
+    expect(snapshot.configPath).toBe("/home/test/.agenc/config.toml");
+    expect(
+      snapshot.rows.some(
+        row => row.key === "model" && row.value === "grok-4-fast",
+      ),
+    ).toBe(true);
+    expect(
+      snapshot.rows.some(
+        row => row.key === "mcp server" && row.detail.includes("local"),
+      ),
+    ).toBe(true);
+    expect(
+      snapshot.rows.some(
+        row => row.key === "profiles" && row.detail.includes("dev"),
+      ),
+    ).toBe(true);
   });
 });
 
