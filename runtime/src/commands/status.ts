@@ -8,6 +8,8 @@
  * @module
  */
 
+import { spawn } from "node:child_process";
+
 import { monotonicMs } from "../utils/monotonic.js";
 import type { Session } from "../session/session.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
@@ -17,10 +19,97 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import {
+  createStatusDashboardSnapshot,
+  openStatusDashboard,
+} from "./status-menu.js";
 
-interface StatusLine {
+export interface StatusLine {
   key: string;
   value: string;
+}
+
+interface GitCommandResult {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly code: number | null;
+}
+
+export type GitStatusSummary =
+  | {
+      readonly state: "clean" | "dirty";
+      readonly branch?: string;
+      readonly changedFiles: number;
+    }
+  | { readonly state: "not-repo"; readonly message: string }
+  | { readonly state: "error"; readonly message: string };
+
+type GitRunner = (args: readonly string[], cwd: string) => Promise<GitCommandResult>;
+
+const runGit: GitRunner = (args, cwd) =>
+  new Promise((resolve) => {
+    try {
+      const child = spawn("git", [...args], { cwd });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", data => {
+        stdout += data.toString("utf8");
+      });
+      child.stderr.on("data", data => {
+        stderr += data.toString("utf8");
+      });
+      child.on("error", error => {
+        resolve({ stdout, stderr: stderr + String(error), code: -1 });
+      });
+      child.on("close", code => {
+        resolve({ stdout, stderr, code });
+      });
+    } catch (error) {
+      resolve({ stdout: "", stderr: String(error), code: -1 });
+    }
+  });
+
+export function summarizeGitStatus(params: {
+  readonly insideWorkTree: GitCommandResult;
+  readonly branch: GitCommandResult;
+  readonly porcelain: GitCommandResult;
+}): GitStatusSummary {
+  if (params.insideWorkTree.code !== 0) {
+    return { state: "not-repo", message: "Run /status inside a git work tree for branch state." };
+  }
+  if (params.branch.code !== 0 || params.porcelain.code !== 0) {
+    return {
+      state: "error",
+      message: params.branch.stderr || params.porcelain.stderr || "git status failed",
+    };
+  }
+  const changedFiles = params.porcelain.stdout
+    .split("\n")
+    .filter(line => line.trim().length > 0).length;
+  return {
+    state: changedFiles > 0 ? "dirty" : "clean",
+    branch: params.branch.stdout.trim() || "detached",
+    changedFiles,
+  };
+}
+
+export async function collectGitStatus(
+  cwd: string,
+  git: GitRunner = runGit,
+): Promise<GitStatusSummary> {
+  const insideWorkTree = await git(["rev-parse", "--is-inside-work-tree"], cwd);
+  if (insideWorkTree.code !== 0) {
+    return summarizeGitStatus({
+      insideWorkTree,
+      branch: { stdout: "", stderr: "", code: 0 },
+      porcelain: { stdout: "", stderr: "", code: 0 },
+    });
+  }
+  const [branch, porcelain] = await Promise.all([
+    git(["rev-parse", "--abbrev-ref", "HEAD"], cwd),
+    git(["status", "--porcelain"], cwd),
+  ]);
+  return summarizeGitStatus({ insideWorkTree, branch, porcelain });
 }
 
 /**
@@ -218,6 +307,12 @@ export const statusCommand: SlashCommand = {
         }
       }
       const lines = collectStatus(ctx.session, ctx.cwd, undefined, snapshot);
+      const dashboard = createStatusDashboardSnapshot({
+        lines,
+        git: await collectGitStatus(ctx.cwd),
+        appState: ctx.appState?.getAppState?.(),
+      });
+      if (openStatusDashboard(ctx, dashboard)) return { kind: "skip" };
       return { kind: "text", text: formatStatus(lines) };
     }),
 };

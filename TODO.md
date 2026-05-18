@@ -115,7 +115,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-003 - Port `/status` to a v2 status dashboard
+### [x] TUI-TODO-003 - Port `/status` to a v2 status dashboard
 
 Files to inspect:
 

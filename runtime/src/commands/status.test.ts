@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import statusCommand, { collectStatus, formatStatus } from "./status.js";
+import { describe, expect, it, vi } from "vitest";
+import statusCommand, {
+  collectStatus,
+  formatStatus,
+  summarizeGitStatus,
+} from "./status.js";
+import { createStatusDashboardSnapshot } from "./status-menu.js";
 import type { Session } from "../session/session.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -142,5 +147,89 @@ describe("statusCommand", () => {
       home: "/home/test",
     });
     expect(res.kind).toBe("text");
+  });
+
+  it("execute opens a persistent v2 dashboard when TUI app state is wired", async () => {
+    const setToolJSX = vi.fn();
+    const res = await statusCommand.execute({
+      session: stubSession(),
+      argsRaw: "",
+      cwd: "/ws",
+      home: "/home/test",
+      appState: {
+        setToolJSX,
+        getAppState: () => ({
+          mainLoopModel: "grok-4.3",
+          mcp: { clients: [], tools: [1], commands: [], resources: {} },
+          tasks: {
+            task1: { status: "running" },
+          },
+        }),
+      },
+    });
+    expect(res.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isLocalJSXCommand: true,
+        shouldHidePromptInput: true,
+        jsx: expect.anything(),
+      }),
+    );
+  });
+});
+
+describe("status git summary", () => {
+  it("detects a clean work tree", () => {
+    expect(
+      summarizeGitStatus({
+        insideWorkTree: { stdout: "true\n", stderr: "", code: 0 },
+        branch: { stdout: "main\n", stderr: "", code: 0 },
+        porcelain: { stdout: "", stderr: "", code: 0 },
+      }),
+    ).toEqual({ state: "clean", branch: "main", changedFiles: 0 });
+  });
+
+  it("detects a dirty work tree", () => {
+    expect(
+      summarizeGitStatus({
+        insideWorkTree: { stdout: "true\n", stderr: "", code: 0 },
+        branch: { stdout: "main\n", stderr: "", code: 0 },
+        porcelain: { stdout: " M file.ts\n?? new.ts\n", stderr: "", code: 0 },
+      }),
+    ).toEqual({ state: "dirty", branch: "main", changedFiles: 2 });
+  });
+
+  it("detects non-git directories", () => {
+    expect(
+      summarizeGitStatus({
+        insideWorkTree: { stdout: "", stderr: "fatal", code: 128 },
+        branch: { stdout: "", stderr: "", code: 0 },
+        porcelain: { stdout: "", stderr: "", code: 0 },
+      }).state,
+    ).toBe("not-repo");
+  });
+});
+
+describe("status dashboard snapshot", () => {
+  it("adds git, mcp, and task rows", () => {
+    const snapshot = createStatusDashboardSnapshot({
+      lines: [
+        { key: "Model", value: "grok-4.3" },
+        { key: "Permission mode", value: "plan" },
+      ],
+      git: { state: "dirty", branch: "main", changedFiles: 2 },
+      appState: {
+        mcp: { clients: [1], tools: [1, 2], commands: [1], resources: {} },
+        tasks: {
+          a: { status: "running" },
+          b: { status: "completed" },
+        },
+      },
+    });
+
+    expect(snapshot.rows.some(row => row.section === "git" && row.value === "dirty")).toBe(true);
+    expect(snapshot.rows.some(row => row.section === "mcp" && row.value === "1")).toBe(true);
+    expect(snapshot.rows.some(row => row.section === "tasks" && row.value === "2")).toBe(true);
+    expect(snapshot.summary).toContain("attention");
   });
 });
