@@ -15,10 +15,29 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openHooksMenu } from "./hooks-menu.js";
+import { HooksRuntimeUnavailableModal, openHooksMenu } from "./hooks-menu.js";
+import React from "react";
 
 function findHooksRuntime(ctx: SlashCommandContext): ConfiguredHooksRuntime | null {
-  return ctx.session.services.hooksRuntime ?? null;
+  return ctx.session.services?.hooksRuntime ?? null;
+}
+
+function openHooksUnavailableMenu(ctx: SlashCommandContext): boolean {
+  const setToolJSX = ctx.appState?.setToolJSX;
+  if (typeof setToolJSX !== "function") return false;
+  const close = () => {
+    setToolJSX({
+      jsx: null,
+      shouldHidePromptInput: false,
+      clearLocalJSX: true,
+    });
+  };
+  setToolJSX({
+    isLocalJSXCommand: true,
+    shouldHidePromptInput: true,
+    jsx: React.createElement(HooksRuntimeUnavailableModal, { onDone: close }),
+  });
+  return true;
 }
 
 function metadataFor(event: HookEventName): {
@@ -206,6 +225,9 @@ async function handleHooksCommand(
 ): Promise<SlashCommandResult> {
   const runtime = findHooksRuntime(ctx);
   if (!runtime) {
+    if (ctx.argsRaw.trim().length === 0 && openHooksUnavailableMenu(ctx)) {
+      return { kind: "skip" };
+    }
     return {
       kind: "error",
       message: "Hooks runtime is not available in this session.",

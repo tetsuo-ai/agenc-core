@@ -34,6 +34,7 @@
     "check:tui-runtime-startup": "node scripts/check-tui-runtime-startup.mjs",
     "compile:react": "node scripts/compile-react.mjs",
     "check:tui-e2e": "node scripts/check-tui-e2e/runner.mjs",
+    "check:tui-command-visual-smoke": "node scripts/check-tui-command-visual-smoke.mjs",
     "test:tui-yolo-openclaude-parity": "npm run check:tui-e2e -- --filter 06-yolo-cold-start",
     "check:llm-pipeline": "node scripts/check-llm-pipeline/runner.mjs",
     "check:daemon-errors": "node scripts/check-daemon-errors/runner.mjs",

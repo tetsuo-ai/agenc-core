@@ -242,7 +242,7 @@ function printableChar(ch) {
   return ch >= " " && ch !== "\x7f";
 }
 
-export function renderPtyScreen(raw, { cols = 140, rows = 40 } = {}) {
+export function renderPtyRows(raw, { cols = 140, rows = 40 } = {}) {
   const grid = emptyGrid(rows, cols);
   let row = 0;
   let col = 0;
@@ -372,8 +372,11 @@ export function renderPtyScreen(raw, { cols = 140, rows = 40 } = {}) {
     }
   }
 
-  return grid
-    .map((line) => line.join("").trimEnd())
+  return grid.map((line) => line.join("").trimEnd());
+}
+
+export function renderPtyScreen(raw, opts = {}) {
+  return renderPtyRows(raw, opts)
     .filter((line) => line.trim().length > 0)
     .join("\n");
 }

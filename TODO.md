@@ -595,7 +595,7 @@ Dependencies:
 
 - Best done after several command-specific items land.
 
-### [ ] TUI-TODO-018 - Add command-level visual smoke coverage
+### [x] TUI-TODO-018 - Add command-level visual smoke coverage
 
 Files to inspect:
 
@@ -624,6 +624,14 @@ Acceptance:
 Dependencies:
 
 - Can start now, but command-specific assertions should be added as each surface is ported.
+
+Completed:
+
+- Added `runtime/scripts/check-tui-command-visual-smoke.mjs` and `npm run check:tui-command-visual-smoke`.
+- The smoke opens `/help`, `/config`, `/skills`, `/model`, `/provider`, `/hooks`, `/mcp`, `/agents`, `/permissions`, `/memory`, `/resume`, `/tasks`, `/context`, and `/diff` in a PTY at 148x40, 120x30, and 80x24.
+- The smoke fails on malformed `/helpfor` and `/claimto`-style hint spacing, missing visible command anchors, missing close/scroll affordances for rich list surfaces, and surfaces that start below the visible body.
+- Added unfiltered PTY row rendering to the e2e harness so live visual checks can reason about vertical placement.
+- `/hooks` now renders a bounded v2 unavailable menu instead of a transient error when the TUI bridge has no hooks runtime.
 
 ### [ ] TUI-TODO-019 - Remove unreachable old component subtrees after ports land
 

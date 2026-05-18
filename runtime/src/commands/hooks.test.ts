@@ -64,6 +64,21 @@ describe("/hooks command", () => {
     });
   });
 
+  it("opens a bounded unavailable hooks menu when the runtime bridge is absent", async () => {
+    const setToolJSX = vi.fn();
+    const result = await hooksCommand.execute({
+      ...ctx("", undefined, { setToolJSX }),
+      session: { services: {} } as unknown as Session,
+    });
+
+    expect(result.kind).toBe("skip");
+    expect(setToolJSX).toHaveBeenCalledTimes(1);
+    expect(setToolJSX.mock.calls[0]?.[0]).toMatchObject({
+      isLocalJSXCommand: true,
+      shouldHidePromptInput: true,
+    });
+  });
+
   it("shows one configured hook", async () => {
     const result = await hooksCommand.execute(ctx("show PreToolUse 0"));
     expect(result.kind).toBe("text");
