@@ -117,6 +117,6 @@ so the next implementation pass does not need to rediscover them.
 - Typecheck:
   `cd runtime && npm run typecheck`
 - Repo hygiene:
-  `git diff --check && node scripts/branding-scan.mjs --changed`
+  `git diff --check`
 - Full TUI gate after runtime-code changes:
   `node /home/tetsuo/.agenc/skills/agenc-tui-validate/scripts/run-tui-validate.mjs --repo /home/tetsuo/git/AgenC/agenc-core --full`

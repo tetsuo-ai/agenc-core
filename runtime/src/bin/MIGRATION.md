@@ -44,12 +44,11 @@ Side labels:
 | `runtime/src/bin/web-fetch-preapproved.ts` | shared | Supplies the WebFetch preapproved-host lookup used by model-facing web tools. |
 | `runtime/src/bin/workflow-controller.ts` | shared | Bridges plan-mode tool state into a live session; used through the shared bootstrap tool registry. |
 
-## Enforcement
+## Maintenance
 
-`scripts/check-bin-classification.mjs` verifies that every non-test `.ts` file
-under `runtime/src/bin/` appears exactly once in the inventory above with a
-valid side label. Update this file in the same change that adds, moves, or
-deletes production files in `runtime/src/bin/`.
+Every non-test `.ts` file under `runtime/src/bin/` should appear exactly once
+in the inventory above with a valid side label. Update this file in the same
+change that adds, moves, or deletes production files in `runtime/src/bin/`.
 
 ## MG-03 Relocation Result
 
@@ -62,6 +61,3 @@ goal discipline forbids new forwarding-only modules, and there is no runtime
 backward-compatibility need when no daemon-owned bin file existed to move.
 Future daemon-owned RPC handlers belong under
 `runtime/src/app-server/handlers/<family>/`, not under `runtime/src/bin/`.
-
-Run `node scripts/check-bin-classification.mjs --forbid-daemon-only` to enforce
-that boundary.

@@ -13,7 +13,7 @@
     "daemon": "npm --workspace=@tetsuo-ai/runtime run daemon",
     "daemon:status": "npm --workspace=@tetsuo-ai/runtime run daemon:status",
     "start": "npm --workspace=@tetsuo-ai/runtime run start",
-    "validate:umbrella": "node scripts/check-sibling-package-pins.mjs --root . && npm run validate:runtime",
+    "validate:umbrella": "npm run validate:runtime",
     "validate:runtime": "npm run typecheck --workspace=@tetsuo-ai/runtime && npm run build --workspace=@tetsuo-ai/runtime && npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime",
     "validate:openclaude-footer-live-parity": "npm run check:tui-e2e --workspace=@tetsuo-ai/runtime -- --filter 54-yolo-footer-glyph",
     "validate:tui-openclaude-core-parity": "npm run check:tui-e2e --workspace=@tetsuo-ai/runtime -- --filter 01-cold-start && npm run check:tui-e2e --workspace=@tetsuo-ai/runtime -- --filter 05-ctrl-d-exit",

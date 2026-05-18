@@ -1,4 +1,3 @@
-// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 /**
  * Model deprecation utilities
  *

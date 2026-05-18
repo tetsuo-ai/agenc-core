@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import type { Notification } from '../../context/notifications.js';
 import { type GlobalConfig, getGlobalConfig } from '../../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { useStartupNotification } from './useStartupNotification';

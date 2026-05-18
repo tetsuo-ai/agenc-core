@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { c as _c } from "react-compiler-runtime";
 /**
  * Surfaces plugin-install prompts driven by `<agenc-code-hint />` tags

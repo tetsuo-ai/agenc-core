@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { isInBundledMode } from '../../../utils/bundledMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getCurrentInstallationType } from '../../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { isEnvTruthy } from 'src/utils/envUtils.js';

@@ -1,5 +1,4 @@
 // @ts-nocheck
-// Z-PURGEC strictness boundary: tracked by scripts/goal/verify.mjs.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDynamicConfig } from '../../hooks/useDynamicConfig.js';
 import { isFeedbackSurveyDisabled } from '../../../services/analytics/config.js';

@@ -26,7 +26,6 @@ This repository currently owns the implementation for:
 - `tools/proof-harness/`
 - `test-fixtures/plugin-kit-channel-adapter/`
 - `tests/`
-- `scripts/`
 - `config/`
 
 Under [ADR-003](docs/architecture/adr/adr-003-public-framework-product.md), the
@@ -102,7 +101,6 @@ agenc-core/
   tools/
   test-fixtures/
   tests/
-  scripts/
   config/
   docs/
 ```

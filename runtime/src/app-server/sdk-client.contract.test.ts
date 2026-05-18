@@ -44,14 +44,6 @@ function readSiblingSdkSource(...segments: readonly string[]): string {
   return readFileSync(siblingSdkPath(...segments), "utf8");
 }
 
-function coreRoot(): string {
-  return resolve(process.cwd(), "..");
-}
-
-function siblingSdkRoot(): string {
-  return resolve(dirname(siblingSdkPath("src", "daemon.ts")), "..");
-}
-
 describe("AgenC SDK daemon client wrapper", () => {
   it("exposes a typed wrapper over every daemon method without SDK agent logic", () => {
     const daemonSource = readSiblingSdkSource("src", "daemon.ts");
@@ -68,22 +60,37 @@ describe("AgenC SDK daemon client wrapper", () => {
       expect(daemonSource).toContain(`"${method}"`);
     }
 
-    const driftCheck = spawnSync(
-      process.execPath,
-      [
-        resolve(coreRoot(), "scripts/check-sdk-daemon-methods.mjs"),
-        "--root",
-        coreRoot(),
-        "--sdk",
-        siblingSdkRoot(),
-      ],
-      {
-        cwd: coreRoot(),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+    expectOrderedLiterals(
+      "AgenCDaemonMethod",
+      AGENC_DAEMON_METHODS,
+      extractTypeUnionStringLiterals(daemonSource, "AgenCDaemonMethod"),
     );
-    expect(driftCheck.status, driftCheck.stderr || driftCheck.stdout).toBe(0);
+    expectOrderedLiterals(
+      "AgenCDaemonParamsByMethod",
+      AGENC_DAEMON_METHODS,
+      extractInterfaceMethodKeys(daemonSource, "AgenCDaemonParamsByMethod"),
+    );
+    expectOrderedLiterals(
+      "AgenCDaemonResultByMethod",
+      AGENC_DAEMON_METHODS,
+      extractInterfaceMethodKeys(daemonSource, "AgenCDaemonResultByMethod"),
+    );
+    expectOrderedLiterals(
+      "AgenCDaemonNotificationMethod",
+      AGENC_DAEMON_NOTIFICATION_METHODS,
+      extractTypeUnionStringLiterals(
+        daemonSource,
+        "AgenCDaemonNotificationMethod",
+      ),
+    );
+    expectOrderedLiterals(
+      "AgenCDaemonNotificationParamsByMethod",
+      AGENC_DAEMON_NOTIFICATION_METHODS,
+      extractInterfaceMethodKeys(
+        daemonSource,
+        "AgenCDaemonNotificationParamsByMethod",
+      ),
+    );
 
     expect(daemonSource).not.toMatch(/@solana\/web3\.js|@coral-xyz\/anchor/);
     expect(daemonSource).not.toMatch(
@@ -183,6 +190,61 @@ describe("AgenC SDK daemon client wrapper", () => {
     ]);
   });
 });
+
+function extractTypeUnionStringLiterals(
+  source: string,
+  typeName: string,
+): string[] {
+  const match = new RegExp(
+    `export\\s+type\\s+${escapeRegExp(typeName)}\\s*=([\\s\\S]*?);`,
+  ).exec(source);
+  if (!match) throw new Error(`missing type union: ${typeName}`);
+  return extractStringLiterals(match[1]);
+}
+
+function extractInterfaceMethodKeys(
+  source: string,
+  interfaceName: string,
+): string[] {
+  const match = new RegExp(
+    `export\\s+interface\\s+${escapeRegExp(interfaceName)}\\s*\\{([\\s\\S]*?)\\n\\}`,
+  ).exec(source);
+  if (!match) throw new Error(`missing interface: ${interfaceName}`);
+  const keys: string[] = [];
+  const keyRe =
+    /readonly\s+(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$]*))\s*:/g;
+  let keyMatch;
+  while ((keyMatch = keyRe.exec(match[1])) !== null) {
+    keys.push(keyMatch[1] ?? keyMatch[2] ?? keyMatch[3]);
+  }
+  return keys;
+}
+
+function expectOrderedLiterals(
+  label: string,
+  expected: readonly string[],
+  actual: readonly string[],
+): void {
+  expect(actual, label).toEqual(expected);
+}
+
+function extractStringLiterals(source: string): string[] {
+  const values: string[] = [];
+  const literalRe = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/g;
+  let match;
+  while ((match = literalRe.exec(source)) !== null) {
+    values.push(unescapeLiteral(match[1] ?? match[2]));
+  }
+  return values;
+}
+
+function unescapeLiteral(value: string): string {
+  return value.replace(/\\(["'\\])/g, "$1");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
