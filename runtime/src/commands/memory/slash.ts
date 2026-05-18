@@ -10,9 +10,9 @@ const MEMORY_CLI_SURFACE = "agenc memory";
 /**
  * Headless dispatcher fallback for `/memory`.
  *
- * The interactive TUI command is exported from `index.ts` as a local JSX
- * command. The registry still needs a plain SlashCommand so daemon/headless
- * dispatch has a non-throwing answer instead of trying to render Ink.
+ * The interactive TUI command body lives in `memory.tsx`. The registry still
+ * needs a plain SlashCommand so daemon/headless dispatch has a non-throwing
+ * answer instead of trying to render Ink.
  */
 export const memorySlashCommand: SlashCommand = {
   name: "memory",

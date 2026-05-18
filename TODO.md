@@ -520,7 +520,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-016 - Clean up residual old local JSX command directories
+### [x] TUI-TODO-016 - Clean up residual old local JSX command directories
 
 Files to inspect:
 
@@ -533,6 +533,13 @@ Current gap:
 
 - Many command directories still declare `type: "local-jsx"` even when the runtime registry has moved to v2 command handlers.
 - This makes it hard to know which visual layer is canonical.
+
+Audit result:
+
+- Deleted legacy local-JSX command specs for retained v2 slash commands: `/help`, `/status`, `/model`, `/provider`, `/permissions`, `/plan`, `/agents`, `/tasks`, `/config`, `/hooks`, `/skills`, `/plugins`, `/memory`, `/resume`, `/context`, `/diff`, and `/exit`.
+- Deleted local-JSX specs for retired command names: `/add-dir`, `/branch`, `/brief`, `/copy`, `/export`, `/install`, `/rename`, and `/sandbox`.
+- Preserved root command handlers, v2 menu modules, shared validation helpers, and `memory.tsx`, which is the active `/memory` TUI body loaded by `memory/slash.ts`.
+- Added command-surface coverage that fails if any command source file reintroduces `type: "local-jsx"`.
 
 Target:
 

@@ -4,7 +4,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { SlashCommandContext } from "../types.js";
-import memoryLocalCommand from "./index.js";
 import { memorySlashCommand } from "./slash.js";
 import { getRelativeMemoryPathForRoots } from "../../tui/components/memory/path-format.js";
 import {
@@ -59,9 +58,9 @@ describe("memory command contract", () => {
     vi.doUnmock("../../utils/editor.js");
   });
 
-  it("keeps the copied memory command directory wired into registry and TUI surfaces", () => {
+  it("keeps the memory slash command wired into registry and TUI surfaces", () => {
     expect(existsSync(resolve(root, "runtime/src/commands/memory/index.ts"))).toBe(
-      true,
+      false,
     );
     expect(existsSync(resolve(root, "runtime/src/commands/memory/memory.tsx"))).toBe(
       true,
@@ -79,12 +78,6 @@ describe("memory command contract", () => {
     expect(memorySlash).toContain('await import("./memory.js")');
     expect(memorySlash).toContain("setToolJSX");
 
-    const memoryIndex = readFileSync(
-      resolve(root, "runtime/src/commands/memory/index.ts"),
-      "utf8",
-    );
-    expect(memoryIndex).toContain('import("./memory.js")');
-
     const memoryBody = readFileSync(
       resolve(root, "runtime/src/commands/memory/memory.tsx"),
       "utf8",
@@ -93,13 +86,6 @@ describe("memory command contract", () => {
     expect(
       existsSync(resolve(root, "runtime/src/tui/components/memory/MemoryFileSelector.tsx")),
     ).toBe(false);
-  });
-
-  it("keeps old local JSX loaders pointed at the v2 memory body", () => {
-    expect(memoryLocalCommand.type).toBe("local-jsx");
-    expect(memoryLocalCommand.description).toBe("Edit AgenC memory files");
-    expect(memoryLocalCommand.name).toBe("memory");
-    expect(memoryLocalCommand).not.toHaveProperty("immediate");
   });
 
   it("keeps a non-throwing dispatcher fallback for headless /memory calls", async () => {
@@ -417,7 +403,6 @@ describe("memory command contract", () => {
     );
 
     for (const source of [
-      "src/commands/memory/index.ts",
       "src/commands/memory/memory.tsx",
       "src/components/memory/MemoryFileSelector.tsx",
       "src/components/memory/MemoryUpdateNotification.tsx",

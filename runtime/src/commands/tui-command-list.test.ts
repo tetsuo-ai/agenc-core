@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("bun:bundle", () => ({
@@ -69,11 +72,14 @@ const DAEMON_TUI_NAMES = [
 ] as const;
 
 const REMOVED_TUI_NAMES = [
+  "add-dir",
+  "brief",
   "color",
   "commit",
   "copy",
   "cost",
   "doctor",
+  "export",
   "files",
   "fork",
   "heapdump",
@@ -86,6 +92,7 @@ const REMOVED_TUI_NAMES = [
   "reload-plugins",
   "review",
   "rewind",
+  "sandbox",
   "stats",
   "terminal-setup",
   "theme",
@@ -192,4 +199,36 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
       "exit",
     ]);
   });
+
+  it("does not leave legacy local-jsx command specs under runtime commands", () => {
+    const commandsRoot = resolve(process.cwd(), "src", "commands");
+    const offenders: string[] = [];
+
+    for (const file of commandSourceFiles(commandsRoot)) {
+      const source = readFileSync(file, "utf8");
+      if (/type:\s*['"]local-jsx['"]/.test(source)) {
+        offenders.push(file.replace(`${commandsRoot}/`, ""));
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
 });
+
+function commandSourceFiles(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      out.push(...commandSourceFiles(path));
+    } else if (
+      (path.endsWith(".ts") || path.endsWith(".tsx")) &&
+      !path.endsWith(".test.ts") &&
+      !path.endsWith(".test.tsx")
+    ) {
+      out.push(path);
+    }
+  }
+  return out;
+}

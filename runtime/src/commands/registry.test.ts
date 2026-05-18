@@ -64,7 +64,9 @@ const DAEMON_TUI_REGISTRY_NAMES = [
 ] as const;
 
 const REMOVED_TUI_COMMANDS = [
+  "add-dir",
   "branch",
+  "brief",
   "cache-stats",
   "color",
   "commit",
@@ -74,6 +76,7 @@ const REMOVED_TUI_COMMANDS = [
   "effort",
   "enter-worktree",
   "exit-worktree",
+  "export",
   "files",
   "fork",
   "heapdump",
@@ -90,6 +93,7 @@ const REMOVED_TUI_COMMANDS = [
   "rename",
   "review",
   "rewind",
+  "sandbox",
   "stats",
   "terminal-setup",
   "theme",
