@@ -144,8 +144,8 @@ const builtInTips: readonly Tip[] = [
     id: "terminal-setup",
     content: async (context) =>
       terminal(context) === "Apple_Terminal"
-        ? "Run /terminal-setup to enable convenient terminal integration like Option+Enter for new lines"
-        : "Run /terminal-setup to enable convenient terminal integration like Shift+Enter for new lines",
+        ? "Use backslash + Return for multi-line prompts, or enable Option as Meta during onboarding."
+        : "Use backslash + Return for multi-line prompts; supported terminals can also send Shift+Enter directly.",
     cooldownSessions: 10,
     isRelevant: async (context) =>
       context?.env?.supportsTerminalSetup === true &&
@@ -172,8 +172,8 @@ const builtInTips: readonly Tip[] = [
     id: "shift-enter-setup",
     content: async (context) =>
       terminal(context) === "Apple_Terminal"
-        ? "Run /terminal-setup to enable Option+Enter for new lines"
-        : "Run /terminal-setup to enable Shift+Enter for new lines",
+        ? "Use backslash + Return for multi-line prompts, or enable Option as Meta during onboarding."
+        : "Use backslash + Return for multi-line prompts; supported terminals can also send Shift+Enter directly.",
     cooldownSessions: 10,
     isRelevant: async (context) =>
       context?.env?.supportsTerminalSetup === true &&
@@ -251,7 +251,7 @@ const builtInTips: readonly Tip[] = [
   },
   {
     id: "ide-upsell-external-terminal",
-    content: async () => "Connect AgenC to your IDE with /ide",
+    content: async () => "Configure IDE auto-connect from /config",
     cooldownSessions: 4,
     isRelevant: async (context) =>
       context?.env?.externalTerminalHasRunningIde === true,
@@ -259,7 +259,7 @@ const builtInTips: readonly Tip[] = [
   {
     id: "install-github-app",
     content: async () =>
-      "Run /install-github-app to enable GitHub issue and PR tagging from AgenC",
+      "Use /mcp to configure GitHub issue and PR workflows for AgenC",
     cooldownSessions: 10,
     isRelevant: async (context) =>
       !state(context).githubActionSetupCount && context?.features?.web === true,

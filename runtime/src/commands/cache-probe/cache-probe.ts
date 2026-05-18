@@ -202,7 +202,7 @@ export const call: LocalCommandCall = async (args) => {
       type: 'text',
       value:
         'No API key found. Make sure you are in an active provider-compatible or GitHub Copilot session.\n' +
-        'For GitHub Copilot: run /onboard-github first.\n' +
+        'For GitHub Copilot: set GITHUB_TOKEN or GH_TOKEN, or configure the github provider from /provider.\n' +
         'For provider-compatible: set OPENAI_API_KEY.',
     }
   }

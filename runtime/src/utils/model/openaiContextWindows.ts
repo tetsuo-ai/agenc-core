@@ -51,11 +51,11 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
 
   // LiteLLM format — when AgenC talks to a LiteLLM proxy, Copilot models
   // keep their "<provider>/<model>" naming convention (standard LiteLLM routing)
-  // instead of the "github:copilot:<model>" namespaced form used by /onboard-github.
+  // instead of AgenC's "github:copilot:<model>" namespaced form.
   // Entries below cover the aliases currently exposed by LiteLLM's github_copilot
   // provider — this is a curated subset, not an exhaustive mirror of the
   // namespaced entries above. Values are sourced from copilotModels.ts to stay
-  // consistent with the /onboard-github path.
+  // consistent with the native provider path.
   'github_copilot/claude-sonnet-4.6':        200_000,
   'github_copilot/claude-opus-4.6':          200_000,
   'github_copilot/claude-haiku-4.5':         144_000,

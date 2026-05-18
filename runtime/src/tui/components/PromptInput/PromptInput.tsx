@@ -2272,7 +2272,7 @@ function PromptInput({
       const jsx = terminalName ? <Text dimColor>
           To enable {shortcut}, set <Text bold>Option as Meta</Text> in{' '}
           {terminalName} preferences (⌘,)
-        </Text> : <Text dimColor>To enable {shortcut}, run /terminal-setup</Text>;
+        </Text> : <Text dimColor>Use backslash + Enter for multi-line input, or enable Option as Meta in terminal settings</Text>;
       addNotification({
         key: 'option-meta-hint',
         jsx,

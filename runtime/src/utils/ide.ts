@@ -645,9 +645,8 @@ export async function findAvailableIDE(): Promise<DetectedIDEInfo | null> {
     if (signal.aborted) {
       return null
     }
-    // Return the IDE if and only if there is exactly one match, otherwise the user must
-    // use /ide to select an IDE. When running from a supported built-in terminal, detectIDEs()
-    // should return at most one IDE.
+    // Return the IDE if and only if there is exactly one match. When running from
+    // a supported built-in terminal, detectIDEs() should return at most one IDE.
     if (ides.length === 1) {
       return ides[0]!
     }

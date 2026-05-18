@@ -10,8 +10,6 @@ import { pathToFileURL } from 'url';
 import { supportsHyperlinks } from '../../tui/ink/supports-hyperlinks.js';
 import { color } from '../../tui/ink.js';
 import { maybeMarkProjectOnboardingComplete } from '../../onboarding/projectOnboardingState.js';
-import type { ToolUseContext } from '../../tools/Tool.js';
-import type { LocalJSXCommandContext, LocalJSXCommandOnDone } from '../../types/command.js';
 import { backupTerminalPreferences, checkAndRestoreTerminalBackup, getTerminalPlistPath, markTerminalSetupComplete } from '../../utils/appleTerminalBackup.js';
 import { setupShellCompletion } from '../../utils/completionCache.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
@@ -20,7 +18,6 @@ import { isFsInaccessible } from '../../utils/errors.js';
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
 import { addItemToJSONCArray, safeParseJSONC } from '../../utils/json.js';
 import { logError } from '../../utils/log.js';
-import { getPlatform } from '../../utils/platform.js';
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js';
 const EOL = '\n';
 
@@ -140,50 +137,6 @@ export function markBackslashReturnUsed(): void {
       hasUsedBackslashReturn: true
     }));
   }
-}
-export async function call(onDone: LocalJSXCommandOnDone, context: ToolUseContext & LocalJSXCommandContext, _args: string): Promise<null> {
-  if (env.terminal && env.terminal in NATIVE_CSIU_TERMINALS) {
-    const message = `Shift+Enter is natively supported in ${NATIVE_CSIU_TERMINALS[env.terminal]}.
-
-No configuration needed. Just use Shift+Enter to add newlines.`;
-    onDone(message);
-    return null;
-  }
-
-  // Check if terminal is supported
-  if (!shouldOfferTerminalSetup()) {
-    const terminalName = env.terminal || 'your current terminal';
-    const currentPlatform = getPlatform();
-
-    // Build platform-specific terminal suggestions
-    let platformTerminals = '';
-    if (currentPlatform === 'macos') {
-      platformTerminals = '   • macOS: Apple Terminal\n';
-    } else if (currentPlatform === 'windows') {
-      platformTerminals = '   • Windows: Windows Terminal\n';
-    }
-    // For Linux and other platforms, we don't show native terminal options
-    // since they're not currently supported
-
-    const message = `Terminal setup cannot be run from ${terminalName}.
-
-This command configures a convenient Shift+Enter shortcut for multi-line prompts.
-${chalk.dim('Note: You can already use backslash (\\\\) + return to add newlines.')}
-
-To set up the shortcut (optional):
-1. Exit tmux/screen temporarily
-2. Run /terminal-setup directly in one of these terminals:
-${platformTerminals}   • IDE: VSCode-compatible, Windsurf, Zed
-   • Other: Alacritty
-3. Return to tmux/screen - settings will persist
-
-${chalk.dim('Note: iTerm2, WezTerm, Ghostty, Kitty, and Warp support Shift+Enter natively.')}`;
-    onDone(message);
-    return null;
-  }
-  const result = await setupTerminal(context.options.theme);
-  onDone(result);
-  return null;
 }
 type VSCodeKeybinding = {
   key: string;

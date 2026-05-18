@@ -481,7 +481,7 @@ export function useTextInput({
               // match \x1b\r) — leave it for the \r→\n below. Embedded \r
               // is multi-line paste from a terminal without bracketed
               // paste — convert to \n. Backslash+\r is a stale VS Code
-              // Shift+Enter binding (pre-#8991 /terminal-setup wrote
+              // Shift+Enter binding (pre-#8991 setup wrote
               // args.text "\\\r\n" to keybindings.json); keep the \r so
               // it becomes \n below (anthropics/agenc-code#31316).
               const text = stripAnsi(input)

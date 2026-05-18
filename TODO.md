@@ -483,7 +483,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-015 - Decide and port auxiliary setup dialogs
+### [x] TUI-TODO-015 - Decide and port auxiliary setup dialogs
 
 Files to inspect:
 
@@ -497,6 +497,13 @@ Current gap:
 
 - Several setup commands still use old local JSX dialog surfaces.
 - Some may be outside the desired AgenC TUI command surface.
+
+Decision:
+
+- `/ide` is retired from the slash palette; IDE status and auto-connect configuration belong in `/config` and existing status indicators.
+- `/install-github-app` is retired from the core TUI; GitHub issue and PR workflows should be configured through MCP/project automation instead of an old bundled setup dialog.
+- `/onboard-github` is retired as an interactive slash command; GitHub provider credentials are configured through `/provider`, env vars, or secure-storage helpers.
+- `/terminal-setup` is retired as a slash command; the terminal keybinding installer remains an onboarding helper only.
 
 Target:
 

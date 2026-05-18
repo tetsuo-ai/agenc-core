@@ -163,7 +163,7 @@ export function Onboarding({
             label: 'Yes, use recommended settings',
             value: 'install'
           }, {
-            label: 'No, maybe later with /terminal-setup',
+            label: 'No, maybe later',
             value: 'no'
           }]} onChange={value => {
             if (value === 'install') {

@@ -1621,7 +1621,7 @@ class OpenAiShimMessages {
       const apiKey = this.providerOverride?.apiKey ?? process.env.OPENAI_API_KEY ?? ''
       if (!apiKey) {
         throw new Error(
-          'GitHub Copilot auth is required. Run /onboard-github to sign in.',
+          'GitHub Copilot auth is required. Set GITHUB_TOKEN/GH_TOKEN or configure the github provider from /provider.',
         )
       }
 

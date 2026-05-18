@@ -6,7 +6,7 @@ import {
   buildGithubOnboardingSettingsEnv,
   hasExistingGithubModelsLoginToken,
   shouldForceGithubRelogin,
-} from './onboard-github.js'
+} from './github-onboarding.js'
 
 describe('shouldForceGithubRelogin', () => {
   test.each(['force', '--force', 'relogin', '--relogin', 'reauth', '--reauth'])(

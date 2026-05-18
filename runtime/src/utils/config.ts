@@ -292,7 +292,7 @@ export type GlobalConfig = {
 
   // IDE dialogs
   hasIdeOnboardingBeenShown?: Record<string, boolean> // Map of terminal name to whether IDE onboarding has been shown
-  ideHintShownCount?: number // Number of times the /ide command hint has been shown
+  ideHintShownCount?: number // Number of times the IDE configuration hint has been shown
   hasIdeAutoConnectDialogBeenShown?: boolean // Whether the auto-connect IDE dialog has been shown
 
   tipsHistory: {

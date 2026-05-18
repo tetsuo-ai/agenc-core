@@ -121,6 +121,10 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("reload-plugins")).toBe(false);
     expect(names.has("theme")).toBe(false);
     expect(names.has("color")).toBe(false);
+    expect(names.has("ide")).toBe(false);
+    expect(names.has("install-github-app")).toBe(false);
+    expect(names.has("onboard-github")).toBe(false);
+    expect(names.has("terminal-setup")).toBe(false);
   });
 
   it("keeps remote and bridge allowlists on the minimal command set", () => {

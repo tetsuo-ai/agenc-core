@@ -102,18 +102,18 @@ export async function getProviderValidationError(
     const token = (env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim()) ?? ''
     if (!token) {
       return 'GitHub Copilot authentication required.\n' +
-        'Run /onboard-github in the CLI to sign in with your GitHub account.\n' +
-        'This will store your OAuth token securely and enable Copilot models.'
+        'Set GITHUB_TOKEN or GH_TOKEN, or configure the github provider from /provider.\n' +
+        'A valid Copilot-compatible token is required before Copilot models can run.'
     }
     const endpointType = getGithubEndpointType(env.OPENAI_BASE_URL)
     const status = checkGithubTokenStatus(token, endpointType)
     if (status === 'expired') {
       return 'GitHub Copilot token has expired.\n' +
-        'Run /onboard-github to sign in again and get a fresh token.'
+        'Refresh GITHUB_TOKEN/GH_TOKEN or configure the github provider from /provider.'
     }
     if (status === 'invalid_format') {
       return 'GitHub Copilot token is invalid or corrupted.\n' +
-        'Run /onboard-github to sign in again with your GitHub account.'
+        'Refresh GITHUB_TOKEN/GH_TOKEN or configure the github provider from /provider.'
     }
     return null
   }

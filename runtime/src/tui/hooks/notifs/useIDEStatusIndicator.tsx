@@ -173,7 +173,7 @@ function _temp2(hasShownHintRef_0, addNotification_0) {
       saveGlobalConfig(_temp);
       addNotification_0({
         key: "ide-status-hint",
-        jsx: <Text dimColor={true}>/ide for <Text color="ide">{ideName_0}</Text></Text>,
+        jsx: <Text dimColor={true}>Use /config for <Text color="ide">{ideName_0}</Text> auto-connect</Text>,
         priority: "low"
       });
     }
