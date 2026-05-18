@@ -269,7 +269,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-008 - Finish `/mcp` server detail and management flows in v2
+### [x] TUI-TODO-008 - Finish `/mcp` server detail and management flows in v2
 
 Files to inspect:
 

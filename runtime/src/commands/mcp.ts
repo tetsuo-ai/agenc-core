@@ -28,8 +28,30 @@ export interface McpServerStatus {
   readonly name: string;
   readonly enabled: boolean;
   readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "disconnected"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "pending";
+  readonly error?: string;
   readonly url?: string;
   readonly command?: string;
+}
+
+export interface McpMenuSnapshot {
+  readonly servers: readonly McpServerStatus[];
+  readonly toolsByServer: ReadonlyMap<string, readonly McpToolStatus[]>;
+}
+
+export interface McpMenuController {
+  refresh(): Promise<McpMenuSnapshot>;
+  reconnect(serverName: string): Promise<string>;
+  enable(serverName: string): Promise<string>;
+  disable(serverName: string): Promise<string>;
+  add(serverName: string, commandLine: string): Promise<string>;
+  create(serverName: string, toolName: string, description: string): Promise<string>;
 }
 
 type ParsedMcpArgs =
@@ -179,13 +201,37 @@ export async function collectMcpServerStatus(
     session.services.authManager,
   );
   return [...servers.entries()]
-    .map(([name, info]) => ({
-      name,
-      enabled: info.enabled,
-      required: info.required,
-      ...(info.url !== undefined ? { url: info.url } : {}),
-      ...(info.command !== undefined ? { command: info.command } : {}),
-    }))
+    .map(([name, info]) => {
+      const projected = manager.getConnectionState?.(name);
+      const hasLiveState =
+        projected !== undefined || typeof manager.isConnected === "function";
+      const connected = manager.isConnected?.(name) === true;
+      const state: McpServerStatus["state"] =
+        projected?.type === "failed"
+          ? "failed"
+          : projected?.type === "needs-auth"
+            ? "needs-auth"
+            : projected?.type === "pending"
+              ? "pending"
+              : projected?.type === "disabled" || !info.enabled
+              ? "disabled"
+              : projected?.type === "connected" || connected
+                ? "connected"
+                : hasLiveState
+                  ? "disconnected"
+                  : "connected";
+      return {
+        name,
+        enabled: info.enabled,
+        required: info.required,
+        state,
+        ...(projected?.type === "failed" && projected.error !== undefined
+          ? { error: projected.error }
+          : {}),
+        ...(info.url !== undefined ? { url: info.url } : {}),
+        ...(info.command !== undefined ? { command: info.command } : {}),
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -201,7 +247,6 @@ export function formatMcpServerStatus(
   }
   const lines = ["MCP servers:"];
   for (const server of servers) {
-    const state = server.enabled ? "connected" : "disconnected";
     const required = server.required ? " required" : "";
     const target = server.url ?? server.command ?? "local";
     const tools = toolsByServer?.get(server.name);
@@ -209,7 +254,10 @@ export function formatMcpServerStatus(
       tools !== undefined
         ? `, ${tools.length} ${tools.length === 1 ? "tool" : "tools"}`
         : "";
-    lines.push(`  ${server.name}: ${state}${required} (${target}${toolCount})`);
+    lines.push(`  ${server.name}: ${server.state}${required} (${target}${toolCount})`);
+    if (server.error) {
+      lines.push(`    error: ${server.error}`);
+    }
     if (tools !== undefined && tools.length > 0) {
       const preview = tools.slice(0, 3).map((tool) => tool.name).join(", ");
       const overflow = tools.length > 3 ? `, +${tools.length - 3} more` : "";
@@ -517,6 +565,17 @@ function formatMutationResult(
   };
 }
 
+function mutationResultText(
+  action: string,
+  result: McpServerMutationResult,
+  successSuffix: string,
+): string {
+  const formatted = formatMutationResult(action, result, successSuffix);
+  if (formatted.kind === "error") throw new Error(formatted.message);
+  if (formatted.kind !== "text") throw new Error(`Unexpected MCP ${action} result.`);
+  return formatted.text;
+}
+
 function requireMcpMethod<T>(
   method: T | undefined,
   action: string,
@@ -525,6 +584,116 @@ function requireMcpMethod<T>(
     throw new Error(`MCP ${action} is not available for this session.`);
   }
   return method;
+}
+
+function createMcpMenuController(ctx: SlashCommandContext): McpMenuController {
+  const manager = ctx.session.services.mcpManager;
+  return {
+    refresh: async () => {
+      const servers = await collectMcpServerStatus(ctx.session);
+      return {
+        servers,
+        toolsByServer: collectMcpToolStatusByServer(ctx.session, servers),
+      };
+    },
+    reconnect: async (serverName: string) => {
+      const reconnect = requireMcpMethod(manager.reconnectServer, "reconnect");
+      return mutationResultText(
+        "reconnect",
+        await reconnect(serverName),
+        "reconnected",
+      );
+    },
+    enable: async (serverName: string) => {
+      const enable = requireMcpMethod(manager.enableServer, "enable");
+      return mutationResultText(
+        "enable",
+        await enable(serverName),
+        "enabled for this session",
+      );
+    },
+    disable: async (serverName: string) => {
+      const disable = requireMcpMethod(manager.disableServer, "disable");
+      return mutationResultText(
+        "disable",
+        await disable(serverName),
+        "disabled for this session",
+      );
+    },
+    add: async (serverName: string, commandLine: string) => {
+      const words = parseShellWords(commandLine.trim());
+      if (words === null || !words[0]) {
+        throw new Error("Enter a command and optional args.");
+      }
+      const add = requireMcpMethod(manager.addServer, "add");
+      const result = await add({
+        name: serverName,
+        transport: "stdio",
+        command: words[0],
+        args: words.slice(1),
+        enabled: true,
+      });
+      return `${mutationResultText(
+        "add",
+        result,
+        "added for this session",
+      )}\nThis does not edit config.toml. Use \`agenc mcp add\` to persist the server.`;
+    },
+    create: async (
+      serverName: string,
+      toolName: string,
+      description: string,
+    ) => {
+      const scaffold = await createProjectMcpServer(
+        ctx.cwd,
+        serverName,
+        toolName,
+        description,
+      );
+      if ("error" in scaffold) throw new Error(scaffold.error);
+      const add = manager.addServer;
+      const sessionCommand =
+        `/mcp add ${scaffold.serverName} node ${scaffold.relativeScriptFile}`;
+      const persistCommand =
+        `agenc mcp add ${scaffold.serverName} node ${scaffold.relativeScriptFile}`;
+      if (typeof add !== "function") {
+        return [
+          `Created MCP server: ${scaffold.relativeScriptFile}`,
+          `Tool: ${scaffold.toolName}`,
+          `Add this session: ${sessionCommand}`,
+          `Persist later: ${persistCommand}`,
+        ].join("\n");
+      }
+      const result = await add({
+        name: scaffold.serverName,
+        transport: "stdio",
+        command: "node",
+        args: [scaffold.scriptFile],
+        enabled: true,
+      });
+      if (!result.success) {
+        throw new Error([
+          `Created MCP server: ${scaffold.relativeScriptFile}`,
+          `Could not connect it: ${result.error ?? "unknown MCP add failure"}`,
+          `Try after editing: ${sessionCommand}`,
+        ].join("\n"));
+      }
+      const toolCount =
+        result.toolCount > 0
+          ? ` (${result.toolCount} ${
+              result.toolCount === 1 ? "tool" : "tools"
+            })`
+          : "";
+      return [
+        `Created MCP server: ${scaffold.relativeScriptFile}`,
+        `Connected for this session${toolCount}: /mcp tools ${
+          scaffold.serverName
+        }`,
+        `Tool: ${scaffold.toolName}`,
+        `Persist later: ${persistCommand}`,
+      ].join("\n");
+    },
+  };
 }
 
 export const mcpCommand: SlashCommand = {
@@ -540,7 +709,7 @@ export const mcpCommand: SlashCommand = {
       if (parsed.kind === "status") {
         const servers = await collectMcpServerStatus(ctx.session);
         const toolsByServer = collectMcpToolStatusByServer(ctx.session, servers);
-        if (openMcpMenu(ctx, servers, toolsByServer)) {
+        if (openMcpMenu(ctx, servers, toolsByServer, createMcpMenuController(ctx))) {
           return { kind: "skip" };
         }
         return {
