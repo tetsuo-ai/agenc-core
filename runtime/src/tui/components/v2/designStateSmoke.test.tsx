@@ -170,7 +170,7 @@ const PROJECTED_CELL_ALIGNMENT_FLOORS: Record<string, number> = {
   '17': 0.057,
   '18': 0.098,
   '19a': 0.220,
-  '19b': 0.340,
+  '19b': 0.339,
   '19c': 0.307,
 }
 

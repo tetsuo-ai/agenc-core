@@ -362,7 +362,10 @@ export function StatusSegment({
   readonly color?: ThemeColor
 }): React.ReactNode {
   const columns = React.useContext(TerminalFrameColumnsContext)
-  const labelText = columns >= 148 ? label.toUpperCase() : `${label.toUpperCase()} `
+  const wideLabelNeedsSeparator = label === 'stake' || label === 'cost'
+  const labelText = columns >= 148
+    ? `${label.toUpperCase()}${wideLabelNeedsSeparator ? ' ' : ''}`
+    : `${label.toUpperCase()} `
   return (
     <Box flexDirection="row">
       <ThemedText color="inactive">{labelText}</ThemedText>
@@ -384,6 +387,22 @@ export function StatusBar({
 }): React.ReactNode {
   const color = variantColor[variant]
   const columns = React.useContext(TerminalFrameColumnsContext)
+  const renderSegments = (segments: readonly ReactNode[], side: 'left' | 'right'): React.ReactNode[] =>
+    segments.flatMap((segment, index) => {
+      const spacerWidth = columns >= 148
+        ? side === 'left' && index === 0
+          ? 2
+          : 1
+        : 2
+      const nodes: React.ReactNode[] = [
+        <React.Fragment key={`${side}-${index}`}>{segment}</React.Fragment>,
+      ]
+      if (index < segments.length - 1) {
+        nodes.push(<Box key={`${side}-spacer-${index}`} width={spacerWidth} />)
+      }
+      return nodes
+    })
+
   return (
     <ThemedBox
       flexDirection="row"
@@ -392,17 +411,12 @@ export function StatusBar({
       borderTopColor={color}
       paddingLeft={columns >= 148 ? 2 : 1}
       paddingRight={1}
-      gap={2}
       minHeight={1}
       flexShrink={0}
     >
-      {left.map((segment, index) => (
-        <React.Fragment key={`left-${index}`}>{segment}</React.Fragment>
-      ))}
+      {renderSegments(left, 'left')}
       <Box flexGrow={1} />
-      {(right ?? []).map((segment, index) => (
-        <React.Fragment key={`right-${index}`}>{segment}</React.Fragment>
-      ))}
+      {renderSegments(right ?? [], 'right')}
     </ThemedBox>
   )
 }
