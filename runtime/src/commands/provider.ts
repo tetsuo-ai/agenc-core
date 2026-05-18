@@ -166,6 +166,25 @@ function resolveCommandModelForProvider(
   );
 }
 
+function updateProviderChrome(
+  ctx: SlashCommandContext,
+  model: string | undefined,
+): void {
+  if (model === undefined) return;
+  if (typeof ctx.appState?.setAppState === "function") {
+    ctx.appState.setAppState((prev: unknown): unknown => {
+      if (typeof prev !== "object" || prev === null) return prev;
+      return {
+        ...prev,
+        mainLoopModel: model,
+        mainLoopModelForSession: model,
+      };
+    });
+    return;
+  }
+  ctx.appState?.setModel?.(model);
+}
+
 export const providerCommand: SlashCommand = {
   name: "model-provider",
   aliases: ["provider"],
@@ -182,7 +201,7 @@ export const providerCommand: SlashCommand = {
           openProviderMenu(ctx, snapshot, async (provider, model) => {
             const summary = await applyProviderSwitch(ctx.session, provider, model);
             if (providerSwitchApplied(summary)) {
-              ctx.appState?.setModel?.(model);
+              updateProviderChrome(ctx, model);
             }
             return {
               message: summary,
@@ -208,7 +227,7 @@ export const providerCommand: SlashCommand = {
         targetModel,
       );
       if (resolvedModel !== undefined && providerSwitchApplied(summary)) {
-        ctx.appState?.setModel?.(resolvedModel);
+        updateProviderChrome(ctx, resolvedModel);
       }
       return { kind: "text", text: summary };
     }),

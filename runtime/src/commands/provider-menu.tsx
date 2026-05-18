@@ -1,14 +1,16 @@
 import React from "react";
 
 import {
+  buildProviderModelCatalog,
   normalizeProviderSlug,
+  readProviderConfig,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
 } from "../config/resolve-model.js";
-import type { AgenCConfig } from "../config/schema.js";
+import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
 import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
@@ -17,13 +19,37 @@ import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ProviderRowStatus = "current" | "configured" | "default";
+type ProviderAuthState = "managed" | "ready" | "missing" | "optional";
+type ProviderRuntimeState =
+  | "active"
+  | "available"
+  | "unauthenticated"
+  | "unavailable"
+  | "error";
+type ProviderColor =
+  | "success"
+  | "agenc"
+  | "inactive"
+  | "error"
+  | "warning"
+  | "text2"
+  | "subtle";
 
 type ProviderMenuRow = {
   readonly provider: ProviderSlug;
+  readonly name: string;
   readonly model: string;
+  readonly models: readonly string[];
+  readonly baseURL: string;
   readonly status: ProviderRowStatus;
+  readonly runtimeState: ProviderRuntimeState;
+  readonly authState: ProviderAuthState;
   readonly auth: string;
+  readonly credentialSource: string;
+  readonly configured: boolean;
+  readonly supportsWebsockets: boolean;
   readonly detail: string;
+  readonly error?: string;
 };
 
 export type ProviderMenuSnapshot = {
@@ -31,6 +57,7 @@ export type ProviderMenuSnapshot = {
   readonly currentModel: string;
   readonly rows: readonly ProviderMenuRow[];
   readonly activeIndex: number;
+  readonly diagnostics: readonly string[];
 };
 
 export type ProviderMenuSelectionResult = {
@@ -129,39 +156,190 @@ function rowDetail(status: ProviderRowStatus): string {
   }
 }
 
-function authLabel(params: {
-  readonly requiresManagedAuth: boolean;
-  readonly apiKeyEnvVar?: string;
-}): string {
-  if (params.requiresManagedAuth) return "managed";
-  return params.apiKeyEnvVar ?? "local";
+function providerBaseURL(
+  infoBaseURL: string,
+  config: ProviderConfig | undefined,
+): string {
+  return config?.base_url?.trim() || infoBaseURL;
 }
 
-function statusColor(status: ProviderRowStatus): "success" | "agenc" | "inactive" {
-  switch (status) {
-    case "current":
-      return "success";
-    case "configured":
-      return "agenc";
-    case "default":
-      return "inactive";
+function providerConfigApiKeyEnv(
+  config: ProviderConfig | undefined,
+): string | undefined {
+  return config?.api_key_env?.trim() || undefined;
+}
+
+function isLocalProviderEndpoint(baseURL: string): boolean {
+  try {
+    const url = new URL(baseURL);
+    return (
+      url.hostname === "localhost" ||
+      url.hostname === "127.0.0.1" ||
+      url.hostname === "::1" ||
+      url.hostname.endsWith(".local")
+    );
+  } catch {
+    return false;
   }
 }
 
-function statusGlyph(status: ProviderRowStatus): string {
-  switch (status) {
-    case "current":
+function baseURLError(baseURL: string): string | undefined {
+  try {
+    new URL(baseURL);
+    return undefined;
+  } catch {
+    return "invalid base URL";
+  }
+}
+
+function authState(params: {
+  readonly requiresManagedAuth: boolean;
+  readonly configuredEnvVar?: string;
+  readonly defaultEnvVar?: string;
+  readonly baseURL: string;
+  readonly config?: AgenCConfig;
+}): {
+  readonly state: ProviderAuthState;
+  readonly label: string;
+  readonly source: string;
+} {
+  if (params.requiresManagedAuth) {
+    const enabled = params.config?.auth?.managedKeys?.enabled === true;
+    return {
+      state: "managed",
+      label: enabled ? "managed on" : "managed",
+      source: "managed key vending",
+    };
+  }
+
+  const envVar = params.configuredEnvVar ?? params.defaultEnvVar;
+  if (envVar === undefined) {
+    return {
+      state: "optional",
+      label: "local",
+      source: "no key required",
+    };
+  }
+
+  const hasValue = (process.env[envVar]?.trim().length ?? 0) > 0;
+  if (hasValue) {
+    return {
+      state: "ready",
+      label: envVar,
+      source: `env ${envVar}`,
+    };
+  }
+
+  if (isLocalProviderEndpoint(params.baseURL)) {
+    return {
+      state: "optional",
+      label: `${envVar} optional`,
+      source: `env ${envVar} optional for local endpoint`,
+    };
+  }
+
+  return {
+    state: "missing",
+    label: `${envVar} missing`,
+    source: `set env ${envVar}`,
+  };
+}
+
+function runtimeState(params: {
+  readonly status: ProviderRowStatus;
+  readonly authState: ProviderAuthState;
+  readonly models: readonly string[];
+  readonly baseURL: string;
+}): { readonly state: ProviderRuntimeState; readonly error?: string } {
+  const baseError = baseURLError(params.baseURL);
+  if (baseError !== undefined) {
+    return { state: "error", error: baseError };
+  }
+  if (params.models.length === 0) {
+    return { state: "unavailable", error: "no models available" };
+  }
+  if (params.authState === "missing") {
+    return { state: "unauthenticated" };
+  }
+  if (params.status === "current") {
+    return { state: "active" };
+  }
+  return { state: "available" };
+}
+
+function runtimeDetail(params: {
+  readonly state: ProviderRuntimeState;
+  readonly status: ProviderRowStatus;
+  readonly error?: string;
+}): string {
+  if (params.error !== undefined) return params.error;
+  switch (params.state) {
+    case "active":
+      return "active provider";
+    case "available":
+      return rowDetail(params.status);
+    case "unauthenticated":
+      return "credential required";
+    case "unavailable":
+      return "no models";
+    case "error":
+      return "configuration error";
+  }
+}
+
+function statusColor(state: ProviderRuntimeState): ProviderColor {
+  switch (state) {
+    case "active":
+      return "success";
+    case "available":
+      return "agenc";
+    case "unauthenticated":
+      return "warning";
+    case "unavailable":
+      return "inactive";
+    case "error":
+      return "error";
+  }
+}
+
+function statusGlyph(state: ProviderRuntimeState): string {
+  switch (state) {
+    case "active":
       return "◆";
-    case "configured":
+    case "available":
       return "●";
-    case "default":
+    case "unauthenticated":
+      return "!";
+    case "unavailable":
       return "◇";
+    case "error":
+      return "×";
+  }
+}
+
+function authColor(state: ProviderAuthState): ProviderColor {
+  switch (state) {
+    case "managed":
+      return "agenc";
+    case "ready":
+      return "success";
+    case "missing":
+      return "warning";
+    case "optional":
+      return "inactive";
   }
 }
 
 export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenuSnapshot {
   const config = readConfig(ctx);
   const sessionSelection = readSessionSelection(ctx);
+  const diagnostics: string[] = [];
+  if (
+    sessionSelection.provider !== undefined &&
+    normalizeProviderSlug(sessionSelection.provider) === undefined
+  ) {
+    diagnostics.push(`Unknown session provider: ${sessionSelection.provider}`);
+  }
   const currentProvider =
     normalizeProviderSlug(sessionSelection.provider) ??
     normalizeProviderSlug(config?.model_provider) ??
@@ -171,19 +349,50 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     sessionSelection.model?.trim() ??
     config?.model?.trim() ??
     defaultModelForProvider(currentProvider);
+  const modelCatalog = buildProviderModelCatalog(config);
 
   const rows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
+    const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
+    const baseURL = providerBaseURL(info.baseURL, providerConfig);
+    const configuredEnvVar = providerConfigApiKeyEnv(providerConfig);
+    const auth = authState({
+      requiresManagedAuth: info.requiresManagedAuth,
+      ...(configuredEnvVar ? { configuredEnvVar } : {}),
+      ...(info.apiKeyEnvVar ? { defaultEnvVar: info.apiKeyEnvVar } : {}),
+      baseURL,
+      ...(config ? { config } : {}),
+    });
+    const models = modelCatalog[provider] ?? [];
+    const state = runtimeState({
+      status,
+      authState: auth.state,
+      models,
+      baseURL,
+    });
     return {
       provider,
+      name: info.name,
       model: providerModel({ config, provider, currentProvider, currentModel }),
+      models,
+      baseURL,
       status,
-      auth: authLabel({
-        requiresManagedAuth: info.requiresManagedAuth,
-        ...(info.apiKeyEnvVar ? { apiKeyEnvVar: info.apiKeyEnvVar } : {}),
+      runtimeState: state.state,
+      authState: auth.state,
+      auth: auth.label,
+      credentialSource: auth.source,
+      configured:
+        providerConfig !== undefined ||
+        (config?.model_provider !== undefined &&
+          normalizeProviderSlug(config.model_provider) === provider),
+      supportsWebsockets: info.supportsWebsockets,
+      detail: runtimeDetail({
+        state: state.state,
+        status,
+        ...(state.error ? { error: state.error } : {}),
       }),
-      detail: rowDetail(status),
+      ...(state.error ? { error: state.error } : {}),
     };
   });
 
@@ -196,6 +405,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     currentModel,
     rows,
     activeIndex,
+    diagnostics,
   };
 }
 
@@ -215,6 +425,164 @@ export function providerMenuFallback(snapshot: ProviderMenuSnapshot): string {
   return lines.join("\n");
 }
 
+type DetailRow = {
+  readonly key: string;
+  readonly value: string;
+  readonly color?: ProviderColor;
+};
+
+function successMessage(message: string): boolean {
+  return (
+    message.startsWith("Provider switch") ||
+    message.startsWith("Provider switched")
+  );
+}
+
+function ProviderDetailView({
+  row,
+  snapshot,
+  message,
+  busy,
+}: {
+  readonly row: ProviderMenuRow;
+  readonly snapshot: ProviderMenuSnapshot;
+  readonly message: string | null;
+  readonly busy: boolean;
+}): React.ReactNode {
+  const models = row.models.length > 0 ? row.models : ["no models available"];
+  const items: readonly DetailRow[] = [
+    { key: "state", value: row.runtimeState, color: statusColor(row.runtimeState) },
+    { key: "provider", value: `${row.name} (${row.provider})`, color: "text2" },
+    { key: "active", value: row.status === "current" ? "yes" : "no" },
+    { key: "model", value: row.model, color: "agenc" },
+    { key: "auth", value: row.credentialSource, color: authColor(row.authState) },
+    { key: "base url", value: row.baseURL },
+    { key: "configured", value: row.configured ? "yes" : "no" },
+    { key: "websocket", value: row.supportsWebsockets ? "yes" : "no" },
+    { key: "models", value: `${row.models.length}` },
+    ...models.map((model, index) => ({
+      key: index === 0 ? "catalog" : "",
+      value: model,
+      color: (row.models.length > 0 ? "subtle" : "inactive") as ProviderColor,
+    })),
+  ];
+
+  return (
+    <MenuModal
+      title="provider detail"
+      count={row.provider}
+      summary={`${snapshot.currentProvider} / ${snapshot.currentModel}`}
+      headerRight={busy ? "switching" : row.runtimeState}
+      columns={[14, 64]}
+      headers={["field", "value"]}
+      items={items}
+      activeIndex={0}
+      renderRow={(item) => [
+        <ThemedText key="field" color="inactive" wrap="truncate-end">
+          {item.key}
+        </ThemedText>,
+        <ThemedText key="value" color={item.color ?? "subtle"} wrap="truncate-middle">
+          {item.value}
+        </ThemedText>,
+      ]}
+      preview={
+        <Box flexDirection="column" gap={1}>
+          <ThemedText color="agenc">Provider Detail</ThemedText>
+          <ThemedText color="text2" wrap="wrap">
+            This is the v2 detail surface for the selected provider. It uses the
+            same registry, config, and environment inputs as the runtime switch.
+          </ThemedText>
+          {row.error ? (
+            <ThemedText color="error" wrap="wrap">
+              {row.error}
+            </ThemedText>
+          ) : null}
+          {message ? (
+            <ThemedText color={successMessage(message) ? "success" : "error"} wrap="wrap">
+              {message}
+            </ThemedText>
+          ) : null}
+        </Box>
+      }
+      footer={[
+        { keyName: "l", label: "list" },
+        { keyName: "a", label: "auth" },
+        { keyName: "q", label: "back" },
+      ]}
+      hint="provider registry detail"
+    />
+  );
+}
+
+function ProviderAuthView({
+  row,
+  snapshot,
+  message,
+}: {
+  readonly row: ProviderMenuRow;
+  readonly snapshot: ProviderMenuSnapshot;
+  readonly message: string | null;
+}): React.ReactNode {
+  const items: readonly DetailRow[] = [
+    { key: "state", value: row.authState, color: authColor(row.authState) },
+    { key: "source", value: row.credentialSource, color: "text2" },
+    { key: "provider", value: row.provider },
+    { key: "model", value: row.model },
+    { key: "base url", value: row.baseURL },
+    {
+      key: "next",
+      value:
+        row.authState === "missing"
+          ? row.credentialSource
+          : row.authState === "managed"
+            ? "managed auth is selected for this provider"
+            : "credential is available or optional",
+      color: row.authState === "missing" ? "warning" : "subtle",
+    },
+  ];
+
+  return (
+    <MenuModal
+      title="provider auth"
+      count={row.provider}
+      summary={`${snapshot.currentProvider} / ${snapshot.currentModel}`}
+      headerRight={row.authState}
+      columns={[14, 64]}
+      headers={["field", "value"]}
+      items={items}
+      activeIndex={0}
+      renderRow={(item) => [
+        <ThemedText key="field" color="inactive" wrap="truncate-end">
+          {item.key}
+        </ThemedText>,
+        <ThemedText key="value" color={item.color ?? "subtle"} wrap="truncate-middle">
+          {item.value}
+        </ThemedText>,
+      ]}
+      preview={
+        <Box flexDirection="column" gap={1}>
+          <ThemedText color="agenc">Credential State</ThemedText>
+          <ThemedText color="text2" wrap="wrap">
+            Auth stays registry/config driven. Missing credentials are shown here
+            before a switch can be submitted.
+          </ThemedText>
+          {message ? (
+            <ThemedText color="warning" wrap="wrap">
+              {message}
+            </ThemedText>
+          ) : null}
+        </Box>
+      }
+      footer={[
+        { keyName: "l", label: "list" },
+        { keyName: "d", label: "details" },
+        { keyName: "q", label: "back" },
+      ]}
+      hint="credential visibility"
+    />
+  );
+}
+
 function ProviderMenuView({
   snapshot,
   onDone,
@@ -225,6 +593,7 @@ function ProviderMenuView({
   readonly onSelect: (provider: ProviderSlug, model: string) => Promise<ProviderMenuSelectionResult>;
 }): React.ReactNode {
   const [activeIndex, setActiveIndex] = React.useState(snapshot.activeIndex);
+  const [mode, setMode] = React.useState<"list" | "detail" | "auth">("list");
   const [message, setMessage] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const rows = snapshot.rows;
@@ -232,7 +601,23 @@ function ProviderMenuView({
   useInput((input, key) => {
     if (busy) return;
     if (key.escape || input === "q") {
-      onDone();
+      if (mode === "list") {
+        onDone();
+      } else {
+        setMode("list");
+      }
+      return;
+    }
+    if (input === "l") {
+      setMode("list");
+      return;
+    }
+    if (input === "d" || key.rightArrow) {
+      setMode("detail");
+      return;
+    }
+    if (input === "a") {
+      setMode("auth");
       return;
     }
     if (key.upArrow || input === "k") {
@@ -246,6 +631,15 @@ function ProviderMenuView({
     if (key.return) {
       const row = rows[activeIndex];
       if (row === undefined) return;
+      if (row.runtimeState === "error" || row.runtimeState === "unavailable") {
+        setMessage(`${row.provider}: ${row.detail}`);
+        return;
+      }
+      if (row.runtimeState === "unauthenticated") {
+        setMode("auth");
+        setMessage(`${row.provider}: ${row.credentialSource}`);
+        return;
+      }
       setBusy(true);
       setMessage("Switching provider...");
       void onSelect(row.provider, row.model).then(
@@ -266,24 +660,44 @@ function ProviderMenuView({
   });
 
   const selected = rows[activeIndex] ?? rows[0];
+  if (mode === "detail" && selected !== undefined) {
+    return (
+      <ProviderDetailView
+        row={selected}
+        snapshot={snapshot}
+        message={message}
+        busy={busy}
+      />
+    );
+  }
+  if (mode === "auth" && selected !== undefined) {
+    return (
+      <ProviderAuthView
+        row={selected}
+        snapshot={snapshot}
+        message={message}
+      />
+    );
+  }
+
   return (
     <MenuModal
       title="provider"
       count={`${rows.length}`}
       summary={`${snapshot.currentProvider} / ${snapshot.currentModel}`}
       headerRight={busy ? "switching" : "live"}
-      columns={[3, 12, 20, 28, 18, 24]}
-      headers={["", "status", "provider", "model", "auth", "detail"]}
+      columns={[3, 16, 18, 28, 20, 9, 22]}
+      headers={["", "state", "provider", "model", "auth", "models", "detail"]}
       items={rows}
       activeIndex={activeIndex}
       renderRow={(row, _index, active) => {
-        const color = statusColor(row.status);
+        const color = statusColor(row.runtimeState);
         return [
           <ThemedText key="mark" color={color}>
-            {statusGlyph(row.status)}
+            {statusGlyph(row.runtimeState)}
           </ThemedText>,
           <ThemedText key="status" color={color} wrap="truncate-end">
-            {row.status}
+            {row.runtimeState}
           </ThemedText>,
           <ThemedText key="provider" color={active ? "agenc" : "text2"} wrap="truncate-end">
             {row.provider}
@@ -291,8 +705,11 @@ function ProviderMenuView({
           <ThemedText key="model" color="subtle" wrap="truncate-middle">
             {row.model}
           </ThemedText>,
-          <ThemedText key="auth" color="inactive" wrap="truncate-end">
+          <ThemedText key="auth" color={authColor(row.authState)} wrap="truncate-end">
             {row.auth}
+          </ThemedText>,
+          <ThemedText key="models" color={row.models.length > 0 ? "text2" : "inactive"} wrap="truncate-end">
+            {row.models.length}
           </ThemedText>,
           <ThemedText key="detail" color="subtle" wrap="truncate-end">
             {row.detail}
@@ -303,16 +720,40 @@ function ProviderMenuView({
         <Box flexDirection="column" gap={1}>
           <ThemedText color="agenc">Provider Route</ThemedText>
           <ThemedText color="text2" wrap="wrap">
-            Empty /provider opens this registry-backed provider list. Enter switches to
-            the configured or default model for that provider.
+            Empty /provider opens this registry-backed provider catalog. Enter switches to
+            the configured or default model when the provider is usable.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
-            Selected: {selected?.provider ?? snapshot.currentProvider} /{" "}
+            Selected: {selected?.name ?? snapshot.currentProvider} /{" "}
             {selected?.model ?? snapshot.currentModel}
           </ThemedText>
+          {selected ? (
+            <>
+              <ThemedText color={statusColor(selected.runtimeState)} wrap="wrap">
+                {selected.runtimeState}: {selected.detail}
+              </ThemedText>
+              <ThemedText color={authColor(selected.authState)} wrap="wrap">
+                auth: {selected.credentialSource}
+              </ThemedText>
+              <ThemedText color="inactive" wrap="truncate-middle">
+                {selected.baseURL}
+              </ThemedText>
+              <ThemedText color="subtle" wrap="wrap">
+                models:{" "}
+                {selected.models.length > 0
+                  ? selected.models.slice(0, 4).join(", ")
+                  : "none"}
+              </ThemedText>
+            </>
+          ) : null}
+          {snapshot.diagnostics.map((diagnostic, index) => (
+            <ThemedText key={index} color="warning" wrap="wrap">
+              {diagnostic}
+            </ThemedText>
+          ))}
           {message ? (
             <ThemedText
-              color={message.startsWith("Provider switch") || message.startsWith("Provider switched") ? "success" : "error"}
+              color={successMessage(message) ? "success" : "error"}
               wrap="wrap"
             >
               {message}
@@ -323,6 +764,8 @@ function ProviderMenuView({
       footer={[
         { keyName: "up/down", label: "navigate" },
         { keyName: "enter", label: "select" },
+        { keyName: "d", label: "details" },
+        { keyName: "a", label: "auth" },
         { keyName: "q", label: "close" },
       ]}
       hint="registry + config defaults"

@@ -298,7 +298,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-009 - Port `/provider` and provider auth flows to v2
+### [x] TUI-TODO-009 - Port `/provider` and provider auth flows to v2
 
 Files to inspect:
 

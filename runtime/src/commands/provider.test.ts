@@ -3,6 +3,7 @@ import providerCommand, {
   applyProviderSwitch,
   checkModelHistoryCompat,
 } from "./provider.js";
+import { readProviderMenuSnapshot } from "./provider-menu.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
 import type { ConfigStore } from "../config/store.js";
@@ -162,6 +163,37 @@ describe("providerCommand", () => {
     expect(setModel).toHaveBeenCalledWith("llama3.3");
   });
 
+  it("updates app state without overwriting the pending provider switch", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+      activeTurn: null,
+    });
+    const setModel = vi.fn();
+    let appState: unknown = {
+      mainLoopModel: "grok-4",
+      mainLoopModelForSession: "grok-4",
+    };
+    const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
+      appState = updater(appState);
+    });
+
+    const res = await providerCommand.execute(
+      mkctx(session, "ollama", { setModel, setAppState }),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(setModel).not.toHaveBeenCalled();
+    expect(appState).toMatchObject({
+      mainLoopModel: "llama3.3",
+      mainLoopModelForSession: "llama3.3",
+    });
+    const pending = (session as unknown as {
+      pendingProviderSwitch: { provider: string; model: string } | null;
+    }).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
+  });
+
   it("uses an explicit model when the picker submits provider and model", async () => {
     const session = stubSession({
       provider: "xai",
@@ -289,5 +321,19 @@ describe("providerCommand", () => {
       expect(res.text.toLowerCase()).not.toContain("anthropic");
       expect(res.text.toLowerCase()).not.toContain("AgenC");
     }
+  });
+
+  it("provider menu snapshot exposes v2 auth and model availability state", () => {
+    const snapshot = readProviderMenuSnapshot(mkctx(stubSession(), ""));
+    const ollama = snapshot.rows.find(row => row.provider === "ollama");
+    const openai = snapshot.rows.find(row => row.provider === "openai");
+
+    expect(ollama).toMatchObject({
+      runtimeState: "available",
+      authState: "optional",
+      model: "llama3.3",
+    });
+    expect(openai?.models.length).toBeGreaterThan(0);
+    expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
   });
 });
