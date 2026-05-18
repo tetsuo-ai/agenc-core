@@ -24,9 +24,7 @@ export type SlashCommandSurface = "runtime" | "daemon-tui";
 /**
  * Optional bridge into the React-side AppState so slash commands can
  * synchronously update reactive UI state (status bar, etc.) without
- * waiting for a future turn boundary. Mirrors agenc's
- * `setAppState({ ...prev, mainLoopModel })` pattern at
- * `commands/model/model.tsx:59-63`.
+ * waiting for a future turn boundary.
  */
 export interface SlashCommandAppStateBridge {
   /** Read the live TUI app state for commands that report runtime surfaces. */

@@ -3,6 +3,7 @@ import modelCommand, {
   applyModelSwitch,
   checkModelHistoryCompat,
 } from "./model.js";
+import { readModelMenuSnapshot } from "./model-menu.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
 
@@ -179,12 +180,65 @@ describe("modelCommand", () => {
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/grok-4-fast/);
-      expect(res.text).toMatch(/was "grok-4"/);
+      expect(res.text).toMatch(/was "xai\/grok-4"/);
     }
     const pending = (session as unknown as {
       pendingProviderSwitch: { provider: string; model: string } | null;
     }).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "xai", model: "grok-4-fast" });
+  });
+
+  it("can switch provider and model from provider-qualified input", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+      activeTurn: null,
+    });
+
+    const res = await modelCommand.execute(
+      mkctx(session, "openai:gpt-5"),
+    );
+
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toMatch(/openai/);
+      expect(res.text).toMatch(/gpt-5/);
+    }
+    const pending = (session as unknown as {
+      pendingProviderSwitch: { provider: string; model: string } | null;
+    }).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
+  });
+
+  it("does not let provider-qualified model chrome overwrite pending provider", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+      activeTurn: null,
+    });
+    const setModel = vi.fn();
+    let appState: unknown = {
+      mainLoopModel: "grok-4",
+      mainLoopModelForSession: "grok-4",
+    };
+    const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
+      appState = updater(appState);
+    });
+
+    const res = await modelCommand.execute(
+      mkctx(session, "openai:gpt-5", { setModel, setAppState }),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(setModel).not.toHaveBeenCalled();
+    expect(appState).toMatchObject({
+      mainLoopModel: "gpt-5",
+      mainLoopModelForSession: "gpt-5",
+    });
+    const pending = (session as unknown as {
+      pendingProviderSwitch: { provider: string; model: string } | null;
+    }).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
   it("stages pending switch + aborts current turn when I-13 applies", async () => {
@@ -282,5 +336,14 @@ describe("modelCommand", () => {
       expect(res.text.toLowerCase()).not.toContain("anthropic");
       expect(res.text.toLowerCase()).not.toContain("AgenC");
     }
+  });
+
+  it("model menu snapshot is grouped across providers", () => {
+    const snapshot = readModelMenuSnapshot(mkctx(stubSession(), ""));
+
+    expect(snapshot.rows.some(row => row.provider === "grok")).toBe(true);
+    expect(snapshot.rows.some(row => row.provider === "openai")).toBe(true);
+    expect(snapshot.rows[snapshot.activeIndex]?.status).toBe("current");
+    expect(snapshot.providerCounts.openai).toBeGreaterThan(0);
   });
 });

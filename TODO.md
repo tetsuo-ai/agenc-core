@@ -330,7 +330,7 @@ Dependencies:
 
 - TUI-TODO-010 can run before or after this, but the final UX should be consistent across both.
 
-### [ ] TUI-TODO-010 - Finish `/model` switching and remove old model picker paths
+### [x] TUI-TODO-010 - Finish `/model` switching and remove old model picker paths
 
 Files to inspect:
 
