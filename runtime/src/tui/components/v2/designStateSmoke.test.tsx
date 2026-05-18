@@ -1275,7 +1275,7 @@ function statusLeft(task = '#47 swap-program', step = '1 / 5'): React.ReactNode[
   return [
     <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
     <StatusSegment key="net" label="net" value="mainnet-beta" color="worker" />,
-    <StatusSegment key="task" label="task" value={task} color="worker" />,
+    <StatusSegment key="task" label="task" value={task} color="worker" separator gapAfter={0} />,
     <StatusSegment key="step" label="step" value={step} />,
   ]
 }
@@ -1294,6 +1294,7 @@ function Frame({
   promptText,
   promptPlaceholder,
   promptHint,
+  promptPaddingTop,
   permissionMode = 'default',
   shellMode = false,
   paused = false,
@@ -1302,6 +1303,7 @@ function Frame({
   promptOverlay,
   bodyOverlay,
   bodyOverlayTop,
+  bodyOverlayX,
   contextLeft = 'interrupt esc · transcript ctrl+o',
   contextRight = 'streaming',
   statusLeftItems,
@@ -1312,6 +1314,7 @@ function Frame({
   readonly promptText?: string
   readonly promptPlaceholder?: string
   readonly promptHint?: string
+  readonly promptPaddingTop?: React.ComponentProps<typeof TerminalFrame>['promptPaddingTop']
   readonly permissionMode?: React.ComponentProps<typeof TerminalFrame>['permissionMode']
   readonly shellMode?: boolean
   readonly paused?: boolean
@@ -1320,6 +1323,7 @@ function Frame({
   readonly promptOverlay?: React.ComponentProps<typeof TerminalFrame>['promptOverlay']
   readonly bodyOverlay?: React.ComponentProps<typeof TerminalFrame>['bodyOverlay']
   readonly bodyOverlayTop?: React.ComponentProps<typeof TerminalFrame>['bodyOverlayTop']
+  readonly bodyOverlayX?: React.ComponentProps<typeof TerminalFrame>['bodyOverlayX']
   readonly contextLeft?: React.ComponentProps<typeof TerminalFrame>['contextLeft']
   readonly contextRight?: React.ComponentProps<typeof TerminalFrame>['contextRight']
   readonly statusLeftItems?: readonly React.ReactNode[]
@@ -1339,8 +1343,10 @@ function Frame({
       promptText={promptText}
       promptPlaceholder={promptPlaceholder}
       promptHint={promptHint}
+      promptPaddingTop={promptPaddingTop}
       bodyOverlay={bodyOverlay}
       bodyOverlayTop={bodyOverlayTop}
+      bodyOverlayX={bodyOverlayX}
       promptOverlay={promptOverlay}
       shellMode={shellMode}
       paused={paused}
@@ -1489,13 +1495,13 @@ const DESIGN_STATES: readonly DesignState[] = [
       <Frame
         viewport={viewport}
         promptPlaceholder="message agenc…"
-        promptHint="⏎ resume · esc abandon"
+        promptHint="⏎ resume · esc abandon "
         contextLeft={undefined}
         contextRight={undefined}
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
-          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" />,
+          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
           <StatusSegment key="step" label="step" value="3 / 5" />,
         ]}
         statusRightItems={[
@@ -1534,11 +1540,14 @@ const DESIGN_STATES: readonly DesignState[] = [
   {
     id: '02a',
     title: 'slash full',
-    expected: ['/claim', '/delegate', '/model'],
+    expected: ['/claim', '/delegate'],
     render: viewport => (
       <Frame
         viewport={viewport}
         promptText="/"
+        promptPaddingTop={0}
+        contextLeft={null}
+        contextRight={null}
         statusRightItems={[
           <StatusSegment key="ctx" label="ctx" value="3.2k / 200k" />,
           <StatusSegment key="cost" label="cost" value="◎ 0.0008" />,
@@ -1548,7 +1557,9 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
           <StatusSegment key="stake" label="stake" value="18.40 ◎" />,
         ]}
-        promptOverlay={
+        bodyOverlayTop={13}
+        bodyOverlayX={3}
+        bodyOverlay={
           <SlashPalette
             activeCommand="/claim"
             totalCount={30}
@@ -1573,9 +1584,15 @@ const DESIGN_STATES: readonly DesignState[] = [
       >
         <ChatBody centered>
           <Msg role="agenc" label="agenc · orchestrator" time="14:02:18">
-            picked up swap-program/issues/47 — "swap_v2 fails on high-volatility pairs; add slippage_bps guard before settle." shall I draft a plan, or do you want to scope it manually?
+            <Box flexDirection="column">
+              <ThemedText color="text2">
+                picked up swap-program/issues/47—"swap_v2 fails on high-volatility pairs; add slippage_bps guard before
+              </ThemedText>
+              <ThemedText color="text2">
+                — "swap_v2 fails on high-volatility pairs; add slippage_bps guard before settle." shall I draft a plan?
+              </ThemedText>
+            </Box>
           </Msg>
-          <Msg role="system" label="system">slash commands · 30 · + 18 more · /bashes · ↑↓ navigate · ⏎ run · esc dismiss</Msg>
         </ChatBody>
       </Frame>
     ),
@@ -1588,6 +1605,9 @@ const DESIGN_STATES: readonly DesignState[] = [
       <Frame
         viewport={viewport}
         promptText="/d"
+        promptPaddingTop={1}
+        contextLeft={null}
+        contextRight={null}
         statusRightItems={[
           <StatusSegment key="ctx" label="ctx" value="3.2k / 200k" />,
           <StatusSegment key="cost" label="cost" value="◎ 0.0008" />,
@@ -1597,7 +1617,9 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
           <StatusSegment key="stake" label="stake" value="18.40 ◎" />,
         ]}
-        promptOverlay={
+        bodyOverlayTop={viewport.rows >= 40 ? 28 : Math.max(7, viewport.rows - 14)}
+        bodyOverlayX={3}
+        bodyOverlay={
           <SlashPalette
             activeCommand="/delegate"
             filter="/d"
@@ -1610,10 +1632,7 @@ const DESIGN_STATES: readonly DesignState[] = [
       >
         <ChatBody centered>
           <Msg role="agenc" label="agenc · orchestrator" time="14:02:18">
-            picked up swap-program/issues/47. shall I draft a plan?
-          </Msg>
-          <Msg role="system" label="system">
-            STAKE 18.40 ◎ · 3.2k / 200k · ↑↓ navigate · ⏎ run · esc dismiss
+            picked up swap-program/issues/47.shall I draft a plan?
           </Msg>
         </ChatBody>
       </Frame>
@@ -1622,11 +1641,12 @@ const DESIGN_STATES: readonly DesignState[] = [
   {
     id: '03a',
     title: 'streaming plan',
-    expected: ['proposal', 'guard call', 'streaming'],
+    expected: ['plan', 'token::transfer', 'streaming'],
     render: viewport => (
       <Frame
         viewport={viewport}
         promptHint="esc interrupt"
+        promptPaddingTop={0}
         statusRightItems={[
           <StatusSegment key="ctx" label="ctx" value="18.4k / 200k" />,
           <StatusSegment key="tok" label="tok" value="↑ 412 ↓ 6,140" />,
@@ -1658,31 +1678,32 @@ const DESIGN_STATES: readonly DesignState[] = [
           />
           <Msg role="agenc" label="agenc · orchestrator" time="14:02:13">
             <Box flexDirection="column">
-              <Box flexDirection="row" gap={1} flexWrap="wrap">
-                <ThemedText color="text2">here's the plan. five steps, ~12 min budget. step 4 is the proof — I'll delegate it to</ThemedText>
+              <Box flexDirection="row" flexWrap="wrap">
+                <ThemedText color="text2">here's the plan. five steps, ~12 min budget. step 4 is the proof — I'll delegate it  </ThemedText>
                 <ThemedText color="worker">worker/zk-prover</ThemedText>
-                <ThemedText color="text2">since it'd blow our context.</ThemedText>
               </Box>
-            </Box>
-          </Msg>
-          <PlanList
-            title="proposal"
-            items={[
-              { state: 'done', text: 'read programs/swap/src/lib.rs' },
-              { state: 'done', text: 'read programs/swap/src/state/pool.rs' },
-              { state: 'active', text: 'add slippage_bps arg + guard to swap_v2' },
-              { state: 'pending', text: 'delegate proof of slippage invariant → worker/zk-prover' },
-              { state: 'pending', text: 'cargo test-bpf · settle' },
-            ]}
-          />
-          <Msg role="agenc" label="agenc · orchestrator">
-            <Box flexDirection="column">
-              <ThemedText color="text2">
-                starting step 3. the guard is a single check before token::transfer — if (expected − actual) &gt; max_slip
-              </ThemedText>
-              <ThemedText color="text2">
-                guard call · in bps, we abort with SwapError::SlippageExceeded. let me write it
-              </ThemedText>
+              <ThemedText color="text2">since it'd blow our context.</ThemedText>
+              <PlanList
+                dense
+                gapAfterActive
+                items={[
+                  { state: 'done', text: 'read programs/swap/src/lib.rs' },
+                  { state: 'done', text: 'read programs/swap/src/state/pool.rs' },
+                  { state: 'active', text: 'add slippage_bps arg + guard to swap_v2' },
+                  { state: 'pending', text: 'delegate proof of slippage invariant → worker/zk-prover' },
+                  { state: 'pending', text: 'cargo test-bpf · settle' },
+                ]}
+              />
+              <Box width={126}>
+                <ThemedText color="text2">
+                  starting step 3. the guard is a single check beforetoken::transfer— if  (expected − actual) &gt; max_slip in bps, we abort with
+                </ThemedText>
+              </Box>
+              <Box width={126}>
+                <ThemedText color="text2">
+                  in bps, we abort with SwapError::SlippageExceeded. let me write it
+                </ThemedText>
+              </Box>
             </Box>
           </Msg>
         </ChatBody>

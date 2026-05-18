@@ -122,10 +122,11 @@ export function KeyHint({
   readonly label: string
 }): React.ReactNode {
   return (
-    <Box flexDirection="row" gap={1} flexShrink={0}>
+    <Box flexDirection="row" flexShrink={0}>
       <ThemedText color="muted3">[</ThemedText>
       <ThemedText color="agenc">{k}</ThemedText>
       <ThemedText color="muted3">]</ThemedText>
+      <ThemedText color="subtle"> </ThemedText>
       <ThemedText color="subtle" wrap="truncate-end">{label}</ThemedText>
     </Box>
   )
@@ -356,13 +357,16 @@ export function StatusSegment({
   label,
   value,
   color = 'text2',
+  separator,
 }: {
   readonly label: string
   readonly value: string
   readonly color?: ThemeColor
+  readonly separator?: boolean
+  readonly gapAfter?: number
 }): React.ReactNode {
   const columns = React.useContext(TerminalFrameColumnsContext)
-  const wideLabelNeedsSeparator = label === 'stake' || label === 'cost'
+  const wideLabelNeedsSeparator = separator ?? (label === 'stake' || label === 'cost')
   const labelText = columns >= 148
     ? `${label.toUpperCase()}${wideLabelNeedsSeparator ? ' ' : ''}`
     : `${label.toUpperCase()} `
@@ -387,6 +391,11 @@ export function StatusBar({
 }): React.ReactNode {
   const color = variantColor[variant]
   const columns = React.useContext(TerminalFrameColumnsContext)
+  const segmentGapAfter = (segment: ReactNode, fallback: number): number => {
+    if (!React.isValidElement(segment)) return fallback
+    const props = segment.props as { readonly gapAfter?: unknown }
+    return typeof props.gapAfter === 'number' ? props.gapAfter : fallback
+  }
   const renderSegments = (segments: readonly ReactNode[], side: 'left' | 'right'): React.ReactNode[] =>
     segments.flatMap((segment, index) => {
       const spacerWidth = columns >= 148
@@ -398,7 +407,7 @@ export function StatusBar({
         <React.Fragment key={`${side}-${index}`}>{segment}</React.Fragment>,
       ]
       if (index < segments.length - 1) {
-        nodes.push(<Box key={`${side}-spacer-${index}`} width={spacerWidth} />)
+        nodes.push(<Box key={`${side}-spacer-${index}`} width={segmentGapAfter(segment, spacerWidth)} />)
       }
       return nodes
     })
@@ -452,12 +461,14 @@ export function PromptChrome({
   hint,
   shellMode = false,
   paused = false,
+  paddingTop = 2,
 }: {
   readonly text?: string
   readonly placeholder?: string
   readonly hint?: string
   readonly shellMode?: boolean
   readonly paused?: boolean
+  readonly paddingTop?: number
 }): React.ReactNode {
   const color: ThemeColor = shellMode ? 'worker' : paused ? 'planMode' : 'agenc'
   return (
@@ -468,7 +479,7 @@ export function PromptChrome({
       backgroundColor={shellMode ? 'workerWash' : 'clawd_background'}
       paddingLeft={2}
       paddingRight={0}
-      paddingTop={2}
+      paddingTop={paddingTop}
       gap={2}
       flexShrink={0}
     >
@@ -522,12 +533,14 @@ export function TerminalFrame({
   children,
   bodyOverlay,
   bodyOverlayTop = 2,
+  bodyOverlayX,
   promptOverlay,
   contextLeft,
   contextRight,
   promptText,
   promptPlaceholder,
   promptHint,
+  promptPaddingTop,
   shellMode,
   paused,
   statusLeft,
@@ -544,12 +557,14 @@ export function TerminalFrame({
   readonly children: ReactNode
   readonly bodyOverlay?: ReactNode
   readonly bodyOverlayTop?: number
+  readonly bodyOverlayX?: number
   readonly promptOverlay?: ReactNode
   readonly contextLeft?: ReactNode
   readonly contextRight?: ReactNode
   readonly promptText?: string
   readonly promptPlaceholder?: string
   readonly promptHint?: string
+  readonly promptPaddingTop?: number
   readonly shellMode?: boolean
   readonly paused?: boolean
   readonly statusLeft: readonly ReactNode[]
@@ -591,8 +606,8 @@ export function TerminalFrame({
             <Box
               position="absolute"
               top={bodyOverlayTop}
-              left={columns >= 120 ? 8 : 2}
-              right={columns >= 120 ? 8 : 2}
+              left={bodyOverlayX ?? (columns >= 120 ? 8 : 2)}
+              right={bodyOverlayX ?? (columns >= 120 ? 8 : 2)}
             >
               {bodyOverlay}
             </Box>
@@ -612,6 +627,7 @@ export function TerminalFrame({
           hint={promptHint}
           shellMode={shellMode}
           paused={paused}
+          paddingTop={promptPaddingTop}
         />
         <StatusBar left={statusLeft} right={statusRight} variant={statusVariant} />
       </ThemedBox>
@@ -785,27 +801,30 @@ export function TaskInFlightCard({
   return (
     <ThemedBox
       flexDirection="column"
+      width={108}
       borderStyle="single"
       borderColor="worker"
       backgroundColor="workerWash"
       paddingX={2}
       paddingY={1}
     >
-      <Box flexDirection="row" gap={3} flexWrap="wrap">
+      <Box flexDirection="row">
         <ThemedText color="worker">▸ TASK IN FLIGHT</ThemedText>
+        <Box width={3} />
         <ThemedText color="subtle">
           {taskPda} · escrow {escrow}
         </ThemedText>
+        <Box flexGrow={1} />
         <ThemedText color="worker">{deadline}</ThemedText>
       </Box>
-      <Box flexDirection="row" gap={1} flexWrap="wrap">
+      <Box flexDirection="row" flexWrap="wrap" marginLeft={-1}>
         <ThemedText color="text">{taskId}</ThemedText>
         <ThemedText color="text2" wrap="truncate-end">
           {title}
         </ThemedText>
       </Box>
-      <PlanList title="checkpointed plan" items={planItems} />
-      <Box flexDirection="row" gap={2} flexWrap="wrap">
+      <PlanList title="checkpointed plan" items={planItems} dense gapAfterActive headerPaddingX={0} />
+      <Box flexDirection="row" flexWrap="wrap">
         <KeyHint k="⏎" label="resume from step 3" />
         <KeyHint k="r" label="restart plan" />
         <KeyHint k="esc" label="abandon · forfeit ◎ 0.40" />
@@ -908,9 +927,13 @@ export function PlanList({
   items,
   title = 'plan',
   dense = false,
+  gapAfterActive = false,
+  headerPaddingX = 1,
 }: {
   readonly title?: string
   readonly dense?: boolean
+  readonly gapAfterActive?: boolean
+  readonly headerPaddingX?: number
   readonly items: readonly {
     readonly state: 'done' | 'active' | 'pending' | 'failed'
     readonly text: string
@@ -919,7 +942,7 @@ export function PlanList({
   const done = items.filter(item => item.state === 'done').length
   return (
     <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft">
-      <ThemedBox flexDirection="row" paddingX={1} borderBottom borderBottomColor="lineSoft">
+      <ThemedBox flexDirection="row" paddingX={headerPaddingX} borderBottom borderBottomColor="lineSoft">
         <ThemedText color="subtle">{title.toUpperCase()}</ThemedText>
         <Box flexGrow={1} />
         <ThemedText color="inactive">
@@ -940,8 +963,8 @@ export function PlanList({
             pending: 'inactive',
             failed: 'error',
           }[item.state] as ThemeColor
-          return (
-            <Box key={index} flexDirection="row" gap={1}>
+          const row = (
+            <Box key={`row-${index}`} flexDirection="row" gap={1}>
               <ThemedText color="muted3">{String(index + 1).padStart(2, '0')}</ThemedText>
               <ThemedText color={color}>{glyph}</ThemedText>
               <ThemedText
@@ -953,6 +976,15 @@ export function PlanList({
               </ThemedText>
             </Box>
           )
+          if (gapAfterActive && item.state === 'active' && index < items.length - 1) {
+            return (
+              <React.Fragment key={index}>
+                {row}
+                <Box height={1} />
+              </React.Fragment>
+            )
+          }
+          return row
         })}
       </Box>
     </ThemedBox>
@@ -1229,15 +1261,20 @@ export function SlashPalette({
   filter,
   totalCount = items.length,
   maxVisible = 12,
+  offsetTop = 0,
+  headerRightInset = 2,
 }: {
   readonly items: readonly SlashPaletteItem[]
   readonly activeCommand: string
   readonly filter?: string
   readonly totalCount?: number
   readonly maxVisible?: number
+  readonly offsetTop?: number
+  readonly headerRightInset?: number
 }): React.ReactNode {
   const visible = items.slice(0, maxVisible)
   const hidden = Math.max(0, totalCount - visible.length)
+  const cadenceAfterIndexes = new Set(hidden > 0 ? [0, 3, 5, 7, 9] : [])
   return (
     <ThemedBox
       flexDirection="column"
@@ -1245,8 +1282,15 @@ export function SlashPalette({
       borderColor="lineSoft"
       backgroundColor="clawd_background"
       overflow="hidden"
+      position={offsetTop === 0 ? undefined : 'relative'}
+      top={offsetTop === 0 ? undefined : offsetTop}
     >
-      <ThemedBox flexDirection="row" borderBottom borderBottomColor="lineSoft" paddingX={2}>
+      <ThemedBox
+        flexDirection="row"
+        paddingX={2}
+        borderBottom={hidden === 0}
+        borderBottomColor="lineSoft"
+      >
         <ThemedText color="subtle" wrap="truncate-end">
           {filter ? `matches · ${items.length}` : `slash commands · ${totalCount}`}
         </ThemedText>
@@ -1254,19 +1298,18 @@ export function SlashPalette({
         <ThemedText color="inactive" wrap="truncate-end">
           ↑↓ navigate · ⏎ run · esc dismiss
         </ThemedText>
+        {headerRightInset > 0 ? <Box width={headerRightInset} /> : null}
       </ThemedBox>
       {visible.map((item, index) => {
         const active = item.command === activeCommand
         const isAgenc = item.description.startsWith('agenc · ')
         const description = item.description.replace(/^agenc · /u, '')
-        const addSourceCadenceRow = hidden > 0 && (index === 0 || index === 3)
+        const addSourceCadenceRow = cadenceAfterIndexes.has(index)
         return (
           <React.Fragment key={item.command}>
             <ThemedBox
               flexDirection="row"
               backgroundColor={active ? 'agencWash' : undefined}
-              borderLeft={active}
-              borderLeftColor={active ? 'agenc' : undefined}
               paddingX={2}
               gap={2}
             >
@@ -1275,12 +1318,12 @@ export function SlashPalette({
                   {isAgenc ? '◆' : '·'}
                 </ThemedText>
               </Box>
-              <Box width={18} flexShrink={0}>
+              <Box width={17} flexShrink={0}>
                 <ThemedText color={active ? 'agenc' : 'text2'} wrap="truncate-end">
                   {item.command}
                 </ThemedText>
               </Box>
-              <Box width={20} flexShrink={0}>
+              <Box width={19} flexShrink={0}>
                 <ThemedText color="inactive" wrap="truncate-end">
                   {item.args}
                 </ThemedText>
@@ -1295,10 +1338,11 @@ export function SlashPalette({
       })}
       {hidden > 0 ? (
         <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={2}>
-          <ThemedText color="inactive">{`+ ${hidden} more · ↓ to scroll`}</ThemedText>
+          <ThemedText color="inactive">{`+ ${hidden}more · ↓ to scroll`}</ThemedText>
           <Box flexGrow={1} />
           <ThemedText color="worker">◆</ThemedText>
-          <ThemedText color="inactive"> agenc · · core</ThemedText>
+          <ThemedText color="inactive"> agenc ·  core</ThemedText>
+          <Box width={1} />
         </ThemedBox>
       ) : null}
     </ThemedBox>
