@@ -5,16 +5,18 @@
  * if needed, wait until it is ready, then hand control to a connector hook.
  */
 
-import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { lstat, readFile, readdir } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import {
   createNodeDaemonCliHost,
   readAgenCDaemonPid,
   removeAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
+  resolveAgenCDaemonSocketPath,
   runAgenCDaemonCli,
   resolveAgenCDaemonHome,
+  writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
 } from "./daemon-cli.js";
@@ -59,6 +61,10 @@ export interface AgenCDaemonAutostartOptions {
     target: AgenCDaemonConnectionTarget,
   ) => boolean | Promise<boolean>;
   readonly connect?: (target: AgenCDaemonConnectionTarget) => Promise<void> | void;
+  readonly findOrphanDaemonPids?: (
+    targetHome: string,
+  ) => Promise<readonly number[]> | readonly number[];
+  readonly terminateOrphanDaemonPid?: (pid: number) => Promise<void> | void;
 }
 
 export class AgenCDaemonAutostartError extends Error {
@@ -105,6 +111,7 @@ export async function ensureAgenCDaemonAutostart(
   const host = options.host ?? createNodeDaemonCliHost();
   const io = options.io ?? silentIo();
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
   const runtimeInfoPath = resolveAgenCDaemonRuntimeInfoPath(dirname(pidPath));
   let status: AgenCDaemonAutostartStatus = "already-running";
   let pid = await readAgenCDaemonPid(pidPath);
@@ -156,6 +163,19 @@ export async function ensureAgenCDaemonAutostart(
   }
 
   if (pid === null || !host.isPidRunning(pid)) {
+    const recoveredPid = await recoverPidlessAgenCDaemon({
+      daemonHome,
+      pidPath,
+      host,
+      options,
+    });
+    if (recoveredPid !== null) {
+      pid = recoveredPid;
+      respawnReason = null;
+    }
+  }
+
+  if (pid === null || !host.isPidRunning(pid)) {
     // Round-2 M-NEW3: previously the autostart respawned silently
     // because `io` defaulted to `silentIo`. Surface the start event
     // on stderr so the user sees that a daemon respawn happened
@@ -199,6 +219,151 @@ export async function ensureAgenCDaemonAutostart(
   };
 }
 
+async function recoverPidlessAgenCDaemon(params: {
+  readonly daemonHome: string;
+  readonly pidPath: string;
+  readonly host: AgenCDaemonCliHost;
+  readonly options: AgenCDaemonAutostartOptions;
+}): Promise<number | null> {
+  const orphanPids = [
+    ...await Promise.resolve(
+      params.options.findOrphanDaemonPids?.(params.daemonHome) ??
+        findPidlessAgenCDaemonPids(params.host, params.daemonHome),
+    ),
+  ].filter((pid) => params.host.isPidRunning(pid));
+  if (orphanPids.length === 0) return null;
+
+  const socketPath = resolveAgenCDaemonSocketPath(
+    params.host.env,
+    params.host.userHome,
+  );
+  if (await isAgenCDaemonSocketPresent(socketPath)) {
+    const recoveredPid = orphanPids[0];
+    if (recoveredPid === undefined) return null;
+    await writeAgenCDaemonPid(params.pidPath, recoveredPid);
+    return recoveredPid;
+  }
+
+  await Promise.all(
+    orphanPids.map((pid) =>
+      terminatePidlessAgenCDaemonPid(pid, params.host, params.options),
+    ),
+  );
+  return null;
+}
+
+async function terminatePidlessAgenCDaemonPid(
+  pid: number,
+  host: AgenCDaemonCliHost,
+  options: AgenCDaemonAutostartOptions,
+): Promise<void> {
+  if (options.terminateOrphanDaemonPid !== undefined) {
+    await Promise.resolve(options.terminateOrphanDaemonPid(pid));
+    return;
+  }
+
+  try {
+    host.terminatePid(pid);
+  } catch {
+    /* already gone */
+  }
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline && host.isPidRunning(pid)) {
+    await host.sleep(50);
+  }
+  if (!host.isPidRunning(pid)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* already gone */
+  }
+}
+
+async function isAgenCDaemonSocketPresent(socketPath: string): Promise<boolean> {
+  try {
+    return (await lstat(socketPath)).isSocket();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function findPidlessAgenCDaemonPids(
+  host: AgenCDaemonCliHost,
+  daemonHome: string,
+): Promise<readonly number[]> {
+  if (process.platform !== "linux" || host.entrypointPath.length === 0) {
+    return [];
+  }
+  let entries: readonly import("node:fs").Dirent[];
+  try {
+    entries = await readdir("/proc", { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const expectedEntrypoint = resolve(host.entrypointPath);
+  const expectedHome = resolve(daemonHome);
+  const pids: number[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    const candidatePid = Number.parseInt(entry.name, 10);
+    if (
+      !Number.isSafeInteger(candidatePid) ||
+      candidatePid <= 1 ||
+      candidatePid === host.pid
+    ) {
+      continue;
+    }
+    const procDir = join("/proc", entry.name);
+    const argv = await readProcList(join(procDir, "cmdline"));
+    const entrypointIndex = argv.findIndex((value) => {
+      try {
+        return resolve(value) === expectedEntrypoint;
+      } catch {
+        return false;
+      }
+    });
+    if (entrypointIndex === -1) continue;
+    const tail = argv.slice(entrypointIndex + 1);
+    if (
+      tail[0] !== "daemon" ||
+      tail[1] !== "start" ||
+      tail[2] !== "--foreground"
+    ) {
+      continue;
+    }
+
+    const env = await readProcEnv(join(procDir, "environ"));
+    const candidateHome =
+      env.AGENC_HOME ?? (env.HOME !== undefined ? join(env.HOME, ".agenc") : null);
+    if (candidateHome === null || resolve(candidateHome) !== expectedHome) {
+      continue;
+    }
+    pids.push(candidatePid);
+  }
+  return pids;
+}
+
+async function readProcList(path: string): Promise<readonly string[]> {
+  try {
+    return (await readFile(path, "utf8")).split("\0").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function readProcEnv(path: string): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  for (const entry of await readProcList(path)) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+    env[entry.slice(0, separator)] = entry.slice(separator + 1);
+  }
+  return env;
+}
+
 async function waitForAgenCDaemonReady(
   target: AgenCDaemonConnectionTarget,
   host: AgenCDaemonCliHost,
@@ -225,8 +390,12 @@ async function isAgenCDaemonPidAndCookieReady(
 ): Promise<boolean> {
   if (!host.isPidRunning(target.pid)) return false;
   const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+  const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   try {
-    return (await readFile(cookiePath, "utf8")).trim().length > 0;
+    if ((await readFile(cookiePath, "utf8")).trim().length === 0) {
+      return false;
+    }
+    return (await lstat(socketPath)).isSocket();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") return false;

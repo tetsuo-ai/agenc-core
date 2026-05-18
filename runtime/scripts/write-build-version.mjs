@@ -6,13 +6,14 @@
  * Cut 6.2 of the AgenC runtime refactor (TODO.MD).
  */
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const runtimeDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const binDir = path.join(runtimeDir, "bin");
 const distDir = path.join(runtimeDir, "dist");
 const versionPath = path.join(distDir, "VERSION");
 const policySourceDir = path.join(runtimeDir, "src/sandbox/engine/policies");
@@ -35,6 +36,7 @@ async function main() {
   if (!existsSync(distDir)) {
     mkdirSync(distDir, { recursive: true });
   }
+  writePackageBinShims();
   if (existsSync(policySourceDir)) {
     for (const policyTargetDir of [
       bundledRuntimePolicyDir,
@@ -75,6 +77,23 @@ async function main() {
     `[build] wrote ${path.relative(runtimeDir, versionPath)}: ` +
       `${runtimeVersion} @ ${shortCommit} (${buildTime})`,
   );
+}
+
+function writePackageBinShims() {
+  const shims = new Map([
+    ["agenc", "#!/usr/bin/env node\nimport \"../dist/bin/agenc.js\";\n"],
+    [
+      "agenc-linux-sandbox",
+      "#!/usr/bin/env node\nimport \"../dist/sandbox/linux-launcher/main.js\";\n",
+    ],
+  ]);
+
+  mkdirSync(binDir, { recursive: true });
+  for (const [name, source] of shims) {
+    const shimPath = path.join(binDir, name);
+    writeFileSync(shimPath, source, { encoding: "utf8", mode: 0o755 });
+    chmodSync(shimPath, 0o755);
+  }
 }
 
 main().catch((error) => {

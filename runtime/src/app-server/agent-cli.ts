@@ -924,14 +924,15 @@ export function defaultEnsureDaemonReady(
       env,
     };
     if (await resolveAgenCDaemonAutostartEnabled(env, host.userHome)) {
-      // Pass a real `io` so daemon respawn messages from the
-      // autostart path reach the user's stderr. Without this, the
-      // autostart defaults to silentIo and respawns are invisible
-      // — round-2 M-NEW3. Tests that mock `ensureAutostart` keep
-      // their own io.
+      // Surface respawn reasons on stderr, but keep the daemon CLI's stdout
+      // banner out of interactive TUI rendering.
+      const silentStdout = { write: () => true } as Pick<
+        NodeJS.WriteStream,
+        "write"
+      >;
       await ensureAutostart({
         host,
-        io: { stdout: process.stdout, stderr: process.stderr },
+        io: { stdout: silentStdout, stderr: process.stderr },
       });
     }
   };

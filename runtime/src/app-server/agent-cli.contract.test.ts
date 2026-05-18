@@ -615,6 +615,12 @@ describe("agenc agent start CLI", () => {
         env,
       },
     });
+    expect((calls[0] as { io?: unknown }).io).toMatchObject({
+      stderr: process.stderr,
+    });
+    expect(
+      ((calls[0] as { io?: { stdout?: NodeJS.WriteStream } }).io?.stdout),
+    ).not.toBe(process.stdout);
   });
 
   it("skips daemon autostart when config disables it", async () => {
