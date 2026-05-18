@@ -392,7 +392,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-012 - Replace remaining old `/tasks` detail dialogs
+### [x] TUI-TODO-012 - Replace remaining old `/tasks` detail dialogs
 
 Files to inspect:
 

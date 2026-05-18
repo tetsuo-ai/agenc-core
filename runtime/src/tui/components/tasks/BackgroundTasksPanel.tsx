@@ -9,7 +9,10 @@ import {
   isTaskType,
   type TaskState,
 } from "../../../tasks/types.js";
-import { formatNumber, truncateToWidth } from "../../../utils/format.js";
+import { tailFile } from "../../../utils/fsOperations.js";
+import { formatFileSize, formatNumber, truncateToWidth } from "../../../utils/format.js";
+import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
+import type { Theme } from "../../../utils/theme.js";
 import { Box, useInput } from "../../ink.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useAppState, useSetAppState, type AppState } from "../../state/AppState.js";
@@ -22,6 +25,22 @@ type Props = {
   initialDetailTaskId?: string;
   toolUseContext?: unknown;
 };
+
+type ThemeColor = keyof Theme;
+
+type TaskDetailRow = {
+  readonly section: string;
+  readonly label: string;
+  readonly value: string;
+  readonly color?: ThemeColor;
+};
+
+type ShellOutputTail = {
+  readonly content: string;
+  readonly bytesTotal: number;
+};
+
+const SHELL_DETAIL_TAIL_BYTES = 8192;
 
 function taskTitle(task: TaskState): string {
   if ("title" in task && typeof task.title === "string" && task.title.trim()) {
@@ -102,10 +121,17 @@ function taskStatusLabel(status: string): string {
     case "completed":
       return "done";
     case "killed":
-      return "killed";
+      return "cancelled";
     default:
       return status;
   }
+}
+
+function taskDetailStatusLabel(task: TaskState): string {
+  if (task.status === "running" || task.status === "pending") {
+    return `◐ ${task.status}`;
+  }
+  return task.status === "completed" ? "completed" : taskStatusLabel(task.status);
 }
 
 function taskDetail(task: TaskState): string | null {
@@ -157,6 +183,158 @@ function taskElapsedLabel(task: TaskState): string {
   if (elapsedSeconds >= 3600) return `${Math.floor(elapsedSeconds / 3600)}h`;
   if (elapsedSeconds >= 60) return `${Math.floor(elapsedSeconds / 60)}m`;
   return `${elapsedSeconds}s`;
+}
+
+function stringifyUnknown(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value instanceof Error) {
+    return value.message;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function addDetailRows(
+  rows: TaskDetailRow[],
+  section: string,
+  label: string,
+  value: unknown,
+  color?: ThemeColor,
+): void {
+  const text = stringifyUnknown(value).trim();
+  if (!text) {
+    return;
+  }
+  for (const line of text.split(/\r?\n/u)) {
+    const trimmed = line.trimEnd();
+    if (trimmed) {
+      rows.push({ section, label, value: trimmed, ...(color ? { color } : {}) });
+    }
+  }
+}
+
+function addProgressRows(rows: TaskDetailRow[], task: TaskState): void {
+  if (!("progress" in task) || !task.progress) {
+    return;
+  }
+  const { toolUseCount, tokenCount, lastActivity, recentActivities } = task.progress;
+  if (toolUseCount !== undefined || tokenCount !== undefined) {
+    const parts = [
+      toolUseCount !== undefined ? `${formatNumber(toolUseCount)} tools` : null,
+      tokenCount !== undefined ? `${formatNumber(tokenCount)} tokens` : null,
+    ].filter(Boolean);
+    addDetailRows(rows, "progress", "usage", parts.join(" · "), "text2");
+  }
+  if (lastActivity?.activityDescription) {
+    addDetailRows(rows, "progress", "latest", lastActivity.activityDescription, "subtle");
+  }
+  if (recentActivities && recentActivities.length > 0) {
+    recentActivities.forEach((activity, index) => {
+      const description =
+        activity.activityDescription ??
+        [activity.toolName, stringifyUnknown(activity.input)].filter(Boolean).join(" ");
+      addDetailRows(rows, "progress", `activity ${index + 1}`, description, "subtle");
+    });
+  }
+}
+
+function addMessageRows(
+  rows: TaskDetailRow[],
+  section: string,
+  label: string,
+  messages: readonly unknown[] | undefined,
+): void {
+  if (!messages || messages.length === 0) {
+    return;
+  }
+  messages.forEach((message, index) => {
+    addDetailRows(rows, section, `${label} ${index + 1}`, stringifyUnknown(message), "subtle");
+  });
+}
+
+function buildTaskDetailRows(
+  task: TaskState,
+  shellOutputTail: ShellOutputTail | undefined,
+): readonly TaskDetailRow[] {
+  const rows: TaskDetailRow[] = [];
+  addDetailRows(rows, "task", "status", taskDetailStatusLabel(task), taskStatusColor(task.status));
+  addDetailRows(rows, "task", "type", `${taskKindLabel(task)} · ${task.type}`, taskKindColor(task));
+  addDetailRows(rows, "task", "title", taskTitle(task), "text2");
+  addDetailRows(rows, "task", "id", task.id, "inactive");
+  addDetailRows(rows, "task", "target", taskTarget(task), "subtle");
+  addDetailRows(rows, "task", "elapsed", taskElapsedLabel(task), "inactive");
+  addDetailRows(rows, "output", "uri", task.outputFile, "subtle");
+
+  addProgressRows(rows, task);
+
+  switch (task.type) {
+    case "local_bash":
+      addDetailRows(rows, "shell", "command", task.command, "text2");
+      addDetailRows(rows, "shell", "kind", task.kind, "inactive");
+      if (task.result) {
+        addDetailRows(rows, "shell", "exit", `code ${task.result.code}`, task.result.code === 0 ? "success" : "error");
+        addDetailRows(rows, "shell", "interrupted", task.result.interrupted ? "yes" : "no", task.result.interrupted ? "error" : "inactive");
+      }
+      if (shellOutputTail) {
+        addDetailRows(rows, "output", "size", formatFileSize(shellOutputTail.bytesTotal), "inactive");
+        addDetailRows(rows, "output", "tail", shellOutputTail.content || "(no output)", "text2");
+      } else {
+        addDetailRows(rows, "output", "tail", "loading output tail", "inactive");
+      }
+      break;
+    case "local_agent":
+      addDetailRows(rows, "agent", "agent", `${task.agentId} · ${task.agentType}`, "worker");
+      addDetailRows(rows, "agent", "model", task.model, "inactive");
+      addDetailRows(rows, "agent", "prompt", task.prompt, "text2");
+      addMessageRows(rows, "agent", "pending", task.pendingMessages);
+      addMessageRows(rows, "agent", "message", task.messages);
+      addDetailRows(rows, "agent", "error", task.error, "error");
+      addDetailRows(rows, "agent", "result", task.result, "subtle");
+      break;
+    case "in_process_teammate":
+      addDetailRows(rows, "teammate", "identity", `${task.identity.agentName} · ${task.identity.agentId}`, "worker");
+      addDetailRows(rows, "teammate", "team", task.identity.teamName, "inactive");
+      addDetailRows(rows, "teammate", "mode", task.permissionMode, "subtle");
+      addDetailRows(rows, "teammate", "state", [
+        task.isIdle ? "idle" : "working",
+        task.awaitingPlanApproval ? "awaiting plan approval" : "",
+        task.shutdownRequested ? "shutdown requested" : "",
+      ].filter(Boolean).join(" · "), "text2");
+      addDetailRows(rows, "teammate", "model", task.model, "inactive");
+      addDetailRows(rows, "teammate", "prompt", task.prompt, "text2");
+      addMessageRows(rows, "teammate", "pending", task.pendingUserMessages);
+      addMessageRows(rows, "teammate", "message", task.messages);
+      addDetailRows(rows, "teammate", "error", task.error, "error");
+      addDetailRows(rows, "teammate", "result", task.result, "subtle");
+      break;
+    case "remote_agent":
+      addDetailRows(rows, "remote", "session", task.sessionId, "worker");
+      addDetailRows(rows, "remote", "kind", task.remoteTaskType, "inactive");
+      addDetailRows(rows, "remote", "command", task.command, "text2");
+      if (task.reviewProgress) {
+        addDetailRows(
+          rows,
+          "remote",
+          "review",
+          `${task.reviewProgress.stage ?? "review"} · ${task.reviewProgress.bugsFound} found · ${task.reviewProgress.bugsVerified} verified · ${task.reviewProgress.bugsRefuted} refuted`,
+          "subtle",
+        );
+      }
+      addMessageRows(rows, "remote", "log", task.log);
+      break;
+  }
+
+  return rows.length > 0
+    ? rows
+    : [{ section: "task", label: "empty", value: "No detail available", color: "inactive" }];
 }
 
 function taskActionLabel(task: TaskState): string {
@@ -258,6 +436,10 @@ export function BackgroundTasksPanel({
   const [showDetail, setShowDetail] = React.useState(
     () => Boolean(initialDetailTaskId),
   );
+  const [detailIndex, setDetailIndex] = React.useState(0);
+  const [shellOutputTails, setShellOutputTails] = React.useState<
+    Record<string, ShellOutputTail | undefined>
+  >({});
   React.useEffect(() => {
     if (initialDetailTaskId && sorted.some((task) => task.id === initialDetailTaskId)) {
       setSelectedTaskId(initialDetailTaskId);
@@ -276,7 +458,64 @@ export function BackgroundTasksPanel({
     sorted.findIndex((task) => task.id === selectedTaskId),
   );
   const selectedTask = sorted[selectedIndex] ?? null;
+  const selectedShellOutputTail =
+    selectedTask?.type === "local_bash" ? shellOutputTails[selectedTask.id] : undefined;
+  const detailRows = React.useMemo(
+    () => selectedTask ? buildTaskDetailRows(selectedTask, selectedShellOutputTail) : [],
+    [selectedShellOutputTail, selectedTask],
+  );
   const selectedTaskDetail = selectedTask ? taskDetail(selectedTask) : null;
+  React.useEffect(() => {
+    setDetailIndex(0);
+  }, [selectedTaskId]);
+  React.useEffect(() => {
+    setDetailIndex((current) => Math.min(current, Math.max(0, detailRows.length - 1)));
+  }, [detailRows.length]);
+  React.useEffect(() => {
+    if (!showDetail || selectedTask?.type !== "local_bash") {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const readTail = async () => {
+      try {
+        const result = await tailFile(getTaskOutputPath(selectedTask.id), SHELL_DETAIL_TAIL_BYTES);
+        if (cancelled) {
+          return;
+        }
+        setShellOutputTails((current) => ({
+          ...current,
+          [selectedTask.id]: {
+            content: result.content,
+            bytesTotal: result.bytesTotal,
+          },
+        }));
+      } catch {
+        if (cancelled) {
+          return;
+        }
+        setShellOutputTails((current) => ({
+          ...current,
+          [selectedTask.id]: {
+            content: "",
+            bytesTotal: 0,
+          },
+        }));
+      }
+    };
+    void readTail();
+    if (selectedTask.status === "running" || selectedTask.status === "pending") {
+      timer = setInterval(() => {
+        void readTail();
+      }, 1000);
+    }
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearInterval(timer);
+      }
+    };
+  }, [showDetail, selectedTask?.id, selectedTask?.status, selectedTask?.type]);
   const selectRelative = React.useCallback(
     (delta: number) => {
       if (sorted.length === 0) {
@@ -292,6 +531,17 @@ export function BackgroundTasksPanel({
       stopTask(selectedTask, setAppState);
     }
   }, [selectedTask, setAppState]);
+  const selectDetailRelative = React.useCallback(
+    (delta: number) => {
+      if (detailRows.length === 0) {
+        return;
+      }
+      setDetailIndex((current) =>
+        Math.min(Math.max(0, current + delta), Math.max(0, detailRows.length - 1)),
+      );
+    },
+    [detailRows.length],
+  );
 
   useInput((input, key) => {
     if (key.escape || input === "q") {
@@ -299,6 +549,24 @@ export function BackgroundTasksPanel({
       return;
     }
     if (sorted.length === 0) {
+      return;
+    }
+    if (showDetail) {
+      if (key.leftArrow || input === "b" || input === "h") {
+        setShowDetail(false);
+        return;
+      }
+      if (key.upArrow || input === "k") {
+        selectDetailRelative(-1);
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        selectDetailRelative(1);
+        return;
+      }
+      if (input === "x") {
+        stopSelectedTask();
+      }
       return;
     }
     if (key.upArrow || input === "k") {
@@ -311,10 +579,6 @@ export function BackgroundTasksPanel({
     }
     if (key.return || key.rightArrow || input === "l") {
       setShowDetail(true);
-      return;
-    }
-    if (showDetail && (key.leftArrow || input === "b" || input === "h")) {
-      setShowDetail(false);
       return;
     }
     if (input === "x") {
@@ -351,6 +615,38 @@ export function BackgroundTasksPanel({
     );
   }
 
+  if (showDetail && selectedTask) {
+    const detailValueWidth = Math.max(12, Math.min(96, columns - 25));
+    return (
+      <MenuModal
+        title="task detail"
+        count={taskDetailStatusLabel(selectedTask)}
+        summary={truncateToWidth(taskTitle(selectedTask), Math.max(1, columns - 38))}
+        headerRight="↑↓ scroll · ← back · x stop"
+        columns={[8, 12, detailValueWidth]}
+        headers={["section", "field", "value"]}
+        items={detailRows}
+        activeIndex={detailIndex}
+        footer={[
+          { keyName: "←", label: "back" },
+          { keyName: "x", label: "stop" },
+        ]}
+        hint={truncateToWidth(`${taskKindLabel(selectedTask)} · ${selectedTask.id}`, taskTextWidth)}
+        renderRow={(row, _index, active) => [
+          <ThemedText key="section" color="inactive" wrap="truncate-end">
+            {row.section}
+          </ThemedText>,
+          <ThemedText key="label" color={active ? "agenc" : "subtle"} wrap="truncate-end">
+            {row.label}
+          </ThemedText>,
+          <ThemedText key="value" color={row.color ?? "text2"} wrap="truncate-end">
+            {truncateToWidth(row.value, detailValueWidth)}
+          </ThemedText>,
+        ]}
+      />
+    );
+  }
+
   return (
     <MenuModal
       title="background tasks"
@@ -364,8 +660,7 @@ export function BackgroundTasksPanel({
       footer={[
         { keyName: "⏎", label: "open" },
         { keyName: "x", label: "stop" },
-        { keyName: "l", label: "logs" },
-        { keyName: "r", label: "retry" },
+        { keyName: "l", label: "detail" },
       ]}
       hint={truncateToWidth(
         showDetail ? "detail open · ←/b returns to list" : "kinds · remote · teammate · bash · local",

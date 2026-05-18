@@ -86,6 +86,28 @@ function makeShellTask(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeRemoteTask(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'r1',
+    type: 'remote_agent',
+    status: 'running',
+    description: 'Remote implementation',
+    startTime: Date.now(),
+    outputFile: 'urn:agenc:task:r1:output',
+    outputOffset: 0,
+    notified: false,
+    remoteTaskType: 'remote-agent',
+    sessionId: 'session-1',
+    command: 'implement TODO item',
+    title: 'Remote implementation',
+    todoList: [],
+    log: [],
+    pollStartedAt: Date.now(),
+    isBackgrounded: true,
+    ...overrides,
+  }
+}
+
 describe('BackgroundTasksPanel', () => {
   beforeEach(() => {
     appStateMock.state = { tasks: {} }
@@ -111,12 +133,12 @@ describe('BackgroundTasksPanel', () => {
       100,
     )
 
-    expect(output).toContain('Task details')
+    expect(output).toContain('TASK DETAIL')
     expect(output).toContain('npm test')
-    expect(output).toContain('command: npm test')
-    expect(output).toContain('view output:')
+    expect(output).toContain('command')
+    expect(output).toContain('urn:agenc:task:b1:output')
     expect(output).toContain('stop')
-    expect(output).toContain('detail open')
+    expect(output).toContain('← back')
   })
 
   it('keeps terminal background tasks visible while the dialog is open', async () => {
@@ -150,8 +172,9 @@ describe('BackgroundTasksPanel', () => {
     }
 
     const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+    terminalSizeMock.size = { columns: 148, rows: 30 }
 
-    const output = await renderToString(<BackgroundTasksPanel />, 100)
+    const output = await renderToString(<BackgroundTasksPanel />, 148)
 
     expect(output).not.toContain('No background tasks')
     expect(output).toContain('◐')
@@ -160,7 +183,32 @@ describe('BackgroundTasksPanel', () => {
     expect(output).toContain('npm run dev')
     expect(output).toContain('done')
     expect(output).toContain('failed')
-    expect(output).toContain('killed')
+    expect(output).toContain('cancelled')
+  })
+
+  it('renders long task logs in a scroll-bounded detail surface', async () => {
+    terminalSizeMock.size = { columns: 80, rows: 18 }
+    appStateMock.state = {
+      tasks: {
+        r1: makeRemoteTask({
+          log: Array.from({ length: 24 }, (_, index) => ({
+            message: `remote log line ${index + 1}`,
+          })),
+        }),
+      },
+    }
+
+    const { BackgroundTasksPanel } = await import('./BackgroundTasksPanel.js')
+
+    const output = await renderToString(
+      <BackgroundTasksPanel initialDetailTaskId="r1" />,
+      80,
+    )
+
+    expect(output).toContain('TASK DETAIL')
+    expect(output).toContain('scroll')
+    expect(output).toContain('remote log line 1')
+    expect(output).not.toContain('remote log line 24')
   })
 
   it('truncates long task list and detail text to the terminal width', async () => {
