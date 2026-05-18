@@ -361,9 +361,11 @@ export function StatusSegment({
   readonly value: string
   readonly color?: ThemeColor
 }): React.ReactNode {
+  const columns = React.useContext(TerminalFrameColumnsContext)
+  const labelText = columns >= 148 ? label.toUpperCase() : `${label.toUpperCase()} `
   return (
     <Box flexDirection="row">
-      <ThemedText color="inactive">{label.toUpperCase()} </ThemedText>
+      <ThemedText color="inactive">{labelText}</ThemedText>
       <ThemedText color={color} wrap="truncate-end">
         {value}
       </ThemedText>
@@ -381,13 +383,15 @@ export function StatusBar({
   readonly variant?: BadgeVariant
 }): React.ReactNode {
   const color = variantColor[variant]
+  const columns = React.useContext(TerminalFrameColumnsContext)
   return (
     <ThemedBox
       flexDirection="row"
       backgroundColor={variantWash[variant] ?? 'agencWash'}
       borderTop
       borderTopColor={color}
-      paddingX={1}
+      paddingLeft={columns >= 148 ? 2 : 1}
+      paddingRight={1}
       gap={2}
       minHeight={1}
       flexShrink={0}
