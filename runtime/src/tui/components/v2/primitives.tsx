@@ -449,8 +449,8 @@ export function PromptChrome({
       borderTopColor="lineSoft"
       backgroundColor={shellMode ? 'workerWash' : 'clawd_background'}
       paddingX={2}
-      paddingY={1}
-      gap={1}
+      paddingTop={2}
+      gap={2}
       flexShrink={0}
     >
       <ThemedText color={color}>{shellMode ? '$' : '▸'}</ThemedText>
