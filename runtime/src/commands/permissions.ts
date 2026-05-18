@@ -68,7 +68,10 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import { openPermissionsMenu } from "./permissions-menu.js";
+import {
+  openPermissionsMenu,
+  type PermissionsMenuController,
+} from "./permissions-menu.js";
 
 // ---------------------------------------------------------------------------
 // Helpers: locate the permission registry on session.services.
@@ -559,6 +562,45 @@ async function handleAcceptBypassSubcommand(
   };
 }
 
+function menuActionResult(
+  result: SlashCommandResult,
+  nextMode?: PermissionMode,
+): { readonly ok: boolean; readonly message: string; readonly nextMode?: PermissionMode } {
+  switch (result.kind) {
+    case "text":
+      return {
+        ok: true,
+        message: result.text,
+        ...(nextMode !== undefined ? { nextMode } : {}),
+      };
+    case "error":
+      return { ok: false, message: result.message };
+    case "skip":
+      return { ok: true, message: "Action applied." };
+    case "compact":
+      return { ok: true, message: result.text };
+    case "exit":
+      return { ok: true, message: `Exit requested with code ${result.code}.` };
+    case "prompt":
+      return { ok: false, message: result.content };
+  }
+}
+
+function permissionsMenuController(
+  registry: PermissionModeRegistry,
+  ctx: SlashCommandContext,
+): PermissionsMenuController {
+  return {
+    setMode: async (mode: PermissionMode) =>
+      menuActionResult(
+        await handleModeSubcommand(mode, registry, ctx),
+        registry.current().mode,
+      ),
+    acceptBypass: async () =>
+      menuActionResult(await handleAcceptBypassSubcommand(registry, ctx)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Command
 // ---------------------------------------------------------------------------
@@ -581,7 +623,7 @@ export const permissionsCommand: SlashCommand = {
       }
       const raw = ctx.argsRaw.trim();
       if (raw === "") {
-        if (openPermissionsMenu(ctx, registry.current())) {
+        if (openPermissionsMenu(ctx, registry.current(), permissionsMenuController(registry, ctx))) {
           return { kind: "skip" };
         }
         return { kind: "text", text: formatRuleList(registry.current()) };
@@ -592,7 +634,7 @@ export const permissionsCommand: SlashCommand = {
 
       switch (sub) {
         case "list":
-          if (openPermissionsMenu(ctx, registry.current())) {
+          if (openPermissionsMenu(ctx, registry.current(), permissionsMenuController(registry, ctx))) {
             return { kind: "skip" };
           }
           return { kind: "text", text: formatRuleList(registry.current()) };

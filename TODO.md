@@ -360,7 +360,7 @@ Dependencies:
 
 - TUI-TODO-009 should be considered for shared provider/model state, but either item can land first.
 
-### [ ] TUI-TODO-011 - Finish `/permissions` rules, approval, and trust surfaces in v2
+### [x] TUI-TODO-011 - Finish `/permissions` rules, approval, and trust surfaces in v2
 
 Files to inspect:
 
