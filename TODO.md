@@ -239,7 +239,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-007 - Finish `/hooks` edit, test, and reload flows in v2
+### [x] TUI-TODO-007 - Finish `/hooks` edit, test, and reload flows in v2
 
 Files to inspect:
 
