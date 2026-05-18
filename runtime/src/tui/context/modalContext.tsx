@@ -24,6 +24,10 @@ type ModalCtx = {
   columns: number;
   scrollRef: RefObject<ScrollBoxHandle | null> | null;
 };
+type ModalSize = {
+  rows: number;
+  columns: number;
+};
 export const ModalContext = createContext<ModalCtx | null>(null);
 export function useIsInsideModal() {
   return useContext(ModalContext) !== null;
@@ -35,7 +39,7 @@ export function useIsInsideModal() {
  * component caps its visible content height — the modal's inner area is
  * smaller than the terminal.
  */
-export function useModalOrTerminalSize(fallback) {
+export function useModalOrTerminalSize(fallback: ModalSize): ModalSize {
   const $ = _c(3);
   const ctx = useContext(ModalContext);
   let t0;

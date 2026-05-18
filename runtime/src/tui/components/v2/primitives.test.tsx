@@ -2,7 +2,15 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
-import { ModeSwitcher, SlashPalette, StatusSegment, TerminalFrame } from './primitives.js'
+import { Text } from '../../ink.js'
+import {
+  MenuModal,
+  ModeSwitcher,
+  SlashPalette,
+  StatusSegment,
+  TerminalFrame,
+  WelcomeColdPanel,
+} from './primitives.js'
 
 describe('v2 primitives', () => {
   it('renders the runtime-bound mode switcher state with the current mode selected', async () => {
@@ -80,5 +88,44 @@ describe('v2 primitives', () => {
     expect(output).toContain('<agent> <step>')
     expect(output).toContain('/diff')
     expect(output).toContain('show the current working diff')
+  })
+
+  it('keeps welcome command labels separated from surrounding text', async () => {
+    const output = await renderToString(<WelcomeColdPanel />, { columns: 120, rows: 24 })
+
+    expect(output).toContain('type /help for commands ·  /claim to pick a task off the marketplace')
+    expect(output).not.toContain('/helpfor')
+    expect(output).not.toContain('/claimto')
+  })
+
+  it('windows long menus to the active row and exposes scroll position', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      status: 'available',
+      name: `item-${String(index).padStart(2, '0')}`,
+      detail: `detail-${index}`,
+    }))
+
+    const output = await renderToString(
+      <MenuModal
+        title="skills"
+        count={`${rows.length}`}
+        columns={[12, 12, 20]}
+        headers={['status', 'name', 'detail']}
+        items={rows}
+        activeIndex={18}
+        footer={[{ keyName: 'up/down', label: 'navigate' }]}
+        renderRow={row => [
+          <Text key="status">{row.status}</Text>,
+          <Text key="name">{row.name}</Text>,
+          <Text key="detail">{row.detail}</Text>,
+        ]}
+      />,
+      { columns: 100, rows: 12 },
+    )
+
+    expect(output).toContain('item-18')
+    expect(output).toContain('scroll 16-22/30')
+    expect(output).not.toContain('item-00')
+    expect(output).not.toContain('item-29')
   })
 })

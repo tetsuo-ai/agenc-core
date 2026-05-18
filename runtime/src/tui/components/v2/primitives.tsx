@@ -2,6 +2,8 @@ import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
 import type { Theme } from '../../../utils/theme.js'
+import { useModalOrTerminalSize } from '../../context/modalContext.js'
+import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
 import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
@@ -771,9 +773,9 @@ export function WelcomeColdPanel({
         <Box flexDirection="row" flexWrap="wrap">
           <ThemedText color="inactive">type </ThemedText>
           <ThemedText color="agenc">/help</ThemedText>
-          <ThemedText color="inactive">for commands ·  </ThemedText>
+          <ThemedText color="inactive"> for commands ·  </ThemedText>
           <ThemedText color="agenc">/claim</ThemedText>
-          <ThemedText color="inactive">to pick a task off the marketplace</ThemedText>
+          <ThemedText color="inactive"> to pick a task off the marketplace</ThemedText>
         </Box>
       </Box>
     </Box>
@@ -1167,6 +1169,30 @@ export function MenuModal<T>({
   const resolvedListWidth = preview
     ? `${100 - Number.parseInt(resolvedPreviewWidth, 10)}%` as `${number}%`
     : undefined
+  const viewport = useModalOrTerminalSize(useTerminalSize())
+  const viewportRows = Number.isFinite(viewport.rows)
+    ? Math.max(1, Math.trunc(viewport.rows))
+    : 24
+  const rowHeight = Math.max(1, rowMinHeight)
+  const chromeRows = (omitTopBorder ? 1 : 2) + 3
+  const maxVisibleItems = Math.max(
+    1,
+    Math.floor(Math.max(1, viewportRows - chromeRows) / rowHeight),
+  )
+  const visibleCount = Math.min(items.length, maxVisibleItems)
+  const clampedActiveIndex = Math.max(0, Math.min(activeIndex, Math.max(0, items.length - 1)))
+  const windowStart = Math.min(
+    Math.max(0, clampedActiveIndex - Math.floor(visibleCount / 2)),
+    Math.max(0, items.length - visibleCount),
+  )
+  const visibleItems = items.slice(windowStart, windowStart + visibleCount)
+  const windowEnd = windowStart + visibleItems.length
+  const scrollStatus =
+    items.length > visibleItems.length
+      ? `scroll ${windowStart + 1}-${windowEnd}/${items.length}`
+      : undefined
+  const constrainedMinHeight =
+    modalMinHeight === undefined ? undefined : Math.min(modalMinHeight, viewportRows)
 
   return (
     <ThemedBox
@@ -1181,7 +1207,8 @@ export function MenuModal<T>({
       borderBottomColor="agenc"
       backgroundColor="clawd_background"
       overflow="hidden"
-      minHeight={modalMinHeight}
+      maxHeight={viewportRows}
+      minHeight={constrainedMinHeight}
     >
       <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={paddingX} gap={columnGap}>
         <Box flexShrink={0}>
@@ -1210,8 +1237,9 @@ export function MenuModal<T>({
               </ThemedText>
             ))}
           </Box>
-          {items.map((item, index) => {
-            const active = index === activeIndex
+          {visibleItems.map((item, visibleIndex) => {
+            const index = windowStart + visibleIndex
+            const active = index === clampedActiveIndex
             const cells = renderRow(item, index, active)
             return (
               <ThemedBox
@@ -1238,6 +1266,7 @@ export function MenuModal<T>({
             borderLeftColor="lineSoft"
             width={resolvedPreviewWidth}
             paddingX={paddingX}
+            overflow="hidden"
           >
             {preview}
           </ThemedBox>
@@ -1247,6 +1276,7 @@ export function MenuModal<T>({
         {footer.map(item => (
           <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
         ))}
+        {scrollStatus ? <ThemedText color="inactive">{scrollStatus}</ThemedText> : null}
         <Box flexGrow={1} />
         {hint ? <ThemedText color="inactive" wrap="truncate-end">{hint}</ThemedText> : null}
         <KeyHint k="esc" label="dismiss" />
