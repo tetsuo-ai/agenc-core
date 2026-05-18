@@ -25,7 +25,7 @@ const MINIMAL_NAMES = [
   "help",
   "status",
   "model",
-  "model-provider",
+  "provider",
   "permissions",
   "plan",
   "agents",
@@ -139,7 +139,7 @@ describe("AgenC command surface compatibility", () => {
       "help",
       "status",
       "model",
-      "model-provider",
+      "provider",
       "clear",
       "exit",
     ]);

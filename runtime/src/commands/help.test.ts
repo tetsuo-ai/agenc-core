@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDefaultRegistry } from "./registry.js";
 import helpCommand, {
+  filterHelpCommands,
   formatHelp,
   formatHelpCommands,
   groupHelpCommands,
+  normalizeHelpQuery,
 } from "./help.js";
 import {
   setGlobalCommandRegistry,
@@ -74,9 +76,8 @@ describe("helpCommand", () => {
 
     const text = formatHelp(reg);
 
-    expect(text).toContain("Getting Started:");
-    expect(text).toContain("Configuration:");
-    expect(text).toContain("Context & Files:");
+    expect(text).toContain("Session:");
+    expect(text).toContain("Project / Context:");
     expect(text).toContain("Other Commands:");
     expect(text).toContain("/status - show status");
     expect(text).toContain("/config - configure AgenC");
@@ -114,17 +115,16 @@ describe("helpCommand", () => {
     expect(formatHelp(reg)).toMatch(/No slash commands/);
   });
 
-  it("surfaces canonical /model-provider and alias /provider together", () => {
+  it("surfaces canonical /provider without the retired provider alias", () => {
     const cmds: SlashCommand[] = [
       {
-        name: "model-provider",
-        aliases: ["provider"],
+        name: "provider",
         description: "Switch provider",
         execute: async () => ({ kind: "skip" }),
       },
     ];
     const reg: CommandRegistry = { list: () => cmds, find: () => undefined };
-    expect(formatHelp(reg)).toContain("/model-provider, /provider");
+    expect(formatHelp(reg)).toContain("/provider - Switch provider");
   });
 
   it("groups only retained built-in categories before custom commands", () => {
@@ -152,9 +152,9 @@ describe("helpCommand", () => {
     ];
     const reg: CommandRegistry = { list: () => cmds, find: () => undefined };
     expect(groupHelpCommands(reg.list()).map((group) => group.title)).toEqual([
-      "Getting Started",
-      "Configuration",
       "Session",
+      "Tools / MCP",
+      "Utility",
       "Other Commands",
     ]);
   });
@@ -172,6 +172,15 @@ describe("helpCommand", () => {
     expect(text).not.toContain("Diagnostics:");
   });
 
+  it("keeps default help rows inside an 80 column terminal", () => {
+    const text = formatHelp(buildDefaultRegistry({ surface: "daemon-tui" }));
+    const longRows = text
+      .split("\n")
+      .filter(row => row.length > 80);
+
+    expect(longRows).toEqual([]);
+  });
+
   it("daemon TUI help includes redesign palette commands", () => {
     const registry = buildDefaultRegistry({ surface: "daemon-tui" });
     const text = formatHelp(registry);
@@ -179,7 +188,7 @@ describe("helpCommand", () => {
     expect(text).toContain("/help - Show help and available commands");
     expect(text).toContain("/plan - Enter plan mode");
     expect(text).toContain("/model - Switch the model");
-    expect(text).toContain("/model-provider, /provider");
+    expect(text).toContain("/provider - Switch the LLM provider");
     expect(text).toContain("/hooks - Inspect and test AgenC hook configuration");
     expect(text).toContain("/compact - Compact the current conversation");
     expect(text).toContain("/context, /ctx - Show current context usage");
@@ -191,7 +200,7 @@ describe("helpCommand", () => {
     const res = await helpCommand.execute(makeCtx({ cwd: "/tmp/project" }));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
-      expect(res.text).toContain("Getting Started:");
+      expect(res.text).toContain("Utility:");
       expect(res.text).toContain("/help - Show help and available commands");
       expect(res.text).not.toContain("Custom Commands:");
     }
@@ -214,6 +223,38 @@ describe("helpCommand", () => {
     });
   });
 
+  it("filters help commands while keeping the persistent TUI surface", async () => {
+    const setToolJSX = vi.fn();
+    const registry = buildDefaultRegistry({ surface: "daemon-tui" });
+
+    const res = await helpCommand.execute(makeCtx({
+      argsRaw: "/provider",
+      commandRegistry: registry,
+      appState: { setToolJSX },
+    }));
+
+    expect(res.kind).toBe("skip");
+    const jsx = setToolJSX.mock.calls[0]?.[0] as {
+      jsx?: { props?: { commands?: readonly SlashCommand[]; query?: string } };
+    };
+    expect(jsx.jsx?.props?.query).toBe("provider");
+    expect(jsx.jsx?.props?.commands?.map(command => command.name)).toEqual([
+      "provider",
+    ]);
+  });
+
+  it("normalizes slash-prefixed help filters for text output", () => {
+    const registry = buildDefaultRegistry();
+    const query = normalizeHelpQuery("/provider");
+    const commands = filterHelpCommands(registry.list(), query);
+    const text = formatHelpCommands(commands);
+
+    expect(text).toContain("Model / Provider:");
+    expect(text).toContain("/provider - Switch the LLM provider");
+    expect(text).not.toContain("/model-provider");
+    expect(text).not.toContain("/permissions");
+  });
+
   it("formats custom commands separately when built-in names are supplied", () => {
     const text = formatHelpCommands(
       [
@@ -227,7 +268,7 @@ describe("helpCommand", () => {
       ],
       { builtInCommandNames: new Set(["help"]) },
     );
-    expect(text).toContain("Getting Started:");
+    expect(text).toContain("Utility:");
     expect(text).toContain("/help - help");
     expect(text).toContain("Custom Commands:");
     expect(text).toContain("/team-skill - Team skill (bundled)");

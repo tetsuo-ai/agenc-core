@@ -34,8 +34,7 @@ describe("slash command suggestions", () => {
   it("keeps name and alias prefix matches", () => {
     const suggestions = generateCommandSuggestions("/prov", [
       localCommand({
-        name: "model-provider",
-        aliases: ["provider"],
+        name: "provider",
         description: "Switch model provider",
       }),
       localCommand({
@@ -45,7 +44,7 @@ describe("slash command suggestions", () => {
     ]);
 
     expect(suggestions.map((suggestion) => suggestion.displayText)).toEqual([
-      "/model-provider (provider)",
+      "/provider",
     ]);
   });
 

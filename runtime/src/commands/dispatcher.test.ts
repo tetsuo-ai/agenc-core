@@ -236,7 +236,6 @@ describe("isBridgeSafeCommand", () => {
       "status",
       "help",
       "model",
-      "model-provider",
       "provider",
       "clear",
       "diff",

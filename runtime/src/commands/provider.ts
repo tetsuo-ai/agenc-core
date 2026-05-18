@@ -186,8 +186,7 @@ function updateProviderChrome(
 }
 
 export const providerCommand: SlashCommand = {
-  name: "model-provider",
-  aliases: ["provider"],
+  name: "provider",
   description: "Switch the LLM provider for subsequent turns",
   supportedSurfaces: ["runtime", "daemon-tui"],
   userInvocable: true,

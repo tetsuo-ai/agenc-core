@@ -421,7 +421,7 @@ export function providerMenuFallback(snapshot: ProviderMenuSnapshot): string {
       `  ${row.status === "current" ? "*" : "-"} ${row.provider} -> ${row.model} (${row.detail})`,
     );
   }
-  lines.push("", "Run /model-provider <provider> [model] to switch.");
+  lines.push("", "Run /provider <provider> [model] to switch.");
   return lines.join("\n");
 }
 

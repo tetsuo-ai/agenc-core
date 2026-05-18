@@ -302,7 +302,6 @@ const BRIDGE_SAFE: ReadonlySet<string> = new Set([
   "status",
   "help",
   "model",
-  "model-provider",
   "provider",
   "clear",
   "diff",

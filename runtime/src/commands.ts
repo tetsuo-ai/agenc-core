@@ -546,7 +546,6 @@ const REMOTE_SAFE_COMMAND_NAMES = new Set([
   "help",
   "status",
   "model",
-  "model-provider",
   "provider",
 ]);
 
@@ -555,7 +554,6 @@ const BRIDGE_SAFE_COMMAND_NAMES = new Set([
   "diff",
   "help",
   "model",
-  "model-provider",
   "provider",
   "status",
 ]);

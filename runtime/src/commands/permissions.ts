@@ -608,7 +608,7 @@ function permissionsMenuController(
 export const permissionsCommand: SlashCommand = {
   name: "permissions",
   aliases: ["approvals", "allowed-tools"],
-  description: "List or manage permission rules and mode",
+  description: "Manage permission mode and rules",
   immediate: true,
   userInvocable: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>

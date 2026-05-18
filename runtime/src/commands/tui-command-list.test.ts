@@ -19,7 +19,7 @@ const MINIMAL_TUI_NAMES = [
   "help",
   "status",
   "model",
-  "model-provider",
+  "provider",
   "permissions",
   "plan",
   "agents",
@@ -47,7 +47,7 @@ const DAEMON_TUI_NAMES = [
   "help",
   "status",
   "model",
-  "model-provider",
+  "provider",
   "permissions",
   "plan",
   "agents",
@@ -134,7 +134,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
     const names = listTuiCommandList(registry).map((cmd) => cmd.name);
 
     expect(names).toEqual(DAEMON_TUI_NAMES);
-    for (const name of ["model", "model-provider", "hooks", "compact", "context"]) {
+    for (const name of ["model", "provider", "hooks", "compact", "context"]) {
       expect(names).toContain(name);
     }
   });
@@ -142,7 +142,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
   it("preserves aliases on retained commands", () => {
     const projected = new Map(listTuiCommandList().map((cmd) => [cmd.name, cmd]));
 
-    expect(projected.get("model-provider")?.aliases).toEqual(["provider"]);
+    expect(projected.get("provider")?.aliases).toBeUndefined();
     expect(projected.get("permissions")?.aliases).toEqual([
       "approvals",
       "allowed-tools",
@@ -194,7 +194,7 @@ describe("listTuiCommandList (minimal runtime slash surface)", () => {
       "help",
       "status",
       "model",
-      "model-provider",
+      "provider",
       "clear",
       "exit",
     ]);

@@ -11,7 +11,7 @@ const MINIMAL_REGISTRY_NAMES = [
   "help",
   "status",
   "model",
-  "model-provider",
+  "provider",
   "permissions",
   "plan",
   "agents",
@@ -39,7 +39,7 @@ const DAEMON_TUI_REGISTRY_NAMES = [
   "help",
   "status",
   "model",
-  "model-provider",
+  "provider",
   "permissions",
   "plan",
   "agents",
@@ -181,7 +181,7 @@ describe("CommandRegistry", () => {
     expect(registry.list().map((command) => command.name)).toEqual(
       DAEMON_TUI_REGISTRY_NAMES,
     );
-    for (const name of ["model", "model-provider", "provider", "hooks", "compact", "ctx"]) {
+    for (const name of ["model", "provider", "hooks", "compact", "ctx"]) {
       expect(registry.has(name), `/${name} should dispatch in daemon TUI`).toBe(
         true,
       );
@@ -208,7 +208,7 @@ describe("CommandRegistry", () => {
     const registry = buildDefaultRegistry();
 
     expect(registry.has("provider")).toBe(true);
-    expect(registry.find("provider")?.name).toBe("model-provider");
+    expect(registry.find("provider")?.name).toBe("provider");
     expect(registry.has("quit")).toBe(true);
     expect(registry.has("reset")).toBe(true);
     expect(registry.has("approvals")).toBe(true);

@@ -81,8 +81,8 @@ describe("providerCommand", () => {
   it("is userInvocable and immediate", () => {
     expect(providerCommand.userInvocable).toBe(true);
     expect(providerCommand.immediate).toBe(true);
-    expect(providerCommand.name).toBe("model-provider");
-    expect(providerCommand.aliases).toEqual(["provider"]);
+    expect(providerCommand.name).toBe("provider");
+    expect(providerCommand.aliases).toBeUndefined();
   });
 
   it("re-exports the live I-57 implementation", () => {

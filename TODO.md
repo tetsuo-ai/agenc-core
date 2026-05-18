@@ -674,7 +674,7 @@ Completed:
 - Kept still-wired low-level/runtime components: `ModelPicker`, `ThemePicker`, `ProviderManager`, MCP setup/elicitation dialogs, `SnapshotUpdateDialog`, and agent file utilities.
 - Updated tests that referenced deleted files and added visual-contract guard paths so retired v1 command surfaces stay deleted.
 
-### [ ] TUI-TODO-020 - Normalize slash help and command metadata after the v2 ports
+### [x] TUI-TODO-020 - Normalize slash help and command metadata after the v2 ports
 
 Files to inspect:
 
@@ -704,6 +704,13 @@ Acceptance:
 Dependencies:
 
 - Best done after TUI-TODO-014, TUI-TODO-015, and TUI-TODO-016.
+
+Completed:
+
+- Reworked help grouping into the final workflow buckets: session, model/provider, tools/MCP, agents/tasks, permissions, project/context, protocol, and utility.
+- Made `/provider` the canonical provider command name and removed `/model-provider` from visible registry/help metadata.
+- Added persistent filtered help coverage and an 80-column help-row guard.
+- Capped `/diff` preview rows by terminal height so compact command smoke keeps the footer visible.
 
 ### [ ] TUI-TODO-021 - Add a final v2 parity audit against numbered design states
 

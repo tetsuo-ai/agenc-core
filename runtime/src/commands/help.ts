@@ -17,11 +17,12 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import React from "react";
-
-interface HelpCategory {
-  readonly title: string;
-  readonly commands: readonly string[];
-}
+import {
+  CUSTOM_COMMANDS_TITLE,
+  HELP_WORKFLOW_GROUPS,
+  OTHER_COMMANDS_TITLE,
+  helpWorkflowTitleForCommand,
+} from "./help-groups.js";
 
 export interface HelpCommand {
   readonly name: string;
@@ -50,42 +51,6 @@ export interface HelpFormatOptions {
   readonly builtInCommandNames?: ReadonlySet<string>;
 }
 
-const OTHER_COMMANDS_TITLE = "Other Commands";
-const CUSTOM_COMMANDS_TITLE = "Custom Commands";
-
-const HELP_CATEGORIES: readonly HelpCategory[] = [
-  {
-    title: "Getting Started",
-    commands: ["help", "status"],
-  },
-  {
-    title: "Configuration",
-    commands: [
-      "config",
-      "hooks",
-      "mcp",
-      "model",
-      "model-provider",
-      "permissions",
-      "skills",
-    ],
-  },
-  {
-    title: "Session",
-    commands: ["clear", "compact", "exit"],
-  },
-  {
-    title: "Context & Files",
-    commands: ["context", "diff"],
-  },
-];
-
-const CATEGORY_BY_COMMAND = new Map<string, string>(
-  HELP_CATEGORIES.flatMap((category) =>
-    category.commands.map((command) => [command, category.title] as const),
-  ),
-);
-
 /**
  * Group visible, deduplicated slash commands.
  *
@@ -110,7 +75,10 @@ export function groupHelpCommands(
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const title = helpGroupTitle(command, key, options.builtInCommandNames);
+    const title = helpWorkflowTitleForCommand(
+      command,
+      options.builtInCommandNames,
+    );
     const bucket = grouped.get(title);
     if (bucket) {
       bucket.push(command);
@@ -120,7 +88,7 @@ export function groupHelpCommands(
   }
 
   const groups: HelpCommandGroup[] = [];
-  for (const category of HELP_CATEGORIES) {
+  for (const category of HELP_WORKFLOW_GROUPS) {
     const commands = grouped.get(category.title);
     if (!commands || commands.length === 0) continue;
     groups.push({
@@ -171,30 +139,6 @@ export function formatHelpCommands(
     }
   }
   return lines.join("\n");
-}
-
-function helpGroupTitle(
-  command: HelpCommand,
-  key: string,
-  builtInCommandNames: ReadonlySet<string> | undefined,
-): string {
-  if (
-    builtInCommandNames &&
-    !matchesCommandNameSet(command, builtInCommandNames)
-  ) {
-    return CUSTOM_COMMANDS_TITLE;
-  }
-  return CATEGORY_BY_COMMAND.get(key) ?? OTHER_COMMANDS_TITLE;
-}
-
-function matchesCommandNameSet(
-  command: HelpCommand,
-  names: ReadonlySet<string>,
-): boolean {
-  return (
-    names.has(command.name) ||
-    (command.aliases ?? []).some((alias) => names.has(alias))
-  );
 }
 
 function compareCommandNames(left: HelpCommand, right: HelpCommand): number {
@@ -249,9 +193,45 @@ async function loadHelpCommandSurface(
   };
 }
 
+export function normalizeHelpQuery(argsRaw: string): string {
+  return argsRaw
+    .trim()
+    .replace(/^\/+/, "")
+    .toLowerCase();
+}
+
+export function filterHelpCommands(
+  commands: readonly HelpCommand[],
+  query: string,
+  options: HelpFormatOptions = {},
+): readonly HelpCommand[] {
+  const terms = query.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return commands;
+
+  if (terms.length === 1) {
+    const exact = commands.filter((command) =>
+      [command.name, ...(command.aliases ?? [])]
+        .map(name => name.toLowerCase())
+        .includes(terms[0]!),
+    );
+    if (exact.length > 0) return exact;
+  }
+
+  return commands.filter((command) => {
+    const haystack = [
+      command.name,
+      ...(command.aliases ?? []),
+      command.description ?? "",
+      helpWorkflowTitleForCommand(command, options.builtInCommandNames),
+    ].join(" ").toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
 async function openHelpMenu(
   ctx: SlashCommandContext,
   commands: readonly HelpCommand[],
+  query: string,
 ): Promise<boolean> {
   const setToolJSX = ctx.appState?.setToolJSX;
   if (typeof setToolJSX !== "function") return false;
@@ -269,6 +249,7 @@ async function openHelpMenu(
     shouldHidePromptInput: true,
     jsx: React.createElement(HelpV2, {
       commands: commands as never,
+      query,
       onClose: close,
     }),
   });
@@ -293,12 +274,16 @@ export const helpCommand: SlashCommand = {
         return { kind: "text", text: "registry pending" };
       }
       const surface = await loadHelpCommandSurface(ctx.cwd, reg);
-      if (await openHelpMenu(ctx, surface.commands)) {
+      const query = normalizeHelpQuery(ctx.argsRaw);
+      const commands = filterHelpCommands(surface.commands, query, {
+        builtInCommandNames: surface.builtInCommandNames,
+      });
+      if (await openHelpMenu(ctx, commands, query)) {
         return { kind: "skip" };
       }
       return {
         kind: "text",
-        text: formatHelpCommands(surface.commands, {
+        text: formatHelpCommands(commands, {
           builtInCommandNames: surface.builtInCommandNames,
         }),
       };

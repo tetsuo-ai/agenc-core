@@ -99,7 +99,7 @@ describe("slash typeahead: exact-match wins index 0", () => {
     expect(hasNameOrAliasPrefixMatch(meta("clear"), "cle")).toBe(true);
     expect(
       hasNameOrAliasPrefixMatch(
-        meta("model-provider", { aliases: ["provider"] }),
+        meta("provider"),
         "prov",
       ),
     ).toBe(true);

@@ -1,5 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import { type Command, formatDescriptionWithSource } from '../../../commands.js';
+import { compareHelpWorkflowCommands, helpWorkflowTitleForCommand } from '../../../commands/help-groups.js';
 import { Box, Text } from '../../ink.js';
 import { truncate } from '../../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Select } from '../CustomSelect/select.js';
@@ -37,7 +38,7 @@ export function Commands(t0: Props) {
       t2 = (cmd_0: Command) => ({
         label: `/${cmd_0.name}`,
         value: cmd_0.name,
-        description: truncate(formatDescriptionWithSource(cmd_0), maxWidth, true)
+        description: truncate(`${helpWorkflowTitleForCommand(cmd_0)} - ${formatDescriptionWithSource(cmd_0)}`, maxWidth, true)
       });
       $[3] = maxWidth;
       $[4] = t2;
@@ -50,7 +51,7 @@ export function Commands(t0: Props) {
       }
       seen.add(cmd.name);
       return true;
-    }).sort(_temp).map(t2);
+    }).sort(compareHelpWorkflowCommands).map(t2);
     $[0] = commands;
     $[1] = maxWidth;
     $[2] = t1;
@@ -74,7 +75,4 @@ export function Commands(t0: Props) {
     t2 = $[13];
   }
   return t2;
-}
-function _temp(a: Command, b: Command) {
-  return a.name.localeCompare(b.name);
 }

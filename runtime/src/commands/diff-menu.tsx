@@ -1,6 +1,8 @@
 import React from "react";
 
 import { Box, useInput } from "../tui/ink.js";
+import { useModalOrTerminalSize } from "../tui/context/modalContext.js";
+import { useTerminalSize } from "../tui/hooks/useTerminalSize.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
@@ -248,6 +250,7 @@ export function DiffMenuView({
 }): React.ReactNode {
   const rows = snapshot.files.length > 0 ? snapshot.files : emptyRows(snapshot);
   const [activeIndex, setActiveIndex] = React.useState(0);
+  const viewport = useModalOrTerminalSize(useTerminalSize());
 
   useInput((input, key) => {
     if (key.escape || input === "q") {
@@ -266,6 +269,14 @@ export function DiffMenuView({
   const selected = rows[Math.max(0, Math.min(activeIndex, rows.length - 1))] ?? rows[0];
   const totalAdditions = snapshot.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
   const totalDeletions = snapshot.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
+  const viewportRows = Number.isFinite(viewport.rows)
+    ? Math.max(1, Math.trunc(viewport.rows))
+    : 24;
+  const previewLineBudget = Math.max(3, Math.min(28, viewportRows - 12));
+  const previewLines =
+    selected?.previewLines.length ? selected.previewLines : ["No preview available."];
+  const visiblePreviewLines = previewLines.slice(0, previewLineBudget);
+  const previewClipped = previewLines.length > visiblePreviewLines.length;
 
   return (
     <MenuModal
@@ -303,11 +314,16 @@ export function DiffMenuView({
             {selected ? `${selected.status} · ${formatDelta(selected)}` : "no selection"}
           </ThemedText>
           <Box flexDirection="column">
-            {(selected?.previewLines.length ? selected.previewLines : ["No preview available."]).map((line, index) => (
+            {visiblePreviewLines.map((line, index) => (
               <ThemedText key={`${index}-${line}`} color={previewColor(line)} wrap="truncate-end">
                 {line}
               </ThemedText>
             ))}
+            {previewClipped ? (
+              <ThemedText color="inactive" wrap="truncate-end">
+                ... preview clipped to {previewLineBudget} rows
+              </ThemedText>
+            ) : null}
           </Box>
         </Box>
       }

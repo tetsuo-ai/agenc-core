@@ -17,12 +17,14 @@ type Props = {
     display?: CommandResultDisplay;
   }) => void;
   commands: Command[];
+  query?: string;
 };
 export function HelpV2(t0: Props): React.ReactNode {
   const $ = _c(44);
   const {
     onClose,
-    commands
+    commands,
+    query
   } = t0;
   const {
     rows,
@@ -75,30 +77,32 @@ export function HelpV2(t0: Props): React.ReactNode {
     t4 = $[8];
   }
   let tabs;
-  if ($[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight) {
+  if ($[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight || $[14] !== query) {
     tabs = [t4];
     let t5;
-    if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight) {
-      t5 = <Tab key="commands" title="commands"><Commands commands={builtinCommands} maxHeight={maxHeight} columns={columns} title="Browse default commands:" onCancel={close} /></Tab>;
+    if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight || $[20] !== query) {
+      t5 = <Tab key="commands" title="commands"><Commands commands={builtinCommands} maxHeight={maxHeight} columns={columns} title={query ? `Default commands matching ${query}:` : "Browse default commands:"} onCancel={close} /></Tab>;
       $[16] = builtinCommands;
       $[17] = close;
       $[18] = columns;
       $[19] = maxHeight;
-      $[20] = t5;
+      $[20] = query;
+      $[21] = t5;
     } else {
-      t5 = $[20];
+      t5 = $[21];
     }
     tabs.push(t5);
     let t6;
-    if ($[21] !== close || $[22] !== columns || $[23] !== customCommands || $[24] !== maxHeight) {
-      t6 = <Tab key="custom" title="custom-commands"><Commands commands={customCommands} maxHeight={maxHeight} columns={columns} title="Browse custom commands:" emptyMessage="No custom commands found" onCancel={close} /></Tab>;
-      $[21] = close;
-      $[22] = columns;
-      $[23] = customCommands;
-      $[24] = maxHeight;
-      $[25] = t6;
+    if ($[22] !== close || $[23] !== columns || $[24] !== customCommands || $[25] !== maxHeight || $[26] !== query) {
+      t6 = <Tab key="custom" title="custom-commands"><Commands commands={customCommands} maxHeight={maxHeight} columns={columns} title={query ? `Custom commands matching ${query}:` : "Browse custom commands:"} emptyMessage={query ? "No matching custom commands" : "No custom commands found"} onCancel={close} /></Tab>;
+      $[22] = close;
+      $[23] = columns;
+      $[24] = customCommands;
+      $[25] = maxHeight;
+      $[26] = query;
+      $[27] = t6;
     } else {
-      t6 = $[25];
+      t6 = $[27];
     }
     tabs.push(t6);
     $[9] = builtinCommands;
@@ -106,6 +110,7 @@ export function HelpV2(t0: Props): React.ReactNode {
     $[11] = columns;
     $[12] = customCommands;
     $[13] = maxHeight;
+    $[14] = query;
     $[15] = tabs;
   } else {
     tabs = $[15];
