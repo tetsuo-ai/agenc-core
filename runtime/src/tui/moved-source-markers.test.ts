@@ -10,7 +10,6 @@ const files = [
   "runtime/src/tui/context/modalContext.tsx",
   "runtime/src/tui/components/ScrollKeybindingHandler.tsx",
   "runtime/src/tui/components/SearchBox.tsx",
-  "runtime/src/tui/components/Settings/Settings.tsx",
   "runtime/src/tui/components/HelpV2/HelpV2.tsx",
   "runtime/src/tui/components/tasks/BackgroundTaskStatus.tsx",
   "runtime/src/tui/components/AutoModeOptInDialog.tsx",
@@ -20,7 +19,6 @@ const files = [
   "runtime/src/tui/components/IdeOnboardingDialog.tsx",
   "runtime/src/tui/components/IdleReturnDialog.tsx",
   "runtime/src/tui/components/design-system/Dialog.tsx",
-  "runtime/src/tui/components/diff/DiffDialog.tsx",
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
@@ -58,52 +56,9 @@ describe("moved-source marker cleanup", () => {
     }
   });
 
-  test("settings and help surfaces do not keep moved-source or donor telemetry residue", () => {
-    for (const file of [
-      "runtime/src/tui/components/Settings/Settings.tsx",
-      "runtime/src/tui/components/Settings/Config.tsx",
-      "runtime/src/tui/components/HelpV2/HelpV2.tsx",
-    ]) {
-      const source = readFileSync(`${repoRoot}${file}`, "utf8");
-
-      expect(source).not.toContain("@ts-nocheck");
-      expect(source).not.toContain("Moved-source note");
-      expect(source).not.toContain("tengu_");
-      expect(source).not.toContain("key: 'env.ANTHROPIC_API_KEY'");
-    }
-  });
-
-  test("agent management surfaces do not keep moved-source or upstream-import residue", () => {
-    for (const file of [
-      "runtime/src/tui/components/agents/AgentsMenu.tsx",
-      "runtime/src/tui/components/agents/AgentEditor.tsx",
-      "runtime/src/tui/components/agents/AgentDetail.tsx",
-      "runtime/src/tui/components/agents/ToolSelector.tsx",
-      "runtime/src/tui/components/agents/ModelSelector.tsx",
-      "runtime/src/tui/components/agents/ColorPicker.tsx",
-    ]) {
-      const source = readFileSync(`${repoRoot}${file}`, "utf8");
-
-      expect(source).not.toContain("@ts-nocheck");
-      expect(source).not.toContain("Moved-source note");
-      expect(source).not.toContain("upstream-import");
-    }
-  });
-
   test("design-system dialog does not keep moved-source or upstream-import residue", () => {
     const source = readFileSync(
       `${repoRoot}runtime/src/tui/components/design-system/Dialog.tsx`,
-      "utf8",
-    );
-
-    expect(source).not.toContain("@ts-nocheck");
-    expect(source).not.toContain("Moved-source note");
-    expect(source).not.toContain("upstream-import");
-  });
-
-  test("diff dialog does not keep moved-source or upstream-import residue", () => {
-    const source = readFileSync(
-      `${repoRoot}runtime/src/tui/components/diff/DiffDialog.tsx`,
       "utf8",
     );
 

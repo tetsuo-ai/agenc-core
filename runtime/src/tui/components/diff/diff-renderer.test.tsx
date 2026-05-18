@@ -11,7 +11,6 @@ import {
   getDiffDetailBodyHeight,
   getDiffDetailEstimatedRows,
 } from './DiffDetailView.js'
-import { DiffDialog } from './DiffDialog.js'
 import { DiffFileList } from './DiffFileList.js'
 import { FileEditToolDiff } from './FileEditToolDiff.js'
 
@@ -441,73 +440,22 @@ describe('diff renderer components', () => {
       const detailOutput = renderPlain(
         <DiffDetailView filePath="src/large.ts" hunks={[longHunk]} />,
       )
-      hookState.diffData = {
-        stats: {
-          filesCount: 1,
-          linesAdded: 1,
-          linesRemoved: 0,
-        },
-        files: [makeFile('src/a.ts', 1)],
-        hunks: new Map(),
-        loading: false,
-      }
-      hookState.turnDiffs = [
-        {
-          turnIndex: 1,
-          userPromptPreview: 'turn diff',
-          stats: { filesChanged: 1, linesAdded: 1, linesRemoved: 0 },
-          files: new Map(),
-        },
-      ]
-      const dialogOutput = renderPlain(
-        <DiffDialog messages={[]} onDone={() => {}} />,
-      )
-
       expect(listOutput).toContain('^ 1 more file')
       expect(listOutput).toContain('> src/file-3.ts')
       expect(listOutput).toContain('v 1 more file')
       expect(detailOutput).toContain('... diff clipped to 30 rows')
-      expect(dialogOutput).toContain('</> source')
-      expect(dialogOutput).toContain('^/v select')
-      expect(dialogOutput).not.toContain('←')
-      expect(dialogOutput).not.toContain('→')
-      expect(dialogOutput).not.toContain('↑')
-      expect(dialogOutput).not.toContain('↓')
-      expect(`${listOutput}\n${detailOutput}\n${dialogOutput}`).not.toContain('…')
+      expect(listOutput).not.toContain('←')
+      expect(listOutput).not.toContain('→')
+      expect(listOutput).not.toContain('↑')
+      expect(listOutput).not.toContain('↓')
+      expect(`${listOutput}\n${detailOutput}`).not.toContain('…')
     } finally {
       if (previousGlyphMode === undefined) {
         delete process.env.AGENC_TUI_GLYPHS
       } else {
         process.env.AGENC_TUI_GLYPHS = previousGlyphMode
       }
-      hookState.turnDiffs = []
     }
-  })
-
-  test('renders the current diff dialog list from diff data', () => {
-    hookState.diffData = {
-      stats: {
-        filesCount: 2,
-        linesAdded: 5,
-        linesRemoved: 3,
-      },
-      files: [makeFile('src/a.ts', 2), makeFile('src/b.ts', 1)],
-      hunks: new Map(),
-      loading: false,
-    }
-
-    const output = renderPlain(
-      <DiffDialog messages={[]} onDone={() => {}} />,
-    )
-
-    expect(output).toContain('Uncommitted changes')
-    expect(output).toContain('(git diff HEAD)')
-    expect(output).toContain('2 files changed')
-    expect(output).toContain('+5')
-    expect(output).toContain('-3')
-    expect(output).toContain('src/a.ts')
-    expect(output).toContain('Enter view')
-    expect(output).toContain('esc close')
   })
 
   test('FileEditToolDiff filters invalid edits and skips file reads for large edit input', async () => {

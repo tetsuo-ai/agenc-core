@@ -7,13 +7,6 @@ vi.mock("bun:bundle", () => ({
   feature: () => false,
 }));
 
-vi.mock("../tui/components/agents/AgentsMenu.js", async () => {
-  const React = await import("react");
-  return {
-    AgentsMenu: () => React.createElement("mock-agents-menu"),
-  };
-});
-
 import {
   dispatchSlashCommand,
   parseSlashCommand,
@@ -506,11 +499,21 @@ describe("app-server-client daemon helpers", () => {
       };
 
       await expect(run("/plan")).resolves.toMatchObject({
-        result: { kind: "text", text: "Enabled plan mode" },
+        result: { kind: "skip" },
       });
       expect(context.baseSession.services.permissionModeRegistry.current().mode).toBe(
         "plan",
       );
+      expect(toolJSX).toMatchObject({
+        isLocalJSXCommand: true,
+        shouldHidePromptInput: true,
+        jsx: expect.anything(),
+      });
+      (toolJSX as { jsx: { props: { onDone: () => void } } }).jsx.props.onDone();
+      expect(toolJSX).toMatchObject({
+        clearLocalJSX: true,
+        jsx: null,
+      });
 
       await expect(run("/agents")).resolves.toMatchObject({
         result: { kind: "skip" },
@@ -520,7 +523,7 @@ describe("app-server-client daemon helpers", () => {
         shouldHidePromptInput: true,
         jsx: expect.anything(),
       });
-      (toolJSX as { jsx: { props: { onExit: () => void } } }).jsx.props.onExit();
+      (toolJSX as { jsx: { props: { onDone: () => void } } }).jsx.props.onDone();
       expect(toolJSX).toMatchObject({
         clearLocalJSX: true,
         jsx: null,

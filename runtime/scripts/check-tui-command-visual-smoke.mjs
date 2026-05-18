@@ -94,8 +94,8 @@ const COMMANDS = [
   },
   {
     command: "/diff",
-    anchors: ["DIFF"],
-    supporting: ["git diff HEAD", "no uncommitted changes"],
+    anchors: ["DIFF", "git diff HEAD", "modified", "deleted"],
+    supporting: ["git diff HEAD", "no uncommitted changes", "runtime/src"],
     requiresFooter: true,
   },
 ];

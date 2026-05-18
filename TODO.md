@@ -633,7 +633,7 @@ Completed:
 - Added unfiltered PTY row rendering to the e2e harness so live visual checks can reason about vertical placement.
 - `/hooks` now renders a bounded v2 unavailable menu instead of a transient error when the TUI bridge has no hooks runtime.
 
-### [ ] TUI-TODO-019 - Remove unreachable old component subtrees after ports land
+### [x] TUI-TODO-019 - Remove unreachable old component subtrees after ports land
 
 Files to inspect:
 
@@ -667,6 +667,12 @@ Acceptance:
 Dependencies:
 
 - Depends on command-specific port items.
+
+Completed:
+
+- Removed unreachable old command-facing component subtrees: `Settings/`, `skills/`, `hooks/`, old agent manager/editor/wizard files, old MCP tool browser files, old `DiffDialog`, old task detail dialogs, `ExportDialog`, `commands/review/UltrareviewOverageDialog.tsx`, and the old `commands/plugin/` interactive subtree.
+- Kept still-wired low-level/runtime components: `ModelPicker`, `ThemePicker`, `ProviderManager`, MCP setup/elicitation dialogs, `SnapshotUpdateDialog`, and agent file utilities.
+- Updated tests that referenced deleted files and added visual-contract guard paths so retired v1 command surfaces stay deleted.
 
 ### [ ] TUI-TODO-020 - Normalize slash help and command metadata after the v2 ports
 
