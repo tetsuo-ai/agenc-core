@@ -448,7 +448,8 @@ export function PromptChrome({
       borderTop
       borderTopColor="lineSoft"
       backgroundColor={shellMode ? 'workerWash' : 'clawd_background'}
-      paddingX={2}
+      paddingLeft={2}
+      paddingRight={0}
       paddingTop={2}
       gap={2}
       flexShrink={0}
