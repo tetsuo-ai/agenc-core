@@ -1463,7 +1463,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.000" />,
         ]}
       >
-        <ChatBody centered>
+        <ChatBody centered maxWidth={112}>
           <WelcomeColdPanel />
         </ChatBody>
       </Frame>
@@ -1492,7 +1492,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0041" />,
         ]}
       >
-        <ChatBody centered>
+        <ChatBody centered maxWidth={112}>
           <Msg role="system" label="system" time="14:18:02">
             session 0x9c4f resumed · last active 23m ago
           </Msg>
@@ -1876,7 +1876,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0202" />,
         ]}
       >
-        <ChatBody centered>
+        <ChatBody centered maxWidth={124}>
           <Msg role="agenc" label="agenc · orchestrator" time="14:13:02">
             <Box flexDirection="column">
               <ThemedText color="text2">
@@ -2134,7 +2134,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0224" />,
         ]}
       >
-        <ChatBody centered>
+        <ChatBody centered maxWidth={114}>
           <Msg role="user" label="you" time="14:14:48">/retro</Msg>
           <Msg role="agenc" label="agenc · orchestrator" time="14:14:50">
             <Box flexDirection="column">
@@ -2186,7 +2186,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0041" />,
         ]}
       >
-        <ChatBody centered>
+        <ChatBody centered maxWidth={124}>
           <Msg role="agenc" label="agenc · orchestrator" time="14:04:12">
             I have lib.rs in context already. drop me pool.rs too — I want to confirm the slippage_bps field is on Pool, not Config.
           </Msg>
@@ -3347,7 +3347,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="est" label="est" value="◎ 0.054" />,
         ]}
       >
-        <ChatBody centered>
+        <ChatBody centered maxWidth={124}>
           <PlanModeBanner
             title="plan mode"
             body="agent is read-only · no edits, no bash, no protocol writes"

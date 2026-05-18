@@ -613,7 +613,7 @@ export function ChatBody({
   const horizontalInset = columns >= 72 ? 3 : 2
   const contentWidth =
     columns >= 120 && (centered || maxWidth !== undefined)
-      ? Math.min(maxWidth ?? 124, Math.max(40, columns - (horizontalInset * 2)))
+      ? Math.min(maxWidth ?? 108, Math.max(40, columns - (horizontalInset * 2)))
       : undefined
 
   return (
@@ -674,7 +674,7 @@ export function WelcomeColdPanel({
   }[]
 }): React.ReactNode {
   return (
-    <Box flexDirection="column" paddingX={7}>
+    <Box flexDirection="column">
       <Box flexDirection="column">
         {wordmarkLines.map(line => (
           <ThemedText key={line} color="agenc">
