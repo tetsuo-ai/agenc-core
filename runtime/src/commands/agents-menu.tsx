@@ -12,6 +12,7 @@ import { MenuModal } from "../tui/components/v2/primitives.js";
 import { useAppState } from "../tui/state/AppState.js";
 import type { AppState } from "../tui/state/AppStateStore.js";
 import type { AgentDefinition } from "../tools/AgentTool/loadAgentsDir.js";
+import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
 function sourceLabel(source: AgentDefinition["source"]): string {
@@ -100,11 +101,11 @@ export function AgentsMenuModal({
       return;
     }
     if (key.upArrow || input === "k") {
-      setActiveIndex(index => Math.max(0, index - 1));
+      setActiveIndex(index => previousMenuIndex(index, displayRows.length));
       return;
     }
     if (key.downArrow || input === "j") {
-      setActiveIndex(index => Math.min(displayRows.length - 1, index + 1));
+      setActiveIndex(index => nextMenuIndex(index, displayRows.length));
     }
   });
 

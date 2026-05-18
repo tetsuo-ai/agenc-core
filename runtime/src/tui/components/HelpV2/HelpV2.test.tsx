@@ -14,6 +14,14 @@ describe("HelpV2 tab set", () => {
     expect(source).not.toContain("false &&");
     expect(source).not.toContain("false ?");
   });
+
+  test("does not expose placeholder versions or stale repository links", () => {
+    expect(source).toContain('title="AgenC Help"');
+    expect(source).not.toContain("AgenC v");
+    expect(source).not.toContain("MACRO.VERSION");
+    expect(source).not.toContain("For more help:");
+    expect(source).not.toContain("Gitlawb/agenc");
+  });
 });
 
 describe("HelpV2 layout budget", () => {

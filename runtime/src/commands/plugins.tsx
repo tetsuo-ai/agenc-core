@@ -9,6 +9,7 @@ import {
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 
 type PluginRow = {
   readonly name: string;
@@ -108,8 +109,25 @@ function PluginsMenuView({
   readonly onDone: () => void;
 }): React.ReactNode {
   const rows = React.useMemo(() => pluginRows(snapshot), [snapshot]);
+  const displayRows = rows.length > 0 ? rows : [{
+    name: "no plugins",
+    version: "—",
+    status: "disabled" as const,
+    detail: "no plugin records loaded",
+  }];
+  const [activeIndex, setActiveIndex] = React.useState(0);
   useInput((input, key) => {
-    if (key.escape || input === "q") onDone();
+    if (key.escape || input === "q") {
+      onDone();
+      return;
+    }
+    if (key.upArrow || input === "k") {
+      setActiveIndex(index => previousMenuIndex(index, displayRows.length));
+      return;
+    }
+    if (key.downArrow || input === "j") {
+      setActiveIndex(index => nextMenuIndex(index, displayRows.length));
+    }
   });
 
   const enabledCount = snapshot.enabled.length;
@@ -122,12 +140,8 @@ function PluginsMenuView({
       headerRight={snapshot.needsRefresh ? "restart needed" : "live"}
       columns={[3, 12, 18, 12, 36]}
       headers={["", "status", "name", "version", "detail"]}
-      items={rows.length > 0 ? rows : [{
-        name: "no plugins",
-        version: "—",
-        status: "disabled" as const,
-        detail: "no plugin records loaded",
-      }]}
+      items={displayRows}
+      activeIndex={activeIndex}
       renderRow={(row, _index, active) => [
         <ThemedText key="mark" color={row.status === "error" ? "error" : row.status === "enabled" ? "success" : "inactive"}>
           {row.status === "enabled" ? "◆" : row.status === "error" ? "✕" : "◇"}

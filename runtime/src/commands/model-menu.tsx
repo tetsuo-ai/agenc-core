@@ -13,6 +13,7 @@ import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ModelRowStatus = "current" | "configured" | "default" | "available";
@@ -230,11 +231,11 @@ function ModelMenuView({
       return;
     }
     if (key.upArrow || input === "k") {
-      setActiveIndex(index => Math.max(0, index - 1));
+      setActiveIndex(index => previousMenuIndex(index, rows.length));
       return;
     }
     if (key.downArrow || input === "j") {
-      setActiveIndex(index => Math.min(rows.length - 1, index + 1));
+      setActiveIndex(index => nextMenuIndex(index, rows.length));
       return;
     }
     if (key.return) {
