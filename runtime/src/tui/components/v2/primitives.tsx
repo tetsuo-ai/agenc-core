@@ -790,9 +790,8 @@ export function TaskInFlightCard({
       backgroundColor="workerWash"
       paddingX={2}
       paddingY={1}
-      gap={1}
     >
-      <Box flexDirection="row" gap={2} flexWrap="wrap">
+      <Box flexDirection="row" gap={3} flexWrap="wrap">
         <ThemedText color="worker">▸ TASK IN FLIGHT</ThemedText>
         <ThemedText color="subtle">
           {taskPda} · escrow {escrow}

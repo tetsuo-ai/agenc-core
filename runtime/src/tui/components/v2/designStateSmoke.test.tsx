@@ -1506,20 +1506,27 @@ const DESIGN_STATES: readonly DesignState[] = [
       >
         <ChatBody centered maxWidth={108}>
           <Msg role="system" label="system" time="14:18:02">
-            session 0x9c4f resumed · last active 23m ago
+            <Box flexDirection="row">
+              <ThemedText color="text2">session </ThemedText>
+              <ThemedText color="subtle">0x9c4f</ThemedText>
+              <ThemedText color="text2">resumed · last active </ThemedText>
+              <ThemedText color="text">23m ago</ThemedText>
+            </Box>
           </Msg>
           <Msg role="agenc" label="agenc · orchestrator" time="14:18:03">
-            welcome back. you have one task in flight.
+            <Box flexDirection="column">
+              <ThemedText color="text2">welcome back. you have one task in flight.</ThemedText>
+              <TaskInFlightCard
+                planItems={[
+                  { state: 'done', text: 'read programs/swap/src/lib.rs' },
+                  { state: 'done', text: 'read programs/swap/src/state/pool.rs' },
+                  { state: 'active', text: 'add slippage_bps arg + guard to swap_v2' },
+                  { state: 'pending', text: 'delegate proof of slippage invariant → worker/zk-prover' },
+                  { state: 'pending', text: 'cargo test-bpf · settle' },
+                ]}
+              />
+            </Box>
           </Msg>
-          <TaskInFlightCard
-            planItems={[
-              { state: 'done', text: 'read programs/swap/src/lib.rs' },
-              { state: 'done', text: 'read programs/swap/src/state/pool.rs' },
-              { state: 'active', text: 'add slippage_bps arg + guard to swap_v2' },
-              { state: 'pending', text: 'delegate proof of slippage invariant → worker/zk-prover' },
-              { state: 'pending', text: 'cargo test-bpf · settle' },
-            ]}
-          />
         </ChatBody>
       </Frame>
     ),
