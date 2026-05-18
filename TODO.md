@@ -83,7 +83,7 @@ Dependencies:
 
 - None.
 
-### [ ] TUI-TODO-002 - Port `/diff` from text and old diff dialogs to v2
+### [x] TUI-TODO-002 - Port `/diff` from text and old diff dialogs to v2
 
 Files to inspect:
 

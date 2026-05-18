@@ -17,6 +17,11 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import {
+  createDiffMenuSnapshot,
+  openDiffMenu,
+  type DiffMenuSnapshot,
+} from "./diff-menu.js";
 
 const GIT_TIMEOUT_MS = 5_000;
 
@@ -70,55 +75,85 @@ export interface DiffDeps {
   runGit: typeof runGit;
 }
 
-export async function computeDiff(
+function splitUntracked(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+export async function collectDiffSnapshot(
   cwd: string,
   deps: DiffDeps = { runGit },
-): Promise<SlashCommandResult> {
+): Promise<DiffMenuSnapshot> {
   // Check if we're in a git repo.
   const check = await deps.runGit(
     ["rev-parse", "--is-inside-work-tree"],
     cwd,
   );
   if (check.code !== 0 || check.timedOut) {
-    return { kind: "text", text: "not a git repository" };
+    return createDiffMenuSnapshot({
+      rawDiff: "",
+      nameStatus: "",
+      numstat: "",
+      untrackedFiles: [],
+      notRepo: true,
+    });
   }
 
-  const diff = await deps.runGit(["diff", "HEAD"], cwd);
-  const untracked = await deps.runGit(
-    ["ls-files", "--others", "--exclude-standard"],
-    cwd,
-  );
+  const [diff, nameStatus, numstat, untracked] = await Promise.all([
+    deps.runGit(["diff", "HEAD"], cwd),
+    deps.runGit(["diff", "--name-status", "HEAD"], cwd),
+    deps.runGit(["diff", "--numstat", "HEAD"], cwd),
+    deps.runGit(["ls-files", "--others", "--exclude-standard"], cwd),
+  ]);
 
+  return createDiffMenuSnapshot({
+    rawDiff: diff.stdout.trimEnd(),
+    nameStatus: nameStatus.stdout.trimEnd(),
+    numstat: numstat.stdout.trimEnd(),
+    untrackedFiles: splitUntracked(untracked.stdout),
+  });
+}
+
+export function formatDiffSnapshot(snapshot: DiffMenuSnapshot): string {
+  if (snapshot.state === "not-repo") return "not a git repository";
   const parts: string[] = [];
-  const diffOut = diff.stdout.trimEnd();
-  if (diffOut.length > 0) {
+  if (snapshot.rawDiff.length > 0) {
     parts.push("# git diff HEAD");
-    parts.push(diffOut);
+    parts.push(snapshot.rawDiff);
   } else {
     parts.push("# git diff HEAD");
     parts.push("(no changes)");
   }
 
-  const untrackedLines = untracked.stdout
-    .split("\n")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
   parts.push("");
   parts.push("# untracked files");
-  if (untrackedLines.length === 0) {
+  if (snapshot.untrackedFiles.length === 0) {
     parts.push("(none)");
   } else {
-    for (const f of untrackedLines) parts.push(`  ${f}`);
+    for (const f of snapshot.untrackedFiles) parts.push(`  ${f}`);
   }
 
-  return { kind: "text", text: parts.join("\n") };
+  return parts.join("\n");
+}
+
+export async function computeDiff(
+  cwd: string,
+  deps: DiffDeps = { runGit },
+): Promise<SlashCommandResult> {
+  return { kind: "text", text: formatDiffSnapshot(await collectDiffSnapshot(cwd, deps)) };
 }
 
 export const diffCommand: SlashCommand = {
   name: "diff",
   description: "Show uncommitted changes (git diff HEAD + untracked files)",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(() => computeDiff(ctx.cwd)),
+    safeExecute(async () => {
+      const snapshot = await collectDiffSnapshot(ctx.cwd);
+      if (openDiffMenu(ctx, snapshot)) return { kind: "skip" };
+      return { kind: "text", text: formatDiffSnapshot(snapshot) };
+    }),
 };
 
 export default diffCommand;
