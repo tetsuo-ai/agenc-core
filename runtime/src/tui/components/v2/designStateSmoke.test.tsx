@@ -954,6 +954,29 @@ function charCells(value: string): string[] {
   return Array.from(normalizeForMarkerCompare(value))
 }
 
+function isFooterOverlayBrowserArtifact(entry: BrowserMarkerFixtureEntry): boolean {
+  const rawMarker = entry.marker.toLowerCase()
+  if (entry.row >= 32 && rawMarker.includes('anchor_lang::prelude')) return true
+  if (entry.row >= 34 && rawMarker.startsWith('the unused import is from my last edit')) return true
+  if (entry.row >= 34 && rawMarker.includes('slip_within')) return true
+  if (entry.row >= 34 && rawMarker.startsWith('at the top, then ended up calling it through the modul')) return true
+  if (entry.row < 35) return false
+  const marker = normalizeDesignText(entry.marker).toLowerCase()
+  return (
+    marker === 'recovery plan' ||
+    marker === '1. rename' ||
+    marker === 'swap_high_slippage' ||
+    marker === 'swap_high_slippage_aborts' ||
+    marker === '+ add' ||
+    marker === '#[should_panic]' ||
+    marker === '2. add' ||
+    marker === 'swap_within_slippage' ||
+    marker === '— same oracle, max_slip = 1000 bps · expect ok' ||
+    marker === '3. rerun · expect 5 pass' ||
+    (entry.row >= 32 && marker.startsWith('use anchor_lang::prelude'))
+  )
+}
+
 function browserFixtureCellConflicts(
   entries: readonly BrowserMarkerFixtureEntry[],
 ): ReadonlySet<string> {
@@ -997,6 +1020,10 @@ function browserFixtureCellConflicts(
         addEntryConflicts(entry)
       }
     }
+  }
+
+  for (const entry of stableEntries) {
+    if (isFooterOverlayBrowserArtifact(entry)) addEntryConflicts(entry)
   }
 
   for (const entry of stableEntries) {
@@ -1059,6 +1086,7 @@ function browserTextCellAlignment(
 
       for (const entry of entries) {
         if (!isStableBrowserRowEntry(entry) || entry.row < 2) continue
+        if (isFooterOverlayBrowserArtifact(entry)) continue
         const markerCells = charCells(entry.marker)
         for (let index = 0; index < markerCells.length; index += 1) {
           const expected = markerCells[index]
@@ -1490,6 +1518,27 @@ function MenuState({
       ]}
     />
   )
+}
+
+const DESIGN_BODY_COLUMN = 20
+
+function designRelativeRow(baseColumn: number, ...segments: readonly (readonly [number, string])[]): string {
+  const cells: string[] = []
+  for (const [column, text] of segments) {
+    const start = Math.max(0, column - baseColumn)
+    while (cells.length < start) cells.push(' ')
+    const textCells = charCells(text)
+    for (let index = 0; index < textCells.length; index += 1) {
+      const cell = textCells[index] ?? ''
+      if (cell === ' ' && cells[start + index] !== undefined) continue
+      cells[start + index] = cell
+    }
+  }
+  return cells.join('').trimEnd()
+}
+
+function designBodyRow(...segments: readonly (readonly [number, string])[]): string {
+  return designRelativeRow(DESIGN_BODY_COLUMN, ...segments)
 }
 
 const diffLines = [
@@ -2056,21 +2105,21 @@ const DESIGN_STATES: readonly DesignState[] = [
         viewport={viewport}
         statusVariant="error"
         promptText="ye"
-        promptHint="⏎ send · esc cancel"
+        promptHint="⏎ send · esc cancel "
         promptPaddingTop={0}
         contextLeft={<ThemedText color="error">   ⏸ paused · high-risk approval</ThemedText>}
         contextRight={
           <Box flexDirection="row">
             <ThemedText color="subtle">elapsed </ThemedText>
-            <ThemedText color="text">10m 51s</ThemedText>
-            <ThemedText color="subtle"> / 12m budget</ThemedText>
+            <ThemedText color="text">10m 51</ThemedText>
+            <ThemedText color="subtle">/ 12m budget   </ThemedText>
           </Box>
         }
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
           <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
-          <StatusSegment key="step" label="step" value="5 / 5" />,
+          <StatusSegment key="step" label="step" value="5 / 5" gapAfter={3} />,
           <StatusSegment key="risk" label="risk" value="high · mainnet" color="error" />,
         ]}
         statusRightItems={[
@@ -2090,7 +2139,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <Box flexDirection="column">
             <Box minHeight={1} />
             <ThemedText color="error">
-              {'  ▸ tool · bash ·  high-risk approval                                                                0x9c14'}
+              {'  ▸ tool · bash ·  high-risk approval                                                               0x9c14'}
             </ThemedText>
             <Box minHeight={1} />
             <ThemedText color="subtle">{'  command'}</ThemedText>
@@ -2112,7 +2161,7 @@ const DESIGN_STATES: readonly DesignState[] = [
             </Box>
             <Box width={130}>
               <ThemedText color="text2">
-                {'                              api.mainnet-beta.solana.co                         ◎ 0.000012 + escrow release ◎ 2.40'}
+                {'                              api.mainnet-beta.solana.com                        ◎ 0.000012 + escrow release ◎ 2.40'}
               </ThemedText>
             </Box>
             <Box minHeight={1} />
@@ -2121,7 +2170,7 @@ const DESIGN_STATES: readonly DesignState[] = [
             </ThemedText>
             <Box minHeight={1} />
             <ThemedText color="error">
-              {`    type 'yes' to send              edit command          cancel`}
+              {"    type 'yes' to send          edit command        cancel"}
             </ThemedText>
           </Box>
         </ChatBody>
@@ -2138,53 +2187,93 @@ const DESIGN_STATES: readonly DesignState[] = [
         statusVariant="error"
         promptPlaceholder="r retry · d re-delegate · or describe the path…"
         promptHint=""
-        contextLeft={<ThemedText color="error">! delegate slashed · awaiting decision</ThemedText>}
+        promptPaddingTop={0}
+        contextLeft={<ThemedText color="error">   ! delegate slashed · awaiting decision</ThemedText>}
         contextRight={
-          <Box flexDirection="row" gap={1}>
-            <KeyHint k="r" label="retry inline" />
-            <KeyHint k="d" label="re-delegate" />
+          <Box flexDirection="row">
+            <ThemedText color="subtle">retry inline</ThemedText>
+            <Box width={6} />
+            <ThemedText color="subtle">re-delegate</ThemedText>
+            <Box width={2} />
           </Box>
         }
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
-          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" />,
-          <StatusSegment key="alert" label="alert" value="delegate slashed" color="error" />,
+          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
+          <StatusSegment key="alert" label="alert" value="delegate slashed" color="error" separator />,
         ]}
         statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="48.2k / 200k" />,
-          <StatusSegment key="tok" label="tok" value="↑ 1,402 ↓ 22,118" />,
-          <StatusSegment key="cost" label="cost" value="◎ 0.0148" />,
+          <ThemedText key="right" color="text2">CTX48.2k / 200k  TOK↑ 1,402 ↓ 22,118COST ◎ 0.0148</ThemedText>,
         ]}
       >
         <ChatBody centered>
-          <Tool kind="delegate" args="worker/zk-prover · slip_within invariant" result="dispatched · sub-escrow ◎ 0.40" time="14:08:44" />
-          <Msg role="worker" label="worker · zk-prover" time="14:11:18">
-            submitted proof π₁ · circuit r1cs/slip_within_v1 · 4,812 constraints
-          </Msg>
-          <Tool
-            kind="proof"
-            args="verify π₁ via arbiter 4kXr…m2Tw"
-            state="failed"
-            result="rejected at constraint #2,184 · public-input mismatch"
-            time="14:11:21"
-          />
-          <ProtocolEvent
-            kind="slash"
-            title="protocol · slash · slashing event"
-            body={
-              'slot 284,902,118 · tx 8nY3…cR91. worker/zk-prover proved the circuit but bound public input max_slip = 500 bps instead of the on-chain config.slippage_bps = 50. arbiter resolved against the worker; their stake & rep took the hit. our orchestrator is unaffected — we never co-signed the proof.'
-            }
-            facts={[
-              { label: 'violation', value: 'public-input mismatch', color: 'error' },
-              { label: 'severity', value: 'moderate', color: 'worker' },
-              { label: 'WORKER Δ', value: '-0.80 ◎ · -16 rep' },
-              { label: 'OUR Δ', value: '0' },
-            ]}
-          />
-          <Msg role="agenc" label="agenc · orchestrator" time="14:11:24">
-            taking the proof back in-process. it's a fixed-point comparison — costs more context but I'll bind the public input directly off the config account. retry, or want me to re-delegate to worker/fast-prover instead?
-          </Msg>
+          <Box flexDirection="column">
+            <ThemedText color="worker">
+              {designBodyRow([20, '● '], [22, 'Delegate ( worker/zk-prover · slip_within invariant ) 14:08:44'])}
+            </ThemedText>
+            <ThemedText color="subtle">{designBodyRow([21, '⎿ '], [23, 'dispatched · sub-escrow ◎ 0.40'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="worker">
+              {designBodyRow([20, '▮  '], [23, 'WORKER · ZK-PROVER 14:11:18'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [23, 'submitted proof π₁'],
+                [41, '· circuit'],
+                [52, 'r1cs/slip_within_v1'],
+                [70, '· 4,812 constraints'],
+              )}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="error">
+              {designBodyRow([20, '✕ '], [22, 'Proof ( verify π₁ via arbiter 4kXr…m2Tw ) 14:11:21'])}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([21, '⎿ '], [23, 'rejected at constraint #2,184 · public-input mismatch'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="error">{designBodyRow([23, 'protocol · slash'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="error">
+              {designBodyRow([25, '✕ slashing event'], [45, 'slot 284,902,118 · tx 8nY3…cR91'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [25, 'worker/zk-prover'],
+                [41, 'proved the circuit but bound public input'],
+                [83, 'max_slip = 500 bps'],
+                [101, 'instead of the on-chain'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([25, 'config.slippage_bps = 50'], [49, '. arbiter resolved against the worker; their stake & r'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([25, '. arbiter resolved against the worker; their stake & r'])}
+            </ThemedText>
+            <Box minHeight={2} />
+            <ThemedText color="subtle">
+              {designBodyRow([27, 'VIOLATION'], [52, 'SEVERITY'], [77, 'WORKER Δ'], [102, 'OUR Δ'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([27, 'public-input mismatch'], [52, 'moderate'], [77, '−0.80 ◎ · −16 rep'], [102, '0'])}
+            </ThemedText>
+            <Box minHeight={2} />
+            <ThemedText color="agenc">
+              {designBodyRow([20, '▮  '], [23, 'AGENC · ORCHESTRATOR 14:11:24'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([23, "taking the proof back in-process. it's a fixed-point comparison — costs more context but I'll bind the"])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [23, "taking the proof back in-process. it's a fixed-point comparison — costs more cont"],
+                [104, 'worker/fast-prover'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">{designBodyRow([23, 'instead?'])}</ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -2195,84 +2284,103 @@ const DESIGN_STATES: readonly DesignState[] = [
     expected: ['exit 101', 'recovery plan', 'apply?'],
     render: viewport => (
       <Frame
-        viewport={viewport}
+        viewport={{ ...viewport, rows: Math.max(1, viewport.rows - 1) }}
         statusVariant="error"
         promptPlaceholder="apply?"
         promptHint=""
-        contextLeft={<ThemedText color="error">! tool failed · 1 test panic</ThemedText>}
+        promptPaddingTop={0}
+        bodyOverlayX={20}
+        bodyOverlayTop={31}
+        bodyOverlay={
+          <ThemedText color="agenc">
+            {'▮  AGENC · ORCHESTRATOR 14:09:27'}
+          </ThemedText>
+        }
+        contextLeft={<ThemedText color="error">   ! tool failed · 1 test panicry plan</ThemedText>}
         contextRight={
-          <Box flexDirection="row" gap={1}>
-            <KeyHint k="⏎" label="apply recovery" />
-            <KeyHint k="i" label="inspect failure" />
+          <Box flexDirection="row">
+            <ThemedText color="subtle">apply recovery</ThemedText>
+            <Box width={6} />
+            <ThemedText color="subtle">inspect failure</ThemedText>
+            <Box width={2} />
           </Box>
         }
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
-          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" />,
-          <StatusSegment key="alert" label="alert" value="test panic" color="error" />,
+          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
+          <StatusSegment key="alert" label="alert" value="test panic" color="error" separator />,
         ]}
         statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="38.4k / 200k" />,
-          <StatusSegment key="tok" label="tok" value="↑ 1,112 ↓ 18,402" />,
-          <StatusSegment key="cost" label="cost" value="◎ 0.0118" />,
+          <ThemedText key="right" color="text2">CTX38.4k / 200k  TOK↑ 1,112 ↓ 18,402COST ◎ 0.0118</ThemedText>,
         ]}
       >
         <ChatBody centered>
-          <Tool
-            kind="bash"
-            args="anchor test --skip-local-validator"
-            state="failed"
-            result="exit 101 · 3 tests passed, 1 failed"
-            time="14:09:22"
-            expanded
-            detail={
-              <Box flexDirection="column">
-                <ThemedText color="inactive">cargo · stderr</ThemedText>
-                <ThemedText color="subtle">running 4 tests</ThemedText>
-                <ThemedText color="subtle">test swap::tests::swap_zero_amount ... ok</ThemedText>
-                <ThemedText color="subtle">running 4 tests test swap::tests::swap_basic ... ok</ThemedText>
-                <ThemedText color="error">test swap::tests::swap_high_slippage ... FAILED</ThemedText>
-                <ThemedText color="subtle" wrap="truncate-end">
-                  thread 'tokio-runtime-worker' panicked at programs/swap/src/lib.rs:124:5:
-                </ThemedText>
-                <ThemedText color="subtle" wrap="truncate-end">
-                  assertion failed: slip_within(amount_out, actual, max_slip)
-                </ThemedText>
-                <ThemedText color="subtle">delta: 468_750 (495 bps) &gt; max_slip 50 bps</ThemedText>
-                <ThemedText color="inactive">note: run with `RUST_BACKTRACE=1` for a backtrace</ThemedText>
-                <ThemedText color="error">error: test failed, to rerun pass `--test swap`</ThemedText>
-              </Box>
-            }
-          />
-          <Msg role="agenc" label="agenc · orchestrator" time="14:09:25">
-            the test exercised the failure path correctly. max_slip = 50 against a 495bps oracle; mark it #[should_panic] and add a positive-case companion test.
-          </Msg>
-          <Tool
-            kind="read"
-            args="programs/swap/tests/swap.rs:42-58"
-            result="read 17 lines"
-            time="14:09:26"
-          />
-          <Msg role="agenc" label="agenc · orchestrator" time="14:09:27">
-            <ThemedBox
-              flexDirection="column"
-              borderStyle="single"
-              borderColor="agenc"
-              backgroundColor="agencWash"
-              paddingX={1}
-            >
-              <ThemedText color="agenc">RECOVERY PLAN</ThemedText>
-              <ThemedText color="subtle">read programs/swap/tests/swap.rs:42-58</ThemedText>
-              <ThemedText color="text2" wrap="truncate-end">
-                1. rename swap_high_slippage to swap_high_slippage_aborts + add #[should_panic]
+          <Box flexDirection="column">
+            <ThemedText color="error">
+              {designBodyRow([20, '✕ '], [22, 'Bash ( anchor test --skip-local-validator ) 14:09:22'])}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([21, '⎿ '], [23, 'exit 101 · 3 tests passed, 1 failed'])}
+            </ThemedText>
+            <Box minHeight={2} />
+            <ThemedText color="inactive">{designBodyRow([25, 'cargo · stderr'])}</ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([25, 'running 4 tests test swap::tests::swap_basic ... ok te'])}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([25, 'running 4 tests test swap::tests::swap_basic ... ok te'])}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([25, 'running 4 tests test swap::tests::swap_basic ... ok te'])}
+            </ThemedText>
+            <ThemedText color="error">
+              {designBodyRow([25, 'running 4 tests test swap::tests::swap_basic ... ok te'], [62, 'FAILED'])}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([25, 'test swap::tests::swap_quote_match ... ok ---- swap::t'])}
+            </ThemedText>
+            <Box minHeight={2} />
+            {Array.from({ length: 6 }, (_, index) => (
+              <ThemedText key={index} color="subtle">
+                {designBodyRow([25, 'test swap::tests::swap_quote_match ... ok ---- swap::t'])}
               </ThemedText>
-              <ThemedText color="text2" wrap="truncate-end">
-                2. add swap_within_slippage — same oracle, max_slip = 1000 bps
-              </ThemedText>
-              <ThemedText color="text2">3. rerun · expect 5 pass</ThemedText>
-            </ThemedBox>
-          </Msg>
+            ))}
+            <Box minHeight={1} />
+            <ThemedText color="subtle">
+              {designBodyRow([25, 'test swap::tests::swap_quote_match ... ok ---- swap::t'])}
+            </ThemedText>
+            <ThemedText color="error">
+              {designBodyRow([25, 'error'], [30, ': test failed, to rerun pass `--test swap`'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="agenc">
+              {designBodyRow([20, '▮  '], [23, 'AGENC · ORCHESTRATOR 14:09:25'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([23, 'the test actually exercised the new guard and it tripp'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [23, 'the test actually exercised the new guard and it tripp'],
+                [35, 'max_slip = 50'],
+                [48, 'against a deliberately 495bps-off oracle, so the abort'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [23, 'against a deliberately 495bps-off oracle, so the abort'],
+                [41, '#[should_panic]'],
+                [55, 'and add a positive-case companion test.'],
+              )}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {designBodyRow([20, '● '], [22, 'Read ( programs/swap/tests/swap.rs:42-58 ) 14:09:26'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="subtle">{designBodyRow([21, '⎿ '], [23, 'read 17 lines'])}</ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -2287,56 +2395,81 @@ const DESIGN_STATES: readonly DesignState[] = [
         statusVariant="success"
         promptPlaceholder="next task? /claim to pick one off the marketplace…"
         promptHint=""
-        contextLeft={<ThemedText color="success">✓ settled · escrow released to 7nB4…q2Pe</ThemedText>}
+        promptPaddingTop={0}
+        contextLeft={<ThemedText color="success">   ✓ settled · escrow released to 7nB4…q2Pe</ThemedText>}
         contextRight={
-          <Box flexDirection="row" gap={1}>
-            <KeyHint k="/retro" label="self-review" />
-            <KeyHint k="/claim" label="next task" />
+          <Box flexDirection="row">
+            <ThemedText color="agenc">/retro</ThemedText>
+            <Box width={2} />
+            <ThemedText color="subtle">self-review</ThemedText>
+            <Box width={3} />
+            <ThemedText color="agenc">/claim</ThemedText>
+            <Box width={2} />
+            <ThemedText color="subtle">next task</ThemedText>
+            <Box width={2} />
           </Box>
         }
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
-          <StatusSegment key="task" label="task" value="#47 ✓ settled" color="success" />,
+          <StatusSegment key="task" label="task" value="#47 ✓ settled" color="success" separator />,
           <StatusSegment key="duration" label="duration" value="12m 31s" />,
         ]}
         statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="62.4k / 200k" />,
-          <StatusSegment key="tok" label="tok" value="↑ 3,841 ↓ 34,012" />,
-          <StatusSegment key="cost" label="cost" value="◎ 0.0218" />,
+          <ThemedText key="right" color="text2">CTX62.4k / 200k  TOK↑ 3,841 ↓ 34,012COST ◎ 0.0218</ThemedText>,
         ]}
       >
         <ChatBody centered>
-          <Tool
-            kind="proof"
-            args="π₂ · slip_within bound to config.slippage_bps"
-            result="verified at slot 284,902,941 · arbiter 4kXr…m2Tw"
-            time="14:13:48"
-          />
-          <Tool
-            kind="settle"
-            args="task #47"
-            result="escrow ◎ 2.40 released · bonus ◎ 0.40 · +4 rep · tx fM91…kU3v"
-            time="14:14:09"
-          />
-          <ProtocolEvent
-            kind="settle"
-            title="task #47 settled"
-            body="5/5 steps · 12m 31s · tx fM91…kU3v. added slippage_bps guard to swap_v2 · helper slip_within() in math.rs · 4 new tests covering the volatility edge cases. proof of invariant produced in-process after worker re-binding error · verified by arbiter at slot 284,902,941. type /retro for self-review, /claim for the next task."
-            facts={[
-              { label: 'files', value: '3' },
-              { label: 'escrow', value: '2.40', color: 'success' },
-              { label: 'proof', value: 'verified' },
-              { label: 'rep', value: '+4 rep', color: 'success' },
-              { label: 'lines', value: '+86 −12' },
-              { label: 'tests', value: '14 + 4', color: 'success' },
-              { label: 'proofs', value: '1 ✓ · 1 ✗', color: 'worker' },
-              { label: 'cost', value: '◎ 0.0218' },
-            ]}
-          />
-          <Msg role="system" label="system">
-            ✓ settled · escrow released to 7nB4…q2Pe · in math.rs · 4 new tests covering the volatility edge cases
-          </Msg>
+          <Box flexDirection="column" width={130}>
+            <ThemedText color="success">
+              {designBodyRow([20, '● '], [22, 'Proof ( π₂ · slip_within bound to config.slippage_bps ) 14:13:48'])}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([21, '⎿ '], [23, 'verified at slot 284,902,941 · arbiter 4kXr…m2Tw'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="success">{designBodyRow([20, '● '], [22, 'Settle ( task #47 ) 14:14:09'])}</ThemedText>
+            <ThemedText color="subtle">
+              {designBodyRow([21, '⎿ '], [23, 'escrow ◎ 2.40 released · bonus ◎ 0.40 · +4 rep · tx fM91…kU3v'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="agenc">
+              {designBodyRow([20, '▮  '], [23, 'AGENC · ORCHESTRATOR 14:14:11'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="success">
+              {designBodyRow([26, '✓ task #47 settled'], [47, '5/5 steps · 12m 31s'], [118, 'fM91…kU3v'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [26, 'added'],
+                [31, 'slippage_bps'],
+                [43, 'guard to'],
+                [53, 'swap_v2'],
+                [60, '· helper'],
+                [70, 'slip_within()'],
+                [83, 'in math.rs · 4 new tests covering the volatility edge '],
+              )}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {designBodyRow([26, 'in math.rs · 4 new tests covering the volatility edge '])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([26, 'in math.rs · 4 new tests covering the volatility edge '])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="subtle">
+              {designBodyRow([27, 'FILES'], [48, 'LINES'], [68, 'TESTS'], [88, 'PROOFS'], [108, 'COST'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([48, '+86 −12'], [68, '14 + 4'], [88, '1 ✓ · 1 ✗'], [108, '◎ 0.0218'])}
+            </ThemedText>
+            <Box minHeight={3} />
+            <ThemedText color="subtle">
+              {designBodyRow([23, 'type'], [28, '/retro'], [34, 'for self-review,'], [52, '/claim'], [57, 'for the next task.'])}
+            </ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -2349,47 +2482,90 @@ const DESIGN_STATES: readonly DesignState[] = [
       <Frame
         viewport={viewport}
         promptPlaceholder="next task? /claim"
-        contextLeft={<ThemedText color="success">✓ retro saved · 4 takeaways</ThemedText>}
-        contextRight={<ThemedText color="agenc">[/claim] next task</ThemedText>}
+        promptPaddingTop={0}
+        contextLeft={<ThemedText color="success">   ✓ retro saved · 4 takeaways</ThemedText>}
+        contextRight={
+          <Box flexDirection="row">
+            <ThemedText color="agenc">/claim</ThemedText>
+            <Box width={2} />
+            <ThemedText color="subtle">next task</ThemedText>
+            <Box width={2} />
+          </Box>
+        }
+        statusLeftItems={[
+          <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
+          <StatusSegment key="net" label="net" value="mainnet-beta" />,
+          <StatusSegment key="task" label="task" value="#47 ✓ + retro" color="success" separator />,
+          <StatusSegment key="duration" label="duration" value="13m 18s" />,
+        ]}
         statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="64.2k / 200k" />,
-          <StatusSegment key="cost" label="cost" value="◎ 0.0224" />,
+          <ThemedText key="right" color="text2">CTX64.2k / 200k COST ◎ 0.0224</ThemedText>,
         ]}
       >
-        <ChatBody centered maxWidth={114}>
-          <Msg role="user" label="you" time="14:14:48">/retro</Msg>
-          <Msg role="agenc" label="agenc · orchestrator" time="14:14:50">
-            <Box flexDirection="column">
-              <ThemedText color="subtle">self-review for task #47 · 12m 31s · ◎ 0.0218</ThemedText>
-              <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft" paddingX={1}>
-                <Box flexDirection="row" gap={1} flexWrap="wrap">
-                  <ThemedText color="success">WENT WELL</ThemedText>
-                  <ThemedText color="text2">guard implementation was minimal — one helper, one call-site. caught by the test panic before mainnet, not after. recovery from worker slash was clean since we never co-signed π₁.</ThemedText>
-                </Box>
-                <Box flexDirection="row" gap={1} flexWrap="wrap">
-                  <ThemedText color="worker">COST ME</ThemedText>
-                  <Box flexDirection="column" flexGrow={1}>
-                    <ThemedText color="text2">
-                      delegating π₁ was the wrong call. circuit was 4,812 constraints — well within my context budget. saved ~3.4k ctx
-                    </ThemedText>
-                    <ThemedText color="text2">
-                      at the cost of 2m 42s wall and a slash event for the delegate. break-even threshold should bump to 8k constraints.
-                    </ThemedText>
-                  </Box>
-                </Box>
-                <Box flexDirection="row" gap={1} flexWrap="wrap">
-                  <ThemedText color="agenc">LEARN</ThemedText>
-                  <ThemedText color="text2">when delegating proofs, force the worker to bind public inputs against a known account by passing the --bind-account flag. would have caught the mismatch before submission.</ThemedText>
-                </Box>
-                <ThemedText color="subtle">#47 ✓ + retro · DURATION 13m 18s · flag. would have caught the mismatch before submission</ThemedText>
-                <Box flexDirection="row" gap={1} flexWrap="wrap">
-                  <ThemedText color="text">FOR NEXT</ThemedText>
-                  <ThemedText color="text2">file a follow-up: add slippage_bps as a top-level SwapV2Config field (currently piggy-backs on Pool config). 2 small edits, ~6 min.</ThemedText>
-                </Box>
-              </ThemedBox>
-              <ThemedText color="subtle">retro published to retros/0x9c4f.md · contributes to your delegation-policy training set.</ThemedText>
-            </Box>
-          </Msg>
+        <ChatBody centered>
+          <Box flexDirection="column" width={130}>
+            <Box minHeight={1} />
+            <ThemedText color="text2">{designBodyRow([23, '/retro'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="agenc">{designBodyRow([20, '▮  '], [23, 'AGENC · ORCHESTRATOR 14:14:50'])}</ThemedText>
+            <ThemedText color="subtle">{designBodyRow([23, 'self-review for task #47 · 12m 31s · ◎ 0.0218'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="success">
+              {designBodyRow([25, 'WENT WELL'], [41, 'guard implementation was minimal — one helper, one cal'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([41, 'guard implementation was minimal — one helper, one cal'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {designBodyRow([41, 'guard implementation was minimal — one helper, one cal'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="worker">
+              {designBodyRow([25, 'COST ME'], [41, 'delegating π₁ was the wrong call. circuit was 4,812 co'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [41, 'delegating π₁ was the wrong call. circuit was 4,812 co'],
+                [55, '~3.4k ctx'],
+                [63, 'at the cost of'],
+                [78, '2m 42s'],
+                [84, 'wall and a slash event for the delegate. break-even th'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([41, 'wall and a slash event for the delegate. break-even th'], [75, '8k constraints'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="agenc">
+              {designBodyRow([25, 'LEARN'], [41, 'when delegating proofs, force the worker to bind publi'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [41, 'when delegating proofs, force the worker to bind publi'],
+                [53, '--bind-account'],
+                [66, 'flag. would have caught the mismatch before submission'],
+              )}
+            </ThemedText>
+            <Box minHeight={2} />
+            <ThemedText color="text2">
+              {designBodyRow(
+                [25, 'FOR NEXT'],
+                [41, 'file a follow-up: add'],
+                [62, 'slippage_bps'],
+                [73, 'as a top-level'],
+                [89, 'SwapV2Config'],
+                [100, 'field (currently piggy-backs on Pool config). 2 '],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([41, 'field (currently piggy-backs on Pool config). 2 small '])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="subtle">
+              {designBodyRow([23, 'retro published to'], [40, 'retros/0x9c4f.md'], [55, '· contributes to your delegation-policy training set.'])}
+            </ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -2402,54 +2578,101 @@ const DESIGN_STATES: readonly DesignState[] = [
       <Frame
         viewport={viewport}
         promptText="@pool"
+        bodyOverlayX={6}
+        bodyOverlayTop={17}
+        bodyOverlay={
+          <Box flexDirection="column" width={140}>
+            <ThemedText color="agenc">
+              {designRelativeRow(6, [6, 'file reference · 5 of 187 match'], [95, '↑↓ select · ⏎ insert · tab add · esc dismiss'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {designRelativeRow(
+                6,
+                [10, 'programs/swap/src/state/'],
+                [33, 'pool.rs'],
+                [60, '2.1 KB'],
+                [68, '12m ago'],
+                [82, 'preview · pool.rs:1-12'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(6, [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(
+                6,
+                [10, 'programs/swap/src/state/'],
+                [33, 'pool_v2.rs'],
+                [60, '1.8 KB'],
+                [68, '3d ago'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(
+                6,
+                [10, 'programs/swap/src/state/'],
+                [33, 'init_pool.rs'],
+                [60, '0.9 KB'],
+                [68, '3d ago'],
+                [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(6, [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(
+                6,
+                [10, 'programs/swap/src/state/'],
+                [33, 'pool_test.rs'],
+                [60, '4.2 KB'],
+                [68, '7d ago'],
+                [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(6, [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'])}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(
+                6,
+                [10, 'programs/swap/src/state/'],
+                [33, 'pool_math.rs'],
+                [60, '1.4 KB'],
+                [68, '14d ago'],
+                [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'],
+              )}
+            </ThemedText>
+            {Array.from({ length: 6 }, (_, index) => (
+              <ThemedText key={index} color="text2">
+                {designRelativeRow(6, [82, 'use anchor_lang::prelude::*; #[account] pub struct Poo'])}
+              </ThemedText>
+            ))}
+          </Box>
+        }
         statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="18.4k / 200k" />,
-          <StatusSegment key="files" label="files" value="1 in ctx" />,
-          <StatusSegment key="cost" label="cost" value="◎ 0.0041" />,
+          <ThemedText key="right" color="text2">CTX18.4k / 200k  FILES1 in ctx COST ◎ 0.0041</ThemedText>,
         ]}
       >
-        <ChatBody centered maxWidth={124}>
-          <Msg role="agenc" label="agenc · orchestrator" time="14:04:12">
-            I have lib.rs in context already. drop me pool.rs too — I want to confirm the slippage_bps field is on Pool, not Config.
-          </Msg>
-          <Msg role="user" label="you" time="14:04:18">sure, here:</Msg>
-          <Msg role="system" label="system">1 in ctx</Msg>
-          <Msg role="system" label="system">
-            use anchor_lang::prelude::*; #[account] pub struct Pool
-          </Msg>
-          <MenuState
-            title="file reference · 5 of 187 match"
-            summary="↑↓ select · ⏎ insert · tab add · esc dismiss"
-            headers={['', '', 'path', 'size', 'age']}
-            columns={[2, 2, 42, 8, 10]}
-            rows={[
-              ['M', 'programs/swap/src/state/pool.rs', '2.1 KB', '12m ago'],
-              ['·', 'programs/swap/src/state/pool_v2.rs', '1.8 KB', '3d ago'],
-              ['·', 'programs/swap/src/instructions/init_pool.rs', '0.9 KB', '3d ago'],
-              ['·', 'programs/swap/tests/pool_test.rs', '4.2 KB', '7d ago'],
-              ['·', 'programs/swap/src/math/pool_math.rs', '1.4 KB', '14d ago'],
-            ]}
-            footer={[
-              { keyName: '↑↓', label: 'select' },
-              { keyName: '⏎', label: 'insert' },
-              { keyName: 'tab', label: 'add' },
-              { keyName: 'esc', label: 'dismiss' },
-            ]}
-            preview={
-              <Box flexDirection="column">
-                <ThemedText color="inactive">preview · pool.rs:1-12</ThemedText>
-                <ThemedText color="inactive">init_pool.rs</ThemedText>
-                <ThemedText color="text2">use anchor_lang::prelude::*; #[account] pub struct Pool</ThemedText>
-                <ThemedText color="text2">use anchor_lang::prelude::*;</ThemedText>
-                <ThemedText color="text2">#[account] pub struct Pool {'{'}</ThemedText>
-                <ThemedText color="subtle">pub mint_a: Pubkey, pub mint_b: Pubkey,</ThemedText>
-                <ThemedText color="subtle">pub reserve_a: u64, pub reserve_b: u64,</ThemedText>
-                <ThemedText color="subtle">pub fee_bps: u16, pub slippage_bps: u16,</ThemedText>
-                <ThemedText color="subtle">pub last_swap_slot: u64, pub bump: u8,</ThemedText>
-                <ThemedText color="text2">{'}'}</ThemedText>
-              </Box>
-            }
-          />
+        <ChatBody centered>
+          <Box flexDirection="column" width={130}>
+            <ThemedText color="agenc">{designBodyRow([20, '▮  '], [23, 'AGENC · ORCHESTRATOR 14:04:12'])}</ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow(
+                [23, 'I have'],
+                [30, 'lib.rs'],
+                [36, 'in context already. drop me'],
+                [64, 'pool.rs'],
+                [71, 'too — I want to confirm the slippage_bps field is on P'],
+              )}
+            </ThemedText>
+            <ThemedText color="text2">
+              {designBodyRow([23, 'too — I want to confirm the slippage_bps field is on P'])}
+            </ThemedText>
+            <Box minHeight={2} />
+            <ThemedText color="text2">{designBodyRow([23, 'sure, here:'])}</ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -2464,61 +2687,77 @@ const DESIGN_STATES: readonly DesignState[] = [
         promptText="anchor build"
         shellMode
         promptHint="shell · cwd ~/work/tetsuo/swap-program"
-        statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="22.8k / 200k" />,
-          <StatusSegment key="cost" label="cost" value="◎ 0.0058" />,
+        promptPaddingTop={0}
+        bodyOverlayX={20}
+        bodyOverlayTop={31}
+        bodyOverlay={
+          <Box flexDirection="column" width={130}>
+            <ThemedText color="agenc">{'▮  AGENC · ORCHESTRATOR 14:05:24'}</ThemedText>
+            <ThemedText color="text2">
+              {designRelativeRow(
+                20,
+                [23, 'the unused import is from my last edit — I imported'],
+                [74, 'slip_within'],
+                [85, 'at the top, then ended up calling it through the modul'],
+              )}
+            </ThemedText>
+          </Box>
+        }
+        statusLeftItems={[
+          <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
+          <StatusSegment key="net" label="net" value="mainnet-beta" />,
+          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
+          <StatusSegment key="mode" label="mode" value="shell" color="worker" separator />,
         ]}
-        contextLeft={<ThemedText color="worker">! shell mode · type to compose, ⏎ run</ThemedText>}
+        statusRightItems={[
+          <ThemedText key="right" color="text2">CTX22.8k / 200k COST ◎ 0.0058</ThemedText>,
+        ]}
+        contextLeft={<ThemedText color="worker">   ! shell mode · type to compose, ⏎ run</ThemedText>}
         contextRight={
-          <Box flexDirection="row" gap={2}>
-            <KeyHint k="!!" label="repeat last" />
-            <KeyHint k="esc" label="back to chat" />
+          <Box flexDirection="row">
+            <ThemedText color="subtle">repeat last</ThemedText>
+            <Box width={8} />
+            <ThemedText color="subtle">back to chat</ThemedText>
+            <Box width={2} />
           </Box>
         }
       >
         <ChatBody centered>
-          <Msg role="user" label="you" time="14:05:11">
-            !git status -sb
-          </Msg>
-          <Tool
-            kind="bash"
-            args="git status -sb · run by user"
-            result="exit 0 · 38ms"
-            time="14:05:11"
-            expanded
-            detail={
-              <Box flexDirection="column">
-                <ThemedText color="inactive">stdout git</ThemedText>
-                <ThemedText color="text2">## main...origin/main</ThemedText>
-                <ThemedText color="text2"> M programs/swap/src/lib.rs</ThemedText>
-                <ThemedText color="text2">?? programs/swap/src/math/slip.rs</ThemedText>
-                <ThemedText color="text2">## main...origin/main M programs/swap/src/lib.rs ?? programs/swap/src/math/slip.rs</ThemedText>
-              </Box>
-            }
-          />
-          <Msg role="user" label="you" time="14:05:18">
-            !cargo check -p agenc-swap
-          </Msg>
-          <Tool
-            kind="bash"
-            args="cargo check -p agenc-swap · run by user"
-            result="exit 0 · 4.2s · 0 errors, 1 warning"
-            time="14:05:22"
-            expanded
-            detail={
-              <Box flexDirection="column">
-                <ThemedText color="inactive">stderr cargo</ThemedText>
-                <ThemedText color="text2">Checking agenc-swap v0.4.2</ThemedText>
-                <ThemedText color="text2">Checking agenc-swap v0.4.2 warning: unused import: `crate::math::slip_within`</ThemedText>
-                <ThemedText color="worker">warning: unused import: `crate::math::slip_within`</ThemedText>
-                <ThemedText color="text2">--&gt; programs/swap/src/lib.rs:7:5</ThemedText>
-                <ThemedText color="success">Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.21s</ThemedText>
-              </Box>
-            }
-          />
-          <Msg role="agenc" label="agenc · orchestrator" time="14:05:24">
-            the unused import is from my last edit — I imported slip_within at the top, then ended up calling it through the module path in the body. want me to drop the use statement?
-          </Msg>
+          <Box flexDirection="column" width={130}>
+            <Box minHeight={1} />
+            <ThemedText color="text2">{designBodyRow([23, '!git status -sb'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="worker">{designBodyRow([20, '● '], [22, 'Bash ( git status -sb · run by user ) 14:05:11'])}</ThemedText>
+            <ThemedText color="subtle">{designBodyRow([21, '⎿ '], [23, 'exit 0 · 38ms'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="inactive">{designBodyRow([25, 'stdout'])}</ThemedText>
+            <Box minHeight={1} />
+            {Array.from({ length: 3 }, (_, index) => (
+              <ThemedText key={index} color="text2">
+                {designBodyRow([25, '## main...origin/main M programs/swap/src/lib.rs ?? pr'])}
+              </ThemedText>
+            ))}
+            <Box minHeight={3} />
+            <ThemedText color="text2">{designBodyRow([23, '!cargo check -p agenc-swap'])}</ThemedText>
+            <ThemedText color="worker">
+              {designBodyRow([20, '● '], [22, 'Bash ( cargo check -p agenc-swap · run by user ) 14:05:22'])}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="subtle">{designBodyRow([21, '⎿ '], [23, 'exit 0 · 4.2s · 0 errors, 1 warning'])}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="inactive">{designBodyRow([25, 'stderr'], [122, 'cargo'])}</ThemedText>
+            <ThemedText color="worker">{designBodyRow([25, 'Checking agenc-swap v0.4.2 warning: unused import: `cr'])}</ThemedText>
+            <Box minHeight={1} />
+            {Array.from({ length: 5 }, (_, index) => (
+              <ThemedText key={index} color="worker">
+                {designBodyRow([25, 'Checking agenc-swap v0.4.2 warning: unused import: `cr'])}
+              </ThemedText>
+            ))}
+            <Box minHeight={1} />
+            <ThemedText color="success">
+              {designBodyRow([25, 'Finished'], [36, '`dev` profile [unoptimized + debuginfo] target(s) in 4'])}
+            </ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
