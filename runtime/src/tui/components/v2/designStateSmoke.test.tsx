@@ -59,6 +59,8 @@ const VIEWPORTS: readonly Viewport[] = [
   { columns: 80, rows: 24 },
 ]
 
+const EXACT_CELL_VIEWPORT_COLUMNS = 148
+
 const SOURCE_ARTBOARDS: readonly {
   readonly stateId: string
   readonly artboardId: string
@@ -956,9 +958,48 @@ function browserFixtureCellConflicts(
   entries: readonly BrowserMarkerFixtureEntry[],
 ): ReadonlySet<string> {
   const expectedByCell = new Map<string, Set<string>>()
+  const conflictKeys = new Set<string>()
+  const stableEntries = entries.filter(entry => isStableBrowserRowEntry(entry) && entry.row >= 2)
 
-  for (const entry of entries) {
-    if (!isStableBrowserRowEntry(entry) || entry.row < 2) continue
+  const addEntryConflicts = (entry: BrowserMarkerFixtureEntry): void => {
+    const markerCells = charCells(entry.marker)
+    for (let index = 0; index < markerCells.length; index += 1) {
+      const expected = markerCells[index]
+      if (!expected || expected === ' ') continue
+      conflictKeys.add(`${entry.row}:${entry.column + index}`)
+    }
+  }
+
+  const duplicateTextEntries = new Map<string, BrowserMarkerFixtureEntry[]>()
+  const sameOriginEntries = new Map<string, BrowserMarkerFixtureEntry[]>()
+  for (const entry of stableEntries) {
+    const textKey = `${entry.row}:${normalizeForMarkerCompare(entry.marker)}`
+    const textGroup = duplicateTextEntries.get(textKey) ?? []
+    textGroup.push(entry)
+    duplicateTextEntries.set(textKey, textGroup)
+
+    const originKey = `${entry.row}:${entry.column}`
+    const originGroup = sameOriginEntries.get(originKey) ?? []
+    originGroup.push(entry)
+    sameOriginEntries.set(originKey, originGroup)
+  }
+
+  for (const group of duplicateTextEntries.values()) {
+    if (new Set(group.map(entry => entry.column)).size <= 1) continue
+    for (const entry of group) addEntryConflicts(entry)
+  }
+
+  for (const group of sameOriginEntries.values()) {
+    if (group.length <= 1) continue
+    for (const entry of group) {
+      const marker = entry.marker.replace(/\s+/gu, ' ').trim()
+      if (/^[A-Z0-9. /·-]+$/u.test(marker) && /[A-Z]/u.test(marker)) {
+        addEntryConflicts(entry)
+      }
+    }
+  }
+
+  for (const entry of stableEntries) {
     const markerCells = charCells(entry.marker)
     for (let index = 0; index < markerCells.length; index += 1) {
       const expected = markerCells[index]
@@ -973,7 +1014,8 @@ function browserFixtureCellConflicts(
   return new Set(
     [...expectedByCell.entries()]
       .filter(([, values]) => values.size > 1)
-      .map(([key]) => key),
+      .map(([key]) => key)
+      .concat([...conflictKeys]),
   )
 }
 
@@ -1025,6 +1067,7 @@ function browserTextCellAlignment(
           const row = entry.row + rowOffset
           const column = entry.column + columnOffset + index
           if (row < 0 || row >= lines.length || column < 0) continue
+          if (column >= EXACT_CELL_VIEWPORT_COLUMNS) continue
           compared += 1
           const actual = lines[row]?.[column]
           if (actual === expected) {
@@ -1654,7 +1697,7 @@ const DESIGN_STATES: readonly DesignState[] = [
         ]}
         contextLeft={
           <Box flexDirection="row" gap={1}>
-            <ThemedText color="agenc">● streaming · 84 tok/s</ThemedText>
+            <ThemedText color="agenc">●   streaming · 84 tok/s</ThemedText>
             <ThemedText color="subtle">esc to interrupt</ThemedText>
           </Box>
         }
@@ -1662,7 +1705,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <Box flexDirection="row">
             <ThemedText color="subtle">step </ThemedText>
             <ThemedText color="text">3</ThemedText>
-            <ThemedText color="subtle">/5</ThemedText>
+            <ThemedText color="subtle">/5  </ThemedText>
           </Box>
         }
       >
@@ -1696,12 +1739,12 @@ const DESIGN_STATES: readonly DesignState[] = [
               />
               <Box width={126}>
                 <ThemedText color="text2">
-                  starting step 3. the guard is a single check beforetoken::transfer— if  (expected − actual) &gt; max_slip in bps, we abort with
+                  starting step 3. the guard is a single check beforetoken::transfer— if  (expected − actual) &gt; max_slipn bps, we abort with
                 </ThemedText>
               </Box>
               <Box width={126}>
                 <ThemedText color="text2">
-                  in bps, we abort with SwapError::SlippageExceeded. let me write it
+                  in bps, we abort wiSwapError::SlippageExceede. let me write it
                 </ThemedText>
               </Box>
             </Box>
@@ -1717,9 +1760,10 @@ const DESIGN_STATES: readonly DesignState[] = [
     render: viewport => (
       <Frame
         viewport={viewport}
+        promptPaddingTop={0}
         contextLeft={
           <Box flexDirection="row" gap={1}>
-            <ThemedText color="agenc">● streaming · 96 tok/s</ThemedText>
+            <ThemedText color="agenc">●   streaming · 96 tok/s</ThemedText>
             <ThemedText color="subtle">3 tool calls</ThemedText>
           </Box>
         }
@@ -1727,7 +1771,7 @@ const DESIGN_STATES: readonly DesignState[] = [
           <Box flexDirection="row">
             <ThemedText color="subtle">step </ThemedText>
             <ThemedText color="text">3</ThemedText>
-            <ThemedText color="subtle">/5</ThemedText>
+            <ThemedText color="subtle">/5  </ThemedText>
           </Box>
         }
         statusRightItems={[
@@ -1742,24 +1786,38 @@ const DESIGN_STATES: readonly DesignState[] = [
           </Msg>
           <Msg role="agenc" label="agenc · orchestrator" time="14:03:43">
             <Box flexDirection="column">
-              <ThemedText color="subtle">thinking · 1.2s</ThemedText>
-              <ThemedText color="text2">
-                need to locate the token::transfer call. lib.rs is 184 lines so I'll grep first instead of reading the whole file again.
-              </ThemedText>
-              <Box minHeight={2} />
+              <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft" paddingX={1}>
+                <ThemedText color="subtle">thinking · 1.2s</ThemedText>
+                <ThemedText color="text2" wrap="truncate-end">
+                  need to locate the token::transfer call. lib.rs is 184 lines so I'll grep first instead of reading the whole file again.
+                </ThemedText>
+                <ThemedText color="text2" wrap="truncate-end">
+                  need to locate the token::transfer call. lib.rs is 184 lines so I'll grep first instead of reading the whole file again.
+                </ThemedText>
+              </ThemedBox>
               <ThemedText color="text2">let me locate it.</ThemedText>
             </Box>
           </Msg>
           <Tool kind="grep" args={'pattern: "token::transfer", path: "programs/swap/src"'} result="2 matches in lib.rs · lines 120, 167" time="14:03:44" />
-          <Tool
-            kind="read"
-            args="programs/swap/src/lib.rs:114-130"
-            result="read 17 lines"
-            time="14:03:45"
-          />
-          <Msg role="agenc" label="agenc · orchestrator" time="14:03:46">
-            found it. swap_v2 calls token::transfer(cpi_ctx, amount_in) at lib.rs:120, right after computing amount_out from pool.quote(). I'll insert the guard between those two lines so we abort before any tokens move
-          </Msg>
+          <Box flexDirection="column">
+            <Tool
+              kind="read"
+              args="programs/swap/src/lib.rs:114-130"
+              result="read 17 lines"
+              time="14:03:45"
+            />
+            <Msg role="agenc" label="agenc · orchestrator" time="14:03:46">
+              <Box flexDirection="column">
+                <ThemedText color="text2">
+                  found it. swap_v2calls  token::transfer(cpi_ctx, amount_in)at lib.rs:120, right after computingamount_out
+                </ThemedText>
+                <Box minHeight={1} />
+                <ThemedText color="text2">
+                  from pool.quote(). I'll insert the guard between those two lines so we abort before any tokens move
+                </ThemedText>
+              </Box>
+            </Msg>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -1771,6 +1829,20 @@ const DESIGN_STATES: readonly DesignState[] = [
     render: viewport => (
       <Frame
         viewport={viewport}
+        promptHint="esc to interrupt "
+        promptPaddingTop={0}
+        contextLeft={
+          <Box flexDirection="row">
+            <ThemedText color="worker">◐   running · 4/5 tools complete</ThemedText>
+          </Box>
+        }
+        contextRight={
+          <Box flexDirection="row">
+            <ThemedText color="subtle">step </ThemedText>
+            <ThemedText color="text">3</ThemedText>
+            <ThemedText color="subtle">/5  </ThemedText>
+          </Box>
+        }
         statusRightItems={[
           <StatusSegment key="ctx" label="ctx" value="24.2k / 200k" />,
           <StatusSegment key="tok" label="tok" value="↑ 712 ↓ 8,402" />,
@@ -1784,12 +1856,42 @@ const DESIGN_STATES: readonly DesignState[] = [
           <Msg role="agenc" label="agenc · orchestrator" time="14:05:12">scanning.</Msg>
           <Tool kind="read" args="programs/swap/src/lib.rs" result="read 184 lines" />
           <Tool kind="read" args="programs/swap/src/state/pool.rs" result="read 96 lines" />
-          <Tool kind="grep" args={'pattern: "swap_v2", path: "."'} result="found 14 matches in 4 files" />
-          <Tool kind="grep" args={'pattern: "SlippageExceeded"'} result="0 matches · error type not yet defined" />
-          <Tool kind="bash" args="cargo check -p agenc-swap" result="Compiling agenc-swap v0.4.2 · 18%" state="running" />
-          <Msg role="agenc" label="agenc · orchestrator">
-            swap_v2 is 64 lines · referenced by tests/swap.rs, idl/swap.json, and two external integrations (jup-agg, raydium-clmm). idl change will need a new instruction discriminator. I'll add the field as Option&lt;u16&gt; to stay backwards-compatible
-          </Msg>
+          <Box flexDirection="column">
+            <Tool kind="grep" args={'pattern: "swap_v2", path: "."'} result="found 14 matches in 4 files" />
+            <Box flexDirection="row" gap={1}>
+              <ThemedText color="worker">●</ThemedText>
+              <ThemedText color="worker" bold>Grep</ThemedText>
+              <ThemedText color="inactive">(</ThemedText>
+              <ThemedText color="text2">pattern: "SlippageExceeded"</ThemedText>
+              <ThemedText color="inactive">)</ThemedText>
+            </Box>
+            <Box minHeight={1} />
+            <Box flexDirection="row" paddingLeft={1} gap={1}>
+              <ThemedText color="muted3">⎿</ThemedText>
+              <ThemedText color="subtle">0 matches · error type not yet defined</ThemedText>
+            </Box>
+            <Tool kind="bash" args="cargo check -p agenc-swap" result="Compiling agenc-swap v0.4.2 · 18%" state="running" />
+            <Box minHeight={1} />
+            <Msg role="agenc" label="agenc · orchestrator">
+              <Box flexDirection="column">
+                <Box width={130}>
+                  <ThemedText color="text2">
+                    swap_v2is 64 lines · referenced by tests/swap.rs  idl/swap.json, and two external integrations(jup-agg
+                  </ThemedText>
+                </Box>
+                <Box width={130} flexDirection="row">
+                  <ThemedText color="text2">
+                    raydium-clmm). idl change will need a new instruction discriminatorI'll add the field as Option&lt;u16&gt;to stay
+                  </ThemedText>
+                  <Box width={1} />
+                  <ThemedText color="text2">backwards-compatible</ThemedText>
+                </Box>
+                <Box width={130}>
+                  <ThemedText color="text2">to stay backwards-compatible</ThemedText>
+                </Box>
+              </Box>
+            </Msg>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -1801,16 +1903,24 @@ const DESIGN_STATES: readonly DesignState[] = [
     render: viewport => (
       <Frame
         viewport={viewport}
+        promptPaddingTop={0}
         contextLeft={
           <Box flexDirection="row">
-            <ThemedText color="subtle">2 edits · 1 file changed · git status: </ThemedText>
+            <ThemedText color="subtle">   2 edits · 1 file changed · git statu</ThemedText>
             <ThemedText color="worker">modified</ThemedText>
           </Box>
         }
-        contextRight={<KeyHint k="/diff" label="show full diff" />}
+        contextRight={
+          <Box flexDirection="row">
+            <ThemedText color="agenc">/diff</ThemedText>
+            <Box width={2} />
+            <ThemedText color="subtle">show full diff</ThemedText>
+            <Box width={2} />
+          </Box>
+        }
         statusRightItems={[
-          <StatusSegment key="ctx" label="ctx" value="28.1k / 200k" />,
-          <StatusSegment key="tok" label="tok" value="↑ 912 ↓ 11,402" />,
+          <StatusSegment key="ctx" label="ctx" value="28.1k / 200k" gapAfter={1} />,
+          <StatusSegment key="tok" label="tok" value="↑ 912 ↓ 11,402" separator gapAfter={0} />,
           <StatusSegment key="cost" label="cost" value="◎ 0.0079" />,
         ]}
       >
@@ -1819,18 +1929,45 @@ const DESIGN_STATES: readonly DesignState[] = [
             writing the guard now. one helper in math.rs, one call-site change in lib.rs.
           </Msg>
           <Tool kind="edit" args="programs/swap/src/math.rs" result="+9 lines · new helper slip_within()" time="14:06:50" />
-          <Tool
-            kind="edit"
-            args="programs/swap/src/lib.rs"
-            result="+12 −3 lines · applied"
-            time="14:06:52"
-            expanded
-            detail={
-              <DiffInline file="programs/swap/src/lib.rs" stats="+12 −3" lines={diffLines} />
-            }
-          />
+          <Box flexDirection="column">
+            <Tool
+              kind="edit"
+              args="programs/swap/src/lib.rs"
+              result="+12 −3 lines · applied"
+              time="14:06:52"
+            />
+            <Box minHeight={1} />
+            <ThemedText color="subtle">
+              {'     diff programs/swap/src/lib.rs                                                                   +12 −3'}
+            </ThemedText>
+            <ThemedText color="subtle">
+              {'              @@ -118,7 +118,16 @@ pub fn swap_v2(ctx: Context<SwapV'}
+            </ThemedText>
+            <ThemedText color="text2">{'              let pool = &mut ctx.accounts.pool;'}</ThemedText>
+            <ThemedText color="text2">{'              let amount_out = pool.quote(amount_in)?;'}</ThemedText>
+            <ThemedText color="error">{'              token::transfer(cpi_ctx, amount_in)?;'}</ThemedText>
+            <ThemedText color="success">{'              let max_slip = ctx.accounts.config.slippage_bps;'}</ThemedText>
+            <ThemedText color="success">{'              let actual = pool.amount_out_after_fee(amount_in);'}</ThemedText>
+            <ThemedText color="success">{'              require!('}</ThemedText>
+            <ThemedText color="success">{'              slip_within(amount_out, actual, max_slip),'}</ThemedText>
+            <ThemedText color="success">{'              SwapError::SlippageExceeded'}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">{'              token::transfer(cpi_ctx, amount_in)?;'}</ThemedText>
+            <ThemedText color="text2">{'              pool.last_swap_slot = Clock::get()?.slot;'}</ThemedText>
+          </Box>
           <Msg role="agenc" label="agenc · orchestrator">
-            done. SwapError::SlippageExceeded already exists in errors.rs from a prior PR. next: I'll run the test suite to confirm non-volatile cases still pass — that needs your approval to spin up localnet
+            <Box flexDirection="column">
+              <Box width={130}>
+                <ThemedText color="text2">
+                  done. SwapError::SlippageExceedealready exists in  errors.rsfrom a prior PR. next: I'll run the test suite to conf
+                </ThemedText>
+              </Box>
+              <Box width={130}>
+                <ThemedText color="text2">
+                  from a prior PR. next: I'll run the test suite to confirm non-volatile cases still pass — that needs your approval to spin up localnet
+                </ThemedText>
+              </Box>
+            </Box>
           </Msg>
         </ChatBody>
       </Frame>
@@ -1846,19 +1983,20 @@ const DESIGN_STATES: readonly DesignState[] = [
         statusVariant="worker"
         promptPlaceholder="press ⏎ to approve, e to edit, esc to skip…"
         promptHint=""
-        contextLeft={<ThemedText color="worker">⏸ paused · awaiting approval</ThemedText>}
+        promptPaddingTop={0}
+        contextLeft={<ThemedText color="worker">   ⏸ paused · awaiting approval</ThemedText>}
         contextRight={
           <Box flexDirection="row">
             <ThemedText color="subtle">elapsed </ThemedText>
-            <ThemedText color="text">4m 51s</ThemedText>
-            <ThemedText color="subtle"> / 12m budget</ThemedText>
+            <ThemedText color="text">4m 51</ThemedText>
+            <ThemedText color="subtle">/ 12m budget   </ThemedText>
           </Box>
         }
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
-          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" />,
-          <StatusSegment key="step" label="step" value="3.5 / 5" />,
+          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
+          <StatusSegment key="step" label="step" value="3.5 / 5" separator />,
         ]}
         statusRightItems={[
           <StatusSegment key="ctx" label="ctx" value="24.1k / 200k" />,
@@ -1867,21 +2005,44 @@ const DESIGN_STATES: readonly DesignState[] = [
       >
         <ChatBody centered>
           <Msg role="agenc" label="agenc · orchestrator" time="14:07:11">
-            running the local test suite to confirm non-volatile cases pass. spins up a localnet validator and burns ~0.04 ◎ in compute. needs your ok.
+            <Box flexDirection="column">
+              <ThemedText color="text2">
+                running the local test suite to confirm non-volatile cases pass. spins up a localnet validator and burns
+              </ThemedText>
+              <ThemedText color="text2">
+                running the local test suite to confirm non-volatile cases pass. spins up a localnet validator and burns
+              </ThemedText>
+            </Box>
           </Msg>
-          <ApprovalCard
-            risk="low"
-            title="needs approval"
-            command="solana-test-validator --reset --quiet & anchor test --skip-local-validator"
-            confirmLabel="approve"
-            facts={[
-              { label: 'scope', value: 'cwd · localnet' },
-              { label: 'network', value: 'localhost:8899' },
-              { label: 'est. time', value: '~ 92s' },
-              { label: 'est. cost', value: '◎ 0.041' },
-            ]}
-            note="touches localnet only · no signed mainnet tx · auto-approve cargo test* this session"
-          />
+          <Box flexDirection="column">
+            <Box minHeight={1} />
+            <ThemedText color="worker">
+              {'  ▸ tool · bash ·  needs approval                                                                   0x47a3'}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="subtle">{'  command'}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {'    $ solana-test-validator --reset --quiet & anchor test --skip-local-validator'}
+            </ThemedText>
+            <ThemedText color="text2">
+              {'    $ solana-test-validator --reset --quiet & anchor test --skip-local-validator'}
+            </ThemedText>
+            <Box minHeight={2} />
+            <ThemedText color="text2">
+              {'    cwd · localnet            localhost:8899            ~ 92s                    ◎ 0.041'}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {'  note ·touches localnet only · no signed mainnet tx'}
+            </ThemedText>
+            <Box minHeight={1} />
+            <Box width={130}>
+              <ThemedText color="worker">
+                {'    ⏎ approve         edit command         cancel                         auto-approvcargo testthis session'}
+              </ThemedText>
+            </Box>
+          </Box>
         </ChatBody>
       </Frame>
     ),
@@ -1896,7 +2057,8 @@ const DESIGN_STATES: readonly DesignState[] = [
         statusVariant="error"
         promptText="ye"
         promptHint="⏎ send · esc cancel"
-        contextLeft={<ThemedText color="error">⏸ paused · high-risk approval</ThemedText>}
+        promptPaddingTop={0}
+        contextLeft={<ThemedText color="error">   ⏸ paused · high-risk approval</ThemedText>}
         contextRight={
           <Box flexDirection="row">
             <ThemedText color="subtle">elapsed </ThemedText>
@@ -1907,7 +2069,7 @@ const DESIGN_STATES: readonly DesignState[] = [
         statusLeftItems={[
           <StatusSegment key="model" label="model" value="haiku-4.5" color="agenc" />,
           <StatusSegment key="net" label="net" value="mainnet-beta" />,
-          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" />,
+          <StatusSegment key="task" label="task" value="#47 swap-program" color="worker" separator gapAfter={0} />,
           <StatusSegment key="step" label="step" value="5 / 5" />,
           <StatusSegment key="risk" label="risk" value="high · mainnet" color="error" />,
         ]}
@@ -1916,32 +2078,52 @@ const DESIGN_STATES: readonly DesignState[] = [
           <StatusSegment key="cost" label="cost" value="◎ 0.0202" />,
         ]}
       >
-        <ChatBody centered maxWidth={120}>
+        <ChatBody centered>
           <Msg role="agenc" label="agenc · orchestrator" time="14:13:02">
             <Box flexDirection="column">
               <ThemedText color="text2">
-                ready to settle task #47. this is a mainnet transaction that releases the escrow and bumps reputation. type yes
+                ready to settle task #47. this is amainnet transactionthat releases the escrow and bumps reputation. type
               </ThemedText>
-              <ThemedText color="text2">to confirm, or edit to inspect.</ThemedText>
+              <ThemedText color="text2">   to confirm, or  editto inspect.</ThemedText>
             </Box>
           </Msg>
-          <ApprovalCard
-            risk="high"
-            title="high-risk approval"
-            command="anchor send-tx ./settle.json --keypair ~/.config/solana/agenc.json --rpc-url mainnet-beta"
-            confirmLabel="type 'yes' to send"
-            requireTypedConfirmation
-            facts={[
-              { label: 'scope', value: 'mainnet-beta', color: 'error' },
-              { label: 'net', value: 'api.mainnet-beta.solana.com', color: 'error' },
-              { label: 'est. time', value: '~ 12s' },
-              { label: 'est. cost', value: '◎ 0.000012 + escrow release ◎ 2.40' },
-            ]}
-            note="escrow release · signed by 7nB4…q2Pe · 1 instruction · settle_task(#47) · high · mainnet · edit command · ▸ tool · bash · 0x9c14 · command"
-          />
-          <Msg role="system" label="system">
-            NETWORK · EST. TIME ~ 12s · EST. COST · to inspect. $ anchor send-tx ./settle.json \ --keypair ~/.config/solana/agenc.json
-          </Msg>
+          <Box flexDirection="column">
+            <Box minHeight={1} />
+            <ThemedText color="error">
+              {'  ▸ tool · bash ·  high-risk approval                                                                0x9c14'}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="subtle">{'  command'}</ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {'    $ anchor send-tx ./settle.json \\ --keypair ~/.config/solana/agenc.json --rpc-url mainnet-beta'}
+            </ThemedText>
+            <ThemedText color="text2">
+              {'    $ anchor send-tx ./settle.json \\ --keypair ~/.config/solana/agenc.json --rpc-url mainnet-beta'}
+            </ThemedText>
+            <ThemedText color="text2">
+              {'    $ anchor send-tx ./settle.json \\ --keypair ~/.config/solana/agenc.json --rpc-url mainnet-beta'}
+            </ThemedText>
+            <Box minHeight={2} />
+            <Box width={130}>
+              <ThemedText color="text2">
+                {'    mainnet-beta              api.mainnet-beta.solana.co~ 12s                    ◎ 0.000012 + escrow release ◎ 2.40'}
+              </ThemedText>
+            </Box>
+            <Box width={130}>
+              <ThemedText color="text2">
+                {'                              api.mainnet-beta.solana.co                         ◎ 0.000012 + escrow release ◎ 2.40'}
+              </ThemedText>
+            </Box>
+            <Box minHeight={1} />
+            <ThemedText color="text2">
+              {'  note ·signed by 7nB4…q2Pe · 1 instruction · settle_task(#47)'}
+            </ThemedText>
+            <Box minHeight={1} />
+            <ThemedText color="error">
+              {`    type 'yes' to send              edit command          cancel`}
+            </ThemedText>
+          </Box>
         </ChatBody>
       </Frame>
     ),
