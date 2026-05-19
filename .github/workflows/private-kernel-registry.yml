@@ -68,100 +68,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect private-registry support files
-        id: private_registry_support
-        shell: bash
-        run: |
-          set -eu
-          missing=""
-          for path in \
-            config/private-kernel-distribution.local.json \
-            containers/private-registry \
-            scripts/private-registry-service.mjs \
-            scripts/bootstrap-private-registry-user.mjs \
-            scripts/private-registry-rehearsal.mjs \
-            scripts/private-kernel-distribution.mjs \
-            scripts/private-registry-service.test.mjs \
-            scripts/bootstrap-private-registry-user.test.mjs \
-            scripts/private-kernel-distribution.test.mjs
-          do
-            if [ ! -e "$path" ]; then
-              missing="${missing} ${path}"
-            fi
-          done
-          if [ -n "$missing" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping private kernel registry validation; checkout does not include:${missing}"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup Node
-        if: steps.private_registry_support.outputs.available == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install ripgrep
-        if: steps.private_registry_support.outputs.available == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --yes ripgrep
           rg --version
 
       - name: Initialize private registry env
-        if: steps.private_registry_support.outputs.available == 'true'
         run: |
           echo "PRIVATE_REGISTRY_INSTANCE=${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "$GITHUB_ENV"
           echo "PRIVATE_REGISTRY_TOKEN_FILE=${RUNNER_TEMP}/agenc-private-registry.token" >> "$GITHUB_ENV"
           echo "PRIVATE_REGISTRY_BOOTSTRAP_JSON=${RUNNER_TEMP}/agenc-private-registry-bootstrap.json" >> "$GITHUB_ENV"
 
       - name: Pin npm
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm install --global npm@11.7.0
 
       - name: Verify npm version
-        if: steps.private_registry_support.outputs.available == 'true'
         run: test "$(npm --version)" = "11.7.0"
 
       - name: Install workspace dependencies
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm install --no-fund
 
       - name: Run required runtime validation lane
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run validate:runtime
 
       - name: Build private-kernel packages
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run build:private-kernel
 
       - name: Check private-kernel surface
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run check:private-kernel-surface
 
       - name: Validate local private-kernel distribution config
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run check:private-kernel-distribution:local
 
       - name: Run private registry script tests
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run test:private-registry-scripts
 
       - name: Reset any stale registry instance
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run private-registry:reset
 
       - name: Start locked private registry
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run private-registry:up
 
       - name: Wait for registry health
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run private-registry:health
 
       - name: Bootstrap registry service account
-        if: steps.private_registry_support.outputs.available == 'true'
         run: |
           node scripts/bootstrap-private-registry-user.mjs --token-file "$PRIVATE_REGISTRY_TOKEN_FILE" > "$PRIVATE_REGISTRY_BOOTSTRAP_JSON"
           TOKEN="$(cat "$PRIVATE_REGISTRY_TOKEN_FILE")"
@@ -169,19 +126,16 @@ jobs:
           echo "PRIVATE_KERNEL_REGISTRY_TOKEN=$TOKEN" >> "$GITHUB_ENV"
 
       - name: Stage private-kernel distribution artifacts
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run stage:private-kernel-distribution:local
 
       - name: Dry-run private-kernel distribution against local registry
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run dry-run:private-kernel-distribution:local
 
       - name: Rehearse private-registry publish and install flows
-        if: steps.private_registry_support.outputs.available == 'true'
         run: npm run private-registry:rehearse
 
       - name: Cleanup registry instance
-        if: always() && steps.private_registry_support.outputs.available == 'true'
+        if: always()
         run: |
           npm run private-registry:reset
           rm -f "$PRIVATE_REGISTRY_TOKEN_FILE" "$PRIVATE_REGISTRY_BOOTSTRAP_JSON"
