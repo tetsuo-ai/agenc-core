@@ -1,35 +1,10 @@
 name: Proof Harness Boundary
 
 on:
+  # Automatic CI is intentionally disabled to avoid paid GitHub Actions runs.
+  # Maintainers can still run this workflow manually when proof-harness checks
+  # are needed.
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/proof-harness-boundary.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "tools/proof-harness/**"
-      - "scripts/check-proof-harness-boundary.mjs"
-      - "REFACTOR.MD"
-      - "REFACTOR-MASTER-PROGRAM.md"
-      - "docs/MAINNET_DEPLOYMENT.md"
-      - "docs/devnet-program-data.md"
-      - "docs/PRIVACY_README.md"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/proof-harness-boundary.yml"
-      - "package.json"
-      - "package-lock.json"
-      - "tools/proof-harness/**"
-      - "scripts/check-proof-harness-boundary.mjs"
-      - "REFACTOR.MD"
-      - "REFACTOR-MASTER-PROGRAM.md"
-      - "docs/MAINNET_DEPLOYMENT.md"
-      - "docs/devnet-program-data.md"
-      - "docs/PRIVACY_README.md"
 
 jobs:
   proof-harness-boundary:

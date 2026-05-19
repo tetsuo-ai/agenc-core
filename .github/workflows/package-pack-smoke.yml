@@ -1,65 +1,10 @@
 name: Package Pack Smoke
 
 on:
+  # Automatic CI is intentionally disabled to avoid paid GitHub Actions runs.
+  # Maintainers can still run this workflow manually when package smoke coverage
+  # is needed.
   workflow_dispatch:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/package-pack-smoke.yml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'README.md'
-      - 'packages/agenc/**'
-      - 'docs/RUNTIME_API.md'
-      - 'docs/DEPLOYMENT_CHECKLIST.md'
-      - 'docs/AUTONOMY_RUNTIME_ROLLOUT.md'
-      - 'scripts/pack-smoke.mjs'
-      - 'scripts/build-public-runtime-artifacts.mjs'
-      - 'scripts/prepare-public-agenc-package.mjs'
-      - 'scripts/public-agenc-install-smoke.mjs'
-      - 'scripts/sync-dashboard-assets.mjs'
-      - 'scripts/check-private-kernel-surface.mjs'
-      - 'test-fixtures/plugin-kit-channel-adapter/**'
-      - 'contracts/desktop-tool-contracts/**'
-      - 'runtime/**'
-      - 'runtime/README.md'
-      - 'mcp/**'
-      - 'mcp/README.md'
-      - 'docs-mcp/**'
-      - 'docs-mcp/README.md'
-      - 'web/**'
-      - 'docs/PLUGIN_KIT.md'
-      - 'docs/VERSION_DOCS_MAP.md'
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/package-pack-smoke.yml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'README.md'
-      - 'packages/agenc/**'
-      - 'docs/RUNTIME_API.md'
-      - 'docs/DEPLOYMENT_CHECKLIST.md'
-      - 'docs/AUTONOMY_RUNTIME_ROLLOUT.md'
-      - 'scripts/pack-smoke.mjs'
-      - 'scripts/build-public-runtime-artifacts.mjs'
-      - 'scripts/prepare-public-agenc-package.mjs'
-      - 'scripts/public-agenc-install-smoke.mjs'
-      - 'scripts/sync-dashboard-assets.mjs'
-      - 'scripts/check-private-kernel-surface.mjs'
-      - 'test-fixtures/plugin-kit-channel-adapter/**'
-      - 'contracts/desktop-tool-contracts/**'
-      - 'runtime/**'
-      - 'runtime/README.md'
-      - 'mcp/**'
-      - 'mcp/README.md'
-      - 'docs-mcp/**'
-      - 'docs-mcp/README.md'
-      - 'web/**'
-      - 'docs/PLUGIN_KIT.md'
-      - 'docs/VERSION_DOCS_MAP.md'
 
 jobs:
   pack-smoke:
