@@ -134,6 +134,14 @@ import {
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
 import { enforceRuntimeSandboxAttempt } from "./runtimes/sandboxing.js";
+import {
+  createTransactionGuardContextFromEnv,
+  evaluateToolInvocationTransactionGuard,
+  formatTransactionGuardDenialMessage,
+  formatTransactionGuardEventMessage,
+  transactionGuardAuditMetadata,
+  type TransactionGuardContext,
+} from "../transaction-guard/index.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -952,6 +960,11 @@ export interface RunToolUseOptions {
   readonly onMcpToolCallError?: (mcpMeta: unknown) => void;
   /** Hidden per-call runtime context selected by router/orchestrator. */
   readonly runtimeAttemptContext?: ToolRuntimeAttemptContext;
+  /**
+   * Optional fail-closed SLM transaction guard. Undefined means resolve
+   * from environment; null means explicitly disabled for this call.
+   */
+  readonly transactionGuardContext?: TransactionGuardContext | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1403,6 +1416,52 @@ export async function runToolUse(
         invocation,
         content: message,
         elapsedMs: performance.now() - startedAt,
+      });
+    }
+  }
+
+  const transactionGuardContext =
+    opts.transactionGuardContext === undefined
+      ? createTransactionGuardContextFromEnv()
+      : opts.transactionGuardContext;
+  const transactionGuardOutcome = await evaluateToolInvocationTransactionGuard({
+    context: transactionGuardContext,
+    tool,
+    invocation,
+    args: inputForTool,
+  });
+  if (transactionGuardOutcome.kind === "evaluated") {
+    const { decision } = transactionGuardOutcome;
+    const auditMetadata = transactionGuardAuditMetadata(decision);
+    await recordRunToolPolicyAudit(opts, {
+      decision: decision.allowed ? "approved" : "denied",
+      source: "transaction-guard",
+      reasonCode: decision.allowed
+        ? "transaction_guard_allowed"
+        : decision.code ?? "transaction_guard_denied",
+    });
+    if (opts.eventLog) {
+      const message = formatTransactionGuardEventMessage(tool.name, decision);
+      if (decision.allowed) {
+        emitWarningEvent(
+          opts.eventLog,
+          subId,
+          "transaction_guard_allowed",
+          message,
+        );
+      } else {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: `transaction_guard:${decision.code ?? decision.verdict}`,
+          message,
+        });
+      }
+    }
+    if (!decision.allowed) {
+      return errorOutput({
+        invocation,
+        content: `<tool_use_error>${formatTransactionGuardDenialMessage(decision)}</tool_use_error>`,
+        elapsedMs: performance.now() - startedAt,
+        metadata: { transactionGuard: auditMetadata },
       });
     }
   }

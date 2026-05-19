@@ -193,6 +193,13 @@ entrypoints, or built artifacts.
 `check:tui-e2e` runs the scenario suite under `runtime/scripts/check-tui-e2e/`.
 Use `-- --filter <name>` to run one scenario while debugging.
 
+## Security Guardrails
+
+The runtime includes an opt-in CourtGuard-style SLM transaction guard for
+Solana transaction-like tool calls. It runs at the tool-dispatch boundary before
+execution, defaults to local Ollama `gemma4:e4b`, and has an explicit DevNet
+live validation path. See `docs/security/slm-transaction-guard.md`.
+
 ## Build Output
 
 `npm run build` compiles the runtime with `tsup`, writes `runtime/dist/VERSION`,
