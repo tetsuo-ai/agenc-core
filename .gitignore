@@ -128,6 +128,7 @@ CURSOR.md
 
 # Claude Code (local AI assistant config)
 .claude/
+.codex/
 CLAUDE.md
 claude.md
 AGENTS.md
