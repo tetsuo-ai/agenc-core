@@ -16,6 +16,8 @@ export default {
     'src/index.ts!',
     'src/bin/agenc.ts!',
     'src/bin/tui-trust-prompt.tsx!',
+    // Type-only shim for build-time `bun:bundle` feature flags.
+    'src/build/feature.ts!',
     'src/sandbox/linux-launcher/main.ts!',
     'src/tui/main.tsx!',
     'tsup.config.ts',
@@ -39,6 +41,8 @@ export default {
   },
   ignoreFiles: [
     'src/types/generated/**',
+    // String-loaded fixture used by MCP client lifecycle tests.
+    'src/mcp-client/test-fixtures/**',
     'src/test-parity/**',
     'tests/fixtures/**',
   ],
