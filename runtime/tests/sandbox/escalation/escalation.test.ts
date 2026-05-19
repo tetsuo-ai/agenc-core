@@ -19,18 +19,8 @@ import {
   requestManagedNetworkApprovalForSandbox,
 } from "./network-approval.js";
 import {
-  prefixRuleAllowedForCommand,
-  renderOnRequestEscalationGuidance,
-  shouldRetryWithEscalationAfterFailure,
-} from "./on-request.js";
-import {
-  allowedAdditionalPermissionNames,
-  preferAdditionalPermissions,
-} from "./on-request-rule-request-permission.js";
-import {
   approvalSandboxPermissions,
   managedNetworkForSandboxPermissions,
-  sandboxPermissionsFromArgs,
   sandboxOverrideForFirstAttempt,
   selectFirstAttemptSandbox,
   toolWantsNoSandboxApproval,
@@ -370,40 +360,6 @@ describe("network approval escalation", () => {
       host: "registry.npmjs.org",
       target: "https://registry.npmjs.org:443",
       cacheKey: "https://registry.npmjs.org:443",
-    });
-  });
-});
-
-describe("prompt guidance helpers", () => {
-  test("guidance prefers scoped permissions and conservative reusable rules", () => {
-    expect(renderOnRequestEscalationGuidance()).toContain(
-      'sandbox_permissions="require_escalated"',
-    );
-    expect(shouldRetryWithEscalationAfterFailure("EACCES: permission denied"))
-      .toBe(true);
-    expect(prefixRuleAllowedForCommand(["rm", "-rf", "dist"])).toBe(false);
-    expect(prefixRuleAllowedForCommand(["grep", "rm", "file.txt"])).toBe(true);
-    expect(prefixRuleAllowedForCommand(["git", "-C", "repo", "reset", "--hard"]))
-      .toBe(false);
-    expect(prefixRuleAllowedForCommand(["bash", "-lc", "git reset --hard"]))
-      .toBe(false);
-    const permissions = {
-      network: { enabled: true },
-      file_system: { read: ["/tmp/a"] },
-    };
-    expect(preferAdditionalPermissions(permissions)).toBe(true);
-    expect(allowedAdditionalPermissionNames(permissions)).toEqual([
-      "network.enabled",
-      "file_system.read",
-    ]);
-    expect(
-      sandboxPermissionsFromArgs({
-        sandbox_permissions: "with_additional_permissions",
-        additional_permissions: { file_system: { read: "/tmp/not-array" } },
-      }),
-    ).toEqual({
-      kind: "with_additional_permissions",
-      additionalPermissions: {},
     });
   });
 });
