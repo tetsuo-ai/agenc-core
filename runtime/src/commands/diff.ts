@@ -116,7 +116,7 @@ export async function collectDiffSnapshot(
   });
 }
 
-export function formatDiffSnapshot(snapshot: DiffMenuSnapshot): string {
+function formatDiffSnapshot(snapshot: DiffMenuSnapshot): string {
   if (snapshot.state === "not-repo") return "not a git repository";
   const parts: string[] = [];
   if (snapshot.rawDiff.length > 0) {

@@ -241,7 +241,7 @@ function emptyRows(snapshot: DiffMenuSnapshot): readonly DiffFileRow[] {
   }];
 }
 
-export function DiffMenuView({
+function DiffMenuView({
   snapshot,
   onDone,
 }: {

@@ -1,6 +1,6 @@
 import type { PermissionMode } from "./types.js";
 
-export type PermissionModeDisplayColor =
+type PermissionModeDisplayColor =
   | "text"
   | "planMode"
   | "permission"
@@ -99,12 +99,6 @@ export function permissionModeSymbol(
   return env.AGENC_TUI_GLYPHS === "ascii"
     ? modeSymbol.ascii
     : modeSymbol.unicode;
-}
-
-export function permissionModeDisplayColor(
-  mode: PermissionMode,
-): PermissionModeDisplayColor {
-  return displayFor(mode).color;
 }
 
 export function isDefaultMode(mode: PermissionMode | undefined): boolean {

@@ -86,7 +86,7 @@ export function createPlanDashboardSnapshot(params: {
   };
 }
 
-export function PlanDashboardView({
+function PlanDashboardView({
   snapshot,
   onDone,
 }: {

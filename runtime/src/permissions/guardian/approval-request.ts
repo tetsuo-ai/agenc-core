@@ -16,7 +16,7 @@
 import type { ToolPayload } from "../../tools/context.js";
 import type { ApprovalCtx } from "./arbiter.js";
 
-export const GUARDIAN_MAX_SERIALIZED_REQUEST_CHARS = 16_000;
+const GUARDIAN_MAX_SERIALIZED_REQUEST_CHARS = 16_000;
 const GUARDIAN_MAX_STRING_CHARS = 4_000;
 const GUARDIAN_MAX_COLLECTION_ITEMS = 200;
 const GUARDIAN_MAX_DEPTH = 12;
@@ -163,12 +163,6 @@ export function guardianApprovalRequestTargetItemId(
   request: GuardianApprovalRequest,
 ): string {
   return request.callId;
-}
-
-export function guardianApprovalRequestTurnId(
-  request: GuardianApprovalRequest,
-): string {
-  return request.turnId;
 }
 
 export function guardianApprovalRequestActionText(

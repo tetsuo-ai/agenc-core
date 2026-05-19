@@ -275,6 +275,65 @@ const intentionalSandboxMemoryIssueIgnores = {
     memoryContractExportFiles.map((file) => [file, ['exports', 'types']]),
   ),
 };
+const permissionContractExportFiles = [
+  // Permission CLI, trust, policy, evaluator, and sandbox helpers are consumed
+  // by permission tests and by runtime/TUI adapters outside this production
+  // Knip graph. The cleanup tranche removes only truly local-only exports.
+  'src/permissions/approval-cache.ts',
+  'src/permissions/approval-policy.ts',
+  'src/permissions/bash.ts',
+  'src/permissions/classifier.ts',
+  'src/permissions/denial-tracking.ts',
+  'src/permissions/evaluator.ts',
+  'src/permissions/guardian/approval-request.ts',
+  'src/permissions/guardian/rejection-circuit-breaker.ts',
+  'src/permissions/guardian/reviewer.ts',
+  'src/permissions/mode-display.ts',
+  'src/permissions/network-approval.ts',
+  'src/permissions/path-validation.ts',
+  'src/permissions/permission-audit-log.ts',
+  'src/permissions/permission-cli.ts',
+  'src/permissions/permission-mode.ts',
+  'src/permissions/review-decision.ts',
+  'src/permissions/rpc/mcp-tool-approval-templates.ts',
+  'src/permissions/rpc/request-permissions.ts',
+  'src/permissions/rules.ts',
+  'src/permissions/sandbox.ts',
+  'src/permissions/tool-approval.ts',
+  'src/permissions/trust/project-trust.ts',
+  'src/permissions/trust/TrustDialog.tsx',
+  'src/permissions/types.ts',
+  'src/permissions/unattended-policy.ts',
+];
+const commandContractExportFiles = [
+  // Slash command implementations expose focused helpers for command tests and
+  // dynamic command/menu wiring not visible to production-only Knip.
+  'src/commands/config-menu.tsx',
+  'src/commands/config.ts',
+  'src/commands/diff.ts',
+  'src/commands/dispatcher.ts',
+  'src/commands/help.ts',
+  'src/commands/mcp.ts',
+  'src/commands/model.ts',
+  'src/commands/permissions.ts',
+  'src/commands/plan-menu.tsx',
+  'src/commands/plan.ts',
+  'src/commands/provider.ts',
+  'src/commands/resume.ts',
+  'src/commands/session-compact.ts',
+  'src/commands/skills.ts',
+  'src/commands/status.ts',
+  'src/commands/tasks.ts',
+];
+const intentionalCommandPermissionIssueIgnores = {
+  ...Object.fromEntries(
+    permissionContractExportFiles.map((file) => [file, ['exports']]),
+  ),
+  ...Object.fromEntries(
+    commandContractExportFiles.map((file) => [file, ['exports']]),
+  ),
+  'src/permissions/sandbox.ts': ['exports', 'types'],
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -335,6 +394,7 @@ export default {
     ...intentionalSessionIssueIgnores,
     ...intentionalLlmIssueIgnores,
     ...intentionalSandboxMemoryIssueIgnores,
+    ...intentionalCommandPermissionIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

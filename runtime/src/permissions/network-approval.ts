@@ -342,7 +342,7 @@ export type DeferredNetworkApprovalDecision = NetworkDecision & {
 };
 
 /** Distinguishable rejection: the user actively denied the prompt. */
-export class DeniedByUser extends Error {
+class DeniedByUser extends Error {
   readonly kind = "denied_by_user" as const;
   constructor(message = "rejected by user") {
     super(message);

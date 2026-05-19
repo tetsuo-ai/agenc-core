@@ -93,7 +93,7 @@ export function summarizeGitStatus(params: {
   };
 }
 
-export async function collectGitStatus(
+async function collectGitStatus(
   cwd: string,
   git: GitRunner = runGit,
 ): Promise<GitStatusSummary> {

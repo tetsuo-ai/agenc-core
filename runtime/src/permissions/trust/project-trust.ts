@@ -100,7 +100,7 @@ export function resolveProjectTrustRootSync(
   return canonicalizePathSync(found?.rootDir ?? cwd);
 }
 
-export async function resolveProjectTrustRoot(
+async function resolveProjectTrustRoot(
   options: ProjectTrustRootOptions,
 ): Promise<string> {
   const cwd = resolve(options.cwd);
@@ -139,7 +139,7 @@ function parseTrustedProjects(raw: string): TrustedProjectsFile {
   }
 }
 
-export function readTrustedProjectsSync(
+function readTrustedProjectsSync(
   options: ProjectTrustPathOptions = {},
 ): TrustedProjectsFile {
   const path = trustedProjectsPath(options);
@@ -194,34 +194,6 @@ async function resolveLookupRoot(
   });
 }
 
-function resolveHomeSync(env: NodeJS.ProcessEnv | undefined): string | null {
-  const home = envWithProcessFallback(env).HOME;
-  if (home === undefined || home.length === 0) return null;
-  return canonicalizePathSync(home);
-}
-
-async function resolveHome(env: NodeJS.ProcessEnv | undefined): Promise<string | null> {
-  const home = envWithProcessFallback(env).HOME;
-  if (home === undefined || home.length === 0) return null;
-  return canonicalizePath(home);
-}
-
-export function isHomeProjectRootSync(
-  projectRoot: string,
-  env?: NodeJS.ProcessEnv,
-): boolean {
-  const home = resolveHomeSync(env);
-  return home !== null && canonicalizePathSync(projectRoot) === home;
-}
-
-export async function isHomeProjectRoot(
-  projectRoot: string,
-  env?: NodeJS.ProcessEnv,
-): Promise<boolean> {
-  const home = await resolveHome(env);
-  return home !== null && (await canonicalizePath(projectRoot)) === home;
-}
-
 export function isProjectTrustedSync(
   options: ProjectTrustLookupOptions = {},
 ): boolean {
@@ -229,23 +201,10 @@ export function isProjectTrustedSync(
   return containsTrustedPath(readTrustedProjectsSync(options).trustedProjects, projectRoot);
 }
 
-export async function isProjectTrusted(
-  options: ProjectTrustLookupOptions = {},
-): Promise<boolean> {
-  const projectRoot = await resolveLookupRoot(options);
-  return containsTrustedPath((await readTrustedProjects(options)).trustedProjects, projectRoot);
-}
-
 export function resolveProjectTrustStateSync(
   options: ProjectTrustLookupOptions = {},
 ): ProjectTrust {
   return isProjectTrustedSync(options) ? "trusted" : "untrusted";
-}
-
-export async function resolveProjectTrustState(
-  options: ProjectTrustLookupOptions = {},
-): Promise<ProjectTrust> {
-  return (await isProjectTrusted(options)) ? "trusted" : "untrusted";
 }
 
 function mergeTrustedProject(

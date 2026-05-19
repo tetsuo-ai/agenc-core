@@ -66,7 +66,7 @@ export const DANGEROUS_BASH_PATTERNS: readonly string[] = [
     : []),
 ];
 
-export interface DangerousShellCommandPattern {
+interface DangerousShellCommandPattern {
   readonly label: string;
   readonly pattern?: RegExp;
   readonly matches?: (command: string) => boolean;
@@ -79,7 +79,7 @@ export interface DangerousShellCommandPattern {
  * runtime exec-policy safety floor: destructive removal commands must never be
  * hidden by broad allow rules.
  */
-export const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
+const DANGEROUS_SHELL_COMMAND_PATTERNS: readonly DangerousShellCommandPattern[] = [
   {
     matches: shellExecutesDownloadedContent,
     label: "downloaded shell execution",

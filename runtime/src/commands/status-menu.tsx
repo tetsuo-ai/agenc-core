@@ -169,7 +169,7 @@ function stateGlyph(state: StatusRowState): string {
   }
 }
 
-export function StatusDashboardView({
+function StatusDashboardView({
   snapshot,
   onDone,
 }: {

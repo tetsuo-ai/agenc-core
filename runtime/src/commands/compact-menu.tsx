@@ -11,7 +11,7 @@ function rowsFromText(text: string): readonly string[] {
   return rows.length > 0 ? rows : ["No context usage estimate available."];
 }
 
-export function CompactStatusModal({
+function CompactStatusModal({
   message,
   contextText,
   onDone,

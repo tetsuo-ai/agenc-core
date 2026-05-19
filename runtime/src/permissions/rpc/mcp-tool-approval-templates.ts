@@ -12,7 +12,7 @@
  */
 
 export const MCP_TOOL_APPROVAL_TEMPLATES_SCHEMA_VERSION = 4;
-export const MCP_CONNECTOR_NAME_TEMPLATE_VAR = "{connector_name}";
+const MCP_CONNECTOR_NAME_TEMPLATE_VAR = "{connector_name}";
 
 export type McpToolApprovalJsonPrimitive = string | number | boolean | null;
 export type McpToolApprovalJsonValue =

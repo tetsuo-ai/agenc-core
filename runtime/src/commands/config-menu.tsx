@@ -119,7 +119,7 @@ function row(
   };
 }
 
-export function createConfigMenuSnapshot(
+function createConfigMenuSnapshot(
   config: AgenCConfig,
   options: ConfigMenuSnapshotOptions,
 ): ConfigMenuSnapshot {
@@ -265,7 +265,7 @@ function statusGlyph(status: ConfigRowStatus): string {
   }
 }
 
-export function ConfigMenuView({
+function ConfigMenuView({
   snapshot,
   onDone,
 }: {

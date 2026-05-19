@@ -588,7 +588,7 @@ function AgentFormModal({
   );
 }
 
-export function AgentsMenuModal({
+function AgentsMenuModal({
   onDone,
   initialTools = [],
 }: {

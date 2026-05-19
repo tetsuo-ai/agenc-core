@@ -58,7 +58,6 @@ import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   addPermissionRulesToSettings,
   deletePermissionRule,
-  EDITABLE_SOURCES,
   recordBypassPermissionsAcceptance,
   type DiskEnv,
 } from "../permissions/settings.js";
@@ -662,6 +661,3 @@ export const permissionsCommand: SlashCommand = {
       }
     }),
 };
-
-// Re-export list of editable sources for test/assertion use.
-export { EDITABLE_SOURCES };

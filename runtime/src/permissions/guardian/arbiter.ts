@@ -835,7 +835,7 @@ function emitApprovalPromptEvents(opts: RequestToolUserApprovalOpts): void {
   });
 }
 
-export function readGuardianToolPermissionContext(
+function readGuardianToolPermissionContext(
   permissionContext: ToolEvaluatorContext,
 ): ToolPermissionContext | null {
   if (typeof permissionContext.getAppState !== "function") return null;

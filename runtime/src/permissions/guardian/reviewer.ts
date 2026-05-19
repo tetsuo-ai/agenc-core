@@ -54,7 +54,7 @@ import {
 } from "./prompt.js";
 import type { GuardianRejectionCircuitBreaker } from "./rejection-circuit-breaker.js";
 
-export { guardianOutputSchema, parseGuardianAssessment } from "./prompt.js";
+export { parseGuardianAssessment } from "./prompt.js";
 export type {
   GuardianAssessment,
   GuardianAssessmentDecisionSource,
@@ -64,8 +64,7 @@ export type {
 } from "./prompt.js";
 
 export const GUARDIAN_PREFERRED_MODEL = "codex-auto-review"; // branding-scan: allow OpenAI model identifier
-export const GUARDIAN_REVIEW_TIMEOUT_MS = 90_000;
-export const GUARDIAN_REVIEWER_NAME = "guardian";
+const GUARDIAN_REVIEW_TIMEOUT_MS = 90_000;
 
 const GUARDIAN_REJECTION_INSTRUCTIONS =
   "The agent must not attempt to achieve the same outcome via workaround, " +
@@ -128,7 +127,7 @@ export function newGuardianReviewId(): string {
   return randomUUID();
 }
 
-export function guardianRejectionMessage(
+function guardianRejectionMessage(
   session: GuardianApprovalReviewSession,
   reviewId: string,
 ): string {
@@ -145,7 +144,7 @@ export function guardianRejectionMessage(
   ].join("\n");
 }
 
-export function guardianTimeoutMessage(): string {
+function guardianTimeoutMessage(): string {
   return GUARDIAN_TIMEOUT_INSTRUCTIONS;
 }
 

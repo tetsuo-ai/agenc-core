@@ -337,7 +337,7 @@ export function requestPermissionProfileIsEmpty(
   return profile.network === undefined && profile.fileSystem === undefined;
 }
 
-export function normalizeRequestPermissionProfile(
+function normalizeRequestPermissionProfile(
   value: unknown,
   options: RequestPermissionsNormalizeOptions = {},
 ): RequestPermissionProfile {

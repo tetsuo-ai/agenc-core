@@ -172,7 +172,7 @@ async function openContextUsageModal(
   return true;
 }
 
-export async function buildFallbackContextUsageText(
+async function buildFallbackContextUsageText(
   ctx: SlashCommandContext,
   reason: string,
 ): Promise<string> {

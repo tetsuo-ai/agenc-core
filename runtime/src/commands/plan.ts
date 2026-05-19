@@ -42,7 +42,6 @@ import type { PermissionMode } from "../permissions/types.js";
 import {
   formatPlanText,
   clearAllPlanSlugs,
-  clearPlanSlug,
   getPlan,
   getPlanFilePath,
   setPlanSlug,
@@ -64,7 +63,6 @@ import {
 
 export {
   clearAllPlanSlugs,
-  clearPlanSlug,
   formatPlanText,
   getPlan,
   getPlanFilePath,

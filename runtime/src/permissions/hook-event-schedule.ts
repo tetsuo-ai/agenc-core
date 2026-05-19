@@ -7,14 +7,14 @@
 
 import type { HookEventName } from "../config/schema.js";
 
-export type HookEventMatcherKind = "tool" | "source" | "none";
+type HookEventMatcherKind = "tool" | "source" | "none";
 
-export interface HookEventScheduleEntry {
+interface HookEventScheduleEntry {
   readonly event: HookEventName;
   readonly matcher: HookEventMatcherKind;
 }
 
-export const hookEventSchedule: readonly HookEventScheduleEntry[] = Object.freeze([
+const hookEventSchedule: readonly HookEventScheduleEntry[] = Object.freeze([
   { event: "PreToolUse", matcher: "tool" },
   { event: "PostToolUse", matcher: "tool" },
   { event: "PermissionRequest", matcher: "tool" },
@@ -27,7 +27,7 @@ const matcherByEvent = new Map<HookEventName, HookEventMatcherKind>(
   hookEventSchedule.map((entry) => [entry.event, entry.matcher]),
 );
 
-export function hookEventMatcherKind(
+function hookEventMatcherKind(
   event: HookEventName,
 ): HookEventMatcherKind | undefined {
   return matcherByEvent.get(event);
