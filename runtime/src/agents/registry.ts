@@ -383,7 +383,7 @@ export function normalizeAgentNameForPath(input: string): string {
   return candidate;
 }
 
-export function assertValidAgentPath(path: string): asserts path is AgentPath {
+function assertValidAgentPath(path: string): asserts path is AgentPath {
   if (path === MEMORY_AGENT_PATH) return;
   if (!path.startsWith("/")) {
     throw new InvalidAgentPathError(

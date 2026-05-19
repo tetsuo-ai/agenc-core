@@ -52,17 +52,7 @@ import { AsyncLock } from "./_deps/async-lock.js";
  * `.git/worktrees/`. One lock per process is sufficient since all
  * subagent spawns serialize through AgentControl anyway.
  */
-let gitMutationLock = new AsyncLock<void>(undefined);
-
-export function withGitWorktreeMutationLock<T>(
-  fn: () => Promise<T>,
-): Promise<T> {
-  return gitMutationLock.with(fn);
-}
-
-export function _resetGitWorktreeMutationLocksForTesting(): void {
-  gitMutationLock = new AsyncLock<void>(undefined);
-}
+const gitMutationLock = new AsyncLock<void>(undefined);
 
 // ─────────────────────────────────────────────────────────────────────
 // Git command helper
@@ -75,7 +65,7 @@ export interface GitResult {
 }
 
 /** Run `git <args>` under `cwd`. Does NOT throw; returns a result. */
-export function runGit(
+function runGit(
   args: ReadonlyArray<string>,
   cwd: string,
 ): Promise<GitResult> {
@@ -202,7 +192,7 @@ function resolveWorktreeGitDir(worktreePath: string): string | null {
 const SLUG_RE = /^[a-zA-Z0-9._-]+$/;
 const MAX_SLUG_LEN = 64;
 
-export function worktreeBranchName(slug: string): string {
+function worktreeBranchName(slug: string): string {
   return `worktree-${slug}`;
 }
 

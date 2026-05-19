@@ -141,7 +141,7 @@ export class MaxDepthExceededError extends Error {
   }
 }
 
-export class SpawnRaceAbortedError extends Error {
+class SpawnRaceAbortedError extends Error {
   constructor(public readonly parentPath: AgentPath) {
     super(`spawn aborted — parent ${parentPath} interrupted mid-spawn`);
     this.name = "SpawnRaceAbortedError";

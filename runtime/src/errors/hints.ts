@@ -96,8 +96,6 @@ export function markShownThisSession(): void {
   shownThisSession = true;
 }
 
-export const subscribeToPendingHint = pendingHintChanged.subscribe;
-
 export function getPendingHintSnapshot(): AgenCCodeHint | null {
   return pendingHint;
 }

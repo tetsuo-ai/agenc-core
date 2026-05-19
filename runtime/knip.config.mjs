@@ -377,6 +377,62 @@ const intentionalPluginPromptIssueIgnores = {
     pluginContractExportFiles.map((file) => [file, ['exports']]),
   ),
 };
+const appServerContractExportFiles = [
+  // Daemon protocol, transport, realtime, agent CLI, health, auth, and
+  // lifecycle helpers are exercised by contract tests and external daemon
+  // clients, so production-only Knip cannot see every caller.
+  'src/app-server/agent-cli.ts',
+  'src/app-server/auth.ts',
+  'src/app-server/background-agent-runner.ts',
+  'src/app-server/client-multiplexer.ts',
+  'src/app-server/daemon-autostart.ts',
+  'src/app-server/daemon-cli.ts',
+  'src/app-server/fuzzy-file-search.ts',
+  'src/app-server/health.ts',
+  'src/app-server/protocol/index.ts',
+  'src/app-server/realtime-transport.ts',
+  'src/app-server/session-lifecycle.ts',
+  'src/app-server/transport/auth.ts',
+  'src/app-server/transport/peer-credentials.ts',
+  'src/app-server/transport/stdio.ts',
+  'src/app-server/transport/unix-socket.ts',
+];
+const agentContractExportFiles = [
+  // Agent control, registry, role, mailbox, worktree, resume, truncation, job,
+  // and spawn helpers are runtime/test contracts or consumed by excluded agent
+  // adapters outside the production-only Knip graph.
+  'src/agents/control.ts',
+  'src/agents/fork-context.ts',
+  'src/agents/jobs/csv-reader.ts',
+  'src/agents/mailbox.ts',
+  'src/agents/registry.ts',
+  'src/agents/resume.ts',
+  'src/agents/role.ts',
+  'src/agents/run-agent.ts',
+  'src/agents/status.ts',
+  'src/agents/thread-manager.ts',
+  'src/agents/thread-rollout-truncation.ts',
+  'src/agents/worktree.ts',
+];
+const errorContractExportFiles = [
+  // Runtime, SDK, provider, API, category-marker, and hint-store error
+  // surfaces are shared compatibility contracts and are directly test-covered.
+  'src/errors/api.ts',
+  'src/errors/hints.ts',
+  'src/errors/openai-compatible.ts',
+  'src/errors/runtime.ts',
+];
+const intentionalAppAgentErrorIssueIgnores = {
+  ...Object.fromEntries(
+    appServerContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+  ...Object.fromEntries(
+    agentContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+  ...Object.fromEntries(
+    errorContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -439,6 +495,7 @@ export default {
     ...intentionalSandboxMemoryIssueIgnores,
     ...intentionalCommandPermissionIssueIgnores,
     ...intentionalPluginPromptIssueIgnores,
+    ...intentionalAppAgentErrorIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

@@ -61,7 +61,7 @@ export interface DaemonRuntimeInfo {
   readonly startedAt: string;
 }
 
-export const AGENC_DAEMON_RUNTIME_INFO_FILENAME = "daemon-runtime.json";
+const AGENC_DAEMON_RUNTIME_INFO_FILENAME = "daemon-runtime.json";
 
 export function resolveAgenCDaemonRuntimeInfoPath(daemonHome: string): string {
   return join(daemonHome, AGENC_DAEMON_RUNTIME_INFO_FILENAME);

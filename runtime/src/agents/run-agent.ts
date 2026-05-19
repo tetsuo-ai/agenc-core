@@ -382,10 +382,6 @@ export async function initMcpForAgent(opts: {
 // runAgent — main entry
 // ─────────────────────────────────────────────────────────────────────
 
-export interface RunAgentIterator {
-  [Symbol.asyncIterator](): AsyncIterator<RunAgentProgressEvent, RunAgentResult>;
-}
-
 function providerFromParent(parent: Session): LLMProvider | undefined {
   const services = (parent as unknown as { services?: Record<string, unknown> })
     .services;

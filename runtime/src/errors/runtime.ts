@@ -7,8 +7,6 @@ export class AgenCError extends Error {
   }
 }
 
-export class MalformedCommandError extends Error {}
-
 export class AbortError extends Error {
   constructor(message?: string) {
     super(message);
@@ -22,50 +20,6 @@ export function isAbortError(error: unknown): boolean {
     error instanceof APIUserAbortError ||
     (error instanceof Error && error.name === "AbortError")
   );
-}
-
-export class ConfigParseError extends Error {
-  readonly filePath: string;
-  readonly defaultConfig: unknown;
-
-  constructor(message: string, filePath: string, defaultConfig: unknown) {
-    super(message);
-    this.name = "ConfigParseError";
-    this.filePath = filePath;
-    this.defaultConfig = defaultConfig;
-  }
-}
-
-export class ShellError extends Error {
-  constructor(
-    readonly stdout: string,
-    readonly stderr: string,
-    readonly code: number,
-    readonly interrupted: boolean,
-  ) {
-    super("Shell command failed");
-    this.name = "ShellError";
-  }
-}
-
-export class TeleportOperationError extends Error {
-  constructor(
-    message: string,
-    readonly formattedMessage: string,
-  ) {
-    super(message);
-    this.name = "TeleportOperationError";
-  }
-}
-
-export class TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends Error {
-  readonly telemetryMessage: string;
-
-  constructor(message: string, telemetryMessage?: string) {
-    super(message);
-    this.name = "TelemetrySafeError";
-    this.telemetryMessage = telemetryMessage ?? message;
-  }
 }
 
 export function hasExactErrorMessage(
@@ -101,10 +55,6 @@ export function getErrnoCode(error: unknown): string | undefined {
     return error.code;
   }
   return undefined;
-}
-
-export function isENOENT(error: unknown): boolean {
-  return getErrnoCode(error) === "ENOENT";
 }
 
 export function getErrnoPath(error: unknown): string | undefined {

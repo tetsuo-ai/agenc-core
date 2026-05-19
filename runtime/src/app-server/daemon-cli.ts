@@ -115,14 +115,14 @@ import {
 import { FileThreadStore } from "../thread-store/store.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 
-export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
-export const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
-export const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
-export const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
-export const AGENC_DAEMON_WEBSOCKET_HOST_ENV = "AGENC_DAEMON_WEBSOCKET_HOST";
+const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
+const AGENC_DAEMON_SOCKET_FILENAME = "daemon.sock";
+const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
+const AGENC_DAEMON_SNAPSHOT_FILENAME = "daemon-snapshot.json";
+const AGENC_DAEMON_WEBSOCKET_HOST_ENV = "AGENC_DAEMON_WEBSOCKET_HOST";
 export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
-export const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
-export const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
+const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
+const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV =
   "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 
@@ -2325,7 +2325,7 @@ export async function removeAgenCDaemonPid(
   await rm(pidPath, { force: true });
 }
 
-export async function writeAgenCDaemonSnapshot(
+async function writeAgenCDaemonSnapshot(
   snapshotPath: string,
   snapshot: AgenCDaemonAgentSnapshotFlush,
 ): Promise<void> {

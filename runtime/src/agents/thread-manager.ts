@@ -121,7 +121,7 @@ export interface ThreadOperationManager {
   getThread(threadId: ThreadId): ManagedThread;
 }
 
-export class ThreadNotManagedError extends Error {
+class ThreadNotManagedError extends Error {
   constructor(threadId: ThreadId) {
     super(`thread not found: ${threadId}`);
     this.name = "ThreadNotManagedError";

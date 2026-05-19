@@ -27,9 +27,9 @@ import {
   type AgenCNativePeerCredentialBinding,
 } from "./peer-credentials.js";
 
-export const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
-export const AGENC_DAEMON_SOCKET_MODE = 0o600;
-export const AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS = 5000;
+const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
+const AGENC_DAEMON_SOCKET_MODE = 0o600;
+const AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS = 5000;
 
 export function defaultAgenCDaemonSocketPath(homeDir = homedir()): string {
   return join(homeDir, ".agenc", "daemon.sock");
@@ -351,7 +351,7 @@ export async function resolveAgenCPrivateUnixSocketOwnerUid(
   return expectedUid;
 }
 
-export function resolveAgenCUnixSocketPeerUid(
+function resolveAgenCUnixSocketPeerUid(
   socket: Socket,
   nativePeerCredentialBinding: AgenCNativePeerCredentialBinding | null,
 ): number | null {

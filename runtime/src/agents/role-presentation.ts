@@ -95,11 +95,11 @@ export function agentRolePresentation(
   return ROLE_PRESENTATION[canonicalName];
 }
 
-export function agentRoleDisplayLabel(roleName: string | undefined): string | undefined {
+function agentRoleDisplayLabel(roleName: string | undefined): string | undefined {
   return agentRolePresentation(roleName)?.label;
 }
 
-export function agentRolePublicName(roleName: string | undefined): string | undefined {
+function agentRolePublicName(roleName: string | undefined): string | undefined {
   return agentRolePresentation(roleName)?.publicName;
 }
 

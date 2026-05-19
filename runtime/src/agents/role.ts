@@ -299,7 +299,7 @@ export function getDefaultAgentRole(): AgentRole {
   return DEFAULT_ROLE;
 }
 
-export class AgentRoleNotFoundError extends Error {
+class AgentRoleNotFoundError extends Error {
   constructor(public readonly roleName: string) {
     super(`unknown agent_type '${roleName}'`);
     this.name = "AgentRoleNotFoundError";

@@ -542,7 +542,7 @@ export function formatAgenCAgentLogsResult(result: AgentLogsResult): string {
   return result.transcript;
 }
 
-export function resolveAgenCAgentAttachSession(
+function resolveAgenCAgentAttachSession(
   result: AgentAttachResult,
 ): SessionSummary | null {
   const primarySessionId = result.sessionIds[0];

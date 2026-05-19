@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentControl } from "../control.js";
 import {
-  depthOfAgentPath,
   ROOT_AGENT_PATH,
   type AgentPath,
   type AgentRegistry,
@@ -20,7 +19,6 @@ import { safeStringify } from "../../tools/types.js";
 export const MIN_WAIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 export const MAX_WAIT_TIMEOUT_MS = 3_600_000;
-export const DEFAULT_MAX_AGENT_DEPTH = 1;
 
 export interface MultiAgentV2Options {
   readonly getSession: () => Session | null;
@@ -192,33 +190,6 @@ export function receiverMetadataFor(
       ? { receiverAgentRoleDisplayName: formatAgentRoleLabel(roleName) }
       : {}),
   };
-}
-
-export function currentAgentDepth(
-  session: Session,
-  current: Pick<CurrentAgentContext, "threadId" | "agentPath">,
-  opts: MultiAgentV2Options,
-): number {
-  const { control } = opts.ensureAgentControl(session);
-  return control.getLive(current.threadId)?.depth ?? depthOfAgentPath(current.agentPath);
-}
-
-export function resolveSessionMaxAgentDepth(session: Session): number {
-  const candidate = (value: unknown): number | undefined =>
-    typeof value === "number" && Number.isInteger(value) && value >= 1
-      ? value
-      : undefined;
-  return (
-    candidate((session.config as { agent_max_depth?: unknown }).agent_max_depth) ??
-    candidate(
-      (
-        session.sessionConfiguration.originalConfigDoNotUse as
-          | { agent_max_depth?: unknown }
-          | undefined
-      )?.agent_max_depth,
-    ) ??
-    DEFAULT_MAX_AGENT_DEPTH
-  );
 }
 
 export function recordAgentCounter(

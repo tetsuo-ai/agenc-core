@@ -29,11 +29,11 @@ import { basename, dirname, join } from "node:path";
 import type { InitializeParams, JsonObject } from "../protocol/index.js";
 import type { AuthDaemonSocketIdentity } from "../../auth/backend.js";
 
-export const AGENC_DAEMON_COOKIE_BYTES = 32;
+const AGENC_DAEMON_COOKIE_BYTES = 32;
 export const AGENC_DAEMON_COOKIE_HEX_LENGTH =
   AGENC_DAEMON_COOKIE_BYTES * 2;
-export const AGENC_DAEMON_COOKIE_FILE_MODE = 0o600;
-export const AGENC_DAEMON_COOKIE_DIR_MODE = 0o700;
+const AGENC_DAEMON_COOKIE_FILE_MODE = 0o600;
+const AGENC_DAEMON_COOKIE_DIR_MODE = 0o700;
 
 export class AgenCDaemonCookieAuthenticator {
   readonly #expectedCookie: string;

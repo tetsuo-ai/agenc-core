@@ -16,10 +16,8 @@ import type {
   RealtimeEvent,
   RealtimeOutputModality,
   RealtimeSessionConfig,
-  RealtimeSessionMode,
   RealtimeTransportConnection,
   RealtimeTransportRequest,
-  RealtimeVoice,
   RealtimeWriter,
 } from "../conversation/realtime/conversation.js";
 
@@ -267,7 +265,7 @@ export function realtimeCallMultipartContentType(boundary: string): string {
   return `multipart/form-data; boundary=${boundary}`;
 }
 
-export function randomRealtimeMultipartBoundary(): string {
+function randomRealtimeMultipartBoundary(): string {
   return `agenc-realtime-${randomUUID()}`;
 }
 
@@ -361,7 +359,7 @@ export function realtimeCallSessionConfigToProviderJson(
   return realtimeSessionConfigToProviderJson(config);
 }
 
-export function realtimeSessionUpdateToProviderJson(
+function realtimeSessionUpdateToProviderJson(
   config: RealtimeSessionConfig,
 ): JsonObject {
   const { model: _model, ...session } =
@@ -369,7 +367,7 @@ export function realtimeSessionUpdateToProviderJson(
   return session;
 }
 
-export function realtimeCallUrl(baseUrl: string): string {
+function realtimeCallUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   const path = url.pathname;
   if (path === "" || path === "/") {
@@ -1222,14 +1220,4 @@ function formatRealtimeCloseReason(reason: unknown): string {
       ? ""
       : String(reason);
   return text.length === 0 ? "" : ` reason=${text}`;
-}
-
-export function realtimeVoiceToJsonValue(voice: RealtimeVoice): JsonValue {
-  return voice;
-}
-
-export function realtimeSessionModeToJsonValue(
-  sessionMode: RealtimeSessionMode,
-): JsonValue {
-  return sessionMode;
 }

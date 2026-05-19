@@ -10,12 +10,6 @@ export interface SnapshotTurnState {
   readonly activeTurnStartIndex?: number;
 }
 
-export function initialHistoryHasPriorUserTurns(
-  items: ReadonlyArray<RolloutItem>,
-): boolean {
-  return items.some(rolloutItemIsUserTurnBoundary);
-}
-
 export function userMessagePositionsInRollout(
   items: ReadonlyArray<RolloutItem>,
 ): number[] {
@@ -92,7 +86,7 @@ export function truncateRolloutToLastNForkTurns(
   return items.slice(positions[positions.length - nFromEnd]);
 }
 
-export function keepForkedRolloutItem(item: RolloutItem): boolean {
+function keepForkedRolloutItem(item: RolloutItem): boolean {
   if (item.type === "response_item") {
     const response = item.payload;
     const role = response.role as string;
@@ -122,7 +116,7 @@ export function filterForkedRolloutItems(
   return items.filter(keepForkedRolloutItem).map(cloneRolloutItem);
 }
 
-export function snapshotTurnState(
+function snapshotTurnState(
   items: ReadonlyArray<RolloutItem>,
 ): SnapshotTurnState {
   let activeTurnId: string | undefined;
@@ -166,7 +160,7 @@ export function snapshotTurnState(
   return { endsMidTurn: !hasTerminalBoundary };
 }
 
-export function truncateBeforeNthUserMessage(
+function truncateBeforeNthUserMessage(
   items: ReadonlyArray<RolloutItem>,
   n: number,
   state: SnapshotTurnState = snapshotTurnState(items),
@@ -195,7 +189,7 @@ export function forkSnapshotRollout(
     : filtered;
 }
 
-export function appendInterruptedBoundary(
+function appendInterruptedBoundary(
   items: ReadonlyArray<RolloutItem>,
   turnId?: string,
 ): RolloutItem[] {
