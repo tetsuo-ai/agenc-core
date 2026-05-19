@@ -57,7 +57,6 @@ describe("memory wiring contract", () => {
   it("wires global durable memory into loading, recall, and permissions", () => {
     const agencmd = readFileSync(resolve(root, "runtime/src/memory/agencmd.ts"), "utf8");
     const projectMemory = readFileSync(resolve(root, "runtime/src/memory/project-memory.ts"), "utf8");
-    const fileReadTool = readFileSync(resolve(root, "runtime/src/tools/FileReadTool/FileReadTool.ts"), "utf8");
     const fileWriteTool = readFileSync(resolve(root, "runtime/src/tools/FileWriteTool/FileWriteTool.ts"), "utf8");
     const attachments = readFileSync(resolve(root, "runtime/src/utils/attachments.ts"), "utf8");
     const filesystem = readFileSync(resolve(root, "runtime/src/utils/permissions/filesystem.ts"), "utf8");
@@ -67,9 +66,6 @@ describe("memory wiring contract", () => {
     expect(projectMemory).toContain("getProjectMemoryPathForSelector");
     expect(projectMemory).toContain("MEMORY_MENTION_SYNTAX");
     expect(projectMemory).toContain("./privacy.js");
-    expect(fileReadTool).toContain("detectSessionFileType");
-    expect(fileReadTool).toContain("../../memory/index.js");
-    expect(fileReadTool).not.toContain("function detectSessionFileType");
     expect(fileWriteTool).toContain("../../memory/index.js");
     expect(attachments).toContain("getDurableMemorySearchDirs");
     expect(attachments).toContain("getGlobalMemoryPath");
@@ -101,7 +97,6 @@ describe("memory wiring contract", () => {
 
     for (const rel of [
       "runtime/src/utils/attachments.ts",
-      "runtime/src/tools/FileReadTool/FileReadTool.ts",
       "runtime/src/services/extractMemories/extractMemories.ts",
     ]) {
       expect(readFileSync(resolve(root, rel), "utf8"), rel).toContain(

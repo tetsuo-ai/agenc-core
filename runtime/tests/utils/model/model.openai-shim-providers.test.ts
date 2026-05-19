@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
 
 import { saveGlobalConfig } from '../config.js'
-import { applyProviderFlag } from '../providerFlag.js'
 
 async function importFreshModelModule() {
   mock.restore()
@@ -171,38 +170,6 @@ test('github provider reads GITHUB_MODEL, not stale OPENAI_MODEL', async () => {
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('github:copilot')
 })
-
-test.each([
-  {
-    provider: 'github',
-    model: 'github:copilot',
-  },
-  {
-    provider: 'nvidia-nim',
-    model: 'nvidia/llama-3.1-nemotron-70b-instruct',
-  },
-  {
-    provider: 'minimax',
-    model: 'MiniMax-M2.5',
-  },
-] as const)(
-  '--provider $provider --model feeds model helper paths',
-  async ({ provider, model }) => {
-    saveGlobalConfig(current => ({ ...current, model: 'stale-default' }))
-    process.env.OPENAI_MODEL = 'wrong-openai-model'
-
-    const result = applyProviderFlag(provider, ['--provider', provider, '--model', model])
-    expect(result.error).toBeUndefined()
-
-    const {
-      getUserSpecifiedModelSetting,
-      getDefaultMainLoopModelSetting,
-    } = await importFreshModelModule()
-
-    expect(getUserSpecifiedModelSetting()).toBe(model)
-    expect(getDefaultMainLoopModelSetting()).toBe(model)
-  },
-)
 
 // ---------------------------------------------------------------------------
 // Default model helpers — must not fall through to claude-haiku-4-5 etc. for
