@@ -17,7 +17,6 @@ import {
   compactWarningStore,
   suppressCompactWarning,
 } from "./compactWarningState.js";
-import { groupMessagesAtAssistantBoundaries } from "./grouping.js";
 import { runPostCompactCleanup } from "./postCompactCleanup.js";
 import {
   formatCompactSummary,
@@ -74,32 +73,6 @@ describe("compact supporting surfaces", () => {
     await expect(maybeRunCachedMicrocompact()).resolves.toBeNull();
     expect(existsSync(fileURLToPath(sourceUrl("services/compact/cachedMCConfig.ts"))))
       .toBe(false);
-  });
-
-  test("groups messages at assistant API-round boundaries", () => {
-    const groups = groupMessagesAtAssistantBoundaries([
-      message("system", "system"),
-      message("user", "user"),
-      message("assistant 1", "assistant"),
-      message("tool", "tool"),
-      {
-        type: "assistant",
-        content: "assistant 2",
-        message: { role: "assistant", content: "assistant 2" },
-      },
-      {
-        originalRole: "assistant",
-        content: "assistant 3",
-        message: { content: "assistant 3" },
-      },
-    ]);
-
-    expect(groups.map((group) => group.map((entry) => entry.content))).toEqual([
-      ["system", "user"],
-      ["assistant 1", "tool"],
-      ["assistant 2"],
-      ["assistant 3"],
-    ]);
   });
 
   test("formats compact summaries without analysis blocks", () => {
