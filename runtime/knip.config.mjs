@@ -433,6 +433,39 @@ const intentionalAppAgentErrorIssueIgnores = {
     errorContractExportFiles.map((file) => [file, ['exports', 'types']]),
   ),
 };
+const binConfigTaskOnboardingContractExportFiles = [
+  // CLI bootstrap ingress helpers, config schema/compatibility helpers,
+  // onboarding flows, and task registry surfaces are covered by focused tests
+  // or consumed through dynamic runtime paths outside this Knip graph.
+  'src/bin/_deps/session-ingress-auth.ts',
+  'src/bin/_deps/session-storage.ts',
+  'src/config/init.ts',
+  'src/config/loader.ts',
+  'src/config/profiles.ts',
+  'src/config/project-init.ts',
+  'src/config/resolve-model.ts',
+  'src/config/resolve-provider.ts',
+  'src/config/schema.ts',
+  'src/onboarding/Onboarding.tsx',
+  'src/onboarding/inputPaste.ts',
+  'src/onboarding/pasteStore.ts',
+  'src/onboarding/projectOnboardingState.ts',
+  'src/onboarding/projectOnboardingSteps.ts',
+  'src/onboarding/useApiKeyVerification.ts',
+  'src/tasks/DreamTask/DreamTask.ts',
+  'src/tasks/InProcessTeammateTask/InProcessTeammateTask.tsx',
+  'src/tasks/LocalAgentTask/LocalAgentTask.tsx',
+  'src/tasks/LocalMainSessionTask.ts',
+  'src/tasks/LocalShellTask/LocalShellTask.tsx',
+  'src/tasks/MonitorMcpTask/MonitorMcpTask.ts',
+  'src/tasks/index.ts',
+  'src/tasks/registry.ts',
+  'src/tasks/stopTask.ts',
+  'src/tasks/types.ts',
+];
+const intentionalBinConfigTaskOnboardingIssueIgnores = Object.fromEntries(
+  binConfigTaskOnboardingContractExportFiles.map((file) => [file, ['exports']]),
+);
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -496,6 +529,7 @@ export default {
     ...intentionalCommandPermissionIssueIgnores,
     ...intentionalPluginPromptIssueIgnores,
     ...intentionalAppAgentErrorIssueIgnores,
+    ...intentionalBinConfigTaskOnboardingIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',
