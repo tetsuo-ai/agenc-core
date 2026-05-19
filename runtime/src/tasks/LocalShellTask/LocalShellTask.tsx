@@ -371,22 +371,6 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
  * Background ALL foreground tasks (bash commands and agents).
  * Called when user presses Ctrl+B to background all running tasks.
  */
-/**
- * Check if there are any foreground tasks (bash or agent) that can be backgrounded.
- * Used to determine whether Ctrl+B should background existing tasks vs. background the session.
- */
-export function hasForegroundTasks(state: AppState): boolean {
-  return Object.values(state.tasks).some(task => {
-    if (isLocalShellTask(task) && !task.isBackgrounded && task.shellCommand) {
-      return true;
-    }
-    // Exclude main session tasks - they display in the main view, not as foreground tasks
-    if (isLocalAgentTask(task) && !task.isBackgrounded && !isMainSessionTask(task)) {
-      return true;
-    }
-    return false;
-  });
-}
 export function backgroundAll(getAppState: () => AppState, setAppState: SetAppState): void {
   const state = getAppState();
 

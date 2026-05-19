@@ -1,5 +1,4 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG, WORKTREE_BRANCH_TAG, WORKTREE_PATH_TAG, WORKTREE_TAG } from '../../constants/xml.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import type { AppState } from '../../tui/state/AppState.js';
@@ -19,7 +18,6 @@ import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import { getAgentTranscriptPath } from '../../utils/sessionStorage.js';
 import { evictTaskOutput, getTaskOutputPath, initTaskOutputAsSymlink } from '../../utils/task/diskOutput.js';
 import { PANEL_GRACE_MS, registerTask, updateTaskState } from '../../utils/task/framework.js';
-import { emitTaskProgress } from '../../utils/task/sdkProgress.js';
 import type { TaskState } from '../types.js';
 export type ToolActivity = {
   toolName: string;
@@ -166,18 +164,6 @@ export function queuePendingMessage(taskId: string, msg: string, setAppState: (f
   }));
 }
 
-/**
- * Append a message to task.messages so it appears in the viewed transcript
- * immediately. Caller constructs the Message (breaks the messages.ts cycle).
- * queuePendingMessage and resumeAgentBackground route the prompt to the
- * agent's API input but don't touch the display.
- */
-export function appendMessageToLocalAgent(taskId: string, message: Message, setAppState: (f: (prev: AppState) => AppState) => void): void {
-  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
-    ...task,
-    messages: [...(task.messages ?? []), message]
-  }));
-}
 export function drainPendingMessages(taskId: string, getAppState: () => AppState, setAppState: (f: (prev: AppState) => AppState) => void): string[] {
   const task = getAppState().tasks[taskId];
   if (!isLocalAgentTask(task) || task.pendingMessages.length === 0) {
@@ -350,60 +336,6 @@ export function updateAgentProgress(taskId: string, progress: AgentProgress, set
       } : progress
     };
   });
-}
-
-/**
- * Update the background summary for an agent task.
- * Called by the periodic summarization service to store a 1-2 sentence progress summary.
- */
-export function updateAgentSummary(taskId: string, summary: string, setAppState: SetAppState): void {
-  let captured: {
-    tokenCount: number;
-    toolUseCount: number;
-    startTime: number;
-    toolUseId: string | undefined;
-  } | null = null;
-  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.status !== 'running') {
-      return task;
-    }
-    captured = {
-      tokenCount: task.progress?.tokenCount ?? 0,
-      toolUseCount: task.progress?.toolUseCount ?? 0,
-      startTime: task.startTime,
-      toolUseId: task.toolUseId
-    };
-    return {
-      ...task,
-      progress: {
-        ...task.progress,
-        toolUseCount: task.progress?.toolUseCount ?? 0,
-        tokenCount: task.progress?.tokenCount ?? 0,
-        summary
-      }
-    };
-  });
-
-  // Emit summary to SDK consumers (e.g. VS Code subagent panel). No-op in TUI.
-  // Gate on the SDK option so coordinator-mode sessions without the flag don't
-  // leak summary events to consumers who didn't opt in.
-  if (captured && getSdkAgentProgressSummariesEnabled()) {
-    const {
-      tokenCount,
-      toolUseCount,
-      startTime,
-      toolUseId
-    } = captured;
-    emitTaskProgress({
-      taskId,
-      toolUseId,
-      description: summary,
-      startTime,
-      totalTokens: tokenCount,
-      toolUses: toolUseCount,
-      summary
-    });
-  }
 }
 
 /**

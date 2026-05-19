@@ -24,7 +24,6 @@ Side labels:
 | `runtime/src/bin/_deps/session-ingress-auth.ts` | shared | Session-ingress auth hook consumed by bootstrap when optional session ingress is configured. |
 | `runtime/src/bin/_deps/session-storage.ts` | shared | Transcript loader and session-ingress setters consumed by shared bootstrap rehydration. |
 | `runtime/src/bin/_deps/tools-types.ts` | shared | Tool shape and stringify helper used by `delegate-tool.ts`, which is shared by background-agent sessions. |
-| `runtime/src/bin/_deps/types-logs.ts` | shared | Transcript collapse entry types consumed by the shared session-storage helper. |
 | `runtime/src/bin/agenc.ts` | client-only | Top-level executable, command dispatcher, TUI launcher, and daemon thin-client owner. It calls daemon helpers but is not daemon runtime code. |
 | `runtime/src/bin/auth-cli.ts` | client-only | Implements `agenc login`, `logout`, and `whoami` terminal commands over the configured auth backend. |
 | `runtime/src/bin/bootstrap-services.ts` | shared | Builds session services used by daemon-launched runtime sessions. |
