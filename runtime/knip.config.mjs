@@ -498,6 +498,58 @@ const intentionalConversationRecoveryStateShellIssueIgnores = Object.fromEntries
     ['exports'],
   ]),
 );
+const remainingRuntimeContractExportFiles = [
+  // The final cleanup tranche leaves only daemon/client protocol, command,
+  // MCP, elicitation, hook, phase, planning, skill, secret, and thread-store
+  // surfaces that are public, dynamically consumed, or covered by focused
+  // contract tests outside the production-only Knip graph.
+  'src/app-server-client/index.ts',
+  'src/app-server-protocol/index.ts',
+  'src/commands.ts',
+  'src/context/personality-spec-instructions.ts',
+  'src/coordinator/coordinatorMode.ts',
+  'src/elicitation/mcp.ts',
+  'src/elicitation/request-user-input.ts',
+  'src/elicitation/respond.ts',
+  'src/file-watcher/index.ts',
+  'src/hooks/configured-hooks.ts',
+  'src/hooks/engine/dispatcher.ts',
+  'src/lifecycle/signal-handlers.ts',
+  'src/mcp-client/resources.ts',
+  'src/mcp-client/supply-chain.ts',
+  'src/mcp-client/transports/stdio.ts',
+  'src/mcp-client/transports/websocket.ts',
+  'src/mcp-server/http-sse.ts',
+  'src/mcp-server/stdio.ts',
+  'src/mcp-server/tools.ts',
+  'src/mcp/server/start.ts',
+  'src/observability/telemetry.ts',
+  'src/personality/migration.ts',
+  'src/phases/_deps/tool-runtime.ts',
+  'src/phases/post-sample-recovery.ts',
+  'src/phases/stop-hooks.ts',
+  'src/phases/stream-model.ts',
+  'src/planning/exit-plan-approval.ts',
+  'src/planning/plan-files.ts',
+  'src/pty/loadPty.ts',
+  'src/secrets/index.ts',
+  'src/secrets/sanitizer.ts',
+  'src/skills/local-loader.ts',
+  'src/thread-store/live-thread.ts',
+];
+const remainingRuntimeContractTypeFiles = [
+  'src/schemas/hooks.ts',
+  'src/types/hooks.ts',
+  'src/types/permissions.ts',
+];
+const intentionalRemainingRuntimeIssueIgnores = {
+  ...Object.fromEntries(
+    remainingRuntimeContractExportFiles.map((file) => [file, ['exports']]),
+  ),
+  ...Object.fromEntries(
+    remainingRuntimeContractTypeFiles.map((file) => [file, ['types']]),
+  ),
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -563,6 +615,7 @@ export default {
     ...intentionalAppAgentErrorIssueIgnores,
     ...intentionalBinConfigTaskOnboardingIssueIgnores,
     ...intentionalConversationRecoveryStateShellIssueIgnores,
+    ...intentionalRemainingRuntimeIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

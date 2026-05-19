@@ -44,7 +44,7 @@ import {
 } from "./prompts.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
-export const MCP_STARTUP_TIMEOUT_MS = 30_000;
+const MCP_STARTUP_TIMEOUT_MS = 30_000;
 
 export interface MCPManagerStartOpts {
   /** Cancel the startup wait — fires I-50. Any in-flight connect that

@@ -6,7 +6,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 type EnvLike = Pick<NodeJS.ProcessEnv, "AGENC_HOME" | "HOME" | "USERPROFILE">;
@@ -52,7 +52,7 @@ const nouns = [
 
 const planSlugs = new Map<string, string>();
 
-export function resolveAgencHome(ctx: PlanFileContext = {}): string {
+function resolveAgencHome(ctx: PlanFileContext = {}): string {
   if (ctx.agencHome && ctx.agencHome.trim().length > 0) {
     return ctx.agencHome;
   }
@@ -148,7 +148,7 @@ function pathForSlug(ctx: PlanFileContext, slug: string): string {
   return join(getPlansDirectory(ctx), `${slug}${agentSuffix}.md`);
 }
 
-export function getPlanSlug(ctx: PlanFileContext = {}): string {
+function getPlanSlug(ctx: PlanFileContext = {}): string {
   const key = baseKey(ctx);
   const keyString = cacheKey(key);
   const cached = planSlugs.get(keyString);
@@ -184,14 +184,6 @@ export function setPlanSlug(ctx: PlanFileContext, slug: string): string {
   index[baseKey(ctx).sessionId] = cleaned;
   writeSlugIndex(ctx, index);
   return cleaned;
-}
-
-export function clearPlanSlug(ctx: PlanFileContext = {}): void {
-  const key = baseKey(ctx);
-  planSlugs.delete(cacheKey(key));
-  const index = readSlugIndex(ctx);
-  delete index[key.sessionId];
-  writeSlugIndex(ctx, index);
 }
 
 export function clearAllPlanSlugs(): void {
@@ -241,15 +233,6 @@ export function getPlan(ctx: PlanFileContext = {}): string | null {
   const path = getPlanFilePath(ctx);
   try {
     const content = readFileSync(path, "utf8");
-    return content.length > 0 ? content : null;
-  } catch {
-    return null;
-  }
-}
-
-export function readPlanFile(filePath: string): string | null {
-  try {
-    const content = readFileSync(filePath, "utf8");
     return content.length > 0 ? content : null;
   } catch {
     return null;
@@ -373,27 +356,6 @@ export function copyPlanForResume(
     : null;
   if (recovered === null) return null;
   writeFileSync(targetPath, recovered, "utf8");
-  return targetPath;
-}
-
-export async function copyPlanForFork(
-  source: PlanFileContext,
-  target: PlanFileContext,
-  opts: { readonly messages?: readonly unknown[] } = {},
-): Promise<string | null> {
-  const sourcePath = getPlanFilePath(source);
-  const targetPath = getPlanFilePath(target);
-  await mkdir(dirname(targetPath), { recursive: true });
-  if (existsSync(sourcePath)) {
-    if (sourcePath === targetPath) return targetPath;
-    await copyFile(sourcePath, targetPath);
-    return targetPath;
-  }
-  const recovered = opts.messages
-    ? recoverPlanFromMessages(opts.messages)
-    : null;
-  if (recovered === null) return null;
-  await writeFile(targetPath, recovered, "utf8");
   return targetPath;
 }
 

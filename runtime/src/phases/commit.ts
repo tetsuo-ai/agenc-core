@@ -49,7 +49,7 @@ import { evaluateStopHooks } from "./stop-hooks.js";
  * we tolerate before force-terminating with error. Matches AgenC
  * `MAX_STOP_HOOK_BLOCKS = 3` (query.ts:163).
  */
-export const MAX_STOP_HOOK_BLOCKS = 3;
+const MAX_STOP_HOOK_BLOCKS = 3;
 
 function toolUseSummaryText(summary: unknown): string | null {
   if (summary === null || summary === undefined || typeof summary !== "object") {

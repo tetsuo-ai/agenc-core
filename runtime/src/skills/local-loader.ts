@@ -1057,7 +1057,7 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 1)}…`;
 }
 
-export function recordInvokedSkill(record: InvokedSkillRecord): void {
+function recordInvokedSkill(record: InvokedSkillRecord): void {
   const key = record.agentId ?? INVOKED_MAIN_AGENT_ID;
   let skills = invokedSkillsByAgent.get(key);
   if (!skills) {
@@ -1067,13 +1067,13 @@ export function recordInvokedSkill(record: InvokedSkillRecord): void {
   skills.set(record.skillName, record);
 }
 
-export function getInvokedSkillsForAgent(
+function getInvokedSkillsForAgent(
   agentId?: string,
 ): ReadonlyMap<string, InvokedSkillRecord> {
   return new Map(invokedSkillsByAgent.get(agentId ?? INVOKED_MAIN_AGENT_ID));
 }
 
-export function clearInvokedSkillsForAgent(agentId?: string): void {
+function clearInvokedSkillsForAgent(agentId?: string): void {
   invokedSkillsByAgent.delete(agentId ?? INVOKED_MAIN_AGENT_ID);
 }
 

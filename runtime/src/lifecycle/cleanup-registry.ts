@@ -77,18 +77,3 @@ export class AgenCCleanupRegistry {
     return results;
   }
 }
-
-const globalAgenCCleanupRegistry = new AgenCCleanupRegistry();
-
-export function registerAgenCCleanup(
-  name: string,
-  task: AgenCCleanupTask,
-): () => void {
-  return globalAgenCCleanupRegistry.register(name, task);
-}
-
-export function runAgenCCleanup(
-  context: AgenCCleanupContext,
-): Promise<readonly AgenCCleanupResult[]> {
-  return globalAgenCCleanupRegistry.run(context);
-}

@@ -22,18 +22,11 @@ const MAX_STATUS_CHARS = 2000
 // System prompt injection for cache breaking (internal-only, ephemeral debugging state)
 let systemPromptInjection: string | null = null
 
-export function getSystemPromptInjection(): string | null {
+function getSystemPromptInjection(): string | null {
   return systemPromptInjection
 }
 
-export function setSystemPromptInjection(value: string | null): void {
-  systemPromptInjection = value
-  // Clear context caches immediately when injection changes
-  getUserContext.cache.clear?.()
-  getSystemContext.cache.clear?.()
-}
-
-export const getGitStatus = memoize(async (): Promise<string | null> => {
+const getGitStatus = memoize(async (): Promise<string | null> => {
   if (process.env.NODE_ENV === 'test') {
     // Avoid cycles in tests
     return null

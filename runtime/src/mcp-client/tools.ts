@@ -148,7 +148,7 @@ const MCP_RESULT_TELEMETRY_SERVER_USER_FLOW_SPAN_ATTR =
 const MCP_RESULT_TELEMETRY_TARGET_ID_MAX_CHARS = 256;
 
 /** I-76: upper bound on a single MCP tool-call result, 5MB. */
-export const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
+const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
 
 /**
  * T6 gap #119: optional observer hooks for `mcp_tool_call_begin` /

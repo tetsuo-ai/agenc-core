@@ -55,7 +55,7 @@ export function getUserPromptSubmitHookBlockingMessage(
   return `UserPromptSubmit operation blocked by hook:\n${blockingError.blockingError}`;
 }
 
-export async function* runUserPromptSubmitHooks(
+async function* runUserPromptSubmitHooks(
   hooks: readonly UserPromptSubmitHook[],
   input: UserPromptSubmitHookInput,
   onError?: (err: unknown, idx: number) => void,

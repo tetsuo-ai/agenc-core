@@ -28,7 +28,7 @@ import type {
 } from "../llm/hooks/types.js";
 import { redactSecrets } from "../secrets/index.js";
 import { HookEngine, matchesPattern } from "./engine/dispatcher.js";
-import { flattenHooks, groupHooksByEvent } from "./engine/discovery.js";
+import { groupHooksByEvent } from "./engine/discovery.js";
 import {
   readHookSpecificOutput,
   type HookSpecificOutput,
@@ -40,7 +40,7 @@ import type {
   IndividualHookConfig,
 } from "./engine/types.js";
 
-export { flattenHooks, groupHooksByEvent, matchesPattern };
+export { groupHooksByEvent, matchesPattern };
 export type {
   HookCommandRunDiagnostic,
   HookRunDiagnostic,

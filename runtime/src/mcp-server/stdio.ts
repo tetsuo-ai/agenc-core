@@ -153,7 +153,7 @@ export function encodeMcpJsonLine(message: McpOutgoingMessage): string {
   return `${ensureMcpOutgoingSerializable(message)}\n`;
 }
 
-export function writeMcpJsonLine(
+function writeMcpJsonLine(
   output: Writable,
   message: McpOutgoingMessage,
 ): Promise<void> {

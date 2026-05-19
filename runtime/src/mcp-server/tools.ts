@@ -43,7 +43,7 @@ export function mcpDefinitionFromAgenCTool(tool: Tool): McpToolDefinition {
   };
 }
 
-export function mcpResultFromToolDispatch(
+function mcpResultFromToolDispatch(
   result: ToolDispatchResult,
 ): McpCallToolResult {
   return {
@@ -55,7 +55,7 @@ export function mcpResultFromToolDispatch(
   };
 }
 
-export function registeredToolFromAgenCTool(
+function registeredToolFromAgenCTool(
   tool: Tool,
   dispatch: ToolRegistry["dispatch"],
 ): McpRegisteredTool {

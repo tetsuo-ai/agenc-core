@@ -230,7 +230,3 @@ function shouldIgnorePath(path: string): boolean {
 }
 
 export const skillChangeDetector = createSkillChangeDetector();
-export const initialize = skillChangeDetector.initialize;
-export const dispose = skillChangeDetector.dispose;
-export const resetForTesting = skillChangeDetector.resetForTesting;
-export const subscribe = skillChangeDetector.subscribe;

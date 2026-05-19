@@ -33,12 +33,6 @@ export interface ParsedHookSpecificOutput {
   readonly invalid?: string;
 }
 
-export function parseHookSpecificOutput(
-  stdout: string,
-): HookSpecificOutput | undefined {
-  return readHookSpecificOutput(stdout).output;
-}
-
 export function readHookSpecificOutput(
   stdout: string,
   expectedEvent?: string,

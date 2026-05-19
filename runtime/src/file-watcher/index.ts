@@ -643,7 +643,7 @@ export function isMutatingEvent(event: FileWatcherRawEvent): boolean {
   return event.kind === "change" || event.kind === "create" || event.kind === "modify" || event.kind === "remove" || event.kind === "rename";
 }
 
-export function dedupeWatchedPaths(watchedPaths: readonly WatchPath[]): WatchPath[] {
+function dedupeWatchedPaths(watchedPaths: readonly WatchPath[]): WatchPath[] {
   const sorted = [...watchedPaths].sort((a, b) => {
     const pathComparison = a.path.localeCompare(b.path);
     if (pathComparison !== 0) return pathComparison;

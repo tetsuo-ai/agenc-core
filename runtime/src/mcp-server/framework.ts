@@ -217,14 +217,14 @@ function errorObject(
   };
 }
 
-export function response(
+function response(
   id: McpRequestId,
   result: unknown,
 ): McpJsonRpcSuccess {
   return { jsonrpc: MCP_JSON_RPC_VERSION, id, result };
 }
 
-export function errorResponse(
+function errorResponse(
   id: McpRequestId,
   error: McpJsonRpcErrorObject,
 ): McpJsonRpcError {

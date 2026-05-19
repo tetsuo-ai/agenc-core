@@ -6,8 +6,6 @@
  * `_deps/` to cut the gut→AgenC crossing without losing behavior.
  */
 
-export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
-
 export interface Logger {
   debug(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;

@@ -169,7 +169,7 @@ export function requestUserInputAvailableModes(
   return modes;
 }
 
-export function requestUserInputUnavailableMessage(
+function requestUserInputUnavailableMessage(
   mode: PermissionMode,
   availableModes: readonly PermissionMode[],
 ): string | null {
@@ -209,7 +209,7 @@ function abortSignalFromArgs(args: Record<string, unknown>): AbortSignal | undef
     : undefined;
 }
 
-export const REQUEST_USER_INPUT_INPUT_SCHEMA = Object.freeze({
+const REQUEST_USER_INPUT_INPUT_SCHEMA = Object.freeze({
   type: "object",
   properties: {
     questions: {

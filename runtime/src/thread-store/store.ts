@@ -258,7 +258,7 @@ export class ThreadStoreInvalidRequestError extends Error {
  * Error thrown on state conflicts.
  * Source runtime: `ThreadStoreError::Conflict`.
  */
-export class ThreadStoreConflictError extends Error {
+class ThreadStoreConflictError extends Error {
   constructor(message: string) {
     super(`thread-store conflict: ${message}`);
     this.name = "ThreadStoreConflictError";

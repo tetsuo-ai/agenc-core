@@ -157,7 +157,7 @@ export class MCPWebSocketClientTransport implements Transport {
   }
 }
 
-export function createWebSocketMCPTransport(
+function createWebSocketMCPTransport(
   config: MCPServerWebSocketConfig,
 ): MCPWebSocketClientTransport {
   return new MCPWebSocketClientTransport(

@@ -43,12 +43,6 @@ export interface McpJsonRpcError {
   readonly error: McpJsonRpcErrorObject;
 }
 
-export type McpIncomingMessage =
-  | McpJsonRpcRequest
-  | McpJsonRpcNotification
-  | McpJsonRpcSuccess
-  | McpJsonRpcError;
-
 export type McpResponseMessage = McpJsonRpcSuccess | McpJsonRpcError;
 
 export type McpOutgoingMessage =

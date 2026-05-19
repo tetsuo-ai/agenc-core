@@ -100,7 +100,7 @@ export function createStdioMCPEnvironment(
   return env;
 }
 
-export function resolveStdioProgram(
+function resolveStdioProgram(
   command: string,
   env: Readonly<Record<string, string>>,
   cwd: string = process.cwd(),
@@ -291,7 +291,7 @@ export class AgenCStdioClientTransport implements Transport {
   }
 }
 
-export function createStdioMCPTransport(
+function createStdioMCPTransport(
   config: MCPServerStdioConfig,
   logger: Logger = silentLogger,
 ): AgenCStdioClientTransport {

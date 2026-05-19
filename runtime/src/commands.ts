@@ -222,7 +222,7 @@ function localResultFromSlashResult(result: SlashCommandResult): LocalCommandRes
   }
 }
 
-export function projectSlashCommand(
+function projectSlashCommand(
   cmd: SlashCommand,
   registry?: SlashCommandRegistry,
 ): Command {
@@ -538,8 +538,6 @@ export function builtInCommandNames(): Set<string> {
 const commandByName = (name: string): Command | undefined =>
   builtInCommands().find(command => command.name === name);
 
-export const INTERNAL_ONLY_COMMANDS: Command[] = [];
-
 const REMOTE_SAFE_COMMAND_NAMES = new Set([
   "exit",
   "clear",
@@ -661,31 +659,6 @@ getSkillToolCommands.cache = {
   clear() {},
 };
 
-export async function getSlashCommandToolSkills(
-  cwd: string,
-  config: unknown = {},
-): Promise<Command[]> {
-  try {
-    const allCommands = await getCommands(cwd, config);
-    return allCommands.filter(
-      command =>
-        command.type === "prompt" &&
-        command.source !== "builtin" &&
-        (command.hasUserSpecifiedDescription || command.whenToUse) &&
-        (command.loadedFrom === "skills" ||
-          command.loadedFrom === "plugin" ||
-          command.loadedFrom === "bundled" ||
-          command.disableModelInvocation),
-    );
-  } catch {
-    return [];
-  }
-}
-
-getSlashCommandToolSkills.cache = {
-  clear() {},
-};
-
 export function getMcpSkillCommands(
   mcpCommands: readonly Command[],
 ): readonly Command[] {
@@ -708,7 +681,6 @@ export function clearCommandMemoizationCaches(): void {
   }).catch(() => undefined);
   clearPluginRegistrationCaches();
   getSkillToolCommands.cache.clear();
-  getSlashCommandToolSkills.cache.clear();
 }
 
 export function clearCommandsCache(): void {

@@ -34,17 +34,6 @@ export type BuiltinPluginDefinition = {
   defaultEnabled?: boolean
 }
 
-export type PluginRepository = {
-  url: string
-  branch: string
-  lastUpdated?: string
-  commitSha?: string
-}
-
-export type PluginConfig = {
-  repositories: Record<string, PluginRepository>
-}
-
 export type LoadedPlugin = {
   name: string
   manifest: PluginManifest

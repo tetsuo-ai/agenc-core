@@ -30,7 +30,7 @@ import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 
-export const MAX_CONTINUATION_NUDGES = 3;
+const MAX_CONTINUATION_NUDGES = 3;
 
 const CONTINUATION_SIGNALS: RegExp[] = [
   /\bso now (i|let me|we) (need to|have to|should|must|will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up)\b/,

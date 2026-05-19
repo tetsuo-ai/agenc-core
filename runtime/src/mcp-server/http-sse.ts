@@ -520,12 +520,6 @@ export class McpHttpSseServerTransport {
   }
 }
 
-export function createMcpHttpSseNodeServer(
-  options: McpHttpSseServerTransportOptions,
-): Server {
-  return new McpHttpSseServerTransport(options).createNodeServer();
-}
-
 export function encodeSseEvent(event: SseEvent): string {
   const lines: string[] = [];
   if (event.id !== undefined) lines.push(`id: ${event.id}`);
