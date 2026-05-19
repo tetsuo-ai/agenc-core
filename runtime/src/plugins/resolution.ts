@@ -21,7 +21,6 @@ import {
   createPublicKey,
   verify as verifySignatureBytes,
 } from "node:crypto";
-import { pathToFileURL } from "node:url";
 import { redactSecrets } from "../secrets/index.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { sanitizePluginId } from "./directories.js";
@@ -269,7 +268,7 @@ export async function classifyPluginSource(
   return "npm";
 }
 
-export function parsePluginIdentifier(plugin: string): ParsedPluginIdentifier {
+function parsePluginIdentifier(plugin: string): ParsedPluginIdentifier {
   const marker = plugin.indexOf("@", 1);
   if (marker === -1) return { name: plugin };
   return {
@@ -278,7 +277,7 @@ export function parsePluginIdentifier(plugin: string): ParsedPluginIdentifier {
   };
 }
 
-export function buildPluginIdentifier(name: string, marketplace?: string): string {
+function buildPluginIdentifier(name: string, marketplace?: string): string {
   return marketplace ? `${name}@${marketplace}` : name;
 }
 
@@ -698,7 +697,7 @@ function comparePrereleaseVersions(a: readonly string[], b: readonly string[]): 
   return 0;
 }
 
-export function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
+function pluginDependencyIdentifier(plugin: LoadedPlugin): string {
   return pluginDependencyIdentityFromSource(plugin.source) ?? plugin.name;
 }
 
@@ -794,7 +793,7 @@ export function pluginSignaturePayloadBytes(
   }));
 }
 
-export function verifyEd25519Signature(input: {
+function verifyEd25519Signature(input: {
   readonly publicKey: string;
   readonly payload: Uint8Array;
   readonly signature: string;
@@ -821,7 +820,7 @@ export function pluginSourceCacheRoot(agencHome: string, source: string): string
   );
 }
 
-export function classifyPluginFetchError(error: unknown): string {
+function classifyPluginFetchError(error: unknown): string {
   const msg = String((error as { message?: unknown })?.message ?? error);
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|Could not resolve host|Connection refused/iu.test(msg)) {
     return "dns_or_refused";
@@ -1239,7 +1238,7 @@ async function runProcess(
   }
 }
 
-export async function defaultPluginProcessRunner(
+async function defaultPluginProcessRunner(
   command: string,
   args: readonly string[],
   options: {
@@ -1513,7 +1512,7 @@ function isIgnoredSignaturePayloadDirectory(name: string): boolean {
   return isPluginVcsMetadataDirectoryName(name);
 }
 
-export function isPluginVcsMetadataDirectoryName(name: string): boolean {
+function isPluginVcsMetadataDirectoryName(name: string): boolean {
   return name === ".git" || name === ".hg" || name === ".svn";
 }
 
@@ -1724,8 +1723,4 @@ function emitTelemetry(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function fileUrlForPluginRoot(path: string): string {
-  return pathToFileURL(resolve(path)).toString();
 }

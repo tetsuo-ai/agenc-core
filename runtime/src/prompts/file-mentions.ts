@@ -64,17 +64,12 @@ export interface ExpandFileMentionsOptions {
   readonly maxLines?: number;
 }
 
-export interface AttachmentsConfigLike {
-  readonly allowedRoots?: readonly string[];
-  readonly allowed_roots?: readonly string[];
-}
-
 const EMPTY_MENTIONS: readonly DetectedMention[] = Object.freeze([]);
 
-export const FILE_MENTION_MAX_FILES = 10;
-export const FILE_MENTION_MAX_FILE_BYTES = 256 * 1024;
-export const FILE_MENTION_MAX_TOTAL_BYTES = 768 * 1024;
-export const FILE_MENTION_MAX_LINES = 4_000;
+const FILE_MENTION_MAX_FILES = 10;
+const FILE_MENTION_MAX_FILE_BYTES = 256 * 1024;
+const FILE_MENTION_MAX_TOTAL_BYTES = 768 * 1024;
+const FILE_MENTION_MAX_LINES = 4_000;
 
 /**
  * Match prompt @mentions that begin at a token boundary and stop before

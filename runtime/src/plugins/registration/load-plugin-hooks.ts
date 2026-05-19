@@ -13,8 +13,6 @@ export interface PluginHookRegistrationOptions extends PluginRuntimeLoadOptions 
   readonly sessionId?: string;
 }
 
-let pluginHookCache: Promise<HooksMap | undefined> | null = null;
-
 function substituteHookCommand(
   plugin: LoadedPlugin,
   command: HookCommand,
@@ -89,13 +87,8 @@ export async function loadPluginHooks(
   return validateHooksConfig(merged);
 }
 
-export async function getPluginHooks(): Promise<HooksMap | undefined> {
-  pluginHookCache ??= loadPluginHooks();
-  return pluginHookCache;
-}
-
 export function clearPluginHookCache(): void {
-  pluginHookCache = null;
+  // Hook loading is uncached; this keeps the registration cache API uniform.
 }
 
 export async function registerPluginHooks(

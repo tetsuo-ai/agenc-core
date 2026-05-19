@@ -19,8 +19,6 @@ import { readTextFile } from "./_deps/file-read.js";
 import {
   AGENTS_PROJECT_INSTRUCTION_FILE,
   CLAUDE_PROJECT_INSTRUCTION_FILE,
-  FALLBACK_PROJECT_INSTRUCTION_FILE,
-  FALLBACK_PROJECT_INSTRUCTION_FILES,
   getProjectInstructionFilePaths,
   PRIMARY_PROJECT_INSTRUCTION_FILE,
 } from "../utils/projectInstructions.js";
@@ -28,8 +26,6 @@ import {
 export {
   AGENTS_PROJECT_INSTRUCTION_FILE,
   CLAUDE_PROJECT_INSTRUCTION_FILE,
-  FALLBACK_PROJECT_INSTRUCTION_FILE,
-  FALLBACK_PROJECT_INSTRUCTION_FILES,
   PRIMARY_PROJECT_INSTRUCTION_FILE,
 };
 
@@ -37,7 +33,7 @@ export {
  * Preferred per-checkout override. Not committed; shadows AGENC.md in
  * the same directory when present.
  */
-export const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
+const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
 
 /**
  * Default project-root markers used when config does not specify any.

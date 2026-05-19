@@ -39,10 +39,10 @@ import type {
 
 export const IMAGE_MENTION_MAX_FILES = 10;
 export const IMAGE_MENTION_MAX_FILE_BYTES = 5 * 1024 * 1024;
-export const IMAGE_MENTION_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
-export const PDF_MENTION_MAX_FILES = 5;
+const IMAGE_MENTION_MAX_TOTAL_BYTES = 20 * 1024 * 1024;
+const PDF_MENTION_MAX_FILES = 5;
 export const PDF_MENTION_MAX_FILE_BYTES = 20 * 1024 * 1024;
-export const PDF_MENTION_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const PDF_MENTION_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 function alreadyContainsFileMentionContext(input: string): boolean {
   return (

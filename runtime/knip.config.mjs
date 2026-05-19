@@ -334,6 +334,49 @@ const intentionalCommandPermissionIssueIgnores = {
   ),
   'src/permissions/sandbox.ts': ['exports', 'types'],
 };
+const promptContractExportFiles = [
+  // Prompt assembly, project instruction, rule discovery, attachment, and
+  // permission prompt surfaces are imported by tests, excluded prompt adapters,
+  // or runtime prompt builders that production-only Knip does not fully see.
+  'src/prompts/agenc-md.ts',
+  'src/prompts/attachments/agent-mentions.ts',
+  'src/prompts/attachments/auto-mode.ts',
+  'src/prompts/attachments/file-mentions.ts',
+  'src/prompts/attachments/plan-mode.ts',
+  'src/prompts/attachments/types.ts',
+  'src/prompts/attachments/user-pdf-input.ts',
+  'src/prompts/attachments/verify-plan-reminder.ts',
+  'src/prompts/file-mentions.ts',
+  'src/prompts/permissions-prompt.ts',
+  'src/prompts/project-instructions.ts',
+  'src/prompts/rules/discovery.ts',
+  'src/prompts/sections.ts',
+  'src/prompts/system-prompt.ts',
+];
+const pluginContractExportFiles = [
+  // Plugin manifest, marketplace, registration, directory, resolution, loader,
+  // and sandbox helpers are test-backed compatibility surfaces or dynamically
+  // consumed by plugin/MCP/LSP integration paths outside this Knip graph.
+  'src/plugins/directories.ts',
+  'src/plugins/loader.ts',
+  'src/plugins/marketplace/marketplace.ts',
+  'src/plugins/registration/load-plugin-commands.ts',
+  'src/plugins/registration/load-plugin-hooks.ts',
+  'src/plugins/registration/lsp-plugin-integration.ts',
+  'src/plugins/registration/manager.ts',
+  'src/plugins/registration/mcp-plugin-integration.ts',
+  'src/plugins/resolution.ts',
+  'src/plugins/sandbox.ts',
+  'src/plugins/validation.ts',
+];
+const intentionalPluginPromptIssueIgnores = {
+  ...Object.fromEntries(
+    promptContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+  ...Object.fromEntries(
+    pluginContractExportFiles.map((file) => [file, ['exports']]),
+  ),
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -395,6 +438,7 @@ export default {
     ...intentionalLlmIssueIgnores,
     ...intentionalSandboxMemoryIssueIgnores,
     ...intentionalCommandPermissionIssueIgnores,
+    ...intentionalPluginPromptIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

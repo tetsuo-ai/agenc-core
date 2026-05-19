@@ -17,8 +17,8 @@ import { loadPlugins, type LoadedPlugin, type PluginLoaderOptions } from "../loa
 import { getPluginDataDir } from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
 
-export const MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES = 512;
-export const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
+const MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES = 512;
+const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
 
 export interface PluginRuntimeLoadOptions {
   readonly cwd?: string;
@@ -291,7 +291,7 @@ export interface PluginTemplateResolution {
   readonly missingUserConfig: readonly string[];
 }
 
-export function resolvePluginTemplate(
+function resolvePluginTemplate(
   value: string,
   plugin: LoadedPlugin,
   options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
@@ -328,7 +328,7 @@ export interface EnvTemplateResolution {
   readonly missingEnv: readonly string[];
 }
 
-export function expandEnvTemplate(
+function expandEnvTemplate(
   value: string,
   env: NodeJS.ProcessEnv = process.env,
 ): EnvTemplateResolution {

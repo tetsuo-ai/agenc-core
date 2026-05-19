@@ -357,11 +357,3 @@ export type Attachment =
 
 /** All possible `Attachment.kind` values. */
 export type AttachmentKind = Attachment["kind"];
-
-/** Type guard for narrowing the discriminated union by kind. */
-export function isAttachmentOfKind<K extends AttachmentKind>(
-  attachment: Attachment,
-  kind: K,
-): attachment is Extract<Attachment, { kind: K }> {
-  return attachment.kind === kind;
-}

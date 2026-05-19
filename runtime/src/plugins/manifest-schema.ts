@@ -1,8 +1,8 @@
 import { basename, isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 
-export const MAX_DEFAULT_PROMPT_COUNT = 3;
-export const MAX_DEFAULT_PROMPT_LENGTH = 128;
+const MAX_DEFAULT_PROMPT_COUNT = 3;
+const MAX_DEFAULT_PROMPT_LENGTH = 128;
 
 export type PluginComponentKind =
   | "commands"
@@ -287,7 +287,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function optionalString(value: unknown): string | undefined {
+function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 

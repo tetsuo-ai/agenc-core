@@ -76,7 +76,7 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "<!-- dynamic-boundary -->";
 // ─────────────────────────────────────────────────────────────────────
 
 /** Prefix top-level items with ` - ` and nested arrays with `   - `. */
-export function prependBullets(items: Array<string | string[]>): string[] {
+function prependBullets(items: Array<string | string[]>): string[] {
   return items.flatMap((item) =>
     Array.isArray(item)
       ? item.map((subitem) => `   - ${subitem}`)
@@ -337,7 +337,7 @@ export function getSimpleToneAndStyleSection(): string {
  *  AgenC-original. Drives the `Use ask-user-question when stuck` and
  *  `Use subagents when matching` reminders that depend on the actual
  *  visible tool catalog and agent surface for this turn. */
-export function getSessionGuidanceSection(
+function getSessionGuidanceSection(
   enabledTools: ReadonlySet<string>,
   agentsEnabled: boolean,
 ): string | null {
@@ -362,7 +362,7 @@ export function getSessionGuidanceSection(
 /** memory — `loadMemoryPrompt()` output (from T10-C). Wired as a
  *  compute closure so the caller can pass a pre-loaded string or leave
  *  it absent. AgenC-original wrapper. */
-export function getMemorySection(memoryPrompt: string | undefined): string | null {
+function getMemorySection(memoryPrompt: string | undefined): string | null {
   if (!memoryPrompt || memoryPrompt.trim().length === 0) return null;
   return memoryPrompt;
 }
@@ -465,7 +465,7 @@ ${blocks}`;
 
 /** scratchpad — session-local temp file directory, when enabled.
  *  AgenC-specific runtime concern. */
-export function getScratchpadSection(scratchpadDir: string | undefined): string | null {
+function getScratchpadSection(scratchpadDir: string | undefined): string | null {
   if (!scratchpadDir) return null;
   return `# Scratchpad Directory
 
@@ -475,7 +475,7 @@ Use this directory for temporary files instead of /tmp:
 The scratchpad is session-specific and isolated from the user's project.`;
 }
 
-export function getAutonomousWorkSection(
+function getAutonomousWorkSection(
   autonomousMode: boolean | undefined,
   permissionContext: ToolPermissionContext | null,
 ): string | null {
@@ -533,23 +533,6 @@ Keep your text output brief and high-level. The user does not need a play-by-pla
 - Errors or blockers that change the plan
 
 Do not narrate each step, list every file you read, or explain routine actions. If you can say it in one sentence, don't use three.`;
-}
-
-/**
- * summarize_tool_results — static reminder to write down important info
- * from tool results before they may be cleared.
- *
- * Re-exported for `session/_deps/system-prompt.ts` (the compact summarizer
- * fork) which assembles its own prompt sequence and asks for this hint
- * unconditionally. Not wired into the main `dynamicDecls` list — the
- * primary assembly path now relies on the AgenC doing-tasks /
- * output-efficiency guidance instead.
- */
-export const SUMMARIZE_TOOL_RESULTS_SECTION =
-  "When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.";
-
-export function getSummarizeToolResultsSection(): string {
-  return SUMMARIZE_TOOL_RESULTS_SECTION;
 }
 
 // ─────────────────────────────────────────────────────────────────────

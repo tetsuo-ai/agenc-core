@@ -460,7 +460,7 @@ export async function loadMarketplace(
   };
 }
 
-export async function findMarketplacePlugin(
+async function findMarketplacePlugin(
   marketplacePath: string,
   pluginName: string,
   marketplaceNameOverride?: string,
@@ -503,7 +503,7 @@ export function findMarketplaceManifestPath(root: string): string | undefined {
   return undefined;
 }
 
-export function normalizeMarketplaceName(name: string): string {
+function normalizeMarketplaceName(name: string): string {
   const trimmed = name.trim();
   if (trimmed.length === 0) {
     throw new Error("marketplace name cannot be empty");
@@ -519,11 +519,11 @@ export function normalizeMarketplaceName(name: string): string {
   return trimmed;
 }
 
-export function sanitizeMarketplaceInstallName(name: string): string {
+function sanitizeMarketplaceInstallName(name: string): string {
   return sanitizePluginId(normalizeMarketplaceName(name));
 }
 
-export function findMarketplaceName(
+function findMarketplaceName(
   index: MarketplaceIndex,
   name: string,
 ): string | undefined {
@@ -531,7 +531,7 @@ export function findMarketplaceName(
   return Object.keys(index.marketplaces).find((candidate) => candidate.toLowerCase() === lowered);
 }
 
-export function findMarketplaceInstallName(
+function findMarketplaceInstallName(
   index: MarketplaceIndex,
   safeName: string,
 ): string | undefined {
@@ -630,7 +630,7 @@ export async function defaultRunProcess(
   });
 }
 
-export async function defaultFetch(
+async function defaultFetch(
   url: string,
   init: {
     readonly method?: string;

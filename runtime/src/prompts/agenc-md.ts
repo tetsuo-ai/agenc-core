@@ -40,16 +40,16 @@ import {
 import { DEFAULT_MANAGED_RULES_DIR, discoverInstructionRules, formatRulesBlock, projectRulesDir, userRulesDir } from "./rules/discovery.js";
 
 /** Default max nesting depth for `@include` expansion. */
-export const DEFAULT_INCLUDE_MAX_DEPTH = 10;
+const DEFAULT_INCLUDE_MAX_DEPTH = 10;
 /** Default total expansion budget (5 MiB) to guard against fork bombs. */
-export const DEFAULT_INCLUDE_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_INCLUDE_MAX_BYTES = 5 * 1024 * 1024;
 
 /** Filename convention for per-user global instructions. */
-export const USER_INSTRUCTION_FILENAME = "AGENC.md";
+const USER_INSTRUCTION_FILENAME = "AGENC.md";
 /** Filename convention for per-checkout local instructions. */
-export const LOCAL_INSTRUCTION_FILENAME = "AGENC.local.md";
+const LOCAL_INSTRUCTION_FILENAME = "AGENC.local.md";
 /** Default system-wide managed instructions path. */
-export const DEFAULT_MANAGED_INSTRUCTION_PATH = "/etc/agenc/AGENC.md";
+const DEFAULT_MANAGED_INSTRUCTION_PATH = "/etc/agenc/AGENC.md";
 
 export type InstructionTier = "managed" | "user" | "project" | "local";
 
@@ -180,7 +180,7 @@ export function isPathWithin(candidate: string, boundary: string): boolean {
  * targets are surfaced separately through the `not_found` drop reason
  * after this check, so a false here is safe.
  */
-export async function isPathWithinReal(
+async function isPathWithinReal(
   candidate: string,
   boundary: string,
 ): Promise<boolean> {

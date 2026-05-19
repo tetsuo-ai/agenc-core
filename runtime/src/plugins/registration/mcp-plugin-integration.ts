@@ -158,7 +158,7 @@ function reportSandboxIssue(
   });
 }
 
-export function addPluginScopeToServers(
+function addPluginScopeToServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, McpServerConfig>>,
   options: PluginMcpRegistrationOptions = {},
@@ -189,7 +189,7 @@ async function resolvePlugins(
   return options.plugins ?? await loadRuntimePlugins(options);
 }
 
-export async function extractMcpServersFromPlugins(
+async function extractMcpServersFromPlugins(
   plugins: readonly LoadedPlugin[],
   options: PluginMcpRegistrationOptions = {},
 ): Promise<Readonly<Record<string, McpServerConfig>>> {

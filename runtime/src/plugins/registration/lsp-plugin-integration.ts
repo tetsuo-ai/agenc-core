@@ -133,7 +133,7 @@ function reportServerIssues(
   return true;
 }
 
-export function addPluginScopeToLspServers(
+function addPluginScopeToLspServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, LspServerConfigInput>>,
   options: PluginLspRegistrationOptions = {},
@@ -153,7 +153,7 @@ async function resolvePlugins(
   return options.plugins ?? await loadRuntimePlugins(options);
 }
 
-export async function extractLspServersFromPlugins(
+async function extractLspServersFromPlugins(
   plugins: readonly LoadedPlugin[],
   options: PluginLspRegistrationOptions = {},
 ): Promise<Readonly<Record<string, LspServerConfigInput>>> {

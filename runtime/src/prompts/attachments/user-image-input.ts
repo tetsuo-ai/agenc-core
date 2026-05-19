@@ -29,7 +29,7 @@ function stripInputQuotes(value: string): string {
   return trimmed;
 }
 
-export function mediaTypeForImagePath(filePath: string): string {
+function mediaTypeForImagePath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
     case ".jpg":

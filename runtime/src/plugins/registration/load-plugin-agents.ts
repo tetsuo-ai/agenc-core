@@ -44,7 +44,6 @@ const MEMORY_TOOLS = [
   FILE_READ_TOOL_NAME,
 ] as const;
 
-let pluginAgentCache: Promise<readonly PluginAgentDefinition[]> | null = null;
 const activePluginAgentsByCwd = new Map<string, readonly PluginAgentDefinition[]>();
 
 interface ActivePluginSnapshotOptions {
@@ -245,12 +244,6 @@ export async function loadPluginAgents(
   return groups.flat().sort((a, b) => a.agentType.localeCompare(b.agentType));
 }
 
-export async function getPluginAgents(): Promise<readonly PluginAgentDefinition[]> {
-  pluginAgentCache ??= loadPluginAgents();
-  return pluginAgentCache;
-}
-
 export function clearPluginAgentCache(): void {
-  pluginAgentCache = null;
   activePluginAgentsByCwd.clear();
 }

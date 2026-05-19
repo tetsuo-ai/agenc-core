@@ -25,9 +25,9 @@ import type {
 import { getPluginDataDir } from "./directories.js";
 import type { LoadedPlugin } from "./loader.js";
 
-export const PLUGIN_MCP_SANDBOX_MODE = "stdio-child-process" as const;
+const PLUGIN_MCP_SANDBOX_MODE = "stdio-child-process" as const;
 
-export const RESERVED_PLUGIN_MCP_SANDBOX_ENV_KEYS = Object.freeze([
+const RESERVED_PLUGIN_MCP_SANDBOX_ENV_KEYS = Object.freeze([
   "AGENC_PLUGIN_ROOT",
   "AGENC_PLUGIN_DATA",
   "AGENC_PLUGIN_NAME",
@@ -141,7 +141,7 @@ function realpathContainmentIssue(
   return null;
 }
 
-export function isPluginMcpRemoteTransport(
+function isPluginMcpRemoteTransport(
   server: Pick<McpServerConfig, "transport" | "endpoint" | "command">,
 ): boolean {
   return server.transport === "http" ||
@@ -155,7 +155,7 @@ export function isPluginMcpRemoteTransport(
     );
 }
 
-export function isPluginMcpStdioChildProcess(
+function isPluginMcpStdioChildProcess(
   server: Pick<McpServerConfig, "transport" | "command">,
 ): boolean {
   return (server.transport === undefined || server.transport === "stdio") &&
@@ -196,7 +196,7 @@ function transportConfigIssue(
   return null;
 }
 
-export function pluginMcpSandboxEnvironment(
+function pluginMcpSandboxEnvironment(
   plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
   serverName: string,
   dataDir = getPluginDataDir(plugin.source),
@@ -210,7 +210,7 @@ export function pluginMcpSandboxEnvironment(
   };
 }
 
-export function createPluginMcpSandboxMetadata(
+function createPluginMcpSandboxMetadata(
   plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
   serverName: string,
   scopedServerName: string,

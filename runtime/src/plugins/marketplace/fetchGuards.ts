@@ -62,7 +62,7 @@ export async function readResponseErrorText(
   }
 }
 
-export async function readResponseBytesWithLimit(
+async function readResponseBytesWithLimit(
   response: Pick<FetchResponse, "body" | "arrayBuffer">,
   maxBytes: number,
   label: string,

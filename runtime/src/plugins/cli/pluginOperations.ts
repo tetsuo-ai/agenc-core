@@ -121,15 +121,15 @@ const MANAGED_CONFIG_SUFFIX = "# END agenc plugin";
 const INSTALL_METADATA_FILE = "agenc-install.json";
 const RESERVED_INSTALL_NAMES = new Set(["cache", "data"]);
 
-export function resolvePluginAgencHome(options: PluginOperationOptions = {}): string {
+function resolvePluginAgencHome(options: PluginOperationOptions = {}): string {
   return options.agencHome ?? resolveAgencHome(options.env);
 }
 
-export function resolvePluginWorkspaceRoot(options: PluginOperationOptions = {}): string {
+function resolvePluginWorkspaceRoot(options: PluginOperationOptions = {}): string {
   return options.workspaceRoot ?? process.cwd();
 }
 
-export function pluginScopeRoot(
+function pluginScopeRoot(
   scope: PluginScope,
   options: PluginOperationOptions = {},
 ): string {
@@ -144,7 +144,7 @@ export function pluginScopeRoot(
   }
 }
 
-export function pluginConfigPath(options: PluginOperationOptions = {}): string {
+function pluginConfigPath(options: PluginOperationOptions = {}): string {
   return join(resolvePluginAgencHome(options), "config.toml");
 }
 
@@ -410,11 +410,11 @@ export async function updatePluginOp(
   };
 }
 
-export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`, 0o600);
 }
 
-export async function readJsonFile<T>(
+async function readJsonFile<T>(
   path: string,
   fallback: T,
 ): Promise<T> {
@@ -426,7 +426,7 @@ export async function readJsonFile<T>(
   }
 }
 
-export async function writeTextAtomic(
+async function writeTextAtomic(
   path: string,
   text: string,
   mode = 0o600,
@@ -442,7 +442,7 @@ export async function writeTextAtomic(
   }
 }
 
-export function sanitizeInstallName(name: string): string {
+function sanitizeInstallName(name: string): string {
   const trimmed = name.trim();
   if (trimmed.length === 0) {
     throw new Error("plugin name cannot be empty");
@@ -457,7 +457,7 @@ export function sanitizeInstallName(name: string): string {
   return safeName;
 }
 
-export function resolvePath(path: string, base: string): string {
+function resolvePath(path: string, base: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(base, path);
 }
 

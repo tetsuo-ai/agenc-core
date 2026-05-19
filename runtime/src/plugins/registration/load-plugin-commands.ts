@@ -39,8 +39,6 @@ interface PluginMarkdownCommand {
   readonly isSkillMode: boolean;
 }
 
-let pluginCommandCache: Promise<readonly Command[]> | null = null;
-let pluginSkillCache: Promise<readonly Command[]> | null = null;
 const activePluginCommandsByCwd = new Map<string, readonly Command[]>();
 const activePluginSkillsByCwd = new Map<string, readonly Command[]>();
 
@@ -466,23 +464,11 @@ export async function loadPluginSkills(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export async function getPluginCommands(): Promise<readonly Command[]> {
-  pluginCommandCache ??= loadPluginCommands();
-  return pluginCommandCache;
-}
-
-export async function getPluginSkills(): Promise<readonly Command[]> {
-  pluginSkillCache ??= loadPluginSkills();
-  return pluginSkillCache;
-}
-
 export function clearPluginCommandCache(): void {
-  pluginCommandCache = null;
   activePluginCommandsByCwd.clear();
 }
 
 export function clearPluginSkillsCache(): void {
-  pluginSkillCache = null;
   activePluginSkillsByCwd.clear();
 }
 

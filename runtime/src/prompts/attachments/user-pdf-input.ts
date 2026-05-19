@@ -36,7 +36,7 @@ const PDF_MEDIA_TYPE = "application/pdf";
 const PDF_MAGIC = "%PDF-";
 
 export const PDF_TEXT_EXTRACTION_MAX_BYTES = 256 * 1024;
-export const PDF_TEXT_EXTRACTION_TIMEOUT_MS = 120_000;
+const PDF_TEXT_EXTRACTION_TIMEOUT_MS = 120_000;
 
 export function isSupportedUserPdfPath(filePath: string): boolean {
   return PDF_FILE_RE.test(filePath);

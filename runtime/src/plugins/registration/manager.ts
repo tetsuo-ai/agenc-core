@@ -336,7 +336,7 @@ function currentConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
   return ctx.configStore?.current?.() ?? ctx.session.services.configStore?.current?.();
 }
 
-export function pluginRuntimeOptionsFromContext(
+function pluginRuntimeOptionsFromContext(
   ctx: SlashCommandContext,
 ): PluginRuntimeLoadOptions {
   const config = currentConfig(ctx);

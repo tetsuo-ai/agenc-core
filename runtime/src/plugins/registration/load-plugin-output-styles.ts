@@ -26,8 +26,6 @@ export interface PluginOutputStyleRegistrationOptions extends PluginRuntimeLoadO
   readonly plugins?: readonly LoadedPlugin[];
 }
 
-let pluginOutputStyleCache: Promise<readonly PluginOutputStyle[]> | null = null;
-
 async function loadStyleFile(
   plugin: LoadedPlugin,
   filePath: string,
@@ -101,11 +99,6 @@ export async function loadPluginOutputStyles(
     .sort((a, b) => a.name.localeCompare(b.name) || basename(a.filePath).localeCompare(basename(b.filePath)));
 }
 
-export async function getPluginOutputStyles(): Promise<readonly PluginOutputStyle[]> {
-  pluginOutputStyleCache ??= loadPluginOutputStyles();
-  return pluginOutputStyleCache;
-}
-
 export function clearPluginOutputStyleCache(): void {
-  pluginOutputStyleCache = null;
+  // Output style loading is uncached; this keeps the registration cache API uniform.
 }
