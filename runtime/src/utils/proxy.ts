@@ -400,11 +400,15 @@ export async function getAWSClientProxyConfig(): Promise<object> {
     return {}
   }
 
-  const [{ NodeHttpHandler }, { defaultProvider }] = await Promise.all([
+  const [{ NodeHttpHandler }, credentialProviderNode] = await Promise.all([
     import('@smithy/node-http-handler'),
-    // @ts-expect-error -- optional AWS SDK dep imported lazily; declaration not installed.
     import('@aws-sdk/credential-provider-node'),
   ])
+  const { defaultProvider } = credentialProviderNode as {
+    defaultProvider: (init?: {
+      readonly clientConfig?: { readonly requestHandler?: unknown }
+    }) => unknown
+  }
 
   const agent = createHttpsProxyAgent(proxyUrl)
   const requestHandler = new NodeHttpHandler({

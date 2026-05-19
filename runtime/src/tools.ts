@@ -20,27 +20,14 @@ import { MonitorTool as RuntimeMonitorTool } from './tools/MonitorTool/MonitorTo
 import * as coordinatorMode from './coordinator/coordinatorMode.js'
 // Dead code elimination: conditional import for internal-only tools
 /* eslint-disable @typescript-eslint/no-require-imports */
-const SleepTool =
-  feature('PROACTIVE') || feature('KAIROS')
-    ? require('./tools/SleepTool/SleepTool.js').SleepTool
-    : null
-const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
-  ? require('./tools/RemoteTriggerTool/RemoteTriggerTool.js').RemoteTriggerTool
-  : null
+const SleepTool = null
+const RemoteTriggerTool = null
 const MonitorTool = feature('MONITOR_TOOL')
   ? RuntimeMonitorTool
   : null
-const SendUserFileTool = feature('KAIROS')
-  ? require('./tools/SendUserFileTool/SendUserFileTool.js').SendUserFileTool
-  : null
-const PushNotificationTool =
-  feature('KAIROS') || feature('KAIROS_PUSH_NOTIFICATION')
-    ? require('./tools/PushNotificationTool/PushNotificationTool.js')
-        .PushNotificationTool
-    : null
-const SubscribePRTool = feature('KAIROS_GITHUB_WEBHOOKS')
-  ? require('./tools/SubscribePRTool/SubscribePRTool.js').SubscribePRTool
-  : null
+const SendUserFileTool = null
+const PushNotificationTool = null
+const SubscribePRTool = null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
@@ -85,34 +72,18 @@ export {
 import { feature } from 'bun:bundle'
 // Dead code elimination: conditional import for OVERFLOW_TEST_TOOL
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
-const OverflowTestTool = feature('OVERFLOW_TEST_TOOL')
-  ? require('./tools/OverflowTestTool/OverflowTestTool.js').OverflowTestTool
-  : null
+const OverflowTestTool = null
 const CtxInspectTool = feature('CONTEXT_COLLAPSE')
   ? ContextCollapseInspectTool
   : null
-const TerminalCaptureTool = feature('TERMINAL_PANEL')
-  ? require('./tools/TerminalCaptureTool/TerminalCaptureTool.js')
-      .TerminalCaptureTool
-  : null
-const WebBrowserTool = feature('WEB_BROWSER_TOOL')
-  ? require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool
-  : null
+const TerminalCaptureTool = null
+const WebBrowserTool = null
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? coordinatorMode
   : null
-const SnipTool = feature('HISTORY_SNIP')
-  ? require('./tools/SnipTool/SnipTool.js').SnipTool
-  : null
-const ListPeersTool = feature('UDS_INBOX')
-  ? require('./tools/ListPeersTool/ListPeersTool.js').ListPeersTool
-  : null
-const WorkflowTool = feature('WORKFLOW_SCRIPTS')
-  ? (() => {
-      require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
-      return require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool
-    })()
-  : null
+const SnipTool = null
+const ListPeersTool = null
+const WorkflowTool = null
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './tools/Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'

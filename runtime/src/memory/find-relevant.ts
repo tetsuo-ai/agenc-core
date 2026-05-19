@@ -2,7 +2,6 @@
  * Ports the upstream `src/memdir/findRelevantMemories.ts` scanner flow onto
  * AgenC memory primitives.
  */
-import { feature } from 'bun:bundle'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
 import { getDefaultSonnetModel } from '../utils/model/model.js'
@@ -64,20 +63,6 @@ export async function findRelevantMemories(
   const selected = selectedFilenames
     .map(filename => byFilename.get(filename))
     .filter((m): m is MemoryHeader => m !== undefined)
-
-  // Fires even on empty selection: selection-rate needs the denominator,
-  // and -1 ages distinguish "ran, picked nothing" from "never ran".
-  if (feature('MEMORY_SHAPE_TELEMETRY')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { logMemoryRecallShape } = require('./shape-telemetry.js') as {
-      logMemoryRecallShape: (
-        all: readonly MemoryHeader[],
-        selected: readonly MemoryHeader[],
-      ) => void
-    }
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    logMemoryRecallShape(memories, selected)
-  }
 
   return selected.map(m => ({ path: m.filePath, mtimeMs: m.mtimeMs }))
 }

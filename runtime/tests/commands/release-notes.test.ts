@@ -15,9 +15,9 @@ afterEach(() => {
 });
 
 describe("loadReleaseNotes", () => {
-  it("falls back to the bundled runtime changelog when no local CHANGELOG.md is present", async () => {
+  it("returns an explicit fallback when no local CHANGELOG.md is present", async () => {
     const text = await loadReleaseNotes(tmpRoot);
-    expect(text).toContain("# Changelog");
+    expect(text).toBe("No local release notes were found for this checkout.");
   });
 
   it("reads the nearest CHANGELOG.md", async () => {
@@ -63,7 +63,9 @@ describe("releaseNotesCommand.execute", () => {
     });
     expect(result.kind).toBe("text");
     if (result.kind === "text") {
-      expect(result.text).toContain("# Changelog");
+      expect(result.text).toBe(
+        "No local release notes were found for this checkout.",
+      );
     }
   });
 });

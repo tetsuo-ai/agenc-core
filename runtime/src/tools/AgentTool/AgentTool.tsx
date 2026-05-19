@@ -68,7 +68,7 @@ const getRemoteTaskSessionUrl = (..._args: unknown[]): null => null;
 const registerRemoteAgentTask = (..._args: unknown[]): { agentTaskId: string; sessionUrl: null } => ({ agentTaskId: '', sessionUrl: null });
 const teleportToRemote = async (..._args: unknown[]): Promise<null> => null;
 // ---- end donor-purge stubs ----
-const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../../proactive/index.js') as typeof import('../../proactive/index.js') : null;
+const proactiveModule = null;
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 // Progress display constants (for showing background hint)

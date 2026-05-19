@@ -13,7 +13,7 @@ const { stdout, stderr } = await execa(
   'knip',
   [
     '--config',
-    'knip.jsonc',
+    'knip.config.mjs',
     '--production',
     '--reporter',
     'json',
@@ -105,7 +105,7 @@ const body = [
   `# Unused Code Report`,
   ``,
   `Generated: ${generatedAt}`,
-  `Command: \`knip --config knip.jsonc --production --reporter json --no-exit-code --no-progress\``,
+  `Command: \`knip --config knip.config.mjs --production --reporter json --no-exit-code --no-progress\``,
   `Full JSON: \`${jsonReportPath}\``,
   ``,
   `## Counts`,

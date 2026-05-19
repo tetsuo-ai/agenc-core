@@ -2,7 +2,6 @@ import { defineConfig } from 'vitest/config';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 
-const benchmarkLaneEnabled = process.env.AGENC_RUNTIME_BENCHMARKS === '1';
 const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(__dirname, 'src');
@@ -369,9 +368,8 @@ export default defineConfig({
       ...movedDonorTestFiles,
       'tests/integration.test.ts',
       'tests/eval-replay.integration.test.ts',
-      ...(benchmarkLaneEnabled ? [] : ['tests/benchmark-runner.integration.test.ts']),
     ],
-    testTimeout: benchmarkLaneEnabled ? 120000 : 30000,
+    testTimeout: 30000,
     deps: {
       interopDefault: true,
     },

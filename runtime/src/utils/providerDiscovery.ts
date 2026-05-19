@@ -343,41 +343,6 @@ export async function probeAtomicChatReadiness(options?: {
   return { state: 'ready', models }
 }
 
-export async function benchmarkOllamaModel(
-  modelName: string,
-  baseUrl?: string,
-): Promise<number | null> {
-  const start = Date.now()
-  const { signal, clear } = withTimeoutSignal(20000)
-  try {
-    const response = await fetch(`${getOllamaApiBaseUrl(baseUrl)}/api/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      signal,
-      body: JSON.stringify({
-        model: modelName,
-        stream: false,
-        messages: [{ role: 'user', content: 'Reply with OK.' }],
-        options: {
-          temperature: 0,
-          num_predict: 8,
-        },
-      }),
-    })
-    if (!response.ok) {
-      return null
-    }
-    await response.json()
-    return Date.now() - start
-  } catch {
-    return null
-  } finally {
-    clear()
-  }
-}
-
 export async function probeOllamaGenerationReadiness(options?: {
   baseUrl?: string
   model?: string

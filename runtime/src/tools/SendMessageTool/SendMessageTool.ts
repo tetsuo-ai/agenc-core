@@ -747,64 +747,6 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     async call(input, context, canUseTool, assistantMessage) {
-      if (feature('UDS_INBOX') && typeof input.message === 'string') {
-        const addr = parseAddress(input.to)
-        if (addr.scheme === 'bridge') {
-          // Re-check handle — checkPermissions blocks on user approval (can be
-          // minutes). validateInput's check is stale if the bridge dropped
-          // during the prompt wait; without this, from="unknown" ships.
-          // Also re-check isReplBridgeActive for outbound-only mode.
-          if (!getReplBridgeHandle() || !isReplBridgeActive()) {
-            return {
-              data: {
-                success: false,
-                message: `Remote Control disconnected before send — cannot deliver to ${input.to}`,
-              },
-            }
-          }
-          /* eslint-disable @typescript-eslint/no-require-imports */
-          const { postInterAgenCMessage } =
-            require('../../bridge/peerSessions.js') as typeof import('../../bridge/peerSessions.js')
-          /* eslint-enable @typescript-eslint/no-require-imports */
-          const result = await postInterAgenCMessage(
-            addr.target,
-            input.message,
-          )
-          const preview = input.summary || truncate(input.message, 50)
-          return {
-            data: {
-              success: result.ok,
-              message: result.ok
-                ? `“${preview}” → ${input.to}`
-                : `Failed to send to ${input.to}: ${result.error ?? 'unknown'}`,
-            },
-          }
-        }
-        if (addr.scheme === 'uds') {
-          /* eslint-disable @typescript-eslint/no-require-imports */
-          const { sendToUdsSocket } =
-            require('../../../../utils/udsClient.js') as typeof import('../../../../utils/udsClient.js')
-          /* eslint-enable @typescript-eslint/no-require-imports */
-          try {
-            await sendToUdsSocket(addr.target, input.message)
-            const preview = input.summary || truncate(input.message, 50)
-            return {
-              data: {
-                success: true,
-                message: `“${preview}” → ${input.to}`,
-              },
-            }
-          } catch (e) {
-            return {
-              data: {
-                success: false,
-                message: `Failed to send to ${input.to}: ${errorMessage(e)}`,
-              },
-            }
-          }
-        }
-      }
-
       // Route to in-process subagent by name or raw agentId before falling
       // through to ambient-team resolution. Stopped agents are auto-resumed.
       if (typeof input.message === 'string' && input.to !== '*') {

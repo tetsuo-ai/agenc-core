@@ -12,11 +12,7 @@ const BRIEF_TOOL_NAME: string | null =
         require('src/tools/BriefTool/prompt.js') as typeof import('src/tools/BriefTool/prompt.js')
       ).BRIEF_TOOL_NAME
     : null
-const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS')
-  ? (
-      require('../SendUserFileTool/prompt.js') as typeof import('../SendUserFileTool/prompt.js')
-    ).SEND_USER_FILE_TOOL_NAME
-  : null
+const SEND_USER_FILE_TOOL_NAME: string | null = null
 
 /* eslint-enable @typescript-eslint/no-require-imports */
 

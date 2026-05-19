@@ -64,7 +64,6 @@
     "src/commands/add-dir/add-dir.tsx",
     "src/commands/advisor.ts",
     "src/commands/agents/index.ts",
-    "src/commands/benchmark.ts",
     "src/commands/branch/branch.ts",
     "src/commands/bridge-kick.ts",
     "src/commands/bridge/bridge.tsx",

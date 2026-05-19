@@ -14,9 +14,7 @@ import {
 import { buildPostCompactMessages } from './services/compact/compact.js'
 import * as contextCollapseModule from './services/contextCollapse/index.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
-const reactiveCompact = feature('REACTIVE_COMPACT')
-  ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
-  : null
+const reactiveCompact = null
 const contextCollapse = feature('CONTEXT_COLLAPSE')
   ? contextCollapseModule
   : null
@@ -64,12 +62,8 @@ import {
   startRelevantMemoryPrefetch,
 } from './utils/attachments.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
-const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
-  : null
-const jobClassifier = feature('TEMPLATES')
-  ? (require('./jobs/classifier.js') as typeof import('./jobs/classifier.js'))
-  : null
+const skillPrefetch = null
+const jobClassifier = null
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   remove as removeFromQueue,
@@ -104,7 +98,7 @@ import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
 import { getGlobalConfig } from './utils/config.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
-import type { Terminal, Continue } from './query/transitions.js'
+import type { Terminal, Continue } from './session/turn-state.js'
 import { feature } from 'bun:bundle'
 import {
   getCurrentTurnTokenBudget,
@@ -114,12 +108,8 @@ import {
 import { createBudgetTracker, checkTokenBudget } from './conversation/token-budget.js'
 import { count } from './utils/array.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
-const snipModule = feature('HISTORY_SNIP')
-  ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
-  : null
-const taskSummaryModule = feature('BG_SESSIONS')
-  ? (require('../../utils/taskSummary.js') as typeof import('../../utils/taskSummary.js'))
-  : null
+const snipModule = null
+const taskSummaryModule = null
 /* eslint-enable @typescript-eslint/no-require-imports */
 function* yieldMissingToolResultBlocks(
   assistantMessages: AssistantMessage[],
@@ -430,7 +420,7 @@ async function* queryLoop(
     // what snip removed; tokenCountWithEstimation alone can't see it (reads usage
     // from the protected-tail assistant, which survives snip unchanged).
     let snipTokensFreed = 0
-    if (feature('HISTORY_SNIP')) {
+    if (snipModule) {
       queryCheckpoint('query_snip_start')
       const snipResult = snipModule!.snipCompactIfNeeded(messagesForQuery)
       messagesForQuery = snipResult.messages
@@ -1863,7 +1853,7 @@ async function* queryLoop(
     // long-running agent still refreshes what it's working on. Gated
     // only on !agentId so every top-level conversation (REPL, SDK, HFI,
     // remote) generates summaries; subagents/forks don't.
-    if (feature('BG_SESSIONS')) {
+    if (taskSummaryModule) {
       if (
         !toolUseContext.agentId &&
         taskSummaryModule!.shouldGenerateTaskSummary()

@@ -12,7 +12,7 @@ import type { Tool } from '../Tool.js';
 import { buildTool, type ToolDef } from '../Tool.js';
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js';
-import type { RemoteAgentTaskState } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
+import type { RemoteAgentTaskState } from '../../tasks/types.js';
 import type { TaskState } from '../../tasks/types.js';
 import { AbortError } from '../../utils/errors.js';
 import { lazySchema } from '../../utils/lazySchema.js';

@@ -40,9 +40,7 @@ import type { SystemPrompt } from '../utils/systemPromptType.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
 import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
-const jobClassifierModule = feature('TEMPLATES')
-  ? (require('../jobs/classifier.js') as typeof import('../jobs/classifier.js'))
-  : null
+const jobClassifierModule = null
 
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -102,7 +100,7 @@ export async function* handleStopHooks(
   // require()-gated jobs/ import pattern above; spawn.test.ts asserts the
   // string matches.
   if (
-    feature('TEMPLATES') &&
+    jobClassifierModule &&
     process.env.AGENC_JOB_DIR &&
     querySource.startsWith('repl_main_thread') &&
     !toolUseContext.agentId
