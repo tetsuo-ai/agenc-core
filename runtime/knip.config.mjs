@@ -43,6 +43,9 @@ export default {
     'src/types/generated/**',
     // String-loaded fixture used by MCP client lifecycle tests.
     'src/mcp-client/test-fixtures/**',
+    // Required by the memory subsystem contract even though production code
+    // currently reaches the memory store through narrower helpers.
+    'src/memory/store.ts',
     'src/test-parity/**',
     'tests/fixtures/**',
   ],
