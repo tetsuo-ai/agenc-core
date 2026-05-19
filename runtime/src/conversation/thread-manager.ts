@@ -627,7 +627,7 @@ export class ConversationThreadManager extends ThreadManager {
   }
 }
 
-export async function applyRolloutReconstructionToSession(
+async function applyRolloutReconstructionToSession(
   session: Session,
   reconstruction: RolloutReconstruction,
 ): Promise<SessionState> {

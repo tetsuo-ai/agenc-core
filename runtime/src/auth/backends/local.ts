@@ -22,8 +22,8 @@ import type {
   AuthWhoamiResult,
 } from "../backend.js";
 
-export const LOCAL_AUTH_STATE_FILENAME = "auth.json" as const;
-export const LOCAL_AUTH_STATE_VERSION = 1 as const;
+const LOCAL_AUTH_STATE_FILENAME = "auth.json" as const;
+const LOCAL_AUTH_STATE_VERSION = 1 as const;
 
 interface LocalAuthDiskState {
   readonly version: typeof LOCAL_AUTH_STATE_VERSION;

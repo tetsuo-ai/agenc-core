@@ -28,7 +28,7 @@ export interface CostSummaryFallbackOptions {
   readonly shouldPrint?: () => boolean;
 }
 
-export function registerCostSummaryFallbackOnExit(
+function registerCostSummaryFallbackOnExit(
   getFpsMetrics?: () => CostFpsMetrics | undefined,
   options: CostSummaryFallbackOptions = {},
 ): () => void {

@@ -7,9 +7,6 @@ import { LocalAuthBackend } from "./backends/local.js";
 import { RemoteAuthBackend } from "./backends/remote.js";
 import {
   createAuthBackend,
-  InvalidAuthBackendConfigError,
-  InvalidAuthManagedKeysConfigError,
-  resolveAuthBackendKind,
   resolveAuthManagedKeysEnabled,
 } from "./selection.js";
 
@@ -31,7 +28,6 @@ describe("auth backend selection", () => {
     homes.push(agencHome);
     const config = defaultConfig();
 
-    expect(resolveAuthBackendKind(config)).toBe("local");
     const backend = createAuthBackend(config, { agencHome });
 
     expect(backend).toBeInstanceOf(LocalAuthBackend);
@@ -45,7 +41,6 @@ describe("auth backend selection", () => {
       auth: { backend: "remote", managedKeys: { enabled: true } },
     });
 
-    expect(resolveAuthBackendKind(config)).toBe("remote");
     expect(resolveAuthManagedKeysEnabled(config)).toBe(true);
     const backend = createAuthBackend(config, {
       remote: {
@@ -194,8 +189,11 @@ describe("auth backend selection", () => {
       auth: { backend: "other" },
     } as unknown as ReturnType<typeof defaultConfig>;
 
-    expect(() => resolveAuthBackendKind(config)).toThrow(
-      InvalidAuthBackendConfigError,
+    expect(() => createAuthBackend(config)).toThrow(
+      /Invalid auth\.backend config/,
+    );
+    expect(() => createAuthBackend(config)).toThrow(
+      expect.objectContaining({ name: "InvalidAuthBackendConfigError" }),
     );
   });
 
@@ -205,10 +203,10 @@ describe("auth backend selection", () => {
     } as unknown as ReturnType<typeof defaultConfig>;
 
     expect(() => resolveAuthManagedKeysEnabled(config)).toThrow(
-      InvalidAuthManagedKeysConfigError,
+      /Invalid auth\.managedKeys\.enabled config/,
     );
-    expect(() => resolveAuthBackendKind(config)).toThrow(
-      InvalidAuthManagedKeysConfigError,
+    expect(() => createAuthBackend(config)).toThrow(
+      expect.objectContaining({ name: "InvalidAuthManagedKeysConfigError" }),
     );
   });
 });

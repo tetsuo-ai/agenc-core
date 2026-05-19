@@ -28,7 +28,7 @@ import { emitWarning } from "../session/event-log.js";
 export const RECONNECT_INITIAL_MS = 1_000;
 export const RECONNECT_MAX_MS = 30_000;
 export const RECONNECT_GIVE_UP_MS = 600_000;
-export const RECONNECT_JITTER_FRAC = 0.25; // ±25 %
+const RECONNECT_JITTER_FRAC = 0.25; // ±25 %
 export const RECONNECT_SLEEP_DETECTION_THRESHOLD_MS =
   RECONNECT_MAX_MS * 2;
 

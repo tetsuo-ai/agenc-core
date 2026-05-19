@@ -16,7 +16,7 @@ export interface AuthBackendSelectionOptions {
   readonly remote?: RemoteAuthBackendOptions;
 }
 
-export class InvalidAuthBackendConfigError extends Error {
+class InvalidAuthBackendConfigError extends Error {
   constructor(value: unknown) {
     super(
       `Invalid auth.backend config: expected "local" or "remote", got ${JSON.stringify(value)}`,
@@ -25,7 +25,7 @@ export class InvalidAuthBackendConfigError extends Error {
   }
 }
 
-export class InvalidAuthManagedKeysConfigError extends Error {
+class InvalidAuthManagedKeysConfigError extends Error {
   constructor(value: unknown) {
     super(
       `Invalid auth.managedKeys.enabled config: expected boolean, got ${JSON.stringify(value)}`,
@@ -64,7 +64,7 @@ export function resolveAuthManagedKeysEnabled(
   throw new InvalidAuthManagedKeysConfigError(enabled);
 }
 
-export function resolveAuthBackendKind(
+function resolveAuthBackendKind(
   config: Pick<AgenCConfig, "auth">,
 ): AuthBackendConfigKind {
   const auth = readAuthConfig(config);

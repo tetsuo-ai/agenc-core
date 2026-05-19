@@ -6,10 +6,9 @@ import { mergeConfigs, defaultConfig } from "../config/schema.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
 import { Session } from "../session/session.js";
 import { createAuthBackend } from "./selection.js";
-import {
-  REMOTE_AUTH_TOKEN_ENV,
-  REMOTE_AUTH_URL_ENV,
-} from "./backends/remote.js";
+
+const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
+const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL";
 
 describe("remote AuthBackend bootstrap key vending", () => {
   it("vends a remote managed key through createAuthBackend during provider startup", async () => {

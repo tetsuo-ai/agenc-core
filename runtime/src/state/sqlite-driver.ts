@@ -188,7 +188,7 @@ export function discoverStateDatabasePaths(
     .filter((paths) => existsSync(paths.stateDbPath));
 }
 
-export function configureDatabase(db: SqliteDatabase): void {
+function configureDatabase(db: SqliteDatabase): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = FULL");
   db.pragma("foreign_keys = ON");
@@ -196,7 +196,7 @@ export function configureDatabase(db: SqliteDatabase): void {
   db.pragma("temp_store = MEMORY");
 }
 
-export function configureReadOnlyDatabase(db: SqliteDatabase): void {
+function configureReadOnlyDatabase(db: SqliteDatabase): void {
   db.pragma("query_only = ON");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");

@@ -64,13 +64,13 @@ export interface InFlightToolCallProgressParams {
   readonly outputRotation?: ToolOutputRotationPolicy;
 }
 
-export const DEFAULT_TOOL_OUTPUT_ROTATION_POLICY = Object.freeze({
+const DEFAULT_TOOL_OUTPUT_ROTATION_POLICY = Object.freeze({
   outputPartialMaxBytes: 32_768,
   logMaxBytes: 1_048_576,
   rotatedLogCount: 4,
 } satisfies Required<ToolOutputRotationPolicy>);
 
-export const DEFAULT_TOOL_RECOVERY_CATEGORY: ToolRecoveryCategory =
+const DEFAULT_TOOL_RECOVERY_CATEGORY: ToolRecoveryCategory =
   "side-effecting";
 
 const UTF8_FATAL_DECODER = new TextDecoder("utf-8", { fatal: true });

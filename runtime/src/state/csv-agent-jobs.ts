@@ -45,16 +45,6 @@ const ITEM_STATUSES: ReadonlySet<CsvAgentJobItemStatus> = new Set([
   "failed",
 ]);
 
-const FINAL_JOB_STATUSES: ReadonlySet<CsvAgentJobStatus> = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-]);
-
-export function isFinalJobStatus(status: CsvAgentJobStatus): boolean {
-  return FINAL_JOB_STATUSES.has(status);
-}
-
 function parseJobStatus(raw: string): CsvAgentJobStatus {
   if (!JOB_STATUSES.has(raw as CsvAgentJobStatus)) {
     throw new Error(`invalid agent job status: ${raw}`);

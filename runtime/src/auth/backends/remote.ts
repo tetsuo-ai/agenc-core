@@ -22,28 +22,28 @@ import {
   type EnvSnapshot,
 } from "../../config/env.js";
 
-export const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
+const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://api.agenc.tech/v1/auth/vend-key" as const;
-export const DEFAULT_REMOTE_AUTH_LOGIN_START_URL =
+const DEFAULT_REMOTE_AUTH_LOGIN_START_URL =
   "https://api.agenc.tech/v1/auth/login/start" as const;
-export const DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL =
+const DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL =
   "https://api.agenc.tech/v1/auth/login/poll" as const;
-export const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
+const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
   "https://api.agenc.tech/v1/auth/infer-model" as const;
-export const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
+const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
   "https://api.agenc.tech/v1/auth/subscription-tier" as const;
-export const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
-export const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
-export const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
-export const REMOTE_AUTH_LOGIN_START_URL_ENV =
+const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
+const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
+const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
+const REMOTE_AUTH_LOGIN_START_URL_ENV =
   "AGENC_REMOTE_AUTH_LOGIN_START_URL" as const;
-export const REMOTE_AUTH_LOGIN_POLL_URL_ENV =
+const REMOTE_AUTH_LOGIN_POLL_URL_ENV =
   "AGENC_REMOTE_AUTH_LOGIN_POLL_URL" as const;
-export const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
-export const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
-export const REMOTE_AUTH_STATE_VERSION = 1 as const;
-export const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
-export const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
+const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
+const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
+const REMOTE_AUTH_STATE_VERSION = 1 as const;
+const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
+const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
 
 interface RemoteAuthDiskState {
   readonly version: typeof REMOTE_AUTH_STATE_VERSION;
@@ -329,14 +329,6 @@ async function resolveRemoteAuthToken(
   const explicit = trimNonEmpty(options.token) ??
     trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
   return explicit;
-}
-
-export async function resolveRemoteAuthHeaders(
-  options: RemoteAuthBackendOptions = {},
-): Promise<Readonly<Record<string, string>> | null> {
-  const token = await resolveRemoteAuthToken(options);
-  if (token === undefined) return null;
-  return remoteAuthJsonHeaders(token);
 }
 
 function createHttpRemoteAuthKeyVendor(

@@ -26,8 +26,8 @@ const CLOSE_TASK_DRAIN_TIMEOUT_MS = 50;
 const CONTROL_QUEUE_CAPACITY =
   AUDIO_IN_QUEUE_CAPACITY + USER_TEXT_IN_QUEUE_CAPACITY + HANDOFF_OUT_QUEUE_CAPACITY + 1;
 export const DEFAULT_REALTIME_MODEL = "gpt-realtime-1.5";
-export const REALTIME_USER_TEXT_PREFIX = "[USER] ";
-export const REALTIME_BACKEND_TEXT_PREFIX = "[BACKEND] ";
+const REALTIME_USER_TEXT_PREFIX = "[USER] ";
+const REALTIME_BACKEND_TEXT_PREFIX = "[BACKEND] ";
 
 const REALTIME_V2_HANDOFF_COMPLETE_ACKNOWLEDGEMENT =
   "Background agent finished. Use the preceding [BACKEND] messages as the result.";
@@ -984,7 +984,7 @@ export async function buildRealtimeSessionConfigFromSession(
   });
 }
 
-export function prepareRealtimeInstructions(
+function prepareRealtimeInstructions(
   prompt: string | null,
   startupContext: string | null,
 ): string {
@@ -1020,7 +1020,7 @@ export function builtinRealtimeVoices(): RealtimeVoicesList {
   };
 }
 
-export function defaultRealtimeVoice(version: RealtimeSessionVersion): RealtimeVoice {
+function defaultRealtimeVoice(version: RealtimeSessionVersion): RealtimeVoice {
   const voices = builtinRealtimeVoices();
   return version === "v1" ? voices.defaultV1 : voices.defaultV2;
 }

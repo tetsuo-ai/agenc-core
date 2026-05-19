@@ -2,17 +2,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import {
-  REMOTE_AUTH_LOGIN_POLL_URL_ENV,
-  REMOTE_AUTH_LOGIN_START_URL_ENV,
-  REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS,
-  REMOTE_AUTH_MODEL_URL_ENV,
-  REMOTE_AUTH_TIER_URL_ENV,
-  REMOTE_AUTH_TOKEN_ENV,
-  REMOTE_AUTH_URL_ENV,
-  RemoteAuthBackend,
-  resolveRemoteAuthHeaders,
-} from "./remote.js";
+import { RemoteAuthBackend } from "./remote.js";
+
+const REMOTE_AUTH_LOGIN_POLL_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_POLL_URL";
+const REMOTE_AUTH_LOGIN_START_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_START_URL";
+const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
+const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL";
+const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL";
+const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN";
+const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL";
 
 describe("RemoteAuthBackend", () => {
   it("persists a long-lived token returned by the configured login flow", async () => {
@@ -96,41 +94,6 @@ describe("RemoteAuthBackend", () => {
           body: JSON.stringify({ sessionId: "session-1" }),
         },
       );
-    } finally {
-      await rm(agencHome, { recursive: true, force: true });
-    }
-  });
-
-  it("resolves persisted remote auth headers for startup integrations", async () => {
-    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-headers-"));
-    const backend = new RemoteAuthBackend({
-      agencHome,
-      loginFlow: () => ({ token: "persisted-token" }),
-    });
-
-    try {
-      await backend.login({ sessionId: "cli" });
-
-      await expect(resolveRemoteAuthHeaders({ agencHome })).resolves.toEqual({
-        "content-type": "application/json",
-        authorization: "Bearer persisted-token",
-      });
-    } finally {
-      await rm(agencHome, { recursive: true, force: true });
-    }
-  });
-
-  it("resolves remote auth headers from the bootstrap token env when no login is persisted", async () => {
-    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-headers-"));
-
-    try {
-      await expect(resolveRemoteAuthHeaders({
-        agencHome,
-        env: { [REMOTE_AUTH_TOKEN_ENV]: "env-token" },
-      })).resolves.toEqual({
-        "content-type": "application/json",
-        authorization: "Bearer env-token",
-      });
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

@@ -5,10 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AgenCDaemonAgentManager } from "../app-server/agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../app-server/daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "../app-server/protocol/index.js";
-import {
-  LOCAL_AUTH_STATE_FILENAME,
-  LocalAuthBackend,
-} from "../auth/backends/local.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
 import {
   createAgenCPortalDaemonInitializeRequest,
   AGENC_PORTAL_AUTH_METHODS,
@@ -58,7 +55,7 @@ describe("AgenC portal AuthBackend contract", () => {
       },
     });
     await expect(
-      readAuthToken(join(agencHome, LOCAL_AUTH_STATE_FILENAME)),
+      readAuthToken(join(agencHome, "auth.json")),
     ).resolves.toBe("portal-auth-token");
 
     const whoamiResponse = await connection.dispatch({

@@ -466,6 +466,38 @@ const binConfigTaskOnboardingContractExportFiles = [
 const intentionalBinConfigTaskOnboardingIssueIgnores = Object.fromEntries(
   binConfigTaskOnboardingContractExportFiles.map((file) => [file, ['exports']]),
 );
+const conversationRecoveryStateShellContractExportFiles = [
+  // Realtime, recovery, shell parser/safety, and state persistence helpers are
+  // focused contract-test surfaces or dynamically consumed by session/runtime
+  // flows outside the production-only Knip graph.
+  'src/conversation/realtime/context.ts',
+  'src/conversation/realtime/conversation.ts',
+  'src/conversation/realtime/instructions/messages.ts',
+  'src/conversation/realtime/prompt.ts',
+  'src/conversation/realtime/webrtc/native.ts',
+  'src/conversation/token-budget.ts',
+  'src/recovery/api-errors.ts',
+  'src/recovery/fallback-ladder.ts',
+  'src/recovery/max-output-tokens.ts',
+  'src/recovery/reconnection.ts',
+  'src/recovery/terminal-tool-result.ts',
+  'src/recovery/tombstone.ts',
+  'src/recovery/triggers.ts',
+  'src/shell-command/parser.ts',
+  'src/shell-command/powershell-parser.ts',
+  'src/shell-command/safety.ts',
+  'src/state/atomic-snapshot-writes.ts',
+  'src/state/backfill.ts',
+  'src/state/migrations/config-migrations.ts',
+  'src/state/sqlite-driver.ts',
+  'src/state/tool-output-rotation.ts',
+];
+const intentionalConversationRecoveryStateShellIssueIgnores = Object.fromEntries(
+  conversationRecoveryStateShellContractExportFiles.map((file) => [
+    file,
+    ['exports'],
+  ]),
+);
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -530,6 +562,7 @@ export default {
     ...intentionalPluginPromptIssueIgnores,
     ...intentionalAppAgentErrorIssueIgnores,
     ...intentionalBinConfigTaskOnboardingIssueIgnores,
+    ...intentionalConversationRecoveryStateShellIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

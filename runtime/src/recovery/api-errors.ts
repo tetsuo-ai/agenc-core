@@ -25,9 +25,7 @@ import {
 // String constants
 // ─────────────────────────────────────────────────────────────────────
 
-export const PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long";
-export const MAX_OUTPUT_TOKENS_ERROR_MESSAGE = "max_output_tokens";
-export const CONTEXT_WINDOW_ERROR_MESSAGE = "context_window_exceeded";
+const PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long";
 
 // ─────────────────────────────────────────────────────────────────────
 // FallbackTriggeredError — port of withRetry.ts:169

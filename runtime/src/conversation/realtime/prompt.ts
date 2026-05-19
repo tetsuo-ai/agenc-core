@@ -9,7 +9,7 @@ import realtimeStartPrompt from "./prompts/realtime_start.md";
  * markdown assets at commit `c8c30d9d75556ecbe94991af22380d2a4e9d6589`.
  */
 export const REALTIME_USER_FIRST_NAME_PLACEHOLDER = "{{ user_first_name }}";
-export const DEFAULT_REALTIME_USER_FIRST_NAME = "there";
+const DEFAULT_REALTIME_USER_FIRST_NAME = "there";
 
 export const DEFAULT_REALTIME_BACKEND_PROMPT: string = backendPrompt;
 export const DEFAULT_REALTIME_START_INSTRUCTIONS: string = realtimeStartPrompt;

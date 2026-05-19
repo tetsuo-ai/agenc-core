@@ -91,7 +91,7 @@ interface InFlightToolCallRow {
   readonly started_at: string;
 }
 
-export class AgenCStateExportImportError extends Error {
+class AgenCStateExportImportError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "AgenCStateExportImportError";

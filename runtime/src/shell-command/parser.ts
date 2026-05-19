@@ -17,7 +17,7 @@ export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50;
 /**
  * Env-var assignment pattern. Matches AgenC's permission env-prefix handling.
  */
-export const ENV_VAR_ASSIGN_RE = /^[A-Za-z_]\w*=/;
+const ENV_VAR_ASSIGN_RE = /^[A-Za-z_]\w*=/;
 
 /**
  * Shape check for "this token looks like a subcommand/command name":
@@ -619,7 +619,7 @@ export function parseShellLcSingleCommandPrefix(
   return parseBashSingleCommandPrefix(bash.script);
 }
 
-export function parseBashSingleCommandPrefix(
+function parseBashSingleCommandPrefix(
   script: string,
 ): readonly string[] | null {
   const trimmed = script.trim();

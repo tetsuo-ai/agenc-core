@@ -14,8 +14,8 @@ import { basename, join } from "node:path";
 import type { ResponseItem } from "../../session/rollout-item.js";
 import { isContextualUserMessageContent } from "../../session/rollout-reconstruction.js";
 
-export const REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET = 5_300;
-export const REALTIME_TURN_TOKEN_BUDGET = 300;
+const REALTIME_STARTUP_CONTEXT_TOKEN_BUDGET = 5_300;
+const REALTIME_TURN_TOKEN_BUDGET = 300;
 
 const STARTUP_CONTEXT_HEADER =
   "Startup context from AgenC.\n" +
