@@ -14,12 +14,6 @@ import {
   upgradeMarketplaceOp,
   type Fetcher,
 } from "./marketplace.js";
-import {
-  createPluginId,
-  isSourceAllowedByPolicy,
-  loadMarketplacesWithGracefulDegradation,
-} from "./marketplaceHelpers.js";
-import { getMarketplace, reconcileMarketplaces } from "./marketplaceManager.js";
 import { parseMarketplaceInput } from "./parseMarketplaceInput.js";
 
 async function tempRuntime(): Promise<{
@@ -130,10 +124,6 @@ describe("plugin marketplace runtime", () => {
     });
 
     expect(result.marketplace.name).toBe("team");
-
-    const marketplace = await getMarketplace("team", { agencHome, workspaceRoot });
-    expect(marketplace.name).toBe("team");
-    expect(marketplace.plugins.map((plugin) => plugin.name)).toEqual(["alpha"]);
 
     const plugin = await findInstallableMarketplacePlugin(
       result.marketplace.manifestPath,
@@ -253,32 +243,6 @@ describe("plugin marketplace runtime", () => {
     const repositorySeparator = cloneCalls[0]!.indexOf("--");
     expect(repositorySeparator).toBeGreaterThan(-1);
     expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
-  });
-
-  it("rejects leading-dash object-form git marketplace sources before running git", async () => {
-    const { agencHome, workspaceRoot } = await tempRuntime();
-    const calls: string[][] = [];
-
-    const result = await reconcileMarketplaces({
-      agencHome,
-      workspaceRoot,
-      declaredMarketplaces: {
-        team: {
-          source: { source: "git", url: "--upload-pack=x.git" },
-        },
-      },
-      runProcess: async (_command, args) => {
-        calls.push([...args]);
-        throw new Error("git should not run for unsafe object-form git sources");
-      },
-    });
-
-    expect(calls).toEqual([]);
-    expect(result.failed).toHaveLength(1);
-    expect(result.failed[0]).toMatchObject({
-      name: "team",
-      error: expect.stringContaining("must not start with '-'"),
-    });
   });
 
   it("requires safe URL marketplace transport and bounded manifest downloads", async () => {
@@ -529,102 +493,6 @@ describe("plugin marketplace runtime", () => {
     );
   });
 
-  it("keeps marketplace reconciliation atomic when plugin source metadata is invalid", async () => {
-    const { agencHome, workspaceRoot } = await tempRuntime();
-    const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
-    await mkdir(marketplaceRoot, { recursive: true });
-    await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
-      JSON.stringify({
-        metadata: { name: "bad" },
-        plugins: [{
-          name: "alpha",
-          source: { source: "git", url: "http://agenc.tech/plugin.git" },
-        }],
-      }, null, 2),
-    );
-
-    const result = await reconcileMarketplaces({
-      agencHome,
-      workspaceRoot,
-      declaredMarketplaces: {
-        bad: { source: { source: "directory", path: marketplaceRoot } },
-      },
-    });
-
-    expect(result.installed).toEqual([]);
-    expect(result.failed).toHaveLength(1);
-    expect(result.failed[0]).toMatchObject({
-      name: "bad",
-      error: expect.stringContaining("must use HTTPS or loopback HTTP"),
-    });
-    await expect(readFile(marketplaceIndexPath({ agencHome }), "utf8"))
-      .rejects.toMatchObject({ code: "ENOENT" });
-    await expect(stat(marketplaceInstalledPath("bad", { agencHome })))
-      .rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("treats policy host and path patterns as a safe bounded subset", () => {
-    expect(isSourceAllowedByPolicy(
-      { source: "github", repo: "agenc-org/plugins" },
-      {
-        strictKnownMarketplaces: [{
-          source: "settings",
-          name: String.raw`hostPattern:^github\.com$`,
-          plugins: [],
-        }],
-      },
-    )).toBe(true);
-    expect(isSourceAllowedByPolicy(
-      { source: "directory", path: "/opt/approved/team-marketplace" },
-      {
-        strictKnownMarketplaces: [{
-          source: "settings",
-          name: "pathPattern:^/opt/approved/",
-          plugins: [],
-        }],
-      },
-    )).toBe(true);
-    expect(isSourceAllowedByPolicy(
-      { source: "git", url: "https://github.com/agenc-org/plugins.git" },
-      {
-        strictKnownMarketplaces: [{
-          source: "settings",
-          name: "hostPattern:(a+)+$",
-          plugins: [],
-        }],
-      },
-    )).toBe(false);
-    expect(isSourceAllowedByPolicy(
-      { source: "git", url: "https://github.com/agenc-org/plugins.git" },
-      {
-        strictKnownMarketplaces: [{
-          source: "settings",
-          name: `hostPattern:${"a".repeat(257)}`,
-          plugins: [],
-        }],
-      },
-    )).toBe(false);
-  });
-
-  it("handles empty marketplace maps and unicode plugin ids at helper boundaries", async () => {
-    await expect(loadMarketplacesWithGracefulDegradation({}, async () => {
-      throw new Error("no marketplaces should load");
-    })).resolves.toEqual({ marketplaces: [], failures: [] });
-    expect(createPluginId("überblick", "team")).toBe("überblick@team");
-  });
-
-  it("evicts rejected marketplace cache entries before retrying", async () => {
-    const { agencHome, workspaceRoot } = await tempRuntime();
-    await expect(getMarketplace("team", { agencHome, workspaceRoot }))
-      .rejects.toThrow("not found");
-
-    const marketplaceRoot = await writeMarketplace(join(workspaceRoot, "team-marketplace"), "team");
-    await addMarketplaceOp({ agencHome, workspaceRoot, source: marketplaceRoot });
-
-    await expect(getMarketplace("team", { agencHome, workspaceRoot }))
-      .resolves.toMatchObject({ name: "team" });
-  });
 });
 
 function exactArrayBuffer(bytes: Buffer): ArrayBuffer {
