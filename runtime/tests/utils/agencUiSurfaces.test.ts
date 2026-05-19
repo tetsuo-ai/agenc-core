@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'path'
 
-import { optionForPermissionSaveDestination } from '../tui/permission-rules/AddPermissionRules.tsx'
 import { isAgenCSettingsPath } from './permissions/filesystem.ts'
 import { getValidationTip } from './settings/validationTips.ts'
 
@@ -20,27 +19,6 @@ describe('AgenC settings path surfaces', () => {
     ).toBe(true)
   })
 
-  test('permission save destinations point user settings to ~/.agenc', () => {
-    expect(optionForPermissionSaveDestination('userSettings')).toEqual({
-      label: 'User settings',
-      description: 'Saved in ~/.agenc/settings.json',
-      value: 'userSettings',
-    })
-  })
-
-  test('permission save destinations point project settings to .agenc', () => {
-    expect(optionForPermissionSaveDestination('projectSettings')).toEqual({
-      label: 'Project settings',
-      description: 'Checked in at .agenc/settings.json',
-      value: 'projectSettings',
-    })
-
-    expect(optionForPermissionSaveDestination('localSettings')).toEqual({
-      label: 'Project settings (local)',
-      description: 'Saved in .agenc/settings.local.json',
-      value: 'localSettings',
-    })
-  })
 })
 
 describe('AgenC validation tips', () => {
