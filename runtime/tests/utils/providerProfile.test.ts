@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
 
-import { DEFAULT_CODEX_BASE_URL } from '../services/api/providerConfig.ts'
+import { DEFAULT_PROVIDER_CODE_BASE_URL } from '../services/api/providerConfig.ts'
 import {
   applySavedProfileToCurrentSession,
   buildStartupEnvFromProfile,
@@ -539,7 +539,7 @@ test('buildCodexProfileEnv tags OAuth-saved profiles so logout can remove them s
   })
 
   assert.deepEqual(env, {
-    OPENAI_BASE_URL: DEFAULT_CODEX_BASE_URL,
+    OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
     OPENAI_MODEL: 'agencplan',
     AGENC_CREDENTIAL_SOURCE: 'oauth',
     AGENC_API_KEY: makeJwt({
@@ -568,7 +568,7 @@ test('clearPersistedCodexOAuthProfile removes only persisted Agenc OAuth profile
     } = providerProfileModule
     const oauthProfile = createProfileFile('agenc', {
       OPENAI_MODEL: 'agencplan',
-      OPENAI_BASE_URL: DEFAULT_CODEX_BASE_URL,
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       CHATGPT_ACCOUNT_ID: 'acct_oauth',
       AGENC_CREDENTIAL_SOURCE: 'oauth',
     })
@@ -583,7 +583,7 @@ test('clearPersistedCodexOAuthProfile removes only persisted Agenc OAuth profile
 
     const existingCredentialProfile = createProfileFile('agenc', {
       OPENAI_MODEL: 'agencplan',
-      OPENAI_BASE_URL: DEFAULT_CODEX_BASE_URL,
+      OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
       CHATGPT_ACCOUNT_ID: 'acct_existing',
       AGENC_CREDENTIAL_SOURCE: 'existing',
     })

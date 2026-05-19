@@ -308,7 +308,6 @@ export function createAutoMemoryToolPolicy(memoryDir: string): ChildToolPolicy {
   };
 }
 
-export const createAutoMemCanUseTool = createAutoMemoryToolPolicy
 
 function createChildWriteTracker(memoryDir: string): ChildWriteTracker {
   const pathsByCallId = new Map<string, string>();

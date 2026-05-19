@@ -250,7 +250,9 @@ export const getProjectMemoryPath = memoize(
   () => getProjectRoot(),
 )
 
-export const getAutoMemPath = getProjectMemoryPath
+export function getAutoMemPath(): string {
+  return getProjectMemoryPath()
+}
 
 export function getGlobalMemoryPath(): string {
   return (join(getMemoryBaseDir(), MEMORY_DIRNAME) + sep).normalize('NFC')

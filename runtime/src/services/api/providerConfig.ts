@@ -942,10 +942,3 @@ export function supportsProviderCodeReasoningEffort(model: string): boolean {
 
   return /^gpt-5(?:[.-]|$)/.test(base)
 }
-
-export const DEFAULT_CODEX_BASE_URL = DEFAULT_PROVIDER_CODE_BASE_URL
-export const isCodexBaseUrl = isProviderCodeBaseUrl
-export const resolveCodexApiCredentials = resolveProviderCodeApiCredentials
-export const shouldUseCodexTransport = shouldUseProviderCodeTransport
-export const supportsCodexReasoningEffort = supportsProviderCodeReasoningEffort
-export const parseOpenAICompatibleApiFormat = parseOpenAiCompatibleApiFormat

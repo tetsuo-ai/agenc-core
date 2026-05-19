@@ -9,7 +9,7 @@ import {
 export const PLUGIN_MANIFEST_DIR = ".agenc-plugin";
 export const PLUGIN_MANIFEST_FILE = "plugin.json";
 export const PLUGIN_MANIFEST_RELATIVE_PATH = `${PLUGIN_MANIFEST_DIR}/${PLUGIN_MANIFEST_FILE}`;
-export const ROOT_PLUGIN_MANIFEST_RELATIVE_PATH = PLUGIN_MANIFEST_FILE;
+const ROOT_PLUGIN_MANIFEST_RELATIVE_PATH = PLUGIN_MANIFEST_FILE;
 export const MAX_PLUGIN_JSON_BYTES = 1_048_576;
 
 export interface ParsedPluginManifest {

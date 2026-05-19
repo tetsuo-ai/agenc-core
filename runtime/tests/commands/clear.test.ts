@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import clearCommand, { clearSession } from "./clear.js";
+import { clearCommand, clearSession } from "./clear.js";
 import { buildDefaultRegistry } from "./registry.js";
 import { dispatchSlashCommand, parseSlashCommand } from "./dispatcher.js";
 import type { Session } from "../session/session.js";

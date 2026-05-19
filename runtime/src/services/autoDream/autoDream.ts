@@ -33,7 +33,7 @@ import {
   getIsRemoteMode,
   getSessionId,
 } from '../../bootstrap/state.js'
-import { createAutoMemCanUseTool } from '../extractMemories/extractMemories.js'
+import { createAutoMemoryToolPolicy } from '../extractMemories/extractMemories.js'
 import { buildConsolidationPrompt } from './consolidationPrompt.js'
 import {
   readLastConsolidatedAt,
@@ -224,7 +224,7 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
       const result = await runForkedAgent({
         promptMessages: [createUserMessage({ content: prompt })],
         cacheSafeParams: createCacheSafeParams(context),
-        canUseTool: createAutoMemCanUseTool(memoryRoot),
+        canUseTool: createAutoMemoryToolPolicy(memoryRoot),
         querySource: 'auto_dream',
         forkLabel: 'auto_dream',
         skipTranscript: true,

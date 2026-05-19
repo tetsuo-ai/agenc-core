@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import modelCommand, {
+import {
+  modelCommand,
   applyModelSwitch,
   checkModelHistoryCompat,
 } from "./model.js";

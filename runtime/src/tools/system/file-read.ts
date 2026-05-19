@@ -1432,5 +1432,3 @@ function envOrDefault(fallback: number): number {
   const parsed = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
-
-export default createFileReadTool;

@@ -353,5 +353,3 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
 
 /** Default command instance wired with real editor spawner. */
 export const configCommand: SlashCommand = createConfigCommand();
-
-export default configCommand;

@@ -253,5 +253,3 @@ export const tasksCommand: SlashCommand = {
       };
     }),
 };
-
-export default tasksCommand;

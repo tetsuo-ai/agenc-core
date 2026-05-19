@@ -6,7 +6,6 @@ export {
   REDACTED_SECRET,
   redactSecrets,
   redactSecretsInValue,
-  sanitizeSecrets,
   type RedactableJson,
 } from "./sanitizer.js";
 

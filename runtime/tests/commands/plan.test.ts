@@ -6,7 +6,8 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import planCommand, {
+import {
+  planCommand,
   clearAllPlanSlugs,
   formatPlanText,
   getPermissionModeRegistry,

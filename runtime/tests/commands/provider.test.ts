@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import providerCommand, {
+import {
+  providerCommand,
   applyProviderSwitch,
   checkModelHistoryCompat,
 } from "./provider.js";

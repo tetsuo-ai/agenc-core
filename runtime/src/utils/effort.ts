@@ -9,7 +9,7 @@ import {
   resolveAntModel,
 } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { supportsCodexReasoningEffort } from '../services/api/providerConfig.js'
+import { supportsProviderCodeReasoningEffort } from '../services/api/providerConfig.js'
 import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
@@ -42,7 +42,7 @@ export function modelSupportsEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  if (modelUsesOpenAIEffort(model) && supportsCodexReasoningEffort(model)) {
+  if (modelUsesOpenAIEffort(model) && supportsProviderCodeReasoningEffort(model)) {
     return true
   }
   // Supported by a subset of AgenC 4 models

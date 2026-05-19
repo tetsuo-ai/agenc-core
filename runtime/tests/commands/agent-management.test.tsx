@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import agentsCommand from "./agent-management.js";
+import { agentsCommand } from "./agent-management.js";
 import type { SlashCommandContext } from "./types.js";
 
 function makeCtx(

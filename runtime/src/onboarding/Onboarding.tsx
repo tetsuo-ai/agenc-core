@@ -1137,5 +1137,3 @@ export function Onboarding({
     </Box>
   );
 }
-
-export default Onboarding;

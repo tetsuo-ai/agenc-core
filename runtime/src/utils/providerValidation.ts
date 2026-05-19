@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import {
   getGithubEndpointType,
   isLocalProviderUrl,
-  resolveCodexApiCredentials,
+  resolveProviderCodeApiCredentials,
   resolveProviderRequest,
 } from '../services/api/providerConfig.js'
 import { getGlobalAgenCFile } from './env.js'
@@ -132,7 +132,7 @@ export async function getProviderValidationError(
   }
 
   if (request.transport === 'providerCode_responses') {
-    const credentials = resolveCodexApiCredentials(env)
+    const credentials = resolveProviderCodeApiCredentials(env)
     if (!credentials.apiKey) {
       const oauthHint = isBareMode() ? '' : ', choose Agenc OAuth in /provider'
       const authHint = credentials.authPath

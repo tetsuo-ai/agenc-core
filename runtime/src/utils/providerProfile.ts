@@ -1,10 +1,10 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
-  DEFAULT_CODEX_BASE_URL,
+  DEFAULT_PROVIDER_CODE_BASE_URL,
   DEFAULT_OPENAI_BASE_URL,
-  isCodexBaseUrl,
-  resolveCodexApiCredentials,
+  isProviderCodeBaseUrl,
+  resolveProviderCodeApiCredentials,
   resolveProviderRequest,
 } from '../services/api/providerConfig.js'
 import { parseChatgptAccountId } from '../services/api/openAiCodeOAuthShared.js'
@@ -387,7 +387,7 @@ export function buildCodexProfileEnv(options: {
   const credentialEnv = key
     ? ({ ...processEnv, AGENC_API_KEY: key } as NodeJS.ProcessEnv)
     : processEnv
-  const credentials = resolveCodexApiCredentials(credentialEnv)
+  const credentials = resolveProviderCodeApiCredentials(credentialEnv)
   if (!credentials.apiKey || !credentials.accountId) {
     return null
   }
@@ -396,7 +396,7 @@ export function buildCodexProfileEnv(options: {
     (credentials.source === 'secure-storage' ? 'oauth' : 'existing')
 
   const env: ProfileEnv = {
-    OPENAI_BASE_URL: options.baseUrl || DEFAULT_CODEX_BASE_URL,
+    OPENAI_BASE_URL: options.baseUrl || DEFAULT_PROVIDER_CODE_BASE_URL,
     OPENAI_MODEL: options.model || 'agencplan',
     AGENC_CREDENTIAL_SOURCE: credentialSource,
   }
@@ -503,7 +503,7 @@ export function buildCodexOAuthProfileEnv(
   }
 
   return {
-    OPENAI_BASE_URL: DEFAULT_CODEX_BASE_URL,
+    OPENAI_BASE_URL: DEFAULT_PROVIDER_CODE_BASE_URL,
     OPENAI_MODEL: 'agencplan',
     CHATGPT_ACCOUNT_ID: accountId,
     AGENC_CREDENTIAL_SOURCE: 'oauth',
@@ -893,9 +893,9 @@ export async function buildLaunchEnv(options: {
 
   if (options.profile === 'agenc') {
     env.OPENAI_BASE_URL =
-      persistedOpenAIBaseUrl && isCodexBaseUrl(persistedOpenAIBaseUrl)
+      persistedOpenAIBaseUrl && isProviderCodeBaseUrl(persistedOpenAIBaseUrl)
         ? persistedOpenAIBaseUrl
-        : DEFAULT_CODEX_BASE_URL
+        : DEFAULT_PROVIDER_CODE_BASE_URL
     env.OPENAI_MODEL = persistedOpenAIModel || 'agencplan'
     delete env.OPENAI_API_KEY
     delete env.OPENAI_API_FORMAT
@@ -906,7 +906,7 @@ export async function buildLaunchEnv(options: {
     const agencKey =
       sanitizeApiKey(processEnv.AGENC_API_KEY) ||
       sanitizeApiKey(persistedEnv.AGENC_API_KEY)
-    const liveCodexCredentials = resolveCodexApiCredentials(processEnv)
+    const liveCodexCredentials = resolveProviderCodeApiCredentials(processEnv)
     const agencAccountId =
       processEnv.CHATGPT_ACCOUNT_ID ||
       processEnv.AGENC_ACCOUNT_ID ||

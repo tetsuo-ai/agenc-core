@@ -159,5 +159,3 @@ export function TrustDialog(props: TrustDialogProps): React.ReactElement {
     ),
   );
 }
-
-export default TrustDialog;

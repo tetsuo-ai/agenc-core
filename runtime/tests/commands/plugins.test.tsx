@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import pluginsCommand from "./plugins.js";
+import { pluginsCommand } from "./plugins.js";
 import type { SlashCommandContext } from "./types.js";
 
 function makeCtx(

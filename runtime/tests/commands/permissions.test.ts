@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import permissionsCommand, {
+import {
+  permissionsCommand,
   formatRuleList,
   exportRules,
   parseRuleArgs,

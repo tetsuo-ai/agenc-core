@@ -402,5 +402,3 @@ export const skillsCommand: SlashCommand = {
       };
     }),
 };
-
-export default skillsCommand;

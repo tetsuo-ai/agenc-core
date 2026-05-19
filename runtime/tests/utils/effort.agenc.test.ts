@@ -6,7 +6,7 @@ afterEach(() => {
 
 async function importFreshEffortModule(options: {
   provider: 'agenc' | 'openai'
-  supportsCodexReasoningEffort: boolean
+  supportsProviderCodeReasoningEffort: boolean
 }) {
   mock.module('./model/providers.js', () => ({
     getAPIProvider: () => options.provider,
@@ -15,7 +15,7 @@ async function importFreshEffortModule(options: {
     get3PModelCapabilityOverride: () => undefined,
   }))
   mock.module('../services/api/providerConfig.js', () => ({
-    supportsCodexReasoningEffort: () => options.supportsCodexReasoningEffort,
+    supportsProviderCodeReasoningEffort: () => options.supportsProviderCodeReasoningEffort,
   }))
 
   return import(`./effort.js?ts=${Date.now()}-${Math.random()}`)
@@ -25,7 +25,7 @@ test('gpt-5.4 on the ChatGPT Agenc backend supports effort selection', async () 
   const { getAvailableEffortLevels, modelSupportsEffort } =
     await importFreshEffortModule({
       provider: 'agenc',
-      supportsCodexReasoningEffort: true,
+      supportsProviderCodeReasoningEffort: true,
     })
 
   expect(modelSupportsEffort('gpt-5.4')).toBe(true)
@@ -41,7 +41,7 @@ test('gpt-5.4 on the openai provider still supports effort selection', async () 
   const { getAvailableEffortLevels, modelSupportsEffort } =
     await importFreshEffortModule({
       provider: 'openai',
-      supportsCodexReasoningEffort: true,
+      supportsProviderCodeReasoningEffort: true,
     })
 
   expect(modelSupportsEffort('gpt-5.4')).toBe(true)
@@ -57,7 +57,7 @@ test('gpt-5.3-codex-spark stays without effort controls', async () => {
   const { getAvailableEffortLevels, modelSupportsEffort } =
     await importFreshEffortModule({
       provider: 'agenc',
-      supportsCodexReasoningEffort: false,
+      supportsProviderCodeReasoningEffort: false,
     })
 
   expect(modelSupportsEffort('gpt-5.3-codex-spark')).toBe(false)

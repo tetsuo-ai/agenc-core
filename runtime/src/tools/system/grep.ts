@@ -1301,8 +1301,6 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
   };
 }
 
-export default createGrepTool;
-
 // Re-export internal symbols used solely by the test file. Kept at the
 // bottom so the public surface above is easy to scan.
 export const __INTERNAL = {

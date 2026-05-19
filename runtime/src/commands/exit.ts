@@ -38,5 +38,3 @@ export const exitCommand: SlashCommand = {
       return { kind: "exit", code: 0 };
     }),
 };
-
-export default exitCommand;

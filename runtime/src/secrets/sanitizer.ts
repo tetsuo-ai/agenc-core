@@ -103,7 +103,6 @@ export function redactSecretsInValue<T>(value: T): T {
   return redactValue(value, new WeakMap<object, unknown>()) as T;
 }
 
-export const sanitizeSecrets = redactSecretsInValue;
 
 function redactValue(value: unknown, seen: WeakMap<object, unknown>): unknown {
   if (typeof value === "string") return redactSecrets(value);

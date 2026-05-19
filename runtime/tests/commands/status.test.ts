@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import statusCommand, {
+import {
+  statusCommand,
   collectStatus,
   formatStatus,
   summarizeGitStatus,

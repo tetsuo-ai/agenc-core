@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto'
 import {
-  isCodexBaseUrl,
-  parseOpenAICompatibleApiFormat,
+  isProviderCodeBaseUrl,
+  parseOpenAiCompatibleApiFormat,
 } from '../services/api/providerConfig.js'
 import {
   getGlobalConfig,
@@ -106,7 +106,7 @@ function sanitizeProfile(profile: ProviderProfile): ProviderProfile | null {
           : 'openai'
   const baseUrl = normalizeBaseUrl(profile.baseUrl)
   const model = trimValue(profile.model)
-  const apiFormat = parseOpenAICompatibleApiFormat(profile.apiFormat)
+  const apiFormat = parseOpenAiCompatibleApiFormat(profile.apiFormat)
   const authHeader = sanitizeAuthHeader(profile.authHeader)
   const authScheme = sanitizeAuthScheme(profile.authScheme)
   const authHeaderValue = trimOrUndefined(profile.authHeaderValue)
@@ -975,7 +975,7 @@ export function getProfileModelOptions(profile: ProviderProfile): ModelOption[] 
 function buildOpenAICompatibleStartupEnv(
   activeProfile: ProviderProfile,
 ): ProfileEnv | null {
-  if (isCodexBaseUrl(activeProfile.baseUrl)) {
+  if (isProviderCodeBaseUrl(activeProfile.baseUrl)) {
     return null
   }
 

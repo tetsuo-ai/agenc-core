@@ -288,5 +288,3 @@ export const resumeCommand: SlashCommand = {
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runResumeCommand(ctx)),
 };
-
-export default resumeCommand;

@@ -212,5 +212,3 @@ export const pluginsCommand: SlashCommand = {
       return { kind: "text", text: pluginListFromSnapshot(snapshot) };
     }),
 };
-
-export default pluginsCommand;

@@ -289,5 +289,3 @@ export const helpCommand: SlashCommand = {
       };
     }),
 };
-
-export default helpCommand;

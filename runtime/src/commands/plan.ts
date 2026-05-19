@@ -262,5 +262,3 @@ export const planCommand: SlashCommand = {
       };
     }),
 };
-
-export default planCommand;

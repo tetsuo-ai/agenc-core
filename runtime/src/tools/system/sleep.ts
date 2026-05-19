@@ -132,5 +132,3 @@ export function createSleepTool(): Tool {
     },
   };
 }
-
-export default createSleepTool;

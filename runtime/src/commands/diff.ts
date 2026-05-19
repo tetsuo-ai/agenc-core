@@ -155,5 +155,3 @@ export const diffCommand: SlashCommand = {
       return { kind: "text", text: formatDiffSnapshot(snapshot) };
     }),
 };
-
-export default diffCommand;

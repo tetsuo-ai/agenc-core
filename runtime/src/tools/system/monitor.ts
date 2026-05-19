@@ -178,5 +178,3 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
     },
   };
 }
-
-export default createMonitorTool;

@@ -53,5 +53,3 @@ export const memorySlashCommand: SlashCommand = {
       };
     }),
 };
-
-export default memorySlashCommand;

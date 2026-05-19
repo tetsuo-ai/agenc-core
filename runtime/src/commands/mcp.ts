@@ -839,5 +839,3 @@ export const mcpCommand: SlashCommand = {
       return { kind: "error", message: usage() };
     }),
 };
-
-export default mcpCommand;

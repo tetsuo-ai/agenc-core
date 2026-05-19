@@ -70,5 +70,3 @@ export const protocolCommands: readonly SlashCommand[] = [
   protocolCommand("settle"),
   protocolCommand("stake"),
 ];
-
-export default protocolCommands;

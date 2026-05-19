@@ -343,5 +343,3 @@ export const modelCommand: SlashCommand = {
       return { kind: "text", text: summary };
     }),
 };
-
-export default modelCommand;

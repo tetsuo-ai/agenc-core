@@ -665,5 +665,3 @@ export const permissionsCommand: SlashCommand = {
 
 // Re-export list of editable sources for test/assertion use.
 export { EDITABLE_SOURCES };
-
-export default permissionsCommand;

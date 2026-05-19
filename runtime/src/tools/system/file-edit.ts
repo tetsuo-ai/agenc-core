@@ -1265,5 +1265,3 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
     },
   };
 }
-
-export default createFileEditTool;

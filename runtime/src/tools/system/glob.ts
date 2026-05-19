@@ -467,8 +467,6 @@ export function createGlobTool(
   };
 }
 
-export default createGlobTool;
-
 export const __INTERNAL = {
   extractGlobBaseDirectory,
   toRelativeIfInside,

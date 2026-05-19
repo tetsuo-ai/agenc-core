@@ -11,25 +11,25 @@ import type {
   SlashCommand,
   SlashCommandSurface,
 } from "./types.js";
-import helpCommand from "./help.js";
-import statusCommand from "./status.js";
-import diffCommand from "./diff.js";
-import exitCommand from "./exit.js";
-import clearCommand from "./clear.js";
-import permissionsCommand from "./permissions.js";
-import configCommand from "./config.js";
+import { helpCommand } from "./help.js";
+import { statusCommand } from "./status.js";
+import { diffCommand } from "./diff.js";
+import { exitCommand } from "./exit.js";
+import { clearCommand } from "./clear.js";
+import { permissionsCommand } from "./permissions.js";
+import { configCommand } from "./config.js";
 import hooksCommand from "./hooks.js";
-import planCommand from "./plan.js";
-import modelCommand from "./model.js";
-import providerCommand from "./provider.js";
-import mcpCommand from "./mcp.js";
-import skillsCommand from "./skills.js";
-import agentsCommand from "./agent-management.js";
-import tasksCommand from "./tasks.js";
-import resumeCommand from "./resume.js";
-import memoryCommand from "./memory/slash.js";
-import pluginsCommand from "./plugins.js";
-import protocolCommands from "./protocol.js";
+import { planCommand } from "./plan.js";
+import { modelCommand } from "./model.js";
+import { providerCommand } from "./provider.js";
+import { mcpCommand } from "./mcp.js";
+import { skillsCommand } from "./skills.js";
+import { agentsCommand } from "./agent-management.js";
+import { tasksCommand } from "./tasks.js";
+import { resumeCommand } from "./resume.js";
+import { memorySlashCommand } from "./memory/slash.js";
+import { pluginsCommand } from "./plugins.js";
+import { protocolCommands } from "./protocol.js";
 import { compactCommand, contextCommand } from "./session-compact.js";
 
 /**
@@ -148,7 +148,7 @@ export function buildDefaultRegistry(
     skillsCommand,
     mcpCommand,
     pluginsCommand,
-    memoryCommand,
+    memorySlashCommand,
     resumeCommand,
     clearCommand,
     compactCommand,

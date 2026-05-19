@@ -426,5 +426,3 @@ export function createFileWriteTool(
     },
   };
 }
-
-export default createFileWriteTool;

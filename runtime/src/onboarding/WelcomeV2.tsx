@@ -29,5 +29,3 @@ export function WelcomeV2({
     </Box>
   );
 }
-
-export default WelcomeV2;

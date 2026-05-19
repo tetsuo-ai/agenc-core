@@ -294,5 +294,3 @@ function buildFetch(
     return inner(input, { ...init, headers })
   }
 }
-
-export const getAnthropicClient = getproviderClient

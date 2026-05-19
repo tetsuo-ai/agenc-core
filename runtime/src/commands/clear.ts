@@ -179,5 +179,3 @@ export const clearCommand: SlashCommand = {
       return { kind: "text", text: "Session cleared." };
     }),
 };
-
-export default clearCommand;

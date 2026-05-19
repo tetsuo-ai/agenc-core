@@ -316,5 +316,3 @@ export const statusCommand: SlashCommand = {
       return { kind: "text", text: formatStatus(lines) };
     }),
 };
-
-export default statusCommand;

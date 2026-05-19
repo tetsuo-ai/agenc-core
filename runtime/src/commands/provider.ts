@@ -231,5 +231,3 @@ export const providerCommand: SlashCommand = {
       return { kind: "text", text: summary };
     }),
 };
-
-export default providerCommand;

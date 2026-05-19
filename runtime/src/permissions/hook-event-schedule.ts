@@ -23,8 +23,6 @@ export const hookEventSchedule: readonly HookEventScheduleEntry[] = Object.freez
   { event: "Stop", matcher: "none" },
 ] as const);
 
-export const hookSchedule = hookEventSchedule;
-
 const matcherByEvent = new Map<HookEventName, HookEventMatcherKind>(
   hookEventSchedule.map((entry) => [entry.event, entry.matcher]),
 );

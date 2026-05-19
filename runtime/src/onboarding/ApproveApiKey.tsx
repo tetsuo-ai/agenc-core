@@ -38,5 +38,3 @@ export function ApproveApiKey({
     </Box>
   );
 }
-
-export default ApproveApiKey;

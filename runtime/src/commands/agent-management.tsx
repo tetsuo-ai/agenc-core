@@ -30,5 +30,3 @@ export const agentsCommand: SlashCommand = {
       return { kind: "skip" };
     }),
 };
-
-export default agentsCommand;

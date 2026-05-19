@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDefaultRegistry } from "./registry.js";
-import helpCommand, {
+import {
+  helpCommand,
   filterHelpCommands,
   formatHelp,
   formatHelpCommands,
