@@ -37,14 +37,3 @@ export async function readTextFile(
   if (!options?.preserveLineEndings) text = normalizeLineEndings(text);
   return text;
 }
-
-export function normalizeExternalText(
-  content: string,
-  options?: ReadTextFileOptions,
-): string {
-  if (content.length === 0) return content;
-  let text = content;
-  if (!options?.preserveBOM) text = stripBOM(text);
-  if (!options?.preserveLineEndings) text = normalizeLineEndings(text);
-  return text;
-}

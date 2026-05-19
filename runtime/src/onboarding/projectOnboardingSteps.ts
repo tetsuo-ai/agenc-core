@@ -85,7 +85,7 @@ export function findProjectInstructionFilePathInAncestors(
   }
 }
 
-export function isDirEmpty(
+function isDirEmpty(
   path: string,
   options: Pick<ProjectOnboardingStepOptions, "readdir" | "stat"> = {},
 ): boolean {

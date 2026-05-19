@@ -69,9 +69,9 @@ export function extractFlagValues(
   return out;
 }
 
-export const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
+const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
 
-export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
+const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
   "--version",
   "--yolo",
@@ -83,7 +83,7 @@ export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--allow-dangerously-skip-permissions",
 ] as const);
 
-export const STARTUP_VALUE_FLAGS = Object.freeze([
+const STARTUP_VALUE_FLAGS = Object.freeze([
   "--resume",
   "-r",
   "--fork",

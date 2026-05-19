@@ -572,14 +572,6 @@ export interface AgenCConfig {
  * (d) remove it from this block. Don't forget to drop the matching
  * `_unknown` test if the key is tested via `_unknown` today.
  */
-export const DEFERRED_RUNTIME_KEYS: readonly string[] = Object.freeze([
-  "notify",
-  "otel",
-  "history",
-  "log_dir",
-  "file_opener",
-  "analytics",
-]);
 
 export const DEFERRED_SETTINGS_KEYS: readonly string[] = Object.freeze([
   "env",
@@ -588,10 +580,9 @@ export const DEFERRED_SETTINGS_KEYS: readonly string[] = Object.freeze([
 ]);
 
 // Known top-level keys — anything else goes into `_unknown` (I-26).
-// See DEFERRED_RUNTIME_KEYS / DEFERRED_SETTINGS_KEYS above for the list
-// of keys intentionally absent from this array while their tranches
-// catch up. Forward-compat: unknown keys land on `_unknown` rather than
-// being dropped.
+// See the deferred-key block above for keys intentionally absent from this
+// array while their tranches catch up. Forward-compat: unknown keys land on
+// `_unknown` rather than being dropped.
 export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "configVersion",
   "model",

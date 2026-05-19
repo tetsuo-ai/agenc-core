@@ -14,14 +14,6 @@ import {
   startMcpSseServe,
 } from "../mcp/server/start.js";
 
-export {
-  formatMcpSseServeUrl,
-  resolveMcpServeDefaults,
-  startMcpSseServe,
-  type ResolvedMcpServeDefaults,
-  type StartedMcpSseServer,
-} from "../mcp/server/start.js";
-
 export type AgenCMcpCliCommand =
   | {
       readonly kind: "serve";
@@ -107,7 +99,7 @@ export function parseAgenCMcpCliArgs(
   return parseMcpServeArgs(argv.slice(2), config);
 }
 
-export function parseMcpServeArgs(
+function parseMcpServeArgs(
   argv: readonly string[],
   config?: AgenCConfig,
 ): AgenCMcpCliCommand {

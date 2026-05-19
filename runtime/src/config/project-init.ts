@@ -7,7 +7,7 @@ export const PROJECT_CONFIG_DIR = ".agenc";
 export const PROJECT_CONFIG_FILENAME = "config.json";
 export const PROJECT_INSTRUCTIONS_FILENAME = "AGENC.md";
 
-export const PROJECT_INSTRUCTIONS_TEMPLATE = `# Repository Guidelines
+const PROJECT_INSTRUCTIONS_TEMPLATE = `# Repository Guidelines
 
 Fill this file with the project-specific guidance AgenC should follow in this repository. Keep only facts that are hard to infer from the source tree.
 
@@ -45,7 +45,7 @@ export interface InitializeAgenCProjectOptions {
   readonly config?: Partial<AgenCConfig>;
 }
 
-export function createDefaultProjectConfig(): Partial<AgenCConfig> {
+function createDefaultProjectConfig(): Partial<AgenCConfig> {
   const defaults = defaultConfig();
   return {
     configVersion: defaults.configVersion,
@@ -57,7 +57,7 @@ export function createDefaultProjectConfig(): Partial<AgenCConfig> {
   };
 }
 
-export function serializeProjectConfig(
+function serializeProjectConfig(
   config: Partial<AgenCConfig> = createDefaultProjectConfig(),
 ): string {
   return `${JSON.stringify(config, null, 2)}\n`;

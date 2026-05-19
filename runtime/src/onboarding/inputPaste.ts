@@ -1,5 +1,5 @@
 export const MAX_ONBOARDING_INPUT_LENGTH = 10_000;
-export const ONBOARDING_INPUT_PREVIEW_LENGTH = 1_000;
+const ONBOARDING_INPUT_PREVIEW_LENGTH = 1_000;
 
 export interface PastedContent {
   readonly id: number;
@@ -17,12 +17,12 @@ export interface InputPasteResult {
   readonly pastedContents: readonly PastedContent[];
 }
 
-export function getPastedTextLineCount(text: string): number {
+function getPastedTextLineCount(text: string): number {
   if (text.length === 0) return 0;
   return text.split(/\r\n|\r|\n/).length;
 }
 
-export function maybeTruncateMessageForInput(
+function maybeTruncateMessageForInput(
   text: string,
   nextPasteId = 1,
 ): TruncatedInput {

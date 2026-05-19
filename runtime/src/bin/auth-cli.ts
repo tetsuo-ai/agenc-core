@@ -159,7 +159,7 @@ function remoteAuthCliOptions(
   };
 }
 
-export function formatAgenCAuthIdentity(
+function formatAgenCAuthIdentity(
   identity: AuthIdentity | undefined,
 ): string {
   if (identity === undefined) return "AgenC user";

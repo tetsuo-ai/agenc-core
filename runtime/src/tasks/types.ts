@@ -30,11 +30,6 @@ export type TaskStatus =
 
 export type StoppableTaskStatus = Extract<TaskStatus, "pending" | "running">;
 
-export interface TaskHandle {
-  readonly taskId: string;
-  readonly cleanup?: () => void;
-}
-
 export interface TaskStateBase<T extends TaskType = TaskType> {
   readonly id: string;
   readonly type: T;

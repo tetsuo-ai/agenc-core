@@ -143,7 +143,3 @@ export async function runSlashCommand(
 
   return { kind: "dispatched", outcome, result: outcome.result };
 }
-
-// Re-exports so the CLI (and future bridge adapters) can read the gate
-// + the canonical parser from this single entry point.
-export { isBridgeSafeCommand, parseDispatcherInput as parseSlashCommandLine };

@@ -178,7 +178,7 @@ const KEY_REQUIRED_PROVIDERS = new Set<BuiltInProviderSlug>([
   "gemini",
 ]);
 
-export function buildFirstRunOnboardingSteps(
+function buildFirstRunOnboardingSteps(
   state: FirstRunOnboardingState,
 ): readonly FirstRunOnboardingStep[] {
   const completed = new Set(state.completedStepIds);
@@ -235,7 +235,7 @@ export function createInitialFirstRunOnboardingState(
   };
 }
 
-export function providerChoices(): readonly BuiltInProviderSlug[] {
+function providerChoices(): readonly BuiltInProviderSlug[] {
   const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze([
     "grok",
     "openai",

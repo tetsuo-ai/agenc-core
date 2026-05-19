@@ -14,23 +14,7 @@ import {
   collectProviderAvailability,
   formatProviderAvailabilityReport,
   type CollectProviderAvailabilityOptions,
-  type ProviderAvailabilityEntry,
-  type ProviderAvailabilityReport,
-  type ProviderAvailabilityStatus,
-  type ProviderKeyStatus,
-  type ProviderLocalStatus,
 } from "../llm/discovery/provider-discovery.js";
-
-export {
-  collectProviderAvailability,
-  formatProviderAvailabilityReport,
-  type CollectProviderAvailabilityOptions,
-  type ProviderAvailabilityEntry,
-  type ProviderAvailabilityReport,
-  type ProviderAvailabilityStatus,
-  type ProviderKeyStatus,
-  type ProviderLocalStatus,
-};
 
 export type AgenCProvidersCliCommand =
   | {
@@ -134,7 +118,7 @@ export async function runAgenCProvidersCli(
   }
 }
 
-export async function resolveAgenCProvidersCliBackend(
+async function resolveAgenCProvidersCliBackend(
   options: AgenCProvidersCliOptions,
   io: AgenCProvidersCliIo,
 ): Promise<AuthBackend | undefined> {

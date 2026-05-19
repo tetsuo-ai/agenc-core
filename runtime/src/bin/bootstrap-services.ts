@@ -452,7 +452,7 @@ function createHooksService(): Hooks & {
   };
 }
 
-export function loadBootstrapHooks(opts: {
+function loadBootstrapHooks(opts: {
   readonly hooksRuntime: Pick<ConfiguredHooksRuntime, "load">;
   readonly hooksService: { readonly postToolUseHooks: PostToolUseHook[] };
   readonly config: Pick<AgenCConfig, "hooks">;
@@ -470,7 +470,7 @@ function readConfiguredLspServers(
   return parseLspServersConfig(cfg.lsp_servers);
 }
 
-export async function loadBootstrapLspServers(
+async function loadBootstrapLspServers(
   cfg: ReturnType<ConfigStore["current"]>,
   opts: { readonly workspaceRoot?: string } = {},
 ): Promise<void> {
@@ -507,7 +507,7 @@ function lspErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function loadBootstrapLspServersInBackground(
+function loadBootstrapLspServersInBackground(
   cfg: ReturnType<ConfigStore["current"]>,
   opts: { readonly workspaceRoot?: string } = {},
 ): void {
@@ -517,7 +517,7 @@ export function loadBootstrapLspServersInBackground(
   });
 }
 
-export async function shutdownBootstrapLspServers(): Promise<void> {
+async function shutdownBootstrapLspServers(): Promise<void> {
   try {
     await shutdownLspServerManager();
   } catch (error) {

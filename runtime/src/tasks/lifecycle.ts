@@ -147,7 +147,7 @@ export class BackgroundTaskError extends Error {
   }
 }
 
-export function generateBackgroundTaskId(type: BackgroundTaskType): string {
+function generateBackgroundTaskId(type: BackgroundTaskType): string {
   return generateTaskId(type);
 }
 

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-export const ONBOARDING_PASTE_STORE_DIR = "paste-cache" as const;
+const ONBOARDING_PASTE_STORE_DIR = "paste-cache" as const;
 
 export interface StorePastedTextParams {
   readonly agencHome: string;
@@ -25,7 +25,7 @@ export function hashPastedText(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
-export function pasteStoreDir(agencHome: string): string {
+function pasteStoreDir(agencHome: string): string {
   return join(agencHome, ONBOARDING_PASTE_STORE_DIR);
 }
 

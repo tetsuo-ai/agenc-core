@@ -36,7 +36,7 @@ const PROMPT_PATTERNS = [/\(y\/n\)/i,
 /\(yes\/no\)/i, /\b(?:Do you|Would you|Shall I|Are you sure|Ready to)\b.*\? *$/i,
 // directed questions
 /Press (any key|Enter)/i, /Continue\?/i, /Overwrite\?/i];
-export function looksLikePrompt(tail: string): boolean {
+function looksLikePrompt(tail: string): boolean {
   const lastLine = tail.trimEnd().split('\n').pop() ?? '';
   return PROMPT_PATTERNS.some(p => p.test(lastLine));
 }

@@ -92,13 +92,11 @@ const LOCK_OPTIONS = {
 // after a mutation in the same process. Mirrors agenc
 // `tasksUpdated` in `src/utils/tasks.ts`.
 const tasksUpdated = createSignal();
-export const onTasksUpdated = tasksUpdated.subscribe;
 
-// Fires on create only. Separate from `onTasksUpdated` so consumers
+// Fires on create only. Separate from `tasksUpdated` so consumers
 // (e.g. the TUI auto-expand on the task panel) can react to task
 // creation without flapping on every status edit.
 const taskCreated = createSignal<[StoredTask]>();
-export const onTaskCreated = taskCreated.subscribe;
 
 function notifyTasksUpdated(): void {
   // Listener errors must not propagate to the mutation caller.
@@ -121,7 +119,7 @@ function resolveAgencHome(opts: TaskStoreOptions): string {
   return opts.agencHome ?? join(homedir(), ".agenc");
 }
 
-export function tasksDir(opts: TaskStoreOptions): string {
+function tasksDir(opts: TaskStoreOptions): string {
   const root = findProjectRootSync(opts.workspaceRoot);
   const slugInput = root ? root.rootDir : opts.workspaceRoot;
   return join(resolveAgencHome(opts), "projects", slugifyCwd(slugInput), "tasks");
@@ -287,7 +285,7 @@ export async function loadOne(
   return loadOneNoLock(opts, id);
 }
 
-export async function loadAll(opts: TaskStoreOptions): Promise<StoredTask[]> {
+async function loadAll(opts: TaskStoreOptions): Promise<StoredTask[]> {
   const dir = tasksDir(opts);
   let entries: string[];
   try {
@@ -494,22 +492,6 @@ export async function updateOne(
   return result;
 }
 
-export async function deleteTask(
-  opts: TaskStoreOptions,
-  id: string,
-): Promise<UpdateOutcome> {
-  const result = await withListLock(opts, async (): Promise<UpdateOutcome> => {
-    const existing = await loadOneNoLock(opts, id);
-    if (!existing) return { error: { message: "Task not found" } };
-    const deleted = await deleteTaskNoLock(opts, existing);
-    return deleted
-      ? { deleted: true }
-      : { error: { message: "Failed to delete task" } };
-  });
-  if (result.deleted) notifyTasksUpdated();
-  return result;
-}
-
 async function deleteTaskNoLock(
   opts: TaskStoreOptions,
   task: StoredTask,
@@ -546,7 +528,7 @@ async function deleteTaskNoLock(
   return true;
 }
 
-export function deriveUnresolvedBlockers(
+function deriveUnresolvedBlockers(
   task: StoredTask,
   byId: ReadonlyMap<string, StoredTask>,
 ): string[] {

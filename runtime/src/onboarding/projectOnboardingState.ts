@@ -7,8 +7,6 @@ import {
 import { dirname, join, resolve } from "node:path";
 
 export {
-  getSteps,
-  isProjectOnboardingComplete,
   type ProjectOnboardingStepOptions,
   type Step,
 } from "./projectOnboardingSteps.js";
@@ -17,7 +15,7 @@ import {
   type ProjectOnboardingStepOptions,
 } from "./projectOnboardingSteps.js";
 
-export const ONBOARDING_STATE_VERSION = 1;
+const ONBOARDING_STATE_VERSION = 1;
 export const DEFAULT_FIRST_RUN_SEEN_LIMIT = 4;
 
 export type OnboardingEnv = Readonly<Record<string, string | undefined>>;
@@ -165,7 +163,7 @@ function stateFromUnknown(value: unknown): FirstRunOnboardingState {
   };
 }
 
-export function resolveOnboardingStatePath(agencHome: string): string {
+function resolveOnboardingStatePath(agencHome: string): string {
   return join(resolve(agencHome), "onboarding.json");
 }
 
@@ -181,7 +179,7 @@ export function readOnboardingState(
   }
 }
 
-export function writeOnboardingState(
+function writeOnboardingState(
   options: ReadOnboardingStateOptions,
   state: FirstRunOnboardingState,
 ): void {

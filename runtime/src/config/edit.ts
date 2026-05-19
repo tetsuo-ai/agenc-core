@@ -54,7 +54,7 @@ const UNSAFE_MIGRATION_SKIPS = new Set([
   "json:write-failed",
 ]);
 
-export function configTomlPath(agencHome: string): string {
+function configTomlPath(agencHome: string): string {
   return join(agencHome, "config.toml");
 }
 

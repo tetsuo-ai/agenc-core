@@ -41,22 +41,27 @@ export class UnknownProfileError extends Error {
 
 /**
  * Allowed overrideable fields. Everything else in a profile is ignored.
- * Kept as a `readonly string[]` so `listOverridableKeys()` can expose it.
  */
-export const OVERRIDABLE_PROFILE_KEYS: readonly (keyof ProfileOverride)[] =
-  Object.freeze([
-    "model",
-    "model_provider",
-    "approval_policy",
-    "sandbox_mode",
-    "reasoning_effort",
-    "approvals_reviewer",
-    "model_verbosity",
-    "service_tier",
-    "personality",
-    "web_search",
-    "tools",
-  ]);
+const OVERRIDABLE_PROFILE_KEYS: readonly (keyof ProfileOverride)[] = Object.freeze([
+  "model",
+  "model_provider",
+  "approval_policy",
+  "sandbox_mode",
+  "reasoning_effort",
+  "approvals_reviewer",
+  "model_verbosity",
+  "service_tier",
+  "personality",
+  "web_search",
+  "tools",
+]);
+
+function hasProfileOverride(
+  profile: ProfileOverride,
+  key: keyof ProfileOverride,
+): boolean {
+  return OVERRIDABLE_PROFILE_KEYS.includes(key) && profile[key] !== undefined;
+}
 
 /**
  * Merge the named profile over `config` and return a new frozen snapshot.
@@ -78,26 +83,26 @@ export function resolveProfile(
   }
 
   const override: Mutable<Partial<AgenCConfig>> = {};
-  if (profile.model !== undefined) override.model = profile.model;
-  if (profile.model_provider !== undefined)
+  if (hasProfileOverride(profile, "model")) override.model = profile.model;
+  if (hasProfileOverride(profile, "model_provider"))
     override.model_provider = profile.model_provider;
-  if (profile.approval_policy !== undefined)
+  if (hasProfileOverride(profile, "approval_policy"))
     override.approval_policy = profile.approval_policy;
-  if (profile.sandbox_mode !== undefined)
+  if (hasProfileOverride(profile, "sandbox_mode"))
     override.sandbox_mode = profile.sandbox_mode;
-  if (profile.reasoning_effort !== undefined)
+  if (hasProfileOverride(profile, "reasoning_effort"))
     override.reasoning_effort = profile.reasoning_effort;
-  if (profile.approvals_reviewer !== undefined)
+  if (hasProfileOverride(profile, "approvals_reviewer"))
     override.approvals_reviewer = profile.approvals_reviewer;
-  if (profile.model_verbosity !== undefined) {
+  if (hasProfileOverride(profile, "model_verbosity")) {
     override.model_verbosity = profile.model_verbosity;
   }
-  if (profile.service_tier !== undefined) {
+  if (hasProfileOverride(profile, "service_tier")) {
     override.service_tier = profile.service_tier;
   }
-  if (profile.personality !== undefined)
+  if (hasProfileOverride(profile, "personality"))
     override.personality = profile.personality;
-  if (profile.web_search !== undefined) {
+  if (hasProfileOverride(profile, "web_search")) {
     const tools: ToolsConfig = {
       ...(config.tools_config ?? {}),
       web_search:
@@ -107,7 +112,7 @@ export function resolveProfile(
     };
     override.tools_config = tools;
   }
-  if (profile.tools !== undefined) {
+  if (hasProfileOverride(profile, "tools")) {
     override.tools_config = {
       ...(config.tools_config ?? {}),
       ...profile.tools,

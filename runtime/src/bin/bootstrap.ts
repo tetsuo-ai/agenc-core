@@ -96,11 +96,8 @@ import {
 } from "./startup-selection.js";
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
 export {
-  DEFAULT_MODEL,
   PROVIDER_MODEL_CATALOG,
-  readStartupCliFlags,
   resolveModelOrExit,
-  resolveStartupSelection,
 } from "./startup-selection.js";
 export type {
   StartupCliFlags,

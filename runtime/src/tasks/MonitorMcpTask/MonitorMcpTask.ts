@@ -32,7 +32,7 @@ function isMonitorMcpTask(task: unknown): task is MonitorMcpTaskState {
   )
 }
 
-export const MonitorMcpTask: Task = {
+const MonitorMcpTask: Task = {
   name: 'MonitorMcpTask',
   type: 'monitor_mcp',
   async kill(taskId, setAppState) {

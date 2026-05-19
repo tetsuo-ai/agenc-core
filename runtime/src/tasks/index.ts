@@ -1,7 +1,6 @@
 export {
   BackgroundTaskError,
   BackgroundTaskLifecycle,
-  generateBackgroundTaskId,
   isTerminalTaskStatus,
   type BackgroundTaskNotification,
   type BackgroundTaskNotificationKind,
@@ -36,7 +35,6 @@ export {
   type RemoteReviewProgress,
   type RemoteTaskType,
   type StoppableTaskStatus,
-  type TaskHandle,
   type TaskState,
   type TaskStateBase,
   type TaskStatus,
