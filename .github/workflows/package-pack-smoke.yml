@@ -70,30 +70,64 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect package-pack support files
+        id: package_pack_support
+        shell: bash
+        run: |
+          set -eu
+          missing=""
+          for path in \
+            scripts/pack-smoke.mjs \
+            scripts/build-public-runtime-artifacts.mjs \
+            scripts/prepare-public-agenc-package.mjs \
+            scripts/public-agenc-install-smoke.mjs \
+            scripts/sync-dashboard-assets.mjs \
+            scripts/check-private-kernel-surface.mjs \
+            web/package.json
+          do
+            if [ ! -e "$path" ]; then
+              missing="${missing} ${path}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping package pack smoke; checkout does not include:${missing}"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Node
+        if: steps.package_pack_support.outputs.available == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install workspace dependencies
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm install --no-fund
 
       - name: Build private-kernel packages
+        if: steps.package_pack_support.outputs.available == 'true'
         run: AGENC_SKIP_DASHBOARD_BUILD=1 npm run build:private-kernel
 
       - name: Build dashboard surface
+        if: steps.package_pack_support.outputs.available == 'true'
         run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
 
       - name: Sync dashboard assets
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run sync:dashboard-assets
 
       - name: Check private-kernel surface
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run check:private-kernel-surface
 
       - name: Run package pack smoke test
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run pack:smoke:skip-build
 
       - name: Run public agenc install smoke test
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run smoke:public-agenc-install -- --skip-build
 
   public-install-macos-arm64:
@@ -104,24 +138,54 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect package-pack support files
+        id: package_pack_support
+        shell: bash
+        run: |
+          set -eu
+          missing=""
+          for path in \
+            scripts/build-public-runtime-artifacts.mjs \
+            scripts/prepare-public-agenc-package.mjs \
+            scripts/public-agenc-install-smoke.mjs \
+            scripts/sync-dashboard-assets.mjs \
+            web/package.json
+          do
+            if [ ! -e "$path" ]; then
+              missing="${missing} ${path}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping public install smoke; checkout does not include:${missing}"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Node
+        if: steps.package_pack_support.outputs.available == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Install workspace dependencies
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm install --no-fund
 
       - name: Build private-kernel packages
+        if: steps.package_pack_support.outputs.available == 'true'
         run: AGENC_SKIP_DASHBOARD_BUILD=1 npm run build:private-kernel
 
       - name: Build dashboard surface
+        if: steps.package_pack_support.outputs.available == 'true'
         run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
 
       - name: Sync dashboard assets
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run sync:dashboard-assets
 
       - name: Run public agenc install smoke test on macOS arm64
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run smoke:public-agenc-install -- --skip-build
 
   public-install-min-node:
@@ -132,35 +196,68 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect package-pack support files
+        id: package_pack_support
+        shell: bash
+        run: |
+          set -eu
+          missing=""
+          for path in \
+            scripts/build-public-runtime-artifacts.mjs \
+            scripts/prepare-public-agenc-package.mjs \
+            scripts/public-agenc-install-smoke.mjs \
+            scripts/sync-dashboard-assets.mjs \
+            web/package.json
+          do
+            if [ ! -e "$path" ]; then
+              missing="${missing} ${path}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping minimum Node public install smoke; checkout does not include:${missing}"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Node
+        if: steps.package_pack_support.outputs.available == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
       - name: Install workspace dependencies
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm install --no-fund
 
       - name: Build private-kernel packages
+        if: steps.package_pack_support.outputs.available == 'true'
         run: AGENC_SKIP_DASHBOARD_BUILD=1 npm run build:private-kernel
 
       - name: Setup Node for dashboard build
+        if: steps.package_pack_support.outputs.available == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
       - name: Refresh dependencies for dashboard build
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm install --no-fund
 
       - name: Build dashboard surface
+        if: steps.package_pack_support.outputs.available == 'true'
         run: AGENC_DASHBOARD_BASE=/ui/ npm run build --workspace=@tetsuo-ai/web
 
       - name: Sync dashboard assets
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run sync:dashboard-assets
 
       - name: Restore minimum-supported Node
+        if: steps.package_pack_support.outputs.available == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
       - name: Run minimum-supported Node public agenc install smoke test
+        if: steps.package_pack_support.outputs.available == 'true'
         run: npm run smoke:public-agenc-install -- --skip-build
