@@ -48,6 +48,8 @@ export default {
     // Required by the memory subsystem contract even though production code
     // currently reaches the memory store through narrower helpers.
     'src/memory/store.ts',
+    // Declaration shim for the generated Message.renderers.js module.
+    'src/tui/components/Message.renderers.d.ts',
     'src/test-parity/**',
     'tests/fixtures/**',
   ],
