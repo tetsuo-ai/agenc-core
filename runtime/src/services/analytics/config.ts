@@ -19,13 +19,3 @@ export function isAnalyticsDisabled(): boolean {
   // Open AgenC does not send product telemetry.
   return true
 }
-/**
- * Check if the feedback survey should be suppressed.
- *
- * Unlike isAnalyticsDisabled(), this does NOT block on 3P providers
- * (Bedrock/Vertex/Foundry). The survey is a local UI prompt with no
- * transcript data — enterprise customers capture responses via OTEL.
- */
-export function isFeedbackSurveyDisabled(): boolean {
-  return process.env.NODE_ENV === 'test' || isTelemetryDisabled()
-}

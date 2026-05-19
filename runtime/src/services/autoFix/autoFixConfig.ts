@@ -14,11 +14,11 @@
 
 import { z } from "zod/v4";
 
-export const AUTO_FIX_DEFAULT_MAX_RETRIES = 3;
-export const AUTO_FIX_DEFAULT_TIMEOUT_MS = 30_000;
-export const AUTO_FIX_MAX_RETRIES_LIMIT = 10;
-export const AUTO_FIX_MIN_TIMEOUT_MS = 1_000;
-export const AUTO_FIX_MAX_TIMEOUT_MS = 300_000;
+const AUTO_FIX_DEFAULT_MAX_RETRIES = 3;
+const AUTO_FIX_DEFAULT_TIMEOUT_MS = 30_000;
+const AUTO_FIX_MAX_RETRIES_LIMIT = 10;
+const AUTO_FIX_MIN_TIMEOUT_MS = 1_000;
+const AUTO_FIX_MAX_TIMEOUT_MS = 300_000;
 
 export interface AutoFixConfig {
   readonly enabled: true;

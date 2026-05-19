@@ -119,7 +119,7 @@ let runner:
  * Call once at startup (from backgroundHousekeeping alongside
  * initExtractMemories), or per-test in beforeEach for a fresh closure.
  */
-export function initAutoDream(): void {
+function initAutoDream(): void {
   let lastSessionScanAt = 0
 
   runner = async function runAutoDream(context, appendSystemMessage) {

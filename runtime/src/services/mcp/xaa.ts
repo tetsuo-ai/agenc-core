@@ -132,7 +132,7 @@ export type ProtectedResourceMetadata = {
  * RFC 9728 PRM discovery via SDK, plus RFC 9728 §3.3 resource-mismatch
  * validation (mix-up protection — Follow-up: upstream to SDK).
  */
-export async function discoverProtectedResource(
+async function discoverProtectedResource(
   serverUrl: string,
   opts?: { fetchFn?: FetchLike },
 ): Promise<ProtectedResourceMetadata> {
@@ -175,7 +175,7 @@ export type AuthorizationServerMetadata = {
  * AS metadata discovery via SDK (RFC 8414 + OIDC fallback), plus RFC 8414
  * §3.3 issuer-mismatch validation (mix-up protection — Follow-up: upstream to SDK).
  */
-export async function discoverAuthorizationServer(
+async function discoverAuthorizationServer(
   asUrl: string,
   opts?: { fetchFn?: FetchLike },
 ): Promise<AuthorizationServerMetadata> {
@@ -230,7 +230,7 @@ export type JwtAuthGrantResult = {
  * OIDC metadata and support `client_secret_basic`, mirroring the AS-side
  * selection in `performCrossAppAccess`. All major IdPs accept POST today.
  */
-export async function requestJwtAuthorizationGrant(opts: {
+async function requestJwtAuthorizationGrant(opts: {
   tokenEndpoint: string
   audience: string
   resource: string
@@ -334,7 +334,7 @@ export type XaaResult = XaaTokenResult & {
  * params) — the SEP-990 conformance test requires this. Only set
  * `client_secret_post` if the AS explicitly requires it.
  */
-export async function exchangeJwtAuthGrant(opts: {
+async function exchangeJwtAuthGrant(opts: {
   tokenEndpoint: string
   assertion: string
   clientId: string

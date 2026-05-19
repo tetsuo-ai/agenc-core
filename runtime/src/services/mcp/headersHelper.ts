@@ -28,7 +28,7 @@ function isMcpServerFromProjectOrLocalSettings(
  * @param config The MCP server configuration
  * @returns Headers object or null if not configured or failed
  */
-export async function getMcpHeadersFromHelper(
+async function getMcpHeadersFromHelper(
   serverName: string,
   config: McpSSEServerConfig | McpHTTPServerConfig | McpWebSocketServerConfig,
 ): Promise<Record<string, string> | null> {

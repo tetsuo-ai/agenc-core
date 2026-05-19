@@ -122,19 +122,3 @@ export async function listSessionsTouchedSince(
   const candidates = await listCandidates(dir, true)
   return candidates.filter(c => c.mtime > sinceMs).map(c => c.sessionId)
 }
-
-/**
- * Stamp from manual /dream. Optimistic — fires at prompt-build time,
- * no post-skill completion hook. Best-effort.
- */
-export async function recordConsolidation(): Promise<void> {
-  try {
-    // Memory dir may not exist yet (manual /dream before any auto-trigger).
-    await mkdir(getAutoMemPath(), { recursive: true })
-    await writeFile(lockPath(), String(process.pid))
-  } catch (e: unknown) {
-    logForDebugging(
-      `[autoDream] recordConsolidation write failed: ${(e as Error).message}`,
-    )
-  }
-}

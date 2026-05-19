@@ -30,7 +30,7 @@ export function parsePolicyLimitsResponse(
   return { restrictions };
 }
 
-export function parsePolicyLimitsRestrictions(
+function parsePolicyLimitsRestrictions(
   value: unknown,
 ): PolicyLimitsRestrictions | null {
   if (!isRecord(value)) return null;

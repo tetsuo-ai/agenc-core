@@ -156,14 +156,14 @@ async function getFetchMcpSkillsForClient(): Promise<FetchMcpSkillsForClient | n
   return fetchMcpSkillsForClientPromise
 }
 
-export async function fetchMcpSkillsForConnectedClient(
+async function fetchMcpSkillsForConnectedClient(
   client: MCPServerConnection,
 ): Promise<Command[]> {
   const fetchMcpSkillsForClient = await getFetchMcpSkillsForClient()
   return (fetchMcpSkillsForClient?.(client) ?? []) as unknown as Command[]
 }
 
-export function clearMcpSkillsForClientCache(name: string): void {
+function clearMcpSkillsForClientCache(name: string): void {
   if (!feature('MCP_SKILLS')) return
   if (loadedFetchMcpSkillsForClient) {
     loadedFetchMcpSkillsForClient.cache.delete(name)
@@ -223,7 +223,7 @@ export class McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS extends T
  * Per the MCP spec, servers return 404 when a session ID is no longer valid.
  * We check both signals to avoid false positives from generic 404s (wrong URL, server gone, etc.).
  */
-export function isMcpSessionExpiredError(error: Error): boolean {
+function isMcpSessionExpiredError(error: Error): boolean {
   const httpStatus =
     'code' in error ? (error as Error & { code?: number }).code : undefined
   if (httpStatus !== 404) {
@@ -405,7 +405,7 @@ function handleRemoteAuthFailure(
  * stale token mass-401s every agenc.tech connector and sticks them all in the
  * 15-min needs-auth cache.
  */
-export function createAgenCAiProxyFetch(innerFetch: FetchLike): FetchLike {
+function createAgenCAiProxyFetch(innerFetch: FetchLike): FetchLike {
   return async (url, init) => {
     const doRequest = async () => {
       await checkAndRefreshOAuthTokenIfNeeded()
@@ -525,7 +525,7 @@ const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream'
  *
  * @param baseFetch - The fetch function to wrap
  */
-export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
+function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
   return async (url: string | URL, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase()
 
@@ -630,7 +630,7 @@ function isIncludedMcpTool(tool: Tool): boolean {
  * @param serverRef Server configuration
  * @returns Cache key string
  */
-export function getServerCacheKey(
+function getServerCacheKey(
   name: string,
   serverRef: ScopedMcpServerConfig,
 ): string {
@@ -1753,24 +1753,6 @@ export async function ensureConnectedClient(
   return connectedClient
 }
 
-/**
- * Compares two MCP server configurations to determine if they are equivalent.
- * Used to detect when a server needs to be reconnected due to config changes.
- */
-export function areMcpConfigsEqual(
-  a: ScopedMcpServerConfig,
-  b: ScopedMcpServerConfig,
-): boolean {
-  // Quick type check first
-  if (a.type !== b.type) return false
-
-  // Compare by serializing - this handles all config variations
-  // We exclude 'scope' from comparison since it's metadata, not connection config
-  const { scope: _scopeA, ...configA } = a
-  const { scope: _scopeB, ...configB } = b
-  return jsonStringify(configA) === jsonStringify(configB)
-}
-
 // Max cache size for fetch* caches. Keyed by server name (stable across
 // reconnects), bounded to prevent unbounded growth with many MCP servers.
 const MCP_FETCH_CACHE_SIZE = 20
@@ -1780,7 +1762,7 @@ const MCP_FETCH_CACHE_SIZE = 20
  * Exported so the auto-mode eval scripts can mirror production encoding
  * for `mcp__*` tool stubs without duplicating this logic.
  */
-export function mcpToolInputToAutoClassifierInput(
+function mcpToolInputToAutoClassifierInput(
   input: Record<string, unknown>,
   toolName: string,
 ): string {
@@ -2102,7 +2084,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
   MCP_FETCH_CACHE_SIZE,
 )
 
-export const fetchCommandsForClient = memoizeWithLRU(
+const fetchCommandsForClient = memoizeWithLRU(
   async (client: MCPServerConnection): Promise<Command[]> => {
     if (client.type !== 'connected') return []
 
@@ -2295,7 +2277,7 @@ async function processBatched<T>(
   await pMap(items, processor, { concurrency })
 }
 
-export async function getMcpToolsCommandsAndResources(
+async function getMcpToolsCommandsAndResources(
   onConnectionAttempt: (params: {
     client: MCPServerConnection
     tools: Tool[]
@@ -2547,7 +2529,7 @@ export function prefetchAllMcpResources(
 /**
  * Transform result content from an MCP tool or MCP prompt into message blocks
  */
-export async function transformResultContent(
+async function transformResultContent(
   resultContent: PromptMessage['content'],
   serverName: string,
 ): Promise<Array<ContentBlockParam>> {
@@ -2715,7 +2697,7 @@ export type TransformedMCPResult = {
  * Generates a compact, jq-friendly type signature for a value.
  * e.g. "{title: string, items: [{id: number, name: string}]}"
  */
-export function inferCompactSchema(value: unknown, depth = 2): string {
+function inferCompactSchema(value: unknown, depth = 2): string {
   if (value === null) return 'null'
   if (Array.isArray(value)) {
     if (value.length === 0) return '[]'
@@ -2733,7 +2715,7 @@ export function inferCompactSchema(value: unknown, depth = 2): string {
   return typeof value
 }
 
-export async function transformMCPResult(
+async function transformMCPResult(
   result: unknown,
   tool: string, // Tool name for validation (e.g., "search")
   name: string, // Server name for transformation (e.g., "slack")
@@ -2791,7 +2773,7 @@ function contentContainsImages(content: MCPToolResult): boolean {
   return content.some(block => block.type === 'image')
 }
 
-export async function processMCPResult(
+async function processMCPResult(
   result: unknown,
   tool: string, // Tool name for validation (e.g., "search")
   name: string, // Server name for IDE check and transformation (e.g., "slack")

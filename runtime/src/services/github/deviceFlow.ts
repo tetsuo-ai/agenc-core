@@ -3,14 +3,12 @@
  * Uses GitHub Copilot's official OAuth app for device authentication.
  */
 
-import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
+const DEFAULT_GITHUB_DEVICE_FLOW_CLIENT_ID = 'Iv1.b507a08c87ecfe98'
 
-export const DEFAULT_GITHUB_DEVICE_FLOW_CLIENT_ID = 'Iv1.b507a08c87ecfe98'
-
-export const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code'
-export const GITHUB_DEVICE_ACCESS_TOKEN_URL =
+const GITHUB_DEVICE_CODE_URL = 'https://github.com/login/device/code'
+const GITHUB_DEVICE_ACCESS_TOKEN_URL =
   'https://github.com/login/oauth/access_token'
-export const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token'
+const COPILOT_TOKEN_URL = 'https://api.github.com/copilot_internal/v2/token'
 
 /** Only read:user scope — required for Copilot OAuth */
 export const DEFAULT_GITHUB_DEVICE_SCOPE = 'read:user'
@@ -48,7 +46,7 @@ export type DeviceCodeResult = {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-export function getGithubDeviceFlowClientId(): string {
+function getGithubDeviceFlowClientId(): string {
   return (
     process.env.GITHUB_DEVICE_FLOW_CLIENT_ID?.trim() ||
     DEFAULT_GITHUB_DEVICE_FLOW_CLIENT_ID
@@ -195,27 +193,6 @@ export async function pollAccessToken(
   }
   throw new GitHubDeviceFlowError('Timed out waiting for authorization.')
 }
-
-/**
- * Best-effort open browser / OS handler for the verification URL.
- */
-export async function openVerificationUri(uri: string): Promise<void> {
-  try {
-    if (process.platform === 'darwin') {
-      await execFileNoThrow('open', [uri], { useCwd: false, timeout: 5000 })
-    } else if (process.platform === 'win32') {
-      await execFileNoThrow('cmd', ['/c', 'start', '', uri], {
-        useCwd: false,
-        timeout: 5000,
-      })
-    } else {
-      await execFileNoThrow('xdg-open', [uri], { useCwd: false, timeout: 5000 })
-    }
-  } catch {
-    // User can open the URL manually
-  }
-}
-
 /**
  * Exchange an OAuth access token for a Copilot API token.
  * The OAuth token alone cannot be used with the Copilot API endpoint.

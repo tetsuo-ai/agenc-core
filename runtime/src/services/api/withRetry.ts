@@ -51,7 +51,7 @@ const abortError = () => new APIUserAbortError()
 const DEFAULT_MAX_RETRIES = 10
 const FLOOR_OUTPUT_TOKENS = 3000
 const MAX_529_RETRIES = 3
-export const BASE_DELAY_MS = 500
+const BASE_DELAY_MS = 500
 
 // Foreground query sources where the user IS blocking on the result — these
 // retry on 529. Everything else (summaries, titles, suggestions, classifiers)
@@ -544,7 +544,7 @@ function getRetryAfter(error: unknown): string | null {
   )
 }
 
-export function getRetryDelay(
+function getRetryDelay(
   attempt: number,
   retryAfterHeader?: string | null,
   maxDelayMs = 32000,
@@ -564,7 +564,7 @@ export function getRetryDelay(
   return baseDelay + jitter
 }
 
-export function parseMaxTokensContextOverflowError(error: APIError):
+function parseMaxTokensContextOverflowError(error: APIError):
   | {
       inputTokens: number
       maxTokens: number

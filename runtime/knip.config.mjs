@@ -31,6 +31,75 @@ const intentionalEntryPointIssueIgnores = {
   'src/entrypoints/sdk/controlTypes.ts': ['types'],
   'src/entrypoints/sandboxTypes.ts': ['types'],
 };
+const serviceTestContractExportFiles = [
+  // Contract tests and service-level harnesses import these directly; the
+  // production Knip graph intentionally excludes test-only callers.
+  'src/services/AgentSummary/agentSummary.ts',
+  'src/services/MagicDocs/magicDocs.ts',
+  'src/services/MagicDocs/prompts.ts',
+  'src/services/PromptSuggestion/limits.ts',
+  'src/services/PromptSuggestion/speculation.ts',
+  'src/services/autoFix/autoFixConfig.ts',
+  'src/services/compact/cachedMicrocompact.ts',
+  'src/services/compact/compact.ts',
+  'src/services/compact/compactWarningState.ts',
+  'src/services/compact/microCompact.ts',
+  'src/services/compact/prompt.ts',
+  'src/services/compact/sessionMemoryCompact.ts',
+  'src/services/compact/snipCompact.ts',
+  'src/services/compact/timeBasedMCConfig.ts',
+  'src/services/contextCollapse/index.ts',
+  'src/services/extractMemories/extractMemories.ts',
+  'src/services/extractMemories/memory-paths.ts',
+  'src/services/lsp/LSPDiagnosticRegistry.ts',
+  'src/services/lsp/LSPServerInstance.ts',
+  'src/services/lsp/config.ts',
+  'src/services/lsp/manager.ts',
+  'src/services/lsp/passiveFeedback.ts',
+  'src/services/policyLimits/index.ts',
+  'src/services/toolUseSummary/toolUseSummaryGenerator.ts',
+];
+const servicePublicContractExportFiles = [
+  // Service API surfaces are consumed by runtime integration, diagnostics,
+  // optional provider paths, or external/manual harnesses outside the
+  // production-only Knip graph.
+  'src/services/agencAiLimits.ts',
+  'src/services/analytics/firstPartyEventLogger.ts',
+  'src/services/analytics/index.ts',
+  'src/services/api/anthropic.ts',
+  'src/services/api/cacheMetrics.ts',
+  'src/services/api/compressToolHistory.ts',
+  'src/services/api/errorUtils.ts',
+  'src/services/api/errors.ts',
+  'src/services/api/fetchWithProxyRetry.ts',
+  'src/services/api/openAiCodeOAuthShared.ts',
+  'src/services/api/openaiErrorClassification.ts',
+  'src/services/api/providerConfig.ts',
+  'src/services/api/withRetry.ts',
+  'src/services/github/deviceFlow.ts',
+  'src/services/mcp/SdkControlTransport.ts',
+  'src/services/mcp/auth.ts',
+  'src/services/mcp/client.ts',
+  'src/services/mcp/config.ts',
+  'src/services/mcp/doctor.ts',
+  'src/services/mcp/elicitationHandler.ts',
+  'src/services/mcp/officialRegistry.ts',
+  'src/services/rateLimitMessages.ts',
+  'src/services/tokenEstimation.ts',
+  'src/services/tools/toolExecution.ts',
+  'src/services/vcr.ts',
+];
+const intentionalServiceIssueIgnores = {
+  ...Object.fromEntries(
+    serviceTestContractExportFiles.map((file) => [file, ['exports']]),
+  ),
+  ...Object.fromEntries(
+    servicePublicContractExportFiles.map((file) => [file, ['exports']]),
+  ),
+  // MCP schema/type definitions are a public config surface shared with TUI,
+  // CLI, plugin, and SDK-adjacent callers beyond production entrypoints.
+  'src/services/mcp/types.ts': ['exports', 'types'],
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -86,6 +155,7 @@ export default {
   ignoreIssues: {
     ...typecheckExcludedIssueIgnores,
     ...intentionalEntryPointIssueIgnores,
+    ...intentionalServiceIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

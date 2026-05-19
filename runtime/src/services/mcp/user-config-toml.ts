@@ -31,7 +31,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   );
 }
 
-export function toCanonicalMcpServerConfig(
+function toCanonicalMcpServerConfig(
   config: McpServerConfig,
 ): Record<string, unknown> {
   const raw = { ...(config as Record<string, unknown>) };
@@ -90,7 +90,7 @@ function toServiceMcpServerConfig(config: unknown): McpServerConfig {
   }) as McpServerConfig;
 }
 
-export function getUserMcpConfigTomlPath(): string {
+function getUserMcpConfigTomlPath(): string {
   return join(resolveAgencHome(process.env), "config.toml");
 }
 

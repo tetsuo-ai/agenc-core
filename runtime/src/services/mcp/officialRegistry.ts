@@ -72,7 +72,3 @@ export async function prefetchOfficialMcpUrls(): Promise<void> {
 export function isOfficialMcpUrl(normalizedUrl: string): boolean {
   return officialUrls?.has(normalizedUrl) ?? false
 }
-
-export function resetOfficialMcpUrlsForTesting(): void {
-  officialUrls = undefined
-}

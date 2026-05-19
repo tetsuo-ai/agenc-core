@@ -18,7 +18,7 @@ const FEEDBACK_CHANNEL_ANT = '#briarpatch-cc'
  * All possible rate limit error message prefixes
  * Export this to avoid fragile string matching in UI components
  */
-export const RATE_LIMIT_ERROR_PREFIXES = [
+const RATE_LIMIT_ERROR_PREFIXES = [
   "You've hit your",
   "You've used",
   "You're now using extra usage",
@@ -42,7 +42,7 @@ export type RateLimitMessage = {
  * Get the appropriate rate limit message based on limit state
  * Returns null if no message should be shown
  */
-export function getRateLimitMessage(
+function getRateLimitMessage(
   limits: AgenCAILimits,
   model: string,
 ): RateLimitMessage | null {

@@ -127,7 +127,7 @@ function scheduleFlush(): void {
   }, getFlushIntervalMs()).unref()
 }
 
-export const initializeDatadog = memoize(async (): Promise<boolean> => {
+const initializeDatadog = memoize(async (): Promise<boolean> => {
   if (isAnalyticsDisabled()) {
     datadogInitialized = false
     return false

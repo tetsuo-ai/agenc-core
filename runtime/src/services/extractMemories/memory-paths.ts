@@ -33,7 +33,7 @@ import {
 import type { PermissionRuleSource } from "../../permissions/types.js";
 
 export const AUTO_MEMORY_INDEX_FILE = "MEMORY.md";
-export const AUTO_MEMORY_DIRNAME = "memory";
+const AUTO_MEMORY_DIRNAME = "memory";
 
 export interface AutoMemoryPathResult {
   readonly enabled: boolean;

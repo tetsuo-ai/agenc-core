@@ -84,20 +84,6 @@ function logEventAsyncImpl(
   logEventImpl(eventName, metadata)
   return Promise.resolve()
 }
-
-/**
- * Initialize analytics gates during startup.
- *
- * Updates gate values from server. Early events use cached values from previous
- * session to avoid data loss during initialization.
- *
- * Called from main.tsx during setupBackend().
- */
-export function initializeAnalyticsGates(): void {
-  isDatadogGateEnabled =
-    checkStatsigFeatureGate_CACHED_MAY_BE_STALE(DATADOG_GATE_NAME)
-}
-
 /**
  * Initialize the analytics sink.
  *

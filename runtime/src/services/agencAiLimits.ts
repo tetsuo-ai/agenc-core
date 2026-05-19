@@ -1,18 +1,10 @@
 import { APIError } from '@anthropic-ai/sdk'
-import type { MessageParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import isEqual from 'lodash-es/isEqual.js'
-import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { isAgenCAISubscriber } from '../utils/auth.js'
-import { getModelBetas } from '../utils/betas.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
 import { logError } from '../utils/log.js'
-import { getSmallFastModel } from '../utils/model/model.js'
-import { getAPIProvider } from '../utils/model/providers.js'
-import { isEssentialTrafficOnly } from '../utils/privacyLevel.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from './analytics/index.js'
 import { logEvent } from './analytics/index.js'
-import { getAPIMetadata } from './api/anthropic.js' // branding-scan: allow existing upstream API module name
-import { getproviderClient } from './api/client.js'
 import {
   processRateLimitHeaders,
   shouldProcessRateLimits,
@@ -74,18 +66,6 @@ const EARLY_WARNING_CLAIM_MAP: Record<string, RateLimitType> = {
   '5h': 'five_hour',
   '7d': 'seven_day',
   overage: 'overage',
-}
-
-const RATE_LIMIT_DISPLAY_NAMES: Record<RateLimitType, string> = {
-  five_hour: 'session limit',
-  seven_day: 'weekly limit',
-  seven_day_opus: 'Opus limit',
-  seven_day_sonnet: 'Sonnet limit',
-  overage: 'extra usage limit',
-}
-
-export function getRateLimitDisplayName(type: RateLimitType): string {
-  return RATE_LIMIT_DISPLAY_NAMES[type] || type
 }
 
 /**
@@ -181,7 +161,7 @@ function extractRawUtilization(headers: globalThis.Headers): RawUtilization {
 type StatusChangeListener = (limits: AgenCAILimits) => void
 export const statusListeners: Set<StatusChangeListener> = new Set()
 
-export function emitStatusChange(limits: AgenCAILimits) {
+function emitStatusChange(limits: AgenCAILimits) {
   currentLimits = limits
   updatePromptSuggestionLimits(limits)
   statusListeners.forEach(listener => listener(limits))
@@ -195,62 +175,6 @@ export function emitStatusChange(limits: AgenCAILimits) {
     unifiedRateLimitFallbackAvailable: limits.unifiedRateLimitFallbackAvailable,
     hoursTillReset,
   })
-}
-
-async function makeTestQuery() {
-  const model = getSmallFastModel()
-  const anthropic = await getproviderClient({
-    maxRetries: 0,
-    model,
-    source: 'quota_check',
-  })
-  const messages: MessageParam[] = [{ role: 'user', content: 'quota' }]
-  const betas = getModelBetas(model)
-  // biome-ignore lint/plugin: quota check needs raw response access via asResponse()
-  return anthropic.beta.messages
-    .create({
-      model,
-      max_tokens: 1,
-      messages,
-      metadata: getAPIMetadata(),
-      ...(betas.length > 0 ? { betas } : {}),
-    })
-    .asResponse()
-}
-
-export async function checkQuotaStatus(): Promise<void> {
-  // Skip network requests if nonessential traffic is disabled
-  if (isEssentialTrafficOnly()) {
-    return
-  }
-
-  if (getAPIProvider() !== 'firstParty') {
-    return
-  }
-
-  // Check if we should process rate limits (real subscriber or mock testing)
-  if (!shouldProcessRateLimits(isAgenCAISubscriber())) {
-    return
-  }
-
-  // In non-interactive mode (-p), the real query follows immediately and
-  // extractQuotaStatusFromHeaders() will update limits from its response
-  // headers (anthropic.ts), so skip this pre-check API call. // branding-scan: allow existing upstream API module name
-  if (getIsNonInteractiveSession()) {
-    return
-  }
-
-  try {
-    // Make a minimal request to check quota
-    const raw = await makeTestQuery()
-
-    // Update limits based on the response
-    extractQuotaStatusFromHeaders(raw.headers)
-  } catch (error) {
-    if (error instanceof APIError) {
-      extractQuotaStatusFromError(error)
-    }
-  }
 }
 
 /**

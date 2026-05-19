@@ -241,19 +241,6 @@ function getEnvOverrides(): Record<string, unknown> | null {
   }
   return envOverrides
 }
-
-/**
- * Check if a feature has an env-var override (AGENC_INTERNAL_FC_OVERRIDES).
- * When true, _CACHED_MAY_BE_STALE will return the override without touching
- * disk or network — callers can skip awaiting init for that feature.
- */
-export function hasGrowthBookEnvOverride(feature: string): boolean {
-  const overrides = getEnvOverrides()
-  if (overrides !== null && feature in overrides) return true
-  const local = getLocalFeatureFlags()
-  return local !== null && feature in local
-}
-
 /**
  * Local config overrides set via /config Gates tab (internal-only). Checked after
  * env-var overrides — env wins so eval harnesses remain deterministic. Unlike
@@ -271,77 +258,6 @@ function getConfigOverrides(): Record<string, unknown> | undefined {
     return undefined
   }
 }
-
-/**
- * Enumerate all known GrowthBook features and their current resolved values
- * (not including overrides). In-memory payload first, disk cache fallback —
- * same priority as the getters. Used by the /config Gates tab.
- */
-export function getAllGrowthBookFeatures(): Record<string, unknown> {
-  if (remoteEvalFeatureValues.size > 0) {
-    return Object.fromEntries(remoteEvalFeatureValues)
-  }
-  return getGlobalConfig().cachedGrowthBookFeatures ?? {}
-}
-
-export function getGrowthBookConfigOverrides(): Record<string, unknown> {
-  return getConfigOverrides() ?? {}
-}
-
-/**
- * Set or clear a single config override. Pass undefined to clear.
- * Fires onGrowthBookRefresh listeners so systems that bake gate values into
- * long-lived objects (useMainLoopModel, useSkillsChange, etc.) rebuild —
- * otherwise overriding e.g. tengu_ant_model_override wouldn't actually
- * change the model until the next periodic refresh.
- */
-export function setGrowthBookConfigOverride(
-  feature: string,
-  value: unknown,
-): void {
-  if (process.env.USER_TYPE !== 'ant') return
-  try {
-    saveGlobalConfig(c => {
-      const current = c.growthBookOverrides ?? {}
-      if (value === undefined) {
-        if (!(feature in current)) return c
-        const { [feature]: _, ...rest } = current
-        if (Object.keys(rest).length === 0) {
-          const { growthBookOverrides: __, ...configWithout } = c
-          return configWithout
-        }
-        return { ...c, growthBookOverrides: rest }
-      }
-      if (isEqual(current[feature], value)) return c
-      return { ...c, growthBookOverrides: { ...current, [feature]: value } }
-    })
-    // Subscribers do their own change detection (see onGrowthBookRefresh docs),
-    // so firing on a no-op write is fine.
-    refreshed.emit()
-  } catch (e) {
-    logError(e)
-  }
-}
-
-export function clearGrowthBookConfigOverrides(): void {
-  if (process.env.USER_TYPE !== 'ant') return
-  try {
-    saveGlobalConfig(c => {
-      if (
-        !c.growthBookOverrides ||
-        Object.keys(c.growthBookOverrides).length === 0
-      ) {
-        return c
-      }
-      const { growthBookOverrides: _, ...rest } = c
-      return rest
-    })
-    refreshed.emit()
-  } catch (e) {
-    logError(e)
-  }
-}
-
 /**
  * Log experiment exposure for a feature if it has experiment data.
  * Deduplicates within a session - each feature is logged at most once.
@@ -489,7 +405,7 @@ function isGrowthBookEnabled(): boolean {
  * Returns undefined for unset/default (api.anthropic.com) so the attribute
  * is absent for direct-API users. Hostname only — no path/query/creds.
  */
-export function getApiBaseUrlHost(): string | undefined {
+function getApiBaseUrlHost(): string | undefined {
   const baseUrl = process.env.ANTHROPIC_BASE_URL
   if (!baseUrl) return undefined
   try {
@@ -672,7 +588,7 @@ const getGrowthBookClient = memoize(
 /**
  * Initialize GrowthBook client (blocks until ready)
  */
-export const initializeGrowthBook = memoize(
+const initializeGrowthBook = memoize(
   async (): Promise<GrowthBook | null> => {
     let clientWrapper = getGrowthBookClient()
     if (!clientWrapper) {
@@ -773,7 +689,7 @@ async function getFeatureValueInternal<T>(
  * @deprecated Use getFeatureValue_CACHED_MAY_BE_STALE instead, which is non-blocking.
  * This function blocks on GrowthBook initialization which can slow down startup.
  */
-export async function getFeatureValue_DEPRECATED<T>(
+async function getFeatureValue_DEPRECATED<T>(
   feature: string,
   defaultValue: T,
 ): Promise<T> {
@@ -958,108 +874,10 @@ export async function checkSecurityRestrictionGate(
   // No cache - return false (don't block on init for uncached gates)
   return false
 }
-
-/**
- * Check a boolean entitlement gate with fallback-to-blocking semantics.
- *
- * Fast path: if the disk cache already says `true`, return it immediately.
- * Slow path: if disk says `false`/missing, await GrowthBook init and fetch the
- * fresh server value (max ~5s). Disk is populated by syncRemoteEvalToDisk
- * inside init, so by the time the slow path returns, disk already has the
- * fresh value — no write needed here.
- *
- * Use for user-invoked features (e.g. /remote-control) that are gated on
- * subscription/org, where a stale `false` would unfairly block access but a
- * stale `true` is acceptable (the server is the real gatekeeper).
- */
-export async function checkGate_CACHED_OR_BLOCKING(
-  gate: string,
-): Promise<boolean> {
-  // Check env var overrides first (for eval harnesses)
-  const overrides = getEnvOverrides()
-  if (overrides && gate in overrides) {
-    return Boolean(overrides[gate])
-  }
-  const local = getLocalFeatureFlags()
-  if (local && gate in local) {
-    return Boolean(local[gate])
-  }
-  const configOverrides = getConfigOverrides()
-  if (configOverrides && gate in configOverrides) {
-    return Boolean(configOverrides[gate])
-  }
-
-  if (!isGrowthBookEnabled()) {
-    return Boolean(getOpenBuildFeatureValue(gate, false))
-  }
-
-  // Fast path: disk cache already says true — trust it
-  const cached = getGlobalConfig().cachedGrowthBookFeatures?.[gate]
-  if (cached === true) {
-    // Log experiment exposure if data is available, otherwise defer
-    if (experimentDataByFeature.has(gate)) {
-      logExposureForFeature(gate)
-    } else {
-      pendingExposures.add(gate)
-    }
-    return true
-  }
-
-  // Slow path: disk says false/missing — may be stale, fetch fresh
-  return getFeatureValueInternal(gate, false, true)
-}
-
-/**
- * Refresh GrowthBook after auth changes (login/logout).
- *
- * NOTE: This must destroy and recreate the client because GrowthBook's
- * apiHostRequestHeaders cannot be updated after client creation.
- */
-export function refreshGrowthBookAfterAuthChange(): void {
-  if (!isGrowthBookEnabled()) {
-    return
-  }
-
-  try {
-    // Reset the client completely to get fresh auth headers
-    // This is necessary because apiHostRequestHeaders can't be updated after creation
-    resetGrowthBook()
-
-    // resetGrowthBook cleared remoteEvalFeatureValues. If re-init below
-    // times out (hadFeatures=false) or short-circuits on !hasAuth (logout),
-    // the init-callback notify never fires — subscribers stay synced to the
-    // previous account's memoized state. Notify here so they re-read now
-    // (falls to disk cache). If re-init succeeds, they'll notify again with
-    // fresh values; if not, at least they're synced to the post-reset state.
-    refreshed.emit()
-
-    // Reinitialize with fresh auth headers and attributes
-    // Track this promise so security gate checks can wait for it.
-    // .catch before .finally: initializeGrowthBook can reject if its sync
-    // helpers throw (getGrowthBookClient, getAuthHeaders, resetGrowthBook —
-    // clientWrapper.initialized itself has its own .catch so never rejects),
-    // and .finally re-settles with the original rejection — the sync
-    // try/catch below cannot catch async rejections.
-    reinitializingPromise = initializeGrowthBook()
-      .catch(error => {
-        logError(toError(error))
-        return null
-      })
-      .finally(() => {
-        reinitializingPromise = null
-      })
-  } catch (error) {
-    if (process.env.NODE_ENV === 'development') {
-      throw error
-    }
-    logError(toError(error))
-  }
-}
-
 /**
  * Reset GrowthBook client state (primarily for testing)
  */
-export function resetGrowthBook(): void {
+function resetGrowthBook(): void {
   stopPeriodicGrowthBookRefresh()
   // Remove process handlers before destroying client to prevent accumulation
   if (currentBeforeExitHandler) {
@@ -1099,7 +917,7 @@ let beforeExitListener: (() => void) | null = null
  * Unlike refreshGrowthBookAfterAuthChange() which destroys and recreates the client,
  * this preserves client state and just fetches fresh feature values.
  */
-export async function refreshGrowthBookFeatures(): Promise<void> {
+async function refreshGrowthBookFeatures(): Promise<void> {
   if (!isGrowthBookEnabled()) {
     return
   }
@@ -1159,7 +977,7 @@ export async function refreshGrowthBookFeatures(): Promise<void> {
  * Call this after initialization for long-running sessions to ensure
  * feature values stay fresh. Matches Statsig's 6-hour refresh interval.
  */
-export function setupPeriodicGrowthBookRefresh(): void {
+function setupPeriodicGrowthBookRefresh(): void {
   if (!isGrowthBookEnabled()) {
     return
   }
@@ -1187,7 +1005,7 @@ export function setupPeriodicGrowthBookRefresh(): void {
 /**
  * Stop periodic refresh (for testing or cleanup)
  */
-export function stopPeriodicGrowthBookRefresh(): void {
+function stopPeriodicGrowthBookRefresh(): void {
   if (refreshInterval) {
     clearInterval(refreshInterval)
     refreshInterval = null

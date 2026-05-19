@@ -665,44 +665,10 @@ export async function checkResponseForCacheBreak(
   }
 }
 
-/**
- * Call when cached microcompact sends cache_edits deletions.
- * The next API response will have lower cache read tokens — that's
- * expected, not a cache break.
- */
-export function notifyCacheDeletion(
-  querySource: QuerySource,
-  agentId?: AgentId,
-): void {
-  const key = getTrackingKey(querySource, agentId)
-  const state = key ? previousStateBySource.get(key) : undefined
-  if (state) {
-    state.cacheDeletionsPending = true
-  }
-}
-
-/**
- * Call after compaction to reset the cache read baseline.
- * Compaction legitimately reduces message count, so cache read tokens
- * will naturally drop on the next call — that's not a break.
- */
-export function notifyCompaction(
-  querySource: QuerySource,
-  agentId?: AgentId,
-): void {
-  const key = getTrackingKey(querySource, agentId)
-  const state = key ? previousStateBySource.get(key) : undefined
-  if (state) {
-    state.prevCacheReadTokens = null
-  }
-}
-
 export function cleanupAgentTracking(agentId: AgentId): void {
   previousStateBySource.delete(agentId)
 }
-export function resetPromptCacheBreakDetection(): void {
-  previousStateBySource.clear()
-}
+
 async function writeCacheBreakDiff(
   prevContent: string,
   newContent: string,

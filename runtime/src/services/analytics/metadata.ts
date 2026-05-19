@@ -99,7 +99,7 @@ export function isToolDetailsLoggingEnabled(): boolean {
  *
  * Custom/user-configured MCPs stay sanitized (toolName='mcp_tool').
  */
-export function isAnalyticsToolDetailsLoggingEnabled(
+function isAnalyticsToolDetailsLoggingEnabled(
   mcpServerType: string | undefined,
   mcpServerBaseUrl: string | undefined,
 ): boolean {

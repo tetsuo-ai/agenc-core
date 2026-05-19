@@ -245,7 +245,7 @@ export function isMediaSizeError(raw: string): boolean {
  * string populated by the getAssistantMessageFromError branches at ~L523/560/573)
  * rather than content text, since media errors have per-variant content strings.
  */
-export function isMediaSizeErrorMessage(msg: AssistantMessage): boolean {
+function isMediaSizeErrorMessage(msg: AssistantMessage): boolean {
   return (
     msg.isApiErrorMessage === true &&
     msg.errorDetails !== undefined &&
@@ -262,10 +262,10 @@ export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY =
   'Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable'
 export const TOKEN_REVOKED_ERROR_MESSAGE =
   'OAuth token revoked · Please run /login'
-export const CCR_AUTH_ERROR_MESSAGE =
+const CCR_AUTH_ERROR_MESSAGE =
   'Authentication error · This may be a temporary network issue, please try again'
 export const REPEATED_529_ERROR_MESSAGE = 'Repeated 529 Overloaded errors'
-export function getCustomOffSwitchMessage(): string {
+function getCustomOffSwitchMessage(): string {
   return getAPIProvider() === 'firstParty'
     ? 'Opus is experiencing high load, please use /model to switch to Sonnet'
     : 'The API is experiencing high load, please try again shortly or use /model to switch models'
@@ -301,16 +301,16 @@ export function getRequestTooLargeErrorMessage(): string {
     ? `Request too large (${limits}). Try with a smaller file.`
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
 }
-export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
+const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
   'Your account does not have access to AgenC. Please run /login.'
 
-export function getTokenRevokedErrorMessage(): string {
+function getTokenRevokedErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? 'Your account does not have access to AgenC. Please login again or contact your administrator.'
     : TOKEN_REVOKED_ERROR_MESSAGE
 }
 
-export function getOauthOrgNotAllowedErrorMessage(): string {
+function getOauthOrgNotAllowedErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? 'Your organization does not have access to AgenC. Please login again or contact your administrator.'
     : OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE
@@ -491,7 +491,7 @@ function logToolUseToolResultMismatch(
 /**
  * Type guard to check if a value is a valid Message response from the API
  */
-export function isValidAPIMessage(value: unknown): value is BetaMessage {
+function isValidAPIMessage(value: unknown): value is BetaMessage {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -515,7 +515,7 @@ type AmazonError = {
 /**
  * Given a response that doesn't look quite right, see if it contains any known error types we can extract.
  */
-export function extractUnknownErrorFormat(value: unknown): string | undefined {
+function extractUnknownErrorFormat(value: unknown): string | undefined {
   // Check if value is a valid object first
   if (!value || typeof value !== 'object') {
     return undefined

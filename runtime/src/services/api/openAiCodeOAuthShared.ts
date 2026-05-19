@@ -1,14 +1,14 @@
-export const PROVIDER_CODE_OAUTH_ISSUER = 'https://auth.openai.com'
+const PROVIDER_CODE_OAUTH_ISSUER = 'https://auth.openai.com'
 export const PROVIDER_CODE_REFRESH_URL = `${PROVIDER_CODE_OAUTH_ISSUER}/oauth/token`
-export const DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 export const DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT = 1455
 export const PROVIDER_CODE_OAUTH_SCOPE =
   'openid profile email offline_access api.connectors.read api.connectors.invoke'
 export const PROVIDER_CODE_OAUTH_ORIGINATOR = 'providerCode_cli_rs'
-export const PROVIDER_CODE_API_KEY_TOKEN_NAME = 'openai-api-key'
-export const PROVIDER_CODE_ID_TOKEN_SUBJECT_TYPE =
+const PROVIDER_CODE_API_KEY_TOKEN_NAME = 'openai-api-key'
+const PROVIDER_CODE_ID_TOKEN_SUBJECT_TYPE =
   'urn:ietf:params:oauth:token-type:id_token'
-export const PROVIDER_CODE_TOKEN_EXCHANGE_GRANT =
+const PROVIDER_CODE_TOKEN_EXCHANGE_GRANT =
   'urn:ietf:params:oauth:grant-type:token-exchange'
 
 export function asTrimmedString(value: unknown): string | undefined {

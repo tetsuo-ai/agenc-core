@@ -96,7 +96,7 @@ function contextWindowForModel(model: string): number {
   return DEFAULT_CONTEXT_WINDOW
 }
 
-export function getEffectiveContextWindowSize(model: string): number {
+function getEffectiveContextWindowSize(model: string): number {
   const reservedTokensForSummary = Math.min(
     positiveIntegerEnv(process.env.AGENC_MAX_OUTPUT_TOKENS) ??
       DEFAULT_MAX_OUTPUT_TOKENS,

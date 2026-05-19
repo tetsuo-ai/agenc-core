@@ -34,15 +34,15 @@ export type {
   PolicyRestriction,
 } from "./types.js";
 
-export const POLICY_LIMITS_CACHE_FILENAME = "policy-limits.json" as const;
-export const DEFAULT_POLICY_LIMITS_ENDPOINT =
+const POLICY_LIMITS_CACHE_FILENAME = "policy-limits.json" as const;
+const DEFAULT_POLICY_LIMITS_ENDPOINT =
   "https://api.agenc.tech/v1/policy-limits" as const;
-export const POLICY_LIMITS_ENDPOINT_ENV = "AGENC_POLICY_LIMITS_URL" as const;
-export const DEFAULT_POLICY_LIMITS_FETCH_TIMEOUT_MS = 10_000;
-export const DEFAULT_POLICY_LIMITS_MAX_RETRIES = 5;
-export const DEFAULT_POLICY_LIMITS_POLLING_INTERVAL_MS = 60 * 60 * 1000;
-export const DEFAULT_POLICY_LIMITS_LOADING_TIMEOUT_MS = 30_000;
-export const POLICY_ALLOW_PRODUCT_FEEDBACK = "allow_product_feedback" as const;
+const POLICY_LIMITS_ENDPOINT_ENV = "AGENC_POLICY_LIMITS_URL" as const;
+const DEFAULT_POLICY_LIMITS_FETCH_TIMEOUT_MS = 10_000;
+const DEFAULT_POLICY_LIMITS_MAX_RETRIES = 5;
+const DEFAULT_POLICY_LIMITS_POLLING_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_POLICY_LIMITS_LOADING_TIMEOUT_MS = 30_000;
+const POLICY_ALLOW_PRODUCT_FEEDBACK = "allow_product_feedback" as const;
 
 const ESSENTIAL_TRAFFIC_DENY_ON_MISS = new Set<string>([
   POLICY_ALLOW_PRODUCT_FEEDBACK,
@@ -550,7 +550,7 @@ export function createPolicyLimitsService(
   return new PolicyLimitsService(options);
 }
 
-export function getPolicyLimitsService(): PolicyLimitsService {
+function getPolicyLimitsService(): PolicyLimitsService {
   defaultPolicyLimitsService ??= new PolicyLimitsService();
   return defaultPolicyLimitsService;
 }
@@ -559,32 +559,12 @@ export function initializePolicyLimitsLoadingPromise(): void {
   getPolicyLimitsService().initializePolicyLimitsLoadingPromise();
 }
 
-export function isPolicyLimitsEligible(): boolean {
-  return getPolicyLimitsService().isPolicyLimitsEligible();
-}
-
 export function isPolicyAllowed(policy: string): boolean {
   return getPolicyLimitsService().isPolicyAllowed(policy);
 }
 
-export function isProductFeedbackAllowedByPolicy(): boolean {
-  return isPolicyAllowed(POLICY_ALLOW_PRODUCT_FEEDBACK);
-}
-
-export async function waitForPolicyLimitsToLoad(): Promise<void> {
-  await getPolicyLimitsService().waitForPolicyLimitsToLoad();
-}
-
 export async function loadPolicyLimits(): Promise<void> {
   await getPolicyLimitsService().loadPolicyLimits();
-}
-
-export async function refreshPolicyLimits(): Promise<void> {
-  await getPolicyLimitsService().refreshPolicyLimits();
-}
-
-export async function clearPolicyLimitsCache(): Promise<void> {
-  await getPolicyLimitsService().clearPolicyLimitsCache();
 }
 
 export function startBackgroundPolling(): void {
@@ -594,12 +574,6 @@ export function startBackgroundPolling(): void {
 export function stopBackgroundPolling(): void {
   getPolicyLimitsService().stopBackgroundPolling();
 }
-
-export function _resetPolicyLimitsForTesting(): void {
-  defaultPolicyLimitsService?.stopBackgroundPolling();
-  defaultPolicyLimitsService = null;
-}
-
 export function computePolicyLimitsChecksum(
   restrictions: PolicyLimitsRestrictions,
 ): string {

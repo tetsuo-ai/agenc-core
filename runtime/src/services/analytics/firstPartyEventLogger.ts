@@ -309,7 +309,7 @@ const DEFAULT_MAX_QUEUE_SIZE = 8192
  * This uses its own minimal resource configuration with just the attributes
  * we need for internal analytics (service name, version, platform info).
  */
-export function initialize1PEventLogging(): void {
+function initialize1PEventLogging(): void {
   profileCheckpoint('1p_event_logging_start')
   const enabled = is1PEventLoggingEnabled()
 
@@ -404,7 +404,7 @@ export function initialize1PEventLogging(): void {
  * 3. Swap to new provider/logger; old provider shutdown runs in background
  *    (buffer already drained, just cleanup).
  */
-export async function reinitialize1PEventLoggingIfConfigChanged(): Promise<void> {
+async function reinitialize1PEventLoggingIfConfigChanged(): Promise<void> {
   if (!is1PEventLoggingEnabled() || !firstPartyEventLoggerProvider) {
     return
   }

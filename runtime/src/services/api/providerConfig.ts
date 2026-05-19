@@ -20,7 +20,7 @@ import { DEFAULT_GEMINI_BASE_URL } from 'src/utils/providerProfile.js'
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 export const DEFAULT_PROVIDER_CODE_BASE_URL = 'https://chatgpt.com/backend-api/providerCode'
-export const DEFAULT_MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
+const DEFAULT_MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
 /** Default GitHub Copilot API model when user selects copilot / github:copilot */
 export const DEFAULT_GITHUB_MODELS_API_MODEL = 'gpt-4o'
 const warnedUndefinedEnvNames = new Set<string>()
@@ -266,7 +266,7 @@ function parseModelDescriptor(model: string): ModelDescriptor {
   }
 }
 
-export function isProviderCodeAlias(model: string): boolean {
+function isProviderCodeAlias(model: string): boolean {
   const normalized = model.trim().toLowerCase()
   const base = normalized.split('?', 1)[0] ?? normalized
   return base in PROVIDER_CODE_ALIAS_MODELS
@@ -452,7 +452,7 @@ export function isProviderCodeBaseUrl(baseUrl: string | undefined): boolean {
  * Normalize user model string for GitHub Copilot API inference.
  * Mirrors how Copilot resolves model IDs internally.
  */
-export function normalizeGithubCopilotModel(requestedModel: string): string {
+function normalizeGithubCopilotModel(requestedModel: string): string {
   const noQuery = requestedModel.split('?', 1)[0] ?? requestedModel
   const segment =
     noQuery.includes(':') ? noQuery.split(':', 2)[1]!.trim() : noQuery.trim()
@@ -483,8 +483,8 @@ export function normalizeGithubModelsApiModel(requestedModel: string): string {
   return segment
 }
 
-export const GITHUB_COPILOT_BASE_URL = 'https://api.githubcopilot.com'
-export const GITHUB_MODELS_BASE_URL = 'https://models.github.ai/inference'
+const GITHUB_COPILOT_BASE_URL = 'https://api.githubcopilot.com'
+const GITHUB_MODELS_BASE_URL = 'https://models.github.ai/inference'
 
 export function getGithubEndpointType(
   baseUrl: string | undefined,
@@ -665,7 +665,7 @@ export function getAdditionalModelOptionsCacheScope(): string | null {
   return `openai:${request.baseUrl.toLowerCase()}`
 }
 
-export function resolveProviderCodeAuthPath(
+function resolveProviderCodeAuthPath(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const explicit = asTrimmedString(env.PROVIDER_CODE_AUTH_JSON_PATH)
@@ -758,7 +758,7 @@ function resolveProviderCodeAuthJsonCredentials(options: {
   }
 }
 
-export function resolveStoredProviderCodeCredentials(options: {
+function resolveStoredProviderCodeCredentials(options: {
   storedCredentials: Pick<
     ProviderCodeCredentialBlob,
     'apiKey' | 'accessToken' | 'idToken' | 'accountId'
@@ -920,7 +920,7 @@ export function resolveProviderCodeApiCredentials(
   return resolveEnvOrAuthJsonProviderCodeCredentials(env)
 }
 
-export function getReasoningEffortForModel(model: string): ReasoningEffort | undefined {
+function getReasoningEffortForModel(model: string): ReasoningEffort | undefined {
   const normalized = model.trim().toLowerCase()
   const base = normalized.split('?', 1)[0] ?? normalized
   const alias = base as ProviderCodeAlias

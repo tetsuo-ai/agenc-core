@@ -140,7 +140,7 @@ export function getSuggestionSuppressReason(
  * Shared guard + generation logic used by both CLI TUI and SDK push paths.
  * Returns the suggestion with metadata, or null if suppressed/filtered.
  */
-export async function tryGenerateSuggestion(
+async function tryGenerateSuggestion(
   abortController: AbortController,
   messages: Message[],
   getAppState: () => PromptSuggestionAppState,
@@ -261,7 +261,7 @@ export async function executePromptSuggestion(
 
 const MAX_PARENT_UNCACHED_TOKENS = 10_000
 
-export function getParentCacheSuppressReason(
+function getParentCacheSuppressReason(
   lastAssistantMessage: ReturnType<typeof getLastAssistantMessage>,
 ): string | null {
   if (!lastAssistantMessage) return null
@@ -486,48 +486,6 @@ export function shouldFilterSuggestion(
 
   return false
 }
-
-/**
- * Log acceptance/ignoring of a prompt suggestion. Used by the SDK push path
- * to track outcomes when the next user message arrives.
- */
-export function logSuggestionOutcome(
-  suggestion: string,
-  userInput: string,
-  emittedAt: number,
-  promptId: PromptVariant,
-  generationRequestId: string | null,
-): void {
-  const similarity =
-    Math.round((userInput.length / (suggestion.length || 1)) * 100) / 100
-  const wasAccepted = userInput === suggestion
-  const timeMs = Math.max(0, Date.now() - emittedAt)
-
-  logEvent('tengu_prompt_suggestion', {
-    source: 'sdk' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    outcome: (wasAccepted
-      ? 'accepted'
-      : 'ignored') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    prompt_id:
-      promptId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    ...(generationRequestId && {
-      generationRequestId:
-        generationRequestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    }),
-    ...(wasAccepted && {
-      timeToAcceptMs: timeMs,
-    }),
-    ...(!wasAccepted && { timeToIgnoreMs: timeMs }),
-    similarity,
-    ...(process.env.USER_TYPE === 'ant' && {
-      suggestion:
-        suggestion as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      userInput:
-        userInput as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    }),
-  })
-}
-
 export function logSuggestionSuppressed(
   reason: string,
   suggestion?: string,

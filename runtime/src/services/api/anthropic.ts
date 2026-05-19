@@ -269,7 +269,7 @@ type JsonArray = JsonValue[]
  * @param betaHeaders - An array of beta headers to include in the request.
  * @returns A JSON object representing the extra body parameters.
  */
-export function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
+function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
   // Parse user's extra body parameters first
   const extraBodyStr = process.env.AGENC_EXTRA_BODY
   let result: JsonObject = {}
@@ -330,7 +330,7 @@ export function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
   return result
 }
 
-export function getPromptCachingEnabled(model: string): boolean {
+function getPromptCachingEnabled(model: string): boolean {
   // Prompt caching is an provider-specific feature. Third-party providers // branding-scan: allow provider API terminology
   // do not understand cache_control blocks and strict backends reject or flag
   // requests that contain them.
@@ -480,7 +480,7 @@ type TaskBudgetParam = {
   remaining?: number
 }
 
-export function configureTaskBudgetParams(
+function configureTaskBudgetParams(
   taskBudget: Options['taskBudget'],
   outputConfig: BetaOutputConfig & { task_budget?: TaskBudgetParam },
   betas: string[],
@@ -589,7 +589,7 @@ export async function verifyApiKey(
   }
 }
 
-export function userMessageToMessageParam(
+function userMessageToMessageParam(
   message: UserMessage,
   addCache = false,
   enablePromptCaching: boolean,
@@ -634,7 +634,7 @@ export function userMessageToMessageParam(
   }
 }
 
-export function assistantMessageToMessageParam(
+function assistantMessageToMessageParam(
   message: AssistantMessage,
   addCache = false,
   enablePromptCaching: boolean,
@@ -820,7 +820,7 @@ function getNonstreamingFallbackTimeoutMs(): number {
  * Encapsulates the common pattern of creating a withRetry generator,
  * iterating to yield system messages, and returning the final BetaMessage.
  */
-export async function* executeNonStreamingRequest(
+async function* executeNonStreamingRequest(
   clientOptions: {
     model: string
     fetchOverride?: Options['fetchOverride']
@@ -960,7 +960,7 @@ function isToolResult(
  * Ensures messages contain at most `limit` media items (images + documents).
  * Strips oldest media first to preserve the most recent.
  */
-export function stripExcessMediaItems(
+function stripExcessMediaItems(
   messages: (UserMessage | AssistantMessage)[],
   limit: number,
 ): (UserMessage | AssistantMessage)[] {
@@ -3074,7 +3074,7 @@ type CachedMCPinnedEdits = {
 }
 
 // Exported for testing cache_reference placement constraints
-export function addCacheBreakpoints(
+function addCacheBreakpoints(
   messages: (UserMessage | AssistantMessage)[],
   enablePromptCaching: boolean,
   querySource?: QuerySource,
@@ -3224,7 +3224,7 @@ export function addCacheBreakpoints(
   return result
 }
 
-export function buildSystemPromptBlocks(
+function buildSystemPromptBlocks(
   systemPrompt: SystemPrompt,
   enablePromptCaching: boolean,
   options?: {
@@ -3365,7 +3365,7 @@ export async function queryWithModel({
 // https://agenc.tech/docs/en/api/errors#long-requests
 // The SDK's 21333-token cap is derived from 10min × 128k tokens/hour, but we
 // bypass it by setting a client-level timeout, so we can cap higher.
-export const MAX_NON_STREAMING_TOKENS = 64_000
+const MAX_NON_STREAMING_TOKENS = 64_000
 
 /**
  * Adjusts thinking budget when max_tokens is capped for non-streaming fallback.
@@ -3375,7 +3375,7 @@ export const MAX_NON_STREAMING_TOKENS = 64_000
  * @param maxTokensCap - The maximum allowed tokens (MAX_NON_STREAMING_TOKENS)
  * @returns Adjusted parameters with thinking budget capped if needed
  */
-export function adjustParamsForNonStreaming<
+function adjustParamsForNonStreaming<
   T extends {
     max_tokens: number
     thinking?: BetaMessageStreamParams['thinking']

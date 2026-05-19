@@ -115,9 +115,9 @@ export interface CountTokensViaSmallModelOptions extends CountMessagesTokensOpti
   readonly fallbackModel?: string;
 }
 
-export const TOKEN_COUNT_THINKING_BUDGET = 1024;
-export const TOKEN_COUNT_MAX_TOKENS = 2048;
-export const TOKEN_COUNT_SMALL_MODEL =
+const TOKEN_COUNT_THINKING_BUDGET = 1024;
+const TOKEN_COUNT_MAX_TOKENS = 2048;
+const TOKEN_COUNT_SMALL_MODEL =
   "claude-haiku-4-5"; // branding-scan: allow documented Anthropic API model identifier
 
 const ANTHROPIC_CLI_20250219_BETA_HEADER =
@@ -294,7 +294,7 @@ export function normalizeAttachmentsForTokenEstimation(
   });
 }
 
-export function normalizeAttachmentContent(
+function normalizeAttachmentContent(
   attachment: unknown,
 ): TokenEstimationContent {
   if (!isRecord(attachment)) {

@@ -99,11 +99,6 @@ function hasToolCallsInLastAssistantTurn(
   }
   return false;
 }
-
-export function clearTrackedMagicDocs(): void {
-  trackedMagicDocsByScope.clear();
-}
-
 export function trackedMagicDocPathsForTests(sessionId?: string): readonly string[] {
   if (sessionId !== undefined) {
     return [...(trackedMagicDocsByScope.get(scopeIdForSessionId(sessionId))?.keys() ?? [])]
@@ -210,7 +205,7 @@ function snapshotToSeed(snapshot: SessionReadSnapshot): MagicDocsReadFileSnapsho
   };
 }
 
-export function cloneMagicDocsReadFileState(
+function cloneMagicDocsReadFileState(
   state?: ReadonlyMap<string, unknown>,
 ): MagicDocsReadFileState {
   const cloned = new Map<string, MagicDocsReadFileSnapshot>();

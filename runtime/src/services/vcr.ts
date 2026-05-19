@@ -377,28 +377,3 @@ export async function* withStreamingVCR(
   }
   yield* buffer
 }
-export async function withTokenCountVCR(
-  messages: unknown[],
-  tools: unknown[],
-  f: () => Promise<number | null>,
-): Promise<number | null> {
-  // Dehydrate before hashing so fixture keys survive cwd/config-home/tempdir
-  // variation and message UUID/timestamp churn. System prompts embed the
-  // working directory (both raw and as a slash→dash project slug in the
-  // auto-memory path) and messages carry fresh UUIDs per run; without this,
-  // every test run produces a new hash and fixtures never hit in CI.
-  const cwdSlug = getCwd().replace(/[^a-zA-Z0-9]/g, '-')
-  const dehydrated = (
-    dehydrateValue(jsonStringify({ messages, tools })) as string
-  )
-    .replaceAll(cwdSlug, '[CWD_SLUG]')
-    .replace(
-      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-      '[UUID]',
-    )
-    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?/g, '[TIMESTAMP]')
-  const result = await withFixture(dehydrated, 'token-count', async () => ({
-    tokenCount: await f(),
-  }))
-  return result.tokenCount
-}
