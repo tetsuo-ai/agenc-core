@@ -1,7 +1,6 @@
 import type { Notification } from '../context/notifications.js'
 import type { TodoList } from '../../utils/todo/types.js'
 import type { Command } from '../../commands.js'
-import type { ChannelPermissionCallbacks } from '../../services/mcp/channelPermissions.js'
 import type { ElicitationRequestEvent } from '../../services/mcp/elicitationHandler.js'
 import type {
   MCPServerConnection,
@@ -423,10 +422,6 @@ export type AppState = DeepImmutable<{
   advisorModel?: string
   // Effort value
   effortValue?: EffortValue
-  // Channel permission callbacks — permission prompts over Telegram/iMessage/etc.
-  // Races against local UI + bridge + hooks + classifier via claim() in
-  // interactiveHandler.ts. Constructed once in useManageMCPConnections.
-  channelPermissionCallbacks?: ChannelPermissionCallbacks
 }
 
 export type AppStateStore = Store<AppState>

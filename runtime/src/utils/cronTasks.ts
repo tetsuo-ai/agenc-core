@@ -254,9 +254,9 @@ export async function removeCronTasks(
  * persisting their fire time. No-op if none of the ids match (task was
  * deleted between fire and write — e.g. user ran CronDelete mid-tick).
  *
- * Scheduler lock means at most one process calls this; chokidar picks up
- * the write and triggers a reload which re-seeds `nextFireAt` from the
- * just-written `lastFiredAt` — idempotent (same computation, same answer).
+ * Scheduler callers should serialize writes; chokidar picks up the write and
+ * triggers a reload which re-seeds `nextFireAt` from the just-written
+ * `lastFiredAt` — idempotent (same computation, same answer).
  */
 export async function markCronTasksFired(
   ids: string[],

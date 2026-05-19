@@ -2665,9 +2665,8 @@ export function resetSentSkillNames(): void {
 }
 
 /**
- * Suppress the next skill-listing injection. Called by conversationRecovery
- * on --resume when a skill_listing attachment already exists in the
- * transcript.
+ * Suppress the next skill-listing injection. Called by resume handling when a
+ * skill_listing attachment already exists in the transcript.
  *
  * `sentSkillNames` is module-scope — process-local. Each `agenc -p` spawn
  * starts with an empty Map, so without this every resume re-injects the

@@ -42,9 +42,7 @@ function getConfigUrl(config: ScopedMcpServerConfig): string | undefined {
  * When called, starts performMCPOAuthFlow with skipBrowserOpen and returns
  * the authorization URL. The OAuth callback completes in the background;
  * once it fires, reconnectMcpServerImpl runs and the server's real tools
- * are swapped into appState.mcp.tools via the existing prefix-based
- * replacement (useManageMCPConnections.updateServer wipes anything matching
- * mcp__<server>__*, so this pseudo-tool is removed automatically).
+ * replace the mcp__<server>__* pseudo-tool entries.
  */
 export function createMcpAuthTool(
   serverName: string,

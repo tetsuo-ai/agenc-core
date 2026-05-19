@@ -2725,8 +2725,6 @@
 ^runtime/src/utils/attribution\.ts:41 - AttributionTexts \(used in module\)$
 ^runtime/src/utils/authFileDescriptor\.ts:23 - CCR_OAUTH_TOKEN_PATH \(used in module\)$
 ^runtime/src/utils/authFileDescriptor\.ts:24 - CCR_API_KEY_PATH \(used in module\)$
-^runtime/src/utils/autoModeDenials\.ts:24 - getAutoModeDenials$
-^runtime/src/utils/autoModeDenials\.ts:8 - AutoModeDenial \(used in module\)$
 ^runtime/src/utils/autoUpdater\.ts:71 - assertMinVersion$
 ^runtime/src/utils/autoUpdater\.ts:127 - getMaxVersionMessage$
 ^runtime/src/utils/autoUpdater\.ts:175 - getLockFilePath \(used in module\)$
@@ -2742,7 +2740,6 @@
 ^runtime/src/utils/betas\.ts:96 - modelSupportsISP \(used in module\)$
 ^runtime/src/utils/betas\.ts:129 - modelSupportsContextManagement \(used in module\)$
 ^runtime/src/utils/betas\.ts:239 - getAllModelBetas \(used in module\)$
-^runtime/src/utils/binaryCheck\.ts:51 - clearBinaryCache$
 ^runtime/src/utils/bufferedWriter\.ts:3 - BufferedWriter \(used in module\)$
 ^runtime/src/utils/caCerts\.ts:112 - clearCACertsCache$
 ^runtime/src/utils/classifierApprovals\.ts:32 - getClassifierApproval$
@@ -2773,13 +2770,6 @@
 ^runtime/src/utils/context\.ts:11 - MODEL_CONTEXT_WINDOW_DEFAULT \(used in module\)$
 ^runtime/src/utils/context\.ts:18 - OPENAI_FALLBACK_CONTEXT_WINDOW \(used in module\)$
 ^runtime/src/utils/context\.ts:24 - COMPACT_MAX_OUTPUT_TOKENS$
-^runtime/src/utils/conversationRecovery\.ts:218 - deserializeMessagesWithInterruptDetection \(used in module\)$
-^runtime/src/utils/conversationRecovery\.ts:445 - restoreSkillStateFromMessages \(used in module\)$
-^runtime/src/utils/conversationRecovery\.ts:479 - loadMessagesFromJsonlPath \(used in module\)$
-^runtime/src/utils/conversationRecovery\.ts:519 - loadConversationForResume$
-^runtime/src/utils/conversationRecovery\.ts:83 - ResumeTranscriptTooLargeError \(used in module\)$
-^runtime/src/utils/conversationRecovery\.ts:174 - TurnInterruptionState \(used in module\)$
-^runtime/src/utils/conversationRecovery\.ts:178 - DeserializeResult \(used in module\)$
 ^runtime/src/utils/cron\.ts:10 - CronFields \(used in module\)$
 ^runtime/src/utils/cronTasks\.ts:91 - readCronTasks \(used in module\)$
 ^runtime/src/utils/cronTasks\.ts:146 - hasCronTasksSync$
@@ -3198,8 +3188,6 @@
 ^runtime/src/utils/sessionRestore\.ts:253 - refreshAgentDefinitionsForModeSwitch \(used in module\)$
 ^runtime/src/utils/sessionRestore\.ts:411 - processResumedConversation$
 ^runtime/src/utils/sessionRestore\.ts:278 - ProcessedResume \(used in module\)$
-^runtime/src/utils/sessionStart\.ts:31 - takeInitialUserMessage$
-^runtime/src/utils/sessionStart\.ts:180 - processSetupHooks$
 ^runtime/src/utils/sessionState\.ts:60 - setSessionStateChangedListener$
 ^runtime/src/utils/sessionState\.ts:66 - setSessionMetadataChangedListener$
 ^runtime/src/utils/sessionState\.ts:79 - setPermissionModeChangedListener$
@@ -3338,8 +3326,6 @@
 ^runtime/src/utils/tokens\.ts:241 - TokenAnalytics \(used in module\)$
 ^runtime/src/utils/tokens\.ts:261 - TokenUsageTracker$
 ^runtime/src/utils/toolErrors\.ts:26 - getErrorParts \(used in module\)$
-^runtime/src/utils/toolPool\.ts:18 - isPrActivitySubscriptionTool \(used in module\)$
-^runtime/src/utils/toolPool\.ts:37 - applyCoordinatorToolFilter \(used in module\)$
 ^runtime/src/utils/toolResultStorage\.ts:57 - getPersistenceThreshold \(used in module\)$
 ^runtime/src/utils/toolResultStorage\.ts:252 - isToolResultContentEmpty \(used in module\)$
 ^runtime/src/utils/toolResultStorage\.ts:423 - getPerMessageBudgetLimit \(used in module\)$
@@ -4569,17 +4555,6 @@
 ^runtime/src/services/api/errorUtils\.ts:122 - sanitizeAPIError \(used in module\)$
 ^runtime/src/services/api/errorUtils\.ts:31 - ConnectionErrorDetails \(used in module\)$
 ^runtime/src/services/api/fetchWithProxyRetry\.ts:8 - isRetryableFetchError \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:132 - downloadFile \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:187 - buildDownloadPath \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:219 - downloadAndSaveFile \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:317 - downloadSessionFiles$
-^runtime/src/services/api/filesApi\.ts:570 - uploadSessionFiles$
-^runtime/src/services/api/filesApi\.ts:617 - listFilesCreatedAfter$
-^runtime/src/services/api/filesApi\.ts:722 - parseFileSpecs$
-^runtime/src/services/api/filesApi\.ts:52 - File \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:72 - DownloadResult \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:354 - UploadResult \(used in module\)$
-^runtime/src/services/api/filesApi\.ts:602 - FileMetadata \(used in module\)$
 ^runtime/src/services/api/firstTokenDate\.ts:12 - fetchAndStoreAgenCCodeFirstTokenDate$
 ^runtime/src/services/api/grove\.ts:90 - markGroveNoticeViewed \(used in module\)$
 ^runtime/src/services/api/grove\.ts:120 - updateGroveSettings$
@@ -4588,7 +4563,6 @@
 ^runtime/src/services/api/grove\.ts:25 - AccountSettings \(used in module\)$
 ^runtime/src/services/api/grove\.ts:30 - GroveConfig \(used in module\)$
 ^runtime/src/services/api/grove\.ts:42 - ApiResult \(used in module\)$
-^runtime/src/services/api/metricsOptOut\.ts:157 - _clearMetricsEnabledCacheForTesting$
 ^runtime/src/services/api/openAiCodeOAuthShared\.ts:26 - getOpenAiCodeOAuthCallbackPort$
 ^runtime/src/services/api/openAiCodeOAuthShared\.ts:82 - escapeHtml$
 ^runtime/src/services/api/openAiCodeOAuthShared\.ts:1 - PROVIDER_CODE_OAUTH_ISSUER \(used in module\)$
@@ -4683,8 +4657,6 @@
 ^runtime/src/services/compact/types\.ts:55 - CompactRuntimeDeps \(used in module\)$
 ^runtime/src/services/contextCollapse/index\.ts:14 - getContextCollapseState$
 ^runtime/src/services/contextCollapse/index\.ts:8 - AgenCContextCollapseState \(used in module\)$
-^runtime/src/services/contextCollapse/persist\.ts:13 - restoreFromEntries$
-^runtime/src/services/contextCollapse/persist\.ts:20 - createPersistEntries$
 ^runtime/src/services/extractMemories/extractMemories\.ts:240 - createAutoMemoryToolPolicy \(used in module\)$
 ^runtime/src/services/extractMemories/extractMemories\.ts:391 - initExtractMemories \(used in module\)$
 ^runtime/src/services/extractMemories/extractMemories\.ts:57 - ExtractMemoriesContext \(used in module\)$
@@ -4771,16 +4743,6 @@
 ^runtime/src/services/mcp/auth\.ts:2482 - clearMcpClientConfig$
 ^runtime/src/services/mcp/auth\.ts:2495 - getMcpClientConfig \(used in module\)$
 ^runtime/src/services/mcp/auth\.ts:381 - AuthenticationCancelledError \(used in module\)$
-^runtime/src/services/mcp/channelAllowlist\.ts:67 - isChannelAllowlisted$
-^runtime/src/services/mcp/channelNotification\.ts:127 - getEffectiveChannelAllowlist \(used in module\)$
-^runtime/src/services/mcp/channelNotification\.ts:85 - CHANNEL_PERMISSION_REQUEST_METHOD$
-^runtime/src/services/mcp/channelNotification\.ts:87 - ChannelPermissionRequestParams$
-^runtime/src/services/mcp/channelNotification\.ts:140 - ChannelGateResult \(used in module\)$
-^runtime/src/services/mcp/channelPermissions\.ts:140 - shortRequestId$
-^runtime/src/services/mcp/channelPermissions\.ts:160 - truncateForPreview$
-^runtime/src/services/mcp/channelPermissions\.ts:177 - filterPermissionRelayClients$
-^runtime/src/services/mcp/channelPermissions\.ts:40 - ChannelPermissionResponse \(used in module\)$
-^runtime/src/services/mcp/channelPermissions\.ts:75 - PERMISSION_REPLY_RE$
 ^runtime/src/services/mcp/client\.ts:224 - isMcpSessionExpiredError \(used in module\)$
 ^runtime/src/services/mcp/client\.ts:406 - createAgenCAiProxyFetch \(used in module\)$
 ^runtime/src/services/mcp/client\.ts:526 - wrapFetchWithTimeout \(used in module\)$
@@ -4807,7 +4769,6 @@
 ^runtime/src/services/mcp/config\.ts:1485 - shouldAllowManagedMcpServersOnly \(used in module\)$
 ^runtime/src/services/mcp/config\.ts:1494 - areMcpConfigsAllowedWithEnterpriseMcpConfig$
 ^runtime/src/services/mcp/headersHelper\.ts:32 - getMcpHeadersFromHelper \(used in module\)$
-^runtime/src/services/mcp/MCPConnectionManager\.tsx:19 - useMcpReconnect$
 ^runtime/src/services/mcp/mcpStringUtils\.ts:75 - getMcpDisplayName$
 ^runtime/src/services/mcp/mcpStringUtils\.ts:88 - extractMcpToolDisplayName$
 ^runtime/src/services/mcp/officialRegistry\.ts:34 - prefetchOfficialMcpUrls$
@@ -4866,11 +4827,6 @@
 ^runtime/src/services/mcp/xaaIdpLogin\.ts:36 - XaaIdpSettings \(used in module\)$
 ^runtime/src/services/mcp/xaaIdpLogin\.ts:55 - IdpLoginOptions \(used in module\)$
 ^runtime/src/services/plugins/PluginInstallationManager\.ts:60 - performBackgroundPluginInstallations$
-^runtime/src/services/plugins/pluginOperations\.ts:92 - assertInstallableScope \(used in module\)$
-^runtime/src/services/plugins/pluginOperations\.ts:116 - getProjectPathForScope \(used in module\)$
-^runtime/src/services/plugins/pluginOperations\.ts:575 - setPluginEnabledOp \(used in module\)$
-^runtime/src/services/plugins/pluginOperations\.ts:143 - PluginOperationResult \(used in module\)$
-^runtime/src/services/plugins/pluginOperations\.ts:156 - PluginUpdateResult \(used in module\)$
 ^runtime/src/services/policyLimits/index\.ts:547 - createPolicyLimitsService$
 ^runtime/src/services/policyLimits/index\.ts:553 - getPolicyLimitsService \(used in module\)$
 ^runtime/src/services/policyLimits/index\.ts:558 - initializePolicyLimitsLoadingPromise \(used in module\)$

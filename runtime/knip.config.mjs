@@ -48,8 +48,16 @@ export default {
     // Required by the memory subsystem contract even though production code
     // currently reaches the memory store through narrower helpers.
     'src/memory/store.ts',
+    // Service utility contract tests import these through Vitest's moved-source
+    // resolver; Knip does not model that custom test resolver.
+    'src/services/notifier.ts',
     // Declaration shim for the generated Message.renderers.js module.
     'src/tui/components/Message.renderers.d.ts',
+    // TUI design smoke tests import these fixtures through the test resolver.
+    'src/tui/components/v2/designBrowserMarkerFixture.ts',
+    'src/tui/components/v2/designBrowserTextFixture.ts',
+    // Shared TUI test renderer imported from many tests, not production code.
+    'src/utils/staticRender.tsx',
     'src/test-parity/**',
     'tests/fixtures/**',
   ],

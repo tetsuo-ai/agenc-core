@@ -2469,7 +2469,7 @@ function recoverOrphanedParallelToolResults(
  * delta < 0: resume loaded FEWER (chain truncation — #22453 class)
  * delta = 0: round-trip consistent
  *
- * Called from loadConversationForResume — fires once per resume, not on
+ * Called from resume loading paths — fires once per resume, not on
  * /share or log-listing chain rebuilds.
  */
 export function checkResumeConsistency(chain: Message[]): void {

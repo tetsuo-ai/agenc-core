@@ -329,10 +329,6 @@ export type ScheduledTasksHandle = {
 /**
  * Watch `<dir>/.agenc/scheduled_tasks.json` and yield events as tasks fire.
  *
- * Acquires the per-directory scheduler lock (PID-based liveness) so a REPL
- * session in the same dir won't double-fire. Releases the lock and closes
- * the file watcher when the signal aborts.
- *
  * - `fire` — a task whose cron schedule was met. One-shot tasks are already
  *   deleted from the file when this yields; recurring tasks are rescheduled
  *   (or deleted if aged out).

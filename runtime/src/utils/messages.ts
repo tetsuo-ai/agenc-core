@@ -4843,7 +4843,7 @@ function hasOnlyWhitespaceTextContent(
  * This function removes such messages entirely rather than keeping a placeholder,
  * since whitespace-only content has no semantic value.
  *
- * Also used by conversationRecovery to filter these from the main state during session resume.
+ * Also used to filter these from the main state during session resume.
  */
 export function filterWhitespaceOnlyAssistantMessages(
   messages: (UserMessage | AssistantMessage)[],
