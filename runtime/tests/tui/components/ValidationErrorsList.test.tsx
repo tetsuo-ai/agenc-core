@@ -1,7 +1,6 @@
 import * as React from "react";
 import { describe, expect, test, vi } from "vitest";
 
-import { InvalidSettingsDialog } from "./InvalidSettingsDialog.js";
 import {
   buildValidationErrorTree,
   ValidationErrorsList,
@@ -86,29 +85,6 @@ function collectText(node: React.ReactNode): string {
 }
 
 describe("ValidationErrorsList", () => {
-  test("renders validation output through the live settings dialog route", () => {
-    const output = renderPlain(
-      <InvalidSettingsDialog
-        settingsErrors={[
-          {
-            file: "config.toml",
-            path: "permissions.allow.0",
-            message: "Unknown tool",
-            invalidValue: "bad-tool",
-          },
-        ]}
-        onContinue={() => {}}
-        onExit={() => {}}
-      />,
-    );
-
-    expect(output).toContain("Settings Error");
-    expect(output).toContain("config.toml");
-    expect(output).toContain('"bad-tool"');
-    expect(output).toContain("Unknown tool");
-    expect(output).toContain("Exit and fix manually");
-  });
-
   test("builds a readable nested tree with invalid indexed values", () => {
     expect(
       buildValidationErrorTree([

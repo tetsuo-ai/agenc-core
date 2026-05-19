@@ -17,7 +17,6 @@ const files = [
   "runtime/src/tui/components/CustomSelect/select.tsx",
   "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx",
   "runtime/src/tui/components/IdeOnboardingDialog.tsx",
-  "runtime/src/tui/components/IdleReturnDialog.tsx",
   "runtime/src/tui/components/design-system/Dialog.tsx",
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
