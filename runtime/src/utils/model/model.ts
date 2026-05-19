@@ -96,9 +96,9 @@ export function getSmallFastModel(): ModelName {
   if (getAPIProvider() === 'minimax') {
     return process.env.MINIMAX_MODEL || 'MiniMax-M2.5-highspeed'
   }
-  // xAI — OPENAI_MODEL carries the active Grok model; fall back to grok-3.
+  // xAI — OPENAI_MODEL carries the active Grok model.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-3'
+    return process.env.OPENAI_MODEL || 'grok-4.3'
   }
   return getDefaultHaikuModel()
 }
@@ -211,7 +211,7 @@ export function getDefaultOpusModel(): ModelName {
   }
   // xAI — flagship Grok model for "opus"-equivalent.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4'
+    return process.env.OPENAI_MODEL || 'grok-4.3'
   }
   // Other third-party provider API modes may lag firstParty model launches, so
   // keep their generic fallback on Opus 4.6 until they roll out 4.7.
@@ -256,7 +256,7 @@ export function getDefaultSonnetModel(): ModelName {
   }
   // xAI — flagship Grok model for "sonnet"-equivalent.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4'
+    return process.env.OPENAI_MODEL || 'grok-4.3'
   }
   // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
   if (getAPIProvider() !== 'firstParty') {
@@ -298,9 +298,10 @@ export function getDefaultHaikuModel(): ModelName {
   if (getAPIProvider() === 'minimax') {
     return process.env.MINIMAX_MODEL || 'MiniMax-M2.5-highspeed'
   }
-  // xAI — faster Grok model for "haiku"-equivalent.
+  // xAI — use the current Grok model for "haiku"-equivalent. Older fast
+  // Grok aliases retired, so do not fall back to stale model IDs here.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-3'
+    return process.env.OPENAI_MODEL || 'grok-4.3'
   }
 
   // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
@@ -370,9 +371,9 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   if (getAPIProvider() === 'agenc') {
     return process.env.OPENAI_MODEL || 'gpt-5.5'
   }
-  // xAI provider: always use the configured Grok model (default grok-4)
+  // xAI provider: always use the configured Grok model (default grok-4.3)
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || 'grok-4'
+    return process.env.OPENAI_MODEL || 'grok-4.3'
   }
   if (getAPIProvider() === 'nvidia-nim') {
     return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
@@ -586,6 +587,10 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       'gemini-3.1-pro-preview': 'Gemini 3.1 Pro Preview',
       'gemini-3-flash-preview': 'Gemini 3 Flash',
       'gemini-2.5-pro': 'Gemini 2.5 Pro',
+      'grok-4.3': 'Grok 4.3',
+      'grok-4.20-0309-reasoning': 'Grok 4.20 reasoning',
+      'grok-4.20-0309-non-reasoning': 'Grok 4.20 non-reasoning',
+      'grok-4.20-multi-agent-0309': 'Grok 4.20 multi-agent',
       'grok-code-fast-1': 'Grok Code Fast 1',
     }
     if (copilotModelNames[model]) {

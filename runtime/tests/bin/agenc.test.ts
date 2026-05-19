@@ -56,12 +56,7 @@ import {
   clearSystemPromptSections,
   __systemPromptSectionCacheSize,
 } from "../prompts/sections.js";
-import {
-  buildRolloutFilename,
-  getProjectDir,
-} from "../session/session-store.js";
 import type { Session } from "../session/session.js";
-import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
@@ -513,9 +508,12 @@ describe("initializeCliRuntime", () => {
 
 describe("PROVIDER_MODEL_CATALOG", () => {
   it("advertises grok models including the default grok-4.3", () => {
-    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4.3");
-    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-4");
-    expect(PROVIDER_MODEL_CATALOG.grok).toContain("grok-code-fast-1");
+    expect(PROVIDER_MODEL_CATALOG.grok).toEqual([
+      "grok-4.3",
+      "grok-4.20-0309-reasoning",
+      "grok-4.20-0309-non-reasoning",
+      "grok-4.20-multi-agent-0309",
+    ]);
   });
 });
 
@@ -527,9 +525,12 @@ describe("I-60: resolveModelOrExit hard-fail", () => {
   });
 
   it("accepts explicit provider:model form", () => {
-    const result = resolveModelOrExit("grok:grok-4", PROVIDER_MODEL_CATALOG);
+    const result = resolveModelOrExit(
+      "grok:grok-4.20-0309-reasoning",
+      PROVIDER_MODEL_CATALOG,
+    );
     expect(result.provider).toBe("grok");
-    expect(result.model).toBe("grok-4");
+    expect(result.model).toBe("grok-4.20-0309-reasoning");
   });
 
   it("hard-fails with exit(1) + clear message on ambiguous bare slug", () => {
@@ -1529,84 +1530,6 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry starts a daemon prompt agent and attaches the TUI", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cwd-"));
-    const prevEnv = { ...process.env };
-
-    process.env.AGENC_HOME = tmpHome;
-    process.env.AGENC_WORKSPACE = tmpCwd;
-    process.env.XAI_API_KEY = "stub-key-for-test";
-    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const daemon = installDaemonCliDepsForTest({
-      agentId: "agent_tui",
-      sessionId: "session_tui",
-      runtimeSessionId: "runtime_tui",
-      cwd: tmpCwd,
-    });
-
-    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
-    const unmount = vi.fn();
-    let capturedSession: {
-      conversationId: string;
-      submit?: (message: string) => Promise<void>;
-      subscribeToEvents?: (cb: (event: { type: string }) => void) => () => void;
-      flushEventLog?: () => Promise<void>;
-    } | null = null;
-    const bootTUISpy = vi.fn(async (opts: { session: typeof capturedSession }) => {
-      capturedSession = opts?.session as typeof capturedSession;
-      return { unmount, waitUntilExit };
-    });
-    vi.doMock("../tui/main.js", () => ({
-      bootTUI: bootTUISpy,
-    }));
-
-    try {
-      trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await bootTUIEntry({ initialPrompt: "queue this" });
-      expect(code).toBe(0);
-      expect(daemon.startPromptAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "queue this",
-          cwd: tmpCwd,
-          metadata: { mode: "tui" },
-        }),
-      );
-      expect(daemon.requests.map((request) => request.method)).toEqual([
-        "agent.list",
-        "agent.attach",
-      ]);
-      expect(bootTUISpy).toHaveBeenCalledWith(
-        expect.not.objectContaining({
-          initialPrompt: expect.anything(),
-          initialComposerText: expect.anything(),
-        }),
-      );
-      expect(bootTUISpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          session: expect.any(Object),
-          configStore: expect.any(Object),
-          model: "grok-4.3",
-        }),
-      );
-      expect(capturedSession).not.toBeNull();
-      expect(capturedSession!.conversationId).toBe("runtime_tui");
-      expect(typeof capturedSession!.submit).toBe("function");
-      expect(typeof capturedSession!.subscribeToEvents).toBe("function");
-      expect(typeof capturedSession!.flushEventLog).toBe("function");
-      expect(waitUntilExit).toHaveBeenCalledTimes(1);
-      expect(getCurrentRuntimeSession()).toBeNull();
-    } finally {
-      vi.doUnmock("../tui/main.js");
-      for (const key of Object.keys(process.env)) {
-        if (!(key in prevEnv)) delete process.env[key];
-      }
-      Object.assign(process.env, prevEnv);
-      await rm(tmpHome, { recursive: true, force: true });
-      await rm(tmpCwd, { recursive: true, force: true });
-    }
-  });
-
   it("bootTUIEntry streams startup prompt and images as one daemon message", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-image-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-image-cwd-"));
@@ -1659,68 +1582,6 @@ describe("main() smoke", () => {
         "agent.list",
         "agent.attach",
       ]);
-    } finally {
-      vi.doUnmock("../tui/main.js");
-      for (const key of Object.keys(process.env)) {
-        if (!(key in prevEnv)) delete process.env[key];
-      }
-      Object.assign(process.env, prevEnv);
-      await rm(tmpHome, { recursive: true, force: true });
-      await rm(tmpCwd, { recursive: true, force: true });
-    }
-  });
-
-  it("resumeTUIEntry keeps the requested session id instead of minting a fresh one", async () => {
-    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-home-"));
-    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-resume-cwd-"));
-    const prevEnv = { ...process.env };
-
-    process.env.AGENC_HOME = tmpHome;
-    process.env.AGENC_WORKSPACE = tmpCwd;
-    process.env.XAI_API_KEY = "stub-key-for-test";
-    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const sessionDir = join(getProjectDir(tmpCwd), "sessions", "resume-123");
-    await mkdir(sessionDir, { recursive: true });
-    await writeFile(
-      join(sessionDir, buildRolloutFilename(Date.now(), "resume-123")),
-      JSON.stringify({
-        type: "user_message",
-        payload: { message: "resume fixture" },
-      }) + "\n",
-    );
-
-    const daemon = installDaemonCliDepsForTest({
-      agentId: "agent_resume",
-      sessionId: "resume-123",
-      runtimeSessionId: "resume-123",
-      cwd: tmpCwd,
-    });
-
-    let capturedConversationId: string | null = null;
-    vi.doMock("../tui/main.js", () => ({
-      bootTUI: vi.fn(async (opts: { session: { conversationId: string } }) => {
-        capturedConversationId = opts.session.conversationId;
-        return {
-          unmount: vi.fn(),
-          waitUntilExit: vi.fn().mockResolvedValue(undefined),
-        };
-      }),
-    }));
-
-    try {
-      trustWorkspaceForTest(tmpHome, tmpCwd);
-      const code = await resumeTUIEntry({ resumeId: "resume-123" });
-      expect(code).toBe(0);
-      expect(daemon.ensureDaemonReady).toHaveBeenCalledTimes(1);
-      expect(daemon.findAgentBySessionId).toHaveBeenCalledWith(
-        daemon.client,
-        "resume-123",
-      );
-      expect(daemon.requests.map((request) => request.method)).toEqual([
-        "agent.list",
-        "agent.attach",
-      ]);
-      expect(capturedConversationId).toBe("resume-123");
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {

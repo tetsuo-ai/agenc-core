@@ -33,14 +33,16 @@ export interface GatewayLLMConfig {
   readonly xai?: unknown;
 }
 
-const DEFAULT_GROK_CONTEXT_WINDOW_TOKENS = 256_000;
+const DEFAULT_GROK_CONTEXT_WINDOW_TOKENS = 1_000_000;
 const DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS = 4_096;
 const DEFAULT_OLLAMA_MODEL = "llama3";
 
 const LEGACY_GROK_MODEL_ALIASES: Record<string, string> = {
-  "grok-4": "grok-4-1-fast-reasoning",
-  "grok-4-fast-reasoning": "grok-4-1-fast-reasoning",
-  "grok-4-fast-non-reasoning": "grok-4-1-fast-non-reasoning",
+  "grok-4": "grok-4.3",
+  "grok-4-fast-reasoning": "grok-4.3",
+  "grok-4-fast-non-reasoning": "grok-4.3",
+  "grok-4-1-fast-reasoning": "grok-4.3",
+  "grok-4-1-fast-non-reasoning": "grok-4.3",
   "grok-4.20-beta-0309-reasoning": "grok-4.20-0309-reasoning",
   "grok-4.20-beta-0309-non-reasoning": "grok-4.20-0309-non-reasoning",
   "grok-4.20-multi-agent-beta-0309": "grok-4.20-multi-agent-0309",
@@ -50,6 +52,8 @@ const GROK_CONTEXT_WINDOW_BY_PREFIX: ReadonlyArray<{
   readonly prefix: string;
   readonly contextWindowTokens: number;
 }> = [
+  { prefix: "grok-4.3", contextWindowTokens: 1_000_000 },
+  { prefix: "grok-latest", contextWindowTokens: 1_000_000 },
   { prefix: "grok-4.20-multi-agent-0309", contextWindowTokens: 2_000_000 },
   { prefix: "grok-4.20-0309-reasoning", contextWindowTokens: 2_000_000 },
   { prefix: "grok-4.20-0309-non-reasoning", contextWindowTokens: 2_000_000 },

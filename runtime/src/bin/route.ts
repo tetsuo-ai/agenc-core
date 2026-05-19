@@ -79,6 +79,8 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "-c",
   "-p",
   "--print",
+  "--autonomous",
+  "--proactive",
   "--dangerously-bypass-approvals-and-sandbox",
   "--allow-dangerously-skip-permissions",
 ] as const);

@@ -77,13 +77,9 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
 > = Object.freeze({
   grok: Object.freeze([
     "grok-4.3",
-    "grok-4-fast",
-    "grok-4",
-    "grok-3",
-    "grok-2",
-    "grok-2-mini",
-    "grok-beta",
-    "grok-code-fast-1",
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
   ]),
   openai: Object.freeze([
     "gpt-5",

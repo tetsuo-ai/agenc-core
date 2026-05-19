@@ -379,6 +379,39 @@ function getCodexModelOptions(): ModelOption[] {
   ]
 }
 
+function getXaiModelOptions(): ModelOption[] {
+  return [
+    {
+      value: 'grok-4.3',
+      label: 'grok-4.3',
+      description: 'Grok 4.3 · Current xAI default · 1M context',
+      descriptionForModel:
+        'Grok 4.3 - current xAI default for coding, agentic tool use, and long-context work',
+    },
+    {
+      value: 'grok-4.20-0309-reasoning',
+      label: 'grok-4.20-0309-reasoning',
+      description: 'Grok 4.20 reasoning · 2M context',
+      descriptionForModel:
+        'Grok 4.20 reasoning - xAI reasoning model with 2M context',
+    },
+    {
+      value: 'grok-4.20-0309-non-reasoning',
+      label: 'grok-4.20-0309-non-reasoning',
+      description: 'Grok 4.20 non-reasoning · 2M context',
+      descriptionForModel:
+        'Grok 4.20 non-reasoning - xAI non-reasoning model with 2M context',
+    },
+    {
+      value: 'grok-4.20-multi-agent-0309',
+      label: 'grok-4.20-multi-agent-0309',
+      description: 'Grok 4.20 multi-agent · 2M context',
+      descriptionForModel:
+        'Grok 4.20 multi-agent - xAI multi-agent model with 2M context',
+    },
+  ]
+}
+
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 
@@ -515,6 +548,14 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       const models = getProfileModelOptions(activeProfile)
       profileModelOptions.push(...models)
     }
+  }
+
+  if (getAPIProvider() === 'xai') {
+    return [
+      getDefaultOptionForUser(fastMode),
+      ...getXaiModelOptions(),
+      ...profileModelOptions,
+    ]
   }
 
   // PAYG 1P API: Default (Sonnet) + Sonnet 1M + Opus 4.7 + Opus 4.6 + Opus 1M + Haiku

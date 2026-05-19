@@ -244,7 +244,10 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'GLM-4.5-Air':              128_000,
 
   // xAI Grok
-  'grok-4':                 2_000_000,
+  'grok-4.3':               1_000_000,
+  'grok-4.3-latest':        1_000_000,
+  'grok-latest':            1_000_000,
+  'grok-4':                 1_000_000,
   'grok-3':                   131_072,
 
   // Moonshot AI direct API (api.moonshot.ai/v1). Values from Moonshot's
@@ -449,6 +452,9 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'GLM-4.5-Air':                65_536,
 
   // xAI Grok
+  'grok-4.3':                  32_768,
+  'grok-4.3-latest':           32_768,
+  'grok-latest':               32_768,
   'grok-4':                    32_768,
   'grok-3':                    32_768,
 

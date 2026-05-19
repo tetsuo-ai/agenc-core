@@ -400,6 +400,8 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
         "fast",
         "--permission-mode",
         "bypassPermissions",
+        "--autonomous",
+        "--proactive",
         "--dangerously-bypass-approvals-and-sandbox",
         "--allow-dangerously-skip-permissions",
         "hello",

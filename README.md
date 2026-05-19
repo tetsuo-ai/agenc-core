@@ -62,12 +62,14 @@ Top-level runtime commands:
 
 ```text
 agenc [options] [PROMPT]
+agenc -p|--print [options] [PROMPT]
+agenc help [command]
 agenc init [--force]
-agenc login | logout | whoami
-agenc providers [--json]
-agenc config <get|set|unset|validate|show|edit|path>
-agenc plugin <list|install|uninstall|enable|disable|marketplace>
-agenc permissions <list|approve|revoke>
+agenc <login|logout|whoami>
+agenc providers [--json] [--no-local-check]
+agenc config <command> [args]
+agenc plugin <command> [options]
+agenc permissions <command>
 agenc state export <agent-id>
 agenc state import
 agenc daemon start [--foreground]
@@ -83,6 +85,7 @@ agenc mcp <serve|add|list|get|remove|add-json|add-from-agenc-desktop|reset-proje
 Common flags:
 
 ```text
+-p, --print
 --no-tui
 --continue
 --resume <session-id>
@@ -90,8 +93,10 @@ Common flags:
 --provider <name>
 --model <id|provider:id>
 --permission-mode <mode>
---autonomous
+--autonomous, --proactive
+--dangerously-bypass-approvals-and-sandbox
 --yolo
+--allow-dangerously-skip-permissions
 --image <file|url|data-url>
 ```
 
@@ -207,11 +212,3 @@ Each runs:
 ```bash
 agenc daemon start --foreground
 ```
-
-## Repository Policy
-
-- Source of truth is `main`; this checkout is maintained with local commits.
-- Do not vendor donor source or bring back deleted scaffold directories.
-- Keep public-facing surfaces branded as AgenC.
-- Generated/build output belongs outside source unless a package explicitly
-  requires it.
