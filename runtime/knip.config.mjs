@@ -9,6 +9,28 @@ const typecheckExcludedIssueTypes = [
   'types',
   'duplicates',
 ];
+const typecheckExcludedIssueIgnores = Object.fromEntries(
+  (tsconfig.exclude ?? []).map((pattern) => [
+    pattern,
+    typecheckExcludedIssueTypes,
+  ]),
+);
+const intentionalEntryPointIssueIgnores = {
+  // Public SDK bridge: these exports are consumed by packages outside this
+  // private runtime workspace, so production Knip cannot see the callers.
+  'src/entrypoints/agentSdkTypes.ts': ['exports', 'types'],
+  // Public SDK constant barrel; external SDK consumers use this runtime value.
+  'src/entrypoints/sdk/coreTypes.ts': ['exports'],
+  // Generated SDK schema roots kept for validation/generation consumers even
+  // when nested helper schemas have been made file-local.
+  'src/entrypoints/sdk/coreSchemas.ts': ['exports'],
+  // Generated public SDK type surface, re-exported for external consumers.
+  'src/entrypoints/sdk/coreTypes.generated.ts': ['types'],
+  // SDK control protocol and sandbox settings types are public declaration
+  // surfaces even when no production runtime file imports them directly.
+  'src/entrypoints/sdk/controlTypes.ts': ['types'],
+  'src/entrypoints/sandboxTypes.ts': ['types'],
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -61,12 +83,10 @@ export default {
     'src/test-parity/**',
     'tests/fixtures/**',
   ],
-  ignoreIssues: Object.fromEntries(
-    (tsconfig.exclude ?? []).map((pattern) => [
-      pattern,
-      typecheckExcludedIssueTypes,
-    ]),
-  ),
+  ignoreIssues: {
+    ...typecheckExcludedIssueIgnores,
+    ...intentionalEntryPointIssueIgnores,
+  },
   ignoreBinaries: [
     'findstr',
     'ip',

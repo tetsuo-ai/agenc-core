@@ -60,15 +60,6 @@ import type {
   SessionMutationOptions,
 } from './sdk/runtimeTypes.js'
 
-export type {
-  ListSessionsOptions,
-  GetSessionInfoOptions,
-  SessionMutationOptions,
-  ForkSessionOptions,
-  ForkSessionResult,
-  SDKSessionInfo,
-}
-
 export function tool<Schema extends AnyZodRawShape>(
   _name: string,
   _description: string,

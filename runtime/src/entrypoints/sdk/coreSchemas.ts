@@ -14,7 +14,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 // Usage & Model Types
 // ============================================================================
 
-export const ModelUsageSchema = lazySchema(() =>
+const ModelUsageSchema = lazySchema(() =>
   z.object({
     inputTokens: z.number(),
     outputTokens: z.number(),
@@ -31,7 +31,7 @@ export const ModelUsageSchema = lazySchema(() =>
 // Output Format Types
 // ============================================================================
 
-export const OutputFormatTypeSchema = lazySchema(() => z.literal('json_schema'))
+const OutputFormatTypeSchema = lazySchema(() => z.literal('json_schema'))
 
 export const BaseOutputFormatSchema = lazySchema(() =>
   z.object({
@@ -39,7 +39,7 @@ export const BaseOutputFormatSchema = lazySchema(() =>
   }),
 )
 
-export const JsonSchemaOutputFormatSchema = lazySchema(() =>
+const JsonSchemaOutputFormatSchema = lazySchema(() =>
   z.object({
     type: z.literal('json_schema'),
     schema: z.record(z.string(), z.unknown()),
@@ -54,7 +54,7 @@ export const OutputFormatSchema = lazySchema(() =>
 // Config Types
 // ============================================================================
 
-export const ApiKeySourceSchema = lazySchema(() =>
+const ApiKeySourceSchema = lazySchema(() =>
   z.enum(['user', 'project', 'org', 'temporary', 'oauth', 'none']),
 )
 
@@ -66,7 +66,7 @@ export const SdkBetaSchema = lazySchema(() =>
   z.literal('context-1m-2025-08-07'),
 )
 
-export const ThinkingAdaptiveSchema = lazySchema(() =>
+const ThinkingAdaptiveSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('adaptive'),
@@ -74,7 +74,7 @@ export const ThinkingAdaptiveSchema = lazySchema(() =>
     .describe('AgenC decides when and how much to think (Opus 4.6+).'),
 )
 
-export const ThinkingEnabledSchema = lazySchema(() =>
+const ThinkingEnabledSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('enabled'),
@@ -83,7 +83,7 @@ export const ThinkingEnabledSchema = lazySchema(() =>
     .describe('Fixed thinking token budget (older models)'),
 )
 
-export const ThinkingDisabledSchema = lazySchema(() =>
+const ThinkingDisabledSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('disabled'),
@@ -107,7 +107,7 @@ export const ThinkingConfigSchema = lazySchema(() =>
 // MCP Server Config Types (serializable only)
 // ============================================================================
 
-export const McpStdioServerConfigSchema = lazySchema(() =>
+const McpStdioServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('stdio').optional(), // Optional for backwards compatibility
     command: z.string(),
@@ -116,7 +116,7 @@ export const McpStdioServerConfigSchema = lazySchema(() =>
   }),
 )
 
-export const McpSSEServerConfigSchema = lazySchema(() =>
+const McpSSEServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('sse'),
     url: z.string(),
@@ -124,7 +124,7 @@ export const McpSSEServerConfigSchema = lazySchema(() =>
   }),
 )
 
-export const McpHttpServerConfigSchema = lazySchema(() =>
+const McpHttpServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('http'),
     url: z.string(),
@@ -132,14 +132,14 @@ export const McpHttpServerConfigSchema = lazySchema(() =>
   }),
 )
 
-export const McpSdkServerConfigSchema = lazySchema(() =>
+const McpSdkServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('sdk'),
     name: z.string(),
   }),
 )
 
-export const McpServerConfigForProcessTransportSchema = lazySchema(() =>
+const McpServerConfigForProcessTransportSchema = lazySchema(() =>
   z.union([
     McpStdioServerConfigSchema(),
     McpSSEServerConfigSchema(),
@@ -148,7 +148,7 @@ export const McpServerConfigForProcessTransportSchema = lazySchema(() =>
   ]),
 )
 
-export const McpAgenCAIProxyServerConfigSchema = lazySchema(() =>
+const McpAgenCAIProxyServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('agencai-proxy'),
     url: z.string(),
@@ -157,7 +157,7 @@ export const McpAgenCAIProxyServerConfigSchema = lazySchema(() =>
 )
 
 // Broader config type for status responses (includes agencai-proxy which is output-only)
-export const McpServerStatusConfigSchema = lazySchema(() =>
+const McpServerStatusConfigSchema = lazySchema(() =>
   z.union([
     McpServerConfigForProcessTransportSchema(),
     McpAgenCAIProxyServerConfigSchema(),
@@ -239,7 +239,7 @@ export const McpSetServersResultSchema = lazySchema(() =>
 // Permission Types
 // ============================================================================
 
-export const PermissionUpdateDestinationSchema = lazySchema(() =>
+const PermissionUpdateDestinationSchema = lazySchema(() =>
   z.enum([
     'userSettings',
     'projectSettings',
@@ -249,18 +249,18 @@ export const PermissionUpdateDestinationSchema = lazySchema(() =>
   ]),
 )
 
-export const PermissionBehaviorSchema = lazySchema(() =>
+const PermissionBehaviorSchema = lazySchema(() =>
   z.enum(['allow', 'deny', 'ask']),
 )
 
-export const PermissionRuleValueSchema = lazySchema(() =>
+const PermissionRuleValueSchema = lazySchema(() =>
   z.object({
     toolName: z.string(),
     ruleContent: z.string().optional(),
   }),
 )
 
-export const PermissionUpdateSchema = lazySchema(() =>
+const PermissionUpdateSchema = lazySchema(() =>
   z.discriminatedUnion('type', [
     z.object({
       type: z.literal('addRules'),
@@ -298,7 +298,7 @@ export const PermissionUpdateSchema = lazySchema(() =>
   ]),
 )
 
-export const PermissionDecisionClassificationSchema = lazySchema(() =>
+const PermissionDecisionClassificationSchema = lazySchema(() =>
   z
     .enum(['user_temporary', 'user_permanent', 'user_reject'])
     .describe(
@@ -352,7 +352,7 @@ export const PermissionModeSchema = lazySchema(() =>
 // Hook Types
 // ============================================================================
 
-export const HOOK_EVENTS = [
+const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'PostToolUseFailure',
@@ -384,7 +384,7 @@ export const HOOK_EVENTS = [
 
 export const HookEventSchema = lazySchema(() => z.enum(HOOK_EVENTS))
 
-export const BaseHookInputSchema = lazySchema(() =>
+const BaseHookInputSchema = lazySchema(() =>
   z.object({
     session_id: z.string(),
     transcript_path: z.string(),
@@ -411,7 +411,7 @@ export const BaseHookInputSchema = lazySchema(() =>
 )
 
 // Use .and() instead of .extend() to preserve BaseHookInput & {...} in generated types
-export const PreToolUseHookInputSchema = lazySchema(() =>
+const PreToolUseHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PreToolUse'),
@@ -422,7 +422,7 @@ export const PreToolUseHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const PermissionRequestHookInputSchema = lazySchema(() =>
+const PermissionRequestHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PermissionRequest'),
@@ -433,7 +433,7 @@ export const PermissionRequestHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const PostToolUseHookInputSchema = lazySchema(() =>
+const PostToolUseHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PostToolUse'),
@@ -445,7 +445,7 @@ export const PostToolUseHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const PostToolUseFailureHookInputSchema = lazySchema(() =>
+const PostToolUseFailureHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PostToolUseFailure'),
@@ -458,7 +458,7 @@ export const PostToolUseFailureHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const PermissionDeniedHookInputSchema = lazySchema(() =>
+const PermissionDeniedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PermissionDenied'),
@@ -470,7 +470,7 @@ export const PermissionDeniedHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const NotificationHookInputSchema = lazySchema(() =>
+const NotificationHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('Notification'),
@@ -481,7 +481,7 @@ export const NotificationHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const UserPromptSubmitHookInputSchema = lazySchema(() =>
+const UserPromptSubmitHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('UserPromptSubmit'),
@@ -490,7 +490,7 @@ export const UserPromptSubmitHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const SessionStartHookInputSchema = lazySchema(() =>
+const SessionStartHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SessionStart'),
@@ -501,7 +501,7 @@ export const SessionStartHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const SetupHookInputSchema = lazySchema(() =>
+const SetupHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('Setup'),
@@ -510,7 +510,7 @@ export const SetupHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const StopHookInputSchema = lazySchema(() =>
+const StopHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('Stop'),
@@ -526,7 +526,7 @@ export const StopHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const StopFailureHookInputSchema = lazySchema(() =>
+const StopFailureHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('StopFailure'),
@@ -537,7 +537,7 @@ export const StopFailureHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const SubagentStartHookInputSchema = lazySchema(() =>
+const SubagentStartHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SubagentStart'),
@@ -547,7 +547,7 @@ export const SubagentStartHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const SubagentStopHookInputSchema = lazySchema(() =>
+const SubagentStopHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SubagentStop'),
@@ -566,7 +566,7 @@ export const SubagentStopHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const PreCompactHookInputSchema = lazySchema(() =>
+const PreCompactHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PreCompact'),
@@ -576,7 +576,7 @@ export const PreCompactHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const PostCompactHookInputSchema = lazySchema(() =>
+const PostCompactHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('PostCompact'),
@@ -588,7 +588,7 @@ export const PostCompactHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const TeammateIdleHookInputSchema = lazySchema(() =>
+const TeammateIdleHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('TeammateIdle'),
@@ -598,7 +598,7 @@ export const TeammateIdleHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const TaskCreatedHookInputSchema = lazySchema(() =>
+const TaskCreatedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('TaskCreated'),
@@ -611,7 +611,7 @@ export const TaskCreatedHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const TaskCompletedHookInputSchema = lazySchema(() =>
+const TaskCompletedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('TaskCompleted'),
@@ -624,7 +624,7 @@ export const TaskCompletedHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const ElicitationHookInputSchema = lazySchema(() =>
+const ElicitationHookInputSchema = lazySchema(() =>
   BaseHookInputSchema()
     .and(
       z.object({
@@ -642,7 +642,7 @@ export const ElicitationHookInputSchema = lazySchema(() =>
     ),
 )
 
-export const ElicitationResultHookInputSchema = lazySchema(() =>
+const ElicitationResultHookInputSchema = lazySchema(() =>
   BaseHookInputSchema()
     .and(
       z.object({
@@ -659,7 +659,7 @@ export const ElicitationResultHookInputSchema = lazySchema(() =>
     ),
 )
 
-export const CONFIG_CHANGE_SOURCES = [
+const CONFIG_CHANGE_SOURCES = [
   'user_settings',
   'project_settings',
   'local_settings',
@@ -667,7 +667,7 @@ export const CONFIG_CHANGE_SOURCES = [
   'skills',
 ] as const
 
-export const ConfigChangeHookInputSchema = lazySchema(() =>
+const ConfigChangeHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('ConfigChange'),
@@ -677,7 +677,7 @@ export const ConfigChangeHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const INSTRUCTIONS_LOAD_REASONS = [
+const INSTRUCTIONS_LOAD_REASONS = [
   'session_start',
   'nested_traversal',
   'path_glob_match',
@@ -685,14 +685,14 @@ export const INSTRUCTIONS_LOAD_REASONS = [
   'compact',
 ] as const
 
-export const INSTRUCTIONS_MEMORY_TYPES = [
+const INSTRUCTIONS_MEMORY_TYPES = [
   'User',
   'Project',
   'Local',
   'Managed',
 ] as const
 
-export const InstructionsLoadedHookInputSchema = lazySchema(() =>
+const InstructionsLoadedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('InstructionsLoaded'),
@@ -706,7 +706,7 @@ export const InstructionsLoadedHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const WorktreeCreateHookInputSchema = lazySchema(() =>
+const WorktreeCreateHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('WorktreeCreate'),
@@ -715,7 +715,7 @@ export const WorktreeCreateHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const WorktreeRemoveHookInputSchema = lazySchema(() =>
+const WorktreeRemoveHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('WorktreeRemove'),
@@ -724,7 +724,7 @@ export const WorktreeRemoveHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const CwdChangedHookInputSchema = lazySchema(() =>
+const CwdChangedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('CwdChanged'),
@@ -734,7 +734,7 @@ export const CwdChangedHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const FileChangedHookInputSchema = lazySchema(() =>
+const FileChangedHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('FileChanged'),
@@ -744,7 +744,7 @@ export const FileChangedHookInputSchema = lazySchema(() =>
   ),
 )
 
-export const EXIT_REASONS = [
+const EXIT_REASONS = [
   'clear',
   'resume',
   'logout',
@@ -753,9 +753,9 @@ export const EXIT_REASONS = [
   'bypass_permissions_disabled',
 ] as const
 
-export const ExitReasonSchema = lazySchema(() => z.enum(EXIT_REASONS))
+const ExitReasonSchema = lazySchema(() => z.enum(EXIT_REASONS))
 
-export const SessionEndHookInputSchema = lazySchema(() =>
+const SessionEndHookInputSchema = lazySchema(() =>
   BaseHookInputSchema().and(
     z.object({
       hook_event_name: z.literal('SessionEnd'),
@@ -796,14 +796,14 @@ export const HookInputSchema = lazySchema(() =>
   ]),
 )
 
-export const AsyncHookJSONOutputSchema = lazySchema(() =>
+const AsyncHookJSONOutputSchema = lazySchema(() =>
   z.object({
     async: z.literal(true),
     asyncTimeout: z.number().optional(),
   }),
 )
 
-export const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
+const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PreToolUse'),
     permissionDecision: PermissionBehaviorSchema().optional(),
@@ -813,14 +813,14 @@ export const PreToolUseHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
-export const UserPromptSubmitHookSpecificOutputSchema = lazySchema(() =>
+const UserPromptSubmitHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('UserPromptSubmit'),
     additionalContext: z.string().optional(),
   }),
 )
 
-export const SessionStartHookSpecificOutputSchema = lazySchema(() =>
+const SessionStartHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('SessionStart'),
     additionalContext: z.string().optional(),
@@ -829,21 +829,21 @@ export const SessionStartHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
-export const SetupHookSpecificOutputSchema = lazySchema(() =>
+const SetupHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('Setup'),
     additionalContext: z.string().optional(),
   }),
 )
 
-export const SubagentStartHookSpecificOutputSchema = lazySchema(() =>
+const SubagentStartHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('SubagentStart'),
     additionalContext: z.string().optional(),
   }),
 )
 
-export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
+const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUse'),
     additionalContext: z.string().optional(),
@@ -851,28 +851,28 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
-export const PostToolUseFailureHookSpecificOutputSchema = lazySchema(() =>
+const PostToolUseFailureHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUseFailure'),
     additionalContext: z.string().optional(),
   }),
 )
 
-export const PermissionDeniedHookSpecificOutputSchema = lazySchema(() =>
+const PermissionDeniedHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PermissionDenied'),
     retry: z.boolean().optional(),
   }),
 )
 
-export const NotificationHookSpecificOutputSchema = lazySchema(() =>
+const NotificationHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('Notification'),
     additionalContext: z.string().optional(),
   }),
 )
 
-export const PermissionRequestHookSpecificOutputSchema = lazySchema(() =>
+const PermissionRequestHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PermissionRequest'),
     decision: z.union([
@@ -890,21 +890,21 @@ export const PermissionRequestHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
-export const CwdChangedHookSpecificOutputSchema = lazySchema(() =>
+const CwdChangedHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('CwdChanged'),
     watchPaths: z.array(z.string()).optional(),
   }),
 )
 
-export const FileChangedHookSpecificOutputSchema = lazySchema(() =>
+const FileChangedHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('FileChanged'),
     watchPaths: z.array(z.string()).optional(),
   }),
 )
 
-export const SyncHookJSONOutputSchema = lazySchema(() =>
+const SyncHookJSONOutputSchema = lazySchema(() =>
   z.object({
     continue: z.boolean().optional(),
     suppressOutput: z.boolean().optional(),
@@ -934,7 +934,7 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
   }),
 )
 
-export const ElicitationHookSpecificOutputSchema = lazySchema(() =>
+const ElicitationHookSpecificOutputSchema = lazySchema(() =>
   z
     .object({
       hookEventName: z.literal('Elicitation'),
@@ -946,7 +946,7 @@ export const ElicitationHookSpecificOutputSchema = lazySchema(() =>
     ),
 )
 
-export const ElicitationResultHookSpecificOutputSchema = lazySchema(() =>
+const ElicitationResultHookSpecificOutputSchema = lazySchema(() =>
   z
     .object({
       hookEventName: z.literal('ElicitationResult'),
@@ -958,7 +958,7 @@ export const ElicitationResultHookSpecificOutputSchema = lazySchema(() =>
     ),
 )
 
-export const WorktreeCreateHookSpecificOutputSchema = lazySchema(() =>
+const WorktreeCreateHookSpecificOutputSchema = lazySchema(() =>
   z
     .object({
       hookEventName: z.literal('WorktreeCreate'),
@@ -973,7 +973,7 @@ export const HookJSONOutputSchema = lazySchema(() =>
   z.union([AsyncHookJSONOutputSchema(), SyncHookJSONOutputSchema()]),
 )
 
-export const PromptRequestOptionSchema = lazySchema(() =>
+const PromptRequestOptionSchema = lazySchema(() =>
   z.object({
     key: z
       .string()
@@ -1110,7 +1110,7 @@ export const AccountInfoSchema = lazySchema(() =>
 // Agent Definition Types
 // ============================================================================
 
-export const AgentMcpServerSpecSchema = lazySchema(() =>
+const AgentMcpServerSpecSchema = lazySchema(() =>
   z.union([
     z.string(),
     z.record(z.string(), McpServerConfigForProcessTransportSchema()),
@@ -1245,25 +1245,25 @@ export const RewindFilesResultSchema = lazySchema(() =>
 // This allows us to define SDK message types in Zod while maintaining proper typing.
 
 /** Placeholder for APIUserMessage from @anthropic-ai/sdk */
-export const APIUserMessagePlaceholder = lazySchema(() => z.unknown())
+const APIUserMessagePlaceholder = lazySchema(() => z.unknown())
 
 /** Placeholder for APIAssistantMessage from @anthropic-ai/sdk */
-export const APIAssistantMessagePlaceholder = lazySchema(() => z.unknown())
+const APIAssistantMessagePlaceholder = lazySchema(() => z.unknown())
 
 /** Placeholder for RawMessageStreamEvent from @anthropic-ai/sdk */
-export const RawMessageStreamEventPlaceholder = lazySchema(() => z.unknown())
+const RawMessageStreamEventPlaceholder = lazySchema(() => z.unknown())
 
 /** Placeholder for UUID from crypto */
-export const UUIDPlaceholder = lazySchema(() => z.string())
+const UUIDPlaceholder = lazySchema(() => z.string())
 
 /** Placeholder for NonNullableUsage (mapped type over Usage) */
-export const NonNullableUsagePlaceholder = lazySchema(() => z.unknown())
+const NonNullableUsagePlaceholder = lazySchema(() => z.unknown())
 
 // ============================================================================
 // SDK Message Types
 // ============================================================================
 
-export const SDKAssistantMessageErrorSchema = lazySchema(() =>
+const SDKAssistantMessageErrorSchema = lazySchema(() =>
   z.enum([
     'authentication_failed',
     'billing_error',
@@ -1275,7 +1275,7 @@ export const SDKAssistantMessageErrorSchema = lazySchema(() =>
   ]),
 )
 
-export const SDKStatusSchema = lazySchema(() =>
+const SDKStatusSchema = lazySchema(() =>
   z.union([z.literal('compacting'), z.null()]),
 )
 
@@ -1297,14 +1297,14 @@ const SDKUserMessageContentSchema = lazySchema(() =>
   }),
 )
 
-export const SDKUserMessageSchema = lazySchema(() =>
+const SDKUserMessageSchema = lazySchema(() =>
   SDKUserMessageContentSchema().extend({
     uuid: UUIDPlaceholder().optional(),
     session_id: z.string().optional(),
   }),
 )
 
-export const SDKUserMessageReplaySchema = lazySchema(() =>
+const SDKUserMessageReplaySchema = lazySchema(() =>
   SDKUserMessageContentSchema().extend({
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
@@ -1312,7 +1312,7 @@ export const SDKUserMessageReplaySchema = lazySchema(() =>
   }),
 )
 
-export const SDKRateLimitInfoSchema = lazySchema(() =>
+const SDKRateLimitInfoSchema = lazySchema(() =>
   z
     .object({
       status: z.enum(['allowed', 'allowed_warning', 'rejected']),
@@ -1354,7 +1354,7 @@ export const SDKRateLimitInfoSchema = lazySchema(() =>
     .describe('Rate limit information for agenc.tech subscription users.'),
 )
 
-export const SDKAssistantMessageSchema = lazySchema(() =>
+const SDKAssistantMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('assistant'),
     message: APIAssistantMessagePlaceholder(),
@@ -1365,7 +1365,7 @@ export const SDKAssistantMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKRateLimitEventSchema = lazySchema(() =>
+const SDKRateLimitEventSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('rate_limit_event'),
@@ -1406,7 +1406,7 @@ export const SDKStreamlinedToolUseSummaryMessageSchema = lazySchema(() =>
     ),
 )
 
-export const SDKPermissionDenialSchema = lazySchema(() =>
+const SDKPermissionDenialSchema = lazySchema(() =>
   z.object({
     tool_name: z.string(),
     tool_use_id: z.string(),
@@ -1414,7 +1414,7 @@ export const SDKPermissionDenialSchema = lazySchema(() =>
   }),
 )
 
-export const SDKResultSuccessSchema = lazySchema(() =>
+const SDKResultSuccessSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
     subtype: z.literal('success'),
@@ -1435,7 +1435,7 @@ export const SDKResultSuccessSchema = lazySchema(() =>
   }),
 )
 
-export const SDKResultErrorSchema = lazySchema(() =>
+const SDKResultErrorSchema = lazySchema(() =>
   z.object({
     type: z.literal('result'),
     subtype: z.enum([
@@ -1460,11 +1460,11 @@ export const SDKResultErrorSchema = lazySchema(() =>
   }),
 )
 
-export const SDKResultMessageSchema = lazySchema(() =>
+const SDKResultMessageSchema = lazySchema(() =>
   z.union([SDKResultSuccessSchema(), SDKResultErrorSchema()]),
 )
 
-export const SDKSystemMessageSchema = lazySchema(() =>
+const SDKSystemMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('init'),
@@ -1503,7 +1503,7 @@ export const SDKSystemMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKPartialAssistantMessageSchema = lazySchema(() =>
+const SDKPartialAssistantMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('stream_event'),
     event: RawMessageStreamEventPlaceholder(),
@@ -1513,7 +1513,7 @@ export const SDKPartialAssistantMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
+const SDKCompactBoundaryMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('compact_boundary'),
@@ -1540,7 +1540,7 @@ export const SDKCompactBoundaryMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKStatusMessageSchema = lazySchema(() =>
+const SDKStatusMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('status'),
@@ -1579,7 +1579,7 @@ export const SDKPostTurnSummaryMessageSchema = lazySchema(() =>
     ),
 )
 
-export const SDKAPIRetryMessageSchema = lazySchema(() =>
+const SDKAPIRetryMessageSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('system'),
@@ -1597,7 +1597,7 @@ export const SDKAPIRetryMessageSchema = lazySchema(() =>
     ),
 )
 
-export const SDKLocalCommandOutputMessageSchema = lazySchema(() =>
+const SDKLocalCommandOutputMessageSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('system'),
@@ -1611,7 +1611,7 @@ export const SDKLocalCommandOutputMessageSchema = lazySchema(() =>
     ),
 )
 
-export const SDKHookStartedMessageSchema = lazySchema(() =>
+const SDKHookStartedMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('hook_started'),
@@ -1623,7 +1623,7 @@ export const SDKHookStartedMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKHookProgressMessageSchema = lazySchema(() =>
+const SDKHookProgressMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('hook_progress'),
@@ -1638,7 +1638,7 @@ export const SDKHookProgressMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKHookResponseMessageSchema = lazySchema(() =>
+const SDKHookResponseMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('hook_response'),
@@ -1655,7 +1655,7 @@ export const SDKHookResponseMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKToolProgressMessageSchema = lazySchema(() =>
+const SDKToolProgressMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('tool_progress'),
     tool_use_id: z.string(),
@@ -1668,7 +1668,7 @@ export const SDKToolProgressMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKAuthStatusMessageSchema = lazySchema(() =>
+const SDKAuthStatusMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('auth_status'),
     isAuthenticating: z.boolean(),
@@ -1679,7 +1679,7 @@ export const SDKAuthStatusMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKFilesPersistedEventSchema = lazySchema(() =>
+const SDKFilesPersistedEventSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('files_persisted'),
@@ -1701,7 +1701,7 @@ export const SDKFilesPersistedEventSchema = lazySchema(() =>
   }),
 )
 
-export const SDKTaskNotificationMessageSchema = lazySchema(() =>
+const SDKTaskNotificationMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('task_notification'),
@@ -1722,7 +1722,7 @@ export const SDKTaskNotificationMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKTaskStartedMessageSchema = lazySchema(() =>
+const SDKTaskStartedMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('task_started'),
@@ -1742,7 +1742,7 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKSessionStateChangedMessageSchema = lazySchema(() =>
+const SDKSessionStateChangedMessageSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('system'),
@@ -1757,7 +1757,7 @@ export const SDKSessionStateChangedMessageSchema = lazySchema(() =>
 )
 
 
-export const SDKTaskProgressMessageSchema = lazySchema(() =>
+const SDKTaskProgressMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
     subtype: z.literal('task_progress'),
@@ -1776,7 +1776,7 @@ export const SDKTaskProgressMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKToolUseSummaryMessageSchema = lazySchema(() =>
+const SDKToolUseSummaryMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('tool_use_summary'),
     summary: z.string(),
@@ -1786,7 +1786,7 @@ export const SDKToolUseSummaryMessageSchema = lazySchema(() =>
   }),
 )
 
-export const SDKElicitationCompleteMessageSchema = lazySchema(() =>
+const SDKElicitationCompleteMessageSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('system'),
@@ -1802,7 +1802,7 @@ export const SDKElicitationCompleteMessageSchema = lazySchema(() =>
 )
 
 /** @internal */
-export const SDKPromptSuggestionMessageSchema = lazySchema(() =>
+const SDKPromptSuggestionMessageSchema = lazySchema(() =>
   z
     .object({
       type: z.literal('prompt_suggestion'),
@@ -1861,7 +1861,7 @@ export const SDKSessionInfoSchema = lazySchema(() =>
     .describe('Session metadata returned by listSessions and getSessionInfo.'),
 )
 
-export const SDKPermissionRequestMessageSchema = lazySchema(() =>
+const SDKPermissionRequestMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('permission_request'),
     request_id: z.string().describe('Unique request ID for this permission prompt'),
@@ -1903,7 +1903,7 @@ export const SDKMessageSchema = lazySchema(() =>
   ]),
 )
 
-export const FastModeStateSchema = lazySchema(() =>
+const FastModeStateSchema = lazySchema(() =>
   z
     .enum(['off', 'cooldown', 'on'])
     .describe(

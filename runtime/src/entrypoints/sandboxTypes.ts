@@ -11,7 +11,7 @@ import { lazySchema } from '../utils/lazySchema.js'
 /**
  * Network configuration schema for sandbox.
  */
-export const SandboxNetworkConfigSchema = lazySchema(() =>
+const SandboxNetworkConfigSchema = lazySchema(() =>
   z
     .object({
       allowedDomains: z.array(z.string()).optional(),
@@ -44,7 +44,7 @@ export const SandboxNetworkConfigSchema = lazySchema(() =>
 /**
  * Filesystem configuration schema for sandbox.
  */
-export const SandboxFilesystemConfigSchema = lazySchema(() =>
+const SandboxFilesystemConfigSchema = lazySchema(() =>
   z
     .object({
       allowWrite: z

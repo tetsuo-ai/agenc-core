@@ -6,5 +6,3 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type SDKControlRequest = any
 export type SDKControlResponse = any
-export type SDKControlPermissionRequest = any
-export type StdoutMessage = any
