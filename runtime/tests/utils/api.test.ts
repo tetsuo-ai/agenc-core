@@ -1,8 +1,15 @@
 import { expect, test } from 'bun:test'
 import { z } from 'zod/v4'
 import { getEmptyToolPermissionContext, type Tool, type Tools } from '../tools/Tool.js'
-import { SkillTool } from '../tools/SkillTool/SkillTool.js'
 import { toolToAPISchema } from './api.js'
+
+const SkillTool = {
+  name: 'Skill',
+  inputSchema: z.strictObject({
+    skill: z.string(),
+  }),
+  prompt: async () => 'Run a skill',
+} as unknown as Tool
 
 test('toolToAPISchema preserves provider-specific schema keywords in input_schema', async () => {
   const schema = await toolToAPISchema(

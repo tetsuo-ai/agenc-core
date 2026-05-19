@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'vitest'
 
-import { SkillTool } from '../../tools/SkillTool/SkillTool.js'
+import type { Tool } from '../../tools/Tool.js'
 import {
   getSchemaValidationErrorOverride,
   getSchemaValidationToolUseResult,
 } from './toolExecution.js'
+
+const SkillTool = { name: 'Skill' } as Tool
 
 describe('getSchemaValidationErrorOverride', () => {
   test('returns actionable missing-skill error for SkillTool', () => {
