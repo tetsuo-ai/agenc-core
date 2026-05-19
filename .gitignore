@@ -37,12 +37,12 @@ obj/
 !Anchor.toml
 !package.json
 !tsconfig.json
+!runtime/tsconfig.tui.json
 !runtime/idl/*.json
 !runtime/src/replay/alert-schema-lockfile.json
-!runtime/benchmarks/v1/delegation-manifest.json
-!runtime/benchmarks/v1/*.json
-!runtime/benchmarks/v1/incidents/*.json
-!runtime/benchmarks/mutation-gating-policy.ci.json
+!parity/*.json
+!parity/*.reviews/*.json
+!runtime/parity/*.json
 !runtime/tests/fixtures/*.json
 !runtime/tests/fixtures/replay-cli/*.json
 !runtime/tests/fixtures/golden/*.json
@@ -73,7 +73,12 @@ Thumbs.db
 node_modules/
 
 # Build artifacts (all packages)
+dist/
 **/dist/
+# ZC-38: keep package build outputs grep-discoverable and ignored.
+runtime/dist/
+web/dist/
+mcp/dist/
 !patches/**/dist/
 
 # Logs
@@ -83,6 +88,10 @@ logs/
 .codebase-index-cache.pkl
 *.pkl
 /ansi_girl.png
+
+# Stray "undefined/" dirs from misconfigured AGENC_FILESYSTEM_HISTORY_ROOT
+undefined/
+**/undefined/
 
 # Stray root media (never commit at root)
 /image
@@ -119,6 +128,7 @@ CURSOR.md
 
 # Claude Code (local AI assistant config)
 .claude/
+.codex/
 CLAUDE.md
 claude.md
 AGENTS.md
@@ -126,6 +136,7 @@ agents.md
 CONCORDIA_TODO.MD
 TODO.MD
 TODO.md
+TASK-SYSTEM-PLAN.md
 
 # Playwright outputs
 **/test-results/

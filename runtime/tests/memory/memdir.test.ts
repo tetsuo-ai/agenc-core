@@ -1,0 +1,167 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getOriginalCwd,
+  getProjectRoot,
+  setOriginalCwd,
+  setProjectRoot,
+} from "../bootstrap/state.js";
+import {
+  getGlobalMemoryEntrypoint,
+  getGlobalMemoryPath,
+  getProjectMemoryEntrypoint,
+  getProjectMemoryPath,
+} from "./paths.js";
+
+vi.mock("bun:bundle", () => ({ feature: () => false }));
+vi.mock("../tools/GrepTool/prompt.js", () => ({ GREP_TOOL_NAME: "Grep" }));
+vi.mock("../tools/REPLTool/constants.js", () => ({ isReplModeEnabled: () => false }));
+vi.mock("../utils/embeddedTools.js", () => ({ hasEmbeddedSearchTools: () => false }));
+vi.mock("../utils/sessionStorage.js", () => ({ getProjectDir: (cwd: string) => cwd }));
+vi.mock("../utils/hooks.js", () => ({
+  executeInstructionsLoadedHooks: async () => undefined,
+  hasInstructionsLoadedHook: () => false,
+}));
+vi.mock("../tools.js", () => ({}));
+vi.mock("src/tools.js", () => ({}));
+vi.mock("../utils/settings/settings.js", () => ({
+  getInitialSettings: () => ({ autoMemoryEnabled: true }),
+  getSettingsForSource: () => undefined,
+}));
+vi.mock("../services/analytics/index.js", () => ({ logEvent: () => undefined }));
+vi.mock("../services/analytics/growthbook.js", () => ({
+  getFeatureValue_CACHED_MAY_BE_STALE: <T>(_key: string, fallback: T) => fallback,
+}));
+
+let memory: typeof import("./memdir.js");
+let agencmd: typeof import("./agencmd.js");
+
+let tempRoot = "";
+let oldProjectRoot = "";
+let oldOriginalCwd = "";
+let oldConfigDir: string | undefined;
+let oldDisableAutoMemory: string | undefined;
+
+beforeAll(async () => {
+  memory = await import("./memdir.js");
+  agencmd = await import("./agencmd.js");
+});
+
+beforeEach(() => {
+  tempRoot = mkdtempSync(join(tmpdir(), "agenc-memory-prompt-"));
+  oldProjectRoot = getProjectRoot();
+  oldOriginalCwd = getOriginalCwd();
+  oldConfigDir = process.env.AGENC_CONFIG_DIR;
+  oldDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
+  process.env.AGENC_CONFIG_DIR = join(tempRoot, "home");
+  process.env.AGENC_DISABLE_AUTO_MEMORY = "0";
+  const repo = join(tempRoot, "repo");
+  mkdirSync(repo, { recursive: true });
+  setProjectRoot(repo);
+  setOriginalCwd(repo);
+  getProjectMemoryPath.cache?.clear?.();
+  agencmd.clearMemoryFileCaches();
+});
+
+afterEach(() => {
+  setProjectRoot(oldProjectRoot);
+  setOriginalCwd(oldOriginalCwd);
+  if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
+  else process.env.AGENC_CONFIG_DIR = oldConfigDir;
+  if (oldDisableAutoMemory === undefined) delete process.env.AGENC_DISABLE_AUTO_MEMORY;
+  else process.env.AGENC_DISABLE_AUTO_MEMORY = oldDisableAutoMemory;
+  getProjectMemoryPath.cache?.clear?.();
+  agencmd.clearMemoryFileCaches();
+  rmSync(tempRoot, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  vi.resetModules();
+});
+
+describe("memory prompt", () => {
+  it("renders all three D-13 memory layers without a session filesystem path", () => {
+    const prompt = memory.buildMemoryLines("auto memory", getProjectMemoryPath()).join("\n");
+    expect(prompt).toContain("Global memory");
+    expect(prompt).toContain("Project memory");
+    expect(prompt).toContain("Session memory");
+    expect(prompt).toContain("Save user-level memories");
+    expect(prompt).toContain("Save project-level memories");
+    expect(prompt).toContain(join(tempRoot, "home", "memory"));
+    expect(prompt).toContain(join(tempRoot, "repo", "AGENC.md"));
+    expect(memory.buildSessionMemoryLayerLines().join("\n")).toContain(
+      "in-conversation state",
+    );
+    expect(prompt).not.toContain("session-memory/");
+  });
+
+  it("loadMemoryPrompt keeps compatibility while adding D-13 layers", async () => {
+    const prompt = await memory.loadMemoryPrompt();
+    expect(prompt).toContain("Global memory");
+    expect(prompt).toContain("Project memory");
+    expect(prompt).toContain("Session memory");
+    expect(prompt).toContain(getProjectMemoryPath());
+    expect(prompt).toContain(getGlobalMemoryPath());
+  });
+
+  it("directs durable saves to global or project memory by scope", () => {
+    const prompt = memory.buildMemoryLines("auto memory", getProjectMemoryPath()).join("\n");
+
+    expect(prompt).toContain(
+      `Save user-level memories (preferences, corrections, cross-project facts) in global memory at \`${getGlobalMemoryPath()}\``,
+    );
+    expect(prompt).toContain(
+      `Save project-level memories (repo-specific decisions, workflow context, project references not derivable from code) in project memory at \`${getProjectMemoryPath()}\``,
+    );
+    expect(prompt).toContain("that same directory's `MEMORY.md` index");
+    expect(prompt).toContain("appropriate global or project memory directory");
+  });
+
+  it("loads both global and project durable memory entrypoints", async () => {
+    mkdirSync(getGlobalMemoryPath(), { recursive: true });
+    mkdirSync(getProjectMemoryPath(), { recursive: true });
+    writeFileSync(
+      getGlobalMemoryEntrypoint(),
+      "---\nname: global\ntype: user\n---\nGlobal durable memory",
+    );
+    writeFileSync(
+      getProjectMemoryEntrypoint(),
+      "---\nname: project\ntype: project\n---\nProject durable memory",
+    );
+
+    const files = await agencmd.getMemoryFiles();
+
+    expect(files.map((file) => file.path)).toContain(getGlobalMemoryEntrypoint());
+    expect(files.map((file) => file.path)).toContain(getProjectMemoryEntrypoint());
+    expect(files.map((file) => file.content)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Global durable memory"),
+        expect.stringContaining("Project durable memory"),
+      ]),
+    );
+  });
+
+  it("falls back to a usable project instruction file when AGENC.md is not regular", async () => {
+    const repo = getProjectRoot();
+    mkdirSync(join(repo, "AGENC.md"));
+    writeFileSync(join(repo, "AGENTS.md"), "Fallback project instructions");
+
+    const files = await agencmd.getMemoryFiles();
+
+    expect(files.map((file) => file.path)).toContain(join(repo, "AGENTS.md"));
+    expect(files.map((file) => file.path)).not.toContain(join(repo, "AGENC.md"));
+    expect(files.map((file) => file.content)).toContain(
+      "Fallback project instructions",
+    );
+  });
+
+  it("truncates entrypoints by bytes and reports the cap", () => {
+    const input = `${"x".repeat(memory.MAX_ENTRYPOINT_BYTES + 100)}\nlast`;
+    const truncated = memory.truncateEntrypointContent(input);
+    expect(truncated.wasByteTruncated).toBe(true);
+    expect(truncated.content).toContain("WARNING: MEMORY.md");
+    expect(truncated.content).toContain("index entries are too long");
+  });
+});

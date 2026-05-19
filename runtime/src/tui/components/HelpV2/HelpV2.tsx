@@ -1,0 +1,156 @@
+import { c as _c } from "react-compiler-runtime";
+import * as React from 'react';
+import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
+import { builtInCommandNames, type Command, type CommandResultDisplay } from '../../../commands.js';
+import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import { Box, Text } from '../../ink.js';
+import { useKeybinding } from '../../keybindings/useKeybinding.js';
+import { Pane } from '../design-system/Pane.js';
+import { Tab, Tabs } from '../design-system/Tabs.js';
+import { Commands } from './Commands.js';
+import { General } from './General.js';
+import { calculateHelpBodyHeight } from './layout.js';
+type Props = {
+  onClose: (result?: string, options?: {
+    display?: CommandResultDisplay;
+  }) => void;
+  commands: Command[];
+  query?: string;
+};
+export function HelpV2(t0: Props): React.ReactNode {
+  const $ = _c(44);
+  const {
+    onClose,
+    commands,
+    query
+  } = t0;
+  const {
+    rows,
+    columns
+  } = useModalOrTerminalSize(useTerminalSize());
+  const maxHeight = calculateHelpBodyHeight(rows);
+  const insideModal = useIsInsideModal();
+  let t1;
+  if ($[0] !== onClose) {
+    t1 = () => onClose("Help dialog dismissed", {
+      display: "system"
+    });
+    $[0] = onClose;
+    $[1] = t1;
+  } else {
+    t1 = $[1];
+  }
+  const close = t1;
+  let t2;
+  if ($[2] === Symbol.for("react.memo_cache_sentinel")) {
+    t2 = {
+      context: "Help"
+    };
+    $[2] = t2;
+  } else {
+    t2 = $[2];
+  }
+  useKeybinding("help:dismiss", close, t2);
+  const exitState = useExitOnCtrlCDWithKeybindings(close);
+  const dismissShortcut = useShortcutDisplay("help:dismiss", "Help", "esc");
+  let builtinCommands;
+  let t3;
+  if ($[3] !== commands) {
+    const builtinNames = builtInCommandNames();
+    builtinCommands = commands.filter(cmd => builtinNames.has(cmd.name) && !cmd.isHidden);
+    t3 = commands.filter(cmd_2 => !builtinNames.has(cmd_2.name) && !cmd_2.isHidden);
+    $[3] = commands;
+    $[4] = builtinCommands;
+    $[5] = t3;
+  } else {
+    builtinCommands = $[4];
+    t3 = $[5];
+  }
+  const customCommands = t3;
+  let t4;
+  if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
+    t4 = <Tab key="general" title="general"><General /></Tab>;
+    $[8] = t4;
+  } else {
+    t4 = $[8];
+  }
+  let tabs;
+  if ($[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight || $[14] !== query) {
+    tabs = [t4];
+    let t5;
+    if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight || $[20] !== query) {
+      t5 = <Tab key="commands" title="commands"><Commands commands={builtinCommands} maxHeight={maxHeight} columns={columns} title={query ? `Default commands matching ${query}:` : "Browse default commands:"} onCancel={close} /></Tab>;
+      $[16] = builtinCommands;
+      $[17] = close;
+      $[18] = columns;
+      $[19] = maxHeight;
+      $[20] = query;
+      $[21] = t5;
+    } else {
+      t5 = $[21];
+    }
+    tabs.push(t5);
+    let t6;
+    if ($[22] !== close || $[23] !== columns || $[24] !== customCommands || $[25] !== maxHeight || $[26] !== query) {
+      t6 = <Tab key="custom" title="custom-commands"><Commands commands={customCommands} maxHeight={maxHeight} columns={columns} title={query ? `Custom commands matching ${query}:` : "Browse custom commands:"} emptyMessage={query ? "No matching custom commands" : "No custom commands found"} onCancel={close} /></Tab>;
+      $[22] = close;
+      $[23] = columns;
+      $[24] = customCommands;
+      $[25] = maxHeight;
+      $[26] = query;
+      $[27] = t6;
+    } else {
+      t6 = $[27];
+    }
+    tabs.push(t6);
+    $[9] = builtinCommands;
+    $[10] = close;
+    $[11] = columns;
+    $[12] = customCommands;
+    $[13] = maxHeight;
+    $[14] = query;
+    $[15] = tabs;
+  } else {
+    tabs = $[15];
+  }
+  const t5 = insideModal ? undefined : maxHeight;
+  let t6;
+  if ($[31] !== tabs) {
+    t6 = <Tabs title="AgenC Help" color="professionalBlue" defaultTab="general">{tabs}</Tabs>;
+    $[31] = tabs;
+    $[32] = t6;
+  } else {
+    t6 = $[32];
+  }
+  let t8;
+  if ($[34] !== dismissShortcut || $[35] !== exitState.keyName || $[36] !== exitState.pending) {
+    t8 = <Box marginTop={1}><Text dimColor={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Text italic={true}>{dismissShortcut} to cancel</Text>}</Text></Box>;
+    $[34] = dismissShortcut;
+    $[35] = exitState.keyName;
+    $[36] = exitState.pending;
+    $[37] = t8;
+  } else {
+    t8 = $[37];
+  }
+  let t9;
+  if ($[38] !== t6 || $[39] !== t8) {
+    t9 = <Pane color="professionalBlue">{t6}{t8}</Pane>;
+    $[38] = t6;
+    $[39] = t8;
+    $[40] = t9;
+  } else {
+    t9 = $[40];
+  }
+  let t10;
+  if ($[41] !== t5 || $[42] !== t9) {
+    t10 = <Box flexDirection="column" height={t5}>{t9}</Box>;
+    $[41] = t5;
+    $[42] = t9;
+    $[43] = t10;
+  } else {
+    t10 = $[43];
+  }
+  return t10;
+}

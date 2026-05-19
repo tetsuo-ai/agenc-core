@@ -1,40 +1,22 @@
 {
   "name": "@tetsuo-ai/agenc",
   "version": "0.2.0",
-  "description": "Public CLI and launcher for the AgenC framework",
+  "description": "Public AgenC CLI launcher package",
   "type": "module",
   "bin": {
-    "agenc": "./bin/agenc.js",
-    "agenc-runtime": "./bin/agenc-runtime.js"
+    "agenc": "bin/agenc"
   },
   "files": [
     "bin",
-    "generated",
-    "lib",
-    "scripts",
-    "README.md"
+    "src"
   ],
   "scripts": {
-    "postinstall": "node ./scripts/postinstall.js",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
-  "keywords": [
-    "agents",
-    "cli",
-    "runtime",
-    "marketplace"
-  ],
-  "author": "Tetsuo AI",
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/tetsuo-ai/agenc-core",
-    "directory": "packages/agenc"
+  "dependencies": {
+    "@tetsuo-ai/runtime": "file:../../runtime"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20"
   }
 }

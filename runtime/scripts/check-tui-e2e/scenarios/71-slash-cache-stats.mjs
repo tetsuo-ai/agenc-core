@@ -1,0 +1,17 @@
+/**
+ * /cache-stats scenario.
+ *
+ * Shows prompt-cache hit/miss statistics. Smoke-test that the command
+ * loads, renders, and returns to idle.
+ */
+export const meta = {
+  description: "/cache-stats renders, returns to idle without crash.",
+  timeoutMs: 30_000,
+};
+
+export default async function (session) {
+  await session.start();
+  await session.waitForPrompt({ timeout: 15_000 });
+  await session.submitSlashCommand("/cache-stats");
+  await session.waitForIdle({ timeout: 15_000 });
+}

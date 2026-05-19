@@ -1,0 +1,2827 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:agenc:app-server:protocol",
+  "title": "AgenC Daemon JSON-RPC Protocol",
+  "description": "Initial AgenC daemon JSON-RPC method surface.",
+  "x-agenc-package": {
+    "name": "@tetsuo-ai/protocol",
+    "export": "./daemon-json-rpc.schema.json"
+  },
+  "x-agenc-methods": [
+    "initialize",
+    "request.cancel",
+    "agent.create",
+    "agent.list",
+    "agent.attach",
+    "agent.stop",
+    "agent.logs",
+    "session.create",
+    "session.list",
+    "session.attach",
+    "session.detach",
+    "session.terminate",
+    "session.clear",
+    "session.snapshot",
+    "session.cancelTurn",
+    "session.mcp.addServer",
+    "message.send",
+    "message.stream",
+    "thread/realtime/start",
+    "thread/realtime/appendAudio",
+    "thread/realtime/appendText",
+    "thread/realtime/stop",
+    "thread/realtime/listVoices",
+    "tool.approve",
+    "tool.deny",
+    "tool.cancel",
+    "elicitation.respond",
+    "permission.list",
+    "fs.fuzzy_search",
+    "commandExec.start",
+    "commandExec.write",
+    "commandExec.resize",
+    "commandExec.terminate",
+    "health.ping",
+    "health.ready",
+    "health.stats",
+    "daemon.reload",
+    "auth.login",
+    "auth.whoami",
+    "auth.logout"
+  ],
+  "x-agenc-notifications": [
+    "commandExec.outputDelta",
+    "event.message_chunk",
+    "event.tool_request",
+    "event.permission_request",
+    "event.user_input_request",
+    "event.mcp_elicitation_request",
+    "event.agent_status",
+    "event.session_event",
+    "thread/realtime/started",
+    "thread/realtime/itemAdded",
+    "thread/realtime/transcript/delta",
+    "thread/realtime/transcript/done",
+    "thread/realtime/outputAudio/delta",
+    "thread/realtime/sdp",
+    "thread/realtime/error",
+    "thread/realtime/closed"
+  ],
+  "oneOf": [
+    {
+      "$ref": "#/definitions/AgenCDaemonRequest"
+    },
+    {
+      "$ref": "#/definitions/AgenCDaemonNotification"
+    },
+    {
+      "$ref": "#/definitions/AgenCDaemonSuccessResponse"
+    },
+    {
+      "$ref": "#/definitions/AgenCDaemonErrorResponse"
+    }
+  ],
+  "definitions": {
+    "RequestId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "integer"
+        }
+      ]
+    },
+    "JsonObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "DaemonProtocolInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["version"]
+    },
+    "AgentStatus": {
+      "type": "string",
+      "enum": ["idle", "running", "stopping", "stopped", "error"]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": ["idle", "running", "waiting", "closed", "error"]
+    },
+    "MessageContent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/MessageContentBlock"
+          }
+        }
+      ]
+    },
+    "MessageContentBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "text"]
+    },
+    "InitializeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocol": {
+          "$ref": "#/definitions/DaemonProtocolInfo"
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authCookie": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "anyOf": [
+        {
+          "required": ["protocol"]
+        },
+        {
+          "required": ["protocolVersion"]
+        }
+      ]
+    },
+    "RequestCancelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["requestId"]
+    },
+    "AgentCreateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "objective": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "unattendedAllow": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unattendedDeny": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "envOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "AgentListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "AgentAttachParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["agentId"]
+    },
+    "AgentStopParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["agentId"]
+    },
+    "AgentLogsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["agentId"]
+    },
+    "SessionCreateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "initialPrompt": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      }
+    },
+    "SessionListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "SessionAttachParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionDetachParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attachmentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"],
+      "anyOf": [
+        {
+          "required": ["attachmentId"]
+        },
+        {
+          "required": ["clientId"]
+        }
+      ]
+    },
+    "SessionTerminateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionClearParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionSnapshotParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionCancelTurnParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId"]
+    },
+    "SessionMcpServerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "sse", "http", "websocket", "ws"]
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": ["name"]
+    },
+    "SessionMcpAddServerParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config": {
+          "$ref": "#/definitions/SessionMcpServerConfig"
+        }
+      },
+      "required": ["sessionId", "config"]
+    },
+    "MessageSendParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "$ref": "#/definitions/MessageContent"
+        },
+        "clientMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "content"]
+    },
+    "MessageStreamParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "$ref": "#/definitions/MessageContent"
+        },
+        "clientMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId", "content"]
+    },
+    "ThreadRealtimeVersion": {
+      "type": "string",
+      "enum": ["v1", "v2"]
+    },
+    "ThreadRealtimeSessionMode": {
+      "type": "string",
+      "enum": ["conversational", "transcription"]
+    },
+    "ThreadRealtimeOutputModality": {
+      "type": "string",
+      "enum": ["audio", "text"]
+    },
+    "ThreadRealtimeVoice": {
+      "type": "string",
+      "enum": [
+        "alloy",
+        "arbor",
+        "ash",
+        "ballad",
+        "breeze",
+        "cedar",
+        "coral",
+        "cove",
+        "echo",
+        "ember",
+        "juniper",
+        "maple",
+        "marin",
+        "sage",
+        "shimmer",
+        "sol",
+        "spruce",
+        "vale",
+        "verse"
+      ]
+    },
+    "ThreadRealtimeWebsocketTransport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "websocket"
+        }
+      },
+      "required": ["type"]
+    },
+    "ThreadRealtimeWebrtcTransport": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "webrtc"
+        },
+        "sdp": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["type", "sdp"]
+    },
+    "ThreadRealtimeStartTransport": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/ThreadRealtimeWebsocketTransport"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeWebrtcTransport"
+        }
+      ]
+    },
+    "ThreadRealtimeStartParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transport": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadRealtimeStartTransport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "realtimeSessionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputModality": {
+          "$ref": "#/definitions/ThreadRealtimeOutputModality"
+        },
+        "voice": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadRealtimeVoice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "outputModality"]
+    },
+    "ThreadRealtimeAudioChunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sampleRate": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "numChannels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "samplesPerChannel": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "itemId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      },
+      "required": ["data", "sampleRate", "numChannels"]
+    },
+    "ThreadRealtimeAppendAudioParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio": {
+          "$ref": "#/definitions/ThreadRealtimeAudioChunk"
+        }
+      },
+      "required": ["threadId", "audio"]
+    },
+    "ThreadRealtimeAppendTextParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId", "text"]
+    },
+    "ThreadRealtimeStopParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId"]
+    },
+    "ThreadRealtimeListVoicesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "ThreadRealtimeBaseParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId"]
+    },
+    "ThreadRealtimeStartedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "realtimeSessionId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "$ref": "#/definitions/ThreadRealtimeVersion"
+        }
+      },
+      "required": ["threadId", "version"]
+    },
+    "ThreadRealtimeItemAddedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "item": true
+      },
+      "required": ["threadId", "item"]
+    },
+    "ThreadRealtimeTranscriptDeltaParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string"
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": ["threadId", "role", "delta"]
+    },
+    "ThreadRealtimeTranscriptDoneParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["threadId", "role", "text"]
+    },
+    "ThreadRealtimeOutputAudioDeltaParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio": {
+          "$ref": "#/definitions/ThreadRealtimeAudioChunk"
+        }
+      },
+      "required": ["threadId", "audio"]
+    },
+    "ThreadRealtimeSdpParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sdp": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId", "sdp"]
+    },
+    "ThreadRealtimeErrorParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["threadId", "message"]
+    },
+    "ThreadRealtimeClosedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["threadId"]
+    },
+    "ToolApproveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["once", "session", "agent"]
+        }
+      },
+      "required": ["sessionId", "requestId"]
+    },
+    "ToolDenyParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "requestId"]
+    },
+    "ToolCancelParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "requestId"]
+    },
+    "ElicitationRespondParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["request_user_input", "mcp"]
+        },
+        "serverName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "response": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "requestId", "kind", "response"]
+    },
+    "PermissionListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "FuzzyFileSearchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "cancellationToken": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["query", "roots"]
+    },
+    "CommandExecTerminalSize": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": ["rows", "cols"]
+    },
+    "CommandExecEnv": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "CommandExecStartParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": [
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
+          "additionalItems": {
+            "type": "string",
+            "minLength": 0
+          }
+        },
+        "processId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tty": {
+          "type": "boolean"
+        },
+        "streamStdin": {
+          "type": "boolean"
+        },
+        "streamStdoutStderr": {
+          "type": "boolean"
+        },
+        "outputBytesCap": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disableOutputCap": {
+          "type": "boolean"
+        },
+        "disableTimeout": {
+          "type": "boolean"
+        },
+        "timeoutMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "env": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CommandExecEnv"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CommandExecTerminalSize"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sandboxPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsonObject"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "permissionProfile": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsonObject"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["command"]
+    },
+    "CommandExecWriteParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "processId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deltaBase64": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "closeStdin": {
+          "type": "boolean"
+        }
+      },
+      "required": ["processId"]
+    },
+    "CommandExecTerminateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "processId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["processId"]
+    },
+    "CommandExecResizeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "processId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "$ref": "#/definitions/CommandExecTerminalSize"
+        }
+      },
+      "required": ["processId", "size"]
+    },
+    "CommandExecOutputDeltaParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "processId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stream": {
+          "type": "string",
+          "enum": ["stdout", "stderr"]
+        },
+        "deltaBase64": {
+          "type": "string"
+        },
+        "capReached": {
+          "type": "boolean"
+        }
+      },
+      "required": ["processId", "stream", "deltaBase64", "capReached"]
+    },
+    "AgenCEventBaseParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "eventId"]
+    },
+    "EventMessageChunkParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "eventId", "delta"]
+    },
+    "EventToolRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {}
+      },
+      "required": ["sessionId", "eventId", "requestId", "toolName"]
+    },
+    "EventPermissionRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "input": {},
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "eventId", "requestId", "permissions"]
+    },
+    "EventUserInputRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "callId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/definitions/JsonObject"
+          }
+        }
+      },
+      "required": ["sessionId", "eventId", "requestId", "callId", "turnId", "questions"]
+    },
+    "EventMcpElicitationRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "serverName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "eventId", "requestId", "serverName", "turnId", "request"]
+    },
+    "EventAgentStatusParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "status": {
+          "$ref": "#/definitions/AgentStatus"
+        },
+        "runStatus": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "running",
+            "working",
+            "paused",
+            "blocked",
+            "suspended",
+            "completed",
+            "errored",
+            "stopped"
+          ]
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "eventId", "agentId", "status"]
+    },
+    "EventSessionEventParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "event": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "eventId", "event"]
+    },
+    "HealthPingParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "HealthReadyParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "HealthStatsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "DaemonReloadParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "AuthLoginParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "AuthWhoamiParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "AuthLogoutParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "AgenCDaemonRequest": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/InitializeRequest"
+        },
+        {
+          "$ref": "#/definitions/RequestCancelRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentCreateRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentListRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentAttachRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentStopRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentLogsRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionCreateRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionListRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionAttachRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionDetachRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionTerminateRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionClearRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionSnapshotRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionCancelTurnRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionMcpAddServerRequest"
+        },
+        {
+          "$ref": "#/definitions/MessageSendRequest"
+        },
+        {
+          "$ref": "#/definitions/MessageStreamRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeStartRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeAppendAudioRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeAppendTextRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeStopRequest"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeListVoicesRequest"
+        },
+        {
+          "$ref": "#/definitions/ToolApproveRequest"
+        },
+        {
+          "$ref": "#/definitions/ToolDenyRequest"
+        },
+        {
+          "$ref": "#/definitions/ToolCancelRequest"
+        },
+        {
+          "$ref": "#/definitions/ElicitationRespondRequest"
+        },
+        {
+          "$ref": "#/definitions/PermissionListRequest"
+        },
+        {
+          "$ref": "#/definitions/FuzzyFileSearchRequest"
+        },
+        {
+          "$ref": "#/definitions/CommandExecStartRequest"
+        },
+        {
+          "$ref": "#/definitions/CommandExecWriteRequest"
+        },
+        {
+          "$ref": "#/definitions/CommandExecResizeRequest"
+        },
+        {
+          "$ref": "#/definitions/CommandExecTerminateRequest"
+        },
+        {
+          "$ref": "#/definitions/HealthPingRequest"
+        },
+        {
+          "$ref": "#/definitions/HealthReadyRequest"
+        },
+        {
+          "$ref": "#/definitions/HealthStatsRequest"
+        },
+        {
+          "$ref": "#/definitions/DaemonReloadRequest"
+        },
+        {
+          "$ref": "#/definitions/AuthLoginRequest"
+        },
+        {
+          "$ref": "#/definitions/AuthWhoamiRequest"
+        },
+        {
+          "$ref": "#/definitions/AuthLogoutRequest"
+        }
+      ]
+    },
+    "AgenCDaemonNotification": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/CommandExecOutputDeltaNotification"
+        },
+        {
+          "$ref": "#/definitions/EventMessageChunkNotification"
+        },
+        {
+          "$ref": "#/definitions/EventToolRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventPermissionRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventUserInputRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventMcpElicitationRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventAgentStatusNotification"
+        },
+        {
+          "$ref": "#/definitions/EventSessionEventNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeStartedNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeItemAddedNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDeltaNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDoneNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeOutputAudioDeltaNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeSdpNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeErrorNotification"
+        },
+        {
+          "$ref": "#/definitions/ThreadRealtimeClosedNotification"
+        }
+      ]
+    },
+    "CommandExecOutputDeltaNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "commandExec.outputDelta"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecOutputDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventMessageChunkNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.message_chunk"
+        },
+        "params": {
+          "$ref": "#/definitions/EventMessageChunkParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventToolRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.tool_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventToolRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventPermissionRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.permission_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventPermissionRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventUserInputRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.user_input_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventUserInputRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventMcpElicitationRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.mcp_elicitation_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventMcpElicitationRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventAgentStatusNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.agent_status"
+        },
+        "params": {
+          "$ref": "#/definitions/EventAgentStatusParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventSessionEventNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.session_event"
+        },
+        "params": {
+          "$ref": "#/definitions/EventSessionEventParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeStartedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/started"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeStartedParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeItemAddedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/itemAdded"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeItemAddedParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeTranscriptDeltaNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/transcript/delta"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeTranscriptDoneNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/transcript/done"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeTranscriptDoneParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeOutputAudioDeltaNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/outputAudio/delta"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeOutputAudioDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeSdpNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/sdp"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeSdpParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeErrorNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/error"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeErrorParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "ThreadRealtimeClosedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "thread/realtime/closed"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeClosedParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "InitializeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "initialize"
+        },
+        "params": {
+          "$ref": "#/definitions/InitializeParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "RequestCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "request.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/RequestCancelParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentCreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.create"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentCreateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.list"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentAttachRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.attach"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentAttachParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentStopRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentStopParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentLogsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.logs"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentLogsParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionCreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.create"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionCreateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.list"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionAttachRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.attach"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionAttachParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionDetachRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.detach"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionDetachParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionTerminateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.terminate"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTerminateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionClearRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.clear"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionClearParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionSnapshotRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.snapshot"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionSnapshotParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionCancelTurnRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.cancelTurn"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionCancelTurnParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionMcpAddServerRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.mcp.addServer"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionMcpAddServerParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "MessageSendRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "message.send"
+        },
+        "params": {
+          "$ref": "#/definitions/MessageSendParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "MessageStreamRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "message.stream"
+        },
+        "params": {
+          "$ref": "#/definitions/MessageStreamParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/start"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeStartParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeAppendAudioRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/appendAudio"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeAppendAudioParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeAppendTextRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/appendText"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeAppendTextParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeStopRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/stop"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeStopParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ThreadRealtimeListVoicesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "thread/realtime/listVoices"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadRealtimeListVoicesParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "ToolApproveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "tool.approve"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolApproveParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ToolDenyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "tool.deny"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolDenyParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ToolCancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "tool.cancel"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolCancelParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ElicitationRespondRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "elicitation.respond"
+        },
+        "params": {
+          "$ref": "#/definitions/ElicitationRespondParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "PermissionListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "permission.list"
+        },
+        "params": {
+          "$ref": "#/definitions/PermissionListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "FuzzyFileSearchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "fs.fuzzy_search"
+        },
+        "params": {
+          "$ref": "#/definitions/FuzzyFileSearchParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "CommandExecStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "commandExec.start"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecStartParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "CommandExecWriteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "commandExec.write"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecWriteParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "CommandExecResizeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "commandExec.resize"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecResizeParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "CommandExecTerminateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "commandExec.terminate"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecTerminateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "HealthPingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "health.ping"
+        },
+        "params": {
+          "$ref": "#/definitions/HealthPingParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "HealthReadyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "health.ready"
+        },
+        "params": {
+          "$ref": "#/definitions/HealthReadyParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "HealthStatsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "health.stats"
+        },
+        "params": {
+          "$ref": "#/definitions/HealthStatsParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "DaemonReloadRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "daemon.reload"
+        },
+        "params": {
+          "$ref": "#/definitions/DaemonReloadParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "AuthLoginRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "auth.login"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthLoginParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "AuthWhoamiRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "auth.whoami"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthWhoamiParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "AuthLogoutRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "auth.logout"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthLogoutParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "AgenCDaemonSuccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "result": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["jsonrpc", "id", "result"]
+    },
+    "AgenCDaemonErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/definitions/AgenCDaemonErrorObject"
+        }
+      },
+      "required": ["jsonrpc", "id", "error"]
+    },
+    "AgenCDaemonErrorObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "integer",
+          "enum": [-32700, -32600, -32601, -32602, -32603, -32000]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data": true
+      },
+      "required": ["code", "message"]
+    }
+  }
+}

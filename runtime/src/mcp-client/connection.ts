@@ -1,80 +1,91 @@
 /**
  * MCP client connection management.
  *
- * Spawns external MCP servers as child processes and establishes
- * JSON-RPC communication via stdio transport.
+ * Dispatches to the appropriate transport based on `config.transport`:
+ *   - `"stdio"` (default): delegate to `./transports/stdio.ts`.
+ *   - `"sse"`: delegate to `./transports/sse.ts`.
+ *   - `"http"`: delegate to `./transports/http.ts` (Streamable HTTP).
+ *   - `"websocket"` / `"ws"`: delegate to `./transports/websocket.ts`.
  *
  * @module
  */
 
-import type { MCPServerConfig } from "./types.js";
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { MCPElicitationHandlers, MCPServerConfig } from "./types.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
+import { createStdioMCPConnection } from "./transports/stdio.js";
+import { createSseMCPConnection } from "./transports/sse.js";
+import { createHttpMCPConnection } from "./transports/http.js";
+import { createWebSocketMCPConnection } from "./transports/websocket.js";
 
 /**
  * Create an MCP client connection to an external server.
  *
- * Uses `@modelcontextprotocol/sdk` StdioClientTransport to spawn
- * the server as a child process and communicate via stdin/stdout.
+ * For every transport, the call is delegated to the corresponding module
+ * under `./transports/`.
  *
  * @returns MCP Client instance (typed as `any` to avoid ESM/CJS type conflicts)
  */
 export async function createMCPConnection(
   config: MCPServerConfig,
   logger: Logger = silentLogger,
+  elicitationHandlers?: MCPElicitationHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { StdioClientTransport } = await import(
-    "@modelcontextprotocol/sdk/client/stdio.js"
-  );
+  const transportKind = config.transport ?? "stdio";
 
-  const timeout = config.timeout ?? 30_000;
-
-  // Build env: inherit process.env (filtering undefined values) + user overrides
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) {
-      env[key] = value;
+  if (transportKind === "stdio") {
+    if (!config.command || config.command.length === 0) {
+      throw new Error(
+        `MCP server "${config.name}" has transport="stdio" but no "command" was provided`,
+      );
     }
-  }
-  if (config.env) {
-    Object.assign(env, config.env);
+    return createStdioMCPConnection(
+      {
+        name: config.name,
+        command: config.command,
+        ...(config.args !== undefined ? { args: config.args } : {}),
+        ...(config.env !== undefined ? { env: config.env } : {}),
+        ...(config.env_vars !== undefined ? { env_vars: config.env_vars } : {}),
+        ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
+        ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+      },
+      logger,
+      elicitationHandlers,
+    );
   }
 
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: config.args,
-    env,
-  });
+  if (
+    transportKind === "sse" ||
+    transportKind === "http" ||
+    transportKind === "websocket" ||
+    transportKind === "ws"
+  ) {
+    if (!config.endpoint || config.endpoint.length === 0) {
+      throw new Error(
+        `MCP server "${config.name}" has transport="${transportKind}" but no "endpoint" was provided`,
+      );
+    }
+    const remoteConfig = {
+      name: config.name,
+      endpoint: config.endpoint,
+      ...(config.headers !== undefined ? { headers: config.headers } : {}),
+      ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+    };
+    if (transportKind === "sse") {
+      return createSseMCPConnection(remoteConfig, logger, elicitationHandlers);
+    }
+    if (transportKind === "http") {
+      return createHttpMCPConnection(remoteConfig, logger, elicitationHandlers);
+    }
+    return createWebSocketMCPConnection(
+      remoteConfig,
+      logger,
+      elicitationHandlers,
+    );
+  }
 
-  const client = new Client(
-    { name: `agenc-runtime`, version: "0.2.0" },
-    { capabilities: {} },
+  throw new Error(
+    `MCP server "${config.name}" has unknown transport "${String(transportKind)}"`,
   );
-
-  logger.info(`Connecting to MCP server "${config.name}"...`, {
-    command: config.command,
-    args: config.args,
-  });
-
-  // Connect with timeout — clean up timer on success, kill child on timeout
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const connectPromise = client.connect(transport);
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      // Kill the child process to avoid orphans
-      try { client.close(); } catch { /* best-effort */ }
-      reject(new Error(`MCP connection to "${config.name}" timed out after ${timeout}ms`));
-    }, timeout);
-  });
-
-  try {
-    await Promise.race([connectPromise, timeoutPromise]);
-  } finally {
-    clearTimeout(timer);
-  }
-
-  logger.info(`Connected to MCP server "${config.name}"`);
-  return client;
 }

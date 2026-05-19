@@ -1,0 +1,706 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgenCSessionSnapshotPolicy } from "./snapshot-policy.js";
+import { openStateDatabases, type StateSqliteDriver } from "./sqlite-driver.js";
+import {
+  readRotatedToolOutputLog,
+  resolveToolOutputLogPath,
+} from "./tool-output-rotation.js";
+
+let home = "";
+let cwd = "";
+let driver: StateSqliteDriver;
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), "agenc-snapshot-policy-home-"));
+  cwd = mkdtempSync(join(tmpdir(), "agenc-snapshot-policy-cwd-"));
+  mkdirSync(join(cwd, ".git"));
+  driver = openStateDatabases({ cwd, agencHome: home });
+});
+
+afterEach(() => {
+  driver.close();
+  rmSync(home, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+describe("AgenCSessionSnapshotPolicy", () => {
+  it("snapshots message, tool, and status triggers into session_state_snapshots", () => {
+    seedRun("run-1", "session-1");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:00:03.000Z",
+        "2026-05-01T00:00:04.000Z",
+        "2026-05-01T00:00:05.000Z",
+        "2026-05-01T00:00:06.000Z",
+        "2026-05-01T00:00:07.000Z",
+      ]),
+      agencHome: home,
+    });
+
+    policy.recordMessageExchange({
+      sessionId: "session-1",
+      agentId: "run-1",
+      content: "hello",
+      messageId: "message-1",
+      streamId: "stream-1",
+      acceptedAt: "2026-05-01T00:00:00.000Z",
+    });
+    policy.recordSessionEvent("session-1", {
+      method: "event.tool_request",
+      params: {
+        eventId: "event-tool-1",
+        requestId: "tool-1",
+        toolName: "FileRead",
+        recoveryCategory: "idempotent",
+        input: { path: "a.txt" },
+      },
+    });
+    policy.recordSessionEvent("session-1", {
+      method: "event.session_event",
+      params: {
+        event: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "tool-1",
+            result: "ok",
+            isError: false,
+          },
+        },
+      },
+    });
+    policy.recordAgentStatusTransition({
+      sessionId: "session-1",
+      agentId: "run-1",
+      status: "running",
+      transitionAt: "2026-05-01T00:00:03.000Z",
+    });
+
+    expect(snapshotCount("session-1")).toBe(4);
+    const latest = latestSnapshot("session-1");
+    expect(latest.toolState).toMatchObject({
+      lastTrigger: "agent_status",
+      inFlight: {},
+      completed: {
+        "tool-1": {
+          requestId: "tool-1",
+          recoveryCategory: "idempotent",
+          status: "completed",
+          result: "ok",
+        },
+      },
+      statusTransitions: [
+        {
+          agentId: "run-1",
+          status: "running",
+          transitionAt: "2026-05-01T00:00:03.000Z",
+        },
+      ],
+    });
+    expect(latest.conversation).toEqual([
+      {
+        role: "user",
+        agentId: "run-1",
+        content: "hello",
+        messageId: "message-1",
+        streamId: "stream-1",
+        acceptedAt: "2026-05-01T00:00:00.000Z",
+      },
+    ]);
+    expect(runLastSnapshotAt("run-1")).toBe("2026-05-01T00:00:05.000Z");
+  });
+
+  it("updates agent_runs from runner-emitted terminal run statuses", () => {
+    seedRun("run-complete", "session-complete");
+    seedRun("run-error", "session-error");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:10.000Z",
+        "2026-05-01T00:00:11.000Z",
+      ]),
+    });
+
+    policy.recordSessionEvent("session-complete", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-complete",
+        status: "idle",
+        runStatus: "completed",
+      },
+    });
+    policy.recordSessionEvent("session-error", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-error",
+        status: "error",
+        runStatus: "errored",
+      },
+    });
+
+    expect(runStatus("run-complete")).toEqual({
+      status: "completed",
+      last_active_at: "2026-05-01T00:00:10.000Z",
+    });
+    expect(runStatus("run-error")).toEqual({
+      status: "errored",
+      last_active_at: "2026-05-01T00:00:11.000Z",
+    });
+  });
+
+  it("persists budget halt markers from runner-emitted agent status", () => {
+    seedRun("run-budget", "session-budget");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock(["2026-05-01T00:00:12.000Z"]),
+    });
+    const budgetHalt = {
+      kind: "token_cap",
+      cap: 10,
+      observed: 12,
+      reason: "token_cap:12",
+      haltedAt: "2026-05-01T00:00:12.000Z",
+      tokens: { input: 8, output: 4, total: 12 },
+      costUsd: 0.0001,
+      wallClockSeconds: 12,
+      model: "gpt-5.4",
+      provider: "openai",
+    };
+    const budgetUsage = {
+      inputTokens: 8,
+      outputTokens: 4,
+      totalTokens: 12,
+      costUsd: 0.0001,
+      costBasis: "input_output_token_usage",
+    };
+
+    policy.recordSessionEvent("session-budget", {
+      method: "event.agent_status",
+      params: {
+        agentId: "run-budget",
+        status: "stopped",
+        runStatus: "stopped",
+        message: "agent budget token_cap reached",
+        budgetHalt,
+        budgetUsage,
+      },
+    });
+
+    expect(runStatus("run-budget")).toEqual({
+      status: "stopped",
+      last_active_at: "2026-05-01T00:00:12.000Z",
+    });
+    expect(runMetadata("run-budget")).toEqual({ budgetHalt, budgetUsage });
+    expect(latestSnapshot("session-budget").toolState).toMatchObject({
+      statusTransitions: [
+        {
+          agentId: "run-budget",
+          status: "stopped",
+          reason: "agent budget token_cap reached",
+          metadataPatch: { budgetHalt, budgetUsage },
+        },
+      ],
+    });
+  });
+
+  it("periodically flushes tracked sessions and stops the timer", () => {
+    const clearInterval = vi.fn();
+    let tick: (() => void) | undefined;
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:30.000Z",
+      ]),
+      setInterval: (callback, intervalMs) => {
+        expect(intervalMs).toBe(30_000);
+        tick = callback;
+        return { unref: vi.fn() };
+      },
+      clearInterval,
+    });
+
+    policy.recordMessageExchange({
+      sessionId: "session-periodic",
+      agentId: "agent-periodic",
+      content: "watch",
+      messageId: "message-periodic",
+      streamId: "stream-periodic",
+      acceptedAt: "2026-05-01T00:00:00.000Z",
+    });
+    policy.startPeriodic();
+    tick?.();
+    policy.stopPeriodic();
+
+    expect(snapshotCount("session-periodic")).toBe(2);
+    expect(latestSnapshot("session-periodic").toolState).toMatchObject({
+      lastTrigger: "periodic",
+    });
+    expect(clearInterval).toHaveBeenCalledTimes(1);
+  });
+
+  it("hydrates recovered session state before periodic flush", () => {
+    seedRun("run-hydrate", "session-hydrate");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock(["2026-05-01T00:00:30.000Z"]),
+    });
+
+    policy.hydrateSession({
+      sessionId: "session-hydrate",
+      snapshotAt: "2026-05-01T00:00:10.000Z",
+      conversation: [{ role: "assistant", content: "previous" }],
+      toolState: {
+        pending: ["tool-hydrate"],
+        inFlight: {
+          "tool-hydrate": { requestId: "tool-hydrate", status: "running" },
+        },
+      },
+      mcpConnectionState: { connected: true },
+    });
+    policy.flushPeriodic();
+
+    const latest = latestSnapshot("session-hydrate");
+    expect(latest.conversation).toEqual([
+      { role: "assistant", content: "previous" },
+    ]);
+    expect(latest.toolState).toMatchObject({
+      lastTrigger: "periodic",
+      pending: ["tool-hydrate"],
+      inFlight: {
+        "tool-hydrate": { requestId: "tool-hydrate", status: "running" },
+      },
+    });
+    expect(latest.mcpConnectionState).toMatchObject({ connected: true });
+    expect(runLastSnapshotAt("run-hydrate")).toBe(
+      "2026-05-01T00:00:30.000Z",
+    );
+  });
+
+  it("persists session agent ownership for retention pruning", () => {
+    const policy = new AgenCSessionSnapshotPolicy(driver);
+
+    policy.trackSession("session-linked", "agent-linked");
+
+    expect(sessionAgent("session-linked")).toBe("agent-linked");
+  });
+
+  it("keeps tool identity for completion-only tool events", () => {
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock(["2026-05-01T00:00:00.000Z"]),
+    });
+
+    policy.recordSessionEvent("session-completion-only", {
+      method: "event.session_event",
+      params: {
+        event: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "tool-completion-only",
+            result: "done",
+            isError: false,
+            metadata: {
+              toolName: "FileRead",
+            },
+          },
+        },
+      },
+    });
+
+    expect(latestSnapshot("session-completion-only").toolState).toMatchObject({
+      completed: {
+        "tool-completion-only": {
+          requestId: "tool-completion-only",
+          toolName: "FileRead",
+          status: "completed",
+          result: "done",
+        },
+      },
+    });
+  });
+
+  it("persists replay poison events as terminal recovery state", () => {
+    seedRun("run-replay-poison", "session-replay-poison");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+      ]),
+      agencHome: home,
+    });
+
+    policy.recordSessionEvent("session-replay-poison", {
+      method: "event.tool_request",
+      params: {
+        agentId: "run-replay-poison",
+        requestId: "tool-replay-poison",
+        toolName: "FileWrite",
+        recoveryCategory: "idempotent",
+        input: { file_path: "a.txt", content: "x" },
+      },
+    });
+    policy.recordSessionEvent("session-replay-poison", {
+      method: "event.session_event",
+      params: {
+        agentId: "run-replay-poison",
+        event: {
+          type: "tool_call_recovery_poisoned",
+          payload: {
+            callId: "tool-replay-poison",
+            result: "current registry says side-effecting",
+            metadata: {
+              toolName: "FileWrite",
+              recoveryCategory: "side-effecting",
+            },
+          },
+        },
+      },
+    });
+
+    expect(latestSnapshot("session-replay-poison").toolState).toMatchObject({
+      inFlight: {},
+      completed: {
+        "tool-replay-poison": {
+          requestId: "tool-replay-poison",
+          toolName: "FileWrite",
+          recoveryCategory: "side-effecting",
+          recoveryAction: "poison",
+          status: "poisoned",
+          result: "current registry says side-effecting",
+        },
+      },
+    });
+    expect(inFlightToolOutput("session-replay-poison", "tool-replay-poison"))
+      .toMatchObject({
+        status: "poisoned",
+        output_partial: "current registry says side-effecting",
+      });
+    expect(
+      inFlightToolRecoveryCategory(
+        "session-replay-poison",
+        "tool-replay-poison",
+      ),
+    ).toBe("side-effecting");
+  });
+
+  it("persists capped tool output rows from daemon tool events", () => {
+    seedRun("agent-output", "session-output");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      agencHome: home,
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:00:03.000Z",
+      ]),
+      outputRotation: {
+        outputPartialMaxBytes: 4,
+        logMaxBytes: 3,
+        rotatedLogCount: 1,
+      },
+    });
+
+    policy.recordSessionEvent("session-output", {
+      method: "event.tool_request",
+      params: {
+        agentId: "agent-output",
+        eventId: "event-tool-output-start",
+        requestId: "tool-output",
+        toolName: "Bash",
+        input: { command: "printf output" },
+      },
+    });
+    policy.recordSessionEvent("session-output", {
+      method: "event.session_event",
+      params: {
+        agentId: "agent-output",
+        event: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "tool-output",
+            result: "abcdefghij",
+            isError: false,
+            metadata: {
+              toolName: "Bash",
+            },
+          },
+        },
+      },
+    });
+
+    const outputLogPath = resolveToolOutputLogPath({
+      agencHome: home,
+      agentId: "agent-output",
+      toolCallId: "tool-output",
+    });
+    expect(inFlightToolOutput("session-output", "tool-output")).toEqual({
+      status: "completed",
+      output_partial: "abcd",
+      output_log_path: outputLogPath,
+      output_log_bytes: 6,
+    });
+    expect(existsSync(outputLogPath)).toBe(true);
+    expect(existsSync(`${outputLogPath}.1`)).toBe(true);
+    expect(inFlightToolRecoveryCategory("session-output", "tool-output")).toBe(
+      "side-effecting",
+    );
+  });
+
+  it("persists capped running output from tool_progress chunks", () => {
+    seedRun("agent-progress", "session-progress");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      agencHome: home,
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+        "2026-05-01T00:00:03.000Z",
+        "2026-05-01T00:00:04.000Z",
+        "2026-05-01T00:00:05.000Z",
+      ]),
+      outputRotation: {
+        outputPartialMaxBytes: 4,
+        logMaxBytes: 3,
+        rotatedLogCount: 1,
+      },
+    });
+
+    policy.recordSessionEvent("session-progress", {
+      method: "event.tool_request",
+      params: {
+        agentId: "agent-progress",
+        eventId: "event-tool-progress-start",
+        requestId: "tool-progress",
+        toolName: "Bash",
+        input: { command: "printf output" },
+      },
+    });
+    for (const chunk of ["abc", "def", "ghij"]) {
+      policy.recordSessionEvent("session-progress", {
+        method: "event.session_event",
+        params: {
+          agentId: "agent-progress",
+          event: {
+            type: "tool_progress",
+            payload: {
+              callId: "tool-progress",
+              toolName: "Bash",
+              chunk,
+            },
+          },
+        },
+      });
+    }
+
+    const outputLogPath = resolveToolOutputLogPath({
+      agencHome: home,
+      agentId: "agent-progress",
+      toolCallId: "tool-progress",
+    });
+    expect(inFlightToolOutput("session-progress", "tool-progress")).toEqual({
+      status: "running",
+      output_partial: "abcd",
+      output_log_path: outputLogPath,
+      output_log_bytes: 6,
+    });
+    expect(readRotatedToolOutputLog(outputLogPath, {
+      outputPartialMaxBytes: 4,
+      logMaxBytes: 3,
+      rotatedLogCount: 1,
+    })).toBe("efghij");
+    expect(existsSync(outputLogPath)).toBe(true);
+    expect(existsSync(`${outputLogPath}.1`)).toBe(true);
+  });
+
+  it("applies snapshotRetention after writing each snapshot", () => {
+    seedRun("run-retention", "session-retention");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:00:00.000Z",
+        "2026-05-01T00:00:01.000Z",
+        "2026-05-01T00:00:02.000Z",
+      ]),
+      snapshotRetention: { snapshot_max_count: 2 },
+    });
+
+    for (const index of [1, 2, 3]) {
+      policy.recordMessageExchange({
+        sessionId: "session-retention",
+        agentId: "run-retention",
+        content: `message-${index}`,
+        messageId: `message-${index}`,
+        streamId: "stream-retention",
+        acceptedAt: `2026-05-01T00:00:0${index}.000Z`,
+      });
+    }
+
+    expect(snapshotCount("session-retention")).toBe(2);
+    expect(latestSnapshot("session-retention").conversation).toEqual([
+      expect.objectContaining({ content: "message-1" }),
+      expect.objectContaining({ content: "message-2" }),
+      expect.objectContaining({ content: "message-3" }),
+    ]);
+    expect(runLastSnapshotAt("run-retention")).toBe(
+      "2026-05-01T00:00:02.000Z",
+    );
+  });
+});
+
+function seedRun(runId: string, sessionId: string): void {
+  driver
+    .prepareState(
+      `INSERT INTO agent_runs (
+        id,
+        objective,
+        status,
+        started_at,
+        last_active_at,
+        current_session_id,
+        created_by_client,
+        last_snapshot_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      runId,
+      "snapshot work",
+      "running",
+      "2026-05-01T00:00:00.000Z",
+      "2026-05-01T00:00:00.000Z",
+      sessionId,
+      "client-1",
+      null,
+    );
+}
+
+function snapshotCount(sessionId: string): number {
+  return (
+    driver
+      .prepareState<[string], { count: number }>(
+        `SELECT COUNT(*) AS count
+         FROM session_state_snapshots
+         WHERE session_id = ?`,
+      )
+      .get(sessionId)?.count ?? 0
+  );
+}
+
+function latestSnapshot(sessionId: string): {
+  readonly conversation: unknown;
+  readonly toolState: unknown;
+  readonly mcpConnectionState: unknown;
+} {
+  const row = driver
+    .prepareState<
+      [string],
+      {
+        conversation_json: string;
+        tool_state_json: string;
+        mcp_connection_state_json: string;
+      }
+    >(
+      `SELECT conversation_json, tool_state_json, mcp_connection_state_json
+       FROM session_state_snapshots
+       WHERE session_id = ?
+       ORDER BY snapshot_at DESC
+       LIMIT 1`,
+    )
+    .get(sessionId);
+  if (row === undefined) throw new Error("snapshot missing");
+  return {
+    conversation: JSON.parse(row.conversation_json),
+    toolState: JSON.parse(row.tool_state_json),
+    mcpConnectionState: JSON.parse(row.mcp_connection_state_json),
+  };
+}
+
+function runLastSnapshotAt(runId: string): string | null {
+  return (
+    driver
+      .prepareState<[string], { last_snapshot_at: string | null }>(
+        "SELECT last_snapshot_at FROM agent_runs WHERE id = ?",
+      )
+      .get(runId)?.last_snapshot_at ?? null
+  );
+}
+
+function runStatus(runId: string): {
+  readonly status: string;
+  readonly last_active_at: string;
+} | undefined {
+  return driver
+    .prepareState<[string], { status: string; last_active_at: string }>(
+      "SELECT status, last_active_at FROM agent_runs WHERE id = ?",
+    )
+    .get(runId);
+}
+
+function runMetadata(runId: string): unknown {
+  const value = driver
+    .prepareState<[string], { metadata_json: string | null }>(
+      "SELECT metadata_json FROM agent_runs WHERE id = ?",
+    )
+    .get(runId)?.metadata_json;
+  return value === null || value === undefined ? null : JSON.parse(value);
+}
+
+function sessionAgent(sessionId: string): string | undefined {
+  return driver
+    .prepareState<[string], { agent_id: string }>(
+      "SELECT agent_id FROM session_agent_links WHERE session_id = ?",
+    )
+    .get(sessionId)?.agent_id;
+}
+
+function inFlightToolOutput(
+  sessionId: string,
+  toolCallId: string,
+): {
+  readonly status: string;
+  readonly output_partial: string | null;
+  readonly output_log_path: string | null;
+  readonly output_log_bytes: number;
+} {
+  const row = driver
+    .prepareState<
+      [string, string],
+      {
+        status: string;
+        output_partial: string | null;
+        output_log_path: string | null;
+        output_log_bytes: number;
+      }
+    >(
+      `SELECT status, output_partial, output_log_path, output_log_bytes
+       FROM in_flight_tool_calls
+       WHERE session_id = ?
+         AND tool_call_id = ?`,
+    )
+    .get(sessionId, toolCallId);
+  if (row === undefined) throw new Error("tool output row missing");
+  return row;
+}
+
+function inFlightToolRecoveryCategory(
+  sessionId: string,
+  toolCallId: string,
+): string | undefined {
+  return driver
+    .prepareState<[string, string], { recovery_category: string }>(
+      `SELECT recovery_category
+       FROM in_flight_tool_calls
+       WHERE session_id = ?
+         AND tool_call_id = ?`,
+    )
+    .get(sessionId, toolCallId)?.recovery_category;
+}
+
+function clock(values: readonly string[]): () => string {
+  let index = 0;
+  return () => {
+    const value = values[index] ?? values.at(-1);
+    if (value === undefined) throw new Error("empty clock");
+    index += 1;
+    return value;
+  };
+}

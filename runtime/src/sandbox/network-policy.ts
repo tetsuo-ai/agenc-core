@@ -1,0 +1,405 @@
+import type { NetworkPolicyAmendment } from "../permissions/review-decision.js";
+
+export type NetworkPolicyDecision = "ask" | "deny";
+export type NetworkDecisionSource =
+  | "baseline_policy"
+  | "mode_guard"
+  | "proxy_state"
+  | "decider";
+export type NetworkApprovalProtocol =
+  | "http"
+  | "https"
+  | "socks5-tcp"
+  | "socks5-udp";
+export type NetworkPolicyRequestProtocol =
+  | "http"
+  | "https_connect"
+  | "socks5_tcp"
+  | "socks5_udp";
+export type ExecPolicyNetworkRuleProtocol =
+  | "http"
+  | "https"
+  | "socks5_tcp"
+  | "socks5_udp";
+
+export interface NetworkPolicyDecisionPayload {
+  readonly decision: NetworkPolicyDecision;
+  readonly source: NetworkDecisionSource;
+  readonly protocol?: NetworkApprovalProtocol;
+  readonly host?: string;
+  readonly reason?: string;
+  readonly port?: number;
+}
+
+export interface NetworkApprovalContext {
+  readonly host: string;
+  readonly protocol: NetworkApprovalProtocol;
+}
+
+export interface NetworkPolicyRequest {
+  readonly protocol: NetworkPolicyRequestProtocol;
+  readonly host: string;
+  readonly port: number;
+  readonly clientAddr?: string | null;
+  readonly method?: string | null;
+  readonly command?: string | null;
+  readonly execPolicyHint?: string | null;
+}
+
+export type NetworkDecision =
+  | { readonly decision: "allow" }
+  | {
+      readonly decision: NetworkPolicyDecision;
+      readonly source: NetworkDecisionSource;
+      readonly reason: string;
+    };
+
+export type NetworkPolicyDeciderFunction = (
+  request: NetworkPolicyRequest,
+) => NetworkDecision | Promise<NetworkDecision>;
+
+export interface NetworkPolicyDecider {
+  decide(
+    request: NetworkPolicyRequest,
+  ): NetworkDecision | Promise<NetworkDecision>;
+}
+
+export interface BlockedRequest {
+  readonly host: string;
+  readonly reason: string;
+  readonly client?: string | null;
+  readonly method?: string | null;
+  readonly mode?: string | null;
+  readonly protocol: string;
+  readonly decision?: string | null;
+  readonly source?: string | null;
+  readonly port?: number | null;
+  readonly timestamp: number;
+}
+
+export type BlockedRequestObserverFunction = (
+  request: BlockedRequest,
+) => void | Promise<void>;
+
+export interface BlockedRequestObserver {
+  onBlockedRequest(request: BlockedRequest): void | Promise<void>;
+}
+
+export const noopBlockedRequestObserver: BlockedRequestObserver = {
+  onBlockedRequest: () => undefined,
+};
+
+export interface ExecPolicyNetworkRuleAmendment {
+  readonly protocol: ExecPolicyNetworkRuleProtocol;
+  readonly decision: "allow" | "forbidden";
+  readonly justification: string;
+}
+
+export function networkPolicyDeciderFrom(
+  decider: NetworkPolicyDecider | NetworkPolicyDeciderFunction,
+): NetworkPolicyDecider {
+  if (typeof decider === "function") {
+    return { decide: decider };
+  }
+  return decider;
+}
+
+export function blockedRequestObserverFrom(
+  observer: BlockedRequestObserver | BlockedRequestObserverFunction,
+): BlockedRequestObserver {
+  if (typeof observer === "function") {
+    return { onBlockedRequest: observer };
+  }
+  return observer;
+}
+
+export function allowNetworkDecision(): NetworkDecision {
+  return { decision: "allow" };
+}
+
+export function denyNetworkDecision(
+  reason: string,
+  source: NetworkDecisionSource = "decider",
+): NetworkDecision {
+  return {
+    decision: "deny",
+    source,
+    reason: normalizeDecisionReason(reason),
+  };
+}
+
+export function askNetworkDecision(
+  reason: string,
+  source: NetworkDecisionSource = "decider",
+): NetworkDecision {
+  return {
+    decision: "ask",
+    source,
+    reason: normalizeDecisionReason(reason),
+  };
+}
+
+export function networkPolicyDecisionPayloadFromDecision(
+  decision: NetworkDecision,
+  request?: Pick<NetworkPolicyRequest, "protocol" | "host" | "port">,
+): NetworkPolicyDecisionPayload | null {
+  if (decision.decision === "allow") return null;
+  return {
+    decision: decision.decision,
+    source: decision.source,
+    reason: decision.reason,
+    ...(request !== undefined
+      ? {
+          protocol: networkApprovalProtocolFromRequestProtocol(request.protocol),
+          host: request.host,
+          port: request.port,
+        }
+      : {}),
+  };
+}
+
+export function networkApprovalProtocolFromRequestProtocol(
+  protocol: NetworkPolicyRequestProtocol,
+): NetworkApprovalProtocol {
+  switch (protocol) {
+    case "http":
+      return "http";
+    case "https_connect":
+      return "https";
+    case "socks5_tcp":
+      return "socks5-tcp";
+    case "socks5_udp":
+      return "socks5-udp";
+  }
+}
+
+export function blockedRequest(args: Omit<BlockedRequest, "timestamp"> & {
+  readonly timestamp?: number;
+}): BlockedRequest {
+  return {
+    ...args,
+    timestamp: args.timestamp ?? Math.floor(Date.now() / 1000),
+  };
+}
+
+export async function notifyBlockedRequest(
+  observer: BlockedRequestObserver | undefined,
+  request: BlockedRequest,
+): Promise<void> {
+  await observer?.onBlockedRequest(request);
+}
+
+function parseNetworkPolicyDecision(
+  value: unknown,
+): NetworkPolicyDecision | null {
+  return value === "deny" || value === "ask" ? value : null;
+}
+
+function parseNetworkDecisionSource(
+  value: unknown,
+): NetworkDecisionSource | null {
+  switch (value) {
+    case "baseline_policy":
+    case "mode_guard":
+    case "proxy_state":
+    case "decider":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function parseNetworkApprovalProtocol(
+  value: unknown,
+): NetworkApprovalProtocol | null {
+  switch (value) {
+    case "http":
+      return "http";
+    case "https":
+    case "https_connect":
+    case "http-connect":
+      return "https";
+    case "socks5-tcp":
+    case "socks5_tcp":
+      return "socks5-tcp";
+    case "socks5-udp":
+    case "socks5_udp":
+      return "socks5-udp";
+    default:
+      return null;
+  }
+}
+
+export function parseNetworkPolicyDecisionPayload(
+  value: unknown,
+): NetworkPolicyDecisionPayload {
+  if (!isPlainRecord(value)) {
+    throw new Error("network policy decision payload must be an object");
+  }
+
+  const decision = parseNetworkPolicyDecision(value.decision);
+  if (decision === null) {
+    throw new Error("network policy decision must be ask or deny");
+  }
+  const source = parseNetworkDecisionSource(value.source);
+  if (source === null) {
+    throw new Error("network policy decision source is invalid");
+  }
+
+  const protocolValue = value.protocol;
+  const protocol =
+    protocolValue === undefined || protocolValue === null
+      ? undefined
+      : parseNetworkApprovalProtocol(protocolValue);
+  if (protocolValue !== undefined && protocolValue !== null && protocol === null) {
+    throw new Error("network approval protocol is invalid");
+  }
+
+  return {
+    decision,
+    source,
+    ...(protocol !== undefined && protocol !== null ? { protocol } : {}),
+    ...optionalStringField(value, "host"),
+    ...optionalStringField(value, "reason"),
+    ...optionalPortField(value),
+  };
+}
+
+function isAskFromDecider(
+  payload: NetworkPolicyDecisionPayload,
+): boolean {
+  return payload.decision === "ask" && payload.source === "decider";
+}
+
+export function networkApprovalContextFromPayload(
+  payload: NetworkPolicyDecisionPayload,
+): NetworkApprovalContext | null {
+  if (!isAskFromDecider(payload)) return null;
+  if (payload.protocol === undefined) return null;
+
+  const host = payload.host?.trim();
+  if (!host) return null;
+
+  return {
+    host,
+    protocol: payload.protocol,
+  };
+}
+
+export function deniedNetworkPolicyMessage(
+  blocked: BlockedRequest,
+): string | null {
+  const decision = parseNetworkPolicyDecision(blocked.decision);
+  if (decision !== "deny") return null;
+
+  const host = blocked.host.trim();
+  if (host.length === 0) return "Network access was blocked by policy.";
+
+  const detail = deniedReasonDetail(blocked.reason);
+  return `Network access to "${host}" was blocked: ${detail}.`;
+}
+
+export function execpolicyNetworkRuleAmendment(
+  amendment: NetworkPolicyAmendment,
+  networkApprovalContext: NetworkApprovalContext,
+  host: string,
+): ExecPolicyNetworkRuleAmendment {
+  const decision = amendment.action === "allow" ? "allow" : "forbidden";
+  const actionVerb = amendment.action === "allow" ? "Allow" : "Deny";
+  const protocol = execPolicyProtocolFromApprovalProtocol(
+    networkApprovalContext.protocol,
+  );
+  const protocolLabel = protocolJustificationLabel(networkApprovalContext.protocol);
+  return {
+    protocol,
+    decision,
+    justification:
+      `${actionVerb} ${protocolLabel} ` +
+      `access to ${host}`,
+  };
+}
+
+function normalizeDecisionReason(reason: string): string {
+  return reason.length === 0 ? "denied" : reason;
+}
+
+function deniedReasonDetail(reason: string): string {
+  switch (reason) {
+    case "denied":
+      return "domain is explicitly denied by policy and cannot be approved from this prompt";
+    case "not_allowed":
+      return "domain is not on the allowlist for the current sandbox mode";
+    case "not_allowed_local":
+      return "local/private network addresses are blocked by the sandbox policy";
+    case "method_not_allowed":
+      return "request method is blocked by the current network mode";
+    case "proxy_disabled":
+      return "network proxy is disabled";
+    default:
+      return "request is blocked by network policy";
+  }
+}
+
+function execPolicyProtocolFromApprovalProtocol(
+  protocol: NetworkApprovalProtocol,
+): ExecPolicyNetworkRuleProtocol {
+  switch (protocol) {
+    case "http":
+      return "http";
+    case "https":
+      return "https";
+    case "socks5-tcp":
+      return "socks5_tcp";
+    case "socks5-udp":
+      return "socks5_udp";
+  }
+}
+
+function protocolJustificationLabel(protocol: NetworkApprovalProtocol): string {
+  switch (protocol) {
+    case "http":
+      return "http";
+    case "https":
+      return "https_connect";
+    case "socks5-tcp":
+      return "socks5_tcp";
+    case "socks5-udp":
+      return "socks5_udp";
+  }
+}
+
+function optionalStringField<T extends "host" | "reason">(
+  value: Readonly<Record<string, unknown>>,
+  field: T,
+): Partial<Record<T, string>> {
+  const raw = value[field];
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "string") {
+    throw new Error(`network policy decision ${field} must be a string`);
+  }
+  return { [field]: raw } as Partial<Record<T, string>>;
+}
+
+function optionalPortField(
+  value: Readonly<Record<string, unknown>>,
+): { readonly port?: number } {
+  const raw = value.port;
+  if (raw === undefined || raw === null) return {};
+  if (
+    typeof raw !== "number" ||
+    !Number.isInteger(raw) ||
+    raw < 0 ||
+    raw > 65535
+  ) {
+    throw new Error("network policy decision port must be a uint16");
+  }
+  return { port: raw };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}

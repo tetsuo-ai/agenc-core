@@ -1,121 +1,177 @@
 /**
- * Memory Backends for @tetsuo-ai/runtime
+ * Public memory access surface for runtime, tools, and service code.
  *
- * Provides pluggable memory storage for conversation history,
- * task context, and persistent key-value state (Phase 6).
+ * Why this lives here:
+ *   - The low-level memory ports live in focused modules, but tool and code
+ *     paths should not depend on the original donor-shaped file split.
+ *   - Stable exports here let memory callers consume recall, freshness, path
+ *     resolution, and memory-file detection from one AgenC-owned API.
  *
- * @module
+ * Cross-cuts deliberately NOT carried:
+ *   - Team-memory sync transport remains behind the existing feature gates.
+ *   - Session-memory services keep their own session/turn-context boundary.
  */
+import { memoryAge, memoryFreshnessText } from './age.js'
+import type { RelevantMemory } from './find-relevant.js'
 
-// Core types
-export type {
-  MemoryBackend,
-  MemoryBackendConfig,
-  MemoryEntry,
-  MemoryRole,
-  MemoryQuery,
-  AddEntryOptions,
-  DurabilityLevel,
-  DurabilityInfo,
-  StrategicMemoryScope,
-  StrategicMemoryRecordKind,
-  StrategicMemoryRecordEnvelope,
-} from "./types.js";
+type AgenCMdModule = typeof import('./agencmd.js')
 
-// LLM interop helpers + operational limits
 export {
-  entryToMessage,
-  messageToEntryOptions,
-  MEMORY_OPERATIONAL_LIMITS,
-} from "./types.js";
+  memoryAge,
+  memoryAgeDays,
+  memoryFreshnessNote,
+  memoryFreshnessText,
+} from './age.js'
 
-// Error classes
+export type { RelevantMemory } from './find-relevant.js'
+export type { ExternalAgenCMdInclude, MemoryFileInfo } from './agencmd.js'
+
 export {
-  MemoryBackendError,
-  MemoryConnectionError,
-  MemorySerializationError,
-  MemoryEncryptionError,
-} from "./errors.js";
+  clearMemoryFileCaches,
+  filterInjectedMemoryFiles,
+  getAgenCMds,
+  getAllMemoryFilePaths,
+  getExternalAgenCMdIncludes,
+  getLargeMemoryFiles,
+  getProjectMemoryPathForSelector,
+  hasExternalAgenCMdIncludes,
+  isMemoryFilePath,
+  isMemoryMention,
+  MAX_MEMORY_CHARACTER_COUNT,
+  MEMORY_MENTION_ALIASES,
+  MEMORY_MENTION_SYNTAX,
+  resetGetMemoryFilesCache,
+  stripHtmlComments,
+} from './project-memory.js'
 
-// Encryption
-export type { EncryptionConfig, EncryptionProvider } from "./encryption.js";
-export { createAES256GCMProvider } from "./encryption.js";
-
-// In-memory backend (zero deps)
 export {
-  InMemoryBackend,
-  type InMemoryBackendConfig,
-} from "./in-memory/index.js";
+  formatMemoryManifest,
+  MAX_MEMORY_FILES,
+  scanMemoryFiles,
+  type MemoryHeader,
+} from './scan.js'
 
-// SQLite backend (optional better-sqlite3)
-export { SqliteBackend, type SqliteBackendConfig } from "./sqlite/index.js";
-
-// Redis backend (optional ioredis)
-export { RedisBackend, type RedisBackendConfig } from "./redis/index.js";
-
-// Embeddings (Phase 5.1)
 export {
-  type EmbeddingProvider,
-  OpenAIEmbeddingProvider,
-  OllamaEmbeddingProvider,
-  NoopEmbeddingProvider,
-  createEmbeddingProvider,
-  cosineSimilarity,
-  normalizeVector,
-} from "./embeddings.js";
+  getAutoMemEntrypoint,
+  getAutoMemDailyLogPath,
+  getAutoMemPath,
+  getGlobalMemoryEntrypoint,
+  getGlobalMemoryPath,
+  getMemoryBaseDir,
+  getProjectInstructionPath,
+  getProjectMemoryEntrypoint,
+  getProjectMemoryPath,
+  hasAutoMemPathOverride,
+  isAutoMemoryEnabled,
+  isAutoMemPath,
+  isDurableMemoryPath,
+  isExtractModeActive,
+  isGlobalMemoryPath,
+  isProjectMemoryPath,
+  MEMORY_DIRNAME,
+  MEMORY_ENTRYPOINT_NAME,
+  PROJECT_INSTRUCTION_FILE,
+  PROJECT_MEMORY_DIR,
+} from './paths.js'
 
-// Provenance-aware graph layer
 export {
-  MemoryGraph,
-  type ProvenanceSourceType,
-  type ProvenanceSource,
-  type MemoryEdgeType,
-  type MemoryGraphNode,
-  type MemoryGraphEdge,
-  type UpsertMemoryNodeInput,
-  type AddMemoryEdgeInput,
-  type MemoryGraphQuery,
-  type MemoryGraphResult,
-  type MemoryGraphConfig,
-  type CompactOptions,
-} from "./graph.js";
+  detectSessionFileType,
+  detectSessionPatternType,
+  checkTeamMemSecrets,
+  getSecretLabel,
+  isAutoManagedMemoryFile,
+  isAutoManagedMemoryPattern,
+  isAutoMemFile,
+  isMemoryDirectory,
+  isShellCommandTargetingMemory,
+  memoryScopeForPath,
+  redactSecrets,
+  scanForSecrets,
+  type MemoryScope,
+  type SecretMatch,
+  type SessionFileType,
+} from './privacy.js'
 
-// Vector store (Phase 5.2)
-export {
-  InMemoryVectorStore,
-  type InMemoryVectorStoreConfig,
-  type VectorMemoryBackend,
-  type VectorSearchOptions,
-  type HybridSearchOptions,
-  type ScoredMemoryEntry,
-} from "./vector-store.js";
+export function formatRelevantMemoryHeader(
+  path: string,
+  mtimeMs: number,
+): string {
+  const staleness = memoryFreshnessText(mtimeMs)
+  return staleness
+    ? `${staleness}\n\nMemory: ${path}:`
+    : `Memory (saved ${memoryAge(mtimeMs)}): ${path}:`
+}
 
-// Structured memory (daily logs, curated facts, entity extraction)
-export {
-  formatLogDate,
-  DailyLogManager,
-  CuratedMemoryManager,
-  NoopEntityExtractor,
-  renderStructuredMemoryDigest,
-  type StructuredMemoryEntry,
-  type StructuredMemoryDigestEntry,
-  type EntityExtractor,
-} from "./structured.js";
+export async function findRelevantMemories(
+  query: string,
+  memoryDir: string,
+  signal: AbortSignal,
+  recentTools: readonly string[] = [],
+  alreadySurfaced: ReadonlySet<string> = new Set(),
+): Promise<RelevantMemory[]> {
+  // Keep the side-query chain out of scan/path-only imports.
+  const memoryRecall = await import('./find-relevant.js')
+  return memoryRecall.findRelevantMemories(
+    query,
+    memoryDir,
+    signal,
+    recentTools,
+    alreadySurfaced,
+  )
+}
 
-// Memory ingestion (Phase 5.4)
-export {
-  MemoryIngestionEngine,
-  createIngestionHooks,
-  type IngestionConfig,
-  type SessionEndResult,
-} from "./ingestion.js";
+export async function getMemoryFiles(
+  ...args: Parameters<AgenCMdModule['getMemoryFiles']>
+): ReturnType<AgenCMdModule['getMemoryFiles']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.getMemoryFiles(...args)
+}
 
-// Semantic memory retriever (Phase 5.5)
-export {
-  SemanticMemoryRetriever,
-  computeRetrievalScore,
-  estimateTokens as estimateMemoryTokens,
-  type SemanticMemoryRetrieverConfig,
-  type RetrievalResult,
-  type ScoredRetrievalEntry,
-} from "./retriever.js";
+export async function processMemoryFile(
+  ...args: Parameters<AgenCMdModule['processMemoryFile']>
+): ReturnType<AgenCMdModule['processMemoryFile']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.processMemoryFile(...args)
+}
+
+export async function processMdRules(
+  ...args: Parameters<AgenCMdModule['processMdRules']>
+): ReturnType<AgenCMdModule['processMdRules']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.processMdRules(...args)
+}
+
+export async function processConditionedMdRules(
+  ...args: Parameters<AgenCMdModule['processConditionedMdRules']>
+): ReturnType<AgenCMdModule['processConditionedMdRules']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.processConditionedMdRules(...args)
+}
+
+export async function getManagedAndUserConditionalRules(
+  ...args: Parameters<AgenCMdModule['getManagedAndUserConditionalRules']>
+): ReturnType<AgenCMdModule['getManagedAndUserConditionalRules']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.getManagedAndUserConditionalRules(...args)
+}
+
+export async function getMemoryFilesForNestedDirectory(
+  ...args: Parameters<AgenCMdModule['getMemoryFilesForNestedDirectory']>
+): ReturnType<AgenCMdModule['getMemoryFilesForNestedDirectory']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.getMemoryFilesForNestedDirectory(...args)
+}
+
+export async function getConditionalRulesForCwdLevelDirectory(
+  ...args: Parameters<AgenCMdModule['getConditionalRulesForCwdLevelDirectory']>
+): ReturnType<AgenCMdModule['getConditionalRulesForCwdLevelDirectory']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.getConditionalRulesForCwdLevelDirectory(...args)
+}
+
+export async function shouldShowAgenCMdExternalIncludesWarning(
+  ...args: Parameters<AgenCMdModule['shouldShowAgenCMdExternalIncludesWarning']>
+): ReturnType<AgenCMdModule['shouldShowAgenCMdExternalIncludesWarning']> {
+  const agencmd = await import('./agencmd.js')
+  return agencmd.shouldShowAgenCMdExternalIncludesWarning(...args)
+}

@@ -6,15 +6,27 @@
  * Cut 6.2 of the AgenC runtime refactor (TODO.MD).
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const runtimeDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const binDir = path.join(runtimeDir, "bin");
 const distDir = path.join(runtimeDir, "dist");
 const versionPath = path.join(distDir, "VERSION");
+const policySourceDir = path.join(runtimeDir, "src/sandbox/engine/policies");
+const bundledRuntimePolicyDir = path.join(distDir, "policies");
+const linuxLauncherPolicyDir = path.join(distDir, "sandbox/linux-launcher/policies");
+const yoloClassifierPromptSourceDir = path.join(
+  runtimeDir,
+  "src/utils/permissions/yolo-classifier-prompts",
+);
+const yoloClassifierPromptDistDir = path.join(
+  distDir,
+  "yolo-classifier-prompts",
+);
 
 function tryGitRevParse() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -28,22 +40,25 @@ function tryGitRevParse() {
   return null;
 }
 
-function readRuntimePackageVersion() {
-  try {
-    const packageJsonPath = path.join(runtimeDir, "package.json");
-    const raw = JSON.parse(
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      require("node:fs").readFileSync(packageJsonPath, "utf8"),
-    );
-    return typeof raw.version === "string" ? raw.version : "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
 async function main() {
   if (!existsSync(distDir)) {
     mkdirSync(distDir, { recursive: true });
+  }
+  writePackageBinShims();
+  if (existsSync(policySourceDir)) {
+    for (const policyTargetDir of [
+      bundledRuntimePolicyDir,
+      linuxLauncherPolicyDir,
+    ]) {
+      mkdirSync(policyTargetDir, { recursive: true });
+      cpSync(policySourceDir, policyTargetDir, { recursive: true });
+    }
+  }
+  if (existsSync(yoloClassifierPromptSourceDir)) {
+    mkdirSync(yoloClassifierPromptDistDir, { recursive: true });
+    cpSync(yoloClassifierPromptSourceDir, yoloClassifierPromptDistDir, {
+      recursive: true,
+    });
   }
 
   const commit = process.env.AGENC_BUILD_COMMIT ?? tryGitRevParse() ?? "unknown";
@@ -76,6 +91,23 @@ async function main() {
     `[build] wrote ${path.relative(runtimeDir, versionPath)}: ` +
       `${runtimeVersion} @ ${shortCommit} (${buildTime})`,
   );
+}
+
+function writePackageBinShims() {
+  const shims = new Map([
+    ["agenc", "#!/usr/bin/env node\nimport \"../dist/bin/agenc.js\";\n"],
+    [
+      "agenc-linux-sandbox",
+      "#!/usr/bin/env node\nimport \"../dist/sandbox/linux-launcher/main.js\";\n",
+    ],
+  ]);
+
+  mkdirSync(binDir, { recursive: true });
+  for (const [name, source] of shims) {
+    const shimPath = path.join(binDir, name);
+    writeFileSync(shimPath, source, { encoding: "utf8", mode: 0o755 });
+    chmodSync(shimPath, 0o755);
+  }
 }
 
 main().catch((error) => {

@@ -1,0 +1,466 @@
+import React from "react";
+
+import {
+  buildProviderModelCatalog,
+  normalizeProviderSlug,
+  type ProviderSlug,
+} from "../config/resolve-provider.js";
+import {
+  configuredModelForProvider,
+  defaultModelForProvider,
+} from "../config/resolve-model.js";
+import type { AgenCConfig } from "../config/schema.js";
+import { Box, useInput } from "../tui/ink.js";
+import ThemedText from "../tui/components/design-system/ThemedText.js";
+import { MenuModal } from "../tui/components/v2/primitives.js";
+import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import type { SlashCommandContext } from "./types.js";
+
+type ModelRowStatus =
+  | "current"
+  | "configured"
+  | "default"
+  | "available"
+  | "unavailable";
+
+type ModelMenuRow = {
+  readonly model: string;
+  readonly provider: ProviderSlug;
+  readonly status: ModelRowStatus;
+  readonly detail: string;
+  readonly selectable: boolean;
+  readonly groupLabel: string;
+};
+
+export type ModelMenuSnapshot = {
+  readonly provider: ProviderSlug;
+  readonly currentModel: string;
+  readonly configuredModel?: string;
+  readonly defaultModel: string;
+  readonly rows: readonly ModelMenuRow[];
+  readonly activeIndex: number;
+  readonly providerCounts: Readonly<Record<string, number>>;
+};
+
+export type ModelMenuSelectionResult = {
+  readonly message: string;
+  readonly shouldClose: boolean;
+};
+
+type SessionModelSnapshot = {
+  readonly provider?: string;
+  readonly model?: string;
+};
+
+function readConfig(ctx: SlashCommandContext): AgenCConfig | undefined {
+  return (
+    ctx.configStore?.current() ??
+    (ctx.session as unknown as {
+      services?: { configStore?: { current?: () => AgenCConfig } };
+    }).services?.configStore?.current?.()
+  );
+}
+
+function readSessionSelection(ctx: SlashCommandContext): SessionModelSnapshot {
+  const peekState = (ctx.session as unknown as {
+    state?: { unsafePeek?: () => unknown };
+  }).state?.unsafePeek;
+  const rawState =
+    typeof peekState === "function"
+      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
+          sessionConfiguration?: {
+            provider?: { slug?: string };
+            collaborationMode?: { model?: string };
+          };
+        })
+      : null;
+  const directConfig = (ctx.session as unknown as {
+    sessionConfiguration?: {
+      provider?: { slug?: string };
+      collaborationMode?: { model?: string };
+    };
+  }).sessionConfiguration;
+  const sessionConfiguration = rawState?.sessionConfiguration ?? directConfig;
+  return {
+    ...(sessionConfiguration?.provider?.slug
+      ? { provider: sessionConfiguration.provider.slug }
+      : {}),
+    ...(sessionConfiguration?.collaborationMode?.model
+      ? { model: sessionConfiguration.collaborationMode.model }
+      : {}),
+  };
+}
+
+function readAppStateModel(ctx: SlashCommandContext): string | undefined {
+  const state = ctx.appState?.getAppState?.();
+  if (typeof state !== "object" || state === null) return undefined;
+  const model = (state as { mainLoopModel?: unknown }).mainLoopModel;
+  return typeof model === "string" && model.trim().length > 0
+    ? model.trim()
+    : undefined;
+}
+
+function rowStatus(params: {
+  readonly model: string;
+  readonly provider: ProviderSlug;
+  readonly currentProvider: ProviderSlug;
+  readonly currentModel: string;
+  readonly configuredModel?: string;
+  readonly defaultModel: string;
+}): ModelRowStatus {
+  if (
+    params.provider === params.currentProvider &&
+    params.model === params.currentModel
+  ) {
+    return "current";
+  }
+  if (
+    params.configuredModel !== undefined &&
+    params.model === params.configuredModel
+  ) {
+    return "configured";
+  }
+  if (params.model === params.defaultModel) return "default";
+  return "available";
+}
+
+function rowDetail(status: ModelRowStatus, provider: ProviderSlug): string {
+  switch (status) {
+    case "current":
+      return "active session model";
+    case "configured":
+      return "configured for provider";
+    case "default":
+      return "built-in provider default";
+    case "available":
+      return `catalog option for ${provider}`;
+    case "unavailable":
+      return "no models configured";
+  }
+}
+
+function statusColor(
+  status: ModelRowStatus,
+): "success" | "agenc" | "worker" | "inactive" | "warning" {
+  switch (status) {
+    case "current":
+      return "success";
+    case "configured":
+      return "agenc";
+    case "default":
+      return "worker";
+    case "available":
+      return "inactive";
+    case "unavailable":
+      return "warning";
+  }
+}
+
+function statusGlyph(status: ModelRowStatus): string {
+  switch (status) {
+    case "current":
+      return "◆";
+    case "configured":
+      return "●";
+    case "default":
+      return "◇";
+    case "available":
+      return "·";
+    case "unavailable":
+      return "!";
+  }
+}
+
+function providerOrder(
+  catalog: Readonly<Record<string, readonly string[]>>,
+  currentProvider: ProviderSlug,
+): readonly ProviderSlug[] {
+  const ids = Object.keys(catalog)
+    .map(provider => normalizeProviderSlug(provider))
+    .filter((provider): provider is ProviderSlug => provider !== undefined);
+  const unique = [...new Set(ids)];
+  return unique.sort((left, right) => {
+    if (left === currentProvider) return -1;
+    if (right === currentProvider) return 1;
+    return left.localeCompare(right);
+  });
+}
+
+function providerRows(params: {
+  readonly provider: ProviderSlug;
+  readonly currentProvider: ProviderSlug;
+  readonly currentModel: string;
+  readonly config?: AgenCConfig;
+  readonly catalogModels: readonly string[];
+}): readonly ModelMenuRow[] {
+  const configuredModel =
+    params.config !== undefined
+      ? configuredModelForProvider(params.config, params.provider)
+      : undefined;
+  const defaultModel = defaultModelForProvider(params.provider);
+  const candidates = new Set<string>();
+  if (params.provider === params.currentProvider) candidates.add(params.currentModel);
+  if (configuredModel !== undefined) candidates.add(configuredModel);
+  candidates.add(defaultModel);
+  for (const model of params.catalogModels) {
+    const trimmed = model.trim();
+    if (trimmed.length > 0) candidates.add(trimmed);
+  }
+
+  if (candidates.size === 0) {
+    return [{
+      provider: params.provider,
+      model: "(no models)",
+      status: "unavailable",
+      selectable: false,
+      groupLabel: params.provider,
+      detail: rowDetail("unavailable", params.provider),
+    }];
+  }
+
+  return [...candidates].map((model): ModelMenuRow => {
+    const status = rowStatus({
+      model,
+      provider: params.provider,
+      currentProvider: params.currentProvider,
+      currentModel: params.currentModel,
+      configuredModel,
+      defaultModel,
+    });
+    return {
+      model,
+      provider: params.provider,
+      status,
+      selectable: status !== "unavailable",
+      groupLabel: params.provider,
+      detail: rowDetail(status, params.provider),
+    };
+  });
+}
+
+export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapshot {
+  const config = readConfig(ctx);
+  const sessionSelection = readSessionSelection(ctx);
+  const provider =
+    normalizeProviderSlug(sessionSelection.provider) ??
+    normalizeProviderSlug(config?.model_provider) ??
+    "grok";
+  const defaultModel = defaultModelForProvider(provider);
+  const currentModel =
+    readAppStateModel(ctx) ??
+    sessionSelection.model?.trim() ??
+    config?.model?.trim() ??
+    defaultModel;
+  const configuredModel =
+    config !== undefined ? configuredModelForProvider(config, provider) : undefined;
+  const catalog = buildProviderModelCatalog(config);
+  const rows = providerOrder(catalog, provider).flatMap(catalogProvider =>
+    providerRows({
+      provider: catalogProvider,
+      currentProvider: provider,
+      currentModel,
+      ...(config !== undefined ? { config } : {}),
+      catalogModels: catalog[catalogProvider] ?? [],
+    }),
+  );
+  const activeIndex = Math.max(0, rows.findIndex(row => row.status === "current"));
+  const providerCounts = Object.freeze(
+    Object.fromEntries(
+      Object.entries(catalog).map(([catalogProvider, models]) => [
+        catalogProvider,
+        models.length,
+      ]),
+    ),
+  );
+  return {
+    provider,
+    currentModel,
+    ...(configuredModel !== undefined ? { configuredModel } : {}),
+    defaultModel,
+    rows,
+    activeIndex,
+    providerCounts,
+  };
+}
+
+export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
+  const lines = [
+    "Model selection",
+    `Provider: ${snapshot.provider}`,
+    `Current: ${snapshot.currentModel}`,
+    "",
+    "Available models:",
+  ];
+  for (const row of snapshot.rows) {
+    lines.push(
+      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.model} (${row.detail})`,
+    );
+  }
+  lines.push("", "Run /model <model-name> or /model <provider>:<model-name> to switch.");
+  return lines.join("\n");
+}
+
+function modelSwitchMessage(message: string): boolean {
+  return (
+    message.startsWith("Model switch") ||
+    message.startsWith("Model switched")
+  );
+}
+
+function ModelMenuView({
+  snapshot,
+  onDone,
+  onSelect,
+}: {
+  readonly snapshot: ModelMenuSnapshot;
+  readonly onDone: () => void;
+  readonly onSelect: (provider: ProviderSlug, model: string) => Promise<ModelMenuSelectionResult>;
+}): React.ReactNode {
+  const [activeIndex, setActiveIndex] = React.useState(snapshot.activeIndex);
+  const [message, setMessage] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const rows = snapshot.rows;
+
+  useInput((input, key) => {
+    if (busy) return;
+    if (key.escape || input === "q") {
+      onDone();
+      return;
+    }
+    if (key.upArrow || input === "k") {
+      setActiveIndex(index => previousMenuIndex(index, rows.length));
+      return;
+    }
+    if (key.downArrow || input === "j") {
+      setActiveIndex(index => nextMenuIndex(index, rows.length));
+      return;
+    }
+    if (key.return) {
+      const row = rows[activeIndex];
+      if (row === undefined) return;
+      if (!row.selectable) {
+        setMessage(`${row.provider}: no models configured. Use /provider or config to add a default model.`);
+        return;
+      }
+      setBusy(true);
+      setMessage("Switching model...");
+      void onSelect(row.provider, row.model).then(
+        result => {
+          if (result.shouldClose) {
+            onDone();
+            return;
+          }
+          setMessage(result.message);
+          setBusy(false);
+        },
+        error => {
+          setMessage(error instanceof Error ? error.message : String(error));
+          setBusy(false);
+        },
+      );
+    }
+  });
+
+  const selected = rows[activeIndex] ?? rows[0];
+  const selectedCount =
+    selected === undefined ? 0 : snapshot.providerCounts[selected.provider] ?? 0;
+  return (
+    <MenuModal
+      title="model"
+      count={`${rows.length}`}
+      summary={`active ${snapshot.provider} / ${snapshot.currentModel}`}
+      headerRight={busy ? "switching" : "live"}
+      columns={[3, 13, 15, 34, 12, 34]}
+      headers={["", "status", "provider", "model", "group", "detail"]}
+      items={rows}
+      activeIndex={activeIndex}
+      renderRow={(row, _index, active) => {
+        const color = statusColor(row.status);
+        return [
+          <ThemedText key="mark" color={color}>
+            {statusGlyph(row.status)}
+          </ThemedText>,
+          <ThemedText key="status" color={color} wrap="truncate-end">
+            {row.status}
+          </ThemedText>,
+          <ThemedText key="provider" color={row.provider === snapshot.provider ? "success" : "subtle"} wrap="truncate-end">
+            {row.provider}
+          </ThemedText>,
+          <ThemedText key="model" color={active ? "agenc" : "text2"} wrap="truncate-middle">
+            {row.model}
+          </ThemedText>,
+          <ThemedText key="group" color="inactive" wrap="truncate-end">
+            {row.groupLabel}
+          </ThemedText>,
+          <ThemedText key="detail" color="subtle" wrap="truncate-end">
+            {row.detail}
+          </ThemedText>,
+        ];
+      }}
+      preview={
+        <Box flexDirection="column" gap={1}>
+          <ThemedText color="agenc">Model Route</ThemedText>
+          <ThemedText color="text2" wrap="wrap">
+            Empty /model opens this provider-grouped catalog. Use /provider to
+            inspect credentials and provider auth state.
+          </ThemedText>
+          <ThemedText color="subtle" wrap="wrap">
+            Selected: {selected?.provider ?? snapshot.provider}:{selected?.model ?? snapshot.currentModel}
+          </ThemedText>
+          {selected ? (
+            <>
+              <ThemedText color={statusColor(selected.status)} wrap="wrap">
+                {selected.status}: {selected.detail}
+              </ThemedText>
+              <ThemedText color="inactive" wrap="wrap">
+                provider models: {selectedCount > 0 ? selectedCount : "none"}
+              </ThemedText>
+              {!selected.selectable ? (
+                <ThemedText color="warning" wrap="wrap">
+                  No models are available for this provider. Configure a default model
+                  or switch providers first.
+                </ThemedText>
+              ) : null}
+            </>
+          ) : null}
+          {message ? (
+            <ThemedText
+              color={modelSwitchMessage(message) ? "success" : "error"}
+              wrap="wrap"
+            >
+              {message}
+            </ThemedText>
+          ) : null}
+        </Box>
+      }
+      footer={[
+        { keyName: "up/down", label: "navigate" },
+        { keyName: "enter", label: "select" },
+        { keyName: "q", label: "close" },
+      ]}
+      hint="provider:model catalog"
+    />
+  );
+}
+
+export function openModelMenu(
+  ctx: SlashCommandContext,
+  snapshot: ModelMenuSnapshot,
+  onSelect: (provider: ProviderSlug, model: string) => Promise<ModelMenuSelectionResult>,
+): boolean {
+  const setToolJSX = ctx.appState?.setToolJSX;
+  if (typeof setToolJSX !== "function") return false;
+  const close = () => {
+    setToolJSX({
+      jsx: null,
+      shouldHidePromptInput: false,
+      clearLocalJSX: true,
+    });
+  };
+  setToolJSX({
+    isLocalJSXCommand: true,
+    shouldHidePromptInput: true,
+    jsx: <ModelMenuView snapshot={snapshot} onDone={close} onSelect={onSelect} />,
+  });
+  return true;
+}

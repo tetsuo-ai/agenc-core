@@ -1,6 +1,11 @@
-import type { LLMCompactionDiagnostics } from "./types.js";
+import type {
+  LLMCompactionDiagnostics,
+  LLMStructuredOutputRequest,
+} from "./types.js";
 import { LLMProviderError } from "./errors.js";
 import {
+  isStructuredOutputRequested,
+  resolveProviderStructuredOutputMode,
   supportsXaiReasoningEffortParam,
   supportsXaiStructuredOutputsWithTools,
 } from "./structured-output.js";
@@ -69,6 +74,42 @@ export function assertXaiStructuredOutputToolCompatibility(input: {
     `xAI structured outputs with tools require a Grok 4 model; requested ${input.model ?? "unknown model"}`,
     400,
   );
+}
+
+export function assertProviderStructuredOutputCompatibility(input: {
+  readonly providerName: string;
+  readonly model?: string;
+  readonly structuredOutput?: LLMStructuredOutputRequest;
+  readonly toolsRequested?: boolean;
+  readonly api?: "responses" | "chat_completions" | "messages";
+}): void {
+  if (!isStructuredOutputRequested(input.structuredOutput)) {
+    return;
+  }
+  const mode = resolveProviderStructuredOutputMode({
+    provider: input.providerName,
+    model: input.model,
+    api: input.api,
+  });
+  if (mode === "unsupported") {
+    throw new LLMProviderError(
+      input.providerName,
+      `${input.providerName} structured outputs are not supported by ${input.model ?? "unknown model"}`,
+      400,
+    );
+  }
+  if (
+    (input.providerName.trim().toLowerCase() === "grok" ||
+      input.providerName.trim().toLowerCase() === "xai") &&
+    input.toolsRequested
+  ) {
+    assertXaiStructuredOutputToolCompatibility({
+      providerName: input.providerName,
+      model: input.model,
+      structuredOutputRequested: true,
+      toolsRequested: true,
+    });
+  }
 }
 
 /**

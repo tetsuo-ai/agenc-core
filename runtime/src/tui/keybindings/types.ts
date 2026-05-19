@@ -1,0 +1,156 @@
+export const KEYBINDING_CONTEXT_NAMES = [
+  'Global',
+  'Chat',
+  'Autocomplete',
+  'Confirmation',
+  'Help',
+  'Transcript',
+  'HistorySearch',
+  'Task',
+  'ThemePicker',
+  'Scroll',
+  'Settings',
+  'Tabs',
+  'Attachments',
+  'Footer',
+  'MessageSelector',
+  'MessageActions',
+  'DiffDialog',
+  'ModelPicker',
+  'Select',
+  'Plugin',
+] as const
+
+export type KeybindingContextName = (typeof KEYBINDING_CONTEXT_NAMES)[number]
+
+export const KEYBINDING_ACTION_NAMES = [
+  'app:interrupt',
+  'app:exit',
+  'app:toggleTodos',
+  'app:toggleTranscript',
+  'app:toggleBrief',
+  'app:toggleTeammatePreview',
+  'app:toggleTerminal',
+  'app:redraw',
+  'app:globalSearch',
+  'app:quickOpen',
+  'history:search',
+  'history:previous',
+  'history:next',
+  'chat:cancel',
+  'chat:killAgents',
+  'chat:cycleMode',
+  'chat:modelPicker',
+  'chat:fastMode',
+  'chat:thinkingToggle',
+  'chat:submit',
+  'chat:newline',
+  'chat:undo',
+  'chat:externalEditor',
+  'chat:stash',
+  'chat:imagePaste',
+  'chat:messageActions',
+  'autocomplete:accept',
+  'autocomplete:dismiss',
+  'autocomplete:previous',
+  'autocomplete:next',
+  'confirm:yes',
+  'confirm:no',
+  'confirm:previous',
+  'confirm:next',
+  'confirm:nextField',
+  'confirm:previousField',
+  'confirm:cycleMode',
+  'confirm:toggle',
+  'confirm:toggleExplanation',
+  'tabs:next',
+  'tabs:previous',
+  'transcript:toggleShowAll',
+  'transcript:exit',
+  'historySearch:next',
+  'historySearch:accept',
+  'historySearch:cancel',
+  'historySearch:execute',
+  'task:background',
+  'theme:toggleSyntaxHighlighting',
+  'scroll:pageUp',
+  'scroll:pageDown',
+  'scroll:lineUp',
+  'scroll:lineDown',
+  'scroll:top',
+  'scroll:bottom',
+  'selection:copy',
+  'help:dismiss',
+  'attachments:next',
+  'attachments:previous',
+  'attachments:remove',
+  'attachments:exit',
+  'footer:up',
+  'footer:down',
+  'footer:next',
+  'footer:previous',
+  'footer:openSelected',
+  'footer:clearSelection',
+  'footer:close',
+  'messageSelector:up',
+  'messageSelector:down',
+  'messageSelector:top',
+  'messageSelector:bottom',
+  'messageSelector:select',
+  'messageActions:prev',
+  'messageActions:next',
+  'messageActions:prevUser',
+  'messageActions:nextUser',
+  'messageActions:top',
+  'messageActions:bottom',
+  'messageActions:escape',
+  'messageActions:ctrlc',
+  'messageActions:enter',
+  'messageActions:c',
+  'messageActions:p',
+  'diff:dismiss',
+  'diff:previousSource',
+  'diff:nextSource',
+  'diff:back',
+  'diff:viewDetails',
+  'diff:previousFile',
+  'diff:nextFile',
+  'modelPicker:decreaseEffort',
+  'modelPicker:increaseEffort',
+  'select:next',
+  'select:previous',
+  'select:accept',
+  'select:cancel',
+  'plugin:toggle',
+  'plugin:install',
+  'permission:toggleDebug',
+  'settings:search',
+  'settings:retry',
+  'settings:close',
+] as const
+
+export type KeybindingAction = (typeof KEYBINDING_ACTION_NAMES)[number]
+export type BindingCommand = KeybindingAction | `command:${string}`
+export type BindingValue = BindingCommand | null
+
+export type KeybindingBlock = {
+  context: KeybindingContextName
+  bindings: Record<string, BindingValue>
+}
+
+export type ParsedKeystroke = {
+  key: string
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+  meta: boolean
+  super: boolean
+}
+
+export type Chord = ParsedKeystroke[]
+
+export type ParsedBinding = {
+  chord: Chord
+  action: BindingValue
+  context: KeybindingContextName
+}

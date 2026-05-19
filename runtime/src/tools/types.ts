@@ -7,13 +7,10 @@
  * @module
  */
 
-import type { Connection, PublicKey } from "@solana/web3.js";
-import type { Program } from "@coral-xyz/anchor";
-import type { AgencCoordination } from "../types/agenc_coordination.js";
-import type { Wallet } from "../types/wallet.js";
-import type { Logger } from "../utils/logger.js";
-import type { PolicyEngine } from "../policy/engine.js";
-import type { MarketplaceSignerPolicy } from "./agenc/signer-policy.js";
+import type { FunctionCallOutputContentItem } from "./context.js";
+import type { PermissionResult } from "../permissions/types.js";
+import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
+import type { PermissionDefaultMode } from "../config/schema.js";
 
 /**
  * JSON Schema type alias.
@@ -27,6 +24,11 @@ export type ToolSource =
   | "plugin"
   | "skill"
   | "provider_native";
+
+export type ToolRecoveryCategory =
+  | "idempotent"
+  | "side-effecting"
+  | "interactive";
 
 export interface ToolMetadata {
   /** Coarse tool family for discovery/ranking. */
@@ -75,8 +77,30 @@ export interface ToolResult {
   content: string;
   /** True if execution failed (error message in content) */
   isError?: boolean;
+  /** Structured value returned to nested code-mode callers. */
+  codeModeResult?: unknown;
+  /** Rich content items for providers that support multimodal tool outputs. */
+  contentItems?: readonly FunctionCallOutputContentItem[];
   /** Optional metadata for logging — not sent to LLMs */
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * Non-enumerable execution-only fields injected by `runToolUse()`.
+ *
+ * Tools may read these directly from the `args` object when they need
+ * streaming progress or hard-cancel support, but they must not depend
+ * on them being present for correctness.
+ */
+export interface ToolExecutionInjectedArgs {
+  readonly __onProgress?: (event: {
+    readonly chunk: string;
+    readonly stream?: "stdout" | "stderr" | "status";
+    readonly processId?: number;
+  }) => void;
+  readonly __abortSignal?: AbortSignal;
+  readonly __callId?: string;
+  readonly __toolRuntimeContext?: import("./runtimes/context.js").ToolRuntimeAttemptContext;
 }
 
 /**
@@ -97,35 +121,77 @@ export interface Tool {
   readonly metadata?: ToolMetadata;
   /** Execute the tool with the given arguments */
   execute(args: Record<string, unknown>): Promise<ToolResult>;
-}
 
-/**
- * Context provided to built-in tool factories.
- *
- */
-export interface ToolContext {
-  /** Solana RPC connection */
-  readonly connection: Connection;
-  /** Optional wallet for signer-required tools (e.g. agenc.createTask) */
-  readonly wallet?: Wallet;
-  /** Optional Anchor program instance (tools can create read-only if absent) */
-  readonly program?: Program<AgencCoordination>;
-  /** Optional custom program ID when creating internal program instances */
-  readonly programId?: PublicKey;
-  /** Logger instance */
-  readonly logger: Logger;
-  /** Optional local signer policy for signer-backed AgenC marketplace tools. */
-  readonly marketplaceSignerPolicy?: MarketplaceSignerPolicy;
-}
-
-/**
- * Configuration for ToolRegistry.
- */
-export interface ToolRegistryConfig {
-  /** Logger for registry operations */
-  logger?: Logger;
-  /** Optional policy engine for tool call enforcement. */
-  policyEngine?: PolicyEngine;
+  // ── T7 concurrency + limits ──────────────────────────────────────
+  /**
+   * T7 `ConcurrencyClass` tag. Undefined → treated as `Exclusive` by
+   * `classify()`. Import ConcurrencyClass from `runtime/src/tools/concurrency.ts`.
+   */
+  readonly concurrencyClass?: import("./concurrency.js").ConcurrencyClass;
+  /**
+   * Per-call downgrade hook (AgenC pattern). Return `true` when
+   * the specific invocation is safe to run concurrently; `false` or
+   * `throw` downgrades to `Exclusive`.
+   */
+  readonly isConcurrencySafe?: (args: Record<string, unknown>) => boolean;
+  /** I-9 per-tool timeout override (ms). Falls back to
+   *  `DEFAULT_TOOL_TIMEOUT_MS=30_000` when absent. */
+  readonly timeoutMs?: number;
+  /**
+   * Timeout ownership. `executor` means the generic tool executor
+   * enforces `timeoutMs`; `tool` means the tool handler has its own
+   * timeout semantics and the executor should only preserve aborts.
+   */
+  readonly timeoutBehavior?: "executor" | "tool";
+  /** I-15 per-tool result size cap (bytes). Falls back to
+   *  `DEFAULT_MAX_TOOL_RESULT_BYTES=400_000` when absent. */
+  readonly maxResultBytes?: number;
+  /** MCP-style server id when the tool's class is `shared_server`. */
+  readonly serverId?: string;
+  /** Router flag: whether this tool supports the model's
+   *  `parallel_tool_calls` request knob. Used by `router.ts`. */
+  readonly supportsParallelToolCalls?: boolean;
+  /** Orchestrator hint: `true` → orchestrator.classifyToolApproval
+   *  treats the tool as read-only under `granular` policy. */
+  readonly isReadOnly?: boolean;
+  /** Orchestrator hint: `true` → under `on_request` policy the tool
+   *  always requires user approval. */
+  readonly requiresApproval?: boolean;
+  /**
+   * Optional per-tool default approval mode from `tools_config`.
+   * Uses the config-file literals (`on-request`, `on-failure`) and is
+   * mapped to the orchestrator's internal approval policy at dispatch.
+   */
+  readonly defaultPermissionMode?: PermissionDefaultMode;
+  /**
+   * AgenC behavior: tools that must collect interactive user input
+   * can force an approval/user-interaction prompt even when the current
+   * permission mode would otherwise bypass normal approvals.
+   */
+  readonly requiresUserInteraction?: () => boolean;
+  /**
+   * Daemon restart policy for a tool call left in-flight by a crash.
+   * Missing categories are treated as side-effecting.
+   */
+  readonly recoveryCategory?: ToolRecoveryCategory;
+  /**
+   * Optional AgenC-style permission hook. The permissions evaluator
+   * calls this before the generic mode gate so tools can request asks,
+   * denies, or updated inputs based on their own arguments.
+   */
+  readonly checkPermissions?: (
+    input: unknown,
+    context: ToolEvaluatorContext,
+  ) => PermissionResult | Promise<PermissionResult>;
+  /**
+   * AgenC behavior: how this tool should respond to a user
+   * 'interrupt' abort (typed message mid-turn). `'cancel'` → the
+   * executor synthesizes a `user_interrupted` terminal result and
+   * stops the tool. `'block'` → the tool is allowed to finish; the
+   * interrupt does not cancel it. Omitting the field defaults to
+   * `'block'` — conservative, matches AgenC default.
+   */
+  readonly interruptBehavior?: () => "cancel" | "block";
 }
 
 /**

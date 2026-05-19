@@ -7,10 +7,17 @@
  * @module
  */
 
+import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
+
 /**
  * Message role in a conversation
  */
-export type MessageRole = "system" | "user" | "assistant" | "tool";
+export type MessageRole =
+  | "system"
+  | "developer"
+  | "user"
+  | "assistant"
+  | "tool";
 
 /**
  * Local assistant message phase for long-running/tool-heavy flows.
@@ -21,11 +28,24 @@ export type MessageRole = "system" | "user" | "assistant" | "tool";
 type LLMAssistantPhase = "commentary" | "final_answer";
 
 /**
- * A content part for multimodal messages (OpenAI/Grok-compatible format).
+ * A content part for multimodal messages in provider-compatible format.
  */
 export type LLMContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | {
+      type: "document";
+      source: {
+        type: "base64";
+        media_type: "application/pdf";
+        data: string;
+      };
+      title?: string;
+      filename?: string;
+      fallbackText?: string;
+      fallbackTextTruncated?: boolean;
+      fallbackTextError?: string;
+    };
 
 /**
  * A single message in an LLM conversation.
@@ -49,14 +69,21 @@ export interface LLMMessage {
      * When `true`, this message is preserved across compaction
      * boundaries. Compaction extracts anchor-marked messages from
      * the segment being summarized and retains them alongside the
-     * kept tail — matches upstream's `messagesToKeep` pattern at
-     * `services/compact/compact.ts`. Reserved for messages the
+     * kept tail — matches upstream's `messagesToKeep` compaction pattern.
+     * Reserved for messages the
      * runtime depends on for trigger anchoring (e.g. injected
      * reminders whose re-emission gates scan for prior-injection
      * headers in history). Use sparingly; anchor messages that
      * accumulate indefinitely inflate post-compact history.
      */
     readonly anchorPreserve?: boolean;
+    readonly recoverableToolFailure?: {
+      readonly hiddenFromTranscript: true;
+      readonly kind:
+        | "input_validation"
+        | "mcp_tool_not_shell_command"
+        | "shell_workspace_write_policy";
+    };
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];
@@ -67,7 +94,7 @@ export interface LLMMessage {
 }
 
 /**
- * Tool definition in OpenAI-compatible format
+ * Tool definition in provider-compatible format.
  */
 export interface LLMTool {
   type: "function";
@@ -87,6 +114,27 @@ export interface LLMToolCall {
   arguments: string;
 }
 
+export type LLMStreamingToolUseCaller =
+  | { readonly type: "direct" }
+  | {
+      readonly type: "code_execution_20250825" | "code_execution_20260120";
+      readonly tool_id: string;
+    };
+
+export interface LLMStreamingToolUseContentBlock {
+  readonly type: "tool_use";
+  readonly id: string;
+  readonly name: string;
+  readonly input: unknown;
+  readonly caller?: LLMStreamingToolUseCaller;
+}
+
+export interface StreamingToolUse {
+  readonly index: number;
+  readonly contentBlock: LLMStreamingToolUseContentBlock;
+  readonly unparsedToolInput: string;
+}
+
 export interface ToolCallValidationFailure {
   readonly code:
     | "invalid_shape"
@@ -103,6 +151,60 @@ interface ToolCallValidationResult {
   readonly failure?: ToolCallValidationFailure;
 }
 
+const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
+  exec_command: "cmd",
+  "system.bash": "command",
+  FileRead: "file_path",
+  Write: "file_path",
+  Edit: "file_path",
+  "system.listDir": "path",
+  "system.stat": "path",
+  "system.mkdir": "path",
+  "system.delete": "path",
+  Glob: "pattern",
+  Grep: "pattern",
+  exec: "code",
+};
+
+function isBlankString(value: string): boolean {
+  return value.trim().length === 0;
+}
+
+function isLikelyStructuredObjectLiteral(value: string): boolean {
+  return /^\s*\{\s*['"]?\w+['"]?\s*:/.test(value);
+}
+
+function shouldTreatMalformedArgumentsAsStructuredLiteral(
+  toolName: string,
+  value: string,
+): boolean {
+  if (isLikelyStructuredObjectLiteral(value)) {
+    return true;
+  }
+  // AgenC preserves Bash's plain-string command mode even when the
+  // command starts with bracket syntax (`[ -f foo ] && pwd`, `{ pwd; }`).
+  // File/path tools do not have that escape hatch: if their arguments start
+  // with JSON-like delimiters but failed to parse, keep them as malformed
+  // structured input instead of converting the entire blob into a fake path.
+  if (toolName === "system.bash" || toolName === "exec_command") {
+    return false;
+  }
+  return /^\s*[\[{]/.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function wrapPlainStringToolArguments(
+  toolName: string,
+  value: string,
+): Record<string, string> | null {
+  const field = STRING_ARGUMENT_TOOL_FIELDS[toolName];
+  if (!field) return null;
+  return { [field]: value };
+}
+
 /**
  * Token usage statistics
  */
@@ -110,6 +212,10 @@ export interface LLMUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  reasoningOutputTokens?: number;
+  webSearchRequests?: number;
 }
 
 /**
@@ -227,6 +333,9 @@ interface LLMChatToolRoutingOptions {
 }
 
 type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
+type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
+type LLMModelVerbosity = "low" | "medium" | "high";
+type LLMServiceTier = "fast" | "flex";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -309,7 +418,7 @@ interface LLMEncryptedReasoningDiagnostics {
 export interface LLMCollectionsSearchConfig {
   /** Enable the provider-native collections/file search tool. */
   readonly enabled?: boolean;
-  /** xAI/OpenAI-compatible collection/vector store identifiers. */
+  /** Collection/vector store identifiers for compatible providers. */
   readonly vectorStoreIds?: readonly string[];
   /** Optional server-side retrieval limit. */
   readonly maxNumResults?: number;
@@ -340,7 +449,7 @@ export interface LLMXSearchConfig {
 }
 
 export interface LLMRemoteMcpServerConfig {
-  /** xAI/OpenAI-compatible remote MCP server URL. */
+  /** Remote MCP server URL for compatible providers. */
   readonly serverUrl: string;
   /** Stable label used for tool prefixing and trace readability. */
   readonly serverLabel: string;
@@ -438,6 +547,23 @@ export type LLMToolChoice =
  */
 export interface LLMChatOptions {
   /**
+   * Request-scoped model override. Providers default to their constructor
+   * model, but delegated turns such as reviewer/guardian sessions must be
+   * able to run a different model without rebuilding the whole parent
+   * session.
+   */
+  readonly model?: string;
+  /**
+   * Stable request instructions kept out of the conversation transcript.
+   * Provider adapters serialize this through their native system/instructions
+   * field instead of injecting a mid-conversation system message.
+   */
+  readonly systemPrompt?: string;
+  /** Effective input context window for this request. */
+  readonly contextWindowTokens?: number;
+  /** Positive output-token budget for this request. */
+  readonly maxOutputTokens?: number;
+  /**
    * Optional stable session key passed to providers that expose a
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
    * optimization — has no effect on correctness. No server-side
@@ -445,6 +571,10 @@ export interface LLMChatOptions {
    */
   readonly promptCacheKey?: string;
   readonly toolRouting?: LLMChatToolRoutingOptions;
+  /** Request-scoped tool catalog. Providers should prefer this over
+   * constructor-time tools so late MCP/dynamic tools can appear after
+   * session startup. */
+  readonly tools?: ReadonlyArray<LLMTool>;
   readonly toolChoice?: LLMToolChoice;
   /** Optional request-scoped structured output contract. */
   readonly structuredOutput?: LLMStructuredOutputRequest;
@@ -454,6 +584,12 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
+  /** Provider-facing reasoning-summary hint for APIs that expose it. */
+  readonly reasoningSummary?: LLMReasoningSummary;
+  /** Provider-facing output verbosity hint for APIs that expose it. */
+  readonly modelVerbosity?: LLMModelVerbosity;
+  /** Provider-facing service-tier hint for APIs that expose it. */
+  readonly serviceTier?: LLMServiceTier;
   readonly trace?: LLMChatTraceOptions;
   /** Upper bound for this individual provider call. */
   readonly timeoutMs?: number;
@@ -463,8 +599,8 @@ export interface LLMChatOptions {
    * Disable provider-side parallel tool calls for this request. Used by the
    * meta-planner and other goal-only flows that intentionally do not want the
    * model to fan out into multiple concurrent tool invocations on a single
-   * planning turn. Honored by providers that expose the OpenAI-compatible
-   * `parallel_tool_calls` request flag (Grok, OpenAI, etc.).
+   * planning turn. Honored by providers that expose the
+   * `parallel_tool_calls` request flag.
    */
   readonly parallelToolCalls?: boolean;
 }
@@ -533,6 +669,20 @@ export interface LLMResponse {
   structuredOutput?: LLMStructuredOutputResult;
   /** Encrypted reasoning availability for this provider response. */
   encryptedReasoning?: LLMEncryptedReasoningDiagnostics;
+  /**
+   * Extended-thinking blocks captured from the final response (messages-API
+   * thinking / redacted_thinking content blocks, or Responses-API reasoning
+   * summaries normalised into the same shape). Distinct from `content` —
+   * `content` is visible assistant text only, `thinking` is the model's
+   * reasoning channel. Used by the runtime to emit `agent_thinking` for
+   * transcript persistence after the streaming pass completes.
+   */
+  thinking?: ReadonlyArray<{
+    readonly text: string;
+    readonly signature?: string;
+    readonly redacted: boolean;
+    readonly kind?: "thinking" | "reasoning_summary";
+  }>;
   finishReason: "stop" | "tool_calls" | "length" | "content_filter" | "error";
   /** Underlying error when finishReason is "error". */
   error?: Error;
@@ -557,6 +707,86 @@ export interface LLMStreamChunk {
    * repaired). The normal delta path leaves this undefined.
    */
   resetBuffer?: boolean;
+  /**
+   * Provider-emitted signal that a tool_use content block has begun
+   * streaming its arguments. Mirrors provider content_block_start
+   * with content_block.type === 'tool_use'. Consumed downstream by
+   * runtime/src/phases/stream-model.ts (which translates it into a
+   * `tool_input_block_start` session event) so the TUI bridge can
+   * seed an entry in transcript.streamingToolUses. Other providers
+   * that do not emit streaming tool inputs leave this undefined.
+   */
+  toolInputBlockStart?: {
+    callId: string;
+    index: number;
+    contentBlock: {
+      type: "tool_use";
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+    };
+  };
+  /**
+   * Provider-emitted signal carrying one input_json_delta payload for
+   * a streaming tool_use block. Mirrors provider
+   * content_block_delta with delta.type === 'input_json_delta'.
+   * Translated downstream into a `tool_input_delta` session event;
+   * the TUI bridge appends `partialJson` to the matching slot in
+   * streamingToolUses. Independent of the existing toolCalls field
+   * (which is only set at content_block_stop with the completed,
+   * fully-parsed tool call).
+   */
+  toolInputDelta?: {
+    callId: string;
+    index: number;
+    partialJson: string;
+  };
+  /**
+   * Provider-emitted signal that an extended-thinking (or redacted-thinking)
+   * content block has begun streaming. Mirrors provider content_block_start
+   * with content_block.type === 'thinking' | 'redacted_thinking'. Translated
+   * downstream into an `assistant_thinking_block_start` session event so the
+   * TUI bridge seeds an entry in transcript.streamingThinking. Providers that
+   * do not surface extended thinking leave this undefined.
+   */
+  thinkingBlockStart?: {
+    index: number;
+    redacted: boolean;
+  };
+  /**
+   * Provider-emitted incremental delta for an open thinking block. Mirrors
+   * provider content_block_delta with delta.type === 'thinking_delta'. The
+   * delta payload is plain assistant chain-of-thought text (sanitised
+   * downstream the same way visible text is). The runtime translates this
+   * into an `assistant_thinking_delta` session event; the TUI bridge appends
+   * to the matching streamingThinking accumulator.
+   */
+  thinkingDelta?: {
+    delta: string;
+    index: number;
+  };
+  /**
+   * Provider-emitted close for a thinking block. Translated into an
+   * `assistant_thinking_block_stop` session event so the TUI flips the
+   * accumulator to `isStreaming: false` (preserving the post-stream
+   * visibility window) and marks the block ready for transcript persistence.
+   */
+  thinkingBlockStop?: {
+    index: number;
+  };
+  /**
+   * Provider-emitted reasoning-summary delta for Responses-API style
+   * providers (xAI Grok reasoning models, GPT-style reasoning models) that
+   * surface a human-readable summary of the model's reasoning channel
+   * separate from the visible response. Forwarded downstream through the
+   * same `assistant_thinking_*` events as messages-API thinking blocks but
+   * tagged with `kind: "reasoning_summary"` so the TUI can label it
+   * accordingly.
+   */
+  reasoningSummaryDelta?: {
+    delta: string;
+    summaryIndex: number;
+  };
 }
 
 /**
@@ -572,6 +802,20 @@ export type ToolHandler = (
   args: Record<string, unknown>,
 ) => Promise<string>;
 
+export interface LLMProviderStartupPrewarmParams {
+  readonly conversationId: string;
+  readonly threadId: string;
+}
+
+export interface LLMProviderStartupPrewarmHandle {
+  chatStream(
+    messages: LLMMessage[],
+    onChunk: StreamProgressCallback,
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse>;
+  dispose?(): Promise<void> | void;
+}
+
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -586,6 +830,13 @@ export interface LLMProvider {
   healthCheck(): Promise<boolean>;
   /** Report the effective model/context profile used for prompt budgeting. */
   getExecutionProfile?(): Promise<LLMProviderExecutionProfile>;
+  /** Optional startup hook for providers with session/socket prewarm support. */
+  prewarmStartup?(
+    params: LLMProviderStartupPrewarmParams,
+  ):
+    | Promise<LLMProviderStartupPrewarmHandle | void>
+    | LLMProviderStartupPrewarmHandle
+    | void;
   /** Optional debug/replay hook for fetching a stored provider response by ID. */
   retrieveStoredResponse?(responseId: string): Promise<LLMStoredResponse>;
   /** Optional debug/replay hook for deleting a stored provider response by ID. */
@@ -618,6 +869,14 @@ export interface LLMProviderConfig {
   maxRetries?: number;
   /** Base delay between retries in milliseconds */
   retryDelayMs?: number;
+  /** Ordered model/provider fallback ladder for repeated overload failures. */
+  providerFallback?: ProviderFallbackLadderOptions;
+  /** Best-effort warning sink for provider/transport contract events. */
+  emitWarning?: (warning: { cause: string; message: string }) => void;
+  /** Internal diagnostic sink for debug/replay metadata that must not surface as a warning. */
+  emitDiagnostic?: (diagnostic: { cause: string; message: string }) => void;
+  /** Capability-drift hook fired when the provider rejects a claimed feature. */
+  onCapabilityDrift?: (warning: { message: string; status?: number }) => void;
 }
 
 /**
@@ -650,19 +909,38 @@ function decodeHtmlEntitiesDeep(value: unknown): unknown {
   );
 }
 
-function parseToolArguments(
+function normalizeToolArguments(
+  toolName: string,
   argumentsRaw: string,
 ): { value: unknown } | null {
+  const finalizeParsed = (value: unknown): { value: unknown } => {
+    if (isRecord(value)) {
+      return { value };
+    }
+    if (typeof value === "string" && !isBlankString(value)) {
+      return {
+        value: wrapPlainStringToolArguments(toolName, value) ?? value,
+      };
+    }
+    return { value };
+  };
   try {
-    return {
-      value: JSON.parse(argumentsRaw) as unknown,
-    };
+    return finalizeParsed(JSON.parse(argumentsRaw) as unknown);
   } catch {
     try {
-      return {
-        value: JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown,
-      };
+      return finalizeParsed(JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown);
     } catch {
+      const decoded = decodeHtmlEntities(argumentsRaw);
+      if (
+        isBlankString(decoded) ||
+        shouldTreatMalformedArgumentsAsStructuredLiteral(toolName, decoded)
+      ) {
+        return { value: {} };
+      }
+      const wrapped = wrapPlainStringToolArguments(toolName, decoded);
+      if (wrapped) {
+        return { value: wrapped };
+      }
       return null;
     }
   }
@@ -722,7 +1000,7 @@ export function validateToolCallDetailed(
     };
   }
 
-  const parsedResult = parseToolArguments(argumentsRaw);
+  const parsedResult = normalizeToolArguments(name, argumentsRaw);
   if (!parsedResult) {
     return {
       toolCall: null,
@@ -759,34 +1037,4 @@ export function validateToolCallDetailed(
 
 export function validateToolCall(raw: unknown): LLMToolCall | null {
   return validateToolCallDetailed(raw).toolCall;
-}
-
-/**
- * Returns `true` if the message should survive compaction boundaries.
- * Compaction callers partition history into `anchorPreserved` (retained
- * alongside the kept tail) and the rest (summarized into a single
- * system message). Matches upstream's `messagesToKeep` pattern.
- */
-export function isAnchorPreserved(message: LLMMessage): boolean {
-  return message.runtimeOnly?.anchorPreserve === true;
-}
-
-/**
- * Split a history slice into the anchor-preserved subset and the rest.
- * Order is preserved within each subset. Used by compaction to decide
- * what to summarize (non-anchor) vs what to retain verbatim (anchor).
- */
-export function partitionByAnchorPreserve(
-  messages: readonly LLMMessage[],
-): { anchorPreserved: LLMMessage[]; rest: LLMMessage[] } {
-  const anchorPreserved: LLMMessage[] = [];
-  const rest: LLMMessage[] = [];
-  for (const message of messages) {
-    if (isAnchorPreserved(message)) {
-      anchorPreserved.push(message);
-    } else {
-      rest.push(message);
-    }
-  }
-  return { anchorPreserved, rest };
 }

@@ -1,0 +1,105 @@
+import { describe, expect, test } from "vitest";
+
+import {
+  buildStructuredOutputTextFormat,
+  enforceStrictStructuredOutputSchema,
+  resolveProviderStructuredOutputMode,
+  supportsOpenAIStructuredOutputs,
+  supportsXaiStructuredOutputsWithTools,
+} from "./structured-output.js";
+
+const SCHEMA = {
+  type: "object",
+  properties: {
+    answer: {
+      type: "string",
+      format: "uri",
+    },
+    meta: {
+      type: "object",
+      properties: {
+        confidence: { type: "number" },
+      },
+    },
+  },
+  required: ["answer"],
+};
+
+describe("structured-output provider capability helpers", () => {
+  test("gates xAI structured outputs with tools to Grok 4 family models", () => {
+    expect(supportsXaiStructuredOutputsWithTools("grok-4.3")).toBe(true);
+    expect(supportsXaiStructuredOutputsWithTools("grok-4.20-reasoning")).toBe(true);
+    expect(supportsXaiStructuredOutputsWithTools("grok-code-fast-1")).toBe(false);
+  });
+
+  test("keeps structured output support open for current models and closed for known old ones", () => {
+    expect(supportsOpenAIStructuredOutputs("gpt-5")).toBe(true);
+    expect(supportsOpenAIStructuredOutputs("gpt-4o-2024-08-06")).toBe(true);
+    expect(supportsOpenAIStructuredOutputs("gpt-4-turbo")).toBe(false);
+  });
+
+  test("resolves provider-specific structured-output modes", () => {
+    expect(
+      resolveProviderStructuredOutputMode({
+        provider: "openai",
+        model: "gpt-5",
+        api: "responses",
+      }),
+    ).toBe("native_text_format");
+    expect(
+      resolveProviderStructuredOutputMode({
+        provider: "openai",
+        model: "gpt-5",
+        api: "chat_completions",
+      }),
+    ).toBe("chat_response_format");
+    expect(
+      resolveProviderStructuredOutputMode({
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        api: "messages",
+      }),
+    ).toBe("anthropic_tool_use");
+  });
+
+  test("enforces compatible strict JSON schema constraints recursively", () => {
+    expect(enforceStrictStructuredOutputSchema(SCHEMA)).toEqual({
+      type: "object",
+      properties: {
+        answer: {
+          type: "string",
+        },
+        meta: {
+          type: "object",
+          properties: {
+            confidence: { type: "number" },
+          },
+          additionalProperties: false,
+          required: ["confidence"],
+        },
+      },
+      additionalProperties: false,
+      required: ["answer", "meta"],
+    });
+  });
+
+  test("builds text.format payloads with strict schema defaults", () => {
+    const format = buildStructuredOutputTextFormat({
+      schema: {
+        type: "json_schema",
+        name: "answer",
+        schema: SCHEMA,
+      },
+    });
+
+    expect(format).toMatchObject({
+      type: "json_schema",
+      name: "answer",
+      strict: true,
+      schema: {
+        additionalProperties: false,
+        required: ["answer", "meta"],
+      },
+    });
+  });
+});

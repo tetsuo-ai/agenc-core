@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+npm run build --workspace=@tetsuo-ai/runtime
+npm run check:tui-runtime-startup --workspace=@tetsuo-ai/runtime

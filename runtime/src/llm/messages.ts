@@ -11,7 +11,11 @@
  * Steps in order:
  *   1. Strip "virtual" / boundary system messages whose content starts
  *      with `[snip]`, `[microcompact]`, `[context-collapse]`, `[autocompact]`,
- *      `[reactive-compact]`, or `[boundary]`.
+ *      `[reactive recovery]`, or `[boundary]`, and drop non-leading system
+ *      messages. AgenC keeps system prompt blocks out of the conversation
+ *      list; AgenC may carry the single leading prompt as a message before
+ *      provider wiring, but mid-conversation system messages are runtime
+ *      signals and must not reach providers.
  *   2. Drop empty assistant content unless that message is the very
  *      last one in the array.
  *   3. Merge consecutive same-role messages of role `user` so the API
@@ -20,7 +24,7 @@
  *      preceding assistant `tool_calls` entry.
  *   5. Phase J: tag strategic messages with `cacheControl: "ephemeral"`
  *      breakpoints so provider adapters that support prompt caching
- *      (Anthropic, xAI Grok 4) can pin stable prefixes. Phase J tags
+ *      can pin stable prefixes. Phase J tags
  *      the LAST system message, the LAST non-tool user message, and
  *      the LAST tool result that survived the normalization above.
  *      These are the three cut points the reference runtime uses.
@@ -37,7 +41,7 @@ const BOUNDARY_PREFIXES = [
   "[microcompact]",
   "[context-collapse]",
   "[autocompact]",
-  "[reactive-compact]",
+  "[reactive recovery]",
   "[boundary]",
 ];
 
@@ -50,11 +54,18 @@ export function normalizeMessagesForAPI(
   options?: NormalizeMessagesForAPIOptions,
 ): readonly LLMMessage[] {
   const stripped: LLMMessage[] = [];
+  let sawNonSystemMessage = false;
   for (const message of messages) {
     if (message.role === "system" && typeof message.content === "string") {
       if (BOUNDARY_PREFIXES.some((prefix) => message.content.toString().startsWith(prefix))) {
         continue;
       }
+    }
+    if (message.role === "system" && sawNonSystemMessage) {
+      continue;
+    }
+    if (message.role !== "system") {
+      sawNonSystemMessage = true;
     }
     stripped.push(message);
   }
@@ -134,7 +145,7 @@ export function normalizeMessagesForAPI(
 /**
  * Tag the last system message, the last non-tool user message, and
  * the last tool message with a `cacheControl: "ephemeral"` marker so
- * providers that support prompt caching (Anthropic, xAI Grok 4) can
+ * providers that support prompt caching can
  * pin stable prefixes. Mirrors the reference runtime's three-cut-point
  * strategy.
  *
@@ -182,8 +193,9 @@ function selectCacheBreakpointIndexes(
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
     if (!message) continue;
-    if (message.role === "system") lastSystem = i;
-    else if (message.role === "user") lastUser = i;
+    if (message.role === "system" || message.role === "developer") {
+      lastSystem = i;
+    } else if (message.role === "user") lastUser = i;
     else if (message.role === "tool") lastTool = i;
   }
   const picked = new Set<number>();

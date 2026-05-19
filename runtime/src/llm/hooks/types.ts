@@ -1,134 +1,88 @@
 /**
- * Hook system types — Phase H narrowed vocabulary.
+ * Lifecycle hook event types for the gut runtime.
  *
- * Covers the events this runtime actually fires, plus the ones it has
- * a clear wiring plan for. Phase H (16-phase refactor, TODO.MD)
- * deleted 8 event types that were declared but never dispatched:
- * `UserPromptSubmit`, `Notification`, `FileChanged`, `ConfigChange`,
- * `PermissionRequest`, `PermissionDenied`, `SubagentStart`,
- * `SubagentStop`. AgenC has no watcher that would fire the
- * filesystem/config events; the approval engine already owns
- * permission escalation; subagent lifecycle goes through WebSocket
- * `WS_SUBAGENTS_*` events instead; and user prompt submission is
- * a channel-plugin concern, not a hook-dispatcher concern.
+ * Lean port of the upstream `PreCompact` / `PostCompact` / `SessionStart`
+ * hook surfaces. Tool-use hooks live in
+ * `runtime/src/tools/hooks.ts` and are unrelated — this module is for
+ * runtime lifecycle dispatch (compaction boundaries, session start).
  *
- * The 8 remaining events are:
- *   - `PreToolUse` / `PostToolUse` / `PostToolUseFailure` — LIVE.
- *     Fired from the tool dispatch loop around every tool call.
- *   - `SessionStart` — fired from `daemon.ts` when a new session is
- *     created (Phase H wire-up pending — declared for now).
- *   - `Stop` / `StopFailure` — fired from the generator Terminal
- *     path in `execute-chat.ts` (Phase H wire-up pending).
- *   - `PreCompact` / `PostCompact` — fired from the layered
- *     compaction chain in `chat-executor-tool-loop.ts` (Phase H
- *     wire-up pending).
+ * Kept intentionally minimal: just enough to model dispatch + result
+ * collection. No matcher DSL, no plugin loader, no settings-driven shell
+ * exec — the gut runtime registers hooks programmatically.
  *
  * @module
  */
+import type { HookResultMessage } from "../../types/message.js";
 
-import type { LLMMessage, LLMToolCall } from "../types.js";
+export type LifecycleHookEvent = "PreCompact" | "PostCompact" | "SessionStart";
 
-export type HookEvent =
-  | "SessionStart"
-  | "PreToolUse"
-  | "PostToolUse"
-  | "PostToolUseFailure"
-  | "Stop"
-  | "StopFailure"
-  | "PreCompact"
-  | "PostCompact";
+export type CompactTrigger = "manual" | "auto";
+export type SessionStartSource = "startup" | "resume" | "clear" | "compact";
 
-export type HookKind = "command" | "callback" | "function" | "http";
-
-export interface HookDefinition {
-  readonly event: HookEvent;
-  readonly kind: HookKind;
-  /** Glob / regex / pipe-separated alternatives the matcher resolves. */
-  readonly matcher?: string;
-  /** Shell command or HTTP URL or callback id. */
-  readonly target: string;
-  /** Per-hook timeout. */
-  readonly timeoutMs?: number;
+/** Input passed to a `PreCompact` hook. Shape mirrors upstream
+ *  `PreCompactHookInput` but trimmed to the fields the gut compact
+ *  pipeline actually supplies. */
+export interface PreCompactHookInput {
+  readonly hook_event_name: "PreCompact";
+  readonly trigger: CompactTrigger;
+  readonly custom_instructions: string | null;
 }
 
-interface HookContextBase {
-  readonly event: HookEvent;
-  readonly sessionId: string;
-  readonly chainId?: string;
-  readonly depth?: number;
-  /** Absolute path to the session transcript for hook stdin payloads. */
-  readonly transcriptPath?: string;
-  /** Current working directory reported to hook subprocesses. */
+/** Input passed to a `PostCompact` hook. */
+export interface PostCompactHookInput {
+  readonly hook_event_name: "PostCompact";
+  readonly trigger: CompactTrigger;
+  readonly compact_summary: string;
+}
+
+/** Input passed to a `SessionStart` hook. */
+export interface SessionStartHookInput {
+  readonly hook_event_name: "SessionStart";
+  readonly source: SessionStartSource;
+  readonly session_id?: string;
+  readonly transcript_path?: string | null;
   readonly cwd?: string;
-  /** Optional permission mode surfaced to matcher-aware hooks. */
-  readonly permissionMode?: string;
+  readonly agent_type?: string;
+  readonly model?: string;
+  readonly permission_mode?: string;
 }
 
-interface HookFailureContext {
-  readonly name?: string;
-  readonly message: string;
-  readonly stopReason?: string;
-  readonly stopReasonDetail?: string;
-  readonly failureClass?: string;
-  readonly providerName?: string;
-  readonly statusCode?: number;
-  readonly timeoutMs?: number;
+export type HookInput =
+  | PreCompactHookInput
+  | PostCompactHookInput
+  | SessionStartHookInput;
+
+/**
+ * Result returned by a single hook invocation. Modeled after upstream
+ * `AggregatedHookResult` but only carries the fields the gut compact /
+ * session-start pipelines actually consume:
+ *
+ *  - `succeeded` / `output` — drive PreCompact/PostCompact display +
+ *    custom-instruction merging.
+ *  - `command` — surfaces in `[command] completed/failed` display lines.
+ *  - `message` — SessionStart hooks may emit a synthesized message that
+ *    is concatenated into the post-compact prefix.
+ *  - `additionalContexts` — SessionStart hooks may emit extra context
+ *    strings that the runtime wraps in a single attachment message.
+ */
+export interface HookResult {
+  readonly succeeded: boolean;
+  readonly output: string;
+  readonly command?: string;
+  readonly message?: HookResultMessage;
+  readonly additionalContexts?: ReadonlyArray<string>;
 }
 
-interface PreToolUseContext extends HookContextBase {
-  readonly event: "PreToolUse";
-  readonly toolCall: LLMToolCall;
-  /** Pre-parsed tool args surfaced to hook stdin as `tool_input`. */
-  readonly parsedInput?: Record<string, unknown>;
-}
+/**
+ * Hook callback signature. Hooks receive the typed input for their
+ * registered event and may return undefined to signal "no result"
+ * (the dispatcher drops undefined results before aggregation).
+ */
+export type LifecycleHook<I extends HookInput = HookInput> = (
+  input: I,
+  signal?: AbortSignal,
+) => Promise<HookResult | undefined> | HookResult | undefined;
 
-interface PostToolUseContext extends HookContextBase {
-  readonly event: "PostToolUse";
-  readonly toolCall: LLMToolCall;
-  readonly result: string;
-  readonly isError?: boolean;
-  readonly parsedInput?: Record<string, unknown>;
-}
-
-interface PostToolUseFailureContext extends HookContextBase {
-  readonly event: "PostToolUseFailure";
-  readonly toolCall: LLMToolCall;
-  readonly errorMessage: string;
-  readonly parsedInput?: Record<string, unknown>;
-  readonly isInterrupt?: boolean;
-}
-
-interface SessionLifecycleContext extends HookContextBase {
-  readonly event: "SessionStart" | "Stop" | "StopFailure";
-  readonly messages: readonly LLMMessage[];
-  readonly finalContent?: string;
-  readonly stopReason?: string;
-  readonly stopReasonDetail?: string;
-  readonly failure?: HookFailureContext;
-}
-
-interface CompactContext extends HookContextBase {
-  readonly event: "PreCompact" | "PostCompact";
-  readonly layer:
-    | "snip"
-    | "microcompact"
-    | "context-collapse"
-    | "autocompact"
-    | "reactive-compact";
-}
-
-export type HookContext =
-  | PreToolUseContext
-  | PostToolUseContext
-  | PostToolUseFailureContext
-  | SessionLifecycleContext
-  | CompactContext;
-
-export interface HookOutcome {
-  readonly action: "allow" | "deny" | "noop";
-  readonly message?: string;
-  /** Optional input override (e.g. PreToolUse rewriting tool args). */
-  readonly updatedInput?: Record<string, unknown>;
-  /** Async hook elapsed time for diagnostics. */
-  readonly durationMs?: number;
-}
+export type PreCompactHook = LifecycleHook<PreCompactHookInput>;
+export type PostCompactHook = LifecycleHook<PostCompactHookInput>;
+export type SessionStartHook = LifecycleHook<SessionStartHookInput>;

@@ -1,0 +1,1662 @@
+/**
+ * Ports the donor app-server protocol's JSON-RPC envelope and method-registry
+ * shape onto AgenC's daemon control surface.
+ *
+ * Why this lives here:
+ *   - AgenC uses dot-separated daemon methods as the stable public protocol,
+ *     while the donor app-server protocol uses a broader slash-separated API.
+ *
+ * Cross-cuts deliberately NOT carried:
+ *   - account, plugin, marketplace, app, filesystem, and desktop endpoints
+ *     from the donor app-server surface are outside AgenC's daemon protocol.
+ */
+
+export const JSON_RPC_VERSION = "2.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.0.0" as const;
+export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
+  "urn:agenc:app-server:protocol" as const;
+export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
+  "@tetsuo-ai/protocol" as const;
+export const AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT =
+  "./daemon-json-rpc.schema.json" as const;
+export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
+  packageName: AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
+  schemaExport: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
+  schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
+} as const;
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonArray = readonly JsonValue[];
+export type JsonValue = JsonPrimitive | JsonArray | JsonObject;
+export interface JsonObject {
+  readonly [key: string]: JsonValue | undefined;
+}
+
+export type RequestId = string | number;
+
+export const AGENC_DAEMON_METHODS = [
+  "initialize",
+  "request.cancel",
+  "agent.create",
+  "agent.list",
+  "agent.attach",
+  "agent.stop",
+  "agent.logs",
+  "session.create",
+  "session.list",
+  "session.attach",
+  "session.detach",
+  "session.terminate",
+  "session.clear",
+  "session.snapshot",
+  "session.cancelTurn",
+  "session.mcp.addServer",
+  "message.send",
+  "message.stream",
+  "thread/realtime/start",
+  "thread/realtime/appendAudio",
+  "thread/realtime/appendText",
+  "thread/realtime/stop",
+  "thread/realtime/listVoices",
+  "tool.approve",
+  "tool.deny",
+  "tool.cancel",
+  "elicitation.respond",
+  "permission.list",
+  "fs.fuzzy_search",
+  "commandExec.start",
+  "commandExec.write",
+  "commandExec.resize",
+  "commandExec.terminate",
+  "health.ping",
+  "health.ready",
+  "health.stats",
+  "daemon.reload",
+  "auth.login",
+  "auth.whoami",
+  "auth.logout",
+] as const;
+
+export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
+
+export const AGENC_DAEMON_INTERNAL_METHODS = [
+  "session.partialCompactFromMessage",
+  "session.rewindConversationToMessage",
+] as const;
+
+export type AgenCDaemonInternalMethod =
+  (typeof AGENC_DAEMON_INTERNAL_METHODS)[number];
+
+export type AgenCDaemonKnownMethod =
+  | AgenCDaemonMethod
+  | AgenCDaemonInternalMethod;
+
+export const AGENC_DAEMON_NOTIFICATION_METHODS = [
+  "commandExec.outputDelta",
+  "event.message_chunk",
+  "event.tool_request",
+  "event.permission_request",
+  "event.user_input_request",
+  "event.mcp_elicitation_request",
+  "event.agent_status",
+  "event.session_event",
+  "thread/realtime/started",
+  "thread/realtime/itemAdded",
+  "thread/realtime/transcript/delta",
+  "thread/realtime/transcript/done",
+  "thread/realtime/outputAudio/delta",
+  "thread/realtime/sdp",
+  "thread/realtime/error",
+  "thread/realtime/closed",
+] as const;
+
+export type AgenCDaemonNotificationMethod =
+  (typeof AGENC_DAEMON_NOTIFICATION_METHODS)[number];
+
+export interface AgenCDaemonMethodSpec<
+  Method extends AgenCDaemonMethod = AgenCDaemonMethod,
+> {
+  readonly method: Method;
+  readonly direction: "client-to-server";
+  readonly params: "required" | "optional";
+  readonly result: "object";
+  readonly description: string;
+}
+
+export interface AgenCDaemonInternalMethodSpec<
+  Method extends AgenCDaemonInternalMethod = AgenCDaemonInternalMethod,
+> {
+  readonly method: Method;
+  readonly direction: "client-to-server";
+  readonly params: "required";
+  readonly result: "object";
+  readonly description: string;
+}
+
+export interface AgenCDaemonNotificationSpec<
+  Method extends AgenCDaemonNotificationMethod = AgenCDaemonNotificationMethod,
+> {
+  readonly method: Method;
+  readonly direction: "server-to-client";
+  readonly params: "required";
+  readonly description: string;
+}
+
+function defineMethodSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
+  },
+>(spec: Spec): Spec {
+  return spec;
+}
+
+function defineInternalMethodSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonInternalMethod]: AgenCDaemonInternalMethodSpec<Method>;
+  },
+>(spec: Spec): Spec {
+  return spec;
+}
+
+function defineNotificationSpecs<
+  const Spec extends {
+    readonly [Method in AgenCDaemonNotificationMethod]: AgenCDaemonNotificationSpec<Method>;
+  },
+>(spec: Spec): Spec {
+  return spec;
+}
+
+export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
+  initialize: {
+    method: "initialize",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Initialize a daemon JSON-RPC connection.",
+  },
+  "request.cancel": {
+    method: "request.cancel",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Cancel an in-flight daemon request on the same connection.",
+  },
+  "agent.create": {
+    method: "agent.create",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Create a long-lived daemon agent.",
+  },
+  "agent.list": {
+    method: "agent.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "List long-lived daemon agents.",
+  },
+  "agent.attach": {
+    method: "agent.attach",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Attach a thin client to an existing daemon agent.",
+  },
+  "agent.stop": {
+    method: "agent.stop",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Stop a daemon agent.",
+  },
+  "agent.logs": {
+    method: "agent.logs",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read the full local log and transcript for a daemon agent.",
+  },
+  "session.create": {
+    method: "session.create",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Create a daemon-owned session.",
+  },
+  "session.list": {
+    method: "session.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "List daemon-owned sessions.",
+  },
+  "session.attach": {
+    method: "session.attach",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Attach a client to a daemon-owned session.",
+  },
+  "session.detach": {
+    method: "session.detach",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Detach a client from a daemon-owned session.",
+  },
+  "session.terminate": {
+    method: "session.terminate",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Terminate a daemon-owned session.",
+  },
+  "session.clear": {
+    method: "session.clear",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Clear a daemon-owned session's conversation history.",
+  },
+  "session.snapshot": {
+    method: "session.snapshot",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Read live counters (turn count, token usage, cache stats) for a daemon-owned session so the TUI's /status, /usage, /cache-stats can surface real numbers.",
+  },
+  "session.cancelTurn": {
+    method: "session.cancelTurn",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Interrupt the active turn for a daemon-owned session. Fires the agent's AbortController and signals run-turn to abort with reason='interrupted'.",
+  },
+  "session.mcp.addServer": {
+    method: "session.mcp.addServer",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Add an MCP server to the daemon-owned runtime session so ToolSearch and model tool calls can use it immediately.",
+  },
+  "message.send": {
+    method: "message.send",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Send a message into an existing session.",
+  },
+  "message.stream": {
+    method: "message.stream",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Send a message and subscribe to streamed output.",
+  },
+  "thread/realtime/start": {
+    method: "thread/realtime/start",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Start realtime audio or text interaction for a thread.",
+  },
+  "thread/realtime/appendAudio": {
+    method: "thread/realtime/appendAudio",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Append a base64 PCM audio chunk to a realtime thread.",
+  },
+  "thread/realtime/appendText": {
+    method: "thread/realtime/appendText",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Append a text turn to a realtime thread.",
+  },
+  "thread/realtime/stop": {
+    method: "thread/realtime/stop",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Stop realtime interaction for a thread.",
+  },
+  "thread/realtime/listVoices": {
+    method: "thread/realtime/listVoices",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "List built-in realtime voices and defaults.",
+  },
+  "tool.approve": {
+    method: "tool.approve",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Approve a pending tool or permission request.",
+  },
+  "tool.deny": {
+    method: "tool.deny",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Deny a pending tool or permission request.",
+  },
+  "tool.cancel": {
+    method: "tool.cancel",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Cancel a pending tool or permission request.",
+  },
+  "elicitation.respond": {
+    method: "elicitation.respond",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Resolve a pending user-input or MCP elicitation request.",
+  },
+  "permission.list": {
+    method: "permission.list",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "List effective permissions for an agent or session.",
+  },
+  "fs.fuzzy_search": {
+    method: "fs.fuzzy_search",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Search workspace files and directories with fuzzy matching.",
+  },
+  "commandExec.start": {
+    method: "commandExec.start",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Start a standalone command process for daemon clients.",
+  },
+  "commandExec.write": {
+    method: "commandExec.write",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Write stdin bytes to a running daemon command process.",
+  },
+  "commandExec.resize": {
+    method: "commandExec.resize",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Resize a PTY-backed daemon command process.",
+  },
+  "commandExec.terminate": {
+    method: "commandExec.terminate",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Terminate a running daemon command process.",
+  },
+  "health.ping": {
+    method: "health.ping",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Check whether the daemon process can answer requests.",
+  },
+  "health.ready": {
+    method: "health.ready",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Check whether the daemon process is ready for session work.",
+  },
+  "health.stats": {
+    method: "health.stats",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Read daemon uptime, session counts, and memory usage.",
+  },
+  "daemon.reload": {
+    method: "daemon.reload",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Reload daemon configuration in the running process.",
+  },
+  "auth.login": {
+    method: "auth.login",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Start the AgenC-owned daemon login flow.",
+  },
+  "auth.whoami": {
+    method: "auth.whoami",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Read the daemon's current AgenC authentication identity.",
+  },
+  "auth.logout": {
+    method: "auth.logout",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Clear the daemon's current AgenC authentication identity.",
+  },
+});
+
+export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
+  "session.partialCompactFromMessage": {
+    method: "session.partialCompactFromMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to summarize a selected range of daemon-owned session history.",
+  },
+  "session.rewindConversationToMessage": {
+    method: "session.rewindConversationToMessage",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to rewind daemon-owned session history before a selected prompt.",
+  },
+});
+
+export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
+  "commandExec.outputDelta": {
+    method: "commandExec.outputDelta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream base64 stdout or stderr chunks for a command process.",
+  },
+  "event.message_chunk": {
+    method: "event.message_chunk",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Stream an assistant text chunk for an attached daemon session.",
+  },
+  "event.tool_request": {
+    method: "event.tool_request",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that a daemon session started tool work.",
+  },
+  "event.permission_request": {
+    method: "event.permission_request",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Ask an attached client to resolve a pending permission request.",
+  },
+  "event.user_input_request": {
+    method: "event.user_input_request",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Ask an attached client to resolve a pending user-input request.",
+  },
+  "event.mcp_elicitation_request": {
+    method: "event.mcp_elicitation_request",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Ask an attached client to resolve a pending MCP elicitation request.",
+  },
+  "event.agent_status": {
+    method: "event.agent_status",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that a daemon agent status changed.",
+  },
+  "event.session_event": {
+    method: "event.session_event",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver a generic daemon session event to attached clients.",
+  },
+  "thread/realtime/started": {
+    method: "thread/realtime/started",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that realtime interaction started.",
+  },
+  "thread/realtime/itemAdded": {
+    method: "thread/realtime/itemAdded",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver a realtime conversation item to clients.",
+  },
+  "thread/realtime/transcript/delta": {
+    method: "thread/realtime/transcript/delta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream realtime transcript text deltas.",
+  },
+  "thread/realtime/transcript/done": {
+    method: "thread/realtime/transcript/done",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver a completed realtime transcript segment.",
+  },
+  "thread/realtime/outputAudio/delta": {
+    method: "thread/realtime/outputAudio/delta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream realtime output audio chunks.",
+  },
+  "thread/realtime/sdp": {
+    method: "thread/realtime/sdp",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver provider SDP for a realtime WebRTC session.",
+  },
+  "thread/realtime/error": {
+    method: "thread/realtime/error",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that realtime interaction failed.",
+  },
+  "thread/realtime/closed": {
+    method: "thread/realtime/closed",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that realtime interaction closed.",
+  },
+});
+
+export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
+  return Object.prototype.hasOwnProperty.call(AGENC_DAEMON_METHOD_SPECS, value);
+}
+
+export function isAgenCDaemonKnownMethod(
+  value: string,
+): value is AgenCDaemonKnownMethod {
+  return (
+    isAgenCDaemonMethod(value) ||
+    Object.prototype.hasOwnProperty.call(
+      AGENC_DAEMON_INTERNAL_METHOD_SPECS,
+      value,
+    )
+  );
+}
+
+export function isAgenCDaemonNotificationMethod(
+  value: string,
+): value is AgenCDaemonNotificationMethod {
+  return Object.prototype.hasOwnProperty.call(
+    AGENC_DAEMON_NOTIFICATION_SPECS,
+    value,
+  );
+}
+
+export interface AgentCreateParams extends JsonObject {
+  readonly objective?: string;
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly provider?: string;
+  readonly profile?: string;
+  readonly instructions?: string;
+  readonly initialContent?: MessageContent;
+  readonly unattendedAllow?: readonly string[];
+  readonly unattendedDeny?: readonly string[];
+  readonly metadata?: JsonObject;
+  /**
+   * Session-wide permission mode override for the spawned agent. When
+   * set, the daemon-side bootstrap honors this in place of the project-
+   * trust default. Used by `agenc --yolo`, which sends
+   * `permissionMode: "bypassPermissions"` so the spawned agent's session
+   * approvalPolicy resolves to `"never"` regardless of project trust.
+   * Without this, --yolo only affected the local CLI bootstrap and was
+   * dropped on the wire to the daemon.
+   */
+  readonly permissionMode?:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions";
+  /**
+   * Per-invocation environment overrides for the spawned agent. Used by
+   * the TUI to propagate `OPENAI_BASE_URL` (and similar provider-config
+   * env vars) from the CLI's process env into the daemon-owned agent —
+   * without this, the daemon's runner uses the frozen env snapshot
+   * captured at daemon-start time, so subsequent CLI invocations with
+   * different env vars silently use the original values.
+   *
+   * Only string values are forwarded. Keys collected from a curated
+   * allow-list (provider URLs, API keys, proxy settings) to avoid
+   * leaking unrelated env into agent processes.
+   */
+  readonly envOverrides?: { readonly [key: string]: string };
+}
+
+export interface DaemonProtocolInfo extends JsonObject {
+  readonly version: string;
+}
+
+export interface InitializeParams extends JsonObject {
+  /**
+   * Compatibility flat version field. Accepted when `protocol` is omitted, and must
+   * match `protocol.version` when both are sent.
+   */
+  readonly protocolVersion?: string;
+  /**
+   * Canonical protocol metadata for the initialize handshake.
+   */
+  readonly protocol?: DaemonProtocolInfo;
+  readonly clientName?: string;
+  readonly authCookie?: string;
+  readonly capabilities?: JsonObject;
+}
+
+export interface RequestCancelParams extends JsonObject {
+  readonly requestId: RequestId;
+  readonly reason?: string;
+}
+
+export interface AgentListParams extends JsonObject {
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export interface AgentAttachParams extends JsonObject {
+  readonly agentId: string;
+  readonly clientId?: string;
+}
+
+export interface AgentStopParams extends JsonObject {
+  readonly agentId: string;
+  readonly reason?: string;
+}
+
+export interface AgentLogsParams extends JsonObject {
+  readonly agentId: string;
+}
+
+export interface SessionCreateParams extends JsonObject {
+  readonly agentId?: string;
+  readonly cwd?: string;
+  readonly initialPrompt?: string;
+  readonly metadata?: JsonObject;
+}
+
+export interface SessionListParams extends JsonObject {
+  readonly agentId?: string;
+  readonly cursor?: string;
+  readonly limit?: number;
+}
+
+export interface SessionAttachParams extends JsonObject {
+  readonly sessionId: string;
+  readonly clientId?: string;
+}
+
+export interface SessionDetachParams extends JsonObject {
+  readonly sessionId: string;
+  readonly attachmentId?: string;
+  readonly clientId?: string;
+}
+
+export interface SessionTerminateParams extends JsonObject {
+  readonly sessionId: string;
+  readonly reason?: string;
+}
+
+export interface SessionClearParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+export interface SessionSnapshotParams extends JsonObject {
+  readonly sessionId: string;
+}
+
+export interface SessionCancelTurnParams extends JsonObject {
+  readonly sessionId: string;
+  readonly reason?: string;
+}
+
+export interface SessionMcpServerConfig extends JsonObject {
+  readonly name: string;
+  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly endpoint?: string;
+  readonly enabled?: boolean;
+  readonly required?: boolean;
+}
+
+export interface SessionMcpAddServerParams extends JsonObject {
+  readonly sessionId: string;
+  readonly config: SessionMcpServerConfig;
+}
+
+export interface SessionPartialCompactFromMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+  readonly direction: "from" | "up_to";
+  readonly feedback?: string;
+}
+
+export interface SessionRewindConversationToMessageParams extends JsonObject {
+  readonly sessionId: string;
+  readonly messageOrdinal: number;
+}
+
+export type MessageContentBlock =
+  | (JsonObject & {
+      readonly type: "text";
+      readonly text: string;
+    })
+  | (JsonObject & {
+      readonly type: "image_url";
+      readonly image_url: JsonObject & { readonly url: string };
+    });
+
+export type MessageContent = string | readonly MessageContentBlock[];
+
+export interface MessageSendParams extends JsonObject {
+  readonly sessionId: string;
+  readonly content: MessageContent;
+  readonly clientMessageId?: string;
+  readonly metadata?: JsonObject;
+}
+
+export interface MessageStreamParams extends MessageSendParams {
+  readonly streamId?: string;
+}
+
+export type ThreadRealtimeVersion = "v1" | "v2";
+export type ThreadRealtimeSessionMode = "conversational" | "transcription";
+export type ThreadRealtimeOutputModality = "audio" | "text";
+export type ThreadRealtimeVoice =
+  | "alloy"
+  | "arbor"
+  | "ash"
+  | "ballad"
+  | "breeze"
+  | "cedar"
+  | "coral"
+  | "cove"
+  | "echo"
+  | "ember"
+  | "juniper"
+  | "maple"
+  | "marin"
+  | "sage"
+  | "shimmer"
+  | "sol"
+  | "spruce"
+  | "vale"
+  | "verse";
+
+export interface ThreadRealtimeWebsocketTransport extends JsonObject {
+  readonly type: "websocket";
+}
+
+export interface ThreadRealtimeWebrtcTransport extends JsonObject {
+  readonly type: "webrtc";
+  readonly sdp: string;
+}
+
+export type ThreadRealtimeStartTransport =
+  | ThreadRealtimeWebsocketTransport
+  | ThreadRealtimeWebrtcTransport;
+
+export interface ThreadRealtimeStartParams extends JsonObject {
+  readonly threadId: string;
+  readonly transport?: ThreadRealtimeStartTransport | null;
+  readonly realtimeSessionId?: string | null;
+  readonly prompt?: string | null;
+  readonly outputModality: ThreadRealtimeOutputModality;
+  readonly voice?: ThreadRealtimeVoice | null;
+}
+
+export interface ThreadRealtimeStartResponse extends JsonObject {}
+
+export interface ThreadRealtimeAudioChunk extends JsonObject {
+  readonly data: string;
+  readonly sampleRate: number;
+  readonly numChannels: number;
+  readonly samplesPerChannel?: number | null;
+  readonly itemId?: string | null;
+}
+
+export interface ThreadRealtimeAppendAudioParams extends JsonObject {
+  readonly threadId: string;
+  readonly audio: ThreadRealtimeAudioChunk;
+}
+
+export interface ThreadRealtimeAppendAudioResponse extends JsonObject {}
+
+export interface ThreadRealtimeAppendTextParams extends JsonObject {
+  readonly threadId: string;
+  readonly text: string;
+}
+
+export interface ThreadRealtimeAppendTextResponse extends JsonObject {}
+
+export interface ThreadRealtimeStopParams extends JsonObject {
+  readonly threadId: string;
+}
+
+export interface ThreadRealtimeStopResponse extends JsonObject {}
+
+export interface ThreadRealtimeListVoicesParams extends JsonObject {}
+
+export interface ThreadRealtimeVoicesList extends JsonObject {
+  readonly v1: readonly ThreadRealtimeVoice[];
+  readonly v2: readonly ThreadRealtimeVoice[];
+  readonly defaultV1: ThreadRealtimeVoice;
+  readonly defaultV2: ThreadRealtimeVoice;
+}
+
+export interface ThreadRealtimeListVoicesResponse extends JsonObject {
+  readonly voices: ThreadRealtimeVoicesList;
+}
+
+export interface ToolApproveParams extends JsonObject {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly scope?: "once" | "session" | "agent";
+}
+
+export interface ToolDenyParams extends JsonObject {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly reason?: string;
+}
+
+export interface ToolCancelParams extends JsonObject {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly reason?: string;
+}
+
+export interface ElicitationRespondParams extends JsonObject {
+  readonly sessionId: string;
+  readonly requestId: RequestId;
+  readonly kind: "request_user_input" | "mcp";
+  readonly serverName?: string;
+  readonly response: JsonObject;
+}
+
+export interface PermissionListParams extends JsonObject {
+  readonly agentId?: string;
+  readonly sessionId?: string;
+}
+
+export interface FuzzyFileSearchParams extends JsonObject {
+  readonly query: string;
+  readonly roots: readonly string[];
+  readonly cancellationToken?: string | null;
+}
+
+export interface CommandExecTerminalSize extends JsonObject {
+  readonly rows: number;
+  readonly cols: number;
+}
+
+export type CommandExecEnv = Readonly<Record<string, string | null>>;
+
+export interface CommandExecStartParams extends JsonObject {
+  readonly command: readonly string[];
+  readonly processId?: string | null;
+  readonly tty?: boolean;
+  readonly streamStdin?: boolean;
+  readonly streamStdoutStderr?: boolean;
+  readonly outputBytesCap?: number | null;
+  readonly disableOutputCap?: boolean;
+  readonly disableTimeout?: boolean;
+  readonly timeoutMs?: number | null;
+  readonly cwd?: string | null;
+  readonly env?: CommandExecEnv | null;
+  readonly size?: CommandExecTerminalSize | null;
+  readonly sandboxPolicy?: JsonObject | null;
+  readonly permissionProfile?: JsonObject | null;
+}
+
+export interface CommandExecResponse extends JsonObject {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export interface CommandExecWriteParams extends JsonObject {
+  readonly processId: string;
+  readonly deltaBase64?: string | null;
+  readonly closeStdin?: boolean;
+}
+
+export interface CommandExecWriteResponse extends JsonObject {}
+
+export interface CommandExecTerminateParams extends JsonObject {
+  readonly processId: string;
+}
+
+export interface CommandExecTerminateResponse extends JsonObject {}
+
+export interface CommandExecResizeParams extends JsonObject {
+  readonly processId: string;
+  readonly size: CommandExecTerminalSize;
+}
+
+export interface CommandExecResizeResponse extends JsonObject {}
+
+export type CommandExecOutputStream = "stdout" | "stderr";
+
+export interface CommandExecOutputDeltaParams extends JsonObject {
+  readonly processId: string;
+  readonly stream: CommandExecOutputStream;
+  readonly deltaBase64: string;
+  readonly capReached: boolean;
+}
+
+export interface AgenCEventBaseParams extends JsonObject {
+  readonly sessionId: string;
+  readonly eventId: string;
+  readonly agentId?: string;
+  readonly sequence?: number;
+  readonly acceptedAt?: string;
+  readonly metadata?: JsonObject;
+}
+
+export interface EventMessageChunkParams extends AgenCEventBaseParams {
+  readonly messageId?: string;
+  readonly streamId?: string;
+  readonly delta: string;
+}
+
+export interface EventToolRequestParams extends AgenCEventBaseParams {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly turnId?: string;
+  readonly input?: JsonValue;
+  readonly recoveryCategory?: "idempotent" | "side-effecting" | "interactive";
+}
+
+export interface EventPermissionRequestParams extends AgenCEventBaseParams {
+  readonly requestId: string;
+  readonly toolName?: string;
+  readonly turnId?: string;
+  readonly permissions: readonly string[];
+  readonly input?: JsonValue;
+  readonly reason?: string;
+}
+
+export interface EventUserInputRequestParams extends AgenCEventBaseParams {
+  readonly requestId: string;
+  readonly callId: string;
+  readonly turnId: string;
+  readonly questions: readonly JsonObject[];
+}
+
+export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
+  readonly requestId: RequestId;
+  readonly serverName: string;
+  readonly turnId: string;
+  readonly request: JsonObject;
+}
+
+export interface EventAgentStatusParams extends AgenCEventBaseParams {
+  readonly agentId: string;
+  readonly status: AgentStatus;
+  readonly runStatus?: AgentRunStatus;
+  readonly turnId?: string;
+  readonly message?: string;
+}
+
+export interface EventSessionEventParams extends AgenCEventBaseParams {
+  readonly event: JsonObject;
+}
+
+export interface ThreadRealtimeBaseParams extends JsonObject {
+  readonly threadId: string;
+}
+
+export interface ThreadRealtimeStartedParams extends ThreadRealtimeBaseParams {
+  readonly realtimeSessionId?: string | null;
+  readonly version: ThreadRealtimeVersion;
+}
+
+export interface ThreadRealtimeItemAddedParams extends ThreadRealtimeBaseParams {
+  readonly item: JsonValue;
+}
+
+export interface ThreadRealtimeTranscriptDeltaParams extends ThreadRealtimeBaseParams {
+  readonly role: string;
+  readonly delta: string;
+}
+
+export interface ThreadRealtimeTranscriptDoneParams extends ThreadRealtimeBaseParams {
+  readonly role: string;
+  readonly text: string;
+}
+
+export interface ThreadRealtimeOutputAudioDeltaParams extends ThreadRealtimeBaseParams {
+  readonly audio: ThreadRealtimeAudioChunk;
+}
+
+export interface ThreadRealtimeSdpParams extends ThreadRealtimeBaseParams {
+  readonly sdp: string;
+}
+
+export interface ThreadRealtimeErrorParams extends ThreadRealtimeBaseParams {
+  readonly message: string;
+}
+
+export interface ThreadRealtimeClosedParams extends ThreadRealtimeBaseParams {
+  readonly reason?: string | null;
+}
+
+export interface AgenCDaemonNotificationWithParams<
+  Method extends AgenCDaemonNotificationMethod,
+  Params extends JsonObject,
+> extends JsonObject {
+  readonly jsonrpc: typeof JSON_RPC_VERSION;
+  readonly method: Method;
+  readonly params: Params;
+}
+
+export interface AgenCDaemonNotificationParamsByMethod {
+  readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;
+  readonly "event.message_chunk": EventMessageChunkParams;
+  readonly "event.tool_request": EventToolRequestParams;
+  readonly "event.permission_request": EventPermissionRequestParams;
+  readonly "event.user_input_request": EventUserInputRequestParams;
+  readonly "event.mcp_elicitation_request": EventMcpElicitationRequestParams;
+  readonly "event.agent_status": EventAgentStatusParams;
+  readonly "event.session_event": EventSessionEventParams;
+  readonly "thread/realtime/started": ThreadRealtimeStartedParams;
+  readonly "thread/realtime/itemAdded": ThreadRealtimeItemAddedParams;
+  readonly "thread/realtime/transcript/delta": ThreadRealtimeTranscriptDeltaParams;
+  readonly "thread/realtime/transcript/done": ThreadRealtimeTranscriptDoneParams;
+  readonly "thread/realtime/outputAudio/delta": ThreadRealtimeOutputAudioDeltaParams;
+  readonly "thread/realtime/sdp": ThreadRealtimeSdpParams;
+  readonly "thread/realtime/error": ThreadRealtimeErrorParams;
+  readonly "thread/realtime/closed": ThreadRealtimeClosedParams;
+}
+
+export type AgenCDaemonNotification =
+  | AgenCDaemonNotificationWithParams<
+      "commandExec.outputDelta",
+      CommandExecOutputDeltaParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.message_chunk",
+      EventMessageChunkParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.tool_request",
+      EventToolRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.permission_request",
+      EventPermissionRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.user_input_request",
+      EventUserInputRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.mcp_elicitation_request",
+      EventMcpElicitationRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.agent_status",
+      EventAgentStatusParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.session_event",
+      EventSessionEventParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/started",
+      ThreadRealtimeStartedParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/itemAdded",
+      ThreadRealtimeItemAddedParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/transcript/delta",
+      ThreadRealtimeTranscriptDeltaParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/transcript/done",
+      ThreadRealtimeTranscriptDoneParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/outputAudio/delta",
+      ThreadRealtimeOutputAudioDeltaParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/sdp",
+      ThreadRealtimeSdpParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/error",
+      ThreadRealtimeErrorParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "thread/realtime/closed",
+      ThreadRealtimeClosedParams
+    >;
+
+export type AgenCDaemonSessionNotification = Exclude<
+  AgenCDaemonNotification,
+  AgenCDaemonNotificationWithParams<
+    "commandExec.outputDelta",
+    CommandExecOutputDeltaParams
+  >
+>;
+
+export type EmptyParams = Record<string, never>;
+
+export interface AgenCDaemonRequestWithParams<
+  Method extends AgenCDaemonMethod,
+  Params extends JsonObject,
+> {
+  readonly jsonrpc: typeof JSON_RPC_VERSION;
+  readonly id: RequestId;
+  readonly method: Method;
+  readonly params: Params;
+}
+
+export interface AgenCDaemonRequestWithoutParams<
+  Method extends AgenCDaemonMethod,
+> {
+  readonly jsonrpc: typeof JSON_RPC_VERSION;
+  readonly id: RequestId;
+  readonly method: Method;
+  readonly params?: EmptyParams;
+}
+
+export type AgenCDaemonRequest =
+  | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
+  | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams>
+  | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams>
+  | AgenCDaemonRequestWithParams<"agent.list", AgentListParams>
+  | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
+  | AgenCDaemonRequestWithParams<"agent.stop", AgentStopParams>
+  | AgenCDaemonRequestWithParams<"agent.logs", AgentLogsParams>
+  | AgenCDaemonRequestWithParams<"session.create", SessionCreateParams>
+  | AgenCDaemonRequestWithParams<"session.list", SessionListParams>
+  | AgenCDaemonRequestWithParams<"session.attach", SessionAttachParams>
+  | AgenCDaemonRequestWithParams<"session.detach", SessionDetachParams>
+  | AgenCDaemonRequestWithParams<"session.terminate", SessionTerminateParams>
+  | AgenCDaemonRequestWithParams<"session.clear", SessionClearParams>
+  | AgenCDaemonRequestWithParams<"session.snapshot", SessionSnapshotParams>
+  | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
+  | AgenCDaemonRequestWithParams<"session.mcp.addServer", SessionMcpAddServerParams>
+  | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
+  | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/start",
+      ThreadRealtimeStartParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/appendAudio",
+      ThreadRealtimeAppendAudioParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/appendText",
+      ThreadRealtimeAppendTextParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "thread/realtime/stop",
+      ThreadRealtimeStopParams
+    >
+  | AgenCDaemonRequestWithoutParams<"thread/realtime/listVoices">
+  | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
+  | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
+  | AgenCDaemonRequestWithParams<"tool.cancel", ToolCancelParams>
+  | AgenCDaemonRequestWithParams<
+      "elicitation.respond",
+      ElicitationRespondParams
+    >
+  | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
+  | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams>
+  | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams>
+  | AgenCDaemonRequestWithParams<"commandExec.write", CommandExecWriteParams>
+  | AgenCDaemonRequestWithParams<"commandExec.resize", CommandExecResizeParams>
+  | AgenCDaemonRequestWithParams<
+      "commandExec.terminate",
+      CommandExecTerminateParams
+    >
+  | AgenCDaemonRequestWithoutParams<"health.ping">
+  | AgenCDaemonRequestWithoutParams<"health.ready">
+  | AgenCDaemonRequestWithoutParams<"health.stats">
+  | AgenCDaemonRequestWithoutParams<"daemon.reload">
+  | AgenCDaemonRequestWithoutParams<"auth.login">
+  | AgenCDaemonRequestWithoutParams<"auth.whoami">
+  | AgenCDaemonRequestWithoutParams<"auth.logout">;
+
+export type AgentStatus = "idle" | "running" | "stopping" | "stopped" | "error";
+export type AgentRunStatus =
+  | "pending"
+  | "running"
+  | "working"
+  | "paused"
+  | "blocked"
+  | "suspended"
+  | "completed"
+  | "errored"
+  | "stopped";
+export type SessionStatus = "idle" | "running" | "waiting" | "closed" | "error";
+
+export interface AgentSummary extends JsonObject {
+  readonly agentId: string;
+  readonly agentPath?: string;
+  readonly objective?: string;
+  readonly status: AgentStatus;
+  readonly createdAt: string;
+  readonly startedAt?: string;
+  readonly lastActiveAt?: string;
+  readonly cwd?: string;
+  readonly activeSessionIds?: readonly string[];
+  readonly metadata?: JsonObject;
+}
+
+export interface SessionSummary extends JsonObject {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly status: SessionStatus;
+  readonly createdAt: string;
+  readonly cwd?: string;
+  readonly metadata?: JsonObject;
+  readonly activeAttachmentIds?: readonly string[];
+  readonly closedAt?: string;
+}
+
+export interface AgentCreateResult extends AgentSummary {
+  readonly sessionId?: string;
+}
+
+export interface AgentListResult extends JsonObject {
+  readonly agents: readonly AgentSummary[];
+  readonly nextCursor?: string;
+}
+
+export interface AgentAttachResult extends JsonObject {
+  readonly agentId: string;
+  readonly attachmentId: string;
+  readonly sessionIds: readonly string[];
+  readonly runtimeSessionId?: string;
+  readonly sessions?: readonly SessionSummary[];
+}
+
+export interface AgentStopResult extends JsonObject {
+  readonly agentId: string;
+  readonly stopped: boolean;
+}
+
+export interface AgentLogSession extends JsonObject {
+  readonly sessionId: string;
+  readonly itemCount: number;
+  readonly transcript: string;
+  readonly rolloutPath?: string;
+  readonly source?: string;
+}
+
+export interface AgentToolOutputLog extends JsonObject {
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly status: string;
+  readonly output: string;
+  readonly outputBytes: number;
+  readonly outputLogPath?: string;
+  readonly outputLogBytes?: number;
+}
+
+export interface AgentLogsResult extends JsonObject {
+  readonly agentId: string;
+  readonly transcript: string;
+  readonly sessions: readonly AgentLogSession[];
+  readonly toolOutputs?: readonly AgentToolOutputLog[];
+}
+
+export interface InitializeResult extends JsonObject {
+  readonly type: "initialized";
+  /**
+   * Compatibility mirror of `protocol.version` for older daemon clients.
+   */
+  readonly protocolVersion: string;
+  /**
+   * Negotiated server protocol metadata for the connection.
+   */
+  readonly protocol: DaemonProtocolInfo;
+  readonly capabilities: JsonObject;
+}
+
+export interface RequestCancelResult extends JsonObject {
+  readonly requestId: RequestId;
+  readonly cancelled: boolean;
+  readonly reason?: string;
+}
+
+export interface SessionCreateResult extends SessionSummary {}
+
+export interface SessionListResult extends JsonObject {
+  readonly sessions: readonly SessionSummary[];
+  readonly nextCursor?: string;
+}
+
+export interface SessionAttachResult extends JsonObject {
+  readonly sessionId: string;
+  readonly attachmentId: string;
+  readonly attachedAt: string;
+  readonly clientId?: string;
+  readonly activeAttachmentIds: readonly string[];
+}
+
+export interface SessionDetachResult extends JsonObject {
+  readonly sessionId: string;
+  readonly detached: boolean;
+  readonly attachmentId?: string;
+  readonly remainingAttachmentIds: readonly string[];
+}
+
+export interface SessionTerminateResult extends JsonObject {
+  readonly sessionId: string;
+  readonly terminated: boolean;
+  readonly status: "closed";
+  readonly closedAt: string;
+  readonly reason?: string;
+}
+
+export interface SessionClearResult extends JsonObject {
+  readonly sessionId: string;
+  readonly cleared: true;
+  readonly clearedAt: string;
+}
+
+/**
+ * Counters from the daemon-owned in-process session. The TUI bridge
+ * cannot read these directly because it only holds a thin client-side
+ * `AgenCBridgeSession`; the daemon ships the values over the wire
+ * via `session.snapshot` so commands like `/status`, `/usage`, and
+ * `/cache-stats` can surface meaningful numbers instead of zeros.
+ */
+export interface SessionSnapshotResult extends JsonObject {
+  readonly sessionId: string;
+  /** Number of completed turns recorded in the session's history. */
+  readonly turnCount: number;
+  readonly tokenUsage: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly costUsd: number;
+  };
+  /** Cumulative cache metrics across API calls this session. */
+  readonly cacheStats: {
+    readonly requestCount: number;
+    readonly cacheReadInputTokens: number;
+    readonly cacheCreationInputTokens: number;
+    readonly cacheTotalInputTokens: number;
+    readonly hitRate: number | null;
+  };
+}
+
+export interface SessionCancelTurnResult extends JsonObject {
+  readonly sessionId: string;
+  /**
+   * `true` when an active turn was found and interrupted; `false` when
+   * no turn was running (idle session). Either response is normal —
+   * idle is not an error.
+   */
+  readonly cancelled: boolean;
+  readonly reason?: string;
+}
+
+export interface SessionMcpAddServerResult extends JsonObject {
+  readonly sessionId: string;
+  readonly serverName: string;
+  readonly success: boolean;
+  readonly toolCount: number;
+  readonly error?: string;
+}
+
+export interface SessionPartialCompactFromMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly event?: JsonObject;
+}
+
+export interface SessionRewindConversationToMessageResult extends JsonObject {
+  readonly sessionId: string;
+  readonly ok: boolean;
+  readonly eventAlreadyEmitted: boolean;
+  readonly code?: string;
+  readonly message?: string;
+  readonly event?: JsonObject;
+}
+
+export interface MessageSendResult extends JsonObject {
+  readonly messageId: string;
+  readonly acceptedAt: string;
+}
+
+export interface MessageStreamResult extends MessageSendResult {
+  readonly streamId: string;
+}
+
+export interface ToolDecisionResult extends JsonObject {
+  readonly requestId: string;
+  readonly decision: "approved" | "denied" | "cancelled";
+}
+
+export interface ElicitationRespondResult extends JsonObject {
+  readonly requestId: RequestId;
+  readonly resolved: boolean;
+}
+
+export interface PermissionGrant extends JsonObject {
+  readonly permissionId: string;
+  readonly subject: string;
+  readonly action: string;
+  readonly scope?: string;
+  readonly grantedAt?: string;
+  readonly expiresAt?: string;
+}
+
+export interface PermissionListResult extends JsonObject {
+  readonly permissions: readonly PermissionGrant[];
+}
+
+export interface FuzzyFileSearchResult extends JsonObject {
+  readonly root: string;
+  readonly path: string;
+  readonly match_type: "file" | "directory";
+  readonly file_name: string;
+  readonly score: number;
+  readonly indices?: readonly number[];
+}
+
+export interface FuzzyFileSearchResponse extends JsonObject {
+  readonly files: readonly FuzzyFileSearchResult[];
+}
+
+export interface HealthPingResult extends JsonObject {
+  readonly ok: true;
+  readonly now: string;
+}
+
+export interface HealthReadyResult extends JsonObject {
+  readonly ready: boolean;
+  readonly uptimeMs: number;
+  readonly now: string;
+}
+
+export interface HealthMemoryStats extends JsonObject {
+  readonly rss: number;
+  readonly heapTotal: number;
+  readonly heapUsed: number;
+  readonly external: number;
+  readonly arrayBuffers: number;
+}
+
+export interface HealthSessionStats extends JsonObject {
+  readonly active: number;
+  readonly closed: number;
+  readonly total: number;
+}
+
+export interface HealthStateStats extends JsonObject {
+  readonly available: boolean;
+  readonly readonly: true;
+  readonly projectDir: string;
+  readonly agentRuns: number;
+  readonly sessionStateSnapshots: number;
+  readonly inFlightToolCalls: number;
+  readonly logs: number;
+}
+
+export interface HealthStatsResult extends JsonObject {
+  readonly uptimeMs: number;
+  readonly now: string;
+  readonly sessions: HealthSessionStats;
+  readonly memory: HealthMemoryStats;
+  readonly state?: HealthStateStats;
+}
+
+export interface DaemonReloadMcpServerResult extends JsonObject {
+  readonly status: "disabled" | "unsupported" | "listening";
+  readonly url?: string;
+}
+
+export interface DaemonReloadResult extends JsonObject {
+  readonly reloaded: true;
+  readonly configReloadedAt: string;
+  readonly mcpServer: DaemonReloadMcpServerResult;
+}
+
+export interface AuthIdentity extends JsonObject {
+  readonly accountId?: string;
+  readonly email?: string;
+  readonly displayName?: string;
+  readonly plan?: string;
+  readonly daemon?: AuthDaemonSocketIdentity;
+}
+
+export interface AuthDaemonSocketIdentity extends JsonObject {
+  readonly transport: "daemon";
+  readonly verifiedBy: "cookie" | "peerUid" | "privateSocketOwner";
+  readonly cookie?: "verified";
+  readonly peerUid?: number | null;
+  readonly privateSocketOwnerUid?: number | null;
+}
+
+export interface AuthWhoamiResult extends JsonObject {
+  readonly authenticated: boolean;
+  readonly provider?: string;
+  readonly identity?: AuthIdentity;
+}
+
+export interface AuthLoginResult extends JsonObject {
+  readonly authenticated: true;
+  readonly provider?: string;
+  readonly identity?: AuthIdentity;
+}
+
+export interface AuthLogoutResult extends JsonObject {
+  readonly authenticated: false;
+}
+
+export interface AgenCDaemonResultByMethod {
+  readonly initialize: InitializeResult;
+  readonly "request.cancel": RequestCancelResult;
+  readonly "agent.create": AgentCreateResult;
+  readonly "agent.list": AgentListResult;
+  readonly "agent.attach": AgentAttachResult;
+  readonly "agent.stop": AgentStopResult;
+  readonly "agent.logs": AgentLogsResult;
+  readonly "session.create": SessionCreateResult;
+  readonly "session.list": SessionListResult;
+  readonly "session.attach": SessionAttachResult;
+  readonly "session.detach": SessionDetachResult;
+  readonly "session.terminate": SessionTerminateResult;
+  readonly "session.clear": SessionClearResult;
+  readonly "session.snapshot": SessionSnapshotResult;
+  readonly "session.cancelTurn": SessionCancelTurnResult;
+  readonly "session.mcp.addServer": SessionMcpAddServerResult;
+  readonly "message.send": MessageSendResult;
+  readonly "message.stream": MessageStreamResult;
+  readonly "thread/realtime/start": ThreadRealtimeStartResponse;
+  readonly "thread/realtime/appendAudio": ThreadRealtimeAppendAudioResponse;
+  readonly "thread/realtime/appendText": ThreadRealtimeAppendTextResponse;
+  readonly "thread/realtime/stop": ThreadRealtimeStopResponse;
+  readonly "thread/realtime/listVoices": ThreadRealtimeListVoicesResponse;
+  readonly "tool.approve": ToolDecisionResult;
+  readonly "tool.deny": ToolDecisionResult;
+  readonly "tool.cancel": ToolDecisionResult;
+  readonly "elicitation.respond": ElicitationRespondResult;
+  readonly "permission.list": PermissionListResult;
+  readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
+  readonly "commandExec.start": CommandExecResponse;
+  readonly "commandExec.write": CommandExecWriteResponse;
+  readonly "commandExec.resize": CommandExecResizeResponse;
+  readonly "commandExec.terminate": CommandExecTerminateResponse;
+  readonly "health.ping": HealthPingResult;
+  readonly "health.ready": HealthReadyResult;
+  readonly "health.stats": HealthStatsResult;
+  readonly "daemon.reload": DaemonReloadResult;
+  readonly "auth.login": AuthLoginResult;
+  readonly "auth.whoami": AuthWhoamiResult;
+  readonly "auth.logout": AuthLogoutResult;
+}
+
+export interface AgenCDaemonInternalResultByMethod {
+  readonly "session.partialCompactFromMessage": SessionPartialCompactFromMessageResult;
+  readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
+}
+
+export type AgenCDaemonKnownResultByMethod =
+  AgenCDaemonResultByMethod &
+  AgenCDaemonInternalResultByMethod;
+
+export type AgenCDaemonSuccessResponse<
+  Method extends AgenCDaemonMethod = AgenCDaemonMethod,
+> = {
+  readonly [M in Method]: {
+    readonly jsonrpc: typeof JSON_RPC_VERSION;
+    readonly id: RequestId;
+    readonly result: AgenCDaemonResultByMethod[M];
+  };
+}[Method];
+
+export type AgenCDaemonErrorCode =
+  | -32700
+  | -32600
+  | -32601
+  | -32602
+  | -32603
+  | -32000;
+
+export interface AgenCDaemonErrorObject extends JsonObject {
+  readonly code: AgenCDaemonErrorCode;
+  readonly message: string;
+  readonly data?: JsonValue;
+}
+
+export interface AgenCDaemonErrorResponse extends JsonObject {
+  readonly jsonrpc: typeof JSON_RPC_VERSION;
+  readonly id: RequestId | null;
+  readonly error: AgenCDaemonErrorObject;
+}
+
+export type AgenCDaemonResponse =
+  | AgenCDaemonSuccessResponse
+  | AgenCDaemonErrorResponse;

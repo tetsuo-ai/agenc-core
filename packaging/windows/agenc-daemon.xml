@@ -1,0 +1,13 @@
+<service>
+  <id>agenc-daemon</id>
+  <name>AgenC Daemon</name>
+  <description>Runs the local AgenC daemon control plane.</description>
+  <executable>agenc</executable>
+  <arguments>daemon start --foreground</arguments>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="5 sec"/>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+</service>

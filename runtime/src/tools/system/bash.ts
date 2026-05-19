@@ -14,12 +14,10 @@ import { statSync, writeFileSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { Tool, ToolResult } from "../types.js";
-import { safeStringify } from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import type {
   BashToolConfig,
   BashToolInput,
-  BashExecutionResult,
 } from "./types.js";
 import {
   parseDirectCommandLine,
@@ -35,6 +33,13 @@ import {
 import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { bashToolHasPermission } from "../../permissions/bash.js";
+import type { PermissionResult } from "../../permissions/types.js";
+import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import {
+  extractAgenCCodeHints,
+  type AgenCCodeHint,
+} from "../../errors/hints.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -97,8 +102,18 @@ const SHELL_PREFIX_COMMANDS = new Set([
 ]);
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 
-function errorResult(message: string): ToolResult {
-  return { content: safeStringify({ error: message }), isError: true };
+function errorResult(
+  message: string,
+  metadata?: Readonly<Record<string, unknown>>,
+): ToolResult {
+  // Plain-text content; structured fields (none here) absent. Mirrors
+  // AgenC's `tool_result` shape — errors are strings the model can
+  // read directly without an extra JSON.parse hop.
+  return {
+    content: message,
+    isError: true,
+    ...(metadata !== undefined ? { metadata } : {}),
+  };
 }
 
 function toText(value: unknown): string {
@@ -232,6 +247,59 @@ function truncate(
   return { text: truncatedText + "\n[truncated]", truncated: true };
 }
 
+function combineOutput(stdout: string, stderr: string): string {
+  if (stderr.length === 0) return stdout;
+  return stdout.length > 0 ? `${stdout}\n${stderr}` : stderr;
+}
+
+function stripAgenCCodeHintsFromToolOutput(
+  stdout: string,
+  stderr: string,
+  command: string,
+): {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly content: string;
+  readonly hints: readonly AgenCCodeHint[];
+} {
+  const stdoutExtracted = extractAgenCCodeHints(stdout, command);
+  const stderrExtracted = extractAgenCCodeHints(stderr, command);
+  return {
+    stdout: stdoutExtracted.stripped,
+    stderr: stderrExtracted.stripped,
+    content: combineOutput(stdoutExtracted.stripped, stderrExtracted.stripped),
+    hints: [...stdoutExtracted.hints, ...stderrExtracted.hints],
+  };
+}
+
+function buildDisplayOutput(params: {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly command: string;
+  readonly maxOutputBytes: number;
+}): {
+  readonly content: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly hints: readonly AgenCCodeHint[];
+  readonly truncated: boolean;
+} {
+  const extractedOutput = stripAgenCCodeHintsFromToolOutput(
+    params.stdout,
+    params.stderr,
+    params.command,
+  );
+  const stdoutResult = truncate(extractedOutput.stdout, params.maxOutputBytes);
+  const stderrResult = truncate(extractedOutput.stderr, params.maxOutputBytes);
+  return {
+    content: combineOutput(stdoutResult.text, stderrResult.text),
+    stdout: stdoutResult.text,
+    stderr: stderrResult.text,
+    hints: extractedOutput.hints,
+    truncated: stdoutResult.truncated || stderrResult.truncated,
+  };
+}
+
 function runSpawnedCommand(params: {
   readonly execCommand: string;
   readonly execArgs: readonly string[];
@@ -246,15 +314,27 @@ function runSpawnedCommand(params: {
   readonly metadataArgs: readonly string[];
   readonly shellMode: boolean;
   readonly cleanupPath?: string;
+  readonly signal?: AbortSignal;
+  readonly onProgress?: ToolExecutionInjectedArgs["__onProgress"];
 }): Promise<ToolResult> {
   return new Promise<ToolResult>((resolve) => {
     let resolved = false;
-    let stdoutBuf = "";
-    let stderrBuf = "";
+    // I-78 (docs/plan/invariants.md): accumulate raw Buffer chunks and
+    // decode once at flush so multi-byte UTF-8 sequences split across
+    // two writes don't corrupt to `\uFFFD`. Applies to every tool
+    // that reads from stdio — bash here, MCP stdio in T9.
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let timedOut = false;
+    let aborted = false;
     let forceKillTimer: NodeJS.Timeout | null = null;
+    let onAbort: (() => void) | null = null;
 
     const cleanup = (reason: "timeout" | "resolve" | "error") => {
+      if (params.signal && onAbort) {
+        params.signal.removeEventListener("abort", onAbort);
+        onAbort = null;
+      }
       if (!params.cleanupPath) return;
       try {
         unlinkSync(params.cleanupPath);
@@ -276,10 +356,21 @@ function runSpawnedCommand(params: {
     child.unref();
 
     child.stdout!.on("data", (chunk: Buffer) => {
-      stdoutBuf += chunk.toString();
+      // I-78: push raw bytes; decode once at flush.
+      stdoutChunks.push(chunk);
+      params.onProgress?.({
+        chunk: chunk.toString("utf8"),
+        stream: "stdout",
+        ...(child.pid !== undefined ? { processId: child.pid } : {}),
+      });
     });
     child.stderr!.on("data", (chunk: Buffer) => {
-      stderrBuf += chunk.toString();
+      stderrChunks.push(chunk);
+      params.onProgress?.({
+        chunk: chunk.toString("utf8"),
+        stream: "stderr",
+        ...(child.pid !== undefined ? { processId: child.pid } : {}),
+      });
     });
 
     const timer = setTimeout(() => {
@@ -305,6 +396,37 @@ function runSpawnedCommand(params: {
       cleanup("timeout");
     }, params.timeout);
 
+    const terminateChild = (signalName: "SIGTERM" | "SIGKILL") => {
+      try {
+        process.kill(-child.pid!, signalName);
+      } catch (error) {
+        params.logger.debug(
+          `Bash tool process-group ${signalName} failed; falling back to child.kill`,
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        child.kill(signalName);
+      }
+    };
+
+    if (params.signal) {
+      if (params.signal.aborted) {
+        aborted = true;
+        terminateChild("SIGTERM");
+      } else {
+        onAbort = () => {
+          if (resolved || aborted) return;
+          aborted = true;
+          terminateChild("SIGTERM");
+          forceKillTimer = setTimeout(() => {
+            terminateChild("SIGKILL");
+          }, 500);
+        };
+        params.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
     const doResolve = (code: number | null) => {
       if (resolved) return;
       resolved = true;
@@ -315,23 +437,35 @@ function runSpawnedCommand(params: {
       cleanup("resolve");
 
       const durationMs = Date.now() - params.startTime;
-      const exitCode = timedOut ? null : (code ?? 1);
-      const isError = timedOut || (exitCode !== null && exitCode !== 0);
+      const exitCode = timedOut || aborted ? null : (code ?? 1);
+      const isError =
+        timedOut || aborted || (exitCode !== null && exitCode !== 0);
 
-      const stdoutResult = truncate(stdoutBuf, params.maxOutputBytes);
-      const stderrResult = truncate(
+      // I-78: decode accumulated Buffer[] once at flush boundary.
+      const stdoutBuf = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderrBuf = Buffer.concat(stderrChunks).toString("utf8");
+
+      const stderrText =
         stderrBuf.trim().length > 0
           ? stderrBuf
-          : isError
-            ? `Command "${params.metadataCommand}" failed`
-            : "",
-        params.maxOutputBytes,
-      );
+          : aborted
+            ? "Command aborted"
+            : isError
+              ? `Command "${params.metadataCommand}" failed`
+              : "";
+      const displayOutput = buildDisplayOutput({
+        stdout: stdoutBuf,
+        stderr: stderrText,
+        command: params.metadataCommand,
+        maxOutputBytes: params.maxOutputBytes,
+      });
 
       if (timedOut) {
         params.logger.warn(
           `Bash tool timed out after ${durationMs}ms: ${params.logCmd}`,
         );
+      } else if (aborted) {
+        params.logger.debug(`Bash tool aborted after ${durationMs}ms: ${params.logCmd}`);
       } else if (isError) {
         params.logger.debug(
           `Bash tool error (exit ${exitCode}): ${params.logCmd}`,
@@ -342,25 +476,30 @@ function runSpawnedCommand(params: {
         );
       }
 
-      const result: BashExecutionResult = {
-        exitCode,
-        stdout: stdoutResult.text,
-        stderr: stderrResult.text,
-        timedOut,
-        durationMs,
-        truncated: stdoutResult.truncated || stderrResult.truncated,
-      };
-
+      // Flatten content to plain text (stdout, then stderr if non-empty)
+      // so the model sees the raw command output instead of a JSON
+      // string it has to re-parse. Mirrors the donor `BashTool`
+      // `tool_result.content` shape (plain string, structured flags on
+      // the result envelope). Structured fields move to `metadata`
+      // where the inner emitEnd observer + ToolResult consumers can
+      // still read them.
       resolve({
-        content: safeStringify(result),
+        content: displayOutput.content,
         isError: isError || undefined,
         metadata: {
           command: params.metadataCommand,
           args: params.metadataArgs,
           cwd: params.cwd,
           shellMode: params.shellMode,
+          exitCode,
+          stdout: displayOutput.stdout,
+          stderr: displayOutput.stderr,
           timedOut,
           durationMs,
+          truncated: displayOutput.truncated,
+          ...(displayOutput.hints.length > 0
+            ? { agencCodeHints: displayOutput.hints }
+            : {}),
         },
       });
     };
@@ -379,22 +518,19 @@ function runSpawnedCommand(params: {
       cleanup("error");
       const durationMs = Date.now() - params.startTime;
       resolve({
-        content: safeStringify({
-          error: err.message,
-          exitCode: null,
-          stdout: "",
-          stderr: err.message,
-          timedOut: false,
-          durationMs,
-          truncated: false,
-        }),
+        content: err.message,
         isError: true,
         metadata: {
           command: params.metadataCommand,
           args: params.metadataArgs,
           cwd: params.cwd,
           shellMode: params.shellMode,
+          exitCode: null,
+          stdout: "",
+          stderr: err.message,
+          timedOut: false,
           durationMs,
+          truncated: false,
         },
       });
     });
@@ -664,6 +800,55 @@ export function isCommandAllowed(
   return { allowed: true };
 }
 
+function bashRuleCandidate(input: Record<string, unknown>): {
+  readonly command: string;
+  readonly firstWord: string | null;
+} | undefined {
+  if (typeof input.command !== "string" || input.command.trim().length === 0) {
+    return undefined;
+  }
+  const command = input.command.trim();
+  const args = Array.isArray(input.args)
+    ? input.args.filter((arg): arg is string => typeof arg === "string")
+    : undefined;
+  const rendered = args === undefined ? command : [command, ...args].join(" ");
+  return { command: rendered, firstWord: command.split(/\s+/u)[0] ?? null };
+}
+
+async function bashContentRulePermission(
+  input: Record<string, unknown>,
+  context: Parameters<NonNullable<Tool["checkPermissions"]>>[1],
+): Promise<PermissionResult> {
+  const candidate = bashRuleCandidate(input);
+  if (candidate === undefined) {
+    return { behavior: "passthrough", message: "Run shell command" };
+  }
+  return bashToolHasPermission(
+    {
+      command: candidate.command,
+      ...(typeof input.description === "string"
+        ? { description: input.description }
+        : {}),
+      ...(input.dangerouslyDisableSandbox === true
+        ? { dangerouslyDisableSandbox: true }
+        : {}),
+    },
+    {
+      ...context,
+      getAppState: () => {
+        const appState = context.getAppState();
+        const toolPermissionContext = context.toolPermissionContext
+          ? context.toolPermissionContext(appState)
+          : appState.toolPermissionContext;
+        return {
+          ...appState,
+          toolPermissionContext,
+        };
+      },
+    },
+  );
+}
+
 /**
  * Create the system.bash tool.
  *
@@ -691,14 +876,32 @@ export function createBashTool(config?: BashToolConfig): Tool {
   const logger: Logger = config?.logger ?? silentLogger;
   const lockCwd = config?.lockCwd ?? false;
   const shellModeEnabled = config?.shellMode !== false;
+  const execObserver = config?.execObserver;
 
   return {
     name: "system.bash",
+    // Marked deferred: exec_command is the canonical shell tool (donor runtime
+    // parity — the donor runtime's `local_shell` + `write_stdin` is what AgenC's
+    // `exec_command` + `write_stdin` mirrors). system.bash stays
+    // available via system.searchTools for callers that genuinely
+    // need the direct-mode (command + args) split or the dual-mode
+    // semantics, but defaults to off to keep the visible catalog
+    // donor runtime-small and avoid duplicate-tool confusion.
+    metadata: {
+      family: "terminal",
+      source: "builtin",
+      keywords: ["bash", "shell", "exec-fallback"],
+      preferredProfiles: ["coding"],
+      hiddenByDefault: true,
+      mutating: true,
+      deferred: true,
+    },
     description:
-      "Execute commands in two modes:\n" +
+      "Direct-or-shell command runner (exec_command fallback). Prefer exec_command for general shell work — this tool exists for cases that need explicit `command` + `args` array semantics or the dual-mode shell/direct split.\n" +
       '1. **Direct mode** (command + args): Set `command` to a binary (e.g. "git") and `args` to an array of flags/operands. Uses execFile directly.\n' +
       '2. **Shell mode** (command only, no args): Set `command` to a full shell string (e.g. "ls -la | grep foo"). Pipes, redirects, chaining, and backgrounding are supported.\n\n' +
       "NEVER use this tool to bypass verification: no `--no-verify` on commits, no `|| true` wrapping around failing tests, no rewriting a failing test into `exit 0`. If a test fails, read the error and fix the real cause. If a pre-commit or CI hook fails, investigate the cause and create a new commit with the fix — do not skip the hook. If the verification harness itself is genuinely wrong, stop and explain the discrepancy in your reply so the user can review before you modify the harness. Attempts to overwrite a verification harness that just failed in this turn will be refused by the runtime.",
+    recoveryCategory: "side-effecting",
     inputSchema: {
       type: "object",
       properties: {
@@ -727,8 +930,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
       required: ["command"],
     },
 
+    checkPermissions(input, context) {
+      return bashContentRulePermission(input as Record<string, unknown>, context);
+    },
+
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
-      const input = rawArgs as unknown as BashToolInput;
+      const input = rawArgs as unknown as BashToolInput & ToolExecutionInjectedArgs;
+      const abortSignal = input.__abortSignal;
+      const onProgress = input.__onProgress;
 
       // Validate command
       if (
@@ -892,28 +1101,28 @@ export function createBashTool(config?: BashToolConfig): Tool {
           workspaceWriteDecision.message ??
           "Shell workspace write policy blocked the command.";
         logger.warn(`Bash tool shell write denied: ${rejectionMessage}`);
-        return errorResult(rejectionMessage);
+        return errorResult(
+          rejectionMessage,
+          buildRecoverableToolFailureMetadata("shell_workspace_write_policy"),
+        );
       }
 
       const cwdValidationError = validateWorkingDirectory(cwd);
       if (cwdValidationError) {
         return {
-          content: safeStringify({
-            error: cwdValidationError,
-            exitCode: null,
-            stdout: "",
-            stderr: cwdValidationError,
-            timedOut: false,
-            durationMs: 0,
-            truncated: false,
-          }),
+          content: cwdValidationError,
           isError: true,
           metadata: {
             command,
             args: execArgs,
             cwd,
             shellMode: useShellMode,
+            exitCode: null,
+            stdout: "",
+            stderr: cwdValidationError,
+            timedOut: false,
             durationMs: 0,
+            truncated: false,
           },
         };
       }
@@ -928,6 +1137,54 @@ export function createBashTool(config?: BashToolConfig): Tool {
       const startTime = Date.now();
       const useSpawnedWrapperMode =
         !useShellMode && SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
+
+      // T6 gap #119: exec_command_begin / _end lifecycle emit.
+      // Reuse the LLM tool-call id so the `exec_command_begin/_end`
+      // events collide with `tool_call_started/_completed` in
+      // `events-to-messages.ts`'s `toolMessageIndexByCallId` — otherwise
+      // the two callId namespaces produce two transcript rows for the
+      // same Bash invocation (the streaming row + the completed row).
+      // Mirrors the donor behavior where bash is a single tool_use_id pair with
+      // streaming via `progressMessages` keyed off the same id.
+      const execCallId =
+        typeof input.__callId === "string" && input.__callId.length > 0
+          ? input.__callId
+          : `bash-${randomBytes(4).toString("hex")}`;
+      const execObservedCommand = useShellMode
+        ? shellCommand
+        : [command, ...execArgs].join(" ");
+      execObserver?.onBegin?.({
+        callId: execCallId,
+        command: execObservedCommand,
+        cwd,
+      });
+      const emitEnd = (result: ToolResult): ToolResult => {
+        if (!execObserver?.onEnd) return result;
+        // Read the structured fields directly from metadata — they're
+        // populated alongside the plain-text content above. (Earlier
+        // versions JSON.parsed the content blob; that no longer works
+        // since content is plain text now, matching AgenC's
+        // tool_result shape.)
+        const md = (result.metadata ?? {}) as {
+          exitCode?: number | null;
+          stdout?: string;
+          stderr?: string;
+        };
+        const exitCode =
+          typeof md.exitCode === "number"
+            ? md.exitCode
+            : result.isError
+              ? 1
+              : 0;
+        execObserver.onEnd!({
+          callId: execCallId,
+          exitCode,
+          ...(md.stdout !== undefined ? { stdout: md.stdout } : {}),
+          ...(md.stderr !== undefined ? { stderr: md.stderr } : {}),
+          durationMs: Date.now() - startTime,
+        });
+        return result;
+      };
 
       // Shell mode uses spawn + exit event to avoid hanging when backgrounded
       // children (e.g. `python3 ... &`) inherit stdout/stderr pipes.
@@ -945,8 +1202,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
         try {
           writeFileSync(scriptPath, shellCommand, { mode: 0o700 });
         } catch (writeErr) {
-          return errorResult(
-            `Failed to create temp script: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+          return emitEnd(
+            errorResult(
+              `Failed to create temp script: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+            ),
           );
         }
         return runSpawnedCommand({
@@ -963,7 +1222,9 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataArgs: execArgs,
           shellMode: true,
           cleanupPath: scriptPath,
-        });
+          ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
+        }).then(emitEnd);
       }
 
       if (useSpawnedWrapperMode) {
@@ -980,11 +1241,16 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataCommand: command,
           metadataArgs: execArgs,
           shellMode: false,
-        });
+          ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
+          ...(onProgress !== undefined ? { onProgress } : {}),
+        }).then(emitEnd);
       }
 
       // Direct mode: use execFile (waits for pipes — safe since no backgrounding)
-      return new Promise<ToolResult>((resolve) => {
+      return new Promise<ToolResult>((outerResolve) => {
+        const resolve = (result: ToolResult): void => {
+          outerResolve(emitEnd(result));
+        };
         execFile(
           execCommand,
           execArgs,
@@ -994,6 +1260,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
             maxBuffer: maxOutputBytes * 2, // Allow headroom, rely on truncate() for user-facing limits
             shell: false,
             env,
+            ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           },
           (error, stdout, stderr) => {
             const durationMs = Date.now() - startTime;
@@ -1014,11 +1281,15 @@ export function createBashTool(config?: BashToolConfig): Tool {
               const fallbackErrorText =
                 error.message || `Command "${command}" failed`;
 
-              const stdoutResult = truncate(stdoutText, maxOutputBytes);
-              const stderrResult = truncate(
-                stderrText.trim().length > 0 ? stderrText : fallbackErrorText,
+              const displayOutput = buildDisplayOutput({
+                stdout: stdoutText,
+                stderr:
+                  stderrText.trim().length > 0
+                    ? stderrText
+                    : fallbackErrorText,
+                command: execObservedCommand,
                 maxOutputBytes,
-              );
+              });
 
               if (isTimeout) {
                 logger.warn(
@@ -1030,52 +1301,52 @@ export function createBashTool(config?: BashToolConfig): Tool {
                 );
               }
 
-              const result: BashExecutionResult = {
-                exitCode,
-                stdout: stdoutResult.text,
-                stderr: stderrResult.text,
-                timedOut: isTimeout,
-                durationMs,
-                truncated: stdoutResult.truncated || stderrResult.truncated,
-              };
-
               resolve({
-                content: safeStringify(result),
+                content: displayOutput.content,
                 isError: true,
                 metadata: {
                   command,
                   args: execArgs,
                   cwd,
                   shellMode: false,
+                  exitCode,
+                  stdout: displayOutput.stdout,
+                  stderr: displayOutput.stderr,
                   timedOut: isTimeout,
                   durationMs,
+                  truncated: displayOutput.truncated,
+                  ...(displayOutput.hints.length > 0
+                    ? { agencCodeHints: displayOutput.hints }
+                    : {}),
                 },
               });
               return;
             }
 
-            const stdoutResult = truncate(toText(stdout), maxOutputBytes);
-            const stderrResult = truncate(toText(stderr), maxOutputBytes);
-
             logger.debug(`Bash tool success (${durationMs}ms): ${logCmd}`);
 
-            const result: BashExecutionResult = {
-              exitCode: 0,
-              stdout: stdoutResult.text,
-              stderr: stderrResult.text,
-              timedOut: false,
-              durationMs,
-              truncated: stdoutResult.truncated || stderrResult.truncated,
-            };
-
+            const displayOutput = buildDisplayOutput({
+              stdout: toText(stdout),
+              stderr: toText(stderr),
+              command: execObservedCommand,
+              maxOutputBytes,
+            });
             resolve({
-              content: safeStringify(result),
+              content: displayOutput.content,
               metadata: {
                 command,
                 args: execArgs,
                 cwd,
                 shellMode: false,
+                exitCode: 0,
+                stdout: displayOutput.stdout,
+                stderr: displayOutput.stderr,
+                timedOut: false,
                 durationMs,
+                truncated: displayOutput.truncated,
+                ...(displayOutput.hints.length > 0
+                  ? { agencCodeHints: displayOutput.hints }
+                  : {}),
               },
             });
           },

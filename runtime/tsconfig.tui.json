@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist/tui",
+    "lib": ["ES2023"],
+    "jsx": "react-jsx",
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": false,
+    "noImplicitAny": false,
+    "strictNullChecks": true,
+    "types": [],
+    "paths": {
+      "bun:bundle": ["./src/build/feature.ts"],
+      "src/*": ["./src/*"]
+    }
+  },
+  "include": ["src/tui/**/*"]
+}
