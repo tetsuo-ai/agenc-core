@@ -25,6 +25,8 @@ import {
   type SlashCommandResult,
 } from "./_deps/commands.js";
 
+export { isBridgeSafeCommand };
+
 // ---------------------------------------------------------------------------
 // Thin-wrapper surface
 // ---------------------------------------------------------------------------

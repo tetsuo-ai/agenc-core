@@ -16,6 +16,8 @@ import {
   type CollectProviderAvailabilityOptions,
 } from "../llm/discovery/provider-discovery.js";
 
+export { collectProviderAvailability };
+
 export type AgenCProvidersCliCommand =
   | {
       readonly kind: "providers";

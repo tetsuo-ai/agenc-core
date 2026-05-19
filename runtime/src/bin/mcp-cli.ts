@@ -9,10 +9,17 @@ import type { Readable, Writable } from "node:stream";
 import type { AgenCConfig } from "../config/schema.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import {
+  formatMcpSseServeUrl,
   resolveMcpServeDefaults,
   runMcpStdioServe,
   startMcpSseServe,
 } from "../mcp/server/start.js";
+
+export {
+  formatMcpSseServeUrl,
+  resolveMcpServeDefaults,
+  startMcpSseServe,
+};
 
 export type AgenCMcpCliCommand =
   | {
@@ -99,7 +106,7 @@ export function parseAgenCMcpCliArgs(
   return parseMcpServeArgs(argv.slice(2), config);
 }
 
-function parseMcpServeArgs(
+export function parseMcpServeArgs(
   argv: readonly string[],
   config?: AgenCConfig,
 ): AgenCMcpCliCommand {

@@ -20,6 +20,10 @@ export function setCurrentRuntimeSession(session: Session | null): void {
   currentRuntimeSession = session;
 }
 
+export function getCurrentRuntimeSession(): Session | null {
+  return currentRuntimeSession;
+}
+
 export function clearCurrentRuntimeSession(session?: Session | null): void {
   if (session === undefined || currentRuntimeSession === session) {
     currentRuntimeSession = null;

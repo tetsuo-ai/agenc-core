@@ -7,7 +7,7 @@ export interface LocalTuiPhaseEventTarget {
   emitPhaseEvent?: (event: PhaseEvent) => void;
 }
 
-function emitLocalTuiEvent(
+export function emitLocalTuiEvent(
   subscribers: Iterable<LocalTuiEventSubscriber>,
   event: unknown,
 ): void {

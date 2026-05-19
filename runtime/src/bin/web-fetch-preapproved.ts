@@ -15,7 +15,7 @@
  * @module
  */
 
-const PREAPPROVED_HOSTS: ReadonlySet<string> = new Set([
+export const PREAPPROVED_HOSTS: ReadonlySet<string> = new Set([
   // AgenC + protocol surfaces
   "agenc.tech",
   "modelcontextprotocol.io",
@@ -162,4 +162,13 @@ export function isPreapprovedHost(hostname: string, pathname: string): boolean {
     }
   }
   return false;
+}
+
+export function isPreapprovedUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && isPreapprovedHost(url.hostname, url.pathname);
+  } catch {
+    return false;
+  }
 }

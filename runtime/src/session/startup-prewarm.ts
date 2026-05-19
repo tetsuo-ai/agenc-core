@@ -39,7 +39,7 @@ type ProviderStartupPrewarmResolution =
       readonly handle?: undefined;
     };
 
-class SessionStartupPrewarmStore implements StartupPrewarmStore {
+export class SessionStartupPrewarmStore implements StartupPrewarmStore {
   private providerHandle: LLMProviderStartupPrewarmHandle | undefined;
   private providerHandleStartedAtMs: number | undefined;
   private providerPending: PendingProviderStartupPrewarm | undefined;

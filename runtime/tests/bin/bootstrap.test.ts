@@ -11,9 +11,11 @@ import { join } from "node:path";
 
 import {
   bootstrapLocalRuntimeSession,
+} from "./bootstrap.js";
+import {
   readStartupCliFlags,
   resolveStartupSelection,
-} from "./bootstrap.js";
+} from "../bin/startup-selection.js";
 import { defaultConfig, mergeConfigs } from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";

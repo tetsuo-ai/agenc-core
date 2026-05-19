@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Session } from "../session/session.js";
-import clearCommand from "../commands/clear.js";
+import { clearCommand } from "../commands/clear.js";
 import {
   emitLocalTuiEvent,
   emitLocalTuiPhaseEvent,

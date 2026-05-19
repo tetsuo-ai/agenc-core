@@ -119,7 +119,7 @@ function resolveAgencHome(opts: TaskStoreOptions): string {
   return opts.agencHome ?? join(homedir(), ".agenc");
 }
 
-function tasksDir(opts: TaskStoreOptions): string {
+export function tasksDir(opts: TaskStoreOptions): string {
   const root = findProjectRootSync(opts.workspaceRoot);
   const slugInput = root ? root.rootDir : opts.workspaceRoot;
   return join(resolveAgencHome(opts), "projects", slugifyCwd(slugInput), "tasks");
@@ -285,7 +285,7 @@ export async function loadOne(
   return loadOneNoLock(opts, id);
 }
 
-async function loadAll(opts: TaskStoreOptions): Promise<StoredTask[]> {
+export async function loadAll(opts: TaskStoreOptions): Promise<StoredTask[]> {
   const dir = tasksDir(opts);
   let entries: string[];
   try {
@@ -528,7 +528,20 @@ async function deleteTaskNoLock(
   return true;
 }
 
-function deriveUnresolvedBlockers(
+export async function deleteTask(
+  opts: TaskStoreOptions,
+  id: string,
+): Promise<{ readonly deleted: boolean }> {
+  const result = await withListLock(opts, async () => {
+    const existing = await loadOneNoLock(opts, id);
+    if (!existing) return false;
+    return deleteTaskNoLock(opts, existing);
+  });
+  if (result) notifyTasksUpdated();
+  return { deleted: result };
+}
+
+export function deriveUnresolvedBlockers(
   task: StoredTask,
   byId: ReadonlyMap<string, StoredTask>,
 ): string[] {
@@ -540,6 +553,10 @@ function deriveUnresolvedBlockers(
     out.push(blockerId);
   }
   return out;
+}
+
+export function onTasksUpdated(listener: () => void): () => void {
+  return tasksUpdated.subscribe(listener);
 }
 
 export async function listWithUnresolved(

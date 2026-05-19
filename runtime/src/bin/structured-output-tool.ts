@@ -14,8 +14,9 @@
 
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
+import { Ajv, type ValidateFunction } from "ajv";
 
-const STRUCTURED_OUTPUT_TOOL_NAME = "StructuredOutput";
+export const STRUCTURED_OUTPUT_TOOL_NAME = "StructuredOutput";
 
 const STRUCTURED_OUTPUT_DESCRIPTION =
   "Return your final response in the requested structured format. Call this tool exactly once at the end of your response to provide the structured output. The runtime validates the payload against the configured JSON schema (when one is bound) and surfaces any schema-mismatch errors back to you so you can correct the shape and retry.";
@@ -37,6 +38,17 @@ function jsonResult(content: unknown, isError?: boolean): ToolResult {
     content: safeStringify(content),
     ...(isError ? { isError: true } : {}),
   };
+}
+
+type StructuredOutputToolBuildResult =
+  | { readonly tool: Tool }
+  | { readonly error: string };
+
+const schemaToolCache = new WeakMap<object, StructuredOutputToolBuildResult>();
+const ajv = new Ajv({ allErrors: true, strict: false });
+
+function formatSchemaErrors(validate: ValidateFunction): string {
+  return ajv.errorsText(validate.errors, { separator: "\n" });
 }
 
 /**
@@ -63,4 +75,45 @@ export function createStructuredOutputTool(): Tool {
       });
     },
   };
+}
+
+export function createStructuredOutputToolForSchema(
+  schema: Record<string, unknown>,
+): StructuredOutputToolBuildResult {
+  const cached = schemaToolCache.get(schema);
+  if (cached !== undefined) return cached;
+
+  let validate: ValidateFunction;
+  try {
+    validate = ajv.compile(schema);
+  } catch (error) {
+    const result = {
+      error: error instanceof Error ? error.message : String(error),
+    };
+    schemaToolCache.set(schema, result);
+    return result;
+  }
+
+  const tool: Tool = {
+    ...createStructuredOutputTool(),
+    inputSchema: schema,
+    execute: async (args) => {
+      if (!validate(args)) {
+        return jsonResult(
+          {
+            error: "Output does not match required schema",
+            detail: formatSchemaErrors(validate),
+          },
+          true,
+        );
+      }
+      return jsonResult({
+        message: "Structured output provided successfully",
+        structured_output: args,
+      });
+    },
+  };
+  const result = { tool };
+  schemaToolCache.set(schema, result);
+  return result;
 }
