@@ -15,7 +15,6 @@ const files = [
   "runtime/src/tui/components/AutoModeOptInDialog.tsx",
   "runtime/src/tui/components/AutoUpdaterWrapper.tsx",
   "runtime/src/tui/components/CustomSelect/select.tsx",
-  "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx",
   "runtime/src/tui/components/IdeOnboardingDialog.tsx",
   "runtime/src/tui/components/design-system/Dialog.tsx",
   "runtime/src/tui/components/spinner/Spinner.tsx",
@@ -42,7 +41,6 @@ describe("moved-source marker cleanup", () => {
   test("owned live TUI files do not keep donor import or analytics residue", () => {
     for (const file of [
       "runtime/src/tui/components/AutoModeOptInDialog.tsx",
-      "runtime/src/tui/components/DesktopUpsell/DesktopUpsellStartup.tsx",
       "runtime/src/tui/components/IdeOnboardingDialog.tsx",
     ]) {
       const source = readFileSync(`${repoRoot}${file}`, "utf8");

@@ -22,8 +22,8 @@ describe('Z-PURGEC tsup resolution boundaries', () => {
 
   it('resolves real migrated src aliases and fails missing aliases closed', () => {
     expect(
-      runtimeRel(__agencTsupAliasTest.resolveAgenCBareSrc('src/components/FeedbackSurvey/FeedbackSurvey.js')),
-    ).toBe('src/tui/components/FeedbackSurvey/FeedbackSurvey.tsx')
+      runtimeRel(__agencTsupAliasTest.resolveAgenCBareSrc('src/components/SearchBox.js')),
+    ).toBe('src/tui/components/SearchBox.tsx')
     expect(__agencTsupAliasTest.resolveAgenCBareSrc('src/not-present.js')).toBeNull()
   })
 
