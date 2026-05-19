@@ -40,6 +40,10 @@
     "check:llm-pipeline": "node scripts/check-llm-pipeline/runner.mjs",
     "check:daemon-errors": "node scripts/check-daemon-errors/runner.mjs",
     "check:e2e-all": "npm run check:daemon-errors && npm run check:llm-pipeline && npm run check:tui-e2e",
+    "check:unused": "knip --config knip.jsonc --production --no-progress",
+    "check:unused:all": "knip --config knip.jsonc --no-progress",
+    "check:unused:production": "knip --config knip.jsonc --production --no-progress",
+    "check:unused:report": "node scripts/check-unused-report.mjs",
     "test": "vitest run",
     "validate:required": "npm run typecheck && npm run test && npm run check:tui-runtime-startup && npm run check:e2e-all",
     "prepublishOnly": "npm run build"
@@ -136,6 +140,7 @@
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.5.14",
     "babel-plugin-react-compiler": "^1.0.0",
+    "knip": "^6.14.1",
     "tsup": "^8.5.1",
     "type-fest": "^4.41.0",
     "typescript": "^5.9.3",

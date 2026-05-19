@@ -61,7 +61,7 @@ describe("statsCommand", () => {
       services: { registry: { tools: [] }, mcpManager: {} },
     } as unknown as Session;
     const text = formatRuntimeStats(session, "/tmp");
-    expect(text).toContain("connected MCP servers: 0");
+    expect(text).toContain("connected MCP servers: n/a (daemon-owned)");
   });
 
   it("execute() returns a text result", async () => {

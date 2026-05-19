@@ -6,6 +6,10 @@ import { afterEach, describe, expect, test } from 'vitest'
 
 import { getAgentColor } from './agentColorManager.js'
 import {
+  getAllowedSettingSources,
+  setAllowedSettingSources,
+} from '../../bootstrap/state.js'
+import {
   __setMarkdownAgentDirsForTesting,
   __setPluginAgentCacheClearerForTesting,
   __setPluginAgentsLoaderForTesting,
@@ -21,7 +25,6 @@ import {
 } from './loadAgentsDir.js'
 import { getPrompt } from './prompt.js'
 
-const stateModulePath = '../../bootstrap/state.js'
 const allSettingSources = [
   'userSettings',
   'projectSettings',
@@ -52,19 +55,13 @@ function tempAgentDir(): string {
 async function getAllowedSettingSourcesForTesting(): Promise<
   SettingSourceForTesting[]
 > {
-  const state = (await import(stateModulePath)) as {
-    getAllowedSettingSources?: () => SettingSourceForTesting[]
-  }
-  return state.getAllowedSettingSources?.() ?? [...allSettingSources]
+  return getAllowedSettingSources() as SettingSourceForTesting[]
 }
 
 async function setAllowedSettingSourcesForTesting(
   sources: SettingSourceForTesting[],
 ): Promise<void> {
-  const state = (await import(stateModulePath)) as {
-    setAllowedSettingSources?: (sources: SettingSourceForTesting[]) => void
-  }
-  state.setAllowedSettingSources?.(sources)
+  setAllowedSettingSources(sources)
 }
 
 afterEach(async () => {

@@ -10,6 +10,10 @@ import {
   resolveAttachTargetTrustRoot,
   runProjectTrustPreflightForTui,
 } from "./agenc.js";
+import {
+  getSessionTrustAccepted,
+  setSessionTrustAccepted,
+} from "../bootstrap/state.js";
 import { YOLO_TRUST_COPY } from "../permissions/trust/TrustDialog.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 
@@ -112,20 +116,6 @@ function captureStderr(): {
     restore: () => {
       spy.mockRestore();
     },
-  };
-}
-
-async function loadLegacySessionTrustForTest(): Promise<{
-  readonly getSessionTrustAccepted: () => boolean;
-  readonly setSessionTrustAccepted: (value: boolean) => void;
-}> {
-  const statePath = ["..", "bootstrap", "state.js"].join("/");
-  const state = await import(statePath);
-  return {
-    getSessionTrustAccepted: state.getSessionTrustAccepted as () => boolean,
-    setSessionTrustAccepted: state.setSessionTrustAccepted as (
-      value: boolean,
-    ) => void,
   };
 }
 
@@ -432,12 +422,11 @@ describe("project trust preflight", () => {
     const env = makeEnv(home, workspace);
     const stdio = makeTtyStdio();
     const renderPrompt = vi.fn(async () => true);
-    const legacyTrust = await loadLegacySessionTrustForTest();
-    const previousTrust = legacyTrust.getSessionTrustAccepted();
+    const previousTrust = getSessionTrustAccepted();
 
     try {
-      legacyTrust.setSessionTrustAccepted(false);
-      expect(legacyTrust.getSessionTrustAccepted()).toBe(false);
+      setSessionTrustAccepted(false);
+      expect(getSessionTrustAccepted()).toBe(false);
 
       await expect(
         runProjectTrustPreflightForTui({
@@ -455,9 +444,9 @@ describe("project trust preflight", () => {
         prompted: true,
       });
 
-      expect(legacyTrust.getSessionTrustAccepted()).toBe(true);
+      expect(getSessionTrustAccepted()).toBe(true);
     } finally {
-      legacyTrust.setSessionTrustAccepted(previousTrust);
+      setSessionTrustAccepted(previousTrust);
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }

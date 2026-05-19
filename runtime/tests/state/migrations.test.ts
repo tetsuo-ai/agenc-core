@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { sourcePath } from "../helpers/source-path.ts";
 import Database from "better-sqlite3";
 import {
   LOGS_DB_MIGRATIONS,
@@ -10,7 +10,7 @@ import {
 } from "./migrations/index.js";
 import { applyMigrations } from "./sqlite-driver.js";
 
-const migrationDir = dirname(fileURLToPath(import.meta.url));
+const migrationDir = sourcePath("state");
 
 describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {

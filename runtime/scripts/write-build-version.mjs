@@ -19,6 +19,14 @@ const versionPath = path.join(distDir, "VERSION");
 const policySourceDir = path.join(runtimeDir, "src/sandbox/engine/policies");
 const bundledRuntimePolicyDir = path.join(distDir, "policies");
 const linuxLauncherPolicyDir = path.join(distDir, "sandbox/linux-launcher/policies");
+const yoloClassifierPromptSourceDir = path.join(
+  runtimeDir,
+  "src/utils/permissions/yolo-classifier-prompts",
+);
+const yoloClassifierPromptDistDir = path.join(
+  distDir,
+  "yolo-classifier-prompts",
+);
 
 function tryGitRevParse() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -45,6 +53,12 @@ async function main() {
       mkdirSync(policyTargetDir, { recursive: true });
       cpSync(policySourceDir, policyTargetDir, { recursive: true });
     }
+  }
+  if (existsSync(yoloClassifierPromptSourceDir)) {
+    mkdirSync(yoloClassifierPromptDistDir, { recursive: true });
+    cpSync(yoloClassifierPromptSourceDir, yoloClassifierPromptDistDir, {
+      recursive: true,
+    });
   }
 
   const commit = process.env.AGENC_BUILD_COMMIT ?? tryGitRevParse() ?? "unknown";

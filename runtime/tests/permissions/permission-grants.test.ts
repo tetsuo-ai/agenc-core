@@ -29,8 +29,8 @@ describe("permissionGrantsFromToolPermissionContext", () => {
           scope: "session",
         },
         {
-          permissionId: "unattended:deny:Bash",
-          subject: "Bash",
+          permissionId: "unattended:deny:system.bash",
+          subject: "system.bash",
           action: "unattended-deny",
           scope: "session",
         },

@@ -49,6 +49,7 @@ describe("openStateDatabases", () => {
         "current_session_id",
         "created_by_client",
         "last_snapshot_at",
+        "metadata_json",
       ]);
       const snapshotColumns = driver
         .prepareState<[], { name: string; notnull: number; pk: number }>(

@@ -89,10 +89,10 @@ describe("R3 toolJSX gating reaches the Messages animation gate", () => {
     );
   });
 
-  test("B3.3 App.tsx passes isMessageSelectorVisible={false} to <Messages> so the third canAnimate clause never spuriously blocks animation", () => {
+  test("B3.3 App.tsx passes the live isMessageSelectorVisible state to <Messages> so the selector clause can block animation while active", () => {
     const source = readSource();
     expect(source).toMatch(
-      /<Messages\b[\s\S]{0,2000}isMessageSelectorVisible\s*=\s*\{\s*false\s*\}/,
+      /<Messages\b[\s\S]{0,2000}isMessageSelectorVisible\s*=\s*\{\s*isMessageSelectorVisible\s*\}/,
     );
   });
 

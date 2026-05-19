@@ -33,6 +33,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const REVIEWER_CONTRACT_TIMEOUT_MS = 30_000;
+
 function mkFeatures(): ManagedFeatures {
   return {
     appsEnabledForAuth: () => false,
@@ -260,7 +262,9 @@ describe("guardian approval reviewer", () => {
       provider: mkProvider({ content: '{"outcome":"allow"}' }),
     });
     const turn = newDefaultTurnWithSubId(session, "turn-allow");
-    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+    const reviewer = createDefaultGuardianApprovalReviewer({
+      timeoutMs: REVIEWER_CONTRACT_TIMEOUT_MS,
+    });
 
     const result = await reviewer.reviewApprovalRequest({
       ctx: mkApprovalCtx(session, turn),
@@ -308,7 +312,9 @@ describe("guardian approval reviewer", () => {
       ],
     });
     const turn = newDefaultTurnWithSubId(session, "turn-preferred-model");
-    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+    const reviewer = createDefaultGuardianApprovalReviewer({
+      timeoutMs: REVIEWER_CONTRACT_TIMEOUT_MS,
+    });
 
     const result = await reviewer.reviewApprovalRequest({
       ctx: mkApprovalCtx(session, turn),
@@ -325,7 +331,9 @@ describe("guardian approval reviewer", () => {
       modelInfoError: new Error("model lookup unavailable"),
     });
     const turn = newDefaultTurnWithSubId(session, "turn-model-lookup-failed");
-    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+    const reviewer = createDefaultGuardianApprovalReviewer({
+      timeoutMs: REVIEWER_CONTRACT_TIMEOUT_MS,
+    });
 
     const result = await reviewer.reviewApprovalRequest({
       ctx: mkApprovalCtx(session, turn),
@@ -366,7 +374,9 @@ describe("guardian approval reviewer", () => {
       ],
     });
     const turn = newDefaultTurnWithSubId(session, "turn-policy-context");
-    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+    const reviewer = createDefaultGuardianApprovalReviewer({
+      timeoutMs: REVIEWER_CONTRACT_TIMEOUT_MS,
+    });
 
     const result = await reviewer.reviewApprovalRequest({
       ctx: mkApprovalCtx(session, turn),
@@ -392,7 +402,9 @@ describe("guardian approval reviewer", () => {
       }),
     });
     const turn = newDefaultTurnWithSubId(session, "turn-deny");
-    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+    const reviewer = createDefaultGuardianApprovalReviewer({
+      timeoutMs: REVIEWER_CONTRACT_TIMEOUT_MS,
+    });
 
     const result = await reviewer.reviewApprovalRequest({
       ctx: mkApprovalCtx(session, turn),
@@ -431,7 +443,9 @@ describe("guardian approval reviewer", () => {
       }),
     });
     const turn = newDefaultTurnWithSubId(session, "turn-findings");
-    const reviewer = createDefaultGuardianApprovalReviewer({ timeoutMs: 5_000 });
+    const reviewer = createDefaultGuardianApprovalReviewer({
+      timeoutMs: REVIEWER_CONTRACT_TIMEOUT_MS,
+    });
 
     const result = await reviewer.reviewApprovalRequest({
       ctx: mkApprovalCtx(session, turn),

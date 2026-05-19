@@ -1,10 +1,10 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { sourcePath } from "../helpers/source-path.ts";
 import {
   bootstrapLocalRuntimeSession,
   type LocalRuntimeBootstrap,
@@ -21,10 +21,7 @@ import type { PhaseEvent } from "../phases/events.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
 import { runCommand } from "../utils/process.js";
 
-const FIXTURE_PATH = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../mcp-client/test-fixtures/stdio-pid-server.cjs",
-);
+const FIXTURE_PATH = sourcePath("mcp-client/test-fixtures/stdio-pid-server.cjs");
 const MCP_SERVER_NAME = "live";
 const MCP_TOOL_NAME = `mcp.${MCP_SERVER_NAME}.ping`;
 

@@ -85,7 +85,7 @@ describe("remote AuthBackend bootstrap key vending", () => {
         "grok",
         expect.objectContaining({
           apiKey: "remote-managed-key",
-          model: "grok-4-fast",
+          model: "grok-4.3",
         }),
       );
       expect(fetchImpl).toHaveBeenCalledWith(

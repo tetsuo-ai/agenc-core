@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
+import { parseToml } from "../../config/loader.js";
 import {
   defaultRunProcess,
   marketplaceInstalledPath,
@@ -202,10 +203,14 @@ describe("agenc plugin CLI", () => {
       pluginId: "alpha",
     }, options(agencHome, workspaceRoot, disableIo));
     expect(disableExit).toBe(0);
-    expect(await readFile(join(agencHome, "config.toml"), "utf8"))
-      .toContain("[plugins]\nenabled = true");
-    expect(await readFile(join(agencHome, "config.toml"), "utf8"))
-      .toContain("[plugins.plugins.\"alpha\"]\nenabled = false");
+    const config = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as {
+      readonly plugins?: {
+        readonly enabled?: boolean;
+        readonly plugins?: Record<string, { readonly enabled?: boolean }>;
+      };
+    };
+    expect(config.plugins?.enabled).toBe(true);
+    expect(config.plugins?.plugins?.alpha?.enabled).toBe(false);
 
     const disabledListIo = createIo();
     await runAgenCPluginCli({

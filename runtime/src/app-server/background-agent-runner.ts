@@ -710,6 +710,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ...(this.#authBackend !== undefined
           ? { authBackend: this.#authBackend }
           : {}),
+        conversationId: params.agentId,
+        resumeConversation: true,
         argv: buildBootstrapArgv(params, this.#argv),
         ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
       });
@@ -807,6 +809,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#scheduleAgentBudgetTimer(active);
       void this.#enforceAgentBudget(active);
       this.#cleanupWhenComplete(params.agentId, managedThread);
+      await this.#hydrateRecoveredAgentState({
+        agentId: params.agentId,
+        session: bootstrap.session,
+        registry: bootstrap.registry,
+        thread: managedThread,
+        initialMessages: params.initialMessages ?? [],
+        replayToolCalls: params.replayToolCalls ?? [],
+        currentSessionId: params.currentSessionId,
+        onReplayToolResult: params.onReplayToolResult,
+      });
       return true;
     } catch {
       uninstallApprovalBridge?.();
@@ -850,6 +862,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.unsubscribeStatus?.();
     active.uninstallApprovalBridge?.();
     active.unsubscribeElicitationEvents?.();
+  }
+
+  async #hydrateRecoveredAgentState(params: {
+    readonly agentId: string;
+    readonly session: LocalRuntimeBootstrap["session"];
+    readonly registry: ToolRegistry;
+    readonly thread: ManagedThread;
+    readonly initialMessages: ReadonlyArray<LLMMessage>;
+    readonly replayToolCalls: readonly AgenCBackgroundAgentReplayToolCall[];
+    readonly currentSessionId?: string;
+    readonly onReplayToolResult?: (
+      result: AgenCBackgroundAgentReplayToolResult,
+    ) => void | Promise<void>;
+  }): Promise<void> {
+    const replayedMessages = await replayRecoveredToolCalls({
+      thread: params.thread,
+      parent: params.session,
+      registry: params.registry,
+      initialMessages: params.initialMessages,
+      replayToolCalls: params.replayToolCalls,
+      currentSessionId: params.currentSessionId,
+      onReplayToolResult: params.onReplayToolResult,
+      onProgress: (event) => this.#recordProgressEvent(params.agentId, event),
+    });
+    await hydrateRecoveredSessionHistory(params.session, {
+      initialMessages: params.initialMessages,
+      replayedMessages,
+    });
   }
 
   async attachAgentSessionEvents(
@@ -2202,8 +2242,8 @@ async function runRestoredAgentToCompletion(
   }
 }
 
-async function replayRecoveredToolCalls(opts: {
-  readonly thread: AgentThread;
+async function replayRecoveredToolCalls<TThread extends AgentThread | ManagedThread>(opts: {
+  readonly thread: TThread;
   readonly parent: LocalRuntimeBootstrap["session"];
   readonly registry: ToolRegistry;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
@@ -2214,7 +2254,7 @@ async function replayRecoveredToolCalls(opts: {
   ) => void | Promise<void>;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
-    thread: AgentThread,
+    thread: TThread,
   ) => void | Promise<void>;
 }): Promise<LLMMessage[]> {
   const messages: LLMMessage[] = [];
@@ -2305,6 +2345,91 @@ async function replayRecoveredToolCalls(opts: {
     });
   }
   return messages;
+}
+
+async function hydrateRecoveredSessionHistory(
+  session: LocalRuntimeBootstrap["session"],
+  params: {
+    readonly initialMessages: ReadonlyArray<LLMMessage>;
+    readonly replayedMessages: ReadonlyArray<LLMMessage>;
+  },
+): Promise<void> {
+  if (
+    params.initialMessages.length === 0 &&
+    params.replayedMessages.length === 0
+  ) {
+    return;
+  }
+  const stateLock = (
+    session as {
+      readonly state?: {
+        with?: (
+          fn: (state: { history?: unknown }) => void | Promise<void>,
+        ) => Promise<void> | void;
+      };
+    }
+  ).state;
+  if (typeof stateLock?.with !== "function") return;
+  await stateLock.with((state) => {
+    const current = Array.isArray(state.history) ? state.history : [];
+    const next =
+      current.length === 0
+        ? [...params.initialMessages, ...params.replayedMessages]
+        : [
+            ...current,
+            ...params.replayedMessages.filter(
+              (message) => !historyContainsRecoveredMessage(current, message),
+            ),
+          ];
+    state.history = next.map(cloneRecoveredLlmMessage);
+  });
+}
+
+function historyContainsRecoveredMessage(
+  history: ReadonlyArray<unknown>,
+  message: LLMMessage,
+): boolean {
+  if (message.role === "assistant" && message.toolCalls !== undefined) {
+    const ids = new Set(message.toolCalls.map((toolCall) => toolCall.id));
+    return history.some((entry) => {
+      if (entry === null || typeof entry !== "object") return false;
+      const toolCalls = (entry as { readonly toolCalls?: unknown }).toolCalls;
+      return (
+        Array.isArray(toolCalls) &&
+        toolCalls.some(
+          (toolCall) =>
+            toolCall !== null &&
+            typeof toolCall === "object" &&
+            ids.has(String((toolCall as { readonly id?: unknown }).id)),
+        )
+      );
+    });
+  }
+  if (message.role === "tool" && typeof message.toolCallId === "string") {
+    return history.some(
+      (entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        (entry as { readonly role?: unknown }).role === "tool" &&
+        (entry as { readonly toolCallId?: unknown }).toolCallId ===
+          message.toolCallId,
+    );
+  }
+  return false;
+}
+
+function cloneRecoveredLlmMessage(message: LLMMessage): LLMMessage {
+  return {
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((part) => ({ ...part }))
+      : message.content,
+    ...(message.toolCalls !== undefined
+      ? {
+          toolCalls: message.toolCalls.map((toolCall) => ({ ...toolCall })),
+        }
+      : {}),
+  };
 }
 
 function hasAssistantToolCall(
@@ -3313,10 +3438,7 @@ async function installUnattendedPermissionPolicy(
   await registry.update(next);
 }
 
-// runRestoredAgentToCompletion / restoredAgentMetadata previously fed the
-// runAgent fork-loop on daemon restart for in-flight tool replay. The
-// new ManagedThread-based restoreAgent path resumes via rollout reload
-// and does not yet apply replayToolCalls; keeping these helpers
-// referenced so the recovery synthesis is reachable when the replay
-// path is ported onto the session surface.
+// runRestoredAgentToCompletion / restoredAgentMetadata are retained for
+// compatibility with the older fork-loop restore path while the live
+// ManagedThread restore path handles replay directly above.
 void [runRestoredAgentToCompletion, restoredAgentMetadata];

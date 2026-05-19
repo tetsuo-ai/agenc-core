@@ -5,7 +5,7 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
   DAEMON: false,
   AGENT_TRIGGERS: false,
   ABLATION_BASELINE: false,
-  CONTEXT_COLLAPSE: false,
+  CONTEXT_COLLAPSE: true,
   COMMIT_ATTRIBUTION: false,
   UDS_INBOX: false,
   BG_SESSIONS: false,

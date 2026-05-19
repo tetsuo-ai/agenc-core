@@ -45,12 +45,11 @@ import {
   type AgenCBackgroundAgentSessionEventBinding,
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
-  type AgenCRunAgentFunction,
 } from "./background-agent-runner.js";
-import { AgentStatusTracker } from "../agents/status.js";
-import { Mailbox } from "../agents/mailbox.js";
-import { resolveAgentRole } from "../agents/role.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  createEmptyToolPermissionContext,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   buildRealtimeSessionConfig,
@@ -59,42 +58,59 @@ import {
   type RealtimeTransportRequest,
   type RealtimeWriter,
 } from "../conversation/realtime/conversation.js";
-import type { LiveAgent } from "../agents/control.js";
-import type { AgentMetadata } from "../agents/registry.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { AgenCRealtimeHeadersProvider } from "./realtime-transport.js";
 
-type ResumeAgentFromRolloutParams = {
-  readonly rootThreadId: string;
-  readonly parentPath: string;
-  readonly metadata: AgentMetadata;
-};
-
-function restoredLiveAgent(
-  agentId: string,
-  agentPath = `/root/${agentId}`,
-): LiveAgent {
-  const metadata: AgentMetadata = {
-    agentId,
-    agentPath,
-    agentNickname: agentId,
-    agentRole: "default",
-    depth: 1,
+function createRecoveredSession(
+  threadId: string,
+  permissionModeRegistry: {
+    current: () => ToolPermissionContext;
+    update: (context: ToolPermissionContext) => Promise<void> | void;
+  },
+) {
+  const state = { history: [] as unknown[] };
+  const managedThread = {
+    threadId,
+    agentPath: "/root",
+    kind: "root" as const,
+    status: () =>
+      ({
+        status: "running",
+        turnId: "turn-recovered",
+        startedAtMs: 0,
+      }) as const,
+    subscribeStatus: () => () => {},
+    submit: vi.fn(async () => threadId),
+    appendMessage: vi.fn(async () => threadId),
+    shutdown: vi.fn(async () => {}),
+    totalTokenUsage: () => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    }),
+    configSnapshot: () => ({}),
   };
   return {
-    agentId,
-    agentPath,
-    role: resolveAgentRole(undefined),
-    depth: 1,
-    nickname: agentId,
-    status: new AgentStatusTracker(),
-    upInbox: new Mailbox({ threadId: agentId }),
-    downInbox: new Mailbox({ threadId: `${agentId}-down` }),
-    abortController: new AbortController(),
-    metadata,
-    messages: [],
-    memoryEntries: [],
-    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    conversationId: threadId,
+    permissionModeRegistry,
+    state: {
+      unsafePeek: () => state,
+      with: async (fn: (next: typeof state) => void | Promise<void>) => {
+        await fn(state);
+      },
+    },
+    snapshotHistoryMessages: () => state.history,
+    subscribeToEvents: () => () => {},
+    emitPhaseEvent: () => {},
+    services: {
+      conversationThreadManager: {
+        hasThread: (id: string) => id === threadId,
+        getThread: (id: string) => {
+          if (id !== threadId) throw new Error(`missing recovered thread ${id}`);
+          return managedThread;
+        },
+      },
+    },
   };
 }
 
@@ -1686,7 +1702,7 @@ port = 0
 [agent.retention]
 completed_days = 10000
 failed_days = 10000
-snapshot_days = 1
+snapshot_days = 10000
 snapshot_max_count = 2
 snapshot_max_bytes = 64
       `,
@@ -1710,7 +1726,7 @@ snapshot_max_bytes = 64
       runId: "run-retention-age",
       sessionId: "session-retention-age",
       snapshots: [
-        { snapshotAt: "2026-04-29T00:00:00.000Z" },
+        { snapshotAt: "1990-01-01T00:00:00.000Z" },
         { snapshotAt: "2026-05-06T00:00:00.000Z" },
       ],
     });
@@ -1815,49 +1831,32 @@ snapshot_max_bytes = 64
       toolCallId: "tool-other",
       status: "blocked",
     });
-    const resumedRoots: unknown[] = [];
-    const live = restoredLiveAgent("run-restart", "/root/run-restart");
-    const resumeAgentFromRollout = async (
-      params: ResumeAgentFromRolloutParams,
-    ) => {
-      resumedRoots.push(params);
-      return params.rootThreadId === "run-restart"
-        ? { resumedCount: 1, rootLive: live }
-        : { resumedCount: 0, rootLive: null };
-    };
+    const restoredConversationIds: string[] = [];
     const sendInput = vi.fn(async () => {});
-    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = async function* (
-      params: Parameters<AgenCRunAgentFunction>[0],
-    ) {
-      runParams = params;
-      params.live.status.markRunning("turn-restart");
-      yield { kind: "status", text: "restored" };
-      await new Promise(() => {});
-    } as AgenCRunAgentFunction;
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
     };
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
-        bootstrap: (async () => ({
-          session: {
-            conversationId: "daemon-recovery",
-            permissionModeRegistry,
-            services: {},
-          },
+        bootstrap: (async (options) => {
+          const conversationId = options.conversationId ?? "daemon-recovery";
+          restoredConversationIds.push(conversationId);
+          return {
+            session: createRecoveredSession(
+              conversationId,
+              permissionModeRegistry,
+            ),
           shutdown: async () => {},
-        })) as AgenCBootstrapFunction,
+          };
+        }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
-            resumeAgentFromRollout,
             sendInput,
             shutdown: async () => {},
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
-        runAgentFn,
         now: () => "2026-05-01T12:00:00.000Z",
       });
 
@@ -1885,26 +1884,7 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain(
       "daemon recovery processed 2 stale in-flight tool call(s): replay=0, poison=2, cancel=0",
     );
-    expect(resumedRoots).toHaveLength(2);
-    expect(resumedRoots).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          rootThreadId: "run-restart",
-          metadata: expect.objectContaining({
-            agentId: "run-restart",
-          }),
-        }),
-        expect.objectContaining({
-          rootThreadId: "run-other",
-          metadata: expect.objectContaining({
-            agentId: "run-other",
-          }),
-        }),
-      ]),
-    );
-    expect(runParams?.initialMessages).toEqual([
-      { role: "assistant", content: "state" },
-    ]);
+    expect(restoredConversationIds).toEqual(["run-restart", "run-other"]);
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
@@ -1952,11 +1932,11 @@ snapshot_max_bytes = 64
     });
     expect(agentList.agents[0]).toMatchObject({
       agentId: "run-other",
-      status: "idle",
+      status: "running",
       metadata: {
         recovery: {
           runStatus: "blocked",
-          runnable: false,
+          runnable: true,
         },
       },
     });
@@ -2036,35 +2016,28 @@ snapshot_max_bytes = 64
       recoveryCategory: "idempotent",
     });
 
-    const live = restoredLiveAgent("run-replay", "/root/run-replay");
     const dispatch = vi.fn(async () => ({ content: "raw dispatch bypass" }));
     // Replay uses executable Tool entries; registry.dispatch is kept as a bypass guard.
     const execute = vi.fn(async () => ({ content: "file text" }));
-    const resumeAgentFromRollout = vi.fn(async () => ({
-      resumedCount: 1,
-      rootLive: live,
-    }));
-    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = async function* (
-      params: Parameters<AgenCRunAgentFunction>[0],
-    ) {
-      runParams = params;
-      params.live.status.markRunning("turn-replay");
-      yield { kind: "status", text: "restored" };
-      await new Promise(() => {});
-    } as AgenCRunAgentFunction;
+    const restoredSessions = new Map<
+      string,
+      ReturnType<typeof createRecoveredSession>
+    >();
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
     };
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
-        bootstrap: (async () => ({
-          session: {
-            conversationId: "daemon-replay",
+        bootstrap: (async (options) => {
+          const conversationId = options.conversationId ?? "daemon-replay";
+          const session = createRecoveredSession(
+            conversationId,
             permissionModeRegistry,
-            services: {},
-          },
+          );
+          restoredSessions.set(conversationId, session);
+          return {
+            session,
           registry: {
             tools: [
               {
@@ -2080,16 +2053,15 @@ snapshot_max_bytes = 64
             dispatch,
           },
           shutdown: async () => {},
-        })) as AgenCBootstrapFunction,
+          };
+        }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
-            resumeAgentFromRollout,
             sendInput: async () => {},
             shutdown: async () => {},
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
-        runAgentFn,
         now: () => "2026-05-01T12:00:00.000Z",
       });
 
@@ -2110,14 +2082,11 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain(
       "daemon recovery processed 1 stale in-flight tool call(s): replay=1, poison=0, cancel=0",
     );
-    expect(resumeAgentFromRollout).toHaveBeenCalledWith(
-      expect.objectContaining({ rootThreadId: "run-replay" }),
-    );
     expect(execute).toHaveBeenCalledWith(
       expect.objectContaining({ file_path: "README.md" }),
     );
     expect(dispatch).not.toHaveBeenCalled();
-    expect(runParams?.initialMessages).toEqual([
+    expect(restoredSessions.get("run-replay")?.state.unsafePeek().history).toEqual([
       { role: "assistant", content: "state" },
       {
         role: "assistant",
@@ -2170,46 +2139,35 @@ snapshot_max_bytes = 64
       sessionId: "session-completed-tool",
     });
 
-    const live = restoredLiveAgent(
-      "run-completed-tool",
-      "/root/run-completed-tool",
-    );
-    const resumeAgentFromRollout = vi.fn(async () => ({
-      resumedCount: 1,
-      rootLive: live,
-    }));
-    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = async function* (
-      params: Parameters<AgenCRunAgentFunction>[0],
-    ) {
-      runParams = params;
-      params.live.status.markRunning("turn-completed-tool");
-      yield { kind: "status", text: "restored" };
-      await new Promise(() => {});
-    } as AgenCRunAgentFunction;
+    const restoredSessions = new Map<
+      string,
+      ReturnType<typeof createRecoveredSession>
+    >();
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
     };
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
-        bootstrap: (async () => ({
-          session: {
-            conversationId: "daemon-completed-tool",
+        bootstrap: (async (options) => {
+          const conversationId = options.conversationId ?? "daemon-completed-tool";
+          const session = createRecoveredSession(
+            conversationId,
             permissionModeRegistry,
-            services: {},
-          },
-          shutdown: async () => {},
-        })) as AgenCBootstrapFunction,
+          );
+          restoredSessions.set(conversationId, session);
+          return {
+            session,
+            shutdown: async () => {},
+          };
+        }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
-            resumeAgentFromRollout,
             sendInput: async () => {},
             shutdown: async () => {},
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
-        runAgentFn,
       });
 
     const running = runAgenCDaemonCli(
@@ -2218,10 +2176,14 @@ snapshot_max_bytes = 64
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
     await waitForCondition(
-      () => runParams !== undefined,
-      "restored run params",
+      () =>
+        (restoredSessions.get("run-completed-tool")?.state.unsafePeek().history
+          .length ?? 0) > 0,
+      "restored session history",
     );
-    expect(runParams?.initialMessages).toEqual([
+    expect(
+      restoredSessions.get("run-completed-tool")?.state.unsafePeek().history,
+    ).toEqual([
       {
         role: "user",
         content: "recover this completed tool run",
@@ -2267,52 +2229,41 @@ snapshot_max_bytes = 64
       recoveryCategory: "idempotent",
     });
 
-    const live = restoredLiveAgent(
-      "run-replay-poison",
-      "/root/run-replay-poison",
-    );
     const dispatch = vi.fn(async () => ({ content: "should not run" }));
-    const resumeAgentFromRollout = vi.fn(async () => ({
-      resumedCount: 1,
-      rootLive: live,
-    }));
-    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
-    const runAgentFn = async function* (
-      params: Parameters<AgenCRunAgentFunction>[0],
-    ) {
-      runParams = params;
-      params.live.status.markRunning("turn-replay-poison");
-      yield { kind: "status", text: "restored" };
-      await new Promise(() => {});
-    } as AgenCRunAgentFunction;
+    const restoredSessions = new Map<
+      string,
+      ReturnType<typeof createRecoveredSession>
+    >();
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
       update: async () => {},
     };
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
-        bootstrap: (async () => ({
-          session: {
-            conversationId: "daemon-replay-poison",
+        bootstrap: (async (options) => {
+          const conversationId = options.conversationId ?? "daemon-replay-poison";
+          const session = createRecoveredSession(
+            conversationId,
             permissionModeRegistry,
-            services: {},
-          },
+          );
+          restoredSessions.set(conversationId, session);
+          return {
+            session,
           registry: {
             tools: [{ name: "FileWrite", recoveryCategory: "side-effecting" }],
             toLLMTools: () => [],
             dispatch,
           },
           shutdown: async () => {},
-        })) as AgenCBootstrapFunction,
+          };
+        }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
-            resumeAgentFromRollout,
             sendInput: async () => {},
             shutdown: async () => {},
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
-        runAgentFn,
         now: () => "2026-05-01T12:00:00.000Z",
       });
 
@@ -2333,11 +2284,10 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain(
       "daemon recovery processed 1 stale in-flight tool call(s): replay=1, poison=0, cancel=0",
     );
-    expect(resumeAgentFromRollout).toHaveBeenCalledWith(
-      expect.objectContaining({ rootThreadId: "run-replay-poison" }),
-    );
     expect(dispatch).not.toHaveBeenCalled();
-    expect(runParams?.initialMessages).toEqual([
+    expect(
+      restoredSessions.get("run-replay-poison")?.state.unsafePeek().history,
+    ).toEqual([
       { role: "assistant", content: "state" },
     ]);
     expect(
@@ -2563,29 +2513,14 @@ snapshot_max_bytes = 64
     // after proving agent.create produced the running row and session snapshot.
     markAgentRunRunning(agencHome, process.cwd(), createdAgentId, sessionId);
 
-    const resumedRoots: unknown[] = [];
-    const live = restoredLiveAgent(createdAgentId, `/root/${createdAgentId}`);
-    const resumeAgentFromRollout = async (
-      params: ResumeAgentFromRolloutParams,
-    ) => {
-      resumedRoots.push(params);
-      return params.rootThreadId === createdAgentId
-        ? { resumedCount: 1, rootLive: live }
-        : { resumedCount: 0, rootLive: null };
-    };
     const sendInput = vi.fn(async () => {});
-    let runParams: Parameters<AgenCRunAgentFunction>[0] | undefined;
     let restoreBootstrapOptions:
       | Parameters<AgenCBootstrapFunction>[0]
       | undefined;
-    const runAgentFn = async function* (
-      params: Parameters<AgenCRunAgentFunction>[0],
-    ) {
-      runParams = params;
-      params.live.status.markRunning("turn-created-restart");
-      yield { kind: "status", text: "restored" };
-      await new Promise(() => {});
-    } as AgenCRunAgentFunction;
+    const restoredSessions = new Map<
+      string,
+      ReturnType<typeof createRecoveredSession>
+    >();
     const secondSignal = createSignalProcess();
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
@@ -2595,24 +2530,24 @@ snapshot_max_bytes = 64
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           restoreBootstrapOptions = options;
+          const conversationId = options.conversationId ?? "daemon-recovery";
+          const session = createRecoveredSession(
+            conversationId,
+            permissionModeRegistry,
+          );
+          restoredSessions.set(conversationId, session);
           return {
-            session: {
-              conversationId: "daemon-recovery",
-              permissionModeRegistry,
-              services: {},
-            },
+            session,
             shutdown: async () => {},
           };
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
-            resumeAgentFromRollout,
             sendInput,
             shutdown: async () => {},
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
-        runAgentFn,
         now: () => "2026-05-01T12:01:00.000Z",
       });
 
@@ -2626,17 +2561,11 @@ snapshot_max_bytes = 64
       },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
-    expect(resumedRoots).toEqual([
-      expect.objectContaining({
-        rootThreadId: createdAgentId,
-        metadata: expect.objectContaining({
-          agentId: createdAgentId,
-        }),
-      }),
-    ]);
-    expect(runParams?.taskPrompt).toBe("survive daemon restart");
-    expect(runParams?.model).toBe("grok-4");
-    expect(runParams?.initialMessages).toEqual([
+    expect(restoreBootstrapOptions?.conversationId).toBe(createdAgentId);
+    expect(restoreBootstrapOptions?.resumeConversation).toBe(true);
+    expect(
+      restoredSessions.get(createdAgentId)?.state.unsafePeek().history,
+    ).toEqual([
       { role: "user", content: "state before restart" },
     ]);
     expect(restoreBootstrapOptions?.argv).toEqual(

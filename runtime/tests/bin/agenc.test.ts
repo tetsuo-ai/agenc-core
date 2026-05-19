@@ -115,6 +115,20 @@ function trustWorkspaceForTest(agencHome: string, workspace: string): void {
   });
 }
 
+async function waitForValue<T>(
+  label: string,
+  read: () => T | null | undefined,
+  timeoutMs = 1_000,
+): Promise<T> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const value = read();
+    if (value !== null && value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 function installDaemonCliDepsForTest(
   options: {
     readonly agentId?: string;
@@ -1900,10 +1914,12 @@ describe("main() smoke", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const pending = bootTUIEntry({});
-      await new Promise((r) => setTimeout(r, 20));
-      expect(capturedSession).not.toBeNull();
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
 
-      await capturedSession?.submit?.("hello daemon");
+      await session.submit?.("hello daemon");
 
       resolveExit?.();
       const code = await pending;
@@ -1980,10 +1996,12 @@ describe("main() smoke", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const pending = bootTUIEntry({});
-      await new Promise((r) => setTimeout(r, 20));
-      expect(capturedSession).not.toBeNull();
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
 
-      await capturedSession?.submit?.("use the audit MCP tool");
+      await session.submit?.("use the audit MCP tool");
 
       resolveExit?.();
       const code = await pending;
@@ -2046,33 +2064,35 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-	      const pending = bootTUIEntry({});
-	      await new Promise((r) => setTimeout(r, 20));
-	      expect(capturedSession).not.toBeNull();
-	      const localEvents: Array<{
-	        readonly type?: string;
-	        readonly input?: string;
-	        readonly result?: { readonly kind?: string };
-	      }> = [];
-	      const unsubscribe = capturedSession?.subscribeToEvents?.((event) => {
-	        localEvents.push(event);
-	      });
+      const pending = bootTUIEntry({});
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+      const localEvents: Array<{
+        readonly type?: string;
+        readonly input?: string;
+        readonly result?: { readonly kind?: string };
+      }> = [];
+      const unsubscribe = session.subscribeToEvents?.((event) => {
+        localEvents.push(event);
+      });
 
-	      await capturedSession?.submit?.(slashInput);
-	      unsubscribe?.();
+      await session.submit?.(slashInput);
+      unsubscribe?.();
 
-	      resolveExit?.();
-	      const code = await pending;
-	      expect(code).toBe(0);
-	      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
-	      expect(daemon.requests).toEqual([]);
-	      expect(localEvents).toEqual([
-	        expect.objectContaining({
-	          type: "slash_result",
-	          input: slashInput,
-	          result: expect.objectContaining({ kind: "text" }),
-	        }),
-	      ]);
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      expect(daemon.startPromptAgent).not.toHaveBeenCalled();
+      expect(daemon.requests).toEqual([]);
+      expect(localEvents).toEqual([
+        expect.objectContaining({
+          type: "slash_result",
+          input: slashInput,
+          result: expect.objectContaining({ kind: "text" }),
+        }),
+      ]);
     } finally {
       process.argv = prevArgv;
       vi.doUnmock("../tui/main.js");
@@ -2121,9 +2141,11 @@ describe("main() smoke", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const pending = bootTUIEntry({});
-      await new Promise((r) => setTimeout(r, 20));
-      expect(capturedSession).not.toBeNull();
-      await expect(capturedSession?.submit?.("hello daemon")).rejects.toThrow(
+      const session = await waitForValue(
+        "deferred TUI session",
+        () => capturedSession,
+      );
+      await expect(session.submit?.("hello daemon")).rejects.toThrow(
         "connect failed",
       );
       resolveExit?.();

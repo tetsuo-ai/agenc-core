@@ -1,16 +1,14 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { sourcePath } from "../helpers/source-path.ts";
 import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
 
-const FIXTURE_PATH = resolve(
-  dirname(new URL(import.meta.url).pathname),
-  "test-fixtures/stdio-pid-server.cjs",
-);
+const FIXTURE_PATH = sourcePath("mcp-client/test-fixtures/stdio-pid-server.cjs");
 
 async function makeTempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-mcp-"));

@@ -289,6 +289,7 @@ export function formatCliHelpText(): string {
     "  agenc --resume <session-id>",
     "  agenc agent start \"fix the failing parser test\"",
     "  agenc config validate",
+    "  agenc mcp serve --transport stdio",
     "  agenc mcp list",
     "  agenc help permissions",
   ].join("\n");
@@ -519,6 +520,16 @@ export function validateAgencHome(
     throw error;
   }
   return home;
+}
+
+export function envForAttachBootstrap(
+  env: NodeJS.ProcessEnv,
+  workspace: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    AGENC_WORKSPACE: workspace,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2953,6 +2964,7 @@ export async function attachAgentTuiEntry(
     const runtimeSessionId =
       attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
     const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
+    const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
     const attachArgvForYolo = process.argv.slice(2);
     const isYoloAttach =
       attachArgvForYolo.includes("--yolo") ||
@@ -2967,7 +2979,7 @@ export async function attachAgentTuiEntry(
       model,
       close: closeTuiContext = async () => undefined,
     } = await daemonCliDeps().createTuiContext({
-      env,
+      env: bootstrapEnv,
       cwd: bootstrapCwd,
       conversationId: runtimeSessionId,
       ...(isYoloAttach
@@ -2993,9 +3005,9 @@ export async function attachAgentTuiEntry(
         configStore: configStore as unknown as Pick<ConfigStore, "current">,
         agencHome:
           (configStore as { readonly agencHome?: string }).agencHome ??
-          resolveAgencHome(env),
+          resolveAgencHome(bootstrapEnv),
         cwd: workspaceRoot,
-        env,
+        env: bootstrapEnv,
         stderr: process.stderr,
       },
     );
@@ -3006,7 +3018,7 @@ export async function attachAgentTuiEntry(
         ? startupImageMessagesFromInputs(
             startupImages,
             workspaceRoot,
-            env.HOME,
+            bootstrapEnv.HOME,
           )
         : [];
     try {

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { sourcePath } from "../helpers/source-path.ts";
 import { findCommand } from "../commands.js";
 import { MCPManager } from "../mcp-client/manager.js";
 import { pluginDataDirPath } from "./directories.js";
@@ -29,9 +30,8 @@ import { FILE_EDIT_TOOL_NAME } from "../tools/system/file-edit.js";
 import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import { FILE_WRITE_TOOL_NAME } from "../tools/system/file-write.js";
 
-const PLUGIN_MCP_ENV_SERVER_FIXTURE = join(
-  dirname(new URL(import.meta.url).pathname),
-  "test-fixtures/plugin-mcp-env-server.cjs",
+const PLUGIN_MCP_ENV_SERVER_FIXTURE = sourcePath(
+  "plugins/test-fixtures/plugin-mcp-env-server.cjs",
 );
 
 describe("plugin registration", () => {

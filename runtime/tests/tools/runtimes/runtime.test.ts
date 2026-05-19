@@ -1474,7 +1474,7 @@ describe("tools/runtimes", () => {
       "turn-edit-outside",
     );
     expect(outsideEdit.isError).toBe(true);
-    expect(outsideEdit.content).toContain("workspace_write blocked");
+    expect(outsideEdit.content).toContain("outside allowed");
     expect(readFileSync(outsideEditPath, "utf8")).toBe("outside alpha\n");
 
     const outsideMultiPath = join(outsideRoot, "outside-multi.txt");
@@ -1493,7 +1493,7 @@ describe("tools/runtimes", () => {
       "turn-multiedit-outside",
     );
     expect(outsideMulti.isError).toBe(true);
-    expect(outsideMulti.content).toContain("workspace_write blocked");
+    expect(outsideMulti.content).toContain("outside allowed");
     expect(readFileSync(outsideMultiPath, "utf8")).toBe(
       "outside one\noutside two\n",
     );

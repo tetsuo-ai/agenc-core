@@ -407,6 +407,25 @@ function mkSession(opts: {
   return { session, events, getState: () => state };
 }
 
+function withEnvVar(key: string, value: string): () => void {
+  const previous = process.env[key];
+  process.env[key] = value;
+  return () => {
+    if (previous === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = previous;
+    }
+  };
+}
+
+function attachProviderApiKey(provider: LLMProvider): LLMProvider {
+  (provider as LLMProvider & { config: { apiKey: string } }).config = {
+    apiKey: "test-key",
+  };
+  return provider;
+}
+
 function mkCodeModeNestedProbeService(
   call: {
     readonly toolName: string;
@@ -2842,6 +2861,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
   });
 
   test("pendingProviderSwitch is consumed before default turn construction so turn_context sees the new model", async () => {
+    const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
     const { session, events, getState } = mkSession({
       provider: mkProvider({ content: "hi" }),
       registry: mkRegistry(),
@@ -2853,9 +2873,14 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
         provider: { slug: "openai" },
         collaborationMode: { model: "gpt-4" },
       },
+      configStore: { current: () => ({ providers: {} }) },
     });
 
-    await drain(session.runTurn("hello"));
+    try {
+      await drain(session.runTurn("hello"));
+    } finally {
+      restoreApiKey();
+    }
 
     const applied = getState().sessionConfiguration;
     expect(applied.collaborationMode?.model).toBe("grok-4");
@@ -2889,13 +2914,15 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
   test(
     "mid-turn /model sets pending, aborts current turn, next turn applies the new model",
     async () => {
+      const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
       // Simulate: a pending switch staged DURING turn N (the existing
       // inner-loop safety net terminates turn N cleanly), then turn N+1
       // is a fresh runTurn call that reads the marker and applies the
       // switch to the session config BEFORE any model-dependent work.
       const ctx = mkCtx();
+      const provider = attachProviderApiKey(mkProvider({ content: "first" }));
       const { session, getState } = mkSession({
-        provider: mkProvider({ content: "first" }),
+        provider,
         registry: mkRegistry(),
         sessionConfiguration: {
           provider: { slug: "xai" },
@@ -2917,7 +2944,11 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
       // Turn N+1: fresh runTurn call. The consumer at the top reads the
       // marker, applies it, and clears it before sampling is needed.
-      await drain(session.runTurn("", { ctx }));
+      try {
+        await drain(session.runTurn("", { ctx }));
+      } finally {
+        restoreApiKey();
+      }
 
       expect(session.pendingProviderSwitch).toBeNull();
       expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
@@ -3037,13 +3068,15 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
   });
 
   test("profile switch falls back to marker's model when configStore is absent", async () => {
+    const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
     // No configStore on services -> resolveProfile is not invoked. The
     // staged marker already carries the profile's declared model
     // (populated by commands/config.ts::handleProfileSubcommand) so
     // the session config still ends up with that model.
     const ctx = mkCtx();
+    const provider = attachProviderApiKey(mkProvider({ content: "hi" }));
     const { session, getState } = mkSession({
-      provider: mkProvider({ content: "hi" }),
+      provider,
       registry: mkRegistry(),
       pendingProviderSwitch: {
         provider: "xai",
@@ -3058,7 +3091,11 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     });
 
     // Empty input still exercises the runTurn switch consumer, then skips sampling.
-    await drain(session.runTurn("", { ctx }));
+    try {
+      await drain(session.runTurn("", { ctx }));
+    } finally {
+      restoreApiKey();
+    }
 
     expect(session.pendingProviderSwitch).toBeNull();
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(

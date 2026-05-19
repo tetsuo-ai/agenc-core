@@ -396,6 +396,7 @@ describe("session-store", () => {
       eventLog: new EventLog(),
       rolloutStore,
       txEvent: new AsyncQueue<any>(),
+      isRolloutPersistenceSuspended: () => false,
       nextInternalSubId: (() => {
         let n = 0;
         return () => `sub-${++n}`;
@@ -453,6 +454,7 @@ describe("session-store", () => {
           abortController: new AbortController(),
         }),
       },
+      isRolloutPersistenceSuspended: () => false,
       nextInternalSubId: (() => {
         let n = 0;
         return () => `sub-${++n}`;
