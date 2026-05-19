@@ -6,10 +6,10 @@
  *     stores request/catalog metadata only.
  */
 
-export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
-export const DEFAULT_STREAM_MAX_RETRIES = 5;
-export const DEFAULT_REQUEST_MAX_RETRIES = 4;
-export const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+const DEFAULT_STREAM_MAX_RETRIES = 5;
+const DEFAULT_REQUEST_MAX_RETRIES = 4;
+const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 
 export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
   grok: "grok-4.3",

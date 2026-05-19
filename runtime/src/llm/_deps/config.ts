@@ -56,7 +56,7 @@ export interface ProviderModelPair {
   readonly model: string;
 }
 
-export class AmbiguousModelError extends Error {
+class AmbiguousModelError extends Error {
   readonly candidates: readonly ProviderModelPair[];
   constructor(slug: string, candidates: readonly ProviderModelPair[]) {
     const recommended = candidates
@@ -71,7 +71,7 @@ export class AmbiguousModelError extends Error {
   }
 }
 
-export class UnknownModelError extends Error {
+class UnknownModelError extends Error {
   readonly providers: readonly string[];
   constructor(slug: string, providers: readonly string[] = []) {
     const frozen = Object.freeze([...providers]);

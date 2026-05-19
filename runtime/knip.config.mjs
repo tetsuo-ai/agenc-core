@@ -193,6 +193,42 @@ const sessionContractExportFiles = [
 const intentionalSessionIssueIgnores = Object.fromEntries(
   sessionContractExportFiles.map((file) => [file, ['exports', 'types']]),
 );
+const llmContractExportFiles = [
+  // LLM provider, retry, parser, token, wire, and hook helpers are covered by
+  // LLM tests or consumed by provider adapters and model registries outside
+  // the production-only Knip graph.
+  'src/llm/api/errors.ts',
+  'src/llm/api/fallback-ladder.ts',
+  'src/llm/api/retry.ts',
+  'src/llm/auth/bearer.ts',
+  'src/llm/capabilities.ts',
+  'src/llm/context-window-upgrade.ts',
+  'src/llm/errors.ts',
+  'src/llm/hooks/dispatcher.ts',
+  'src/llm/hooks/registry.ts',
+  'src/llm/messages.ts',
+  'src/llm/model-metadata.ts',
+  'src/llm/oauth/refresh-loop.ts',
+  'src/llm/policy.ts',
+  'src/llm/provider.ts',
+  'src/llm/providers/grok/adapter-utils.ts',
+  'src/llm/providers/grok/incremental.ts',
+  'src/llm/providers/openai-compatible/index.ts',
+  'src/llm/providers/openrouter/index.ts',
+  'src/llm/registry/features.ts',
+  'src/llm/registry/model-catalog.ts',
+  'src/llm/registry/provider-info.ts',
+  'src/llm/shape-request.ts',
+  'src/llm/stream-parser.ts',
+  'src/llm/stream-watchdog.ts',
+  'src/llm/structured-output.ts',
+  'src/llm/token-estimation.ts',
+  'src/llm/tool-turn-validator.ts',
+  'src/llm/wire/responses-xai.ts',
+];
+const intentionalLlmIssueIgnores = Object.fromEntries(
+  llmContractExportFiles.map((file) => [file, ['exports', 'types']]),
+);
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -251,6 +287,7 @@ export default {
     ...intentionalServiceIssueIgnores,
     ...intentionalToolIssueIgnores,
     ...intentionalSessionIssueIgnores,
+    ...intentionalLlmIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

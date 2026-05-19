@@ -27,7 +27,7 @@ export interface XaiResponsesInputBuildResult {
   readonly hasImages: boolean;
 }
 
-export function normalizeXaiResponsesToolChoice(
+function normalizeXaiResponsesToolChoice(
   toolChoice: LLMToolChoice | undefined,
 ): string | Record<string, unknown> | undefined {
   if (toolChoice === undefined || typeof toolChoice === "string") {

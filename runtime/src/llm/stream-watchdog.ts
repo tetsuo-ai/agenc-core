@@ -35,7 +35,7 @@ import { monotonicMs } from "./_deps/monotonic.js";
  * via env `AGENC_STREAM_IDLE_TIMEOUT_MS` (positive integer) or via
  * explicit `timeoutMs` option on `installStreamWatchdog`.
  */
-export const STREAM_IDLE_TIMEOUT_MS_DEFAULT = 90_000;
+const STREAM_IDLE_TIMEOUT_MS_DEFAULT = 90_000;
 
 export function resolveStreamIdleTimeoutMs(): number {
   const raw = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;

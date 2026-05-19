@@ -1038,33 +1038,3 @@ export function validateToolCallDetailed(
 export function validateToolCall(raw: unknown): LLMToolCall | null {
   return validateToolCallDetailed(raw).toolCall;
 }
-
-/**
- * Returns `true` if the message should survive compaction boundaries.
- * Compaction callers partition history into `anchorPreserved` (retained
- * alongside the kept tail) and the rest (summarized into a single
- * system message). Matches upstream's `messagesToKeep` pattern.
- */
-export function isAnchorPreserved(message: LLMMessage): boolean {
-  return message.runtimeOnly?.anchorPreserve === true;
-}
-
-/**
- * Split a history slice into the anchor-preserved subset and the rest.
- * Order is preserved within each subset. Used by compaction to decide
- * what to summarize (non-anchor) vs what to retain verbatim (anchor).
- */
-export function partitionByAnchorPreserve(
-  messages: readonly LLMMessage[],
-): { anchorPreserved: LLMMessage[]; rest: LLMMessage[] } {
-  const anchorPreserved: LLMMessage[] = [];
-  const rest: LLMMessage[] = [];
-  for (const message of messages) {
-    if (isAnchorPreserved(message)) {
-      anchorPreserved.push(message);
-    } else {
-      rest.push(message);
-    }
-  }
-  return { anchorPreserved, rest };
-}

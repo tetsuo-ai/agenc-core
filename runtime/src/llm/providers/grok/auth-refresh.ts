@@ -32,7 +32,7 @@
  * the manager's own state machine limits to ~2 refresh attempts
  * before surfacing the failure (see agenc runtime `AuthManager::unauthorized_recovery`).
  */
-export const DEFAULT_MAX_AUTH_REFRESHES = 2;
+const DEFAULT_MAX_AUTH_REFRESHES = 2;
 
 /**
  * Error shape the retry wrapper recognizes as a 401. Any error the

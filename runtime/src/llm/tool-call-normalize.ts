@@ -23,10 +23,6 @@
 
 import type { LLMToolCall } from "./types.js";
 
-export interface NormalizeOpts {
-  readonly providerName: string;
-}
-
 /**
  * Normalize tool calls for a given provider. Returns a fresh array;
  * does not mutate the input.

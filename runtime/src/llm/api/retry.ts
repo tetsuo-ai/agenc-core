@@ -18,13 +18,13 @@ import {
   type ProviderFallbackLadderOptions,
 } from "./fallback-ladder.js";
 
-export const DEFAULT_MAX_RETRIES = 10;
-export const BASE_DELAY_MS = 500;
-export const DEFAULT_MAX_DELAY_MS = 32_000;
-export const MAX_RETRY_AFTER_MS = 300_000;
-export const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000;
-export const FLOOR_OUTPUT_TOKENS = 3000;
-export const MAX_TOKENS_CONTEXT_SAFETY_BUFFER = 1000;
+const DEFAULT_MAX_RETRIES = 10;
+const BASE_DELAY_MS = 500;
+const DEFAULT_MAX_DELAY_MS = 32_000;
+const MAX_RETRY_AFTER_MS = 300_000;
+const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000;
+const FLOOR_OUTPUT_TOKENS = 3000;
+const MAX_TOKENS_CONTEXT_SAFETY_BUFFER = 1000;
 
 export interface MaxTokensContextOverflow {
   readonly inputTokens: number;
@@ -130,7 +130,7 @@ export function parseMaxTokensContextOverflowError(
   return { inputTokens, maxTokens, contextLimit };
 }
 
-export function resolveMaxTokensContextOverflowOverride(
+function resolveMaxTokensContextOverflowOverride(
   overflow: MaxTokensContextOverflow,
   options: WithRetryOptions["maxTokensContext"] = {},
 ): number | undefined {
@@ -198,7 +198,7 @@ export function getRateLimitResetDelayMs(
   return null;
 }
 
-export function parseRetryAfterMs(
+function parseRetryAfterMs(
   retryAfterHeader: string | null | undefined,
   nowMs = Date.now(),
 ): { readonly delayMs?: number; readonly exceedsMaxWait: boolean } {
@@ -242,7 +242,7 @@ export function getRetryDelay(
   return baseDelay + jitter;
 }
 
-export function shouldRetryApiError(
+function shouldRetryApiError(
   error: unknown,
   retryStatuses: ReadonlySet<number> | readonly number[] = [
     408,

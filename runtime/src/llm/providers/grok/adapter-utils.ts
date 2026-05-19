@@ -7,7 +7,6 @@
 import { createHash } from "node:crypto";
 import type {
   LLMMessage,
-  LLMResponse,
   LLMTool,
   LLMToolChoice,
 } from "../../types.js";
@@ -346,81 +345,6 @@ export function computeReconciliationChain(
     messageCountUsed: sourceWindow.length,
     source:
       relevantMessages.length > 0 ? "non_system_messages" : "all_messages",
-  };
-}
-
-export function computePersistedResponseReconciliationHash(
-  messages: readonly LLMMessage[],
-  response: Pick<LLMResponse, "content" | "finishReason" | "toolCalls">,
-  windowSize: number,
-): string {
-  const lineageMessages = [...messages];
-  const assistantMessage =
-    response.toolCalls.length > 0
-      ? {
-        role: "assistant" as const,
-        content: response.content,
-        phase: "commentary" as const,
-        toolCalls: response.toolCalls,
-      }
-      : response.content.trim().length > 0
-        ? {
-          role: "assistant" as const,
-          content: response.content,
-        }
-        : undefined;
-
-  if (assistantMessage) {
-    lineageMessages.push(assistantMessage);
-  }
-
-  return computeReconciliationChain(lineageMessages, windowSize).anchorHash;
-}
-
-export function buildIncrementalContinuationMessages(
-  messages: readonly LLMMessage[],
-  anchorRelevantMessageIndex: number,
-): {
-  messages: readonly LLMMessage[];
-  mode: "full_replay" | "incremental_delta";
-  omittedMessageCount: number;
-} {
-  if (!Number.isInteger(anchorRelevantMessageIndex) || anchorRelevantMessageIndex < 0) {
-    return {
-      messages,
-      mode: "full_replay",
-      omittedMessageCount: 0,
-    };
-  }
-
-  const incremental: LLMMessage[] = [];
-  let relevantIndex = -1;
-  let omittedMessageCount = 0;
-  for (const message of messages) {
-    if (!isReconciliationRelevantMessage(message)) {
-      incremental.push(message);
-      continue;
-    }
-    relevantIndex += 1;
-    if (relevantIndex <= anchorRelevantMessageIndex) {
-      omittedMessageCount += 1;
-      continue;
-    }
-    incremental.push(message);
-  }
-
-  if (omittedMessageCount <= 0) {
-    return {
-      messages,
-      mode: "full_replay",
-      omittedMessageCount: 0,
-    };
-  }
-
-  return {
-    messages: incremental,
-    mode: "incremental_delta",
-    omittedMessageCount,
   };
 }
 

@@ -82,7 +82,7 @@ const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
   "github",
 ]);
 
-export const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
+const DEFAULT_LOCAL_PROVIDER_PROBE_TIMEOUT_MS = 750;
 const PROVIDER_CHECK_SESSION_ID = "cli";
 
 export interface ProviderAvailabilityEntry {

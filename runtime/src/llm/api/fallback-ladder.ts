@@ -85,7 +85,7 @@ export function normalizeFallbackTargets(
   return normalized;
 }
 
-export function selectNextFallbackTarget(
+function selectNextFallbackTarget(
   options: ProviderFallbackLadderOptions,
 ): ProviderFallbackTarget | null {
   return (
@@ -97,7 +97,7 @@ export function selectNextFallbackTarget(
   );
 }
 
-export function isProviderFallbackError(
+function isProviderFallbackError(
   error: unknown,
   statuses: readonly number[] = DEFAULT_FALLBACK_STATUSES,
 ): boolean {

@@ -1,7 +1,7 @@
 /**
  * Local _deps stub for the gut/AgenC crossing of
  * `../tools/system/command-line.js`. Provides shell tokenization and
- * separator/redirect operator sets used by `shell-write-policy.ts`.
+ * separator set and shell tokenization used by `shell-write-policy.ts`.
  */
 
 export const SHELL_COMMAND_SEPARATORS = new Set<string>([
@@ -13,17 +13,6 @@ export const SHELL_COMMAND_SEPARATORS = new Set<string>([
   "(",
   ")",
   "`",
-]);
-
-export const SHELL_REDIRECT_OPERATORS = new Set<string>([
-  ">",
-  ">>",
-  "<",
-  "<<",
-  "<>",
-  ">&",
-  "<&",
-  ">|",
 ]);
 
 export function tokenizeShellCommand(command: string): string[] {

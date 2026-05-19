@@ -62,10 +62,6 @@ interface ShellWriteTargetCollection {
   indeterminate: boolean;
 }
 
-function isWritePolicyEnabled(turnClass: string | undefined): boolean {
-  return turnClass === "workflow_implementation";
-}
-
 function resolveWorkingDirectory(
   workspaceRoot: string,
   rawCwd: unknown,
@@ -529,21 +525,4 @@ export function classifyShellWorkspaceWritePolicy(params: {
       ? { message: buildPolicyMessage(blockedTargets) }
       : {}),
   };
-}
-
-export function evaluateShellWorkspaceWritePolicy(params: {
-  readonly toolName: string;
-  readonly args: Record<string, unknown>;
-  readonly workspaceRoot?: string;
-  readonly turnClass?: string;
-}): ShellWorkspaceWritePolicyDecision {
-  if (!isWritePolicyEnabled(params.turnClass)) {
-    return {
-      blocked: false,
-      indeterminate: false,
-      observedTargets: [],
-      blockedTargets: [],
-    };
-  }
-  return classifyShellWorkspaceWritePolicy(params);
 }
