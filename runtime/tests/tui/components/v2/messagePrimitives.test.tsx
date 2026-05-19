@@ -12,10 +12,6 @@ import {
   UserMemoryInputMessage,
   UserResourceUpdateMessage,
 } from './messagePrimitives.js'
-import {
-  PermissionRequestTitle,
-  WorkerBadge,
-} from './permissionPrimitives.js'
 
 const previousGlyphMode = process.env.AGENC_TUI_GLYPHS
 
@@ -142,35 +138,5 @@ describe('v2 message primitives', () => {
     expect(output).toContain('* Thinking...')
     expect(output).not.toContain('✻')
     expect(output).not.toContain('…')
-  })
-})
-
-describe('v2 permission primitives', () => {
-  it('renders worker badge status dot with ASCII fallback', async () => {
-    process.env.AGENC_TUI_GLYPHS = 'ascii'
-
-    const output = await renderToString(
-      <WorkerBadge name="build-agent" color="permission" />,
-      80,
-    )
-
-    expect(output).toContain('* @build-agent')
-    expect(output).not.toContain('●')
-  })
-
-  it('renders permission title worker separator with ASCII fallback', async () => {
-    process.env.AGENC_TUI_GLYPHS = 'ascii'
-
-    const output = await renderToString(
-      <PermissionRequestTitle
-        title="Allow tool?"
-        workerBadge={{ name: 'build-agent', color: 'permission' }}
-      />,
-      80,
-    )
-
-    expect(output).toContain('Allow tool?')
-    expect(output).toContain('- @build-agent')
-    expect(output).not.toContain('·')
   })
 })

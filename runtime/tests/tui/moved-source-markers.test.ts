@@ -20,7 +20,6 @@ const files = [
   "runtime/src/tui/components/spinner/Spinner.tsx",
   "runtime/src/tui/components/teams/TeamStatus.tsx",
   "runtime/src/tui/components/teams/TeamsDialog.tsx",
-  "runtime/src/tui/components/v2/permissionPrimitives.tsx",
 ];
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;

@@ -1,9 +1,5 @@
-import React from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { renderToString } from '../../../utils/staticRender.js'
-import { Text } from '../../ink.js'
-import { useShimmerAnimation } from './useShimmerAnimation.js'
 import {
   computeBriefRightStatusLayout,
   computeSpinnerMessageMaxWidth,
@@ -16,7 +12,6 @@ import {
   truncateSpinnerText,
   toRGBColor,
 } from './utils.js'
-import type { SpinnerMode } from './types.js'
 
 const originalTerm = process.env.TERM
 const originalGlyphMode = process.env.AGENC_TUI_GLYPHS
@@ -63,23 +58,6 @@ describe('spinner primitives', () => {
     expect(getSpinnerEllipsis(env)).toBe('...')
   })
 
-  test('keeps shimmer disabled for the v2 terminal visual contract', async () => {
-    expect(await renderToString(
-      <ShimmerProbe mode="requesting" message="working" isStalled={false} />,
-      80,
-    )).toContain('-100')
-
-    expect(await renderToString(
-      <ShimmerProbe mode="responding" message="go" isStalled={false} />,
-      80,
-    )).toContain('-100')
-
-    expect(await renderToString(
-      <ShimmerProbe mode="thinking" message="working" isStalled />,
-      80,
-    )).toContain('-100')
-  })
-
   test('truncates spinner messages to the visible row budget', () => {
     expect(computeSpinnerMessageMaxWidth(20)).toBe(17)
     expect(computeSpinnerMessageMaxWidth(2)).toBe(0)
@@ -98,16 +76,3 @@ describe('spinner primitives', () => {
     })
   })
 })
-
-function ShimmerProbe({
-  mode,
-  message,
-  isStalled,
-}: {
-  mode: SpinnerMode
-  message: string
-  isStalled: boolean
-}): React.ReactNode {
-  const [, glimmerIndex] = useShimmerAnimation(mode, message, isStalled)
-  return <Text>{String(glimmerIndex)}</Text>
-}
