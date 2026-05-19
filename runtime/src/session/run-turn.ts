@@ -2127,7 +2127,7 @@ function extractLastUserText(messages: ReadonlyArray<LLMMessage>): string | null
 
 const DIRECT_MCP_TOOL_NAME_RE = /\bmcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\b/gu;
 
-export function extractDirectMcpToolNameMentions(
+function extractDirectMcpToolNameMentions(
   text: string | null | undefined,
 ): readonly string[] {
   if (!text) return [];
@@ -2143,7 +2143,7 @@ function discoverDirectMcpToolMentions(
   session.services.registry.discoverToolNames?.(directMcpToolNames);
 }
 
-export function builtTools(session: Session, _ctx: TurnContext): ReadonlyArray<LLMTool> {
+function builtTools(session: Session, _ctx: TurnContext): ReadonlyArray<LLMTool> {
   return session.services.registry.toLLMTools();
 }
 
@@ -2734,22 +2734,6 @@ export async function drainInFlight(
       suppressInterruptedStreamToolHistory?: boolean;
     }).suppressInterruptedStreamToolHistory;
   }
-}
-
-/**
- * Port of agenc runtime `get_last_assistant_message_from_turn` (turn.rs:2223-2230).
- * Scans the response history for the most recent assistant message
- * and returns its text content.
- */
-export function getLastAssistantMessageFromTurn(
-  responses: ReadonlyArray<LLMMessage>,
-): string | undefined {
-  for (let i = responses.length - 1; i >= 0; i -= 1) {
-    const m = responses[i];
-    if (!m || m.role !== "assistant") continue;
-    if (typeof m.content === "string" && m.content.length > 0) return m.content;
-  }
-  return undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────

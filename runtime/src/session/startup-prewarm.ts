@@ -7,7 +7,7 @@ import {
   toMetricTags,
 } from "../observability/telemetry.js";
 
-export const DEFAULT_PROVIDER_STARTUP_PREWARM_BOUND_MS = 250;
+const DEFAULT_PROVIDER_STARTUP_PREWARM_BOUND_MS = 250;
 
 export interface StartupPrewarmStore {
   setProviderHandle(handle: LLMProviderStartupPrewarmHandle): void;
@@ -39,7 +39,7 @@ type ProviderStartupPrewarmResolution =
       readonly handle?: undefined;
     };
 
-export class SessionStartupPrewarmStore implements StartupPrewarmStore {
+class SessionStartupPrewarmStore implements StartupPrewarmStore {
   private providerHandle: LLMProviderStartupPrewarmHandle | undefined;
   private providerHandleStartedAtMs: number | undefined;
   private providerPending: PendingProviderStartupPrewarm | undefined;
@@ -240,7 +240,7 @@ function recordStartupPrewarmAge(startedAtMs: number, status: string): void {
   );
 }
 
-export function ensureStartupPrewarmStore(
+function ensureStartupPrewarmStore(
   session: Session,
 ): StartupPrewarmStore {
   const existing = session.services.startupPrewarm;

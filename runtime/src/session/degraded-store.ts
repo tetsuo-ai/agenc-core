@@ -26,8 +26,8 @@
 
 import { monotonicMs } from "./_deps/utils.js";
 
-export const DEFAULT_DEGRADED_CAPACITY = 1000;
-export const DEFAULT_DEGRADED_RETRY_MS = 30_000;
+const DEFAULT_DEGRADED_CAPACITY = 1000;
+const DEFAULT_DEGRADED_RETRY_MS = 30_000;
 
 export interface DegradedStoreOptions<T> {
   /** Max events retained. Oldest-first eviction. Default 1000. */

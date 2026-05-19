@@ -43,7 +43,7 @@ export function createHistoryReplacedEvent(params: {
   };
 }
 
-export function llmHistoryToRuntimeTranscriptMessages(
+function llmHistoryToRuntimeTranscriptMessages(
   history: readonly LLMMessage[],
 ): RuntimeTranscriptMessage[] {
   return history.flatMap((message, index) =>

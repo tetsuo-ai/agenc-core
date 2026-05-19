@@ -359,7 +359,7 @@ export function buildGuardianReviewSessionConfig(
  * and the reviewer system prompt is applied at call-site (the
  * delegate prepends a system message before the user prompt).
  */
-export function buildReviewTurnContext(
+function buildReviewTurnContext(
   parentCtx: AgenCDelegateTurnContextLike,
   reviewerModel: string,
   reviewerModelInfo: ModelInfo | undefined,

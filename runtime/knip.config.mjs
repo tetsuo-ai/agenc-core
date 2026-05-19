@@ -162,6 +162,37 @@ const intentionalToolIssueIgnores = {
   'src/tools/AgentTool/built-in/verificationAgent.ts': ['files'],
   'src/tools/LSPTool/schemas.ts': ['types'],
 };
+const sessionContractExportFiles = [
+  // Session persistence, rollout, startup, MCP, mailbox, plan-mode, and
+  // review helpers are covered by session tests or consumed through dynamic
+  // runtime/bootstrap paths not visible in the production-only Knip graph.
+  'src/session/agenc-delegate.ts',
+  'src/session/agent-task-lifecycle.ts',
+  'src/session/attachment-state.ts',
+  'src/session/autonomous-mode.ts',
+  'src/session/bootstrap.ts',
+  'src/session/cost.ts',
+  'src/session/error-log.ts',
+  'src/session/event-log-reducer.ts',
+  'src/session/event-log.ts',
+  'src/session/file-history.ts',
+  'src/session/lifecycle.ts',
+  'src/session/mcp-startup.ts',
+  'src/session/observer-wiring.ts',
+  'src/session/plan-mode.ts',
+  'src/session/review.ts',
+  'src/session/rollout-item.ts',
+  'src/session/rollout-reconstruction.ts',
+  'src/session/rollout-trace.ts',
+  'src/session/run-turn.ts',
+  'src/session/session-store.ts',
+  'src/session/session.ts',
+  'src/session/tasks.ts',
+  'src/session/turn-context.ts',
+];
+const intentionalSessionIssueIgnores = Object.fromEntries(
+  sessionContractExportFiles.map((file) => [file, ['exports', 'types']]),
+);
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -219,6 +250,7 @@ export default {
     ...intentionalEntryPointIssueIgnores,
     ...intentionalServiceIssueIgnores,
     ...intentionalToolIssueIgnores,
+    ...intentionalSessionIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

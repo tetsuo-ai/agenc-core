@@ -38,21 +38,8 @@ export interface ContentReplacementState {
 }
 
 /** Allocate an empty replacement state. */
-export function createContentReplacementState(): ContentReplacementState {
+function createContentReplacementState(): ContentReplacementState {
   return { seenIds: new Set(), replacements: new Map() };
-}
-
-/**
- * Clone state for a cache-sharing fork. Mutating the clone does not
- * affect the source. Mirrors agenc `cloneContentReplacementState`.
- */
-export function cloneContentReplacementState(
-  source: ContentReplacementState,
-): ContentReplacementState {
-  return {
-    seenIds: new Set(source.seenIds),
-    replacements: new Map(source.replacements),
-  };
 }
 
 /**
@@ -80,7 +67,7 @@ export interface ContentReplacementRecord {
  * `toolCallId`), not AgenC's `tool_result` blocks inside user
  * `Message.message.content`.
  */
-export function reconstructContentReplacementState(
+function reconstructContentReplacementState(
   messages: ReadonlyArray<LLMMessage>,
   records: ReadonlyArray<ContentReplacementRecord>,
   inheritedReplacements?: ReadonlyMap<string, string>,

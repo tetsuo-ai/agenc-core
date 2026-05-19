@@ -101,7 +101,7 @@ export interface PlanItemState {
   accumulatedText: string;
 }
 
-export function createPlanItemState(turnId: string): PlanItemState {
+function createPlanItemState(turnId: string): PlanItemState {
   return {
     itemId: `${turnId}-plan`,
     started: false,
@@ -167,7 +167,7 @@ export interface ParsedAssistantTextDelta {
   readonly citations?: ReadonlyArray<unknown>;
 }
 
-export function isEmptyParsed(parsed: ParsedAssistantTextDelta): boolean {
+function isEmptyParsed(parsed: ParsedAssistantTextDelta): boolean {
   return (
     parsed.visibleText.length === 0 &&
     parsed.planSegments.length === 0
@@ -592,7 +592,7 @@ export function emitAgentMessageInPlanMode(
 // emit_turn_item_in_plan_mode (agenc runtime turn.rs:1738)
 // ─────────────────────────────────────────────────────────────────────
 
-export function emitTurnItemInPlanMode(
+function emitTurnItemInPlanMode(
   session: Session,
   ctx: TurnContext,
   turnItem: PlanTurnItem,

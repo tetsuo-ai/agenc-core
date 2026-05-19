@@ -115,7 +115,7 @@ export type RolloutItem =
       readonly eventVersion?: number;
     };
 
-export const KNOWN_ROLLOUT_TYPES = Object.freeze(
+const KNOWN_ROLLOUT_TYPES = Object.freeze(
   new Set<string>([
     "session_meta",
     "session_state",
@@ -132,7 +132,7 @@ export const KNOWN_ROLLOUT_TYPES = Object.freeze(
  * from earlier AgenC versions still parse. agenc runtime retained `task_*`
  * aliases for the same reason.
  */
-export const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
+const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =
   Object.freeze({
     task_started: "turn_started",
     task_complete: "turn_complete",

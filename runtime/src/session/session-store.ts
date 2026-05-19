@@ -83,7 +83,7 @@ import {
 import { DegradedStore } from "./degraded-store.js";
 
 export const I4_FSYNC_RETRY_MS = 100;
-export const I83_SUSPEND_DETECTION_MS = 10_000;
+const I83_SUSPEND_DETECTION_MS = 10_000;
 
 /**
  * index.json snapshot schema. Written atomically via tmp+rename
@@ -244,7 +244,7 @@ export function getSessionDir(
   );
 }
 
-export function buildRolloutFilename(
+function buildRolloutFilename(
   timestampMs: number,
   sessionId: string,
 ): string {

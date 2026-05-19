@@ -447,54 +447,6 @@ export type SessionSource =
   | { readonly kind: "subagent"; readonly source: SubAgentSource }
   | { kind: "unknown"; raw: string };
 
-export function formatSubAgentSource(source: SubAgentSource): string {
-  switch (source.kind) {
-    case "review":
-      return "review";
-    case "compact":
-      return "compact";
-    case "memory_consolidation":
-      return "memory_consolidation";
-    case "thread_spawn":
-      return `thread_spawn_${source.parentThreadId}_d${source.depth}`;
-    case "other":
-      return source.label;
-  }
-}
-
-export function formatSessionSource(source: SessionSource): string {
-  if (typeof source === "string") return source;
-  if (source.kind === "unknown") return source.raw;
-  return `subagent_${formatSubAgentSource(source.source)}`;
-}
-
-export function sessionSourceAgentPath(
-  source: SessionSource,
-): string | undefined {
-  if (typeof source === "string" || source.kind === "unknown") return undefined;
-  if (source.source.kind === "thread_spawn") return source.source.agentPath;
-  if (source.source.kind === "memory_consolidation") return "/morpheus";
-  return undefined;
-}
-
-export function sessionSourceNickname(
-  source: SessionSource,
-): string | undefined {
-  if (typeof source === "string" || source.kind === "unknown") return undefined;
-  if (source.source.kind === "thread_spawn") return source.source.agentNickname;
-  if (source.source.kind === "memory_consolidation") return "Morpheus";
-  return undefined;
-}
-
-export function sessionSourceAgentRole(
-  source: SessionSource,
-): string | undefined {
-  if (typeof source === "string" || source.kind === "unknown") return undefined;
-  if (source.source.kind === "thread_spawn") return source.source.agentRole;
-  if (source.source.kind === "memory_consolidation") return "memory builder";
-  return undefined;
-}
-
 /**
  * Stage 2 (tool-result budgeting) knobs. Ports agenc's
  * `toolResultStorage` message-level budget into the AgenC context
@@ -768,16 +720,6 @@ export function modelContextWindow(ctx: TurnContext): number | undefined {
 }
 
 /**
- * Resolve a relative path against the turn's `cwd`.
- * Mirrors agenc runtime `TurnContext::resolve_path`.
- */
-export function resolvePath(ctx: TurnContext, path?: string): string {
-  if (!path) return ctx.cwd;
-  if (path.startsWith("/")) return path;
-  return `${ctx.cwd}/${path}`.replace(/\/{2,}/g, "/");
-}
-
-/**
  * Snapshot the current TurnContext into a serializable rollout item.
  * Mirrors agenc runtime `TurnContext::to_turn_context_item`.
  */
@@ -833,7 +775,7 @@ export function imageGenerationToolAuthAllowed(
  * Compute (currentDate, timezone) at turn-construction time.
  * Falls back to UTC on tz lookup failure (mirrors agenc runtime `local_time_context`).
  */
-export function localTimeContext(): {
+function localTimeContext(): {
   currentDate: string;
   timezone: string;
 } {

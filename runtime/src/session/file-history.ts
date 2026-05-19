@@ -51,7 +51,7 @@ import type { RolloutItem } from "./rollout-item.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 
-export const MAX_SNAPSHOTS = 100;
+const MAX_SNAPSHOTS = 100;
 
 export type BackupFileName = string | null;
 

@@ -56,7 +56,7 @@ export function cloneLlmMessage(message: LLMMessage): LLMMessage {
   };
 }
 
-export function cloneContent(
+function cloneContent(
   content: LLMMessage["content"] | ResponseItem["content"],
 ): LLMMessage["content"] {
   if (typeof content === "string") return content;

@@ -685,13 +685,6 @@ export interface StateDbContext {
   readonly path: string;
 }
 
-/** agenc runtime `InitialHistory`. */
-export type InitialHistory =
-  | { readonly kind: "new" }
-  | { readonly kind: "cleared" }
-  | { readonly kind: "forked"; readonly forkedFromId: ThreadId }
-  | { readonly kind: "resumed"; readonly conversationId: ThreadId; readonly rolloutPath: string; readonly history: ReadonlyArray<unknown> };
-
 /** agenc runtime `SessionServices` — DI container of all session-scoped services. */
 export interface SessionServices {
   readonly mcpConnectionManager: McpConnectionManager;

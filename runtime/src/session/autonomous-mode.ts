@@ -2,7 +2,7 @@ import type { PermissionMode, ToolPermissionContext } from "../permissions/types
 
 export const AUTONOMOUS_TICK_TAG = "tick";
 export const AUTONOMOUS_SUBMIT_SOURCE = "autonomous_tick";
-export const DEFAULT_AUTONOMOUS_TICK_DELAY_MS = 0;
+const DEFAULT_AUTONOMOUS_TICK_DELAY_MS = 0;
 
 export type SessionSubmitSource = "user" | typeof AUTONOMOUS_SUBMIT_SOURCE;
 

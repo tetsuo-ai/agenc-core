@@ -291,7 +291,7 @@ function formatReviewLocation(item: ReviewFinding): string {
   return `${loc.absolutePath}:${loc.lineRange.start}-${loc.lineRange.end}`;
 }
 
-export function formatReviewFindingsBlock(
+function formatReviewFindingsBlock(
   findings: ReadonlyArray<ReviewFinding>,
   selection?: ReadonlyArray<boolean>,
 ): string {
@@ -308,7 +308,7 @@ export function formatReviewFindingsBlock(
   return lines.join("\n");
 }
 
-export function renderReviewOutputText(output: ReviewOutput): string {
+function renderReviewOutputText(output: ReviewOutput): string {
   const sections: string[] = [];
   const explanation = output.overallExplanation.trim();
   if (explanation.length > 0) sections.push(explanation);
@@ -319,7 +319,7 @@ export function renderReviewOutputText(output: ReviewOutput): string {
   return sections.length > 0 ? sections.join("\n\n") : REVIEW_FALLBACK_MESSAGE;
 }
 
-export function buildReviewExitResponseItems(
+function buildReviewExitResponseItems(
   payload: ExitReviewModePayload,
 ): readonly [ResponseItem, ResponseItem] {
   const completed = payload.reason === "completed";

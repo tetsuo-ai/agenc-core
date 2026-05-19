@@ -76,7 +76,7 @@ export function createMCPCallObserverForSession(
  * Slot-bound variant. Safe to build before the Session exists;
  * events emitted while `slot.current === null` are dropped.
  */
-export function createMCPCallObserverForSlot(
+function createMCPCallObserverForSlot(
   slot: SessionSlot,
 ): MCPCallObserver {
   return {
