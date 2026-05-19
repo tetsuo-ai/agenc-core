@@ -25,7 +25,7 @@ export default {
     'local-packages/*/src/**/*.{ts,tsx}',
   ],
   project: [
-    'src/**/*.{ts,tsx}!',
+    'src/**/*.{ts,tsx,js,mjs,cjs}!',
     'scripts/**/*.mjs',
     'tests/**/*.{ts,tsx}',
     'tsup.config.ts',
