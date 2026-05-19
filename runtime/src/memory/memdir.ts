@@ -59,7 +59,7 @@ export type EntrypointTruncation = {
  * that names which cap fired. Line-truncates first (natural boundary), then
  * byte-truncates at the last newline before the cap so we don't cut mid-line.
  *
- * Shared by buildMemoryPrompt and agencmd getMemoryFiles (previously
+ * Shared by memory prompt loaders and agencmd getMemoryFiles (previously
  * duplicated the line-only logic).
  */
 export function truncateEntrypointContent(raw: string): EntrypointTruncation {
@@ -128,7 +128,7 @@ export const DIRS_EXIST_GUIDANCE =
  * (~/.agenc/projects/<slug>/memory/) is created in one call with no
  * try/catch needed for the happy path.
  */
-export async function ensureMemoryDirExists(memoryDir: string): Promise<void> {
+async function ensureMemoryDirExists(memoryDir: string): Promise<void> {
   const fs = getFsImplementation()
   try {
     await fs.mkdir(memoryDir)
@@ -206,7 +206,7 @@ export function buildMemoryLayerLines(projectMemoryDir = getProjectMemoryPath())
   ]
 }
 
-export function buildMemorySaveDestinationLines(
+function buildMemorySaveDestinationLines(
   projectMemoryDir = getProjectMemoryPath(),
 ): string[] {
   return [
@@ -228,8 +228,7 @@ export function buildMemorySaveDestinationLines(
  * Individual-only variant: no `## Memory scope` section, no <scope> tags
  * in type blocks, and team/global/project qualifiers stripped from examples.
  *
- * Used by both buildMemoryPrompt (agent memory, includes content) and
- * loadMemoryPrompt (system prompt, content injected via user context instead).
+ * Used by loadMemoryPrompt for system memory instructions.
  */
 export function buildMemoryLines(
   displayName: string,
@@ -319,56 +318,6 @@ export function buildMemoryLines(
 }
 
 /**
- * Build the typed-memory prompt with MEMORY.md content included.
- * Used by agent memory (which has no getAgenCMds() equivalent).
- */
-export function buildMemoryPrompt(params: {
-  displayName: string
-  memoryDir: string
-  extraGuidelines?: string[]
-}): string {
-  const { displayName, memoryDir, extraGuidelines } = params
-  const fs = getFsImplementation()
-  const entrypoint = memoryDir + ENTRYPOINT_NAME
-
-  // Directory creation is the caller's responsibility (loadMemoryPrompt /
-  // loadAgentMemoryPrompt). Builders only read, they don't mkdir.
-
-  // Read existing memory entrypoint (sync: prompt building is synchronous)
-  let entrypointContent = ''
-  try {
-    // eslint-disable-next-line custom-rules/no-sync-fs
-    entrypointContent = fs.readFileSync(entrypoint, { encoding: 'utf-8' })
-  } catch {
-    // No memory file yet
-  }
-
-  const lines = buildMemoryLines(displayName, memoryDir, extraGuidelines)
-
-  if (entrypointContent.trim()) {
-    const t = truncateEntrypointContent(entrypointContent)
-    const memoryType = displayName === AUTO_MEM_DISPLAY_NAME ? 'auto' : 'agent'
-    logMemoryDirCounts(memoryDir, {
-      content_length: t.byteCount,
-      line_count: t.lineCount,
-      was_truncated: t.wasLineTruncated,
-      was_byte_truncated: t.wasByteTruncated,
-      memory_type:
-        memoryType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-    lines.push(`## ${ENTRYPOINT_NAME}`, '', t.content)
-  } else {
-    lines.push(
-      `## ${ENTRYPOINT_NAME}`,
-      '',
-      `Your ${ENTRYPOINT_NAME} is currently empty. When you save new memories, they will appear here.`,
-    )
-  }
-
-  return lines.join('\n')
-}
-
-/**
  * Assistant-mode daily-log prompt. Gated behind feature('KAIROS').
  *
  * Assistant sessions are effectively perpetual, so the agent writes memories
@@ -377,7 +326,7 @@ export function buildMemoryPrompt(params: {
  * files + MEMORY.md. MEMORY.md is still loaded into context (via agencmd.ts)
  * as the distilled index — this prompt only changes where NEW memories go.
  */
-export function buildAssistantDailyLogPrompt(skipIndex = false): string {
+function buildAssistantDailyLogPrompt(skipIndex = false): string {
   const projectMemoryDir = getAutoMemPath()
   const globalMemoryDir = getGlobalMemoryPath()
   // Describe the path as a pattern rather than inlining today's literal path:

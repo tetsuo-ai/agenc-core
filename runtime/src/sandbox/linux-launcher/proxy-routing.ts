@@ -53,7 +53,7 @@ const PROXY_ENV_KEYS = new Set([
   "DOCKER_HTTPS_PROXY",
 ]);
 
-export function isProxyEnvKey(key: string): boolean {
+function isProxyEnvKey(key: string): boolean {
   return PROXY_ENV_KEYS.has(key.toUpperCase());
 }
 
@@ -218,7 +218,7 @@ export function rewriteProxyEnvValue(
     : rewritten;
 }
 
-export function parseLoopbackProxyEndpoint(
+function parseLoopbackProxyEndpoint(
   proxyUrl: string,
 ): { readonly host: string; readonly port: number } | null {
   const candidate = proxyUrl.includes("://") ? proxyUrl : `http://${proxyUrl}`;
@@ -237,7 +237,7 @@ export function parseLoopbackProxyEndpoint(
   return { host, port };
 }
 
-export function defaultProxyPort(protocol: string): number {
+function defaultProxyPort(protocol: string): number {
   switch (protocol.replace(/:$/u, "")) {
     case "https":
       return 443;
@@ -251,7 +251,7 @@ export function defaultProxyPort(protocol: string): number {
   }
 }
 
-export function createProxyPair(
+function createProxyPair(
   tcp: net.Socket,
   unix: net.Socket,
 ): Promise<void> {

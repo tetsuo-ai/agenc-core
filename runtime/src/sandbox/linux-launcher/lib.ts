@@ -21,13 +21,3 @@ export async function runLinuxSandboxEntrypoint(
   });
   return { exitCode, stderr };
 }
-
-export function isLauncherUsageFailure(result: LinuxSandboxEntrypointResult): boolean {
-  return result.exitCode === 2 && result.stderr.length > 0;
-}
-
-export function formatLauncherFailure(
-  result: LinuxSandboxEntrypointResult,
-): string {
-  return result.stderr.join("\n");
-}

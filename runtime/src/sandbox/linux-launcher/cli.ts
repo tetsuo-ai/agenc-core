@@ -106,7 +106,7 @@ export function parseLinuxSandboxLauncherArgs(
   };
 }
 
-export function parsePermissionProfile(value: string): PermissionProfile {
+function parsePermissionProfile(value: string): PermissionProfile {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);

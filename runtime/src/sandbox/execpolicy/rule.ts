@@ -2,8 +2,6 @@ import path from "node:path";
 
 import type { Decision } from "./decision.js";
 import {
-  ExampleDidMatchError,
-  ExampleDidNotMatchError,
   invalidRule,
 } from "./error.js";
 
@@ -72,23 +70,17 @@ export function singleToken(value: string): PatternToken {
   return { type: "single", value };
 }
 
-export function alternativeToken(alternatives: readonly string[]): PatternToken {
-  return alternatives.length === 1
-    ? singleToken(alternatives[0] ?? "")
-    : { type: "alts", alternatives: [...alternatives] };
-}
-
 export function tokenAlternatives(token: PatternToken): readonly string[] {
   return token.type === "single" ? [token.value] : token.alternatives;
 }
 
-export function patternTokenMatches(token: PatternToken, value: string): boolean {
+function patternTokenMatches(token: PatternToken, value: string): boolean {
   return token.type === "single"
     ? token.value === value
     : token.alternatives.some((alternative) => alternative === value);
 }
 
-export function prefixPatternMatches(
+function prefixPatternMatches(
   pattern: PrefixPattern,
   command: readonly string[],
 ): readonly string[] | null {
@@ -103,10 +95,6 @@ export function prefixPatternMatches(
     if (!patternTokenMatches(token, commandToken)) return null;
   }
   return command.slice(0, patternLength);
-}
-
-export function prefixRuleProgram(rule: PrefixRule): string {
-  return rule.pattern.first;
 }
 
 export function prefixRuleMatches(
@@ -149,12 +137,6 @@ export function parseNetworkRuleProtocol(raw: string): NetworkRuleProtocol {
         `network_rule protocol must be one of http, https, socks5_tcp, socks5_udp (got ${raw})`,
       );
   }
-}
-
-export function networkRuleProtocolAsPolicyString(
-  protocol: NetworkRuleProtocol,
-): string {
-  return protocol;
 }
 
 export function normalizeNetworkRuleHost(raw: string): string {
@@ -231,53 +213,6 @@ export function serializeRuleMatch(match: RuleMatch): SerializedRuleMatch {
   return { prefixRuleMatch: payload };
 }
 
-export function validateMatchExamples(
-  policy: {
-    matchesForCommandWithOptions(
-      command: readonly string[],
-      heuristicsFallback: null,
-      options: { readonly resolveHostExecutables: boolean },
-    ): readonly RuleMatch[];
-  },
-  rules: readonly Rule[],
-  examples: readonly (readonly string[])[],
-): void {
-  const unmatched: string[] = [];
-  for (const example of examples) {
-    if (
-      policy.matchesForCommandWithOptions(example, null, {
-        resolveHostExecutables: true,
-      }).length > 0
-    ) {
-      continue;
-    }
-    unmatched.push(shellJoin(example));
-  }
-  if (unmatched.length > 0) {
-    throw new ExampleDidNotMatchError(rules.map(renderRuleForError), unmatched);
-  }
-}
-
-export function validateNotMatchExamples(
-  policy: {
-    matchesForCommandWithOptions(
-      command: readonly string[],
-      heuristicsFallback: null,
-      options: { readonly resolveHostExecutables: boolean },
-    ): readonly RuleMatch[];
-  },
-  examples: readonly (readonly string[])[],
-): void {
-  for (const example of examples) {
-    const match = policy.matchesForCommandWithOptions(example, null, {
-      resolveHostExecutables: true,
-    })[0];
-    if (match !== undefined) {
-      throw new ExampleDidMatchError(renderRuleMatchForError(match), shellJoin(example));
-    }
-  }
-}
-
 export function assertBareExecutableName(name: string): void {
   if (name.length === 0) {
     throw invalidRule("host_executable name cannot be empty");
@@ -285,24 +220,6 @@ export function assertBareExecutableName(name: string): void {
   if (path.basename(name) !== name || name.includes("/") || name.includes("\\")) {
     throw invalidRule(`host_executable name must be a bare executable name (got ${name})`);
   }
-}
-
-function renderRuleForError(rule: Rule): string {
-  return JSON.stringify(rule);
-}
-
-function renderRuleMatchForError(match: RuleMatch): string {
-  return JSON.stringify(match);
-}
-
-function shellJoin(tokens: readonly string[]): string {
-  return tokens
-    .map((token) =>
-      /^[A-Za-z0-9_./:@%+=,-]+$/u.test(token)
-        ? token
-        : `'${token.replace(/'/gu, "'\\''")}'`,
-    )
-    .join(" ");
 }
 
 function countChar(value: string, needle: string): number {

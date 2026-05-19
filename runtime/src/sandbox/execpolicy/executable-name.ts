@@ -7,7 +7,7 @@ export function executableLookupKey(raw: string): string {
   return windowsExecutableLookupKey(raw);
 }
 
-export function windowsExecutableLookupKey(raw: string): string {
+function windowsExecutableLookupKey(raw: string): string {
   const lower = toAsciiLowercase(raw);
   for (const suffix of WINDOWS_EXECUTABLE_SUFFIXES) {
     if (lower.endsWith(suffix)) {

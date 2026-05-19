@@ -12,7 +12,7 @@ import { getAgenCConfigHomeDir } from "../../utils/envUtils.js";
 const MAX_SECTION_LENGTH = 2_000;
 const MAX_TOTAL_SESSION_MEMORY_TOKENS = 12_000;
 
-export const DEFAULT_SESSION_MEMORY_TEMPLATE = `
+const DEFAULT_SESSION_MEMORY_TEMPLATE = `
 # Session Title
 _A short and distinctive 5-10 word descriptive title for the session. Super info dense, no filler_
 
@@ -121,7 +121,7 @@ export async function loadSessionMemoryTemplate(): Promise<string> {
 /**
  * Load a custom session memory update prompt from config home if it exists.
  */
-export async function loadSessionMemoryPrompt(): Promise<string> {
+async function loadSessionMemoryPrompt(): Promise<string> {
   const promptPath = join(
     getAgenCConfigHomeDir(),
     "session-memory",
@@ -207,11 +207,6 @@ export function substituteSessionMemoryVariables(
       ? variables[key]!
       : match,
   );
-}
-
-export async function isSessionMemoryEmpty(content: string): Promise<boolean> {
-  const template = await loadSessionMemoryTemplate();
-  return content.trim() === template.trim();
 }
 
 export async function buildSessionMemoryUpdatePrompt(

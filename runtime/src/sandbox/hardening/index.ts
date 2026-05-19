@@ -16,7 +16,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 
-export const DANGEROUS_ENV_PREFIXES = [
+const DANGEROUS_ENV_PREFIXES = [
   "LD_",
   "DYLD_",
   "MallocStackLogging",
@@ -256,7 +256,7 @@ export function scrubDangerousEnvironment(
   return removed.sort();
 }
 
-export function isDangerousEnvKey(key: string): boolean {
+function isDangerousEnvKey(key: string): boolean {
   return DANGEROUS_ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 

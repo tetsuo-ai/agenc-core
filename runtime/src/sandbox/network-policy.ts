@@ -189,13 +189,13 @@ export async function notifyBlockedRequest(
   await observer?.onBlockedRequest(request);
 }
 
-export function parseNetworkPolicyDecision(
+function parseNetworkPolicyDecision(
   value: unknown,
 ): NetworkPolicyDecision | null {
   return value === "deny" || value === "ask" ? value : null;
 }
 
-export function parseNetworkDecisionSource(
+function parseNetworkDecisionSource(
   value: unknown,
 ): NetworkDecisionSource | null {
   switch (value) {
@@ -209,7 +209,7 @@ export function parseNetworkDecisionSource(
   }
 }
 
-export function parseNetworkApprovalProtocol(
+function parseNetworkApprovalProtocol(
   value: unknown,
 ): NetworkApprovalProtocol | null {
   switch (value) {
@@ -265,7 +265,7 @@ export function parseNetworkPolicyDecisionPayload(
   };
 }
 
-export function isAskFromDecider(
+function isAskFromDecider(
   payload: NetworkPolicyDecisionPayload,
 ): boolean {
   return payload.decision === "ask" && payload.source === "decider";

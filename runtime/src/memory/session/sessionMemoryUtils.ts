@@ -7,10 +7,8 @@
  * notes state without importing subagent orchestration.
  */
 
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, normalize, sep } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 
 import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
 import { findProjectRootSync } from "../../session/session-store.js";
@@ -20,9 +18,6 @@ import {
   resolveAgenCConfigHomeDir,
 } from "../../utils/envUtils.js";
 import { sanitizePathForProjectKey } from "../../services/extractMemories/memory-paths.js";
-
-const EXTRACTION_WAIT_TIMEOUT_MS = 15_000;
-const EXTRACTION_STALE_THRESHOLD_MS = 60_000;
 
 export type SessionMemoryEnv = Readonly<Record<string, string | undefined>>;
 
@@ -38,7 +33,7 @@ export interface SessionMemoryConfig {
   readonly toolCallsBetweenUpdates: number;
 }
 
-export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
+const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
   minimumMessageTokensToInit: 10_000,
   minimumTokensBetweenUpdate: 5_000,
   toolCallsBetweenUpdates: 3,
@@ -174,15 +169,6 @@ export function isSessionMemoryEnabled(
   return true;
 }
 
-/**
- * Get the message marker up to which the session memory is current.
- */
-export function getLastSummarizedMessageId(
-  state: SessionMemoryState = defaultState,
-): string | undefined {
-  return state.lastSummarizedMessageId;
-}
-
 export function getLastSummarizedMessageCount(
   state: SessionMemoryState = defaultState,
 ): number {
@@ -216,55 +202,6 @@ export function markExtractionCompleted(
   state: SessionMemoryState = defaultState,
 ): void {
   state.extractionStartedAt = undefined;
-}
-
-/**
- * Wait for any in-progress session memory extraction to complete.
- */
-export async function waitForSessionMemoryExtraction(
-  state: SessionMemoryState = defaultState,
-): Promise<void> {
-  const startTime = Date.now();
-  while (state.extractionStartedAt !== undefined) {
-    const extractionAge = Date.now() - state.extractionStartedAt;
-    if (extractionAge > EXTRACTION_STALE_THRESHOLD_MS) return;
-    if (Date.now() - startTime > EXTRACTION_WAIT_TIMEOUT_MS) return;
-    await delay(1_000);
-  }
-}
-
-/**
- * Get the current session memory content.
- */
-export async function getSessionMemoryContent(
-  options?: SessionMemoryPathOptions | string,
-): Promise<string | null> {
-  const memoryPath =
-    typeof options === "string"
-      ? options
-      : options
-        ? resolveSessionMemoryPath(options)
-        : null;
-  if (memoryPath === null) return null;
-  try {
-    return await readFile(memoryPath, { encoding: "utf8" });
-  } catch (error) {
-    const code =
-      typeof error === "object" &&
-      error !== null &&
-      typeof (error as { code?: unknown }).code === "string"
-        ? (error as { code: string }).code
-        : undefined;
-    if (
-      code === "ENOENT" ||
-      code === "ENOTDIR" ||
-      code === "EACCES" ||
-      code === "EPERM"
-    ) {
-      return null;
-    }
-    throw error;
-  }
 }
 
 export function setSessionMemoryConfig(

@@ -93,11 +93,3 @@ export function managedNetworkApprovalContext(
     cacheKey: hostApprovalKeyToString(normalized),
   };
 }
-
-export function networkDecisionFromApprovalGate(
-  gate: NetworkApprovalGate,
-): NetworkDecision {
-  return gate.kind === "allowed"
-    ? { kind: "allow" }
-    : { kind: "deny", reason: gate.reason };
-}

@@ -94,7 +94,7 @@ export function intersectPermissionProfiles(
   };
 }
 
-export function effectiveFileSystemSandboxPolicy(
+function effectiveFileSystemSandboxPolicy(
   fileSystemPolicy: FileSystemSandboxPolicy,
   additionalPermissions?: AdditionalPermissionProfile,
 ): FileSystemSandboxPolicy {
@@ -117,7 +117,7 @@ export function effectiveFileSystemSandboxPolicy(
   );
 }
 
-export function effectiveNetworkSandboxPolicy(
+function effectiveNetworkSandboxPolicy(
   networkPolicy: NetworkSandboxPolicy,
   additionalPermissions?: AdditionalPermissionProfile,
 ): NetworkSandboxPolicy {

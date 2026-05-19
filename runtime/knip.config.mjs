@@ -229,6 +229,52 @@ const llmContractExportFiles = [
 const intentionalLlmIssueIgnores = Object.fromEntries(
   llmContractExportFiles.map((file) => [file, ['exports', 'types']]),
 );
+const sandboxContractExportFiles = [
+  // Sandbox hardening, network policy, linux launcher, engine, escalation, and
+  // execpolicy exports are security/runtime surfaces with direct test coverage.
+  'src/sandbox/engine/bwrap.ts',
+  'src/sandbox/engine/index.ts',
+  'src/sandbox/engine/landlock.ts',
+  'src/sandbox/engine/policy-transforms.ts',
+  'src/sandbox/engine/seatbelt.ts',
+  'src/sandbox/escalation/approvals.ts',
+  'src/sandbox/escalation/network-approval.ts',
+  'src/sandbox/escalation/sandboxing.ts',
+  'src/sandbox/escalation/unix-escalation.ts',
+  'src/sandbox/execpolicy/decision.ts',
+  'src/sandbox/execpolicy/error.ts',
+  'src/sandbox/execpolicy/policy.ts',
+  'src/sandbox/execpolicy/rule.ts',
+  'src/sandbox/hardening/index.ts',
+  'src/sandbox/linux-launcher/cli.ts',
+  'src/sandbox/linux-launcher/landlock.ts',
+  'src/sandbox/linux-launcher/launcher.ts',
+  'src/sandbox/linux-launcher/linux-run-main.ts',
+  'src/sandbox/linux-launcher/proxy-routing.ts',
+  'src/sandbox/network-policy.ts',
+];
+const memoryContractExportFiles = [
+  // Memory barrels and helpers are user/project/session memory public surfaces
+  // or test-covered parsing/privacy/path contracts.
+  'src/memory/age.ts',
+  'src/memory/agencmd.ts',
+  'src/memory/index.ts',
+  'src/memory/memdir.ts',
+  'src/memory/paths.ts',
+  'src/memory/privacy.ts',
+  'src/memory/project-memory.ts',
+  'src/memory/scan.ts',
+  'src/memory/session/prompts.ts',
+  'src/memory/session/sessionMemory.ts',
+];
+const intentionalSandboxMemoryIssueIgnores = {
+  ...Object.fromEntries(
+    sandboxContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+  ...Object.fromEntries(
+    memoryContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -288,6 +334,7 @@ export default {
     ...intentionalToolIssueIgnores,
     ...intentionalSessionIssueIgnores,
     ...intentionalLlmIssueIgnores,
+    ...intentionalSandboxMemoryIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

@@ -22,11 +22,11 @@ const USER_NAMESPACE_FAILURES = [
   "No permissions to create a new namespace",
 ] as const;
 
-export const MISSING_BWRAP_WARNING =
+const MISSING_BWRAP_WARNING =
   "AgenC could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. AgenC will use the bundled Linux sandbox helper in the meantime.";
-export const USER_NAMESPACE_WARNING =
+const USER_NAMESPACE_WARNING =
   "AgenC's Linux sandbox uses bubblewrap and needs access to create user namespaces.";
-export const WSL1_BWRAP_WARNING =
+const WSL1_BWRAP_WARNING =
   "AgenC's Linux sandbox uses bubblewrap, which is not supported on WSL1 because WSL1 cannot create the required user namespaces. Use WSL2 for sandboxed shell commands.";
 
 export function systemBwrapWarning(
@@ -57,7 +57,7 @@ export function systemBwrapWarningForPath(
   return null;
 }
 
-export function systemBwrapHasUserNamespaceAccess(
+function systemBwrapHasUserNamespaceAccess(
   systemBwrapPath: string,
 ): boolean {
   const output = spawnSync(systemBwrapPath, [

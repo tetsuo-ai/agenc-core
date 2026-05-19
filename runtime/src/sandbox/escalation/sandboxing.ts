@@ -120,7 +120,7 @@ export function runtimeAdditionalPermissionsForSandboxRequest(
   );
 }
 
-export function additionalPermissionProfileFromSandboxPermissions(
+function additionalPermissionProfileFromSandboxPermissions(
   permissions: AdditionalSandboxPermissions,
 ): AdditionalPermissionProfile | undefined {
   const entries: FileSystemSandboxEntry[] = [];

@@ -5,7 +5,6 @@ import { isDangerousCommand, shouldUseSandbox } from "../../permissions/bash.js"
 import { parseWordOnlyShellSequence } from "../../shell-command/parser.js";
 import type { Decision } from "../execpolicy/decision.js";
 import type { Evaluation, Policy } from "../execpolicy/policy.js";
-import type { RuleMatch } from "../execpolicy/rule.js";
 import {
   hasAdditionalSandboxPermissions,
   normalizeSandboxPermissionsRequest,
@@ -14,9 +13,9 @@ import {
   type SandboxPermissionsInput,
 } from "./sandboxing.js";
 
-export const PROMPT_CONFLICT_REASON =
+const PROMPT_CONFLICT_REASON =
   "approval required by policy, but approval policy is never";
-export const REJECT_SANDBOX_APPROVAL_REASON =
+const REJECT_SANDBOX_APPROVAL_REASON =
   "approval required by policy, but granular sandbox approval is disabled";
 export const REJECT_RULES_APPROVAL_REASON =
   "approval required by policy rule, but granular rule approval is disabled";
@@ -103,7 +102,7 @@ export function execvePromptRejectedByPolicy(
   return null;
 }
 
-export function shellRequestEscalationExecution(
+function shellRequestEscalationExecution(
   sandboxPermissions: SandboxPermissionsInput,
 ): ShellEscalationExecution {
   const normalized = normalizeSandboxPermissionsRequest(sandboxPermissions);
@@ -191,7 +190,7 @@ export function determineInterceptedExecAction(opts: {
   };
 }
 
-export function decisionDrivenByPolicy(evaluation: Evaluation): boolean {
+function decisionDrivenByPolicy(evaluation: Evaluation): boolean {
   return evaluation.matchedRules.some(
     (match) =>
       match.type === "prefix_rule_match" &&
@@ -199,7 +198,7 @@ export function decisionDrivenByPolicy(evaluation: Evaluation): boolean {
   );
 }
 
-export function decisionSourceForEvaluation(
+function decisionSourceForEvaluation(
   evaluation: Evaluation,
 ): EscalationDecisionSource {
   return decisionDrivenByPolicy(evaluation)
@@ -245,7 +244,7 @@ export function commandsForInterceptedExecPolicy(opts: {
   return commandsForInterceptedExecPolicyDetailed(opts).commands;
 }
 
-export function commandsForInterceptedExecPolicyDetailed(opts: {
+function commandsForInterceptedExecPolicyDetailed(opts: {
   readonly program: string;
   readonly argv: readonly string[];
   readonly parseShellWrapper?: boolean;
@@ -264,7 +263,7 @@ export function commandsForInterceptedExecPolicyDetailed(opts: {
     : { commands: parsed, usedComplexParsing: false };
 }
 
-export function renderDecisionForUnmatchedCommand(
+function renderDecisionForUnmatchedCommand(
   command: readonly string[],
   context: UnmatchedCommandContext,
 ): Decision {
@@ -309,7 +308,7 @@ export function renderDecisionForUnmatchedCommand(
   }
 }
 
-export function extractShellScript(
+function extractShellScript(
   program: string,
   argv: readonly string[],
 ): { readonly shell: string; readonly flag: "-c" | "-lc"; readonly script: string } | null {
@@ -341,11 +340,4 @@ export function joinProgramAndArgv(
     return [normalizedProgram, ...argv.slice(1)];
   }
   return [normalizedProgram, ...argv];
-}
-
-export function formatRuleMatchSource(match: RuleMatch): string {
-  if (match.type === "heuristics_rule_match") {
-    return `fallback:${match.command.join(" ")}`;
-  }
-  return `prefix:${match.matchedPrefix.join(" ")}`;
 }

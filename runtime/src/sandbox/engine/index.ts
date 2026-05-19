@@ -151,19 +151,6 @@ export class SandboxTransformError extends Error {
   }
 }
 
-export function sandboxTypeMetricTag(type: SandboxType): string {
-  switch (type) {
-    case "none":
-      return "none";
-    case "macos_seatbelt":
-      return "seatbelt";
-    case "linux_seccomp":
-      return "seccomp";
-    case "windows_restricted_token":
-      return "windows_sandbox";
-  }
-}
-
 export function getPlatformSandbox(options: {
   readonly platform?: NodeJS.Platform;
   readonly windowsSandboxEnabled?: boolean;
@@ -479,7 +466,7 @@ export function includePlatformDefaults(policy: FileSystemSandboxPolicy): boolea
     );
 }
 
-export function defaultReadOnlySubpathsForWritableRoot(root: string): string[] {
+function defaultReadOnlySubpathsForWritableRoot(root: string): string[] {
   const normalized = normalizePathForPolicy(root);
   return PROTECTED_METADATA_PATH_NAMES.map((name) => path.join(normalized, name));
 }

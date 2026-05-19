@@ -47,7 +47,7 @@ export function preferredBubblewrapLauncher(options: {
   };
 }
 
-export function systemBubblewrapSupportsArgv0(program: string): boolean {
+function systemBubblewrapSupportsArgv0(program: string): boolean {
   const output = spawnSync(program, ["--help"], {
     encoding: "utf8",
     maxBuffer: 1024 * 1024,

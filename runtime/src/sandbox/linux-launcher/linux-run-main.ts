@@ -15,7 +15,6 @@ import {
 import { LINUX_SANDBOX_ARG0, SECCOMP_STDIN_FD } from "./config.js";
 import {
   networkSeccompMode,
-  shouldInstallNetworkSeccomp,
   type NetworkSeccompMode,
 } from "./landlock.js";
 import {
@@ -55,7 +54,7 @@ export async function runLinuxSandboxMain(
   }
 }
 
-export async function runLinuxSandboxOptions(
+async function runLinuxSandboxOptions(
   options: LinuxSandboxLauncherOptions,
   deps: LinuxSandboxRunDeps = {},
 ): Promise<number> {
@@ -251,19 +250,12 @@ function requireProxyRouteSpec(value: string | null): string {
   return value;
 }
 
-export function bwrapNetworkMode(
+function bwrapNetworkMode(
   network: "enabled" | "disabled" | "restricted",
   allowNetworkForProxy: boolean,
 ): BwrapNetworkMode {
   if (allowNetworkForProxy) return "proxy-only";
   return network === "enabled" ? "full-access" : "isolated";
-}
-
-export function needsBwrapSeccomp(
-  network: "enabled" | "disabled" | "restricted",
-  allowNetworkForProxy: boolean,
-): boolean {
-  return !allowNetworkForProxy && shouldInstallNetworkSeccomp(network, false);
 }
 
 export async function runCommandWithSupervision(
@@ -287,7 +279,7 @@ export async function runCommandWithSupervision(
   return await waitForChildWithSignalRelay(child);
 }
 
-export function execCommand(
+function execCommand(
   command: readonly string[],
   options: {
     readonly cwd: string;
@@ -314,7 +306,7 @@ export function execCommand(
   throw new Error("Linux sandbox execve returned unexpectedly");
 }
 
-export async function runCommandWithInnerSeccomp(
+async function runCommandWithInnerSeccomp(
   command: readonly string[],
   options: {
     readonly cwd: string;
@@ -368,7 +360,7 @@ function insertFinalCommandArgv0(
   return args;
 }
 
-export function waitForChildWithSignalRelay(child: ChildProcess): Promise<number> {
+function waitForChildWithSignalRelay(child: ChildProcess): Promise<number> {
   const relays = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
   const listeners = relays.map((signal) => {
     const listener = () => child.kill(signal);
@@ -382,7 +374,7 @@ export function waitForChildWithSignalRelay(child: ChildProcess): Promise<number
   });
 }
 
-export function waitForChild(child: ChildProcess): Promise<number> {
+function waitForChild(child: ChildProcess): Promise<number> {
   return new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {

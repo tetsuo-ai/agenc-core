@@ -292,7 +292,7 @@ export class Policy {
   }
 }
 
-export function EvaluationFromMatches(matches: readonly RuleMatch[]): Evaluation {
+function EvaluationFromMatches(matches: readonly RuleMatch[]): Evaluation {
   const decision = maxDecision(matches.map((match) => match.decision));
   if (decision === null) {
     throw new Error("invariant failed: matchedRules must be non-empty");

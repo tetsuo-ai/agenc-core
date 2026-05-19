@@ -110,7 +110,7 @@ export function isMemoryExtractionDisabledByEnv(
   return isEnvTruthy((env ?? process.env).AGENC_DISABLE_EXTRACT_MEMORIES);
 }
 
-export function resolveMinEligibleTurns(value: number | undefined): number {
+function resolveMinEligibleTurns(value: number | undefined): number {
   return Math.max(1, Math.trunc(value ?? 1));
 }
 
