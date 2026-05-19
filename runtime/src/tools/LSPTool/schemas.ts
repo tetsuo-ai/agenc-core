@@ -194,22 +194,3 @@ export const lspToolInputSchema = lazySchema(() => {
  * TypeScript type for LSPTool input
  */
 export type LSPToolInput = z.infer<ReturnType<typeof lspToolInputSchema>>
-
-/**
- * Type guard to check if an operation is a valid LSP operation
- */
-export function isValidLSPOperation(
-  operation: string,
-): operation is LSPToolInput['operation'] {
-  return [
-    'goToDefinition',
-    'findReferences',
-    'hover',
-    'documentSymbol',
-    'workspaceSymbol',
-    'goToImplementation',
-    'prepareCallHierarchy',
-    'incomingCalls',
-    'outgoingCalls',
-  ].includes(operation)
-}

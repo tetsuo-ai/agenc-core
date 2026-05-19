@@ -108,7 +108,7 @@ export function sandboxModeRequiresPlatformIsolation(mode: SandboxMode): boolean
   return mode === "read_only" || mode === "workspace_write";
 }
 
-export function runtimePlatformSandboxAvailable(
+function runtimePlatformSandboxAvailable(
   context: ToolRuntimeAttemptContext,
 ): boolean {
   return runtimePlatformSandboxStatus(context).available;
@@ -242,19 +242,6 @@ function applyRuntimeAdditionalPermissions(
     cwd,
   );
   return effectivePermissionProfile(profile, normalized);
-}
-
-export function compatibilityPolicyForSandboxMode(
-  mode: SandboxMode,
-  options: RuntimeSandboxProfileOptions,
-): SandboxPolicy {
-  const profile = permissionProfileForSandboxMode(mode, options);
-  return compatibilitySandboxPolicyForPermissionProfile(
-    profile,
-    profile.fileSystem,
-    profile.network,
-    options.cwd,
-  );
 }
 
 export function enforceRuntimeSandboxAttempt(

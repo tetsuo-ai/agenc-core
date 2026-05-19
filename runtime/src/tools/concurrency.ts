@@ -274,7 +274,7 @@ export function isWriteFilesystemTool(name: string): boolean {
 }
 
 /** Network tools. Raw system HTTP tools are not exposed; product web tools are read-only. */
-export function isNetworkTool(name: string): boolean {
+function isNetworkTool(name: string): boolean {
   return name === "WebFetch" || name === "WebSearch";
 }
 

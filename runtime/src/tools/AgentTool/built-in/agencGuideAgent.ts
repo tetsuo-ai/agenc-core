@@ -20,7 +20,7 @@ const AGENC_DOCS_MAP_URL =
   'https://agenc.tech/docs/en/agenc_docs_map.md'
 const CDP_DOCS_MAP_URL = 'https://agenc.tech/llms.txt'
 
-export const AGENC_GUIDE_AGENT_TYPE = 'agenc-code-guide'
+const AGENC_GUIDE_AGENT_TYPE = 'agenc-code-guide'
 
 function getAgenCCodeGuideBasePrompt(): string {
   // Ant-native builds alias find/grep to embedded bfs/ugrep and remove the

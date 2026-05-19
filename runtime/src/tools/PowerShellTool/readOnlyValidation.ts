@@ -126,7 +126,7 @@ export function argLeaksValue(
  * undefined, not inherited Object.prototype properties. Same defense as
  * COMMON_ALIASES in parser.ts.
  */
-export const CMDLET_ALLOWLIST: Record<string, CommandConfig> = Object.assign(
+const CMDLET_ALLOWLIST: Record<string, CommandConfig> = Object.assign(
   Object.create(null) as Record<string, CommandConfig>,
   {
     // =========================================================================

@@ -7,23 +7,10 @@
  * @module
  */
 
-import type { Logger } from "../utils/logger.js";
 import type { FunctionCallOutputContentItem } from "./context.js";
 import type { PermissionResult } from "../permissions/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import type { PermissionDefaultMode } from "../config/schema.js";
-
-// Lean-rebuild stubs: the Solana protocol types, wallet types, and
-// the full PolicyEngine surface have all been removed. Tools that used
-// these fields now receive nullable stand-ins; the new permission
-// seam in a later tranche will reintroduce real types.
-type Connection = unknown;
-type PublicKey = unknown;
-type Program = unknown;
-type Wallet = unknown;
-export interface PolicyEngine {
-  readonly allowTool?: (toolName: string) => boolean;
-}
 
 /**
  * JSON Schema type alias.
@@ -205,33 +192,6 @@ export interface Tool {
    * `'block'` — conservative, matches AgenC default.
    */
   readonly interruptBehavior?: () => "cancel" | "block";
-}
-
-/**
- * Context provided to built-in tool factories.
- *
- */
-export interface ToolContext {
-  /** Solana RPC connection */
-  readonly connection: Connection;
-  /** Optional wallet for signer-required tools (e.g. agenc.createTask) */
-  readonly wallet?: Wallet;
-  /** Optional Anchor program instance (tools can create read-only if absent) */
-  readonly program?: Program;
-  /** Optional custom program ID when creating internal program instances */
-  readonly programId?: PublicKey;
-  /** Logger instance */
-  readonly logger: Logger;
-}
-
-/**
- * Configuration for ToolRegistry.
- */
-export interface ToolRegistryConfig {
-  /** Logger for registry operations */
-  logger?: Logger;
-  /** Optional policy engine for tool call enforcement. */
-  policyEngine?: PolicyEngine;
 }
 
 /**

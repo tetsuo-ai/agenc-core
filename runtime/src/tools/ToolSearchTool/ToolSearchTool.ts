@@ -18,7 +18,7 @@ import { escapeRegExp } from '../../utils/stringUtils.js'
 import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
 
-export const inputSchema = lazySchema(() =>
+const inputSchema = lazySchema(() =>
   z.object({
     query: z
       .string()
@@ -34,7 +34,7 @@ export const inputSchema = lazySchema(() =>
 )
 type InputSchema = ReturnType<typeof inputSchema>
 
-export const outputSchema = lazySchema(() =>
+const outputSchema = lazySchema(() =>
   z.object({
     matches: z.array(z.string()),
     query: z.string(),
@@ -97,11 +97,6 @@ function maybeInvalidateCache(deferredTools: Tools): void {
     getToolDescriptionMemoized.cache.clear?.()
     cachedDeferredToolNames = currentKey
   }
-}
-
-export function clearToolSearchDescriptionCache(): void {
-  getToolDescriptionMemoized.cache.clear?.()
-  cachedDeferredToolNames = null
 }
 
 /**

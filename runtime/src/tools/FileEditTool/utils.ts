@@ -7,7 +7,7 @@ import {
   getPatchForDisplay,
   getPatchFromContents,
 } from '../../utils/diff.js'
-import { errorMessage, isENOENT } from '../../utils/errors.js'
+import { isENOENT } from '../../utils/errors.js'
 import {
   addLineNumbers,
   convertLeadingTabsToSpaces,
@@ -18,17 +18,17 @@ import type { EditInput, FileEdit } from './types.js'
 // AgenC can't output curly quotes, so we define them as constants here for AgenC to use
 // in the code. We do this because we normalize curly quotes to straight quotes
 // when applying edits.
-export const LEFT_SINGLE_CURLY_QUOTE = '‘'
-export const RIGHT_SINGLE_CURLY_QUOTE = '’'
-export const LEFT_DOUBLE_CURLY_QUOTE = '“'
-export const RIGHT_DOUBLE_CURLY_QUOTE = '”'
+const LEFT_SINGLE_CURLY_QUOTE = '‘'
+const RIGHT_SINGLE_CURLY_QUOTE = '’'
+const LEFT_DOUBLE_CURLY_QUOTE = '“'
+const RIGHT_DOUBLE_CURLY_QUOTE = '”'
 
 /**
  * Normalizes curly quote variants to ASCII equivalents.
  * @param str The string to normalize
  * @returns The string with curly quotes normalized
  */
-export function normalizeQuotes(str: string): string {
+function normalizeQuotes(str: string): string {
   return str
     .replaceAll(LEFT_SINGLE_CURLY_QUOTE, "'")
     .replaceAll(RIGHT_SINGLE_CURLY_QUOTE, "'")
@@ -203,7 +203,7 @@ function applyCurlySingleQuotes(str: string): string {
  * @param edits Array of edits with optional replace_all
  * @returns Array of edits with replace_all guaranteed to be boolean
  */
-export function applyEditToFile(
+function applyEditToFile(
   originalContent: string,
   oldString: string,
   newString: string,
@@ -267,7 +267,7 @@ export function getPatchForEdit({
  *
  * NOTE: The returned patch is to be used for display purposes only - it has spaces instead of tabs
  */
-export function getPatchForEdits({
+function getPatchForEdits({
   filePath,
   fileContents,
   edits,
@@ -413,124 +413,6 @@ export function getSnippetForTwoFileDiff(
   return `${kept}\n\n... [${remaining} lines truncated] ...`
 }
 
-const CONTEXT_LINES = 4
-
-/**
- * Gets a snippet from a file showing the context around a patch with line numbers.
- * @param originalFile The original file content before applying the patch
- * @param patch The diff hunks to use for determining snippet location
- * @param newFile The file content after applying the patch
- * @returns The snippet text with line numbers and the starting line number
- */
-export function getSnippetForPatch(
-  patch: StructuredPatchHunk[],
-  newFile: string,
-): { formattedSnippet: string; startLine: number } {
-  if (patch.length === 0) {
-    // No changes, return empty snippet
-    return { formattedSnippet: '', startLine: 1 }
-  }
-
-  // Find the first and last changed lines across all hunks
-  let minLine = Infinity
-  let maxLine = -Infinity
-
-  for (const hunk of patch) {
-    if (hunk.oldStart < minLine) {
-      minLine = hunk.oldStart
-    }
-    // For the end line, we need to consider the new lines count since we're showing the new file
-    const hunkEnd = hunk.oldStart + (hunk.newLines || 0) - 1
-    if (hunkEnd > maxLine) {
-      maxLine = hunkEnd
-    }
-  }
-
-  // Calculate the range with context
-  const startLine = Math.max(1, minLine - CONTEXT_LINES)
-  const endLine = maxLine + CONTEXT_LINES
-
-  // Split the new file into lines and get the snippet
-  const fileLines = newFile.split(/\r?\n/)
-  const snippetLines = fileLines.slice(startLine - 1, endLine)
-  const snippet = snippetLines.join('\n')
-
-  // Add line numbers
-  const formattedSnippet = addLineNumbers({
-    content: snippet,
-    startLine,
-  })
-
-  return { formattedSnippet, startLine }
-}
-
-/**
- * Gets a snippet from a file showing the context around a single edit.
- * This is a convenience function that uses the original algorithm.
- * @param originalFile The original file content
- * @param oldString The text to replace
- * @param newString The text to replace it with
- * @param contextLines The number of lines to show before and after the change
- * @returns The snippet and the starting line number
- */
-export function getSnippet(
-  originalFile: string,
-  oldString: string,
-  newString: string,
-  contextLines: number = 4,
-): { snippet: string; startLine: number } {
-  // Use the original algorithm from FileEditTool.tsx
-  const before = originalFile.split(oldString)[0] ?? ''
-  const replacementLine = before.split(/\r?\n/).length - 1
-  const newFileLines = applyEditToFile(
-    originalFile,
-    oldString,
-    newString,
-  ).split(/\r?\n/)
-
-  // Calculate the start and end line numbers for the snippet
-  const startLine = Math.max(0, replacementLine - contextLines)
-  const endLine =
-    replacementLine + contextLines + newString.split(/\r?\n/).length
-
-  // Get snippet
-  const snippetLines = newFileLines.slice(startLine, endLine)
-  const snippet = snippetLines.join('\n')
-
-  return { snippet, startLine: startLine + 1 }
-}
-
-export function getEditsForPatch(patch: StructuredPatchHunk[]): FileEdit[] {
-  return patch.map(hunk => {
-    // Extract the changes from this hunk
-    const contextLines: string[] = []
-    const oldLines: string[] = []
-    const newLines: string[] = []
-
-    // Parse each line and categorize it
-    for (const line of hunk.lines) {
-      if (line.startsWith(' ')) {
-        // Context line - appears in both versions
-        contextLines.push(line.slice(1))
-        oldLines.push(line.slice(1))
-        newLines.push(line.slice(1))
-      } else if (line.startsWith('-')) {
-        // Deleted line - only in old version
-        oldLines.push(line.slice(1))
-      } else if (line.startsWith('+')) {
-        // Added line - only in new version
-        newLines.push(line.slice(1))
-      }
-    }
-
-    return {
-      old_string: oldLines.join('\n'),
-      new_string: newLines.join('\n'),
-      replace_all: false,
-    }
-  })
-}
-
 /**
  * Contains replacements to de-sanitize strings from AgenC
  * Since AgenC can't see any of these strings (sanitized in the API)
@@ -662,122 +544,4 @@ export function normalizeFileEditInput({
   }
 
   return { file_path, edits }
-}
-
-/**
- * Compare two sets of edits to determine if they are equivalent
- * by applying both sets to the original content and comparing results.
- * This handles cases where edits might be different but produce the same outcome.
- */
-export function areFileEditsEquivalent(
-  edits1: FileEdit[],
-  edits2: FileEdit[],
-  originalContent: string,
-): boolean {
-  // Fast path: check if edits are literally identical
-  if (
-    edits1.length === edits2.length &&
-    edits1.every((edit1, index) => {
-      const edit2 = edits2[index]
-      return (
-        edit2 !== undefined &&
-        edit1.old_string === edit2.old_string &&
-        edit1.new_string === edit2.new_string &&
-        edit1.replace_all === edit2.replace_all
-      )
-    })
-  ) {
-    return true
-  }
-
-  // Try applying both sets of edits
-  let result1: { patch: StructuredPatchHunk[]; updatedFile: string } | null =
-    null
-  let error1: string | null = null
-  let result2: { patch: StructuredPatchHunk[]; updatedFile: string } | null =
-    null
-  let error2: string | null = null
-
-  try {
-    result1 = getPatchForEdits({
-      filePath: 'temp',
-      fileContents: originalContent,
-      edits: edits1,
-    })
-  } catch (e) {
-    error1 = errorMessage(e)
-  }
-
-  try {
-    result2 = getPatchForEdits({
-      filePath: 'temp',
-      fileContents: originalContent,
-      edits: edits2,
-    })
-  } catch (e) {
-    error2 = errorMessage(e)
-  }
-
-  // If both threw errors, they're equal only if the errors are the same
-  if (error1 !== null && error2 !== null) {
-    // Normalize error messages for comparison
-    return error1 === error2
-  }
-
-  // If one threw an error and the other didn't, they're not equal
-  if (error1 !== null || error2 !== null) {
-    return false
-  }
-
-  // Both succeeded - compare the results
-  return result1!.updatedFile === result2!.updatedFile
-}
-
-/**
- * Unified function to check if two file edit inputs are equivalent.
- * Handles file edits (FileEditTool).
- */
-export function areFileEditsInputsEquivalent(
-  input1: {
-    file_path: string
-    edits: FileEdit[]
-  },
-  input2: {
-    file_path: string
-    edits: FileEdit[]
-  },
-): boolean {
-  // Fast path: different files
-  if (input1.file_path !== input2.file_path) {
-    return false
-  }
-
-  // Fast path: literal equality
-  if (
-    input1.edits.length === input2.edits.length &&
-    input1.edits.every((edit1, index) => {
-      const edit2 = input2.edits[index]
-      return (
-        edit2 !== undefined &&
-        edit1.old_string === edit2.old_string &&
-        edit1.new_string === edit2.new_string &&
-        edit1.replace_all === edit2.replace_all
-      )
-    })
-  ) {
-    return true
-  }
-
-  // Semantic comparison (requires file read). If the file doesn't exist,
-  // compare against empty content (no TOCTOU pre-check).
-  let fileContent = ''
-  try {
-    fileContent = readFileSyncCached(input1.file_path)
-  } catch (error) {
-    if (!isENOENT(error)) {
-      throw error
-    }
-  }
-
-  return areFileEditsEquivalent(input1.edits, input2.edits, fileContent)
 }

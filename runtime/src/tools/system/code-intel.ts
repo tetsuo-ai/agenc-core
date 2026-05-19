@@ -557,12 +557,6 @@ export async function collectWorkspaceLanguages(
   );
 }
 
-export async function collectWorkspaceFiles(
-  workspaceRoot: string,
-): Promise<readonly string[]> {
-  return listCandidateFiles(workspaceRoot);
-}
-
 export function toRelativeWorkspacePath(
   workspaceRoot: string,
   filePath: string,

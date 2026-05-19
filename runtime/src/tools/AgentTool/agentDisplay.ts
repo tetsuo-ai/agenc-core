@@ -4,10 +4,7 @@
  */
 
 import { getDefaultSubagentModel } from '../../utils/model/agent.js'
-import {
-  getSourceDisplayName,
-  type SettingSource,
-} from '../../utils/settings/constants.js'
+import type { SettingSource } from '../../utils/settings/constants.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 
 type AgentSource = SettingSource | 'built-in' | 'plugin'
@@ -81,24 +78,4 @@ export function resolveAgentModelDisplay(
   const model = agent.model || getDefaultSubagentModel()
   if (!model) return undefined
   return model === 'inherit' ? 'inherit' : model
-}
-
-/**
- * Get a human-readable label for the source that overrides an agent.
- * Returns lowercase, e.g. "user", "project", "managed".
- */
-export function getOverrideSourceLabel(source: AgentSource): string {
-  return getSourceDisplayName(source).toLowerCase()
-}
-
-/**
- * Compare agents alphabetically by name (case-insensitive).
- */
-export function compareAgentsByName(
-  a: AgentDefinition,
-  b: AgentDefinition,
-): number {
-  return a.agentType.localeCompare(b.agentType, undefined, {
-    sensitivity: 'base',
-  })
 }

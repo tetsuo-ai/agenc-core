@@ -40,7 +40,7 @@ let imageCreatorModule: { default: SharpCreator } | null = null
  * Error thrown when no image processor is available (e.g., in the open build
  * where sharp and image-processor-napi are stubbed out).
  */
-export class ImageProcessorUnavailableError extends Error {
+class ImageProcessorUnavailableError extends Error {
   constructor() {
     super('No image processor available (sharp is not installed)')
     this.name = 'ImageProcessorUnavailableError'

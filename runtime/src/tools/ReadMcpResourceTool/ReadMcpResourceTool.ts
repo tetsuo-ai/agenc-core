@@ -27,7 +27,7 @@ export const inputSchema = lazySchema(() =>
 )
 type InputSchema = ReturnType<typeof inputSchema>
 
-export const outputSchema = lazySchema(() =>
+const outputSchema = lazySchema(() =>
   z.object({
     contents: z.array(
       z.object({

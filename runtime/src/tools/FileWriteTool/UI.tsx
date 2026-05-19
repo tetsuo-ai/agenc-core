@@ -32,7 +32,7 @@ const EOL = '\n';
  * Count visible lines in file content. A trailing newline is treated as a
  * line terminator (not a new empty line), matching editor line numbering.
  */
-export function countLines(content: string): number {
+function countLines(content: string): number {
   const parts = content.split(EOL);
   return content.endsWith(EOL) ? parts.length - 1 : parts.length;
 }

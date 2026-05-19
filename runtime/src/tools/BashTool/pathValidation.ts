@@ -700,7 +700,7 @@ function validateCommandPaths(
   }
 }
 
-export function createPathChecker(
+function createPathChecker(
   command: PathCommand,
   operationTypeOverride?: FileOperationType,
 ) {
@@ -1260,7 +1260,7 @@ function skipEnvFlags(a: readonly string[]): number {
  * wrapper commands from AST-derived argv. Env vars are already separated
  * into SimpleCommand.envVars so no env-var stripping here.
  */
-export function stripWrappersFromArgv(argv: string[]): string[] {
+function stripWrappersFromArgv(argv: string[]): string[] {
   let a = argv
   for (;;) {
     if (a[0] === 'time' || a[0] === 'nohup') {

@@ -38,8 +38,6 @@ import { mojeekProvider } from './mojeek.js'
 import { linkupProvider } from './linkup.js'
 
 export { type SearchInput, type SearchProvider, type ProviderOutput, type SearchHit } from './types.js'
-export { applyDomainFilters, safeHostname, hostMatchesDomain } from './types.js'
-export { extractHits } from './custom.js'
 
 // ---------------------------------------------------------------------------
 // All registered providers — order matters for auto mode

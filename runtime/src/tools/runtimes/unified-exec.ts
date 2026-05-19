@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { Tool } from "../types.js";
 
-export const UNIFIED_EXEC_RUNTIME_TOOL_NAMES = new Set([
+const UNIFIED_EXEC_RUNTIME_TOOL_NAMES = new Set([
   "exec_command",
   "system.bash",
 ]);

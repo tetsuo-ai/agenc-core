@@ -6,7 +6,7 @@ import type { ApprovalPolicy, SandboxMode } from "../orchestrator.js";
 import type { Tool } from "../types.js";
 import type { AdditionalPermissionProfile } from "../../sandbox/engine/index.js";
 
-export const TOOL_RUNTIME_CONTEXT_ARG = "__toolRuntimeContext";
+const TOOL_RUNTIME_CONTEXT_ARG = "__toolRuntimeContext";
 const RUNTIME_CONTEXT_MARKER = Symbol("agenc.toolRuntimeContext");
 
 export type ToolRuntimeKind =

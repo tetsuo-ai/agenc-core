@@ -228,10 +228,6 @@ export function recordAskUserQuestionPlanInterviewAction(
   return true;
 }
 
-export function clearAskUserQuestionResponse(callId: string): void {
-  answeredInputs.delete(callId);
-}
-
 export function clearAskUserQuestionResponsesForTest(): void {
   answeredInputs.clear();
 }

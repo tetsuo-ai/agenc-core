@@ -1643,7 +1643,7 @@ const CODE_MODE_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "js_repl_reset",
 ]);
 
-export function isCodeModeSafeTool(toolName: ToolName): boolean {
+function isCodeModeSafeTool(toolName: ToolName): boolean {
   if (toolName.namespace !== undefined) return false;
   return CODE_MODE_SAFE_TOOL_NAMES.has(toolName.name);
 }

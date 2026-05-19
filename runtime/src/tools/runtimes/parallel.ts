@@ -55,7 +55,7 @@ export async function runToolRuntimeCall<T>(
   return runtime.run(effectiveConcurrencyClass(context), fn);
 }
 
-export function effectiveConcurrencyClass(
+function effectiveConcurrencyClass(
   context: ToolRuntimeCallContext,
 ): ConcurrencyClass {
   if (

@@ -67,7 +67,7 @@ export type ResolvedAgentTools = {
   resolvedTools: Tools
   allowedAgentTypes?: string[]
 }
-export function filterToolsForAgent({
+function filterToolsForAgent({
   tools,
   isBuiltIn,
   isAsync = false,
@@ -258,7 +258,7 @@ export const agentToolResultSchema = lazySchema(() =>
 
 export type AgentToolResult = z.input<ReturnType<typeof agentToolResultSchema>>
 
-export function countToolUses(messages: MessageType[]): number {
+function countToolUses(messages: MessageType[]): number {
   let count = 0
   for (const m of messages) {
     if (m.type === 'assistant') {

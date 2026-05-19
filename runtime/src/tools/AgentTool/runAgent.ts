@@ -879,7 +879,7 @@ export async function* runAgent({
  * Filters out assistant messages with incomplete tool calls (tool uses without results).
  * This prevents API errors when sending messages with orphaned tool calls.
  */
-export function filterIncompleteToolCalls(messages: Message[]): Message[] {
+function filterIncompleteToolCalls(messages: Message[]): Message[] {
   // Build a set of tool use IDs that have results
   const toolUseIdsWithResults = new Set<string>()
 

@@ -100,6 +100,68 @@ const intentionalServiceIssueIgnores = {
   // CLI, plugin, and SDK-adjacent callers beyond production entrypoints.
   'src/services/mcp/types.ts': ['exports', 'types'],
 };
+const toolContractExportFiles = [
+  // Tool registration, schema, UI rendering, runtime, and test contract
+  // surfaces. Production Knip cannot see every dynamic tool-registry consumer.
+  'src/tools/AgentTool/loadAgentsDir.ts',
+  'src/tools/BashTool/bashPermissions.ts',
+  'src/tools/BashTool/sedEditParser.ts',
+  'src/tools/BashTool/utils.ts',
+  'src/tools/BriefTool/BriefTool.ts',
+  'src/tools/BriefTool/prompt.ts',
+  'src/tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts',
+  'src/tools/FileEditTool/UI.tsx',
+  'src/tools/FileEditTool/types.ts',
+  'src/tools/FileReadTool/imageProcessor.ts',
+  'src/tools/FileWriteTool/FileWriteTool.ts',
+  'src/tools/SendMessageTool/SendMessageTool.ts',
+  'src/tools/SyntheticOutputTool/SyntheticOutputTool.ts',
+  'src/tools/TeamCreateTool/TeamCreateTool.ts',
+  'src/tools/TeamDeleteTool/TeamDeleteTool.ts',
+  'src/tools/WebFetchTool/utils.ts',
+  'src/tools/WebSearchTool/WebSearchTool.ts',
+  'src/tools/WebSearchTool/providers/custom.ts',
+  'src/tools/WebSearchTool/providers/index.ts',
+  'src/tools/WebSearchTool/providers/types.ts',
+  'src/tools/apply-patch/runtime.ts',
+  'src/tools/apply-patch/tool.ts',
+  'src/tools/ask-user-question/tool.ts',
+  'src/tools/code-mode/description.ts',
+  'src/tools/code-mode/service.ts',
+  'src/tools/code-mode/tools.ts',
+  'src/tools/concurrency.ts',
+  'src/tools/context.ts',
+  'src/tools/execution.ts',
+  'src/tools/hooks.ts',
+  'src/tools/orchestration.ts',
+  'src/tools/orchestrator.ts',
+  'src/tools/router.ts',
+  'src/tools/runtimes/sandboxing.ts',
+  'src/tools/shared/spawnMultiAgent.ts',
+  'src/tools/system/bash.ts',
+  'src/tools/system/coding-common.ts',
+  'src/tools/system/command-line.ts',
+  'src/tools/system/file-edit.ts',
+  'src/tools/system/file-read.ts',
+  'src/tools/system/filesystem.ts',
+  'src/tools/system/glob.ts',
+  'src/tools/system/grep.ts',
+  'src/tools/system/notebook-edit.ts',
+  'src/tools/system/types.ts',
+  'src/tools/system/worktree.ts',
+  'src/tools/tasks/index.ts',
+  'src/tools/types.ts',
+];
+const intentionalToolIssueIgnores = {
+  ...Object.fromEntries(
+    toolContractExportFiles.map((file) => [file, ['exports', 'types']]),
+  ),
+  // Prompt identity tests import these built-in prompt definitions directly.
+  'src/tools/AgentTool/built-in/agencGuideAgent.ts': ['files'],
+  'src/tools/AgentTool/built-in/statuslineSetup.ts': ['files'],
+  'src/tools/AgentTool/built-in/verificationAgent.ts': ['files'],
+  'src/tools/LSPTool/schemas.ts': ['types'],
+};
 
 export default {
   $schema: 'https://unpkg.com/knip@6/schema.json',
@@ -156,6 +218,7 @@ export default {
     ...typecheckExcludedIssueIgnores,
     ...intentionalEntryPointIssueIgnores,
     ...intentionalServiceIssueIgnores,
+    ...intentionalToolIssueIgnores,
   },
   ignoreBinaries: [
     'findstr',

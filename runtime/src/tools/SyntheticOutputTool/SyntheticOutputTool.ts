@@ -19,17 +19,10 @@ export type Output = z.infer<OutputSchema>
 
 export const SYNTHETIC_OUTPUT_TOOL_NAME = 'StructuredOutput'
 
-export function isSyntheticOutputToolEnabled(opts: {
-  isNonInteractiveSession: boolean
-}): boolean {
-  return opts.isNonInteractiveSession
-}
-
 export const SyntheticOutputTool = buildTool({
   isMcp: false,
   isEnabled() {
-    // This tool is only created when conditions are met (see main.tsx where
-    // isSyntheticOutputToolEnabled() gates tool creation). Once created, always enabled.
+    // This tool is only created when conditions are met. Once created, always enabled.
     return true
   },
   isConcurrencySafe() {

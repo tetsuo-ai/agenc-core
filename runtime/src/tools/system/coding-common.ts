@@ -1,9 +1,7 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import {
-  basename,
   dirname,
   join,
-  relative,
   resolve as resolvePath,
 } from "node:path";
 
@@ -55,7 +53,7 @@ function planFileContextFromArgs(
  * workspace allowlist" decision so writeFile / appendFile / editFile /
  * mkdir / delete / move all stay in sync.
  */
-export function isPlanFileWriteAllowed(
+function isPlanFileWriteAllowed(
   args: Record<string, unknown>,
   targetPath: string,
 ): boolean {
@@ -80,14 +78,7 @@ export interface CodingToolConfig {
 }
 
 export const MAX_RESULTS = 200;
-export const DEFAULT_CONTEXT_LINES = 2;
 export const MAX_DIFF_BYTES = 256_000;
-export const TEXT_FILE_SIZE_LIMIT = 512_000;
-export const MAX_RIPGREP_BUFFER = 12 * 1024 * 1024;
-export const RIPGREP_REQUIRED_ERROR =
-  "ripgrep (rg) is required for coding search tools but is not available on PATH";
-
-export const VCS_DIRECTORIES_TO_EXCLUDE = [".git", ".hg", ".jj", ".svn"] as const;
 export const MANIFEST_NAMES = [
   "package.json",
   "tsconfig.json",
@@ -98,19 +89,6 @@ export const MANIFEST_NAMES = [
   "Makefile",
   "README.md",
 ] as const;
-
-const GLOB_DOUBLESTAR = "__AGENC_DOUBLESTAR__";
-
-export function matchGlob(pattern: string, path: string): boolean {
-  const escaped = pattern
-    .replace(/\*\*/g, GLOB_DOUBLESTAR)
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\?/g, "[^/]")
-    .split(GLOB_DOUBLESTAR)
-    .join(".*");
-  return new RegExp("^" + escaped + "$").test(path);
-}
 
 export function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
@@ -131,17 +109,6 @@ export function normalizePositiveInteger(
   return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
-export function normalizeNonNegativeInteger(
-  value: unknown,
-  fallback: number,
-  max: number,
-): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.max(0, Math.min(max, Math.floor(value)));
-}
-
 export function toOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
@@ -155,24 +122,6 @@ export function toOptionalStringArray(value: unknown): readonly string[] | undef
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   return entries.length > 0 ? entries : undefined;
-}
-
-export function resolveSearchGlobPatterns(
-  args: Record<string, unknown>,
-): readonly string[] | undefined {
-  const patterns = [
-    ...(
-      typeof args.glob === "string"
-        ? [args.glob]
-        : Array.isArray(args.glob)
-          ? args.glob.filter((entry): entry is string => typeof entry === "string")
-          : []
-    ),
-    ...(toOptionalStringArray(args.filePatterns) ?? []),
-  ]
-    .map((entry) => entry.trim())
-    .filter((entry, index, all) => entry.length > 0 && all.indexOf(entry) === index);
-  return patterns.length > 0 ? patterns : undefined;
 }
 
 export async function resolveWorkspacePath(params: {
@@ -217,42 +166,6 @@ export async function resolveWorkspacePath(params: {
     // canonicalize threw — fall through to the original rejection.
   }
   return { error: safe.reason ?? "Path is outside allowed directories" };
-}
-
-export interface ResolvedSearchTarget {
-  readonly searchPath: string;
-  readonly searchRoot: string;
-  readonly targetArg: string;
-  readonly isDirectory: boolean;
-}
-
-export async function resolveSearchTarget(params: {
-  readonly config: CodingToolConfig;
-  readonly args: Record<string, unknown>;
-  readonly pathArgKeys?: readonly string[];
-}): Promise<ResolvedSearchTarget | { error: string }> {
-  const workspacePath = await resolveWorkspacePath(params);
-  if (typeof workspacePath !== "string") {
-    return workspacePath;
-  }
-  const target = await stat(workspacePath).catch(() => undefined);
-  if (!target) {
-    return { error: `Path does not exist: ${workspacePath}` };
-  }
-  if (target.isDirectory()) {
-    return {
-      searchPath: workspacePath,
-      searchRoot: workspacePath,
-      targetArg: ".",
-      isDirectory: true,
-    };
-  }
-  return {
-    searchPath: workspacePath,
-    searchRoot: dirname(workspacePath),
-    targetArg: basename(workspacePath),
-    isDirectory: false,
-  };
 }
 
 export async function resolveRepoRoot(params: {
@@ -309,111 +222,6 @@ export async function listRepoFiles(repoRoot: string): Promise<readonly string[]
   return files;
 }
 
-let ripgrepAvailability: boolean | undefined;
-
-export async function ensureRipgrepAvailable(cwd: string): Promise<string | undefined> {
-  if (ripgrepAvailability === true) return undefined;
-  if (ripgrepAvailability === false) return RIPGREP_REQUIRED_ERROR;
-  const result = await runCommand("rg", ["--version"], {
-    cwd,
-    maxBuffer: 64 * 1024,
-  });
-  if (result.exitCode === 0) {
-    ripgrepAvailability = true;
-    return undefined;
-  }
-  ripgrepAvailability = false;
-  return RIPGREP_REQUIRED_ERROR;
-}
-
-export function appendRipgrepPathFilters(
-  args: string[],
-  options: {
-    readonly globPatterns?: readonly string[];
-    readonly type?: string;
-  },
-): void {
-  for (const directory of VCS_DIRECTORIES_TO_EXCLUDE) {
-    args.push("--glob", `!${directory}`);
-    args.push("--glob", `!${directory}/**`);
-  }
-  for (const pattern of options.globPatterns ?? []) {
-    args.push("--glob", pattern);
-  }
-  if (options.type) {
-    args.push("--type", options.type);
-  }
-}
-
-export function describeRipgrepFailure(
-  result: Awaited<ReturnType<typeof runCommand>>,
-  fallback: string,
-): string {
-  return result.stderr.trim() || result.stdout.trim() || fallback;
-}
-
-export async function listSearchTargetFiles(params: {
-  readonly target: ResolvedSearchTarget;
-  readonly globPatterns?: readonly string[];
-}): Promise<
-  | {
-      readonly searchPath: string;
-      readonly searchRoot: string;
-      readonly matches: readonly string[];
-    }
-  | { error: string }
-> {
-  const missingRipgrep = await ensureRipgrepAvailable(params.target.searchRoot);
-  if (missingRipgrep) {
-    return { error: missingRipgrep };
-  }
-  if (!params.target.isDirectory) {
-    const relativePath = basename(params.target.searchPath);
-    const matchesGlob =
-      !params.globPatterns ||
-      params.globPatterns.some((pattern) =>
-        matchGlob(pattern, relativePath) || matchGlob(pattern, basename(relativePath))
-      );
-    return {
-      searchPath: params.target.searchPath,
-      searchRoot: params.target.searchRoot,
-      matches: matchesGlob ? [relativePath] : [],
-    };
-  }
-  const rgArgs = ["--files", "--hidden"];
-  appendRipgrepPathFilters(rgArgs, { globPatterns: params.globPatterns });
-  rgArgs.push(params.target.targetArg);
-  const result = await runCommand("rg", rgArgs, {
-    cwd: params.target.searchRoot,
-    maxBuffer: MAX_RIPGREP_BUFFER,
-  });
-  if (result.exitCode !== 0) {
-    return {
-      error: describeRipgrepFailure(result, "ripgrep file listing failed"),
-    };
-  }
-  const matches = result.stdout
-    .split(/\r?\n/)
-    .map((entry) => entry.trim().replace(/^\.\//, ""))
-    .filter((entry) => entry.length > 0);
-  return {
-    searchPath: params.target.searchPath,
-    searchRoot: params.target.searchRoot,
-    matches,
-  };
-}
-
-export async function readTextFile(path: string): Promise<string | undefined> {
-  const fileStat = await stat(path).catch(() => undefined);
-  if (!fileStat?.isFile() || fileStat.size > TEXT_FILE_SIZE_LIMIT) {
-    return undefined;
-  }
-  const text = await readFile(path, "utf8").catch(() => undefined);
-  if (!text || text.includes("\0")) {
-    return undefined;
-  }
-  return text;
-}
 
 export function parseStatusPorcelain(stdout: string): {
   readonly branch?: string;
@@ -512,8 +320,4 @@ export function codingToolMetadata(
     hiddenByDefault: false,
     ...(opts.deferred === true ? { deferred: true } : {}),
   };
-}
-
-export function relativeWorkspacePath(workspaceRoot: string, filePath: string): string {
-  return relative(resolvePath(workspaceRoot), resolvePath(filePath)) || basename(filePath);
 }

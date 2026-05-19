@@ -57,28 +57,6 @@ export interface ApplyPatchFileUpdate {
   readonly content: string;
 }
 
-export type ApplyPatchFileChange =
-  | {
-      readonly kind: "add";
-      readonly content: string;
-    }
-  | {
-      readonly kind: "delete";
-      readonly content: string;
-    }
-  | {
-      readonly kind: "update";
-      readonly unifiedDiff: string;
-      readonly movePath: string | null;
-      readonly newContent: string;
-    };
-
-export interface ApplyPatchAction {
-  readonly patch: string;
-  readonly cwd: string;
-  readonly changes: ReadonlyMap<string, ApplyPatchFileChange>;
-}
-
 export type ParseErrorKind = "invalid_patch" | "invalid_hunk";
 
 export class ApplyPatchParseError extends Error {

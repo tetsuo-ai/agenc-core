@@ -155,7 +155,7 @@ export type ReviewDecision = PermissionsReviewDecision;
 // ─────────────────────────────────────────────────────────────────────
 
 /** Classifier used by the retry policy. */
-export function isSandboxDeniedError(err: unknown): err is SandboxDeniedError {
+function isSandboxDeniedError(err: unknown): err is SandboxDeniedError {
   return (
     err instanceof SandboxDeniedError ||
     (typeof err === "object" &&

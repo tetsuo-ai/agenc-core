@@ -785,7 +785,7 @@ export function userFacingNameBackgroundColor(input: Partial<{
   // Get the color for this agent
   return getAgentColor(input.subagent_type) as keyof Theme | undefined;
 }
-export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools): string | null {
+function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools): string | null {
   // Build tool_use lookup from all progress messages (needed for reverse iteration)
   const toolUseByID = new Map<string, ToolUseBlockParam>();
   for (const pm of progressMessages) {

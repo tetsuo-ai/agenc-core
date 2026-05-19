@@ -12,8 +12,7 @@ import {
 let _primitiveTools: readonly Tool[] | undefined
 
 /**
- * Primitive tools hidden from direct model use when REPL mode is on
- * (REPL_ONLY_TOOLS) but still accessible inside the REPL VM context.
+ * Primitive tools that remain accessible inside the REPL VM context.
  * Exported so display-side code (collapseReadSearch, renderers) can
  * classify/render virtual messages for these tools even when they're
  * absent from the filtered execution tools list.

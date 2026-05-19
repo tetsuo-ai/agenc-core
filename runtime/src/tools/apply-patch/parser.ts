@@ -17,15 +17,15 @@ import {
   type UpdateFileChunk,
 } from "./types.js";
 
-export const BEGIN_PATCH_MARKER = "*** Begin Patch";
-export const END_PATCH_MARKER = "*** End Patch";
-export const ADD_FILE_MARKER = "*** Add File: ";
-export const DELETE_FILE_MARKER = "*** Delete File: ";
-export const UPDATE_FILE_MARKER = "*** Update File: ";
-export const MOVE_TO_MARKER = "*** Move to: ";
-export const EOF_MARKER = "*** End of File";
-export const CHANGE_CONTEXT_MARKER = "@@ ";
-export const EMPTY_CHANGE_CONTEXT_MARKER = "@@";
+const BEGIN_PATCH_MARKER = "*** Begin Patch";
+const END_PATCH_MARKER = "*** End Patch";
+const ADD_FILE_MARKER = "*** Add File: ";
+const DELETE_FILE_MARKER = "*** Delete File: ";
+const UPDATE_FILE_MARKER = "*** Update File: ";
+const MOVE_TO_MARKER = "*** Move to: ";
+const EOF_MARKER = "*** End of File";
+const CHANGE_CONTEXT_MARKER = "@@ ";
+const EMPTY_CHANGE_CONTEXT_MARKER = "@@";
 
 export type ParseMode = "strict" | "lenient";
 

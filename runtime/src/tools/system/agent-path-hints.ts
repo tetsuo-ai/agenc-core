@@ -6,7 +6,7 @@ export function isAgentNamespacePath(path: string): boolean {
   return path === AGENT_NAMESPACE_ROOT || path.startsWith(`${AGENT_NAMESPACE_ROOT}/`);
 }
 
-export function workspacePathFromAgentNamespace(path: string): string | null {
+function workspacePathFromAgentNamespace(path: string): string | null {
   if (!isAgentNamespacePath(path)) return null;
   const relativePath = path.slice(AGENT_NAMESPACE_ROOT.length).replace(/^\/+/, "");
   return relativePath.length > 0 ? relativePath : null;

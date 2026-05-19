@@ -79,11 +79,6 @@ const DOMAIN_CHECK_CACHE = new LRUCache<string, true>({
   ttl: 5 * 60 * 1000, // 5 minutes — shorter than URL_CACHE TTL
 })
 
-export function clearWebFetchCache(): void {
-  URL_CACHE.clear()
-  DOMAIN_CHECK_CACHE.clear()
-}
-
 // Lazy singleton — defers the turndown → @mixmark-io/domino import (~1.4MB
 // retained heap) until the first HTML fetch, and reuses one instance across
 // calls (construction builds 15 rule objects; .turndown() is stateless).

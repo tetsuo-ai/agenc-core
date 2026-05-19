@@ -26,12 +26,6 @@ export type RecoverableToolFailureKind =
   | "mcp_tool_not_shell_command"
   | "shell_workspace_write_policy";
 
-export interface RecoverableToolFailureMetadata {
-  readonly recoverable: true;
-  readonly hiddenFromTranscript: true;
-  readonly kind: RecoverableToolFailureKind;
-}
-
 export function buildRecoverableToolFailureMetadata(
   kind: RecoverableToolFailureKind,
   existing: Readonly<Record<string, unknown>> = {},
@@ -55,28 +49,6 @@ export function recoverableFailureKind(
     metadata.kind === "shell_workspace_write_policy"
     ? metadata.kind
     : null;
-}
-
-export function isHiddenRecoverableToolFailure(
-  metadata: Readonly<Record<string, unknown>> | undefined,
-): boolean {
-  return recoverableFailureKind(metadata) !== null;
-}
-
-export function compactRecoverableToolFailureMessage(
-  metadata: Readonly<Record<string, unknown>> | undefined,
-): string | null {
-  const kind = recoverableFailureKind(metadata);
-  switch (kind) {
-    case "input_validation":
-      return "Invalid tool parameters";
-    case "mcp_tool_not_shell_command":
-      return "MCP tool used as shell command";
-    case "shell_workspace_write_policy":
-      return "Shell write blocked";
-    default:
-      return null;
-  }
 }
 
 export function buildFileMutationMetadata(

@@ -16,7 +16,7 @@
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
-export const DEFAULT_MAX_OUTPUT_TOKENS = 25000
+const DEFAULT_MAX_OUTPUT_TOKENS = 25000
 /**
  * Env var override for max output tokens. Returns undefined when unset/invalid
  * so the caller can fall through to the next precedence tier.

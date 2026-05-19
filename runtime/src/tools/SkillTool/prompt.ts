@@ -3,7 +3,6 @@ import type { Command } from 'src/commands.js'
 import {
   getCommandName,
   getSkillToolCommands,
-  getSlashCommandToolSkills,
 } from 'src/commands.js'
 import { COMMAND_NAME_TAG } from '../../constants/xml.js'
 import { stringWidth } from '../../tui/ink/stringWidth.js'
@@ -13,22 +12,20 @@ import {
 } from '../../services/analytics/index.js'
 import { count } from '../../utils/array.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { toError } from '../../utils/errors.js'
 import { truncate } from '../../utils/format.js'
-import { logError } from '../../utils/log.js'
 
 // Skill listing gets 1% of the context window (in characters)
-export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01
-export const CHARS_PER_TOKEN = 4
-export const DEFAULT_CHAR_BUDGET = 8_000 // Fallback: 1% of 200k × 4
+const SKILL_BUDGET_CONTEXT_PERCENT = 0.01
+const CHARS_PER_TOKEN = 4
+const DEFAULT_CHAR_BUDGET = 8_000 // Fallback: 1% of 200k × 4
 
 // Per-entry hard cap. The listing is for discovery only — the Skill tool loads
 // full content on invoke, so verbose whenToUse strings waste turn-1 cache_creation
 // tokens without improving match rate. Applies to all entries, including bundled,
 // since the cap is generous enough to preserve the core use case.
-export const MAX_LISTING_DESC_CHARS = 250
+const MAX_LISTING_DESC_CHARS = 250
 
-export function getCharBudget(contextWindowTokens?: number): number {
+function getCharBudget(contextWindowTokens?: number): number {
   if (Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET)) {
     return Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET)
   }
@@ -170,7 +167,7 @@ export function formatCommandsWithinBudget(
     .join('\n')
 }
 
-export const getPrompt = memoize(async (_cwd: string): Promise<string> => {
+const getPrompt = memoize(async (_cwd: string): Promise<string> => {
   return `Execute a skill within the main conversation
 
 When users ask you to perform tasks, check if any of the available skills match. Skills provide specialized capabilities and domain knowledge.
@@ -221,26 +218,4 @@ export function getLimitedSkillToolCommands(cwd: string): Promise<Command[]> {
 
 export function clearPromptCache(): void {
   getPrompt.cache?.clear?.()
-}
-
-export async function getSkillInfo(cwd: string): Promise<{
-  totalSkills: number
-  includedSkills: number
-}> {
-  try {
-    const skills = await getSlashCommandToolSkills(cwd)
-
-    return {
-      totalSkills: skills.length,
-      includedSkills: skills.length,
-    }
-  } catch (error) {
-    logError(toError(error))
-
-    // Return zeros rather than throwing - let caller decide how to handle
-    return {
-      totalSkills: 0,
-      includedSkills: 0,
-    }
-  }
 }

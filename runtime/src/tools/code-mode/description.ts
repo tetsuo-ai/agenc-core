@@ -136,7 +136,7 @@ export function normalizeCodeModeIdentifier(toolKey: string): string {
   return identifier.length > 0 ? identifier : "_";
 }
 
-export function isCodeModeNestedTool(toolName: string): boolean {
+function isCodeModeNestedTool(toolName: string): boolean {
   return isCodeModeNestedToolName(toolName);
 }
 

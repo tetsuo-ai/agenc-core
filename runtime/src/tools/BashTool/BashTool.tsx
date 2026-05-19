@@ -92,7 +92,7 @@ const BASH_SILENT_COMMANDS = new Set(['mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod
  * position, as they're pure output/status commands that don't affect the read/search
  * nature of the pipeline (e.g. `ls dir && echo "---" && ls dir2` is still a read).
  */
-export function isSearchOrReadBashCommand(command: string): {
+function isSearchOrReadBashCommand(command: string): {
   isSearch: boolean;
   isRead: boolean;
   isList: boolean;
@@ -326,7 +326,7 @@ function isAutobackgroundingAllowed(command: string): boolean {
  * instead. Catches `sleep 5`, `sleep 5 && check`, `sleep 5; check` — but
  * not sleep inside pipelines, subshells, or scripts (those are fine).
  */
-export function detectBlockedSleepPattern(command: string): string | null {
+function detectBlockedSleepPattern(command: string): string | null {
   const parts = splitCommand_DEPRECATED(command);
   if (parts.length === 0) return null;
   const first = parts[0]?.trim() ?? '';

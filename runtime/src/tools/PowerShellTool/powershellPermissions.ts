@@ -129,7 +129,7 @@ async function extractCommandName(command: string): Promise<string> {
  * Parse a permission rule string into a structured rule object.
  * Delegates to shared parsePermissionRule.
  */
-export function powershellPermissionRule(
+function powershellPermissionRule(
   permissionRule: string,
 ): ShellPermissionRule {
   return parsePermissionRule(permissionRule)
@@ -382,7 +382,7 @@ function matchingRulesForInput(
 /**
  * Check if the command is an exact match for a permission rule.
  */
-export function powershellToolCheckExactMatchPermission(
+function powershellToolCheckExactMatchPermission(
   input: PowerShellInput,
   toolPermissionContext: ToolPermissionContext,
 ): PermissionResult {
@@ -432,7 +432,7 @@ export function powershellToolCheckExactMatchPermission(
 /**
  * Check permission for a PowerShell command including prefix matches.
  */
-export function powershellToolCheckPermission(
+function powershellToolCheckPermission(
   input: PowerShellInput,
   toolPermissionContext: ToolPermissionContext,
 ): PermissionResult {

@@ -11,7 +11,7 @@
 // See test/utils/sandbox/webfetch-preapproved-separation.test.ts for verification
 // that sandbox network restrictions require explicit user permission rules.
 
-export const PREAPPROVED_HOSTS = new Set([
+const PREAPPROVED_HOSTS = new Set([
   // provider
   'agenc.tech',
   'agenc.tech',

@@ -18,7 +18,7 @@ type InputSchema = ReturnType<typeof inputSchema>
 // MCP tools can return either a plain string or an array of content blocks
 // (text, images, etc.). The outputSchema must reflect both shapes so the model
 // knows rich content is possible.
-export const outputSchema = lazySchema(() =>
+const outputSchema = lazySchema(() =>
   z.union([
     z.string().describe('MCP tool execution result as text'),
     z

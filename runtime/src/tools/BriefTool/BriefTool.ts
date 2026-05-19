@@ -85,7 +85,7 @@ const KAIROS_BRIEF_REFRESH_MS = 5 * 60 * 1000
  * requires an opt-in action to activate (--brief, defaultView, etc.), but
  * the env var alone also sets userMsgOptIn via maybeActivateBrief().
  */
-export function isBriefEntitled(): boolean {
+function isBriefEntitled(): boolean {
   // Positive ternary — see docs/feature-gating.md. Negative early-return
   // would not eliminate the GB gate string from external builds.
   return feature('KAIROS') || feature('KAIROS_BRIEF')

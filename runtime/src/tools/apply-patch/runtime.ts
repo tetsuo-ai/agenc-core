@@ -104,7 +104,7 @@ function splitSourceLines(contents: string): string[] {
   return lines;
 }
 
-export function computeReplacements(
+function computeReplacements(
   originalLines: readonly string[],
   path: string,
   chunks: readonly UpdateFileChunk[],
@@ -179,7 +179,7 @@ export function computeReplacements(
   );
 }
 
-export function applyReplacements(
+function applyReplacements(
   lines: readonly string[],
   replacements: readonly Replacement[],
 ): readonly string[] {
@@ -194,7 +194,7 @@ export function applyReplacements(
   return next;
 }
 
-export async function deriveNewContentsFromChunks(
+async function deriveNewContentsFromChunks(
   pathAbs: string,
   chunks: readonly UpdateFileChunk[],
 ): Promise<AppliedPatch> {
@@ -342,7 +342,7 @@ async function removeFile(pathAbs: string): Promise<void> {
   }
 }
 
-export function printSummary(affected: AffectedPaths): string {
+function printSummary(affected: AffectedPaths): string {
   const lines = ["Success. Updated the following files:"];
   for (const path of affected.added) lines.push(`A ${path}`);
   for (const path of affected.modified) lines.push(`M ${path}`);
@@ -350,7 +350,7 @@ export function printSummary(affected: AffectedPaths): string {
   return `${lines.join("\n")}\n`;
 }
 
-export async function applyHunksToFiles(
+async function applyHunksToFiles(
   hunks: readonly ApplyPatchHunk[],
   opts: ApplyPatchRuntimeOptions,
 ): Promise<{
@@ -443,7 +443,7 @@ export async function applyHunksToFiles(
   };
 }
 
-export async function applyParsedPatch(
+async function applyParsedPatch(
   parsed: ApplyPatchArgs,
   opts: ApplyPatchRuntimeOptions,
 ): Promise<ApplyPatchResult> {

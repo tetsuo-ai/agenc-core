@@ -186,7 +186,7 @@ function isAutobackgroundingAllowed(command: string): boolean {
  * as the first statement. Does NOT block `Start-Sleep -Milliseconds` (sub-second
  * pacing is fine) or float seconds (legit rate limiting).
  */
-export function detectBlockedSleepPattern(command: string): string | null {
+function detectBlockedSleepPattern(command: string): string | null {
   // First statement only — split on PS statement separators: `;`, `|`,
   // `&`/`&&`/`||` (pwsh 7+), and newline (PS's primary separator). This is
   // intentionally shallow — sleep inside script blocks, subshells, or later

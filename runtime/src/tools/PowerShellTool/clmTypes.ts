@@ -15,7 +15,7 @@
  * exist (PS resolves type accelerators like [int] → System.Int32 at runtime;
  * we match against what the AST emits, which is the literal text).
  */
-export const CLM_ALLOWED_TYPES: ReadonlySet<string> = new Set(
+const CLM_ALLOWED_TYPES: ReadonlySet<string> = new Set(
   [
     // Type accelerators (short names as they appear in AST TypeName.Name)
     // SECURITY: 'adsi' and 'adsisearcher' REMOVED. Both are Active Directory
@@ -191,7 +191,7 @@ export const CLM_ALLOWED_TYPES: ReadonlySet<string> = new Set(
  * Normalize a type name from AST TypeName.FullName or TypeName.Name.
  * Handles array suffix ([]) and generic brackets.
  */
-export function normalizeTypeName(name: string): string {
+function normalizeTypeName(name: string): string {
   // Strip array suffix: "String[]" → "string" (arrays of allowed types are allowed)
   // Strip generic args: "List[int]" → "list" (conservative — the generic wrapper
   // might be unsafe even if the type arg is safe, so we check the outer type)

@@ -67,7 +67,7 @@ export function renderToolResultMessage(output: Output, _progressMessages: Progr
 type AttachmentListProps = {
   attachments: Output['attachments'];
 };
-export function AttachmentList(t0) {
+function AttachmentList(t0) {
   const $ = _c(4);
   const {
     attachments

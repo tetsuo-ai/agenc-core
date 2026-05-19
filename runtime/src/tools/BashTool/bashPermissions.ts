@@ -1,6 +1,5 @@
 // @ts-nocheck -- moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { feature } from 'bun:bundle'
-import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
@@ -107,7 +106,7 @@ export const MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50
 // degrades to "similar commands" anyway, and saving 10+ rules from one prompt
 // is more likely noise than intent. Users chaining this many write commands
 // in one && list are rare; they can always approve once and add rules manually.
-export const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5
+const MAX_SUGGESTED_RULES_FOR_COMPOUND = 5
 
 /**
  * Log classifier evaluation results for analysis.
@@ -652,7 +651,7 @@ function skipTimeoutFlags(a: readonly string[]): number {
  * KEEP IN SYNC with SAFE_WRAPPER_PATTERNS above — if you add a wrapper
  * there, add it here too.
  */
-export function stripWrappersFromArgv(argv: string[]): string[] {
+function stripWrappersFromArgv(argv: string[]): string[] {
   // SECURITY: Consume optional `--` after wrapper options, matching what the
   // wrapper does. Otherwise `['nohup','--','rm','--','-/../foo']` yields `--`
   // as baseCmd and skips path validation. See SAFE_WRAPPER_PATTERNS comment.
@@ -965,7 +964,7 @@ function matchingRulesForInput(
 /**
  * Checks if the subcommand is an exact match for a permission rule
  */
-export const bashToolCheckExactMatchPermission = (
+const bashToolCheckExactMatchPermission = (
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
 ): PermissionResult => {
@@ -1024,7 +1023,7 @@ export const bashToolCheckExactMatchPermission = (
   }
 }
 
-export const bashToolCheckPermission = (
+const bashToolCheckPermission = (
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   compoundCommandHasCd?: boolean,
@@ -1157,7 +1156,7 @@ export const bashToolCheckPermission = (
 /**
  * Processes an individual subcommand and applies prefix checks & suggestions
  */
-export async function checkCommandAndSuggestRules(
+async function checkCommandAndSuggestRules(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
   commandPrefixResult: CommandPrefixResult | null | undefined,
@@ -1459,18 +1458,6 @@ function buildPendingClassifierCheck(
 
 const speculativeChecks = new Map<string, Promise<ClassifierResult>>()
 
-/**
- * Start a speculative bash allow classifier check early, so it runs in
- * parallel with pre-tool hooks, deny/ask classifiers, and permission dialog setup.
- * The result can be consumed later by executeAsyncClassifierCheck via
- * consumeSpeculativeClassifierCheck.
- */
-export function peekSpeculativeClassifierCheck(
-  command: string,
-): Promise<ClassifierResult> | undefined {
-  return speculativeChecks.get(command)
-}
-
 export function startSpeculativeClassifierCheck(
   command: string,
   toolPermissionContext: ToolPermissionContext,
@@ -1507,7 +1494,7 @@ export function startSpeculativeClassifierCheck(
  * Consume a speculative classifier check result for the given command.
  * Returns the promise if one exists (and removes it from the map), or undefined.
  */
-export function consumeSpeculativeClassifierCheck(
+function consumeSpeculativeClassifierCheck(
   command: string,
 ): Promise<ClassifierResult> | undefined {
   const promise = speculativeChecks.get(command)
@@ -1515,10 +1502,6 @@ export function consumeSpeculativeClassifierCheck(
     speculativeChecks.delete(command)
   }
   return promise
-}
-
-export function clearSpeculativeChecks(): void {
-  speculativeChecks.clear()
 }
 
 /**
@@ -1561,77 +1544,6 @@ export async function awaitClassifierAutoApproval(
     }
   }
   return undefined
-}
-
-type AsyncClassifierCheckCallbacks = {
-  shouldContinue: () => boolean
-  onAllow: (decisionReason: PermissionDecisionReason) => void
-  onComplete?: () => void
-}
-
-/**
- * Execute the bash allow classifier check asynchronously.
- * This runs in the background while the permission prompt is shown.
- * If the classifier allows with high confidence and the user hasn't interacted, auto-approves.
- *
- * @param pendingCheck - Classifier check metadata from bashToolHasPermission
- * @param signal - Abort signal
- * @param isNonInteractiveSession - Whether this is a non-interactive session
- * @param callbacks - Callbacks to check if we should continue and handle approval
- */
-export async function executeAsyncClassifierCheck(
-  pendingCheck: { command: string; cwd: string; descriptions: string[] },
-  signal: AbortSignal,
-  isNonInteractiveSession: boolean,
-  callbacks: AsyncClassifierCheckCallbacks,
-): Promise<void> {
-  const { command, cwd, descriptions } = pendingCheck
-  const speculativeResult = consumeSpeculativeClassifierCheck(command)
-
-  let classifierResult: ClassifierResult
-  try {
-    classifierResult = speculativeResult
-      ? await speculativeResult
-      : await classifyBashCommand(
-          command,
-          cwd,
-          descriptions,
-          'allow',
-          signal,
-          isNonInteractiveSession,
-        )
-  } catch (error: unknown) {
-    // When the coordinator session is cancelled, the abort signal fires and the
-    // classifier API call rejects with APIUserAbortError. This is expected and
-    // should not surface as an unhandled promise rejection.
-    if (error instanceof APIUserAbortError || error instanceof AbortError) {
-      callbacks.onComplete?.()
-      return
-    }
-    callbacks.onComplete?.()
-    throw error
-  }
-
-  logClassifierResultForAnts(command, 'allow', descriptions, classifierResult)
-
-  // Don't auto-approve if user already made a decision or has interacted
-  // with the permission dialog (e.g., arrow keys, tab, typing)
-  if (!callbacks.shouldContinue()) return
-
-  if (
-    feature('BASH_CLASSIFIER') &&
-    classifierResult.matches &&
-    classifierResult.confidence === 'high'
-  ) {
-    callbacks.onAllow({
-      type: 'classifier',
-      classifier: 'bash_allow',
-      reason: `Allowed by prompt rule: "${classifierResult.matchedDescription}"`,
-    })
-  } else {
-    // No match — notify so the checking indicator is cleared
-    callbacks.onComplete?.()
-  }
 }
 
 /**
@@ -2579,7 +2491,7 @@ export function isNormalizedGitCommand(command: string): boolean {
  * must trigger the same cd+git guard. Mirrors PowerShell's
  * DIRECTORY_CHANGE_ALIASES (src/utils/powershell/parser.ts).
  */
-export function isNormalizedCdCommand(command: string): boolean {
+function isNormalizedCdCommand(command: string): boolean {
   const stripped = stripSafeWrappers(command)
   const parsed = tryParseShellCommand(stripped)
   if (parsed.success && parsed.tokens.length > 0) {
