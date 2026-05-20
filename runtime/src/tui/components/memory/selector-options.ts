@@ -86,10 +86,9 @@ function memoryFileLabel(
   }
 
   const displayPath = displayPathFor(file.path);
-  const existsLabel = file.exists ? '' : ' (new)';
   if (depth > 0) {
     const indent = '  '.repeat(depth - 1);
-    return `${indent}L ${displayPath}${existsLabel}`;
+    return `${indent}L ${displayPath}`;
   }
   return displayPath;
 }
