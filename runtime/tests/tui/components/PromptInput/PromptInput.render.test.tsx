@@ -59,6 +59,69 @@ const harness = vi.hoisted(() => {
     pushToBuffer: vi.fn(),
     removeNotification: vi.fn(),
     updateSettingsForSource: vi.fn(),
+    activeAgent: { type: 'leader' } as { type: string; task?: unknown },
+    autoModeOptInProps: undefined as undefined | Record<string, unknown>,
+    backgroundTasksPanelProps: undefined as undefined | Record<string, unknown>,
+    commandQueue: [] as unknown[],
+    coordinatorTaskCount: 0,
+    features: {} as Record<string, boolean>,
+    getGlobalConfigResult: {} as Record<string, unknown>,
+    globalSearchProps: undefined as undefined | Record<string, unknown>,
+    hasAutoModeOptIn: true,
+    history: {
+      dismissSearchHint: vi.fn(),
+      historyFailedMatch: false,
+      historyIndex: 0,
+      historyMatch: null as unknown,
+      historyQuery: '',
+      onHistoryDown: vi.fn(() => false),
+      onHistoryUp: vi.fn(),
+      resetHistory: vi.fn(),
+      setHistoryQuery: vi.fn(),
+    },
+    historySearchProps: undefined as undefined | Record<string, unknown>,
+    ideAtMentionedHandler: undefined as
+      | undefined
+      | ((atMentioned: {
+          filePath: string
+          lineEnd?: number
+          lineStart?: number
+        }) => void),
+    isAgentSwarmsEnabled: false,
+    isBackgroundTask: vi.fn(() => false),
+    isInProcessEnabled: false,
+    isInProcessTeammate: false,
+    isMacosOptionChar: false,
+    isSSH: false,
+    keybindingRegistrations: [] as Array<Record<string, unknown>>,
+    modelPickerProps: undefined as undefined | Record<string, unknown>,
+    nextPermissionMode: 'plan',
+    platform: 'linux',
+    quickOpenProps: undefined as undefined | Record<string, unknown>,
+    runningTeammates: [] as unknown[],
+    saveGlobalConfig: vi.fn(),
+    specialChars: {} as Record<string, string>,
+    swarmBanner: null as null | { bgColor: string; text?: string },
+    teammateColor: undefined as undefined | string,
+    teamsDialogProps: undefined as undefined | Record<string, unknown>,
+    terminal: undefined as undefined | string,
+    thinkingToggleProps: undefined as undefined | Record<string, unknown>,
+    typeahead: {
+      commandArgumentHint: undefined as undefined | string,
+      inlineGhostText: undefined as undefined | string,
+      maxColumnWidth: 0,
+      selectedSuggestion: -1,
+      suggestionType: undefined as undefined | string,
+      suggestions: [] as Array<{ description?: string; label: string }>,
+    },
+    visibleAgentTasks: [] as Array<{ id: string; status?: string }>,
+    viewedTeammate: undefined as
+      | undefined
+      | {
+          id: string
+          identity: { agentName: string; color?: string }
+          permissionMode: string
+        },
     fastMode: {
       available: false,
       cooldown: false,
@@ -94,9 +157,67 @@ const harness = vi.hoisted(() => {
       }
       appState.speculation = { status: 'inactive' }
       appState.speculationSessionTimeSavedMs = 0
+      appState.tasks = {}
+      appState.teamContext = undefined
+      appState.toolPermissionContext = {
+        isAutoModeAvailable: true,
+        isBypassPermissionsModeAvailable: true,
+        mode: 'default',
+      }
       appState.viewingAgentTaskId = null
       appState.viewSelectionMode = null
       harness.updateSettingsForSource.mockClear()
+      harness.activeAgent = { type: 'leader' }
+      harness.autoModeOptInProps = undefined
+      harness.backgroundTasksPanelProps = undefined
+      harness.commandQueue = []
+      harness.coordinatorTaskCount = 0
+      harness.features = {}
+      harness.getGlobalConfigResult = {}
+      harness.globalSearchProps = undefined
+      harness.hasAutoModeOptIn = true
+      harness.history.dismissSearchHint.mockClear()
+      harness.history.historyFailedMatch = false
+      harness.history.historyIndex = 0
+      harness.history.historyMatch = null
+      harness.history.historyQuery = ''
+      harness.history.onHistoryDown.mockReset()
+      harness.history.onHistoryDown.mockReturnValue(false)
+      harness.history.onHistoryUp.mockClear()
+      harness.history.resetHistory.mockClear()
+      harness.history.setHistoryQuery.mockClear()
+      harness.historySearchProps = undefined
+      harness.ideAtMentionedHandler = undefined
+      harness.isAgentSwarmsEnabled = false
+      harness.isBackgroundTask.mockReset()
+      harness.isBackgroundTask.mockReturnValue(false)
+      harness.isInProcessEnabled = false
+      harness.isInProcessTeammate = false
+      harness.isMacosOptionChar = false
+      harness.isSSH = false
+      harness.keybindingRegistrations = []
+      harness.modelPickerProps = undefined
+      harness.nextPermissionMode = 'plan'
+      harness.platform = 'linux'
+      harness.quickOpenProps = undefined
+      harness.runningTeammates = []
+      harness.saveGlobalConfig.mockClear()
+      harness.specialChars = {}
+      harness.swarmBanner = null
+      harness.teammateColor = undefined
+      harness.teamsDialogProps = undefined
+      harness.terminal = undefined
+      harness.thinkingToggleProps = undefined
+      harness.typeahead = {
+        commandArgumentHint: undefined,
+        inlineGhostText: undefined,
+        maxColumnWidth: 0,
+        selectedSuggestion: -1,
+        suggestionType: undefined,
+        suggestions: [],
+      }
+      harness.visibleAgentTasks = []
+      harness.viewedTeammate = undefined
       harness.fastMode = {
         available: false,
         cooldown: false,
@@ -119,7 +240,7 @@ const harness = vi.hoisted(() => {
 })
 
 vi.mock('bun:bundle', () => ({
-  feature: () => false,
+  feature: (name: string) => harness.features[name] === true,
 }))
 
 vi.mock('../../../services/analytics/index.js', () => ({
@@ -160,20 +281,31 @@ vi.mock('../../context/promptOverlayContext.js', () => ({
 }))
 
 vi.mock('../../hooks/useCommandQueue.js', () => ({
-  useCommandQueue: () => [],
+  useCommandQueue: () => harness.commandQueue,
 }))
 
 vi.mock('../../hooks/useIdeAtMentioned.js', () => ({
-  useIdeAtMentioned: vi.fn(),
+  useIdeAtMentioned: vi.fn(
+    (
+      _clients: unknown,
+      handler: (atMentioned: {
+        filePath: string
+        lineEnd?: number
+        lineStart?: number
+      }) => void,
+    ) => {
+      harness.ideAtMentionedHandler = handler
+    },
+  ),
 }))
 
 vi.mock('../../hooks/useArrowKeyHistory.js', () => ({
   useArrowKeyHistory: () => ({
-    dismissSearchHint: vi.fn(),
-    historyIndex: 0,
-    onHistoryDown: vi.fn(() => false),
-    onHistoryUp: vi.fn(),
-    resetHistory: vi.fn(),
+    dismissSearchHint: harness.history.dismissSearchHint,
+    historyIndex: harness.history.historyIndex,
+    onHistoryDown: harness.history.onHistoryDown,
+    onHistoryUp: harness.history.onHistoryUp,
+    resetHistory: harness.history.resetHistory,
   }),
 }))
 
@@ -183,10 +315,10 @@ vi.mock('../../hooks/useDoublePress.js', () => ({
 
 vi.mock('../../hooks/useHistorySearch.js', () => ({
   useHistorySearch: () => ({
-    historyFailedMatch: false,
-    historyMatch: null,
-    historyQuery: '',
-    setHistoryQuery: vi.fn(),
+    historyFailedMatch: harness.history.historyFailedMatch,
+    historyMatch: harness.history.historyMatch,
+    historyQuery: harness.history.historyQuery,
+    setHistoryQuery: harness.history.setHistoryQuery,
   }),
 }))
 
@@ -208,14 +340,7 @@ vi.mock('../../hooks/useTerminalSize.js', () => ({
 }))
 
 vi.mock('../../hooks/useTypeahead.js', () => ({
-  useTypeahead: () => ({
-    commandArgumentHint: undefined,
-    inlineGhostText: undefined,
-    maxColumnWidth: 0,
-    selectedSuggestion: -1,
-    suggestionType: undefined,
-    suggestions: [],
-  }),
+  useTypeahead: () => harness.typeahead,
 }))
 
 vi.mock('../../ink/hooks/use-terminal-focus.js', () => ({
@@ -239,7 +364,15 @@ vi.mock('../../ink.js', async () => {
 })
 
 vi.mock('../../keybindings/KeybindingContext.js', () => ({
-  useOptionalKeybindingContext: () => null,
+  useOptionalKeybindingContext: () => ({
+    registerHandler: (registration: Record<string, unknown>) => {
+      harness.keybindingRegistrations.push(registration)
+      return () => {
+        harness.keybindingRegistrations =
+          harness.keybindingRegistrations.filter(item => item !== registration)
+      }
+    },
+  }),
 }))
 
 vi.mock('../../keybindings/shortcutFormat.js', () => ({
@@ -267,8 +400,8 @@ vi.mock('../../state/AppState.js', () => ({
 }))
 
 vi.mock('../../state/selectors.js', () => ({
-  getActiveAgentForInput: () => ({ type: 'leader' }),
-  getViewedTeammateTask: () => undefined,
+  getActiveAgentForInput: () => harness.activeAgent,
+  getViewedTeammateTask: () => harness.viewedTeammate,
 }))
 
 vi.mock('../../state/teammateViewHelpers.js', () => ({
@@ -282,11 +415,11 @@ vi.mock('../../../commands.js', () => ({
 }))
 
 vi.mock('../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js', () => ({
-  getRunningTeammatesSorted: () => [],
+  getRunningTeammatesSorted: () => harness.runningTeammates,
 }))
 
 vi.mock('../../../tasks/types.js', () => ({
-  isBackgroundTask: () => false,
+  isBackgroundTask: (task: unknown) => harness.isBackgroundTask(task),
 }))
 
 vi.mock('../../../tools/AgentTool/agentColorManager.js', () => ({
@@ -295,7 +428,7 @@ vi.mock('../../../tools/AgentTool/agentColorManager.js', () => ({
 }))
 
 vi.mock('../../../utils/agentSwarmsEnabled.js', () => ({
-  isAgentSwarmsEnabled: () => false,
+  isAgentSwarmsEnabled: () => harness.isAgentSwarmsEnabled,
 }))
 
 vi.mock('../../../utils/array.js', () => ({
@@ -304,8 +437,8 @@ vi.mock('../../../utils/array.js', () => ({
 }))
 
 vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({}),
-  saveGlobalConfig: vi.fn(),
+  getGlobalConfig: () => harness.getGlobalConfigResult,
+  saveGlobalConfig: harness.saveGlobalConfig,
 }))
 
 vi.mock('../../../utils/cwd.js', () => ({
@@ -328,8 +461,10 @@ vi.mock('../../../utils/dragDropPaths.js', () => ({
 
 vi.mock('../../../utils/env.js', () => ({
   env: {
-    isSSH: () => false,
-    terminal: undefined,
+    isSSH: () => harness.isSSH,
+    get terminal() {
+      return harness.terminal
+    },
   },
 }))
 
@@ -372,8 +507,8 @@ vi.mock('../../../utils/imageStore.js', () => ({
 }))
 
 vi.mock('../../../utils/keyboardShortcuts.js', () => ({
-  MACOS_OPTION_SPECIAL_CHARS: {},
-  isMacosOptionChar: () => false,
+  MACOS_OPTION_SPECIAL_CHARS: harness.specialChars,
+  isMacosOptionChar: () => harness.isMacosOptionChar,
 }))
 
 vi.mock('../../../utils/log.js', () => ({
@@ -391,7 +526,7 @@ vi.mock('../../../utils/permissions/autoModeState.js', () => ({
 
 vi.mock('../../../utils/permissions/getNextPermissionMode.js', () => ({
   cyclePermissionMode: (context: unknown) => ({ context }),
-  getNextPermissionMode: () => 'plan',
+  getNextPermissionMode: () => harness.nextPermissionMode,
 }))
 
 vi.mock('../../../utils/permissions/permissionSetup.js', () => ({
@@ -399,7 +534,7 @@ vi.mock('../../../utils/permissions/permissionSetup.js', () => ({
 }))
 
 vi.mock('../../../utils/platform.js', () => ({
-  getPlatform: () => 'linux',
+  getPlatform: () => harness.platform,
 }))
 
 vi.mock('../../../utils/promptEditor.js', () => ({
@@ -411,7 +546,7 @@ vi.mock('../../input/processBashCommand.js', () => ({
 }))
 
 vi.mock('../../../utils/settings/settings.js', () => ({
-  hasAutoModeOptIn: () => true,
+  hasAutoModeOptIn: () => harness.hasAutoModeOptIn,
   updateSettingsForSource: harness.updateSettingsForSource,
 }))
 
@@ -427,7 +562,7 @@ vi.mock('../../../utils/suggestions/slackChannelSuggestions.js', () => ({
 }))
 
 vi.mock('../../../utils/swarm/backends/registry.js', () => ({
-  isInProcessEnabled: () => false,
+  isInProcessEnabled: () => harness.isInProcessEnabled,
 }))
 
 vi.mock('../../../utils/swarm/teamHelpers.js', () => ({
@@ -435,11 +570,11 @@ vi.mock('../../../utils/swarm/teamHelpers.js', () => ({
 }))
 
 vi.mock('../../../utils/teammate.js', () => ({
-  getTeammateColor: () => undefined,
+  getTeammateColor: () => harness.teammateColor,
 }))
 
 vi.mock('../../../utils/teammateContext.js', () => ({
-  isInProcessTeammate: () => false,
+  isInProcessTeammate: () => harness.isInProcessTeammate,
 }))
 
 vi.mock('../../../utils/teammateMailbox.js', () => ({
@@ -457,7 +592,10 @@ vi.mock('../../../conversation/token-budget.js', () => ({
 }))
 
 vi.mock('../AutoModeOptInDialog.js', () => ({
-  AutoModeOptInDialog: () => null,
+  AutoModeOptInDialog: (props: Record<string, unknown>) => {
+    harness.autoModeOptInProps = props
+    return null
+  },
 }))
 
 vi.mock('../ConfigurableShortcutHint.js', () => ({
@@ -465,8 +603,8 @@ vi.mock('../ConfigurableShortcutHint.js', () => ({
 }))
 
 vi.mock('../CoordinatorAgentStatus.js', () => ({
-  getVisibleAgentTasks: () => [],
-  useCoordinatorTaskCount: () => 0,
+  getVisibleAgentTasks: () => harness.visibleAgentTasks,
+  useCoordinatorTaskCount: () => harness.coordinatorTaskCount,
 }))
 
 vi.mock('../EffortIndicator.js', () => ({
@@ -484,27 +622,45 @@ vi.mock('../FullscreenLayout.js', () => ({
 }))
 
 vi.mock('../GlobalSearchDialog.js', () => ({
-  GlobalSearchDialog: () => null,
+  GlobalSearchDialog: (props: Record<string, unknown>) => {
+    harness.globalSearchProps = props
+    return null
+  },
 }))
 
 vi.mock('../../history/HistorySearchDialog.js', () => ({
-  HistorySearchDialog: () => null,
+  HistorySearchDialog: (props: Record<string, unknown>) => {
+    harness.historySearchProps = props
+    return null
+  },
 }))
 
 vi.mock('../ModelPicker.js', () => ({
-  ModelPicker: () => null,
+  ModelPicker: (props: Record<string, unknown>) => {
+    harness.modelPickerProps = props
+    return null
+  },
 }))
 
 vi.mock('../QuickOpenDialog.js', () => ({
-  QuickOpenDialog: () => null,
+  QuickOpenDialog: (props: Record<string, unknown>) => {
+    harness.quickOpenProps = props
+    return null
+  },
 }))
 
 vi.mock('../ThinkingToggle.js', () => ({
-  ThinkingToggle: () => null,
+  ThinkingToggle: (props: Record<string, unknown>) => {
+    harness.thinkingToggleProps = props
+    return null
+  },
 }))
 
 vi.mock('../tasks/BackgroundTasksPanel.js', () => ({
-  BackgroundTasksPanel: () => null,
+  BackgroundTasksPanel: (props: Record<string, unknown>) => {
+    harness.backgroundTasksPanelProps = props
+    return null
+  },
 }))
 
 vi.mock('../tasks/taskStatusUtils.js', () => ({
@@ -512,7 +668,10 @@ vi.mock('../tasks/taskStatusUtils.js', () => ({
 }))
 
 vi.mock('../teams/TeamsDialog.js', () => ({
-  TeamsDialog: () => null,
+  TeamsDialog: (props: Record<string, unknown>) => {
+    harness.teamsDialogProps = props
+    return null
+  },
 }))
 
 vi.mock('../v2/primitives.js', () => ({
@@ -568,7 +727,7 @@ vi.mock('./useShowFastIconHint.js', () => ({
 }))
 
 vi.mock('./useSwarmBanner.js', () => ({
-  useSwarmBanner: () => null,
+  useSwarmBanner: () => harness.swarmBanner,
 }))
 
 vi.mock('./utils.js', async importOriginal => {
@@ -1333,6 +1492,245 @@ describe('PromptInput render surface', () => {
       ])
       expect(onInputChange).toHaveBeenCalledWith('')
       expect(onModeChange).toHaveBeenCalledWith('prompt')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('selects the task footer from history navigation and opens it from footer keys', async () => {
+    harness.isBackgroundTask.mockImplementation(
+      task => (task as { background?: boolean }).background === true,
+    )
+    harness.appState.tasks = {
+      task1: { background: true },
+    }
+    harness.history.onHistoryDown.mockReturnValue(true)
+
+    const historyRendered = await renderPromptInput({ input: 'line' })
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      ;(baseProps.onHistoryDown as () => void)()
+
+      expect(harness.history.onHistoryDown).toHaveBeenCalled()
+      expect(harness.appState.footerSelection).toBe('tasks')
+      expect(harness.saveGlobalConfig).toHaveBeenCalledWith(expect.any(Function))
+    } finally {
+      await historyRendered.dispose()
+    }
+
+    harness.baseProps = undefined
+    harness.appState.footerSelection = 'tasks'
+    const setShowBashesDialog = vi.fn()
+    const footerRendered = await renderPromptInput({
+      input: 'line',
+      setShowBashesDialog,
+    })
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['footer:down']?.()
+      expect(setShowBashesDialog).toHaveBeenCalledWith(true)
+      expect(harness.appState.footerSelection).toBeNull()
+
+      harness.appState.footerSelection = 'tasks'
+      harness.keybindings['footer:clearSelection']?.()
+      expect(harness.appState.footerSelection).toBeNull()
+    } finally {
+      await footerRendered.dispose()
+    }
+  })
+
+  test('types through selected footer and handles help escape shortcuts', async () => {
+    harness.isBackgroundTask.mockImplementation(
+      task => (task as { background?: boolean }).background === true,
+    )
+    harness.appState.tasks = {
+      task1: { background: true },
+    }
+    harness.appState.footerSelection = 'tasks'
+    const onInputChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      helpOpen: true,
+      input: 'hi',
+      onInputChange,
+      setHelpOpen,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      latestInputHandler()('x', {
+        ctrl: false,
+        escape: false,
+        meta: false,
+        return: false,
+      })
+      expect(onInputChange).toHaveBeenCalledWith('hix')
+      expect(harness.appState.footerSelection).toBeNull()
+
+      const escapeEvent = { stopImmediatePropagation: vi.fn() }
+      latestInputHandler()('', { escape: true }, escapeEvent)
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(escapeEvent.stopImmediatePropagation).toHaveBeenCalled()
+
+      const returnEvent = { stopImmediatePropagation: vi.fn() }
+      latestInputHandler()('', { return: true }, returnEvent)
+      expect(returnEvent.stopImmediatePropagation).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('drives model and thinking picker callbacks from chat keybindings', async () => {
+    harness.fastMode.enabled = true
+    harness.fastMode.available = true
+    harness.fastMode.supportedByModel = false
+    harness.appState.fastMode = true
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      helpOpen: true,
+      setHelpOpen,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:modelPicker']?.()
+      await sleep(25)
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(harness.modelPickerProps).toBeDefined()
+
+      ;(harness.modelPickerProps?.onSelect as (
+        model: string | null,
+        effort: unknown,
+      ) => void)('gpt-slow', undefined)
+      expect(harness.appState.mainLoopModel).toBe('gpt-slow')
+      expect(harness.appState.mainLoopModelForSession).toBeNull()
+      expect(harness.appState.fastMode).toBe(false)
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'model-switched' }),
+      )
+
+      harness.keybindings['chat:thinkingToggle']?.()
+      await sleep(25)
+      expect(harness.thinkingToggleProps).toBeDefined()
+
+      ;(harness.thinkingToggleProps?.onSelect as (enabled: boolean) => void)(
+        false,
+      )
+      expect(harness.appState.thinkingEnabled).toBe(false)
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'thinking-toggled-hotkey' }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('handles quick-open and history-picker feature dialog callbacks', async () => {
+    harness.features.QUICK_SEARCH = true
+    harness.features.HISTORY_PICKER = true
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const setPastedContents = vi.fn()
+    const rendered = await renderPromptInput({
+      helpOpen: true,
+      input: 'abc',
+      onInputChange,
+      onModeChange,
+      setHelpOpen,
+      setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['app:quickOpen']?.()
+      await sleep(25)
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(harness.quickOpenProps).toBeDefined()
+
+      ;(harness.quickOpenProps?.onInsert as (text: string) => void)('@src/app.ts')
+      expect(onInputChange).toHaveBeenCalledWith('abc @src/app.ts')
+
+      ;(harness.quickOpenProps?.onDone as () => void)()
+      await sleep(25)
+
+      harness.keybindings['history:search']?.()
+      await sleep(25)
+      expect(harness.historySearchProps).toBeDefined()
+
+      ;(harness.historySearchProps?.onSelect as (entry: {
+        display: string
+        pastedContents: Record<number, PastedContent>
+      }) => void)({
+        display: '!npm test',
+        pastedContents: { 9: { id: 9, type: 'text', content: 'saved' } },
+      })
+      expect(onModeChange).toHaveBeenCalledWith('bash')
+      expect(onInputChange).toHaveBeenCalledWith('npm test')
+      expect(setPastedContents).toHaveBeenCalledWith({
+        9: { id: 9, type: 'text', content: 'saved' },
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('inserts IDE mentions and converts dragged paths into mentions', async () => {
+    const onInputChange = vi.fn()
+    const rendered = await renderPromptInput({
+      input: 'prefix',
+      onInputChange,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      harness.ideAtMentionedHandler?.({
+        filePath: '/repo/src/file.ts',
+        lineEnd: 7,
+        lineStart: 4,
+      })
+      expect(onInputChange).toHaveBeenCalledWith(
+        'prefix @src/file.ts#L4-7 ',
+      )
+
+      ;(baseProps.onPaste as (value: string) => void)('/dragged/file:b')
+      expect(onInputChange).toHaveBeenCalledWith(
+        expect.stringContaining('@"/dragged/file:b" '),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('registered chat submit handler submits the current prompt', async () => {
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({
+      input: 'registered submit',
+      onSubmit,
+    })
+
+    try {
+      await waitForPromptInputProps()
+      const registration = harness.keybindingRegistrations.find(
+        item => item.action === 'chat:submit',
+      )
+      expect(registration).toBeDefined()
+
+      ;(registration?.handler as () => void)()
+      await sleep(25)
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        'registered submit',
+        expect.anything(),
+        undefined,
+        expect.objectContaining({ mode: 'prompt' }),
+      )
     } finally {
       await rendered.dispose()
     }
