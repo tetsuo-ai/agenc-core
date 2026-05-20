@@ -85,6 +85,7 @@ describe("delegate lifecycle recovery", () => {
     const control = {
       spawn: vi.fn(async () => live),
       shutdown: vi.fn(async () => {}),
+      markThreadSpawnEdgeClosed: vi.fn(async () => {}),
       resumeAgentFromRollout: vi.fn(),
     };
     mockRunAgent.mockImplementationOnce(() =>
@@ -110,6 +111,7 @@ describe("delegate lifecycle recovery", () => {
     }
     await outcome.thread.join();
     expect(control.shutdown).not.toHaveBeenCalled();
+    expect(control.markThreadSpawnEdgeClosed).toHaveBeenCalledWith("thread-bg");
   });
 
   it("records summary cache params and tool transcript events from async runs", async () => {

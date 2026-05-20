@@ -2697,6 +2697,7 @@ function toolRequestInputFromPayload(
 const COLLAB_AGENT_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "collab_agent_spawn_begin",
   "collab_agent_spawn_end",
+  "collab_agent_status",
   "collab_agent_interaction_begin",
   "collab_agent_interaction_end",
   "collab_waiting_begin",

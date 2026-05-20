@@ -1005,11 +1005,16 @@ function startupModel(props: AgenCTuiProps): string | null {
   return props.model ?? props.session.sessionConfiguration?.collaborationMode?.model ?? null;
 }
 function initialState(props: AgenCTuiProps): any {
+  const agentDefinitions = listAgentRoleDefinitions();
   return {
     ...getDefaultAppState(),
     mainLoopModel: startupModel(props),
     mainLoopModelForSession: startupModel(props),
-    toolPermissionContext: initialPermissionContext(props)
+    toolPermissionContext: initialPermissionContext(props),
+    agentDefinitions: {
+      activeAgents: [...agentDefinitions],
+      allAgents: [...agentDefinitions],
+    }
   };
 }
 function useSyncedPermissionContext(session) {
