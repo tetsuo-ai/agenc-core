@@ -239,6 +239,11 @@ export async function delegate(
       try {
         return await execute(thread);
       } finally {
+        await markAsyncThreadSpawnEdgeClosed({
+          control: opts.control,
+          thread,
+          parent: opts.parent,
+        });
         await teardown({
           thread,
           control: opts.control,
@@ -274,6 +279,31 @@ export async function delegate(
     result,
     thread,
   };
+}
+
+async function markAsyncThreadSpawnEdgeClosed(opts: {
+  readonly control: AgentControl;
+  readonly thread: AgentThread;
+  readonly parent: Session;
+}): Promise<void> {
+  const markClosed = (
+    opts.control as {
+      readonly markThreadSpawnEdgeClosed?: (
+        threadId: string,
+      ) => Promise<void> | void;
+    }
+  ).markThreadSpawnEdgeClosed;
+  if (typeof markClosed !== "function") return;
+  try {
+    await markClosed.call(opts.control, opts.thread.threadId);
+  } catch (err) {
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "thread_spawn_edge_close_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 async function runToCompletion(

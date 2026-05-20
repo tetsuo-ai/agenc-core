@@ -121,6 +121,92 @@ describe("syncCollabAgentEventToAppState", () => {
     });
   });
 
+  it("updates spawned agent tasks from live collab status events", () => {
+    const spawned = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "Librarian",
+        newAgentRoleDisplayName: "Default",
+        prompt: "inspect the queue",
+        status: { status: "pending_init" },
+      },
+    });
+
+    const running = applyEvent(spawned, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        agentNickname: "Librarian",
+        agentRoleDisplayName: "Default",
+        status: "running",
+      },
+    });
+
+    const completed = applyEvent(running, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        status: "completed",
+      },
+    });
+
+    expect(running.tasks.agent_1).toMatchObject({
+      status: "running",
+      description: "Librarian",
+      agentType: "Default",
+    });
+    expect(completed.tasks.agent_1).toMatchObject({
+      status: "completed",
+      description: "Librarian",
+      endTime: 1234,
+      evictAfter: 31234,
+      notified: true,
+    });
+  });
+
+  it("keeps terminal retained agent tasks visible until the view releases them", () => {
+    const spawned = applyEvent(baseState(), {
+      type: "collab_agent_spawn_end",
+      payload: {
+        newThreadId: "agent_1",
+        newAgentNickname: "Librarian",
+        status: { status: "running" },
+      },
+    });
+    const retained = {
+      ...spawned,
+      tasks: {
+        ...spawned.tasks,
+        agent_1: {
+          ...spawned.tasks.agent_1!,
+          retain: true,
+        },
+      },
+    };
+
+    const completed = applyEvent(retained, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        status: "completed",
+      },
+    });
+
+    expect(completed.tasks.agent_1).toMatchObject({
+      status: "completed",
+      retain: true,
+      notified: true,
+    });
+    expect(completed.tasks.agent_1).not.toHaveProperty("evictAfter");
+  });
+
   it("updates spawned agents from collab wait completion summaries", () => {
     const firstSpawn = applyEvent(baseState(), {
       type: "collab_agent_spawn_end",
@@ -163,12 +249,16 @@ describe("syncCollabAgentEventToAppState", () => {
       status: "completed",
       description: "ChromeRider",
       endTime: 1234,
+      evictAfter: 31234,
+      notified: true,
     });
     expect(completed.tasks.agent_2).toMatchObject({
       status: "failed",
       description: "Quickhack",
       error: "review failed",
       endTime: 1234,
+      evictAfter: 31234,
+      notified: true,
     });
     expect(completed.tasks.missing).toBeUndefined();
   });
@@ -206,6 +296,21 @@ describe("syncCollabAgentEventToAppState", () => {
         turnId: "turn_1",
         status: "idle",
         runStatus: "completed",
+      },
+    });
+
+    expect(next).toBe(state);
+  });
+
+  it("does not invent tasks from live collab status for unknown agent ids", () => {
+    const state = baseState();
+    const next = applyEvent(state, {
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "agent_1",
+        status: "completed",
       },
     });
 

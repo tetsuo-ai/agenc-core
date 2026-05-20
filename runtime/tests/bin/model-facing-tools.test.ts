@@ -2233,6 +2233,8 @@ describe("model-facing tools", () => {
 
   it("mirrors spawned V2 agents into AppState tasks for TUI spinners and task UI", async () => {
     const session = fakeSession();
+    const emit = vi.fn();
+    (session as unknown as { emit: typeof emit }).emit = emit;
     let appState: unknown = { tasks: {} };
     (
       session as Session & {
@@ -2292,6 +2294,26 @@ describe("model-facing tools", () => {
       isBackgrounded: true,
     });
     expect(isBackgroundTask(task)).toBe(true);
+    expect(
+      emit.mock.calls.map((call: readonly unknown[]) => {
+        const envelope = call[0] as { msg?: { type?: string } } | undefined;
+        return envelope?.msg?.type;
+      }),
+    ).toContain("collab_agent_status");
+    const statusEnvelope = emit.mock.calls.find((call: readonly unknown[]) => {
+      const envelope = call[0] as { msg?: { type?: string } } | undefined;
+      return envelope?.msg?.type === "collab_agent_status";
+    })?.[0] as
+      | {
+          msg?: {
+            payload?: { threadId?: string; status?: string };
+          };
+        }
+      | undefined;
+    expect(statusEnvelope?.msg?.payload).toMatchObject({
+      threadId: "thread-visible-1",
+      status: "running",
+    });
   });
 
   it("launches spawn_agent with a workspace markdown role from the canonical role registry", async () => {

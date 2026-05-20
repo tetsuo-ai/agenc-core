@@ -12,7 +12,7 @@ export default async function (session) {
   await session.start();
   await session.waitForPrompt({ timeout: 15_000 });
   await session.submitSlashCommand("/agents");
-  await session.waitFor(/Agents/, { timeout: 15_000 });
+  await session.waitFor(/AGENTS[\s\S]*registered/, { timeout: 15_000 });
   await session.waitForIdle({ timeout: 15_000 });
 
   if (/▶/u.test(session.text)) {

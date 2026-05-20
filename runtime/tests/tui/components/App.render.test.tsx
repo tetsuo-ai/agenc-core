@@ -342,7 +342,29 @@ vi.mock("../../commands.js", () => ({
 }));
 
 vi.mock("../../agents/role-definitions.js", () => ({
-  listAgentRoleDefinitions: () => [],
+  listAgentRoleDefinitions: () => [
+    {
+      agentType: "default",
+      whenToUse: "Default agent.",
+      source: "built-in",
+      baseDir: "built-in",
+      getSystemPrompt: () => "",
+    },
+    {
+      agentType: "explorer",
+      whenToUse: "Explore code.",
+      source: "built-in",
+      baseDir: "built-in",
+      getSystemPrompt: () => "",
+    },
+    {
+      agentType: "worker",
+      whenToUse: "Execute work.",
+      source: "built-in",
+      baseDir: "built-in",
+      getSystemPrompt: () => "",
+    },
+  ],
 }));
 
 vi.mock("../keybindings/KeybindingProviderSetup.js", async () => {
@@ -802,6 +824,31 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         setVimMode: expect.any(Function),
       }),
     );
+  });
+
+  test("hydrates the TUI app state with registered agent roles", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    providerProbe.appStateProps.length = 0;
+
+    await renderApp(
+      <AgenCTuiApp
+        session={createSession()}
+        configStore={{}}
+        isInteractive={false}
+      />,
+    );
+
+    const initial = providerProbe.appStateProps.at(-1)?.initialState as {
+      agentDefinitions?: {
+        activeAgents?: Array<{ agentType?: string }>;
+        allAgents?: Array<{ agentType?: string }>;
+      };
+    };
+    const active = initial.agentDefinitions?.activeAgents?.map(agent => agent.agentType);
+    const all = initial.agentDefinitions?.allAgents?.map(agent => agent.agentType);
+
+    expect(active).toEqual(expect.arrayContaining(["default", "explorer", "worker"]));
+    expect(all).toEqual(expect.arrayContaining(["default", "explorer", "worker"]));
   });
 
   test("prioritizes a pending permission overlay over an elicitation overlay", async () => {

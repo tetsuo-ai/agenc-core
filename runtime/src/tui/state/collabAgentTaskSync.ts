@@ -1,5 +1,8 @@
 import type { LocalAgentTaskState, TaskState, TaskStatus } from "../../tasks/types.js";
 
+// Inlined from framework.ts; importing it creates a cycle through task UI.
+const PANEL_GRACE_MS = 30_000;
+
 export type SetAppStateWithTasks = (
   updater: (prev: { readonly tasks?: Record<string, TaskState> }) => unknown,
 ) => void;
@@ -131,6 +134,28 @@ function patchFromEvent(event: unknown): CollabAgentTaskPatch | null {
     };
   }
 
+  if (type === "collab_agent_status") {
+    const id = stringField(payload, "threadId");
+    if (!id) return null;
+    const status = collabStatusToTaskStatus(payload.status);
+    return {
+      id,
+      status,
+      requiresExisting: true,
+      title:
+        stringField(payload, "agentNickname") ??
+        stringField(payload, "agentPath"),
+      prompt: stringField(payload, "prompt"),
+      role:
+        stringField(payload, "agentRoleDisplayName") ??
+        stringField(payload, "agentRole"),
+      model: stringField(payload, "model"),
+      error:
+        collabStatusError(payload.status) ??
+        (status === "failed" ? stringField(payload, "error") : undefined),
+    };
+  }
+
   if (
     type === "collab_agent_interaction_begin" ||
     type === "collab_agent_interaction_end"
@@ -210,6 +235,10 @@ function applyPatch(
     patch.status === "completed" ||
     patch.status === "failed" ||
     patch.status === "killed";
+  const evictAfter =
+    ended && previousAgent?.retain !== true
+      ? previousAgent?.evictAfter ?? now + PANEL_GRACE_MS
+      : previousAgent?.evictAfter;
   return {
     id: patch.id,
     type: "local_agent",
@@ -218,7 +247,7 @@ function applyPatch(
     startTime: previousAgent?.startTime ?? now,
     outputFile: previousAgent?.outputFile ?? outputUri(patch.id),
     outputOffset: previousAgent?.outputOffset ?? 0,
-    notified: previousAgent?.notified ?? false,
+    notified: ended ? true : previousAgent?.notified ?? false,
     agentId: patch.id,
     prompt,
     agentType: patch.role ?? previousAgent?.agentType ?? "agent",
@@ -246,9 +275,7 @@ function applyPatch(
       ? { unregisterCleanup: previousAgent.unregisterCleanup }
       : {}),
     ...(previousAgent?.result !== undefined ? { result: previousAgent.result } : {}),
-    ...(previousAgent?.evictAfter !== undefined
-      ? { evictAfter: previousAgent.evictAfter }
-      : {}),
+    ...(evictAfter !== undefined ? { evictAfter } : {}),
   };
 }
 

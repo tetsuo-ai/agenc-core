@@ -211,6 +211,32 @@ describe("AgenC delegate background-agent runner", () => {
         },
       },
     });
+
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        id: "agent-status",
+        msg: {
+          type: "collab_agent_status",
+          payload: {
+            callId: "call-agent",
+            senderThreadId: "root",
+            threadId: "thread-agent",
+            agentNickname: "Librarian",
+            status: "completed",
+          },
+        },
+      }),
+    ).toEqual({
+      id: "agent-status",
+      type: "collab_agent_status",
+      payload: {
+        callId: "call-agent",
+        senderThreadId: "root",
+        threadId: "thread-agent",
+        agentNickname: "Librarian",
+        status: "completed",
+      },
+    });
   });
 
   it("bridges tool_progress session events for live daemon snapshots", () => {

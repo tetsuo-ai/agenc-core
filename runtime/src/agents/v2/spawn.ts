@@ -15,6 +15,7 @@ import {
   BackgroundTaskError,
   backgroundTaskLifecycle,
   registerAgentThreadTask,
+  type BackgroundTaskSnapshot,
 } from "../../tasks/index.js";
 import { syncBackgroundTaskSnapshotToAppState } from "../../tasks/app-state-bridge.js";
 import {
@@ -415,6 +416,29 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (thread === undefined) {
       return json({ error: "spawn_agent did not return an agent thread" }, true);
     }
+    const live = thread.live;
+    const emitTaskStatus = (snapshot: BackgroundTaskSnapshot): void => {
+      if (snapshot.status === "pending") return;
+      emit(session, {
+        type: "collab_agent_status",
+        payload: {
+          callId,
+          senderThreadId: current.threadId,
+          threadId: live.agentId,
+          agentPath: live.agentPath,
+          agentNickname: live.nickname,
+          agentRole: live.role.name,
+          agentRoleDisplayName: formatAgentRoleLabel(live.role.name),
+          prompt,
+          model: model ?? session.sessionConfiguration.collaborationMode.model,
+          reasoningEffort:
+            reasoningEffort ??
+            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          status: snapshot.status,
+          ...(snapshot.error !== undefined ? { error: snapshot.error } : {}),
+        },
+      });
+    };
     try {
       registerAgentThreadTask(backgroundTaskLifecycle, thread, {
         toolUseId: callId,
@@ -430,6 +454,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             ).appStateBridge,
             snapshot,
           );
+          emitTaskStatus(snapshot);
         },
       });
     } catch (error) {
@@ -440,7 +465,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         throw error;
       }
     }
-    const live = thread.live;
     emit(session, {
       type: "collab_agent_spawn_end",
       payload: {

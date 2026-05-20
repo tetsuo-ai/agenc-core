@@ -766,6 +766,10 @@ export class AgentControl {
     await this.shutdown(threadId, "closed_by_tool");
   }
 
+  async markThreadSpawnEdgeClosed(threadId: ThreadId): Promise<void> {
+    await this.setThreadSpawnEdgeStatus(threadId, "closed");
+  }
+
   interruptAgent(threadId: ThreadId): void {
     this.interrupt(threadId, "interrupt");
   }

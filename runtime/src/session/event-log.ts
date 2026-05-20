@@ -382,6 +382,28 @@ export interface CollabAgentSpawnEndEvent {
   readonly status: AgentStatus;
 }
 
+export type CollabAgentTaskStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "killed";
+
+export interface CollabAgentStatusEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly threadId: string;
+  readonly agentPath?: string;
+  readonly agentNickname?: string;
+  readonly agentRole?: string;
+  readonly agentRoleDisplayName?: string;
+  readonly prompt?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
+  readonly status: AgentStatus | CollabAgentTaskStatus;
+  readonly error?: string;
+}
+
 export interface CollabAgentInteractionBeginEvent {
   readonly callId: string;
   readonly senderThreadId: string;
@@ -697,6 +719,10 @@ export type EventMsg =
       readonly payload: CollabAgentSpawnEndEvent;
     }
   | {
+      readonly type: "collab_agent_status";
+      readonly payload: CollabAgentStatusEvent;
+    }
+  | {
       readonly type: "collab_agent_interaction_begin";
       readonly payload: CollabAgentInteractionBeginEvent;
     }
@@ -865,6 +891,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "protocol_stake",
     "collab_agent_spawn_begin",
     "collab_agent_spawn_end",
+    "collab_agent_status",
     "collab_agent_interaction_begin",
     "collab_agent_interaction_end",
     "collab_waiting_begin",
