@@ -108,6 +108,8 @@ export function createProcessRealtimeAudioPlayer(
         reset(active);
         return;
       }
+      queue.shift();
+      queuedBytes -= chunk.length;
       if (!accepted) {
         if (!waitingForDrain) {
           waitingForDrain = true;
@@ -118,8 +120,6 @@ export function createProcessRealtimeAudioPlayer(
         }
         return;
       }
-      queue.shift();
-      queuedBytes -= chunk.length;
     }
   };
 

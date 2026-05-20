@@ -91,23 +91,31 @@ export function useIdeSelection(
 
     // Handler function for selection changes
     const selectionChangeHandler = (data: SelectionData) => {
-      if (data.selection?.start && data.selection?.end) {
-        const { start, end } = data.selection
-        let lineCount = end.line - start.line + 1
-        // If on the first character of the line, do not count the line
-        // as being selected.
-        if (end.character === 0) {
-          lineCount--
-        }
-        const selection = {
-          lineCount,
-          lineStart: start.line,
+      if (!data.selection?.start || !data.selection?.end) {
+        onSelect({
+          lineCount: 0,
+          lineStart: undefined,
           text: data.text,
           filePath: data.filePath,
-        }
-
-        onSelect(selection)
+        })
+        return
       }
+
+      const { start, end } = data.selection
+      let lineCount = end.line - start.line + 1
+      // If on the first character of the line, do not count the line
+      // as being selected.
+      if (end.character === 0) {
+        lineCount--
+      }
+      const selection = {
+        lineCount,
+        lineStart: start.line,
+        text: data.text,
+        filePath: data.filePath,
+      }
+
+      onSelect(selection)
     }
 
     // Register notification handler for selection_changed events
