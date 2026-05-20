@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { extractCompletionToken } from './typeaheadTokens';
+import {
+  applyDirectorySuggestion,
+  applyShellSuggestion,
+  formatReplacementValue,
+} from './useTypeahead.js';
 
 /**
  * Tests for useTypeahead's @-token extractor.
@@ -125,5 +130,124 @@ describe('extractCompletionToken — non-@ paths still split on whitespace', () 
     // No path-char after cursor and the last char before cursor is space,
     // so there's no token at the cursor.
     expect(result).toBeNull();
+  });
+});
+
+describe('formatReplacementValue', () => {
+  it('preserves prompt @ prefixes and adds completion spacing', () => {
+    expect(
+      formatReplacementValue({
+        displayText: '/tmp/file.txt',
+        mode: 'prompt',
+        hasAtPrefix: true,
+        needsQuotes: false,
+        isComplete: true,
+      }),
+    ).toBe('@/tmp/file.txt ');
+  });
+
+  it('quotes prompt replacements that need spaces', () => {
+    expect(
+      formatReplacementValue({
+        displayText: '/tmp/with spaces/file.txt',
+        mode: 'prompt',
+        hasAtPrefix: true,
+        needsQuotes: true,
+        isComplete: true,
+      }),
+    ).toBe('@"/tmp/with spaces/file.txt" ');
+  });
+
+  it('does not add @ prefixes in bash mode', () => {
+    expect(
+      formatReplacementValue({
+        displayText: '/tmp/with spaces/file.txt',
+        mode: 'bash',
+        hasAtPrefix: true,
+        needsQuotes: true,
+        isComplete: false,
+      }),
+    ).toBe('"/tmp/with spaces/file.txt"');
+  });
+
+  it('returns incomplete unprefixed replacements unchanged', () => {
+    expect(
+      formatReplacementValue({
+        displayText: 'src/tui',
+        mode: 'prompt',
+        hasAtPrefix: false,
+        needsQuotes: false,
+        isComplete: false,
+      }),
+    ).toBe('src/tui');
+  });
+});
+
+describe('applyShellSuggestion', () => {
+  it('replaces the current shell word with a command suggestion', () => {
+    const onInputChange = vi.fn();
+    const setCursorOffset = vi.fn();
+
+    applyShellSuggestion(
+      { id: 'git', displayText: 'git' },
+      'gi status',
+      2,
+      onInputChange,
+      setCursorOffset,
+      'command',
+    );
+
+    expect(onInputChange).toHaveBeenCalledWith('git  status');
+    expect(setCursorOffset).toHaveBeenCalledWith(4);
+  });
+
+  it('adds a shell variable prefix for variable completions', () => {
+    const onInputChange = vi.fn();
+    const setCursorOffset = vi.fn();
+
+    applyShellSuggestion(
+      { id: 'PATH', displayText: 'PATH' },
+      'echo PA',
+      'echo PA'.length,
+      onInputChange,
+      setCursorOffset,
+      'variable',
+    );
+
+    expect(onInputChange).toHaveBeenCalledWith('echo $PATH ');
+    expect(setCursorOffset).toHaveBeenCalledWith('echo $PATH '.length);
+  });
+
+  it('leaves default path completions unspaced', () => {
+    const onInputChange = vi.fn();
+    const setCursorOffset = vi.fn();
+
+    applyShellSuggestion(
+      { id: 'src/', displayText: 'src/' },
+      'ls sr',
+      'ls sr'.length,
+      onInputChange,
+      setCursorOffset,
+      undefined,
+    );
+
+    expect(onInputChange).toHaveBeenCalledWith('ls src/');
+    expect(setCursorOffset).toHaveBeenCalledWith('ls src/'.length);
+  });
+});
+
+describe('applyDirectorySuggestion', () => {
+  it('replaces an @ token with a directory suggestion and keeps editing inside it', () => {
+    expect(applyDirectorySuggestion('open @sr now', 'src', 5, 3, true)).toEqual({
+      newInput: 'open @src/ now',
+      cursorPos: 'open @src/'.length,
+    });
+  });
+
+  it('replaces an @ token with a file suggestion and moves past the inserted space', () => {
+    expect(applyDirectorySuggestion('@pack read', 'package.json', 0, 5, false)).toEqual({
+      newInput: '@package.json  read',
+      cursorPos: '@package.json '.length,
+    });
   });
 });

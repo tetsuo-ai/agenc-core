@@ -1,16 +1,22 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { AddressInfo } from "node:net";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   buildTransactionGuardDocket,
   buildToolTransactionGuardInput,
   createTransactionGuardContextFromPolicy,
+  createTransactionGuardContextFromEnv,
+  evaluateToolInvocationTransactionGuard,
+  formatTransactionGuardDenialMessage,
+  formatTransactionGuardEventMessage,
   loadTransactionGuardPolicyFromEnv,
   normalizeTransactionGuardInput,
   OllamaCourtGuard,
   parseTransactionGuardVerdict,
   resetDefaultTransactionGuardContextForTests,
+  transactionGuardAuditMetadata,
+  TransactionGuardError,
   TRANSACTION_GUARD_DENIED,
   TRANSACTION_GUARD_UNAVAILABLE,
   type TransactionGuard,
@@ -424,9 +430,50 @@ describe("transaction guard config and docket", () => {
     expect(loaded.failClosed).toBe(true);
   });
 
+  test("loads enabled policy values and falls back on invalid positive integers", () => {
+    const loaded = loadTransactionGuardPolicyFromEnv({
+      AGENC_TRANSACTION_GUARD: "slm",
+      AGENC_TRANSACTION_GUARD_OLLAMA_URL: "http://ollama.test",
+      AGENC_TRANSACTION_GUARD_MODEL: "local-judge",
+      AGENC_TRANSACTION_GUARD_TIMEOUT_MS: "-1",
+      AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES: "not-a-number",
+    });
+
+    expect(loaded).toMatchObject({
+      enabled: true,
+      ollamaUrl: "http://ollama.test",
+      model: "local-judge",
+      timeoutMs: 120_000,
+      maxDocketBytes: 48 * 1024,
+    });
+  });
+
   test("creates context only when AGENC_TRANSACTION_GUARD=slm", () => {
     expect(createTransactionGuardContextFromPolicy({ ...policy, enabled: false })).toBeNull();
     expect(createTransactionGuardContextFromPolicy(policy)).not.toBeNull();
+  });
+
+  test("caches and resets the default environment context", () => {
+    resetDefaultTransactionGuardContextForTests();
+    const previous = process.env.AGENC_TRANSACTION_GUARD;
+    try {
+      process.env.AGENC_TRANSACTION_GUARD = "slm";
+      const first = createTransactionGuardContextFromEnv();
+      delete process.env.AGENC_TRANSACTION_GUARD;
+      const second = createTransactionGuardContextFromEnv();
+      expect(first).not.toBeNull();
+      expect(second).toBe(first);
+
+      resetDefaultTransactionGuardContextForTests();
+      expect(createTransactionGuardContextFromEnv()).toBeNull();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AGENC_TRANSACTION_GUARD;
+      } else {
+        process.env.AGENC_TRANSACTION_GUARD = previous;
+      }
+      resetDefaultTransactionGuardContextForTests();
+    }
   });
 
   test("normalizes docket input without leaking sensitive keyed values", () => {
@@ -461,6 +508,20 @@ describe("transaction guard config and docket", () => {
     expect(docket).not.toContain("token-secret-value");
     expect(docket).toContain("[redacted]");
     expect(docket).toContain("visible");
+  });
+
+  test("serializes bigint metadata and truncates oversized UTF-8 fields safely", () => {
+    const docket = buildTransactionGuardDocket({
+      source: "tool-dispatch",
+      kind: "solana_tool_invocation",
+      toolName: "exec_command",
+      command: `${DEVNET_TRANSFER} ${"🙂".repeat(20_000)}`,
+      metadata: { lamports: 10n },
+    }, 32 * 1024);
+
+    expect(docket).toContain('"lamports": "10"');
+    expect(docket).toContain("[truncated]");
+    expect(Buffer.byteLength(docket, "utf8")).toBeLessThanOrEqual(32 * 1024 + 20);
   });
 });
 
@@ -560,9 +621,144 @@ describe("Ollama CourtGuard client", () => {
       await server.close();
     }
   });
+
+  test("allows strict benign Ollama verdicts", async () => {
+    const server = await startFakeOllama((_req, res, body) => {
+      const payload = JSON.parse(body) as {
+        messages?: ReadonlyArray<{ readonly content?: string }>;
+      };
+      const prompt = payload.messages?.map((message) => message.content ?? "").join("\n") ?? "";
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        message: {
+          role: "assistant",
+          content: prompt.includes("strict classifier") ? "benign" : "argument",
+        },
+      }));
+    });
+    try {
+      const guard = new OllamaCourtGuard({ ...policy, ollamaUrl: server.url });
+      await expect(guard.evaluate({
+        source: "tool-dispatch",
+        kind: "solana_tool_invocation",
+        toolName: "exec_command",
+        command: "solana transfer recipient 0.001 --url devnet",
+      })).resolves.toMatchObject({
+        allowed: true,
+        verdict: "benign",
+        code: undefined,
+        reason: undefined,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("fails closed on empty and non-Error Ollama failures", async () => {
+    const emptyServer = await startFakeOllama((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ response: "" }));
+    });
+    try {
+      const guard = new OllamaCourtGuard({ ...policy, ollamaUrl: emptyServer.url });
+      await expect(guard.evaluate({
+        source: "tool-dispatch",
+        kind: "solana_tool_invocation",
+        toolName: "exec_command",
+        command: "solana transfer recipient 0.001 --url devnet",
+      })).resolves.toMatchObject({
+        allowed: false,
+        verdict: "unavailable",
+        reason: "Ollama guard returned an empty response",
+      });
+    } finally {
+      await emptyServer.close();
+    }
+
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn().mockRejectedValue("plain failure") as never;
+      const guard = new OllamaCourtGuard(policy);
+      await expect(guard.evaluate({
+        source: "tool-dispatch",
+        kind: "solana_tool_invocation",
+        toolName: "exec_command",
+        command: "solana transfer recipient 0.001 --url devnet",
+      })).resolves.toMatchObject({
+        allowed: false,
+        verdict: "unavailable",
+        reason: "plain failure",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe("transaction guard dispatch integration", () => {
+  test("skips evaluation when context is missing, disabled, or input is not transaction-like", async () => {
+    const tool = makeTool("exec_command", () => {});
+    const invocation = makeInvocation("skip", "exec_command");
+
+    await expect(evaluateToolInvocationTransactionGuard({
+      context: null,
+      tool,
+      invocation,
+      args: { cmd: DEVNET_TRANSFER },
+    })).resolves.toEqual({ kind: "skipped" });
+
+    await expect(evaluateToolInvocationTransactionGuard({
+      context: { policy: { ...policy, enabled: false }, guard: makeGuard("adversarial") },
+      tool,
+      invocation,
+      args: { cmd: DEVNET_TRANSFER },
+    })).resolves.toEqual({ kind: "skipped" });
+
+    await expect(evaluateToolInvocationTransactionGuard({
+      context: { policy, guard: makeGuard("adversarial") },
+      tool,
+      invocation,
+      args: { cmd: "npm test" },
+    })).resolves.toEqual({ kind: "skipped" });
+  });
+
+  test("returns evaluated outcome and formats audit metadata/messages", async () => {
+    const out = await evaluateToolInvocationTransactionGuard({
+      context: { policy, guard: makeGuard("adversarial") },
+      tool: makeTool("exec_command", () => {}),
+      invocation: makeInvocation("evaluated", "exec_command"),
+      args: { cmd: DEVNET_TRANSFER },
+    });
+
+    expect(out.kind).toBe("evaluated");
+    if (out.kind !== "evaluated") throw new Error("expected evaluated outcome");
+    expect(out.input.command).toContain("solana transfer");
+    expect(transactionGuardAuditMetadata(out.decision)).toEqual({
+      provider: "ollama",
+      model: "gemma4:e4b",
+      verdict: "adversarial",
+      inputHash: "hash-for-test",
+      code: TRANSACTION_GUARD_DENIED,
+      reason: "test transaction guard decision",
+    });
+    expect(formatTransactionGuardEventMessage("exec_command", out.decision))
+      .toContain("transaction guard denied exec_command");
+    expect(formatTransactionGuardDenialMessage(out.decision))
+      .toContain(`${TRANSACTION_GUARD_DENIED}: test transaction guard decision.`);
+
+    const unavailable = decision("unavailable");
+    expect(formatTransactionGuardDenialMessage({ ...unavailable, code: undefined, reason: undefined }))
+      .toContain(`${TRANSACTION_GUARD_UNAVAILABLE}: CourtGuard blocked`);
+  });
+
+  test("TransactionGuardError preserves code and name", () => {
+    const err = new TransactionGuardError(TRANSACTION_GUARD_DENIED, "blocked");
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("TransactionGuardError");
+    expect(err.code).toBe(TRANSACTION_GUARD_DENIED);
+    expect(err.message).toBe("blocked");
+  });
+
   test("blocks adversarial Solana submissions before tool execution", async () => {
     let executed = false;
     const out = await runToolUse(

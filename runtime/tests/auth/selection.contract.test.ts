@@ -197,6 +197,26 @@ describe("auth backend selection", () => {
     );
   });
 
+  it("rejects non-object auth config", () => {
+    const config = {
+      auth: "remote",
+    } as unknown as ReturnType<typeof defaultConfig>;
+
+    expect(() => createAuthBackend(config)).toThrow(
+      expect.objectContaining({ name: "InvalidAuthBackendConfigError" }),
+    );
+  });
+
+  it("rejects non-object managedKeys config", () => {
+    const config = {
+      auth: { backend: "remote", managedKeys: "enabled" },
+    } as unknown as ReturnType<typeof defaultConfig>;
+
+    expect(() => resolveAuthManagedKeysEnabled(config)).toThrow(
+      expect.objectContaining({ name: "InvalidAuthManagedKeysConfigError" }),
+    );
+  });
+
   it("rejects invalid auth.managedKeys.enabled values instead of coercing", () => {
     const config = {
       auth: { backend: "remote", managedKeys: { enabled: "yes" } },
