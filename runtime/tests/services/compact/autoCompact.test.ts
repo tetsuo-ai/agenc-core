@@ -92,6 +92,31 @@ describe("auto compact", () => {
       .toContain("recent request");
   });
 
+  test("force compacts even when local estimation is below threshold", async () => {
+    const messages = [message("small current turn")];
+
+    await expect(autoCompactIfNeeded(messages, {
+      options: { contextWindowTokens: 100_000 },
+    })).resolves.toEqual({
+      wasCompacted: false,
+      consecutiveFailures: 0,
+    });
+
+    const result = await autoCompactIfNeeded(
+      messages,
+      { options: { contextWindowTokens: 100_000 } },
+      undefined,
+      "repl_main_thread",
+      undefined,
+      0,
+      { force: true },
+    );
+
+    expect(result.wasCompacted).toBe(true);
+    expect(result.compactionResult?.summaryMessages[0]?.content)
+      .toContain("small current turn");
+  });
+
   test("prefers session-memory compaction and runs cleanup after success", async () => {
     process.env.AGENC_ENABLE_SESSION_MEMORY_COMPACT = "1";
     const cleanup = {

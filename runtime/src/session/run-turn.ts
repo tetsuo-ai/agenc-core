@@ -580,6 +580,7 @@ async function runAgenCAutoCompact(params: {
   readonly reason?: string;
   readonly phase?: string;
   readonly initialContextInjection?: string;
+  readonly force?: boolean;
 }): Promise<AgenCAutoCompactResult> {
   const finishTelemetry = startCompactTelemetry("auto", {
     query_source: params.querySource,
@@ -619,6 +620,7 @@ async function runAgenCAutoCompact(params: {
         params.querySource,
         state.autoCompactTracking,
         state.snipTokensFreed ?? 0,
+        { force: params.force === true },
       );
     }, envForToolUseContext(toolUseContext));
     if (!result.wasCompacted || !result.compactionResult) {
@@ -1815,6 +1817,7 @@ async function runAutoCompact(
     messageHasImageContent(state.messages.at(-1));
   const querySource =
     reason === "model_downshift" ? "model_downshift" : "repl_main_thread";
+  const force = shouldForceAutoCompact(reason, phase);
   try {
     const autoCompactImplOverride = getAutoCompactImplOverride();
     const result = autoCompactImplOverride
@@ -1824,6 +1827,7 @@ async function runAutoCompact(
         state?.autoCompactTracking,
         state?.snipTokensFreed ?? 0,
         initialContextInjection,
+        { force },
       )
       : await runAgenCAutoCompact({
         session,
@@ -1833,6 +1837,7 @@ async function runAutoCompact(
         reason,
         phase,
         initialContextInjection,
+        force,
       });
 
     if (result.wasCompacted && state) {
@@ -1905,6 +1910,13 @@ async function runAutoCompact(
     });
     return false;
   }
+}
+
+function shouldForceAutoCompact(
+  reason: CompactionReason,
+  phase: CompactionPhase,
+): boolean {
+  return reason === "context_limit" && phase === "in_turn";
 }
 
 /**
