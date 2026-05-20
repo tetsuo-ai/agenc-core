@@ -52,6 +52,10 @@ const shutdownMock = vi.hoisted(() => ({
   gracefulShutdown: vi.fn(),
 }));
 
+const themeMock = vi.hoisted(() => ({
+  theme: {},
+}));
+
 vi.mock("../../services/mcp/config.js", () => ({
   addMcpConfig: configMock.addMcpConfig,
   getAllMcpConfigs: configMock.getAllMcpConfigs,
@@ -70,7 +74,7 @@ vi.mock("../ink.js", async () => {
   return {
     ...actual,
     color: () => (text: string) => text,
-    useTheme: () => [{}],
+    useTheme: () => [themeMock.theme],
   };
 });
 
@@ -150,6 +154,20 @@ async function waitFor(check: () => boolean): Promise<void> {
   }
 
   throw new Error("condition was not met");
+}
+
+async function waitForDefaultValue(values: string[]): Promise<void> {
+  await waitFor(() => {
+    const defaultValue = selectMultiMock.props?.defaultValue ?? [];
+    return (
+      defaultValue.length === values.length &&
+      defaultValue.every((value, index) => value === values[index])
+    );
+  });
+}
+
+async function nextRenderTick(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 10));
 }
 
 const alphaServer = {
@@ -232,8 +250,11 @@ describe("MCPServerDesktopImportDialog", () => {
     const rendered = await renderImportDialog({ servers });
 
     try {
+      await waitForDefaultValue(["beta"]);
       rendered.rerender();
-      await waitFor(() => selectMultiMock.renderCount > 1);
+      await nextRenderTick();
+      rendered.rerender();
+      await nextRenderTick();
 
       expect(dialogMock.props).toMatchObject({
         title: "Import MCP Servers from AgenC Desktop",
@@ -270,10 +291,7 @@ describe("MCPServerDesktopImportDialog", () => {
     const rendered = await renderImportDialog({ onDone, servers });
 
     try {
-      await waitFor(() =>
-        selectMultiMock.props?.defaultValue?.length === 1 &&
-        selectMultiMock.props.defaultValue[0] === "beta",
-      );
+      await waitForDefaultValue(["beta"]);
       await selectMultiMock.props?.onSubmit?.(["alpha", "beta", "missing"]);
 
       expect(configMock.addMcpConfig).toHaveBeenCalledTimes(2);

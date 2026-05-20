@@ -1,5 +1,5 @@
 import { c as _c } from "react-compiler-runtime";
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { writeToStdout } from 'src/utils/process.js';
 import { Box, color, Text, useTheme } from '../ink.js';
@@ -69,25 +69,6 @@ export function MCPServerDesktopImportDialog(t0: Props) {
     t5 = $[7];
   }
   const collisions = t5;
-  const onSubmit = async function onSubmit(selectedServers: string[]) {
-    let importedCount = 0;
-    for (const serverName of selectedServers) {
-      const serverConfig = servers[serverName];
-      if (serverConfig) {
-        let finalName = serverName;
-        if (existingServers[finalName] !== undefined) {
-          let counter = 1;
-          while (existingServers[`${serverName}_${counter}`] !== undefined) {
-            counter++;
-          }
-          finalName = `${serverName}_${counter}`;
-        }
-        await addMcpConfig(finalName, serverConfig, scope);
-        importedCount++;
-      }
-    }
-    done(importedCount);
-  };
   const [theme] = useTheme();
   let t6;
   if ($[8] !== onDone || $[9] !== scope || $[10] !== theme) {
@@ -120,6 +101,25 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   }
   done;
   const handleEscCancel = t7;
+  const onSubmit = useCallback(async function onSubmit(selectedServers: string[]) {
+    let importedCount = 0;
+    for (const serverName of selectedServers) {
+      const serverConfig = servers[serverName];
+      if (serverConfig) {
+        let finalName = serverName;
+        if (existingServers[finalName] !== undefined) {
+          let counter = 1;
+          while (existingServers[`${serverName}_${counter}`] !== undefined) {
+            counter++;
+          }
+          finalName = `${serverName}_${counter}`;
+        }
+        await addMcpConfig(finalName, serverConfig, scope);
+        importedCount++;
+      }
+    }
+    done(importedCount);
+  }, [done, existingServers, scope, servers]);
   const t8 = serverNames.length;
   let t9;
   if ($[14] !== serverNames.length) {
