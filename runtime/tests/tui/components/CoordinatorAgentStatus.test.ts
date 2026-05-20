@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  AGENT_PANEL_TRANSIENT_MS,
   getCoordinatorTaskCount,
+  getCoordinatorTaskPanelVisibilityKey,
   getVisibleAgentTasks,
   shouldShowCoordinatorTaskPanel,
 } from "./CoordinatorAgentStatus.js";
@@ -35,7 +37,7 @@ describe("CoordinatorAgentStatus", () => {
     expect(getCoordinatorTaskCount(tasks)).toBe(0);
   });
 
-  test("keeps the panel collapsed while agent tasks run in the background", () => {
+  test("opens the panel while a new agent task is in its transient display window", () => {
     const visibleTasks = getVisibleAgentTasks({
       a: task("a"),
       b: task("b"),
@@ -45,6 +47,23 @@ describe("CoordinatorAgentStatus", () => {
       visibleTasks,
       footerSelection: null,
       viewingAgentTaskId: undefined,
+      transientVisibleUntil: 1_000 + AGENT_PANEL_TRANSIENT_MS,
+      now: 1_000,
+    })).toBe(true);
+  });
+
+  test("collapses the panel after the transient display window expires", () => {
+    const visibleTasks = getVisibleAgentTasks({
+      a: task("a"),
+      b: task("b"),
+    });
+
+    expect(shouldShowCoordinatorTaskPanel({
+      visibleTasks,
+      footerSelection: null,
+      viewingAgentTaskId: undefined,
+      transientVisibleUntil: 1_000 + AGENT_PANEL_TRANSIENT_MS,
+      now: 1_000 + AGENT_PANEL_TRANSIENT_MS,
     })).toBe(false);
   });
 
@@ -57,6 +76,8 @@ describe("CoordinatorAgentStatus", () => {
       visibleTasks,
       footerSelection: "tasks",
       viewingAgentTaskId: undefined,
+      transientVisibleUntil: 0,
+      now: 1_000,
     })).toBe(true);
   });
 
@@ -69,6 +90,21 @@ describe("CoordinatorAgentStatus", () => {
       visibleTasks,
       footerSelection: null,
       viewingAgentTaskId: "a",
+      transientVisibleUntil: 0,
+      now: 1_000,
     })).toBe(true);
+  });
+
+  test("changes the transient visibility key when an agent reaches terminal state", () => {
+    const running = getVisibleAgentTasks({
+      a: task("a", { status: "running" }),
+    });
+    const completed = getVisibleAgentTasks({
+      a: task("a", { status: "completed", endTime: 10 }),
+    });
+
+    expect(getCoordinatorTaskPanelVisibilityKey(running)).not.toBe(
+      getCoordinatorTaskPanelVisibilityKey(completed),
+    );
   });
 });

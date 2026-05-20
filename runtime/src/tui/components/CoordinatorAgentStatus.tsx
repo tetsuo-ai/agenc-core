@@ -2,9 +2,9 @@ import { c as _c } from "react-compiler-runtime";
 /**
  * CoordinatorTaskPanel — Steerable list of background agents.
  *
- * Renders below the prompt input footer whenever local_agent tasks exist.
- * Visibility is driven by evictAfter: undefined (running/retained) shows
- * always; a timestamp shows until passed. Enter to view/steer, x to dismiss.
+ * Renders below the prompt input footer when agent tasks appear, when the
+ * tasks footer is selected, or while a task is being viewed. Enter to
+ * view/steer, x to dismiss.
  */
 
 import figures from 'figures';
@@ -19,6 +19,8 @@ import { isPanelAgentTask, type LocalAgentTaskState } from '../../tasks/LocalAge
 import { formatDuration, formatNumber } from '../../utils/format';
 import { evictTerminalTask } from '../../utils/task/framework';
 import { isTerminalStatus } from './tasks/taskStatusUtils';
+
+export const AGENT_PANEL_TRANSIENT_MS = 5_000;
 
 /**
  * Which panel-managed tasks currently have a visible row.
@@ -37,19 +39,34 @@ export function getCoordinatorTaskCount(tasks: AppState['tasks']): number {
   return visibleTasks.length === 0 ? 0 : visibleTasks.length + 1;
 }
 
+export function getCoordinatorTaskPanelVisibilityKey(
+  visibleTasks: readonly LocalAgentTaskState[],
+): string {
+  return visibleTasks
+    .map(task => `${task.id}:${task.status}:${task.startTime}:${task.endTime ?? ''}`)
+    .join('|');
+}
+
 export function shouldShowCoordinatorTaskPanel({
   visibleTasks,
   footerSelection,
   viewingAgentTaskId,
+  transientVisibleUntil,
+  now,
 }: {
   visibleTasks: readonly LocalAgentTaskState[];
   footerSelection: AppState['footerSelection'];
   viewingAgentTaskId?: string;
+  transientVisibleUntil: number;
+  now: number;
 }): boolean {
   if (visibleTasks.length === 0) {
     return false;
   }
   if (footerSelection === 'tasks') {
+    return true;
+  }
+  if (now < transientVisibleUntil) {
     return true;
   }
   return viewingAgentTaskId !== undefined && visibleTasks.some(task => task.id === viewingAgentTaskId);
@@ -66,6 +83,18 @@ export function CoordinatorTaskPanel(): React.ReactNode {
   const setAppState = useSetAppState();
   const visibleTasks = getVisibleAgentTasks(tasks);
   const hasTasks = Object.values(tasks).some(isPanelAgentTask);
+  const visibilityKey = getCoordinatorTaskPanelVisibilityKey(visibleTasks);
+  const visibilityKeyRef = React.useRef('');
+  const transientVisibleUntilRef = React.useRef(0);
+  const now = Date.now();
+
+  if (visibleTasks.length === 0) {
+    visibilityKeyRef.current = '';
+    transientVisibleUntilRef.current = 0;
+  } else if (visibilityKeyRef.current !== visibilityKey) {
+    visibilityKeyRef.current = visibilityKey;
+    transientVisibleUntilRef.current = now + AGENT_PANEL_TRANSIENT_MS;
+  }
 
   // 1s tick: re-render for elapsed time + evict tasks past their deadline.
   // The eviction deletes from prev.tasks, which makes useCoordinatorTaskCount
@@ -95,6 +124,8 @@ export function CoordinatorTaskPanel(): React.ReactNode {
     visibleTasks,
     footerSelection,
     viewingAgentTaskId,
+    transientVisibleUntil: transientVisibleUntilRef.current,
+    now,
   })) {
     return null;
   }
