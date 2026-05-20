@@ -11,14 +11,14 @@ import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 import { Spinner } from './spinner/Spinner.js';
 
-// Inline require breaks the cycle this file would otherwise close:
+// Dynamic import breaks the cycle this file would otherwise close:
 // sessionStorage → commands → exit → ExitFlow → here. All call sites
-// are inside callbacks, so the lazy require never sees an undefined import.
-function recordWorktreeExit(): void {
-  /* eslint-disable @typescript-eslint/no-require-imports */
-  ;
-  (require('../../utils/sessionStorage') as typeof import('../../utils/sessionStorage')).saveWorktreeState(null);
-  /* eslint-enable @typescript-eslint/no-require-imports */
+// are inside callbacks, so the lazy import never sees an undefined import.
+async function recordWorktreeExit(): Promise<void> {
+  const {
+    saveWorktreeState
+  } = await import('../../utils/sessionStorage.js');
+  saveWorktreeState(null);
 }
 type Props = {
   onDone: (result?: string, options?: {
@@ -62,10 +62,10 @@ export function WorktreeExitDialog({
         // If no changes and no commits, clean up silently
         if (changeLines.length === 0 && count === 0) {
           setStatus('removing');
-          void cleanupWorktree().then(() => {
+          void cleanupWorktree().then(async () => {
             process.chdir(worktreeSession.originalCwd);
             setCwd(worktreeSession.originalCwd);
-            recordWorktreeExit();
+            await recordWorktreeExit();
             getPlansDirectory.cache.clear?.();
             setResultMessage('Worktree removed (no changes)');
           }).catch(error => {
@@ -115,7 +115,7 @@ export function WorktreeExitDialog({
       await keepWorktree();
       process.chdir(worktreeSession.originalCwd);
       setCwd(worktreeSession.originalCwd);
-      recordWorktreeExit();
+      await recordWorktreeExit();
       getPlansDirectory.cache.clear?.();
       if (hasTmux) {
         setResultMessage(`Worktree kept. Your work is saved at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}. Reattach to tmux session with: tmux attach -t ${worktreeSession.tmuxSessionName}`);
@@ -135,7 +135,7 @@ export function WorktreeExitDialog({
       await keepWorktree();
       process.chdir(worktreeSession.originalCwd);
       setCwd(worktreeSession.originalCwd);
-      recordWorktreeExit();
+      await recordWorktreeExit();
       getPlansDirectory.cache.clear?.();
       setResultMessage(`Worktree kept at ${worktreeSession.worktreePath} on branch ${worktreeSession.worktreeBranch}. Tmux session terminated.`);
       setStatus('done');
@@ -152,7 +152,7 @@ export function WorktreeExitDialog({
         await cleanupWorktree();
         process.chdir(worktreeSession.originalCwd);
         setCwd(worktreeSession.originalCwd);
-        recordWorktreeExit();
+        await recordWorktreeExit();
         getPlansDirectory.cache.clear?.();
       } catch (error) {
         logForDebugging(`Failed to clean up worktree: ${error}`, {
