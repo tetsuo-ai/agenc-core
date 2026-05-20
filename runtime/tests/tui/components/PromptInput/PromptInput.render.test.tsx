@@ -40,6 +40,11 @@ const harness = vi.hoisted(() => {
     appState,
     baseProps: undefined as undefined | Record<string, unknown>,
     clearBuffer: vi.fn(),
+    editPromptResult: { content: null, error: null } as {
+      content: string | null
+      error: string | null
+    },
+    keybindings: {} as Record<string, () => unknown>,
     logEvent: vi.fn(),
     onRender: vi.fn(),
     pushToBuffer: vi.fn(),
@@ -52,6 +57,8 @@ const harness = vi.hoisted(() => {
       harness.pushToBuffer.mockClear()
       harness.removeNotification.mockClear()
       harness.baseProps = undefined
+      harness.editPromptResult = { content: null, error: null }
+      harness.keybindings = {}
       appState.coordinatorTaskIndex = -1
       appState.footerSelection = null
       appState.promptSuggestion = {
@@ -201,8 +208,12 @@ vi.mock('../../keybindings/shortcutFormat.js', () => ({
 }))
 
 vi.mock('../../keybindings/useKeybinding.js', () => ({
-  useKeybinding: vi.fn(),
-  useKeybindings: vi.fn(),
+  useKeybinding: (action: string, handler: () => unknown) => {
+    harness.keybindings[action] = handler
+  },
+  useKeybindings: (handlers: Record<string, () => unknown>) => {
+    Object.assign(harness.keybindings, handlers)
+  },
 }))
 
 vi.mock('../../glyphs.js', () => ({
@@ -353,7 +364,7 @@ vi.mock('../../../utils/platform.js', () => ({
 }))
 
 vi.mock('../../../utils/promptEditor.js', () => ({
-  editPromptInEditor: vi.fn(async () => ({ content: null, error: null })),
+  editPromptInEditor: vi.fn(async () => harness.editPromptResult),
 }))
 
 vi.mock('../../../utils/settings/settings.js', () => ({
@@ -612,6 +623,7 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderPromptInput(overrides: Record<string, unknown> = {}) {
+  harness.baseProps = undefined
   const { stdin, stdout } = createTestStreams()
   const root = await createRoot({
     patchConsole: false,
@@ -718,6 +730,95 @@ describe('PromptInput render surface', () => {
       ;(baseProps.onPaste as (value: string) => void)('x'.repeat(40))
       expect(setPastedContents).toHaveBeenCalled()
       expect(onInputChange).toHaveBeenCalledWith(expect.stringContaining('[Pasted text'))
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('handles stash, newline, and external editor chat actions', async () => {
+    const onInputChange = vi.fn()
+    const setPastedContents = vi.fn()
+    const setStashedPrompt = vi.fn()
+    harness.editPromptResult = { content: 'edited draft', error: null }
+
+    const rendered = await renderPromptInput({
+      input: 'draft',
+      onInputChange,
+      setPastedContents,
+      setStashedPrompt,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:newline']?.()
+      expect(onInputChange).toHaveBeenCalledWith('draft\n')
+
+      harness.keybindings['chat:stash']?.()
+      expect(setStashedPrompt).toHaveBeenCalledWith({
+        text: 'draft',
+        cursorOffset: 'draft'.length,
+        pastedContents: {},
+      })
+      expect(onInputChange).toHaveBeenCalledWith('')
+      expect(setPastedContents).toHaveBeenCalledWith({})
+
+      await harness.keybindings['chat:externalEditor']?.()
+      expect(onInputChange).toHaveBeenCalledWith('edited draft')
+
+      const unstash = await renderPromptInput({
+        input: '',
+        onInputChange,
+        setPastedContents,
+        setStashedPrompt,
+        stashedPrompt: {
+          text: 'restored',
+          cursorOffset: 4,
+          pastedContents: { 7: { id: 7, type: 'text', content: 'saved' } },
+        },
+      })
+      try {
+        await waitForPromptInputProps()
+        harness.keybindings['chat:stash']?.()
+        expect(onInputChange).toHaveBeenCalledWith('restored')
+        expect(setPastedContents).toHaveBeenCalledWith({
+          7: { id: 7, type: 'text', content: 'saved' },
+        })
+      } finally {
+        await unstash.dispose()
+      }
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('handles mode cycle, image paste miss, and empty prompt submission guards', async () => {
+    const onSubmit = vi.fn(async () => {})
+    const setToolPermissionContext = vi.fn()
+    const rendered = await renderPromptInput({
+      input: '',
+      onSubmit,
+      setToolPermissionContext,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('')
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      harness.keybindings['chat:cycleMode']?.()
+      expect(setToolPermissionContext).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'plan' }),
+      )
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(0)
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'no-image-in-clipboard',
+        }),
+      )
     } finally {
       await rendered.dispose()
     }
