@@ -373,10 +373,13 @@ export function useMultiSelectState<T>({
 
         // Enter or Space toggles selection (including for input fields)
         if (navigation.focusedValue !== undefined) {
-          const newValues = selectedValues.includes(navigation.focusedValue)
-            ? selectedValues.filter(v => v !== navigation.focusedValue)
-            : [...selectedValues, navigation.focusedValue]
-          updateSelectedValues(newValues)
+          const option = options.find(opt => opt.value === navigation.focusedValue)
+          if (option?.disabled !== true) {
+            const newValues = selectedValues.includes(navigation.focusedValue)
+              ? selectedValues.filter(v => v !== navigation.focusedValue)
+              : [...selectedValues, navigation.focusedValue]
+            updateSelectedValues(newValues)
+          }
         }
         return
       }
@@ -385,11 +388,14 @@ export function useMultiSelectState<T>({
       if (!hideIndexes && /^[0-9]+$/.test(normalizedInput)) {
         const index = parseInt(normalizedInput) - 1
         if (index >= 0 && index < options.length) {
-          const value = options[index]!.value
-          const newValues = selectedValues.includes(value)
-            ? selectedValues.filter(v => v !== value)
-            : [...selectedValues, value]
-          updateSelectedValues(newValues)
+          const option = options[index]!
+          if (option.disabled !== true) {
+            const value = option.value
+            const newValues = selectedValues.includes(value)
+              ? selectedValues.filter(v => v !== value)
+              : [...selectedValues, value]
+            updateSelectedValues(newValues)
+          }
         }
         return
       }
