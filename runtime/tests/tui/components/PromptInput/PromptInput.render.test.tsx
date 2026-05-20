@@ -50,6 +50,7 @@ const harness = vi.hoisted(() => {
       options?: Record<string, unknown>
     }>,
     logEvent: vi.fn(),
+    promptSuggestionLogEvent: vi.fn(),
     onRender: vi.fn(),
     pushToBuffer: vi.fn(),
     removeNotification: vi.fn(),
@@ -66,6 +67,7 @@ const harness = vi.hoisted(() => {
       harness.addNotification.mockClear()
       harness.clearBuffer.mockClear()
       harness.logEvent.mockClear()
+      harness.promptSuggestionLogEvent.mockClear()
       harness.onRender.mockClear()
       harness.pushToBuffer.mockClear()
       harness.removeNotification.mockClear()
@@ -83,6 +85,7 @@ const harness = vi.hoisted(() => {
         text: null,
       }
       appState.speculation = { status: 'inactive' }
+      appState.speculationSessionTimeSavedMs = 0
       appState.viewingAgentTaskId = null
       appState.viewSelectionMode = null
       harness.updateSettingsForSource.mockClear()
@@ -125,7 +128,7 @@ vi.mock('../../../services/PromptSuggestion/promptSuggestion.js', () => ({
 }))
 
 vi.mock('../../../services/PromptSuggestion/runtime.js', () => ({
-  logEvent: vi.fn(),
+  logEvent: harness.promptSuggestionLogEvent,
 }))
 
 vi.mock('../../../services/PromptSuggestion/speculation.js', () => ({
@@ -928,6 +931,109 @@ describe('PromptInput render surface', () => {
       expect(harness.addNotification).toHaveBeenCalledWith(
         expect.objectContaining({ key: 'fast-mode-toggled' }),
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('accepts a visible prompt suggestion on empty submit', async () => {
+    harness.appState.promptSuggestion = {
+      acceptedAt: 0,
+      generationRequestId: 'generation-1',
+      promptId: 'prompt-1',
+      shownAt: 100,
+      text: 'run the test suite',
+    }
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({ input: '', onSubmit })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('')
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        'run the test suite',
+        expect.objectContaining({
+          clearBuffer: harness.clearBuffer,
+          resetHistory: expect.any(Function),
+          setCursorOffset: expect.any(Function),
+        }),
+        undefined,
+        expect.objectContaining({
+          mode: 'prompt',
+          vimRoutingState: expect.objectContaining({ enabled: false }),
+        }),
+      )
+      expect(harness.promptSuggestionLogEvent).toHaveBeenCalledWith(
+        'agenc_prompt_suggestion',
+        expect.objectContaining({
+          generationRequestId: 'generation-1',
+          outcome: 'accepted',
+          prompt_id: 'prompt-1',
+          source: 'cli',
+        }),
+      )
+      expect(harness.appState.promptSuggestion).toEqual({
+        acceptedAt: 0,
+        generationRequestId: null,
+        promptId: null,
+        shownAt: 0,
+        text: null,
+      })
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('routes accepted prompt suggestions through active speculation state', async () => {
+    harness.appState.promptSuggestion = {
+      acceptedAt: 0,
+      generationRequestId: null,
+      promptId: 'prompt-spec',
+      shownAt: 100,
+      text: 'finish via speculation',
+    }
+    harness.appState.speculation = {
+      status: 'active',
+      taskId: 'spec-task',
+    }
+    harness.appState.speculationSessionTimeSavedMs = 1234
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({ input: '', onSubmit })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('')
+
+      expect(onSubmit).toHaveBeenCalledWith(
+        'finish via speculation',
+        expect.objectContaining({
+          clearBuffer: harness.clearBuffer,
+          resetHistory: expect.any(Function),
+          setCursorOffset: expect.any(Function),
+        }),
+        expect.objectContaining({
+          speculationSessionTimeSavedMs: 1234,
+          state: expect.objectContaining({
+            status: 'active',
+            taskId: 'spec-task',
+          }),
+          setAppState: harness.setAppState,
+        }),
+        expect.objectContaining({
+          vimRoutingState: expect.objectContaining({ enabled: false }),
+        }),
+      )
+      expect(harness.promptSuggestionLogEvent).toHaveBeenCalledWith(
+        'agenc_prompt_suggestion',
+        expect.objectContaining({
+          outcome: 'accepted',
+          prompt_id: 'prompt-spec',
+          source: 'cli',
+        }),
+      )
+      expect(harness.appState.promptSuggestion.text).toBe('finish via speculation')
+      expect(harness.appState.promptSuggestion.acceptedAt).toBeGreaterThan(0)
     } finally {
       await rendered.dispose()
     }
