@@ -50,6 +50,7 @@ const harness = vi.hoisted(() => ({
     harness.sessionTitleMatches = []
     harness.shellCompletions = []
     harness.shellHistoryCompletion = null
+    harness.slackSuggestions = []
     harness.unifiedSuggestions = []
   },
   slackSuggestions: [] as unknown[],
@@ -184,6 +185,7 @@ import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 import type { SuggestionItem } from '../components/PromptInput/PromptInputFooterSuggestions.js'
 import type { PromptInputMode } from '../../types/textInputTypes.js'
 import { useTypeahead } from './useTypeahead.js'
+import { generateUnifiedSuggestions } from './unifiedSuggestions'
 
 type SuggestionsState = {
   commandArgumentHint?: string
@@ -201,6 +203,8 @@ const EMPTY_COMMANDS: readonly never[] = []
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+const generateUnifiedSuggestionsMock = vi.mocked(generateUnifiedSuggestions)
 
 function createKey(
   name: string,
@@ -249,6 +253,7 @@ function TypeaheadHarness(props: {
   readonly commands?: readonly unknown[]
   readonly cursorOffset?: number
   readonly input: string
+  readonly markAccepted?: () => void
   readonly mode?: PromptInputMode
   readonly onInputChange: (value: string) => void
   readonly onModeChange?: (mode: PromptInputMode) => void
@@ -266,7 +271,7 @@ function TypeaheadHarness(props: {
     commands: (props.commands ?? EMPTY_COMMANDS) as never,
     cursorOffset: props.cursorOffset ?? props.input.length,
     input: props.input,
-    markAccepted: vi.fn(),
+    markAccepted: props.markAccepted ?? vi.fn(),
     mode: props.mode ?? 'prompt',
     onInputChange: props.onInputChange,
     onModeChange: props.onModeChange,
@@ -285,6 +290,7 @@ function TypeaheadHarness(props: {
 async function renderHookHarness(props: {
   readonly commands?: readonly unknown[]
   readonly input: string
+  readonly markAccepted?: () => void
   readonly mode?: PromptInputMode
   readonly onInputChange?: (value: string) => void
   readonly onModeChange?: (mode: PromptInputMode) => void
@@ -355,6 +361,7 @@ const command = (name: string, aliases: readonly string[] = []) => ({
 describe('useTypeahead hook paths', () => {
   beforeEach(() => {
     harness.reset()
+    generateUnifiedSuggestionsMock.mockClear()
   })
 
   test('generates slash command suggestions and navigates them with autocomplete keybindings', async () => {
@@ -604,6 +611,250 @@ describe('useTypeahead hook paths', () => {
       expect(onInputChange).toHaveBeenCalledWith('/resume session-42')
       expect(setCursorOffset).toHaveBeenCalledWith('/resume session-42'.length)
       expect(onSubmit).toHaveBeenCalledWith('/resume session-42', true)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('enters partial slash commands without executing until the command text is exact', async () => {
+    const onInputChange = vi.fn()
+    const onSubmit = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      commands: [command('help')],
+      input: '/h',
+      onInputChange,
+      onSubmit,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'command',
+        'partial command suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('/help ')
+      expect(setCursorOffset).toHaveBeenCalledWith('/help '.length)
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      rendered.rerender({ input: '/help', cursorOffset: '/help'.length })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'command',
+        'exact command suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('/help ')
+      expect(setCursorOffset).toHaveBeenCalledWith('/help '.length)
+      expect(onSubmit).toHaveBeenCalledWith('/help ', true)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('shows command argument hints on a trailing space and clears them once args start', async () => {
+    const rendered = await renderHookHarness({
+      commands: [{ ...command('review'), argumentHint: '<target>' }],
+      input: '/review ',
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().commandArgumentHint === '<target>',
+        'command argument hint',
+      )
+      expect(rendered.getSnapshot().suggestions).toEqual([])
+
+      rendered.rerender({
+        input: '/review src',
+        cursorOffset: '/review src'.length,
+      })
+      await waitFor(
+        () => rendered.getSnapshot().commandArgumentHint === undefined,
+        'cleared command argument hint',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('does not accept prompt suggestion text while viewing a teammate', async () => {
+    harness.appState.promptSuggestion = {
+      acceptedAt: 0,
+      generationRequestId: null,
+      promptId: 'prompt-1',
+      shownAt: Date.now(),
+      text: '!echo hidden',
+    }
+    harness.appState.viewingAgentTaskId = 'task-1'
+    const markAccepted = vi.fn()
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '',
+      markAccepted,
+      onInputChange,
+      onModeChange,
+      setCursorOffset,
+    })
+
+    try {
+      rendered.getSnapshot().handleKeyDown(createKey('right'))
+      expect(markAccepted).not.toHaveBeenCalled()
+      expect(onModeChange).not.toHaveBeenCalled()
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(setCursorOffset).not.toHaveBeenCalled()
+
+      const tab = createKey('tab')
+      rendered.getSnapshot().handleKeyDown(tab)
+      expect(tab.defaultPrevented).toBe(true)
+      expect(markAccepted).not.toHaveBeenCalled()
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'thinking-toggle-hint' }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('dismiss remembers the current input and does not immediately refetch it', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'src/app.ts', displayText: 'src/app.ts', description: 'file' },
+    ]
+    const rendered = await renderHookHarness({ input: '@sr', cursorOffset: 3 })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'initial file suggestions',
+      )
+
+      harness.keybindings['autocomplete:dismiss']?.()
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'dismissed suggestions',
+      )
+
+      generateUnifiedSuggestionsMock.mockClear()
+      rendered.rerender({ input: '@sr', cursorOffset: 3 })
+      await sleep(25)
+      expect(generateUnifiedSuggestionsMock).not.toHaveBeenCalled()
+
+      rendered.rerender({ input: '@src', cursorOffset: 4 })
+      await waitFor(
+        () => generateUnifiedSuggestionsMock.mock.calls.length > 0,
+        'refetch after input changes',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('tab cycles active @ file suggestions instead of accepting one', async () => {
+    harness.unifiedSuggestions = [
+      { id: 'src/app.ts', displayText: 'src/app.ts', description: 'file' },
+      { id: 'src/api.ts', displayText: 'src/api.ts', description: 'file' },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@sr',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'file suggestions',
+      )
+      expect(rendered.getSnapshot().suggestionsState.selectedSuggestion).toBe(0)
+
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => rendered.getSnapshot().suggestionsState.selectedSuggestion === 1,
+        'cycled file suggestion',
+      )
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(setCursorOffset).not.toHaveBeenCalled()
+
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => rendered.getSnapshot().suggestionsState.selectedSuggestion === 0,
+        'wrapped file suggestion cycle',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('enter applies quoted file suggestions from an @ token', async () => {
+    harness.unifiedSuggestions = [
+      {
+        id: 'docs/release notes.md',
+        displayText: 'docs/release notes.md',
+        description: 'file',
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@docs',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'file suggestion',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('@"docs/release notes.md" ')
+      expect(setCursorOffset).toHaveBeenCalledWith(
+        '@"docs/release notes.md" '.length,
+      )
+      await waitFor(
+        () => rendered.getSnapshot().suggestions.length === 0,
+        'cleared file suggestion',
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('enter applies general path directory suggestions outside slash commands', async () => {
+    harness.directorySuggestions = [
+      {
+        displayText: '/tmp/project',
+        id: '/tmp/project',
+        metadata: { type: 'directory' },
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@/tm',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'directory',
+        'path directory suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('@/tmp/project/')
+      expect(setCursorOffset).toHaveBeenCalledWith('@/tmp/project/'.length)
     } finally {
       await rendered.dispose()
     }
