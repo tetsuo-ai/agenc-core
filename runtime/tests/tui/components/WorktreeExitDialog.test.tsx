@@ -1,6 +1,7 @@
 import { PassThrough } from "node:stream";
 
 import React from "react";
+import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createRoot } from "../ink/root.js";
@@ -135,7 +136,11 @@ function session(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
 }
 
 function stdio() {
+  let output = "";
   const stdout = new PassThrough();
+  stdout.on("data", chunk => {
+    output += chunk.toString();
+  });
   (stdout as unknown as { columns: number }).columns = 120;
   const stdin = new PassThrough() as PassThrough & {
     isTTY: boolean;
@@ -147,7 +152,21 @@ function stdio() {
   stdin.setRawMode = () => {};
   stdin.ref = () => {};
   stdin.unref = () => {};
-  return { stdin, stdout };
+  return {
+    stdin,
+    stdout,
+    output: () => stripAnsi(output),
+  };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, reject, resolve };
 }
 
 async function waitFor(check: () => boolean): Promise<void> {
@@ -177,6 +196,7 @@ async function renderDialog({
 
   return {
     onDone,
+    output: io.output,
     unmount: () => {
       root.unmount();
       io.stdin.end();
@@ -260,6 +280,8 @@ describe("WorktreeExitDialog", () => {
 
     try {
       await waitFor(() => selectMock.props !== undefined);
+
+      expect(dialogMock.props?.subtitle).toContain("1 uncommitted file");
       dialogMock.props?.onCancel();
       await waitFor(() => rendered.onDone.mock.calls.length > 0);
 
@@ -310,6 +332,46 @@ describe("WorktreeExitDialog", () => {
     }
   });
 
+  test("keeps tmux sessions when requested", async () => {
+    worktreeMock.session = session({ tmuxSessionName: "agent-tmux" });
+    execMock.revListStdout = "1\n";
+    const rendered = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      await selectMock.props?.onChange("keep-with-tmux");
+      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+
+      expect(worktreeMock.killTmuxSession).not.toHaveBeenCalled();
+      expect(worktreeMock.keepWorktree).toHaveBeenCalledOnce();
+      expect(rendered.onDone).toHaveBeenCalledWith(
+        "Worktree kept. Your work is saved at /repo-worktree on branch feature/test. Reattach to tmux session with: tmux attach -t agent-tmux",
+      );
+    } finally {
+      rendered.unmount();
+    }
+  });
+
+  test("removes tmux sessions and reports discarded branch commits", async () => {
+    worktreeMock.session = session({ tmuxSessionName: "agent-tmux" });
+    execMock.revListStdout = "2\n";
+    const rendered = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      await selectMock.props?.onChange("remove-with-tmux");
+      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+
+      expect(worktreeMock.killTmuxSession).toHaveBeenCalledWith("agent-tmux");
+      expect(worktreeMock.cleanupWorktree).toHaveBeenCalledOnce();
+      expect(rendered.onDone).toHaveBeenCalledWith(
+        "Worktree removed. 2 commits on feature/test were discarded. Tmux session terminated.",
+      );
+    } finally {
+      rendered.unmount();
+    }
+  });
+
   test("removes worktree and reports discarded work", async () => {
     execMock.statusStdout = " M src/a.ts\n";
     execMock.revListStdout = "1\n";
@@ -330,6 +392,133 @@ describe("WorktreeExitDialog", () => {
       );
     } finally {
       rendered.unmount();
+    }
+  });
+
+  test("reports uncommitted-only removal and explicit cleanup failures", async () => {
+    execMock.statusStdout = " M src/a.ts\n";
+    execMock.revListStdout = "0\n";
+    const removed = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      await selectMock.props?.onChange("remove");
+      await waitFor(() => removed.onDone.mock.calls.length > 0);
+
+      expect(removed.onDone).toHaveBeenCalledWith(
+        "Worktree removed. Uncommitted changes were discarded.",
+      );
+    } finally {
+      removed.unmount();
+    }
+
+    worktreeMock.cleanupWorktree.mockReset().mockRejectedValue(new Error("boom"));
+    execMock.statusStdout = " M src/a.ts\n";
+    selectMock.props = undefined;
+    const failed = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      await selectMock.props?.onChange("remove");
+      await waitFor(() => failed.onDone.mock.calls.length > 0);
+
+      expect(debugMock.logForDebugging).toHaveBeenCalledWith(
+        "Failed to clean up worktree: Error: boom",
+        { level: "error" },
+      );
+      expect(failed.onDone).toHaveBeenCalledWith(
+        "Worktree cleanup failed, exiting anyway",
+      );
+    } finally {
+      failed.unmount();
+    }
+  });
+
+  test("covers removal pluralization variants", async () => {
+    execMock.statusStdout = " M src/a.ts\n?? src/b.ts\n";
+    execMock.revListStdout = "0\n";
+    const uncommitted = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      expect(dialogMock.props?.subtitle).toContain("2 uncommitted files");
+      await selectMock.props?.onChange("remove");
+      await waitFor(() => uncommitted.onDone.mock.calls.length > 0);
+
+      expect(uncommitted.onDone).toHaveBeenCalledWith(
+        "Worktree removed. Uncommitted changes were discarded.",
+      );
+    } finally {
+      uncommitted.unmount();
+    }
+
+    selectMock.props = undefined;
+    execMock.statusStdout = "";
+    execMock.revListStdout = "1\n";
+    const oneCommit = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      await selectMock.props?.onChange("remove");
+      await waitFor(() => oneCommit.onDone.mock.calls.length > 0);
+
+      expect(oneCommit.onDone).toHaveBeenCalledWith(
+        "Worktree removed. 1 commit on feature/test was discarded.",
+      );
+    } finally {
+      oneCommit.unmount();
+    }
+
+    selectMock.props = undefined;
+    execMock.statusStdout = " M src/a.ts\n";
+    execMock.revListStdout = "2\n";
+    const commitsAndChanges = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      await selectMock.props?.onChange("remove");
+      await waitFor(() => commitsAndChanges.onDone.mock.calls.length > 0);
+
+      expect(commitsAndChanges.onDone).toHaveBeenCalledWith(
+        "Worktree removed. 2 commits and uncommitted changes were discarded.",
+      );
+    } finally {
+      commitsAndChanges.unmount();
+    }
+  });
+
+  test("renders keeping and removing progress while actions are pending", async () => {
+    execMock.statusStdout = " M src/a.ts\n";
+    const keep = deferred();
+    worktreeMock.keepWorktree.mockImplementationOnce(() => keep.promise);
+    const keeping = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      const keepAction = selectMock.props!.onChange("keep");
+      await waitFor(() => keeping.output().includes("Keeping worktree..."));
+      keep.resolve();
+      await keepAction;
+      await waitFor(() => keeping.onDone.mock.calls.length > 0);
+    } finally {
+      keeping.unmount();
+    }
+
+    execMock.statusStdout = " M src/a.ts\n";
+    const cleanup = deferred();
+    worktreeMock.cleanupWorktree.mockImplementationOnce(() => cleanup.promise);
+    selectMock.props = undefined;
+    const removing = await renderDialog();
+
+    try {
+      await waitFor(() => selectMock.props !== undefined);
+      const removeAction = selectMock.props!.onChange("remove");
+      await waitFor(() => removing.output().includes("Removing worktree..."));
+      cleanup.resolve();
+      await removeAction;
+      await waitFor(() => removing.onDone.mock.calls.length > 0);
+    } finally {
+      removing.unmount();
     }
   });
 
