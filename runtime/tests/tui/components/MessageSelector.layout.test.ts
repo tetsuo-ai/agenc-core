@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildMessageSelectorFileHistoryMetadata,
   computeMessageOptionTextWidth,
+  messagesAfterAreOnlySynthetic,
 } from './MessageSelector.js'
 
 describe('computeMessageOptionTextWidth', () => {
@@ -72,5 +73,91 @@ describe('buildMessageSelectorFileHistoryMetadata', () => {
         isFileHistoryEnabled: false,
       }),
     ).toEqual({})
+  })
+})
+
+describe('messagesAfterAreOnlySynthetic', () => {
+  it('treats system, progress, attachment, meta, tool-result, and empty assistant messages as non-meaningful', () => {
+    const messages = [
+      {
+        type: 'user',
+        uuid: 'starting-message',
+        message: { content: [{ type: 'text', text: 'start' }] },
+      },
+      { type: 'progress', uuid: 'progress-message' },
+      { type: 'system', uuid: 'system-message' },
+      { type: 'attachment', uuid: 'attachment-message' },
+      {
+        type: 'user',
+        uuid: 'meta-message',
+        isMeta: true,
+        message: { content: [{ type: 'text', text: 'metadata' }] },
+      },
+      {
+        type: 'user',
+        uuid: 'tool-result-message',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'done' }] },
+      },
+      {
+        type: 'assistant',
+        uuid: 'empty-assistant-message',
+        message: { content: [{ type: 'text', text: '   ' }] },
+      },
+    ]
+
+    expect(messagesAfterAreOnlySynthetic(messages as never, 0)).toBe(true)
+  })
+
+  it('flags assistant text after the selected message as meaningful', () => {
+    const messages = [
+      {
+        type: 'user',
+        uuid: 'starting-message',
+        message: { content: [{ type: 'text', text: 'start' }] },
+      },
+      {
+        type: 'assistant',
+        uuid: 'assistant-message',
+        message: { content: [{ type: 'text', text: 'meaningful output' }] },
+      },
+    ]
+
+    expect(messagesAfterAreOnlySynthetic(messages as never, 0)).toBe(false)
+  })
+
+  it('flags assistant tool use after the selected message as meaningful', () => {
+    const messages = [
+      {
+        type: 'user',
+        uuid: 'starting-message',
+        message: { content: [{ type: 'text', text: 'start' }] },
+      },
+      {
+        type: 'assistant',
+        uuid: 'assistant-tool-message',
+        message: {
+          content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: {} }],
+        },
+      },
+    ]
+
+    expect(messagesAfterAreOnlySynthetic(messages as never, 0)).toBe(false)
+  })
+
+  it('flags normal user messages after the selected message as meaningful', () => {
+    const messages = [
+      {
+        type: 'user',
+        uuid: 'starting-message',
+        message: { content: [{ type: 'text', text: 'start' }] },
+      },
+      {
+        type: 'user',
+        uuid: 'next-user-message',
+        message: { content: [{ type: 'text', text: 'next prompt' }] },
+      },
+    ]
+
+    expect(messagesAfterAreOnlySynthetic(messages as never, 0)).toBe(false)
   })
 })
