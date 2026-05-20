@@ -152,7 +152,7 @@ export function NativeAutoUpdater({
 
   // Check every 30 minutes
   useInterval(checkForUpdates, 30 * 60 * 1000);
-  const hasUpdateResult = !!autoUpdaterResult?.version;
+  const hasUpdateResult = autoUpdaterResult?.status === 'install_failed' || !!autoUpdaterResult?.version;
   const hasVersionInfo = !!versions.current && !!versions.latest;
   // Show the component when there is an update result to display or an active
   // check has version info to show.

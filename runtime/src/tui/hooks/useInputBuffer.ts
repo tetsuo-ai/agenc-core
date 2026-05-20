@@ -28,8 +28,10 @@ export function useInputBuffer({
   maxBufferSize,
   debounceMs,
 }: UseInputBufferProps): UseInputBufferResult {
-  const [buffer, setBuffer] = useState<BufferEntry[]>([])
-  const [currentIndex, setCurrentIndex] = useState(-1)
+  const [{ buffer, currentIndex }, setBufferState] = useState<{
+    buffer: BufferEntry[]
+    currentIndex: number
+  }>({ buffer: [], currentIndex: -1 })
   const lastPushTime = useRef<number>(0)
   const pendingPush = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -61,15 +63,20 @@ export function useInputBuffer({
 
       lastPushTime.current = now
 
-      setBuffer(prevBuffer => {
+      setBufferState(prevState => {
         // If we're not at the end of the buffer, truncate everything after current position
         const newBuffer =
-          currentIndex >= 0 ? prevBuffer.slice(0, currentIndex + 1) : prevBuffer
+          prevState.currentIndex >= 0
+            ? prevState.buffer.slice(0, prevState.currentIndex + 1)
+            : prevState.buffer
 
         // Don't add if it's the same as the last entry
         const lastEntry = newBuffer[newBuffer.length - 1]
         if (lastEntry && lastEntry.text === text) {
-          return newBuffer
+          return {
+            buffer: newBuffer,
+            currentIndex: newBuffer.length - 1,
+          }
         }
 
         // Add new entry
@@ -79,20 +86,18 @@ export function useInputBuffer({
         ]
 
         // Limit buffer size
-        if (updatedBuffer.length > maxBufferSize) {
-          return updatedBuffer.slice(-maxBufferSize)
+        const limitedBuffer =
+          updatedBuffer.length > maxBufferSize
+            ? updatedBuffer.slice(-maxBufferSize)
+            : updatedBuffer
+
+        return {
+          buffer: limitedBuffer,
+          currentIndex: limitedBuffer.length - 1,
         }
-
-        return updatedBuffer
-      })
-
-      // Update current index to point to the new entry
-      setCurrentIndex(prev => {
-        const newIndex = prev >= 0 ? prev + 1 : buffer.length
-        return Math.min(newIndex, maxBufferSize - 1)
       })
     },
-    [debounceMs, maxBufferSize, currentIndex, buffer.length],
+    [debounceMs, maxBufferSize],
   )
 
   const undo = useCallback((): BufferEntry | undefined => {
@@ -104,7 +109,10 @@ export function useInputBuffer({
     const entry = buffer[targetIndex]
 
     if (entry) {
-      setCurrentIndex(targetIndex)
+      setBufferState(prevState => ({
+        ...prevState,
+        currentIndex: Math.min(targetIndex, prevState.buffer.length - 1),
+      }))
       return entry
     }
 
@@ -112,8 +120,7 @@ export function useInputBuffer({
   }, [buffer, currentIndex])
 
   const clearBuffer = useCallback(() => {
-    setBuffer([])
-    setCurrentIndex(-1)
+    setBufferState({ buffer: [], currentIndex: -1 })
     lastPushTime.current = 0
     if (pendingPush.current) {
       clearTimeout(pendingPush.current)

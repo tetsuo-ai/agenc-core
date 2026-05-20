@@ -139,6 +139,42 @@ describe("ScrollKeybindingHandler wheel acceleration", () => {
     expect(state.wheelMode).toBe(false);
   });
 
+  test("drops native wheel mode after an idle gap before resolving a stale flip", () => {
+    const state = initWheelAccel(false, 2);
+
+    expect(computeWheelStep(state, 1, 1_000)).toBe(2);
+    expect(computeWheelStep(state, -1, 1_010)).toBe(0);
+    expect(computeWheelStep(state, 1, 1_020)).toBeGreaterThanOrEqual(5);
+    expect(state.wheelMode).toBe(true);
+
+    expect(computeWheelStep(state, -1, 1_030)).toBe(0);
+    expect(state.pendingFlip).toBe(true);
+
+    expect(computeWheelStep(state, 1, 2_600)).toBe(2);
+    expect(state.pendingFlip).toBe(false);
+    expect(state.wheelMode).toBe(false);
+    expect(state.mult).toBe(2);
+  });
+
+  test("treats sustained native wheel-mode bursts as trackpad device switches", () => {
+    const state = initWheelAccel(false, 1);
+    state.dir = 1;
+    state.time = 1_000;
+    state.mult = 7;
+    state.wheelMode = true;
+
+    expect(computeWheelStep(state, 1, 1_001)).toBe(1);
+    expect(computeWheelStep(state, 1, 1_002)).toBe(1);
+    expect(computeWheelStep(state, 1, 1_003)).toBe(1);
+    expect(computeWheelStep(state, 1, 1_004)).toBe(1);
+    expect(state.wheelMode).toBe(true);
+
+    expect(computeWheelStep(state, 1, 1_005)).toBe(1);
+    expect(state.wheelMode).toBe(false);
+    expect(state.burstCount).toBe(0);
+    expect(state.mult).toBeCloseTo(1.3);
+  });
+
   test("uses xterm.js decay, burst, reversal, and idle behavior", () => {
     const state = initWheelAccel(true, 1);
 
@@ -152,6 +188,19 @@ describe("ScrollKeybindingHandler wheel acceleration", () => {
     expect(state.frac).toBe(0);
 
     expect(computeWheelStep(state, -1, 1_700)).toBe(2);
+  });
+
+  test("carries fractional xterm.js scroll between sparse events", () => {
+    const state = initWheelAccel(true, 1);
+
+    expect(computeWheelStep(state, 1, 1_000)).toBe(2);
+
+    const firstSparse = computeWheelStep(state, 1, 1_400);
+    expect(firstSparse).toBe(1);
+    expect(state.frac).toBeGreaterThan(0.9);
+
+    expect(computeWheelStep(state, 1, 1_800)).toBe(2);
+    expect(state.frac).toBeGreaterThan(0);
   });
 });
 
@@ -200,6 +249,20 @@ describe("ScrollKeybindingHandler drag and jump helpers", () => {
         2,
         8,
         1,
+      ),
+    ).toBe(0);
+    expect(
+      dragScrollDirection(
+        { isDragging: true, focus: { row: 9 } } as never,
+        2,
+        8,
+      ),
+    ).toBe(0);
+    expect(
+      dragScrollDirection(
+        { isDragging: true, anchor: { row: 5 } } as never,
+        2,
+        8,
       ),
     ).toBe(0);
   });
@@ -277,6 +340,18 @@ describe("ScrollKeybindingHandler modal pager", () => {
       false,
     );
     expect(beforeJump).toHaveBeenCalledWith(9);
+
+    const pageUp = makeScrollBox({ scrollTop: 20, viewportHeight: 9 });
+    expect(applyModalPagerAction(pageUp.handle as never, "fullPageUp", beforeJump)).toBe(
+      false,
+    );
+    expect(beforeJump).toHaveBeenCalledWith(-9);
+
+    const halfDown = makeScrollBox({ scrollTop: 20, viewportHeight: 9 });
+    expect(
+      applyModalPagerAction(halfDown.handle as never, "halfPageDown", beforeJump),
+    ).toBe(false);
+    expect(beforeJump).toHaveBeenCalledWith(4);
 
     const top = makeScrollBox({ pendingDelta: 3, scrollTop: 20 });
     expect(applyModalPagerAction(top.handle as never, "top", beforeJump)).toBe(false);

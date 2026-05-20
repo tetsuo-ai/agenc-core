@@ -11,6 +11,35 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 let tempCwd = ''
 
+const harness = vi.hoisted(() => ({
+  commandInputs: [] as unknown[],
+  commandResults: [] as string[],
+  fileIndexLoads: [] as string[][],
+  fileIndexSearchError: null as Error | null,
+  fileIndexSearchQueries: [] as { limit: number; query: string }[],
+  fileIndexSearchResults: [] as { path: string; score?: number }[],
+  gitRoot: null as string | null,
+  logError: vi.fn(),
+  logEvent: vi.fn(),
+  ripGrep: vi.fn(async () => [] as string[]),
+  settings: {} as Record<string, unknown>,
+  yieldToEventLoop: vi.fn(async () => {}),
+  reset() {
+    this.commandInputs = []
+    this.commandResults = []
+    this.fileIndexLoads = []
+    this.fileIndexSearchError = null
+    this.fileIndexSearchQueries = []
+    this.fileIndexSearchResults = []
+    this.gitRoot = null
+    this.settings = {}
+    this.logError.mockClear()
+    this.logEvent.mockClear()
+    this.ripGrep.mockClear()
+    this.yieldToEventLoop.mockClear()
+  },
+}))
+
 vi.mock('../../utils/cwd.js', () => ({
   getCwd: () => tempCwd,
   pwd: () => tempCwd,
@@ -19,13 +48,11 @@ vi.mock('../../utils/cwd.js', () => ({
 
 // Avoid hitting the real analytics path during tests.
 vi.mock('../../services/analytics/index', () => ({
-  logEvent: () => {},
+  logEvent: harness.logEvent,
 }))
 
-// Stable settings: file suggestions use the in-process index path, not the
-// configurable hook command.
 vi.mock('../../utils/settings/settings.js', () => ({
-  getInitialSettings: () => ({}),
+  getInitialSettings: () => harness.settings,
 }))
 
 vi.mock('../../utils/config.js', () => ({
@@ -38,13 +65,37 @@ vi.mock('../../utils/config.js', () => ({
 // paths. Stub the few helpers fileSuggestions.ts imports so the module graph
 // stays small.
 vi.mock('../../utils/hooks.js', () => ({
-  createBaseHookInput: () => ({}),
-  executeFileSuggestionCommand: async () => [],
+  createBaseHookInput: () => ({ base: true }),
+  executeFileSuggestionCommand: async (input: unknown) => {
+    harness.commandInputs.push(input)
+    return harness.commandResults
+  },
 }))
 
 vi.mock('../../utils/markdownConfigLoader.js', () => ({
   AGENC_CONFIG_DIRECTORIES: [],
   loadMarkdownFilesForSubdir: async () => [],
+}))
+
+vi.mock('../../utils/git', () => ({
+  findGitRoot: () => harness.gitRoot,
+  gitExe: () => 'git',
+}))
+
+vi.mock('../../utils/log.js', () => ({
+  logError: harness.logError,
+}))
+
+vi.mock('../../utils/path.js', () => ({
+  expandPath: (value: string) => value.replace(/^~/, '/home/tester'),
+}))
+
+vi.mock('../../utils/ripgrep.js', () => ({
+  ripGrep: harness.ripGrep,
+}))
+
+vi.mock('src/utils/debug.js', () => ({
+  logForDebugging: () => {},
 }))
 
 // FileIndex is a Rust-backed native module the empty-query path does not need
@@ -53,25 +104,133 @@ vi.mock('../../utils/markdownConfigLoader.js', () => ({
 vi.mock('../ink/native-ts/file-index/index', () => ({
   CHUNK_MS: 4,
   FileIndex: class {
-    loadFromFileListAsync() {
+    loadFromFileListAsync(paths: string[]) {
+      harness.fileIndexLoads.push([...paths])
       return { done: Promise.resolve() }
     }
-    search() {
-      return []
+    search(query: string, limit: number) {
+      harness.fileIndexSearchQueries.push({ query, limit })
+      if (harness.fileIndexSearchError) throw harness.fileIndexSearchError
+      return harness.fileIndexSearchResults.slice(0, limit)
     }
     get readyCount() {
       return 0
     }
   },
-  yieldToEventLoop: async () => {},
+  yieldToEventLoop: harness.yieldToEventLoop,
 }))
 
 import {
   annotateBrokenSymlinks,
+  applyFileSuggestion,
   clearFileSuggestionCaches,
+  findLongestCommonPrefix,
   generateFileSuggestions,
+  getDirectoryNames,
+  getDirectoryNamesAsync,
   getHiddenTopLevelMatches,
+  pathListSignature,
 } from './fileSuggestions.js'
+
+beforeEach(() => {
+  harness.reset()
+})
+
+describe('fileSuggestions pure helpers', () => {
+  test('pathListSignature is stable and changes when sampled contents change', () => {
+    const original = ['src/a.ts', 'src/b.ts', 'src/c.ts']
+    const same = ['src/a.ts', 'src/b.ts', 'src/c.ts']
+    const middleChanged = ['src/a.ts', 'src/b-renamed.ts', 'src/c.ts']
+    const tailChanged = ['src/a.ts', 'src/b.ts', 'src/d.ts']
+
+    expect(pathListSignature([])).toBe(pathListSignature([]))
+    expect(pathListSignature(original)).toBe(pathListSignature(same))
+    expect(pathListSignature(original)).not.toBe(
+      pathListSignature(middleChanged),
+    )
+    expect(pathListSignature(original)).not.toBe(pathListSignature(tailChanged))
+  })
+
+  test('getDirectoryNames returns unique parent directories only', () => {
+    const dirs = getDirectoryNames([
+      'README.md',
+      'src/index.ts',
+      'src/utils/file.ts',
+      'src/utils/other.ts',
+    ])
+
+    expect(dirs).toEqual(['src' + sep, join('src', 'utils') + sep])
+    expect(dirs).not.toContain('.' + sep)
+  })
+
+  test('getDirectoryNamesAsync matches sync output and yields during long scans', async () => {
+    const files = Array.from(
+      { length: 257 },
+      (_, index) => join('src', `dir-${index}`, 'file.ts'),
+    )
+    const nowSpy = vi
+      .spyOn(performance, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(10)
+      .mockReturnValue(10)
+
+    try {
+      await expect(getDirectoryNamesAsync(files)).resolves.toEqual(
+        getDirectoryNames(files),
+      )
+      expect(harness.yieldToEventLoop).toHaveBeenCalledTimes(1)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  test('findLongestCommonPrefix handles empty, shared, and disjoint suggestions', () => {
+    expect(findLongestCommonPrefix([])).toBe('')
+    expect(
+      findLongestCommonPrefix([
+        { id: 'file-src/index.ts', displayText: 'src/index.ts' },
+        { id: 'file-src/input.ts', displayText: 'src/input.ts' },
+        { id: 'file-src/infra.ts', displayText: 'src/infra.ts' },
+      ]),
+    ).toBe('src/in')
+    expect(
+      findLongestCommonPrefix([
+        { id: 'file-src/index.ts', displayText: 'src/index.ts' },
+        { id: 'file-test/index.ts', displayText: 'test/index.ts' },
+      ]),
+    ).toBe('')
+  })
+
+  test('applyFileSuggestion accepts plain strings and suggestion items', () => {
+    const stringChange = vi.fn()
+    const stringCursor = vi.fn()
+    applyFileSuggestion(
+      'src/index.ts',
+      'open @sr now',
+      'sr',
+      6,
+      stringChange,
+      stringCursor,
+    )
+
+    expect(stringChange).toHaveBeenCalledWith('open @src/index.ts now')
+    expect(stringCursor).toHaveBeenCalledWith(18)
+
+    const itemChange = vi.fn()
+    const itemCursor = vi.fn()
+    applyFileSuggestion(
+      { id: 'file-tests/unit.ts', displayText: 'tests/unit.ts' },
+      'run @te',
+      'te',
+      5,
+      itemChange,
+      itemCursor,
+    )
+
+    expect(itemChange).toHaveBeenCalledWith('run @tests/unit.ts')
+    expect(itemCursor).toHaveBeenCalledWith(18)
+  })
+})
 
 describe('fileSuggestions hidden-file visibility', () => {
   beforeEach(() => {
@@ -136,6 +295,12 @@ describe('fileSuggestions hidden-file visibility', () => {
     expect(matches).toContain('.hideme')
     expect(matches).not.toContain('.hidden-file.txt')
   })
+
+  test('getHiddenTopLevelMatches returns no matches when cwd cannot be read', async () => {
+    rmSync(tempCwd, { recursive: true, force: true })
+
+    await expect(getHiddenTopLevelMatches('.hid')).resolves.toEqual([])
+  })
 })
 
 describe('fileSuggestions broken symlink annotation', () => {
@@ -169,6 +334,21 @@ describe('fileSuggestions broken symlink annotation', () => {
     expect(byName.get('broken-link')).toBe('(broken)')
   })
 
+  test('annotateBrokenSymlinks leaves vanished rows and absolute paths unchanged', () => {
+    writeFileSync(join(tempCwd, 'absolute.txt'), '')
+
+    const vanished = { id: 'file-vanished.txt', displayText: 'vanished.txt' }
+    const absolute = {
+      id: 'file-absolute.txt',
+      displayText: join(tempCwd, 'absolute.txt'),
+    }
+
+    expect(annotateBrokenSymlinks([vanished, absolute])).toEqual([
+      vanished,
+      absolute,
+    ])
+  })
+
   test('empty @ query annotates broken symlinks in the cwd', async () => {
     symlinkSync(
       join(tempCwd, 'missing-target'),
@@ -179,5 +359,91 @@ describe('fileSuggestions broken symlink annotation', () => {
     const dangling = items.find(i => i.displayText === 'dangling')
     expect(dangling).toBeDefined()
     expect(dangling!.description).toBe('(broken)')
+  })
+})
+
+describe('generateFileSuggestions edge branches', () => {
+  beforeEach(() => {
+    tempCwd = mkdtempSync(join(tmpdir(), 'agenc-file-suggestions-'))
+    clearFileSuggestionCaches()
+  })
+
+  afterEach(() => {
+    rmSync(tempCwd, { recursive: true, force: true })
+    tempCwd = ''
+  })
+
+  test('empty query returns nothing when showOnEmpty is disabled', async () => {
+    writeFileSync(join(tempCwd, 'visible.txt'), '')
+
+    await expect(generateFileSuggestions('', false)).resolves.toEqual([])
+    expect(harness.fileIndexSearchQueries).toEqual([])
+    expect(harness.ripGrep).not.toHaveBeenCalled()
+  })
+
+  test('custom command suggestions are query-aware and capped at max suggestions', async () => {
+    harness.settings = { fileSuggestion: { type: 'command' } }
+    harness.commandResults = Array.from(
+      { length: 20 },
+      (_, index) => `result-${index}.ts`,
+    )
+
+    const items = await generateFileSuggestions('src')
+
+    expect(harness.commandInputs).toEqual([{ base: true, query: 'src' }])
+    expect(items).toHaveLength(15)
+    expect(items[0]).toMatchObject({
+      displayText: 'result-0.ts',
+      id: 'file-result-0.ts',
+    })
+    expect(items[0]?.metadata).toBeUndefined()
+    expect(items[1]?.metadata).toBeUndefined()
+    expect(items.at(-1)?.displayText).toBe('result-14.ts')
+  })
+
+  test('non-empty search normalizes current-directory prefixes and backfills hidden matches', async () => {
+    writeFileSync(join(tempCwd, '.hidden-file.txt'), '')
+    writeFileSync(join(tempCwd, '.hideme'), '')
+    harness.fileIndexSearchResults = [{ path: '.hideme', score: 42 }]
+
+    const items = await generateFileSuggestions('./.hid')
+    const names = items.map(item => item.displayText)
+
+    expect(harness.fileIndexSearchQueries[0]).toEqual({
+      limit: 15,
+      query: '.hid',
+    })
+    expect(names.filter(name => name === '.hideme')).toHaveLength(1)
+    expect(names).toContain('.hidden-file.txt')
+    expect(items.find(item => item.displayText === '.hideme')?.metadata).toEqual(
+      { score: 42 },
+    )
+  })
+
+  test('tilde-prefixed search is expanded before querying the index', async () => {
+    await generateFileSuggestions('~/project')
+
+    expect(harness.fileIndexSearchQueries[0]).toEqual({
+      limit: 15,
+      query: '/home/tester/project',
+    })
+  })
+
+  test('parent-directory dotted searches do not backfill top-level dotfiles', async () => {
+    writeFileSync(join(tempCwd, '.hidden-file.txt'), '')
+
+    await expect(generateFileSuggestions('..')).resolves.toEqual([])
+    expect(harness.fileIndexSearchQueries[0]).toEqual({
+      limit: 15,
+      query: '..',
+    })
+  })
+
+  test('search errors are logged and return no suggestions', async () => {
+    const error = new Error('search failed')
+    harness.fileIndexSearchError = error
+
+    await expect(generateFileSuggestions('src')).resolves.toEqual([])
+    expect(harness.logError).toHaveBeenCalledWith(error)
   })
 })

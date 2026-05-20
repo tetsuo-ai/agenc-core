@@ -769,6 +769,249 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("formats render health warnings only for sustained low FPS", async () => {
+    const { formatRenderHealthWarning } = await import("./App.js");
+
+    expect(formatRenderHealthWarning(undefined)).toBeNull();
+    expect(
+      formatRenderHealthWarning({
+        averageFps: Number.NaN,
+        low1PctFps: Number.POSITIVE_INFINITY,
+        sampleCount: 10,
+      }),
+    ).toBe("Render health: average 0.0 FPS, 1% low 0.0 FPS");
+    expect(
+      formatRenderHealthWarning({
+        averageFps: 8,
+        low1PctFps: 2,
+        sampleCount: 9,
+      }),
+    ).toBeNull();
+    expect(
+      formatRenderHealthWarning({
+        averageFps: 25,
+        low1PctFps: 15,
+        sampleCount: 20,
+      }),
+    ).toBeNull();
+    expect(
+      formatRenderHealthWarning({
+        averageFps: 18.234,
+        low1PctFps: 30,
+        sampleCount: 20,
+      }),
+    ).toBe("Render health: average 18.2 FPS, 1% low 18.2 FPS");
+  });
+
+  test("formats stopped-agent notifications by count and description", async () => {
+    const { formatAgentsKilledNotification } = await import("./App.js");
+
+    expect(formatAgentsKilledNotification([])).toBeNull();
+    expect(formatAgentsKilledNotification([{ taskId: "task-1" }])).toBe(
+      "Stopped 1 background agent",
+    );
+    expect(
+      formatAgentsKilledNotification([
+        { taskId: "task-1" },
+        { description: " " },
+      ]),
+    ).toBe("Stopped 2 background agents");
+    expect(
+      formatAgentsKilledNotification([{ description: "Fix tests" }]),
+    ).toBe("Stopped background agent: Fix tests");
+    expect(
+      formatAgentsKilledNotification([
+        { description: "Fix tests" },
+        { description: "Review diff" },
+      ]),
+    ).toBe("Stopped 2 background agents: Fix tests, Review diff");
+  });
+
+  test("gates prompt input when another TUI surface owns input", async () => {
+    const { shouldShowPromptInputState } = await import("./App.js");
+
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: false,
+        permissionRequestCount: 0,
+        hasElicitationPrompt: false,
+        completionPipelineOwnsPrompt: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: true,
+        permissionRequestCount: 0,
+        hasElicitationPrompt: false,
+        completionPipelineOwnsPrompt: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: false,
+        permissionRequestCount: 1,
+        hasElicitationPrompt: false,
+        completionPipelineOwnsPrompt: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: false,
+        permissionRequestCount: 0,
+        hasElicitationPrompt: true,
+        completionPipelineOwnsPrompt: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: false,
+        permissionRequestCount: 0,
+        hasElicitationPrompt: false,
+        completionPipelineOwnsPrompt: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPromptInputState({
+        isMessageSelectorVisible: false,
+        permissionRequestCount: 0,
+        hasElicitationPrompt: false,
+        completionPipelineOwnsPrompt: false,
+        toolShouldHidePromptInput: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("parses MCP primitive field edge cases", async () => {
+    const { parseMcpField } = await import("./App.js");
+
+    expect(parseMcpField("", { type: "number" })).toEqual({
+      ok: false,
+      message: "must be a number",
+    });
+    expect(parseMcpField("abc", { type: "number" })).toEqual({
+      ok: false,
+      message: "must be a number",
+    });
+    expect(parseMcpField("0", { type: "number", minimum: 1 })).toEqual({
+      ok: false,
+      message: "must be at least 1",
+    });
+    expect(parseMcpField("3", { type: "number", maximum: 2 })).toEqual({
+      ok: false,
+      message: "must be at most 2",
+    });
+    expect(parseMcpField("2", { type: "integer" })).toEqual({
+      ok: true,
+      value: 2,
+    });
+    expect(parseMcpField("YES", { type: "boolean" })).toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(parseMcpField("0", { type: "boolean" })).toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(
+      parseMcpField("one, one", {
+        type: "array",
+        items: { type: "string" },
+        uniqueItems: true,
+      }),
+    ).toEqual({
+      ok: false,
+      message: "must not include duplicate values",
+    });
+    expect(
+      parseMcpField("", {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+      }),
+    ).toEqual({
+      ok: false,
+      message: "must include at least 1 item(s)",
+    });
+    expect(
+      parseMcpField("one, two, three", {
+        type: "array",
+        items: { type: "string" },
+        maxItems: 2,
+      }),
+    ).toEqual({
+      ok: false,
+      message: "must include at most 2 item(s)",
+    });
+    expect(parseMcpField("fallback", undefined)).toEqual({
+      ok: true,
+      value: "fallback",
+    });
+  });
+
+  test("renders elicitation overlays and null prompts", async () => {
+    const { ElicitationOverlay } = await import("./App.js");
+
+    expect(await renderApp(<ElicitationOverlay prompt={null} />)).not.toContain(
+      "MCP:",
+    );
+    const output = await renderApp(
+      <ElicitationOverlay
+        prompt={{
+          title: "MCP: files",
+          message: "Authorize files",
+          detailLines: ["https://127.0.0.1/auth", "Type decline to reject"],
+          placeholder: "Enter to accept",
+        }}
+      />,
+    );
+
+    expect(output).toContain("MCP:");
+    expect(output).toContain("files");
+    expect(output).toContain("Authorize");
+    expect(output).toContain("https://127.0.0.1/auth");
+    expect(output).toContain("Enter");
+    expect(output).toContain("accept");
+  });
+
+  test("subscribes to MCP URL completion events from session events", async () => {
+    const { subscribeToMcpUrlCompletions } = await import("./App.js");
+    let listener: ((event: unknown) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const completeMcpUrl = vi.fn();
+    const session = {
+      subscribeToEvents: vi.fn((callback: (event: unknown) => void) => {
+        listener = callback;
+        return unsubscribe;
+      }),
+    };
+
+    const stop = subscribeToMcpUrlCompletions(session, { completeMcpUrl });
+
+    listener?.(null);
+    listener?.({ type: "other" });
+    listener?.({
+      type: "mcp_elicitation_complete",
+      payload: { serverName: 1, elicitationId: "url-1" },
+    });
+    expect(completeMcpUrl).not.toHaveBeenCalled();
+
+    listener?.({
+      type: "mcp_elicitation_complete",
+      payload: { serverName: "srv", elicitationId: "url-1" },
+    });
+    expect(completeMcpUrl).toHaveBeenCalledWith(
+      "srv",
+      "url-1",
+      expect.objectContaining({ action: "accept" }),
+    );
+
+    stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(
+      subscribeToMcpUrlCompletions({}, { completeMcpUrl: vi.fn() }),
+    ).toEqual(expect.any(Function));
+  });
+
   test("App wrapper preserves provider wiring", async () => {
     const { App } = await import("./App.js");
     providerProbe.fpsGetters.length = 0;

@@ -54,11 +54,15 @@ let untrackedFetchPromise: Promise<void> | null = null
 
 // Store tracked files so we can rebuild index with untracked
 let cachedTrackedFiles: string[] = []
+// Store the latest normalized untracked files. The background untracked
+// command can finish before the tracked/config/directory cache is ready.
+let cachedUntrackedFiles: string[] = []
 // Store config files so mergeUntrackedIntoNormalizedCache preserves them
 let cachedConfigFiles: string[] = []
 // Store tracked directories so mergeUntrackedIntoNormalizedCache doesn't
 // recompute ~270k path.dirname() calls on each merge
 let cachedTrackedDirs: string[] = []
+let trackedCacheReadyForUntrackedMerge = false
 
 // Cache for project file-picker ignore patterns (keyed by repoRoot:cwd)
 let ignorePatternsCache: ReturnType<typeof ignore> | null = null
@@ -89,8 +93,10 @@ export function clearFileSuggestionCaches(): void {
   cacheGeneration++
   untrackedFetchPromise = null
   cachedTrackedFiles = []
+  cachedUntrackedFiles = []
   cachedConfigFiles = []
   cachedTrackedDirs = []
+  trackedCacheReadyForUntrackedMerge = false
   indexBuildComplete.clear()
   ignorePatternsCache = null
   ignorePatternsCacheKey = null
@@ -171,8 +177,10 @@ function normalizeGitPaths(
 async function mergeUntrackedIntoNormalizedCache(
   normalizedUntracked: string[],
 ): Promise<void> {
+  cachedUntrackedFiles = normalizedUntracked
   if (normalizedUntracked.length === 0) return
   if (!fileIndex || cachedTrackedFiles.length === 0) return
+  if (!trackedCacheReadyForUntrackedMerge) return
 
   const untrackedDirs = await getDirectoryNamesAsync(normalizedUntracked)
   const allPaths = [
@@ -536,6 +544,7 @@ async function getProjectFiles(
 export async function getPathsForSuggestions(): Promise<FileIndex> {
   const signal = AbortSignal.timeout(10_000)
   const index = getFileIndex()
+  trackedCacheReadyForUntrackedMerge = false
 
   try {
     // Check project settings first, then fall back to global config
@@ -574,6 +583,10 @@ export async function getPathsForSuggestions(): Promise<FileIndex> {
       logForDebugging(
         `[FileIndex] skipped index rebuild — tracked paths unchanged`,
       )
+    }
+    trackedCacheReadyForUntrackedMerge = true
+    if (cachedUntrackedFiles.length > 0) {
+      void mergeUntrackedIntoNormalizedCache(cachedUntrackedFiles)
     }
   } catch (error) {
     logError(error)
@@ -812,7 +825,9 @@ export async function generateFileSuggestions(
       query: partialPath,
     }
     const results = await executeFileSuggestionCommand(input)
-    return results.slice(0, MAX_SUGGESTIONS).map(createFileSuggestionItem)
+    return results
+      .slice(0, MAX_SUGGESTIONS)
+      .map(path => createFileSuggestionItem(path))
   }
 
   // If the partial path is empty or just a dot, return current directory suggestions

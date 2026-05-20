@@ -150,7 +150,6 @@ export function useArrowKeyHistory(onSetInput: (value: string, mode: HistoryMode
       if (historyCacheModeFilter.current !== modeFilter) {
         historyCache.current = [];
         historyCacheModeFilter.current = modeFilter;
-        historyIndexRef.current = 0;
       }
 
       // Load more entries if needed

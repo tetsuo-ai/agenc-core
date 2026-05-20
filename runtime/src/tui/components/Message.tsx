@@ -11,6 +11,8 @@ import { isAdvisorBlock } from '../../utils/advisor.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { logError } from '../../utils/log.js';
 import type { buildMessageLookups } from '../../utils/messages.js';
+import { isSnipMarkerMessage } from '../../services/compact/snipCompact.js';
+import { isSnipBoundaryMessage } from '../../services/compact/snipProjection.js';
 import {
   AdvisorMessage,
   AssistantRedactedThinkingMessage,
@@ -29,8 +31,7 @@ import {
   UserTextMessage,
   UserToolResultMessage,
 } from './Message.renderers.js';
-
-type AnyComponent = React.ComponentType<any>;
+import { SnipBoundaryMessage } from '../message-renderers/SnipBoundaryMessage.js';
 
 export function getToolResultMessageWidth(columns: number): number {
   return Math.max(1, columns - 5);
@@ -292,30 +293,14 @@ function MessageImpl(t0: Props): React.ReactNode {
           return null;
         }
         if (feature("HISTORY_SNIP")) {
-          const {
-            isSnipBoundaryMessage
-          } = require("../../services/compact/snipProjection.js") as { isSnipBoundaryMessage: (candidate: unknown) => boolean };
-          const {
-            isSnipMarkerMessage
-          } = require("../../services/compact/snipCompact.js") as { isSnipMarkerMessage: (candidate: unknown) => boolean };
           if (isSnipBoundaryMessage(message)) {
-            let t2;
-            if ($[65] === Symbol.for("react.memo_cache_sentinel")) {
-              t2 = require("../message-renderers/SnipBoundaryMessage.js");
-              $[65] = t2;
-            } else {
-              t2 = $[65];
-            }
-            const {
-              SnipBoundaryMessage
-            } = t2 as { SnipBoundaryMessage: AnyComponent };
             let t3;
-            if ($[66] !== message) {
+            if ($[65] !== message) {
               t3 = <SnipBoundaryMessage message={message} />;
-              $[66] = message;
-              $[67] = t3;
+              $[65] = message;
+              $[66] = t3;
             } else {
-              t3 = $[67];
+              t3 = $[66];
             }
             return t3;
           }

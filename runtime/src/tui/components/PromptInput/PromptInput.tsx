@@ -2049,7 +2049,12 @@ function PromptInput({
   const handleImagePaste = useCallback(() => {
     void getImageFromClipboard().then(imageData => {
       if (imageData) {
-        onImagePaste(imageData.base64, imageData.mediaType);
+        onImagePaste(
+          imageData.base64,
+          imageData.mediaType,
+          undefined,
+          imageData.dimensions,
+        );
       } else {
         const shortcutDisplay = getShortcutDisplay('chat:imagePaste', 'Chat', 'ctrl+v');
         const message = env.isSSH() ? "No image found in clipboard. You're SSH'd; try scp?" : `No image found in clipboard. Use ${shortcutDisplay} to paste images.`;
