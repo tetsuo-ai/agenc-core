@@ -812,7 +812,9 @@ export async function generateFileSuggestions(
       query: partialPath,
     }
     const results = await executeFileSuggestionCommand(input)
-    return results.slice(0, MAX_SUGGESTIONS).map(createFileSuggestionItem)
+    return results
+      .slice(0, MAX_SUGGESTIONS)
+      .map(result => createFileSuggestionItem(result))
   }
 
   // If the partial path is empty or just a dot, return current directory suggestions
