@@ -8,6 +8,11 @@ import { sourceUrl } from "../../../helpers/source-path.ts";
 import { createRoot } from "../../ink/root.js";
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { stringWidth } from "../../ink/stringWidth.js";
+import {
+  getSwarmSocketName,
+  SWARM_SESSION_NAME,
+  SWARM_VIEW_WINDOW_NAME,
+} from "../../../utils/swarm/constants.js";
 import { TeamsDialog } from "./TeamsDialog.js";
 import {
   getTeamListFooterText,
@@ -544,6 +549,203 @@ describe("TeamsDialog rendering", () => {
       expect(onDone).not.toHaveBeenCalled();
     } finally {
       harness.unmount();
+    }
+  });
+
+  test("navigates the list, opens teammate detail, and returns with left arrow", async () => {
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await harness.press("", { downArrow: true });
+      await harness.press("\r", { return: true }, 80);
+      expect(harness.getText()).toContain("@Planner");
+
+      await harness.press("", { leftArrow: true });
+      const output = harness.getText();
+      expect(output).toContain("Team alpha");
+      expect(output).toContain("@Fixer");
+      expect(output).toContain("@Planner");
+
+      await harness.press("", { upArrow: true });
+      await harness.press("\r", { return: true }, 80);
+      expect(harness.getText()).toContain("@Fixer");
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("successful teammate output selection closes the dialog", async () => {
+    const onDone = vi.fn();
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={onDone} />,
+    );
+
+    try {
+      await harness.press("\r", { return: true }, 80);
+      await harness.press("\r", { return: true }, 80);
+
+      expect(execFileNoThrowMock).toHaveBeenCalledWith("tmux", [
+        "-L",
+        getSwarmSocketName(),
+        "select-pane",
+        "-t",
+        "%1",
+      ]);
+      expect(onDone).toHaveBeenCalledTimes(1);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("kill actions update team state and surface failures", async () => {
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await harness.press("k", {}, 80);
+
+      expect(backendMock.backend.killPane).toHaveBeenCalledWith("%1", true);
+      expect(teamHelpersMock.removeMemberFromTeam).toHaveBeenCalledWith(
+        "alpha",
+        "%1",
+      );
+      expect(tasksMock.unassignTeammateTasks).toHaveBeenCalledWith(
+        "alpha",
+        "agent-fixer",
+        "Fixer",
+        "terminated",
+      );
+    } finally {
+      harness.unmount();
+    }
+
+    teammateStatusMock.statuses = [
+      {
+        ...defaultTeammateStatuses()[0],
+        backendType: undefined,
+        name: "Legacy",
+      },
+    ];
+    const failureHarness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await failureHarness.press("k", {}, 80);
+
+      expect(failureHarness.getText()).toContain(
+        "Cannot kill @Legacy: missing pane backend metadata.",
+      );
+    } finally {
+      failureHarness.unmount();
+    }
+  });
+
+  test("shutdown actions call teammate mailboxes and surface errors", async () => {
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await harness.press("s", {}, 80);
+      expect(mailboxMock.sendShutdownRequestToMailbox).toHaveBeenCalledWith(
+        "Fixer",
+        "alpha",
+        "Graceful shutdown requested by team lead",
+      );
+
+      mailboxMock.sendShutdownRequestToMailbox.mockRejectedValueOnce(
+        new Error("mailbox offline"),
+      );
+      await harness.press("s", {}, 80);
+
+      expect(harness.getText()).toContain(
+        "Cannot request shutdown for @Fixer: mailbox offline",
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("individual hide and show actions use backend visibility APIs", async () => {
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await harness.press("h", {}, 80);
+      expect(backendMock.backend.hidePane).toHaveBeenCalledWith("%1", true);
+      expect(teamHelpersMock.addHiddenPaneId).toHaveBeenCalledWith("alpha", "%1");
+
+      await harness.press("", { downArrow: true });
+      await harness.press("h", {}, 80);
+      expect(backendMock.backend.showPane).toHaveBeenCalledWith(
+        "%2",
+        `${SWARM_SESSION_NAME}:${SWARM_VIEW_WINDOW_NAME}`,
+        true,
+      );
+      expect(teamHelpersMock.removeHiddenPaneId).toHaveBeenCalledWith(
+        "alpha",
+        "%2",
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("bulk hide/show and prune operate on teammate groups", async () => {
+    const harness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await harness.press("H", {}, 80);
+      expect(backendMock.backend.hidePane).toHaveBeenCalledWith("%1", true);
+      expect(backendMock.backend.hidePane).toHaveBeenCalledWith("%2", true);
+    } finally {
+      harness.unmount();
+    }
+
+    teammateStatusMock.statuses = defaultTeammateStatuses().map(teammate => ({
+      ...teammate,
+      isHidden: true,
+    }));
+    backendMock.backend.hidePane.mockClear();
+    const showHarness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await showHarness.press("H", {}, 80);
+      expect(backendMock.backend.showPane).toHaveBeenCalledWith(
+        "%1",
+        `${SWARM_SESSION_NAME}:${SWARM_VIEW_WINDOW_NAME}`,
+        true,
+      );
+      expect(backendMock.backend.showPane).toHaveBeenCalledWith(
+        "%2",
+        `${SWARM_SESSION_NAME}:${SWARM_VIEW_WINDOW_NAME}`,
+        true,
+      );
+    } finally {
+      showHarness.unmount();
+    }
+
+    backendMock.backend.killPane.mockClear();
+    teammateStatusMock.statuses = defaultTeammateStatuses();
+    const pruneHarness = await createTeamsDialogHarness(
+      <TeamsDialog initialTeams={[{ name: "alpha" } as never]} onDone={() => {}} />,
+    );
+
+    try {
+      await pruneHarness.press("p", {}, 80);
+      expect(backendMock.backend.killPane).toHaveBeenCalledTimes(1);
+      expect(backendMock.backend.killPane).toHaveBeenCalledWith("%2", true);
+    } finally {
+      pruneHarness.unmount();
     }
   });
 });
