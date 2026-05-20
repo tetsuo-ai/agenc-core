@@ -8,8 +8,8 @@ const harness = vi.hoisted(() => ({
   appState: {
     agentNameRegistry: new Map<string, string>(),
     mcp: {
-      clients: [],
-      resources: [],
+      clients: [] as unknown[],
+      resources: [] as unknown[],
     },
     promptSuggestion: {
       acceptedAt: 0,
@@ -18,12 +18,14 @@ const harness = vi.hoisted(() => ({
       shownAt: 0,
       text: null as string | null,
     },
-    tasks: {},
-    teamContext: undefined,
+    tasks: {} as Record<string, { status?: string }>,
+    teamContext: undefined as unknown,
     viewingAgentTaskId: null as string | null,
   },
   directorySuggestions: [] as unknown[],
   keybindings: {} as Record<string, () => unknown>,
+  sessionTitleMatches: [] as unknown[],
+  shellCompletions: [] as unknown[],
   shellHistoryCompletion: null as null | {
     fullCommand: string
     suffix: string
@@ -45,6 +47,8 @@ const harness = vi.hoisted(() => ({
     harness.appState.viewingAgentTaskId = null
     harness.directorySuggestions = []
     harness.keybindings = {}
+    harness.sessionTitleMatches = []
+    harness.shellCompletions = []
     harness.shellHistoryCompletion = null
     harness.unifiedSuggestions = []
   },
@@ -114,13 +118,13 @@ vi.mock('../../utils/agentSwarmsEnabled', () => ({
 }))
 
 vi.mock('../../utils/bash/shellCompletion.js', () => ({
-  getShellCompletions: vi.fn(async () => []),
+  getShellCompletions: vi.fn(async () => harness.shellCompletions),
 }))
 
 vi.mock('../../utils/sessionStorage.js', () => ({
   getSessionIdFromLog: (log: { readonly sessionId?: string }) =>
     log.sessionId ?? 'session-1',
-  searchSessionsByCustomTitle: vi.fn(async () => []),
+  searchSessionsByCustomTitle: vi.fn(async () => harness.sessionTitleMatches),
 }))
 
 vi.mock('../../utils/suggestions/directoryCompletion.js', () => ({
@@ -441,6 +445,165 @@ describe('useTypeahead hook paths', () => {
         () => rendered.getSnapshot().suggestions.some(item => item.id === 'src/app.ts'),
         'file suggestions',
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('accepts bash history ghost text and single shell completion through autocomplete accept', async () => {
+    harness.shellHistoryCompletion = {
+      fullCommand: 'git status --short',
+      suffix: 'atus --short',
+    }
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: 'git st',
+      mode: 'bash',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().inlineGhostText?.fullCommand === 'git status --short',
+        'bash history ghost text',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('git status --short')
+      expect(setCursorOffset).toHaveBeenCalledWith('git status --short'.length)
+
+      harness.shellHistoryCompletion = null
+      harness.shellCompletions = [
+        {
+          displayText: 'grep',
+          id: 'grep',
+          metadata: { completionType: 'command' },
+        },
+      ]
+      rendered.rerender({ input: 'gr', mode: 'bash' })
+      await waitFor(
+        () => rendered.getSnapshot().inlineGhostText === undefined,
+        'cleared bash ghost text',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => onInputChange.mock.calls.some(call => call[0] === 'grep '),
+        'single shell completion applied',
+      )
+      expect(setCursorOffset).toHaveBeenCalledWith('grep '.length)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('applies teammate and slack trigger suggestions with enter', async () => {
+    harness.appState.teamContext = {
+      teammates: {
+        fixer: { name: 'Fixer' },
+        lead: { name: 'team-lead' },
+      },
+    }
+    harness.appState.agentNameRegistry.set('Planner', 'agent-planner')
+    harness.appState.tasks = {
+      'agent-planner': { status: 'running' },
+    }
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@Pl',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'agent',
+        'agent suggestions',
+      )
+      expect(rendered.getSnapshot().suggestions.map(item => item.displayText)).toEqual([
+        '@Planner',
+      ])
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('@Planner ')
+      expect(setCursorOffset).toHaveBeenCalledWith('@Planner '.length)
+
+      harness.appState.teamContext = undefined
+      harness.appState.agentNameRegistry = new Map()
+      harness.appState.mcp = {
+        clients: [{ name: 'slack' }],
+        resources: [],
+      }
+      harness.slackSuggestions = [
+        { displayText: '#general', id: 'slack-general', description: 'channel' },
+      ]
+      rendered.rerender({ input: '#gen', cursorOffset: 4 })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'slack-channel',
+        'slack channel suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('#general ')
+      expect(setCursorOffset).toHaveBeenCalledWith('#general '.length)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('handles directory command completion and resume title execution', async () => {
+    harness.directorySuggestions = [
+      {
+        displayText: 'src',
+        id: 'src',
+        metadata: { type: 'directory' },
+      },
+    ]
+    const onInputChange = vi.fn()
+    const onSubmit = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '/add-dir s',
+      onInputChange,
+      onSubmit,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'directory',
+        'directory suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => onInputChange.mock.calls.some(call => call[0] === '/add-dir src/'),
+        'directory suggestion applied',
+      )
+      expect(setCursorOffset).toHaveBeenCalledWith('/add-dir src/'.length)
+
+      harness.directorySuggestions = []
+      harness.sessionTitleMatches = [
+        {
+          customTitle: 'Sprint planning',
+          messageCount: 12,
+          modified: new Date('2026-05-20T00:00:00.000Z'),
+          sessionId: 'session-42',
+        },
+      ]
+      rendered.rerender({ input: '/resume Sprint', cursorOffset: '/resume Sprint'.length })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'custom-title',
+        'custom title suggestions',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).toHaveBeenCalledWith('/resume session-42')
+      expect(setCursorOffset).toHaveBeenCalledWith('/resume session-42'.length)
+      expect(onSubmit).toHaveBeenCalledWith('/resume session-42', true)
     } finally {
       await rendered.dispose()
     }
