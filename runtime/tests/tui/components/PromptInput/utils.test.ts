@@ -1,69 +1,165 @@
-import { describe, expect, test, vi } from 'vitest'
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type { GlobalConfig } from '../../../utils/config.js'
+import type { Key } from "../../ink.js";
 import {
   clampPromptTextInputColumns,
+  formatVimModeIndicator,
+  getNewlineInstructions,
+  isNonSpacePrintable,
   isVimModeEnabled,
   pasteReferenceLineThreshold,
-} from './utils.js'
+} from "./utils.js";
 
-vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ editorMode: 'normal' }),
-}))
+const mocks = vi.hoisted(() => ({
+  config: {
+    editorMode: "default",
+    hasUsedBackslashReturn: false,
+    shiftEnterKeyBindingInstalled: false,
+    tui: {} as { vimMode?: boolean },
+  },
+  env: {
+    terminal: "xterm",
+  },
+}));
 
-const baseConfig = {
-  editorMode: 'normal',
-} as GlobalConfig
+vi.mock("../../../utils/config.js", () => ({
+  getGlobalConfig: () => mocks.config,
+}));
 
-describe('PromptInput vim mode config', () => {
-  test('defaults off for normal editor mode', () => {
-    expect(isVimModeEnabled(baseConfig)).toBe(false)
-  })
+vi.mock("../../../utils/env.js", () => ({
+  env: mocks.env,
+}));
 
-  test('enables vim when tui.vimMode is true', () => {
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+function setPlatform(platform: NodeJS.Platform) {
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    value: platform,
+  });
+}
+
+function key(overrides: Partial<Key> = {}): Key {
+  return {
+    ctrl: false,
+    meta: false,
+    escape: false,
+    return: false,
+    tab: false,
+    backspace: false,
+    delete: false,
+    upArrow: false,
+    downArrow: false,
+    leftArrow: false,
+    rightArrow: false,
+    pageUp: false,
+    pageDown: false,
+    home: false,
+    end: false,
+    ...overrides,
+  } as Key;
+}
+
+afterEach(() => {
+  mocks.config.editorMode = "default";
+  mocks.config.hasUsedBackslashReturn = false;
+  mocks.config.shiftEnterKeyBindingInstalled = false;
+  mocks.config.tui = {};
+  mocks.env.terminal = "xterm";
+  if (originalPlatform) {
+    Object.defineProperty(process, "platform", originalPlatform);
+  }
+});
+
+describe("PromptInput utils", () => {
+  test("resolves vim mode from explicit TUI config before editor mode", () => {
     expect(
       isVimModeEnabled({
-        ...baseConfig,
-        editorMode: 'normal',
-        tui: { vimMode: true },
-      }),
-    ).toBe(true)
-  })
-
-  test('tui.vimMode false overrides legacy editorMode vim', () => {
-    expect(
-      isVimModeEnabled({
-        ...baseConfig,
-        editorMode: 'vim',
+        editorMode: "vim",
         tui: { vimMode: false },
-      }),
-    ).toBe(false)
-  })
-
-  test('falls back to legacy editorMode when tui.vimMode is absent', () => {
+      } as never),
+    ).toBe(false);
     expect(
       isVimModeEnabled({
-        ...baseConfig,
-        editorMode: 'vim',
-      }),
-    ).toBe(true)
-  })
-})
+        editorMode: "default",
+        tui: { vimMode: true },
+      } as never),
+    ).toBe(true);
+    expect(isVimModeEnabled({ editorMode: "vim" } as never)).toBe(true);
+    expect(isVimModeEnabled({ editorMode: "default" } as never)).toBe(false);
+  });
 
-describe('PromptInput terminal geometry helpers', () => {
-  test('clamps input columns to a valid width', () => {
-    expect(clampPromptTextInputColumns(0)).toBe(0)
-    expect(clampPromptTextInputColumns(4)).toBe(0)
-    expect(clampPromptTextInputColumns(5)).toBe(0)
-    expect(clampPromptTextInputColumns(80)).toBe(75)
-  })
+  test("formats vim mode indicators only when a mode is active", () => {
+    expect(formatVimModeIndicator(undefined)).toBeNull();
+    expect(formatVimModeIndicator("INSERT")).toBe("-- INSERT --");
+  });
 
-  test('keeps paste threshold usable on tiny terminal heights', () => {
-    expect(pasteReferenceLineThreshold(0)).toBe(1)
-    expect(pasteReferenceLineThreshold(9)).toBe(1)
-    expect(pasteReferenceLineThreshold(10)).toBe(1)
-    expect(pasteReferenceLineThreshold(11)).toBe(1)
-    expect(pasteReferenceLineThreshold(12)).toBe(2)
-    expect(pasteReferenceLineThreshold(24)).toBe(2)
-  })
-})
+  test("returns newline instructions for terminal and config states", () => {
+    mocks.env.terminal = "Apple_Terminal";
+    setPlatform("darwin");
+    expect(getNewlineInstructions()).toBe("shift + ⏎ for newline");
+
+    mocks.env.terminal = "xterm";
+    setPlatform("linux");
+    mocks.config.shiftEnterKeyBindingInstalled = true;
+    expect(getNewlineInstructions()).toBe("shift + ⏎ for newline");
+
+    mocks.config.shiftEnterKeyBindingInstalled = false;
+    mocks.config.hasUsedBackslashReturn = true;
+    expect(getNewlineInstructions()).toBe("\\⏎ for newline");
+
+    mocks.config.hasUsedBackslashReturn = false;
+    expect(getNewlineInstructions()).toBe(
+      "backslash (\\) + return (⏎) for newline",
+    );
+  });
+
+  test("clamps prompt input columns to the editable area", () => {
+    expect(clampPromptTextInputColumns(0)).toBe(0);
+    expect(clampPromptTextInputColumns(3)).toBe(0);
+    expect(clampPromptTextInputColumns(4)).toBe(0);
+    expect(clampPromptTextInputColumns(5)).toBe(0);
+    expect(clampPromptTextInputColumns(10)).toBe(5);
+    expect(clampPromptTextInputColumns(80)).toBe(75);
+  });
+
+  test("limits paste reference rows to one or two lines", () => {
+    expect(pasteReferenceLineThreshold(0)).toBe(1);
+    expect(pasteReferenceLineThreshold(5)).toBe(1);
+    expect(pasteReferenceLineThreshold(9)).toBe(1);
+    expect(pasteReferenceLineThreshold(10)).toBe(1);
+    expect(pasteReferenceLineThreshold(11)).toBe(1);
+    expect(pasteReferenceLineThreshold(12)).toBe(2);
+    expect(pasteReferenceLineThreshold(24)).toBe(2);
+    expect(pasteReferenceLineThreshold(40)).toBe(2);
+  });
+
+  test("rejects control/navigation keys as non-printable", () => {
+    for (const flag of [
+      "ctrl",
+      "meta",
+      "escape",
+      "return",
+      "tab",
+      "backspace",
+      "delete",
+      "upArrow",
+      "downArrow",
+      "leftArrow",
+      "rightArrow",
+      "pageUp",
+      "pageDown",
+      "home",
+      "end",
+    ] as const) {
+      expect(isNonSpacePrintable("x", key({ [flag]: true }))).toBe(false);
+    }
+  });
+
+  test("recognizes normal non-space printable input", () => {
+    expect(isNonSpacePrintable("", key())).toBe(false);
+    expect(isNonSpacePrintable(" x", key())).toBe(false);
+    expect(isNonSpacePrintable("\x1b[200~paste", key())).toBe(false);
+    expect(isNonSpacePrintable("x", key())).toBe(true);
+  });
+});
