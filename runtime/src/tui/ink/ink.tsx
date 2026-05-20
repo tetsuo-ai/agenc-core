@@ -368,6 +368,15 @@ export default class Ink {
     // layout is updated, causing a mismatch between viewport and content dimensions.
     if (this.currentNode !== null) {
       this.render(this.currentNode);
+      // If only terminal dimensions changed, React may produce no host
+      // mutations and therefore skip resetAfterCommit/onRender entirely.
+      // Alt-screen resize still dirties the frame buffers above, so consume
+      // the pending atomic clear+paint now after layout has been recalculated.
+      if (this.altScreenActive && this.needsEraseBeforePaint) {
+        this.scheduleRender.cancel?.();
+        this.rootNode.onComputeLayout?.();
+        this.onRender();
+      }
     }
   };
   resolveExitPromise: () => void = () => {};
