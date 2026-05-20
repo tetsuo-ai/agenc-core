@@ -53,9 +53,9 @@ describe('PromptInput vim mode config', () => {
 describe('PromptInput terminal geometry helpers', () => {
   test('clamps input columns to a valid width', () => {
     expect(clampPromptTextInputColumns(0)).toBe(0)
-    expect(clampPromptTextInputColumns(2)).toBe(0)
-    expect(clampPromptTextInputColumns(3)).toBe(0)
-    expect(clampPromptTextInputColumns(80)).toBe(77)
+    expect(clampPromptTextInputColumns(4)).toBe(0)
+    expect(clampPromptTextInputColumns(5)).toBe(0)
+    expect(clampPromptTextInputColumns(80)).toBe(75)
   })
 
   test('keeps paste threshold usable on tiny terminal heights', () => {
