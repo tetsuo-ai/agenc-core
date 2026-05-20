@@ -260,7 +260,7 @@ export function useMultiSelectState<T>({
           key.escape ||
           key.tab ||
           key.return ||
-          (key.ctrl && (input === 'n' || input === 'p' || key.return))
+          (key.ctrl && (input === 'n' || input === 'p'))
         if (!isAllowedKey) return
       }
 
