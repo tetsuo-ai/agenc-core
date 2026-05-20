@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream'
 
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
+import type { PastedContent } from '../../../utils/config.js'
 
 const harness = vi.hoisted(() => {
   const appState = {
@@ -579,6 +580,8 @@ vi.mock('./utils.js', async importOriginal => {
 })
 
 import { createRoot } from '../../ink/root.js'
+import { getImageFromClipboard } from '../../../utils/imagePaste.js'
+import { cacheImagePath, storeImage } from '../../../utils/imageStore.js'
 import PromptInput from './PromptInput.js'
 
 function sleep(ms: number): Promise<void> {
@@ -679,6 +682,27 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function createPastedContentsState(
+  initial: Record<number, PastedContent> = {},
+): {
+  readonly current: Record<number, PastedContent>
+  setPastedContents: ReturnType<typeof vi.fn>
+} {
+  let current = initial
+  const setPastedContents = vi.fn(
+    (next: React.SetStateAction<Record<number, PastedContent>>) => {
+      current = typeof next === 'function' ? next(current) : next
+    },
+  )
+
+  return {
+    get current() {
+      return current
+    },
+    setPastedContents,
+  }
+}
+
 async function renderPromptInput(overrides: Record<string, unknown> = {}) {
   harness.baseProps = undefined
   const { stdin, stdout } = createTestStreams()
@@ -709,6 +733,10 @@ async function renderPromptInput(overrides: Record<string, unknown> = {}) {
 describe('PromptInput render surface', () => {
   beforeEach(() => {
     harness.reset()
+    vi.mocked(getImageFromClipboard).mockReset()
+    vi.mocked(getImageFromClipboard).mockResolvedValue(null)
+    vi.mocked(cacheImagePath).mockClear()
+    vi.mocked(storeImage).mockClear()
   })
 
   test('wires base text input props for the idle prompt surface', async () => {
@@ -876,6 +904,121 @@ describe('PromptInput render surface', () => {
           key: 'no-image-in-clipboard',
         }),
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('pastes clipboard images as pills and lazy-spaces the next typed word', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'jpeg-data',
+      mediaType: 'image/jpeg',
+      dimensions: { width: 640, height: 480 },
+    })
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      onInputChange,
+      onModeChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      expect(getImageFromClipboard).toHaveBeenCalledTimes(1)
+      expect(onModeChange).toHaveBeenCalledWith('prompt')
+      expect(onInputChange).toHaveBeenCalledWith('[Image #1]')
+      expect(pastedContents.current).toEqual({
+        1: expect.objectContaining({
+          content: 'jpeg-data',
+          dimensions: { width: 640, height: 480 },
+          filename: 'Pasted image',
+          id: 1,
+          mediaType: 'image/jpeg',
+          type: 'image',
+        }),
+      })
+      expect(cacheImagePath).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, type: 'image' }),
+      )
+      expect(storeImage).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 1, type: 'image' }),
+      )
+
+      const inputFilter = baseProps.inputFilter as (
+        input: string,
+        key: Record<string, boolean>,
+      ) => string
+      expect(inputFilter('caption', {})).toBe(' caption')
+      expect(inputFilter('again', {})).toBe('again')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('prunes pasted image state when image pills are removed from input', async () => {
+    const referencedImage: PastedContent = {
+      id: 1,
+      type: 'image',
+      content: 'kept-image',
+      mediaType: 'image/png',
+      filename: 'kept.png',
+    }
+    const removedImage: PastedContent = {
+      id: 2,
+      type: 'image',
+      content: 'removed-image',
+      mediaType: 'image/png',
+      filename: 'removed.png',
+    }
+    const textPaste: PastedContent = {
+      id: 3,
+      type: 'text',
+      content: 'kept text',
+    }
+    const pastedContents = createPastedContentsState({
+      1: referencedImage,
+      2: removedImage,
+      3: textPaste,
+    })
+    const rendered = await renderPromptInput({
+      input: '[Image #1] [Image #2]',
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await sleep(25)
+      expect(pastedContents.current).toEqual({
+        1: referencedImage,
+        2: removedImage,
+        3: textPaste,
+      })
+
+      harness.baseProps = undefined
+      rendered.root.render(
+        <PromptInput
+          {...(basePromptInputProps({
+            input: '[Image #1]',
+            pastedContents: pastedContents.current,
+            setPastedContents: pastedContents.setPastedContents,
+          }) as never)}
+        />,
+      )
+      await waitForPromptInputProps()
+      await sleep(25)
+
+      expect(pastedContents.current).toEqual({
+        1: referencedImage,
+        3: textPaste,
+      })
     } finally {
       await rendered.dispose()
     }
