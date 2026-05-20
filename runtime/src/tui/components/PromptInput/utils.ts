@@ -35,7 +35,11 @@ export function getNewlineInstructions(): string {
 }
 
 export function clampPromptTextInputColumns(columns: number): number {
-  return Math.max(0, columns - 3)
+  // Bordered prompt layout consumes: left/right border (2), horizontal
+  // padding (2), and the prompt glyph cell (1). TextCursor subtracts one
+  // more display column internally for the cursor, so return the editable
+  // area plus that cursor column.
+  return Math.max(0, columns - 5)
 }
 
 export function pasteReferenceLineThreshold(rows: number): number {
