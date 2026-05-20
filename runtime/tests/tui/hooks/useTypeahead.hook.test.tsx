@@ -859,4 +859,234 @@ describe('useTypeahead hook paths', () => {
       await rendered.dispose()
     }
   })
+
+  test('tab accepts command and custom title suggestions without submitting them', async () => {
+    const onInputChange = vi.fn()
+    const onSubmit = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      commands: [command('help'), command('resume')],
+      input: '/h',
+      onInputChange,
+      onSubmit,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'command',
+        'command suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('/help ')
+      expect(setCursorOffset).toHaveBeenCalledWith('/help '.length)
+      expect(onSubmit).not.toHaveBeenCalled()
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      harness.sessionTitleMatches = [
+        {
+          customTitle: 'Sprint planning',
+          messageCount: 12,
+          modified: new Date('2026-05-20T00:00:00.000Z'),
+          sessionId: 'session-42',
+        },
+      ]
+      rendered.rerender({ input: '/resume Sprint', cursorOffset: '/resume Sprint'.length })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'custom-title',
+        'custom title suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('/resume session-42')
+      expect(setCursorOffset).toHaveBeenCalledWith('/resume session-42'.length)
+      expect(onSubmit).not.toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('tab accepts shell, teammate, and Slack suggestions', async () => {
+    harness.shellCompletions = [
+      {
+        displayText: 'grep',
+        id: 'grep',
+        metadata: { completionType: 'command', inputSnapshot: 'g' },
+      },
+      {
+        displayText: 'git',
+        id: 'git',
+        metadata: { completionType: 'command', inputSnapshot: 'g' },
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: 'g',
+      mode: 'bash',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      harness.keybindings['autocomplete:accept']?.()
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'shell',
+        'shell suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('grep ')
+      expect(setCursorOffset).toHaveBeenCalledWith('grep '.length)
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      harness.appState.teamContext = {
+        teammates: {
+          lead: { name: 'team-lead' },
+        },
+      }
+      harness.appState.agentNameRegistry.set('Planner', 'agent-planner')
+      harness.appState.tasks = {
+        'agent-planner': { status: 'idle' },
+      }
+      rendered.rerender({ input: '@Pl', mode: 'prompt', cursorOffset: 3 })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'agent',
+        'agent suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('@Planner ')
+      expect(setCursorOffset).toHaveBeenCalledWith('@Planner '.length)
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      harness.appState.teamContext = undefined
+      harness.appState.agentNameRegistry = new Map()
+      harness.appState.mcp = {
+        clients: [{ name: 'slack' }],
+        resources: [],
+      }
+      harness.slackSuggestions = [
+        { displayText: '#general', id: 'slack-general', description: 'channel' },
+      ]
+      rendered.rerender({ input: '#gen', cursorOffset: 4 })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'slack-channel',
+        'slack channel suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('#general ')
+      expect(setCursorOffset).toHaveBeenCalledWith('#general '.length)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('tab applies file suggestions as common prefixes and exact selections', async () => {
+    harness.unifiedSuggestions = [
+      {
+        id: 'src/app.ts',
+        displayText: 'src/app.ts',
+        description: 'file',
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '@sr',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'file suggestions',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('@src/app.ts')
+      expect(setCursorOffset).toHaveBeenCalledWith('@src/app.ts'.length)
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      rendered.rerender({ input: '@src/app.ts', cursorOffset: '@src/app.ts'.length })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'file',
+        'exact file suggestion',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('@src/app.ts ')
+      expect(setCursorOffset).toHaveBeenCalledWith('@src/app.ts '.length)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('tab handles directory suggestions in command and general path contexts', async () => {
+    harness.directorySuggestions = [
+      {
+        displayText: 'README.md',
+        id: 'README.md',
+        metadata: { type: 'file' },
+      },
+    ]
+    const onInputChange = vi.fn()
+    const setCursorOffset = vi.fn()
+    const rendered = await renderHookHarness({
+      input: '/add-dir R',
+      onInputChange,
+      setCursorOffset,
+    })
+
+    try {
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'directory',
+        'command file suggestion',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('/add-dir README.md ')
+      expect(setCursorOffset).toHaveBeenCalledWith('/add-dir README.md '.length)
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      harness.directorySuggestions = [
+        {
+          displayText: '/tmp/project',
+          id: '/tmp/project',
+          metadata: { type: 'directory' },
+        },
+      ]
+      rendered.rerender({ input: '@/tm', cursorOffset: '@/tm'.length })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'directory',
+        'general path directory suggestion',
+      )
+
+      harness.keybindings['autocomplete:accept']?.()
+      expect(onInputChange).toHaveBeenCalledWith('@/tmp/project/')
+      expect(setCursorOffset).toHaveBeenCalledWith('@/tmp/project/'.length)
+
+      onInputChange.mockClear()
+      setCursorOffset.mockClear()
+      rendered.rerender({ input: '/add-dir /tmp', cursorOffset: '/add-dir /tmp'.length })
+      await waitFor(
+        () => rendered.getSnapshot().suggestionType === 'directory',
+        'enter clears command directory suggestion',
+      )
+
+      rendered.getSnapshot().handleKeyDown(createKey('return'))
+      expect(onInputChange).not.toHaveBeenCalled()
+      expect(setCursorOffset).not.toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
 })
