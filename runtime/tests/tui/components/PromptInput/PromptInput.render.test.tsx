@@ -45,10 +45,23 @@ const harness = vi.hoisted(() => {
       error: string | null
     },
     keybindings: {} as Record<string, () => unknown>,
+    inputHandlers: [] as Array<{
+      handler: (input: string, key: Record<string, boolean>, event?: unknown) => unknown
+      options?: Record<string, unknown>
+    }>,
     logEvent: vi.fn(),
     onRender: vi.fn(),
     pushToBuffer: vi.fn(),
     removeNotification: vi.fn(),
+    updateSettingsForSource: vi.fn(),
+    fastMode: {
+      available: false,
+      cooldown: false,
+      enabled: false,
+      runtimeState: { status: 'available' },
+      supportedByModel: true,
+      unavailableReason: null as string | null,
+    },
     reset: () => {
       harness.addNotification.mockClear()
       harness.clearBuffer.mockClear()
@@ -59,6 +72,7 @@ const harness = vi.hoisted(() => {
       harness.baseProps = undefined
       harness.editPromptResult = { content: null, error: null }
       harness.keybindings = {}
+      harness.inputHandlers = []
       appState.coordinatorTaskIndex = -1
       appState.footerSelection = null
       appState.promptSuggestion = {
@@ -71,6 +85,15 @@ const harness = vi.hoisted(() => {
       appState.speculation = { status: 'inactive' }
       appState.viewingAgentTaskId = null
       appState.viewSelectionMode = null
+      harness.updateSettingsForSource.mockClear()
+      harness.fastMode = {
+        available: false,
+        cooldown: false,
+        enabled: false,
+        runtimeState: { status: 'available' },
+        supportedByModel: true,
+        unavailableReason: null,
+      }
     },
     setAppState: vi.fn((updater: unknown) => {
       const next =
@@ -195,7 +218,12 @@ vi.mock('../../ink.js', async () => {
       ReactModule.createElement(ReactModule.Fragment, null, children),
     Text: ({ children }: { readonly children?: React.ReactNode }) =>
       ReactModule.createElement(ReactModule.Fragment, null, children),
-    useInput: vi.fn(),
+    useInput: (
+      handler: (input: string, key: Record<string, boolean>, event?: unknown) => unknown,
+      options?: Record<string, unknown>,
+    ) => {
+      harness.inputHandlers.push({ handler, options })
+    },
   }
 })
 
@@ -310,12 +338,12 @@ vi.mock('../../../utils/fastMode.js', () => ({
   FAST_MODE_MODEL_DISPLAY: 'fast-model',
   clearFastModeCooldown: vi.fn(),
   getFastModeModel: () => 'fast-model',
-  getFastModeRuntimeState: () => ({ status: 'available' }),
-  getFastModeUnavailableReason: () => null,
-  isFastModeAvailable: () => false,
-  isFastModeCooldown: () => false,
-  isFastModeEnabled: () => false,
-  isFastModeSupportedByModel: () => true,
+  getFastModeRuntimeState: () => harness.fastMode.runtimeState,
+  getFastModeUnavailableReason: () => harness.fastMode.unavailableReason,
+  isFastModeAvailable: () => harness.fastMode.available,
+  isFastModeCooldown: () => harness.fastMode.cooldown,
+  isFastModeEnabled: () => harness.fastMode.enabled,
+  isFastModeSupportedByModel: () => harness.fastMode.supportedByModel,
 }))
 
 vi.mock('../../../utils/fullscreen.js', () => ({
@@ -369,7 +397,7 @@ vi.mock('../../../utils/promptEditor.js', () => ({
 
 vi.mock('../../../utils/settings/settings.js', () => ({
   hasAutoModeOptIn: () => true,
-  updateSettingsForSource: vi.fn(),
+  updateSettingsForSource: harness.updateSettingsForSource,
 }))
 
 vi.mock('../../../utils/suggestions/commandSuggestions.js', () => ({
@@ -578,6 +606,21 @@ async function waitForPromptInputProps(): Promise<Record<string, unknown>> {
     await sleep(10)
   }
   throw new Error('PromptInput base props were not captured')
+}
+
+async function waitForInputHandlerCount(count: number): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < 1000) {
+    if (harness.inputHandlers.length >= count) return
+    await sleep(10)
+  }
+  throw new Error(`Expected at least ${count} input handlers, got ${harness.inputHandlers.length}`)
+}
+
+function latestInputHandler(): (input: string, key: Record<string, boolean>) => unknown {
+  const latest = harness.inputHandlers.at(-1)
+  if (!latest) throw new Error('No input handler registered')
+  return latest.handler
 }
 
 function basePromptInputProps(overrides: Record<string, unknown> = {}) {
@@ -818,6 +861,72 @@ describe('PromptInput render surface', () => {
         expect.objectContaining({
           key: 'no-image-in-clipboard',
         }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('opens fast mode picker and enables fast mode with model switch when confirmed', async () => {
+    harness.fastMode.enabled = true
+    harness.fastMode.available = true
+    harness.fastMode.supportedByModel = false
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      helpOpen: true,
+      setHelpOpen,
+    })
+
+    try {
+      await waitForPromptInputProps()
+      const handlersBeforePicker = harness.inputHandlers.length
+      harness.keybindings['chat:fastMode']?.()
+      await waitForInputHandlerCount(handlersBeforePicker + 1)
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+
+      latestInputHandler()(' ', { tab: false })
+      await sleep(25)
+      latestInputHandler()('', { return: true })
+      await sleep(25)
+
+      expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
+        'userSettings',
+        { fastMode: true },
+      )
+      expect(harness.appState.fastMode).toBe(true)
+      expect(harness.appState.mainLoopModel).toBe('fast-model')
+      expect(harness.appState.mainLoopModelForSession).toBeNull()
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'fast-mode-toggled' }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('cancels unavailable fast mode by disabling an existing fast-mode session', async () => {
+    harness.appState.fastMode = true
+    harness.fastMode.enabled = true
+    harness.fastMode.available = true
+    harness.fastMode.unavailableReason = 'Fast mode unavailable'
+    const rendered = await renderPromptInput()
+
+    try {
+      await waitForPromptInputProps()
+      const handlersBeforePicker = harness.inputHandlers.length
+      harness.keybindings['chat:fastMode']?.()
+      await waitForInputHandlerCount(handlersBeforePicker + 1)
+
+      latestInputHandler()('', { escape: true })
+      await sleep(25)
+
+      expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
+        'userSettings',
+        { fastMode: undefined },
+      )
+      expect(harness.appState.fastMode).toBe(false)
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'fast-mode-toggled' }),
       )
     } finally {
       await rendered.dispose()
