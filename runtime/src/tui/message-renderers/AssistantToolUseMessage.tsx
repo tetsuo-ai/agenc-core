@@ -219,16 +219,17 @@ export function AssistantToolUseMessage(t0) {
   } else {
     t14 = $[72];
   }
+  const queuedDetail = typeof t14 === "string" ? <Text dimColor={true}>{t14}</Text> : t14;
   const toolState: ToolState = lookups.erroredToolUseIDs.has(param.id) ? "failed" : isResolved ? "done" : isQueued ? "queued" : "running";
   const toolArgs = typeof renderedToolUseMessage === "string" && renderedToolUseMessage.length > 0 ? renderedToolUseMessage : summarizeToolInput(input_0.data);
   const extraDetail = typeof renderedToolUseMessage === "string" ? null : renderedToolUseMessage;
   let t15;
-  if ($[73] !== extraDetail || $[74] !== t11 || $[75] !== t13 || $[76] !== t14) {
-    t15 = extraDetail || t11 || t13 || t14 ? <Box flexDirection="column">{extraDetail}{t11}{t13}{t14}</Box> : null;
+  if ($[73] !== extraDetail || $[74] !== t11 || $[75] !== t13 || $[76] !== queuedDetail) {
+    t15 = extraDetail || t11 || t13 || queuedDetail ? <Box flexDirection="column">{extraDetail}{t11}{t13}{queuedDetail}</Box> : null;
     $[73] = extraDetail;
     $[74] = t11;
     $[75] = t13;
-    $[76] = t14;
+    $[76] = queuedDetail;
     $[77] = t15;
   } else {
     t15 = $[77];

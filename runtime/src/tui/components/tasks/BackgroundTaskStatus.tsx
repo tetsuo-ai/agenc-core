@@ -104,9 +104,9 @@ export function BackgroundTaskStatus(t0) {
   if (allTeammates || !showSpinnerTree && isViewingTeammate) {
     const selectedIdx = tasksSelected ? teammateFooterIndex : -1;
     let t8;
-    if ($[12] !== teammateEntries || $[13] !== viewingAgentTaskId) {
-      t8 = viewingAgentTaskId ? teammateEntries.findIndex(t_3 => t_3.id === viewingAgentTaskId) + 1 : 0;
-      $[12] = teammateEntries;
+    if ($[12] !== allPills || $[13] !== viewingAgentTaskId) {
+      t8 = viewingAgentTaskId ? allPills.findIndex(t_3 => t_3.taskId === viewingAgentTaskId) : 0;
+      $[12] = allPills;
       $[13] = viewingAgentTaskId;
       $[14] = t8;
     } else {

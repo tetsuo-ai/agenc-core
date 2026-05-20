@@ -1,204 +1,183 @@
-import { PassThrough } from "node:stream";
-import React from "react";
-import stripAnsi from "strip-ansi";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PassThrough } from 'node:stream'
 
-import type { McpServerConfig, ScopedMcpServerConfig } from "../../services/mcp/types.js";
-import { createRoot } from "../ink/root.js";
+import React from 'react'
+import stripAnsi from 'strip-ansi'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const configMock = vi.hoisted(() => {
-  const state = {
-    existingServers: {} as Record<string, ScopedMcpServerConfig>,
-  };
+import type {
+  ConfigScope,
+  McpServerConfig,
+  ScopedMcpServerConfig,
+} from '../../services/mcp/types.js'
+import { createRoot } from '../ink/root.js'
+import { renderToString } from '../../utils/staticRender.js'
+import { MCPServerDesktopImportDialog } from './MCPServerDesktopImportDialog.js'
 
-  return {
-    state,
-    addMcpConfig: vi.fn(async () => {}),
-    getAllMcpConfigs: vi.fn(async () => ({ servers: state.existingServers })),
-  };
-});
-
-const dialogMock = vi.hoisted(() => ({
-  props: undefined as
-    | undefined
-    | {
-      title: React.ReactNode;
-      subtitle?: React.ReactNode;
-      color?: string;
-      onCancel: () => void;
-      hideInputGuide?: boolean;
-      children: React.ReactNode;
-    },
-}));
-
-const selectMultiMock = vi.hoisted(() => ({
-  props: undefined as
-    | undefined
-    | {
-      options: { label: string; value: string }[];
-      defaultValue?: string[];
-      onSubmit?: (values: string[]) => void | Promise<void>;
-      onCancel: () => void;
-      hideIndexes?: boolean;
-    },
-  renderCount: 0,
-}));
-
-const processMock = vi.hoisted(() => ({
-  writeToStdout: vi.fn(),
-}));
-
-const shutdownMock = vi.hoisted(() => ({
-  gracefulShutdown: vi.fn(),
-}));
-
-const themeMock = vi.hoisted(() => ({
-  theme: {},
-}));
-
-vi.mock("../../services/mcp/config.js", () => ({
-  addMcpConfig: configMock.addMcpConfig,
-  getAllMcpConfigs: configMock.getAllMcpConfigs,
-}));
-
-vi.mock("../../utils/gracefulShutdown.js", () => ({
-  gracefulShutdown: shutdownMock.gracefulShutdown,
-}));
-
-vi.mock("src/utils/process.js", () => ({
-  writeToStdout: processMock.writeToStdout,
-}));
-
-vi.mock("../ink.js", async () => {
-  const actual = await vi.importActual<typeof import("../ink.js")>("../ink.js");
-  return {
-    ...actual,
-    color: () => (text: string) => text,
-    useTheme: () => [themeMock.theme],
-  };
-});
-
-vi.mock("./CustomSelect/SelectMulti.js", () => ({
-  SelectMulti: (props: NonNullable<typeof selectMultiMock.props>) => {
-    selectMultiMock.props = props;
-    selectMultiMock.renderCount++;
-    return null;
-  },
-}));
-
-vi.mock("./design-system/Dialog.js", () => ({
-  Dialog: (props: NonNullable<typeof dialogMock.props>) => {
-    dialogMock.props = props;
-    return props.children;
-  },
-}));
-
-vi.mock("./ConfigurableShortcutHint.js", () => ({
-  ConfigurableShortcutHint: ({
-    fallback,
-    description,
-  }: {
-    fallback: string;
-    description: string;
-  }) => `${fallback} ${description}`,
-}));
-
-vi.mock("./design-system/Byline.js", () => ({
-  Byline: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
-vi.mock("./design-system/KeyboardShortcutHint.js", () => ({
-  KeyboardShortcutHint: ({
-    shortcut,
-    action,
-  }: {
-    shortcut: string;
-    action: string;
-  }) => `${shortcut} ${action}`,
-}));
-
-function stdio() {
-  let output = "";
-  const stdout = new PassThrough();
-  stdout.on("data", chunk => {
-    output += chunk.toString();
-  });
-  (stdout as unknown as { columns: number }).columns = 120;
-
-  const stdin = new PassThrough() as PassThrough & {
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
-    ref: () => void;
-    unref: () => void;
-  };
-  stdin.isTTY = true;
-  stdin.setRawMode = () => {};
-  stdin.ref = () => {};
-  stdin.unref = () => {};
-
-  return {
-    stdout,
-    stdin,
-    output: () => stripAnsi(output),
-    end: () => {
-      stdin.end();
-      stdout.end();
-    },
-  };
+type SelectOption = {
+  label: string
+  value: string
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt++) {
-    if (check()) return;
-    await new Promise(resolve => setTimeout(resolve, 10));
+type CapturedSelectMultiProps = {
+  options: SelectOption[]
+  defaultValue?: string[]
+  onSubmit?: (values: string[]) => Promise<void>
+  onCancel: () => void
+  hideIndexes?: boolean
+}
+
+type CapturedDialogProps = {
+  title: React.ReactNode
+  subtitle?: React.ReactNode
+  children: React.ReactNode
+  onCancel: () => void
+  color?: string
+  hideInputGuide?: boolean
+}
+
+const harness = vi.hoisted(() => ({
+  addMcpConfig: vi.fn(),
+  dialogProps: undefined as CapturedDialogProps | undefined,
+  getAllMcpConfigs: vi.fn(),
+  gracefulShutdown: vi.fn(),
+  selectProps: undefined as CapturedSelectMultiProps | undefined,
+  writeToStdout: vi.fn(),
+}))
+
+vi.mock('../../services/mcp/config.js', () => ({
+  addMcpConfig: harness.addMcpConfig,
+  getAllMcpConfigs: harness.getAllMcpConfigs,
+}))
+
+vi.mock('../../utils/gracefulShutdown.js', () => ({
+  gracefulShutdown: harness.gracefulShutdown,
+}))
+
+vi.mock('src/utils/process.js', () => ({
+  writeToStdout: harness.writeToStdout,
+}))
+
+vi.mock('./design-system/Dialog.js', async () => {
+  const ReactActual = await vi.importActual<typeof import('react')>('react')
+  return {
+    Dialog: (props: CapturedDialogProps) => {
+      harness.dialogProps = props
+      return ReactActual.createElement(
+        ReactActual.Fragment,
+        null,
+        ReactActual.createElement('ink-text', null, String(props.title)),
+        props.subtitle
+          ? ReactActual.createElement('ink-text', null, String(props.subtitle))
+          : null,
+        props.children,
+      )
+    },
+  }
+})
+
+vi.mock('./CustomSelect/SelectMulti.js', async () => {
+  const ReactActual = await vi.importActual<typeof import('react')>('react')
+  return {
+    SelectMulti: (props: CapturedSelectMultiProps) => {
+      harness.selectProps = props
+      return ReactActual.createElement(
+        'ink-text',
+        null,
+        props.options.map(option => option.label).join('\n'),
+      )
+    },
+  }
+})
+
+const DESKTOP_SERVERS = {
+  filesystem: { type: 'stdio', command: 'node', args: ['fs-server.js'] },
+  docs: { type: 'http', url: 'https://docs.example.test/mcp' },
+} satisfies Record<string, McpServerConfig>
+
+function scoped(
+  config: McpServerConfig,
+  scope: ConfigScope = 'user',
+): ScopedMcpServerConfig {
+  return { ...config, scope }
+}
+
+function createStreams(): {
+  stdout: PassThrough
+  stdin: PassThrough & {
+    isTTY: boolean
+    ref: () => void
+    setRawMode: (mode: boolean) => void
+    unref: () => void
+  }
+} {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean
+    ref: () => void
+    setRawMode: (mode: boolean) => void
+    unref: () => void
   }
 
-  throw new Error("condition was not met");
+  stdin.isTTY = true
+  stdin.ref = () => {}
+  stdin.setRawMode = () => {}
+  stdin.unref = () => {}
+  ;(stdout as unknown as { columns: number; rows: number }).columns = 120
+  ;(stdout as unknown as { columns: number; rows: number }).rows = 30
+  stdout.resume()
+
+  return { stdin, stdout }
 }
 
-async function waitForDefaultValue(values: string[]): Promise<void> {
-  await waitFor(() => {
-    const defaultValue = selectMultiMock.props?.defaultValue ?? [];
-    return (
-      defaultValue.length === values.length &&
-      defaultValue.every((value, index) => value === values[index])
-    );
-  });
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function nextRenderTick(): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, 10));
+async function waitFor(
+  predicate: () => boolean,
+  message: string,
+  timeoutMs = 1000,
+): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return
+    await sleep(10)
+  }
+  throw new Error(message)
 }
 
-const alphaServer = {
-  type: "stdio",
-  command: "alpha-mcp",
-  args: ["--stdio"],
-} satisfies McpServerConfig;
+function selectProps(): CapturedSelectMultiProps {
+  if (!harness.selectProps) {
+    throw new Error('SelectMulti props were not captured')
+  }
+  return harness.selectProps
+}
 
-const betaServer = {
-  type: "http",
-  url: "https://example.test/mcp",
-} satisfies McpServerConfig;
+function dialogProps(): CapturedDialogProps {
+  if (!harness.dialogProps) {
+    throw new Error('Dialog props were not captured')
+  }
+  return harness.dialogProps
+}
 
-async function renderImportDialog({
-  servers,
-  scope = "project",
-  onDone = vi.fn(),
+async function renderDialog({
+  servers = DESKTOP_SERVERS,
+  existingServers = {},
+  scope = 'user',
 }: {
-  servers: Record<string, McpServerConfig>;
-  scope?: "local" | "user" | "project";
-  onDone?: () => void;
-}) {
-  const { MCPServerDesktopImportDialog } = await import(
-    "./MCPServerDesktopImportDialog.js"
-  );
-  const io = stdio();
+  servers?: Record<string, McpServerConfig>
+  existingServers?: Record<string, ScopedMcpServerConfig>
+  scope?: ConfigScope
+} = {}) {
+  harness.getAllMcpConfigs.mockResolvedValue({ servers: existingServers })
+
+  const onDone = vi.fn()
+  const { stdin, stdout } = createStreams()
   const root = await createRoot({
-    stdout: io.stdout as unknown as NodeJS.WriteStream,
-    stdin: io.stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
-  });
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  })
 
   root.render(
     <MCPServerDesktopImportDialog
@@ -206,178 +185,166 @@ async function renderImportDialog({
       scope={scope}
       onDone={onDone}
     />,
-  );
-  await waitFor(() => configMock.getAllMcpConfigs.mock.calls.length > 0);
-  await waitFor(() => selectMultiMock.props !== undefined);
+  )
+  await waitFor(
+    () => harness.selectProps !== undefined && harness.dialogProps !== undefined,
+    'MCP server import dialog did not render',
+  )
 
   return {
-    io,
     onDone,
-    rerender: () => {
-      root.render(
-        <MCPServerDesktopImportDialog
-          servers={servers}
-          scope={scope}
-          onDone={onDone}
-        />,
-      );
+    dispose: async () => {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep(20)
     },
-    unmount: () => {
-      root.unmount();
-      io.end();
-    },
-  };
+  }
 }
 
-describe("MCPServerDesktopImportDialog", () => {
+describe('MCPServerDesktopImportDialog', () => {
   beforeEach(() => {
-    configMock.state.existingServers = {};
-    configMock.addMcpConfig.mockClear();
-    configMock.getAllMcpConfigs.mockClear();
-    dialogMock.props = undefined;
-    selectMultiMock.props = undefined;
-    selectMultiMock.renderCount = 0;
-    processMock.writeToStdout.mockClear();
-    shutdownMock.gracefulShutdown.mockClear();
-  });
+    harness.addMcpConfig.mockReset()
+    harness.addMcpConfig.mockResolvedValue(undefined)
+    harness.dialogProps = undefined
+    harness.getAllMcpConfigs.mockReset()
+    harness.gracefulShutdown.mockReset()
+    harness.selectProps = undefined
+    harness.writeToStdout.mockReset()
+  })
 
-  it("loads existing servers and preselects only non-colliding imports", async () => {
-    configMock.state.existingServers = {
-      alpha: { ...alphaServer, scope: "user" },
-      alpha_1: { ...alphaServer, scope: "local" },
-    };
-    const servers = { alpha: alphaServer, beta: betaServer };
-    const rendered = await renderImportDialog({ servers });
+  it('renders the empty desktop state and cancels as a no-op import', async () => {
+    const rendered = await renderDialog({ servers: {} })
 
     try {
-      await waitForDefaultValue(["beta"]);
-      rendered.rerender();
-      await nextRenderTick();
-      rendered.rerender();
-      await nextRenderTick();
+      expect(dialogProps().title).toBe('Import MCP Servers from AgenC Desktop')
+      expect(dialogProps().subtitle).toBe(
+        'Found 0 MCP servers in AgenC Desktop.',
+      )
+      expect(dialogProps().color).toBe('success')
+      expect(dialogProps().hideInputGuide).toBe(true)
+      expect(selectProps().options).toEqual([])
+      expect(selectProps().defaultValue).toEqual([])
+      expect(selectProps().hideIndexes).toBe(true)
 
-      expect(dialogMock.props).toMatchObject({
-        title: "Import MCP Servers from AgenC Desktop",
-        subtitle: "Found 2 MCP servers in AgenC Desktop.",
-        color: "success",
-        hideInputGuide: true,
-      });
-      expect(selectMultiMock.props).toMatchObject({
-        hideIndexes: true,
-        defaultValue: ["beta"],
-        options: [
-          { label: "alpha (already exists)", value: "alpha" },
-          { label: "beta", value: "beta" },
-        ],
-      });
-      expect(rendered.io.output()).toContain(
-        "Note: Some servers already exist with the same name.",
-      );
-      expect(rendered.io.output()).toContain(
-        "Please select the servers you want to import:",
-      );
+      selectProps().onCancel()
+
+      expect(harness.addMcpConfig).not.toHaveBeenCalled()
+      expect(harness.writeToStdout).toHaveBeenCalledWith(
+        '\nNo servers were imported.',
+      )
+      expect(rendered.onDone).toHaveBeenCalledOnce()
+      expect(harness.gracefulShutdown).toHaveBeenCalledOnce()
     } finally {
-      rendered.unmount();
+      await rendered.dispose()
     }
-  });
+  })
 
-  it("imports selected servers with numbered suffixes for name collisions", async () => {
-    configMock.state.existingServers = {
-      alpha: { ...alphaServer, scope: "user" },
-      alpha_1: { ...alphaServer, scope: "local" },
-    };
-    const onDone = vi.fn();
-    const servers = { alpha: alphaServer, beta: betaServer };
-    const rendered = await renderImportDialog({ onDone, servers });
+  it('renders collisions after loading existing configs and excludes them from the default selection', async () => {
+    const rendered = await renderDialog({
+      existingServers: {
+        docs: scoped(DESKTOP_SERVERS.docs),
+        docs_1: scoped(DESKTOP_SERVERS.docs),
+      },
+    })
 
     try {
-      await waitForDefaultValue(["beta"]);
-      await selectMultiMock.props?.onSubmit?.(["alpha", "beta", "missing"]);
+      await waitFor(
+        () =>
+          selectProps().options.some(
+            option => option.label === 'docs (already exists)',
+          ),
+        'MCP server import dialog did not render collision state',
+      )
 
-      expect(configMock.addMcpConfig).toHaveBeenCalledTimes(2);
-      expect(configMock.addMcpConfig).toHaveBeenNthCalledWith(
+      expect(selectProps().options).toEqual([
+        { label: 'filesystem', value: 'filesystem' },
+        { label: 'docs (already exists)', value: 'docs' },
+      ])
+      expect(selectProps().defaultValue).toEqual(['filesystem'])
+
+      const body = await renderToString(<>{dialogProps().children}</>, 120)
+      expect(body).toContain('Note: Some servers already exist')
+      expect(body).toContain('Please select the servers you want to import')
+      expect(body).toContain('docs (already exists)')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  it('imports selected servers, suffixes collisions, and writes the success result', async () => {
+    const rendered = await renderDialog({
+      existingServers: {
+        docs: scoped(DESKTOP_SERVERS.docs),
+        docs_1: scoped(DESKTOP_SERVERS.docs),
+      },
+      scope: 'project',
+    })
+
+    try {
+      await waitFor(
+        () =>
+          selectProps().options.some(
+            option => option.label === 'docs (already exists)',
+          ),
+        'MCP server import dialog did not load existing server names',
+      )
+
+      await selectProps().onSubmit?.(['docs', 'filesystem'])
+
+      expect(harness.addMcpConfig).toHaveBeenNthCalledWith(
         1,
-        "alpha_2",
-        alphaServer,
-        "project",
-      );
-      expect(configMock.addMcpConfig).toHaveBeenNthCalledWith(
+        'docs_2',
+        DESKTOP_SERVERS.docs,
+        'project',
+      )
+      expect(harness.addMcpConfig).toHaveBeenNthCalledWith(
         2,
-        "beta",
-        betaServer,
-        "project",
-      );
-      expect(processMock.writeToStdout).toHaveBeenCalledWith(
-        "\nSuccessfully imported 2 MCP servers to project config.\n",
-      );
-      expect(onDone).toHaveBeenCalledOnce();
-      expect(shutdownMock.gracefulShutdown).toHaveBeenCalledOnce();
+        'filesystem',
+        DESKTOP_SERVERS.filesystem,
+        'project',
+      )
+      expect(stripAnsi(harness.writeToStdout.mock.calls[0]?.[0] ?? '')).toContain(
+        'Successfully imported 2 MCP servers to project config.',
+      )
+      expect(rendered.onDone).toHaveBeenCalledOnce()
+      expect(harness.gracefulShutdown).toHaveBeenCalledOnce()
     } finally {
-      rendered.unmount();
+      await rendered.dispose()
     }
-  });
+  })
 
-  it("reports singular success when exactly one server is imported", async () => {
-    const rendered = await renderImportDialog({
-      scope: "user",
-      servers: { alpha: alphaServer },
-    });
+  it('ignores stale selected names and reports that nothing was imported', async () => {
+    const rendered = await renderDialog()
 
     try {
-      await selectMultiMock.props?.onSubmit?.(["alpha"]);
+      await selectProps().onSubmit?.(['missing-server'])
 
-      expect(configMock.addMcpConfig).toHaveBeenCalledWith(
-        "alpha",
-        alphaServer,
-        "user",
-      );
-      expect(processMock.writeToStdout).toHaveBeenCalledWith(
-        "\nSuccessfully imported 1 MCP server to user config.\n",
-      );
+      expect(harness.addMcpConfig).not.toHaveBeenCalled()
+      expect(harness.writeToStdout).toHaveBeenCalledWith(
+        '\nNo servers were imported.',
+      )
+      expect(rendered.onDone).toHaveBeenCalledOnce()
+      expect(harness.gracefulShutdown).toHaveBeenCalledOnce()
     } finally {
-      rendered.unmount();
+      await rendered.dispose()
     }
-  });
+  })
 
-  it("cancels empty imports without writing config", async () => {
-    const onDone = vi.fn();
-    const rendered = await renderImportDialog({ onDone, servers: {} });
+  it('propagates import errors without completing or shutting down', async () => {
+    harness.addMcpConfig.mockRejectedValueOnce(new Error('write failed'))
+    const rendered = await renderDialog()
 
     try {
-      expect(dialogMock.props?.subtitle).toBe(
-        "Found 0 MCP servers in AgenC Desktop.",
-      );
-      expect(selectMultiMock.props).toMatchObject({
-        defaultValue: [],
-        options: [],
-      });
+      await expect(selectProps().onSubmit?.(['filesystem'])).rejects.toThrow(
+        'write failed',
+      )
 
-      dialogMock.props?.onCancel();
-
-      expect(configMock.addMcpConfig).not.toHaveBeenCalled();
-      expect(processMock.writeToStdout).toHaveBeenCalledWith(
-        "\nNo servers were imported.",
-      );
-      expect(onDone).toHaveBeenCalledOnce();
-      expect(shutdownMock.gracefulShutdown).toHaveBeenCalledOnce();
+      expect(harness.writeToStdout).not.toHaveBeenCalled()
+      expect(rendered.onDone).not.toHaveBeenCalled()
+      expect(harness.gracefulShutdown).not.toHaveBeenCalled()
     } finally {
-      rendered.unmount();
+      await rendered.dispose()
     }
-  });
-
-  it("select cancel follows the same no-import completion path", async () => {
-    const rendered = await renderImportDialog({ servers: { alpha: alphaServer } });
-
-    try {
-      selectMultiMock.props?.onCancel();
-
-      expect(configMock.addMcpConfig).not.toHaveBeenCalled();
-      expect(processMock.writeToStdout).toHaveBeenCalledWith(
-        "\nNo servers were imported.",
-      );
-      expect(shutdownMock.gracefulShutdown).toHaveBeenCalledOnce();
-    } finally {
-      rendered.unmount();
-    }
-  });
-});
+  })
+})

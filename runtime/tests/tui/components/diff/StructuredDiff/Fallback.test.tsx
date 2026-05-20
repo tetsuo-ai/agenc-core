@@ -1,10 +1,10 @@
-import { PassThrough } from "node:stream";
-import type { StructuredPatchHunk } from "diff";
-import React from "react";
-import stripAnsi from "strip-ansi";
-import { describe, expect, test } from "vitest";
+import { PassThrough } from 'node:stream'
 
-import { createRoot } from "../../../ink/root.js";
+import React from 'react'
+import stripAnsi from 'strip-ansi'
+import { describe, expect, test } from 'vitest'
+
+import { createRoot } from '../../../ink.js'
 import {
   calculateWordDiffs,
   numberDiffLines,
@@ -12,150 +12,189 @@ import {
   StructuredDiffFallback,
   transformLinesToObjects,
   type LineObject,
-} from "./Fallback.js";
+} from './Fallback.js'
 
-async function renderToText(node: React.ReactNode): Promise<string> {
-  let output = "";
-  const stdout = new PassThrough();
-  stdout.on("data", chunk => {
-    output += chunk.toString();
-  });
-
-  const stdin = new PassThrough() as PassThrough & {
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
-    ref: () => void;
-    unref: () => void;
-  };
-  stdin.isTTY = true;
-  stdin.setRawMode = () => {};
-  stdin.ref = () => {};
-  stdin.unref = () => {};
-  (stdout as unknown as { columns: number }).columns = 100;
-
-  const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
-  });
-
-  try {
-    root.render(node);
-    await new Promise(resolve => setTimeout(resolve, 30));
-    return stripAnsi(output);
-  } finally {
-    root.unmount();
-    stdin.end();
+function createStreams(): {
+  stdout: PassThrough
+  stdin: PassThrough & {
+    isTTY: boolean
+    ref: () => void
+    setRawMode: (mode: boolean) => void
+    unref: () => void
   }
+} {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean
+    ref: () => void
+    setRawMode: (mode: boolean) => void
+    unref: () => void
+  }
+  stdin.isTTY = true
+  stdin.ref = () => {}
+  stdin.setRawMode = () => {}
+  stdin.unref = () => {}
+  stdout.resume()
+  return { stdin, stdout }
 }
 
-function compact(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
 }
 
-describe("StructuredDiffFallback helpers", () => {
-  test("transforms diff lines into typed line objects", () => {
-    expect(transformLinesToObjects(["+added", "-removed", " unchanged"])).toEqual([
-      { code: "added", i: 0, originalCode: "added", type: "add" },
-      { code: "removed", i: 0, originalCode: "removed", type: "remove" },
-      { code: "unchanged", i: 0, originalCode: "unchanged", type: "nochange" },
-    ]);
-  });
+async function renderFallbackToText(props: {
+  readonly dim?: boolean
+  readonly lines: string[]
+  readonly oldStart?: number
+  readonly width?: number
+}): Promise<string> {
+  let output = ''
+  const { stdin, stdout } = createStreams()
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  })
+  root.render(
+    <StructuredDiffFallback
+      dim={props.dim ?? false}
+      patch={{
+        lines: props.lines,
+        newLines: 0,
+        newStart: props.oldStart ?? 1,
+        oldLines: 0,
+        oldStart: props.oldStart ?? 1,
+      }}
+      width={props.width ?? 80}
+    />,
+  )
+  await sleep()
+  root.unmount()
+  stdin.end()
+  stdout.end()
+  await sleep()
+  return stripAnsi(output)
+}
 
-  test("pairs adjacent remove/add lines for word diffs and preserves unmatched lines", () => {
+describe('StructuredDiffFallback helpers', () => {
+  test('transforms patch lines into typed line objects', () => {
+    expect(transformLinesToObjects([' context', '+added', '-removed'])).toEqual([
+      {
+        code: 'context',
+        i: 0,
+        originalCode: 'context',
+        type: 'nochange',
+      },
+      {
+        code: 'added',
+        i: 0,
+        originalCode: 'added',
+        type: 'add',
+      },
+      {
+        code: 'removed',
+        i: 0,
+        originalCode: 'removed',
+        type: 'remove',
+      },
+    ])
+  })
+
+  test('pairs adjacent remove/add lines and keeps unpaired removals', () => {
     const lines = transformLinesToObjects([
-      "-const oldName = value.old",
-      "-const oldOnly = true",
-      "+const newName = value.new",
-      " context",
-      "-deleteOnly()",
-      "+insertOnly()",
-      "+extraAdd()",
-    ]);
+      '-old name',
+      '-old extra',
+      '+new name',
+      ' context',
+      '-orphan',
+    ])
 
-    const processed = processAdjacentLines(lines);
+    const processed = processAdjacentLines(lines)
 
     expect(processed.map(line => line.type)).toEqual([
-      "remove",
-      "remove",
-      "add",
-      "nochange",
-      "remove",
-      "add",
-      "add",
-    ]);
-    expect(processed[0]?.wordDiff).toBe(true);
-    expect(processed[0]?.matchedLine).toBe(processed[2]);
-    expect(processed[1]?.wordDiff).toBeUndefined();
-    expect(processed[4]?.matchedLine).toBe(processed[5]);
-    expect(processed[6]?.wordDiff).toBeUndefined();
-  });
+      'remove',
+      'remove',
+      'add',
+      'nochange',
+      'remove',
+    ])
+    expect(processed[0]?.wordDiff).toBe(true)
+    expect(processed[0]?.matchedLine).toBe(processed[2])
+    expect(processed[1]?.wordDiff).toBeUndefined()
+    expect(processed[4]?.wordDiff).toBeUndefined()
+  })
 
-  test("numbers no-change, add, and remove runs like unified diff rows", () => {
+  test('numbers removals without advancing the following added line too far', () => {
     const diff: LineObject[] = [
-      { code: "same", i: 0, originalCode: "same", type: "nochange" },
-      { code: "added", i: 0, originalCode: "added", type: "add" },
-      { code: "removed-a", i: 0, originalCode: "removed-a", type: "remove" },
-      { code: "removed-b", i: 0, originalCode: "removed-b", type: "remove" },
-      { code: "same-again", i: 0, originalCode: "same-again", type: "nochange" },
-    ];
+      { code: 'same', i: 0, originalCode: 'same', type: 'nochange' },
+      { code: 'remove one', i: 0, originalCode: 'remove one', type: 'remove' },
+      { code: 'remove two', i: 0, originalCode: 'remove two', type: 'remove' },
+      { code: 'add one', i: 0, originalCode: 'add one', type: 'add' },
+    ]
 
     expect(numberDiffLines(diff, 10).map(line => [line.type, line.i])).toEqual([
-      ["nochange", 10],
-      ["add", 11],
-      ["remove", 12],
-      ["remove", 13],
-      ["nochange", 12],
-    ]);
-  });
+      ['nochange', 10],
+      ['remove', 11],
+      ['remove', 12],
+      ['add', 11],
+    ])
+  })
 
-  test("calculates word diffs while preserving spaces", () => {
-    const parts = calculateWordDiffs("return oldValue + 1", "return newValue + 1");
+  test('preserves whitespace in word-level diffs', () => {
+    const parts = calculateWordDiffs('const value = oldName', 'const value = newName')
 
-    expect(parts.map(part => part.value).join("")).toContain("return ");
-    expect(parts.some(part => part.removed && part.value === "oldValue")).toBe(true);
-    expect(parts.some(part => part.added && part.value === "newValue")).toBe(true);
-  });
-});
+    expect(parts.map(part => part.value).join('')).toContain('const value = ')
+    expect(parts.some(part => part.removed && part.value === 'oldName')).toBe(true)
+    expect(parts.some(part => part.added && part.value === 'newName')).toBe(true)
+  })
+})
 
-describe("StructuredDiffFallback rendering", () => {
-  test("renders word-level add/remove pairs with line numbers", async () => {
-    const patch = {
+describe('StructuredDiffFallback rendering', () => {
+  test('renders word-level add and remove pairs with line numbers', async () => {
+    const output = await renderFallbackToText({
       lines: [
-        " function example() {",
-        "-  return value.oldName;",
-        "+  return value.newName;",
-        " }",
+        ' function read() {',
+        '-  return value.oldName',
+        '+  return value.newName',
       ],
-      oldStart: 20,
-    } as StructuredPatchHunk;
+      oldStart: 7,
+      width: 60,
+    })
 
-    const output = compact(
-      await renderToText(<StructuredDiffFallback dim={false} patch={patch} width={80} />),
-    );
+    expect(output).toContain('7  function read()')
+    expect(output).toContain('8 -  return value.oldName')
+    expect(output).toContain('8 +  return value.newName')
+  })
 
-    expect(output).toContain("20 function example()");
-    expect(output).toContain("- return value.oldName;");
-    expect(output).toContain("+ return value.newName;");
-    expect(output).toContain("22 }");
-  });
-
-  test("falls back to full-line rendering for dimmed or heavily changed rows", async () => {
-    const patch = {
+  test('falls back to standard dim rendering and wraps narrow content', async () => {
+    const output = await renderFallbackToText({
+      dim: true,
       lines: [
-        "-short",
-        "+a completely different and much longer replacement line",
-        " unchanged context that should wrap when the width is narrow",
+        '-completely different removed line with lots of text',
+        '+tiny',
+        ' unchanged line that is long enough to wrap',
       ],
+      oldStart: 1,
+      width: 14,
+    })
+
+    expect(output).toContain('1 -complet')
+    expect(output).toContain('different')
+    expect(output).toContain('1 +tiny')
+    expect(output).toContain('2  unchanged')
+  })
+
+  test('clamps invalid widths to a safe minimum', async () => {
+    const output = await renderFallbackToText({
+      lines: ['+x'],
       oldStart: 3,
-    } as StructuredPatchHunk;
+      width: 0,
+    })
 
-    const output = compact(
-      await renderToText(<StructuredDiffFallback dim patch={patch} width={24} />),
-    );
-
-    expect(output).toContain("3 -short");
-    expect(output).toContain("3 +a completely");
-    expect(output).toContain("4 unchanged");
-  });
-});
+    expect(output).toContain('3 +')
+    expect(output).toContain('x')
+  })
+})

@@ -8,6 +8,15 @@
 import type { RuntimeMessage } from "./types.js";
 import { estimateMessagesTokens } from "./_deps/runtime.js";
 
+export function isSnipMarkerMessage(candidate: unknown): boolean {
+  return (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    (candidate as { readonly type?: unknown }).type === "system" &&
+    (candidate as { readonly subtype?: unknown }).subtype === "snip_marker"
+  );
+}
+
 export function snipCompact(
   messages: readonly RuntimeMessage[],
   options: {

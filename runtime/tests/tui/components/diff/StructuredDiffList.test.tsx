@@ -1,87 +1,104 @@
-import React from "react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { StructuredPatchHunk } from 'diff'
+import React from 'react'
+import { describe, expect, test, vi } from 'vitest'
 
-import { renderToString } from "../../utils/staticRender.js";
+vi.mock('../../ink.js', () => {
+  const Passthrough = ({ children }: { readonly children?: React.ReactNode }) => (
+    <>{children}</>
+  )
 
-const structuredDiffMock = vi.hoisted(() => ({
-  props: [] as Array<{
-    dim: boolean;
-    fileContent?: string;
-    filePath: string;
-    firstLine: string | null;
-    patch: { newStart: number };
-    width: number;
-  }>,
-}));
-
-vi.mock("./StructuredDiff", () => ({
-  StructuredDiff: (props: (typeof structuredDiffMock.props)[number]) => {
-    structuredDiffMock.props.push(props);
-    return null;
-  },
-}));
-
-function hunk(newStart: number) {
   return {
-    lines: [],
-    newLines: 0,
-    newStart,
-    oldLines: 0,
-    oldStart: newStart,
-  };
+    Box: Passthrough,
+    NoSelect: Passthrough,
+    Text: Passthrough,
+  }
+})
+
+vi.mock('./StructuredDiff', () => ({
+  StructuredDiff: ({
+    dim,
+    fileContent,
+    filePath,
+    firstLine,
+    patch,
+    width,
+  }: {
+    readonly dim: boolean
+    readonly fileContent?: string
+    readonly filePath: string
+    readonly firstLine: string | null
+    readonly patch: StructuredPatchHunk
+    readonly width: number
+  }) => (
+    <span>
+      {`diff:${patch.newStart}:${dim ? 'dim' : 'normal'}:${width}:${filePath}:${firstLine ?? 'none'}:${fileContent ?? 'empty'}`}
+    </span>
+  ),
+}))
+
+import { StructuredDiffList } from './StructuredDiffList.js'
+
+function collectText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
+  }
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+  if (Array.isArray(node)) {
+    return node.map(collectText).join('')
+  }
+  if (React.isValidElement(node)) {
+    const element = node as React.ReactElement<{
+      readonly children?: React.ReactNode
+    }>
+    if (typeof element.type === 'function') {
+      const Component = element.type as (
+        props: typeof element.props,
+      ) => React.ReactNode
+      return collectText(Component(element.props))
+    }
+    return collectText(element.props.children)
+  }
+  return ''
 }
 
-describe("StructuredDiffList", () => {
-  beforeEach(() => {
-    structuredDiffMock.props = [];
-  });
-
-  test("renders each hunk and inserts ellipsis separators", async () => {
-    const { StructuredDiffList } = await import("./StructuredDiffList.js");
-
-    const output = await renderToString(
+describe('StructuredDiffList', () => {
+  test('renders each hunk with ellipsis separators', () => {
+    const output = collectText(
       <StructuredDiffList
-        dim={true}
-        fileContent={"alpha\nbeta"}
+        dim
+        fileContent="old file"
         filePath="src/app.ts"
-        firstLine="alpha"
-        hunks={[hunk(1), hunk(10), hunk(20)]}
-        width={100}
+        firstLine="import x"
+        hunks={
+          [
+            { newStart: 10 },
+            { newStart: 42 },
+          ] as StructuredPatchHunk[]
+        }
+        width={88}
       />,
-      120,
-    );
+    )
 
-    expect(output).toContain("...");
-    expect(structuredDiffMock.props).toHaveLength(3);
-    expect(structuredDiffMock.props.map(props => props.patch.newStart)).toEqual([
-      1,
-      10,
-      20,
-    ]);
-    expect(structuredDiffMock.props[0]).toMatchObject({
-      dim: true,
-      fileContent: "alpha\nbeta",
-      filePath: "src/app.ts",
-      firstLine: "alpha",
-      width: 100,
-    });
-  });
+    expect(output).toBe(
+      'diff:10:dim:88:src/app.ts:import x:old file' +
+        '...' +
+        'diff:42:dim:88:src/app.ts:import x:old file',
+    )
+  })
 
-  test("renders an empty list without hunks or separators", async () => {
-    const { StructuredDiffList } = await import("./StructuredDiffList.js");
-
-    const output = await renderToString(
-      <StructuredDiffList
-        dim={false}
-        filePath="src/empty.ts"
-        firstLine={null}
-        hunks={[]}
-        width={80}
-      />,
-      80,
-    );
-
-    expect(output).not.toContain("...");
-    expect(structuredDiffMock.props).toEqual([]);
-  });
-});
+  test('returns no rendered text for an empty hunk list', () => {
+    expect(
+      collectText(
+        <StructuredDiffList
+          dim={false}
+          filePath="src/app.ts"
+          firstLine={null}
+          hunks={[]}
+          width={80}
+        />,
+      ),
+    ).toBe('')
+  })
+})

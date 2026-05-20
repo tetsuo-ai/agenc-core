@@ -1,387 +1,389 @@
-import { PassThrough } from 'node:stream'
+import { PassThrough } from "node:stream";
 
-import React from 'react'
-import stripAnsi from 'strip-ansi'
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import React, { useState } from "react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { Text } from '../ink.js'
-import { createRoot } from '../ink/root.js'
-import { useHistorySearch } from './useHistorySearch.js'
-
-type Entry = {
-  display: string
-  pastedContents: Record<number, unknown>
-}
-
-const historyFixture = vi.hoisted(() => ({
-  entries: [] as Entry[],
-  featureFlags: new Set<string>(),
-  inputSubscriptions: [] as Array<{
-    handler: (input: string, key: unknown, event: { keypress: string }) => void
-    options: { isActive?: boolean }
+const harness = vi.hoisted(() => ({
+  entries: [] as HistoryEntryLike[],
+  features: new Set<string>(),
+  inputSubscription: undefined as
+    | undefined
+    | { handler: (input: string, key: unknown, event: { keypress: string }) => void; isActive: boolean },
+  keybinding: new Map<
+    string,
+    { handler: () => void; isActive: boolean; context: string }
+  >(),
+  keybindings: new Map<
+    string,
+    { handler: () => void; isActive: boolean; context: string }
+  >(),
+  readers: [] as Array<{
+    next: ReturnType<typeof vi.fn>;
+    return: ReturnType<typeof vi.fn>;
   }>,
-  keybindingCalls: [] as Array<{
-    action: string
-    handler: () => void
-    options: { context: string; isActive?: boolean }
-  }>,
-  keybindingsCalls: [] as Array<{
-    handlers: Record<string, () => void>
-    options: { context: string; isActive?: boolean }
-  }>,
-  readerReturns: 0,
-}))
-
-vi.mock('bun:bundle', () => ({
-  feature: (name: string) => historyFixture.featureFlags.has(name),
-}))
-
-vi.mock('../history/history.js', () => ({
-  makeHistoryReader: () => {
-    let index = 0
-    const reader = {
-      async next() {
-        const value = historyFixture.entries[index++]
-        if (!value) return { done: true, value: undefined }
-        return { done: false, value }
-      },
-      async return(value: undefined) {
-        historyFixture.readerReturns++
-        return { done: true, value }
-      },
-      [Symbol.asyncIterator]() {
-        return this
-      },
-    }
-    return reader
+  reset() {
+    harness.entries = [];
+    harness.features = new Set();
+    harness.inputSubscription = undefined;
+    harness.keybinding = new Map();
+    harness.keybindings = new Map();
+    harness.readers = [];
   },
-}))
+}));
 
-vi.mock('../keybindings/useKeybinding.js', () => ({
+type HistoryEntryLike = {
+  display: string;
+  pastedContents?: Record<string, unknown>;
+};
+
+vi.mock("bun:bundle", () => ({
+  feature: (name: string) => harness.features.has(name),
+}));
+
+vi.mock("../history/history.js", () => ({
+  makeHistoryReader: () => {
+    let index = 0;
+    const reader = {
+      next: vi.fn(async () => {
+        if (index >= harness.entries.length) {
+          return { done: true, value: undefined };
+        }
+        const value = harness.entries[index++];
+        return { done: false, value };
+      }),
+      return: vi.fn(async () => ({ done: true, value: undefined })),
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    harness.readers.push(reader);
+    return reader;
+  },
+}));
+
+vi.mock("../keybindings/useKeybinding.js", () => ({
   useKeybinding: (
-    action: string,
+    command: string,
     handler: () => void,
-    options: { context: string; isActive?: boolean },
+    options: { context: string; isActive: boolean },
   ) => {
-    historyFixture.keybindingCalls.push({ action, handler, options })
+    harness.keybinding.set(command, {
+      context: options.context,
+      handler,
+      isActive: options.isActive,
+    });
   },
   useKeybindings: (
     handlers: Record<string, () => void>,
-    options: { context: string; isActive?: boolean },
+    options: { context: string; isActive: boolean },
   ) => {
-    historyFixture.keybindingsCalls.push({ handlers, options })
+    for (const [command, handler] of Object.entries(handlers)) {
+      harness.keybindings.set(command, {
+        context: options.context,
+        handler,
+        isActive: options.isActive,
+      });
+    }
   },
-}))
+}));
 
-vi.mock('../ink.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../ink.js')>()
-  return {
-    ...actual,
-    useInput: (
-      handler: (input: string, key: unknown, event: { keypress: string }) => void,
-      options: { isActive?: boolean },
-    ) => {
-      historyFixture.inputSubscriptions.push({ handler, options })
-    },
-  }
-})
+vi.mock("../ink.js", () => ({
+  useInput: (
+    handler: (input: string, key: unknown, event: { keypress: string }) => void,
+    options: { isActive: boolean },
+  ) => {
+    harness.inputSubscription = {
+      handler,
+      isActive: options.isActive,
+    };
+  },
+}));
 
-type CapturedHistory = ReturnType<typeof useHistorySearch> & {
-  accepted: Entry[]
-  cursor: number
-  input: string
-  isSearching: boolean
-  mode: string
-  pastedContents: Record<number, unknown>
-}
+import { createRoot } from "../ink/root.js";
+import { useHistorySearch } from "./useHistorySearch.js";
 
-function HistoryHarness({
-  capture,
-  initialCursor = 4,
-  initialInput = 'seed',
-  initialMode = 'prompt',
-  initialPastedContents = {},
-}: {
-  capture: { current: CapturedHistory | null }
-  initialCursor?: number
-  initialInput?: string
-  initialMode?: 'prompt' | 'bash'
-  initialPastedContents?: Record<number, unknown>
-}): React.ReactNode {
-  const [accepted, setAccepted] = React.useState<Entry[]>([])
-  const [input, setInput] = React.useState(initialInput)
-  const [cursor, setCursor] = React.useState(initialCursor)
-  const [mode, setMode] = React.useState(initialMode)
-  const [isSearching, setIsSearching] = React.useState(false)
-  const [pastedContents, setPastedContents] = React.useState(initialPastedContents)
-  const history = useHistorySearch(
-    entry => setAccepted(items => [...items, entry as Entry]),
-    input,
-    setInput,
-    setCursor,
-    cursor,
-    setMode,
-    mode,
-    isSearching,
-    setIsSearching,
-    setPastedContents,
-    pastedContents,
-  )
-  capture.current = {
-    ...history,
-    accepted,
-    cursor,
-    input,
-    isSearching,
-    mode,
-    pastedContents,
-  }
-  return <Text>{`${mode}:${input}:${cursor}:${String(isSearching)}`}</Text>
-}
+type HookResult = ReturnType<typeof useHistorySearch>;
 
 function createStreams(): {
+  stdout: PassThrough;
   stdin: PassThrough & {
-    isTTY: boolean
-    ref: () => void
-    setRawMode: (mode: boolean) => void
-    unref: () => void
-  }
-  stdout: PassThrough
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
 } {
-  const stdout = new PassThrough()
-  const stdin = new PassThrough() as ReturnType<typeof createStreams>['stdin']
-  stdin.isTTY = true
-  stdin.setRawMode = () => {}
-  stdin.ref = () => {}
-  stdin.unref = () => {}
-  ;(stdout as unknown as { columns: number }).columns = 120
-  return { stdin, stdout }
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  stdout.resume();
+  return { stdin, stdout };
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 1_000) {
-    if (predicate()) return
-    await new Promise(resolve => setTimeout(resolve, 5))
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitFor(assertion: () => void): Promise<void> {
+  let lastError: unknown;
+  for (let i = 0; i < 20; i++) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(25);
+    }
   }
-  throw new Error('Timed out waiting for history search state')
+  throw lastError;
 }
 
-function latestStartSearchHandler(): (() => void) | undefined {
-  return historyFixture.keybindingCalls
-    .filter(call => call.action === 'history:search')
-    .at(-1)?.handler
-}
-
-function latestHistoryHandlers(): Record<string, () => void> {
-  return historyFixture.keybindingsCalls.at(-1)?.handlers ?? {}
-}
-
-async function renderHarness(
-  node: React.ReactNode,
-  run: (output: () => string) => Promise<void>,
-): Promise<string> {
-  let output = ''
-  const { stdin, stdout } = createStreams()
-  stdout.on('data', chunk => {
-    output += chunk.toString()
-  })
+async function renderHistoryHarness(
+  initial: {
+    currentCursorOffset?: number;
+    currentInput?: string;
+    currentMode?: "bash" | "prompt";
+    currentPastedContents?: Record<string, unknown>;
+  } = {},
+): Promise<{
+  callbacks: {
+    onAcceptHistory: ReturnType<typeof vi.fn>;
+    onCursorChange: ReturnType<typeof vi.fn>;
+    onInputChange: ReturnType<typeof vi.fn>;
+    onModeChange: ReturnType<typeof vi.fn>;
+    setPastedContents: ReturnType<typeof vi.fn>;
+  };
+  dispose: () => Promise<void>;
+  isSearching: () => boolean;
+  result: () => HookResult;
+}> {
+  let latest: HookResult | undefined;
+  let latestIsSearching = false;
+  const callbacks = {
+    onAcceptHistory: vi.fn(),
+    onCursorChange: vi.fn(),
+    onInputChange: vi.fn(),
+    onModeChange: vi.fn(),
+    setPastedContents: vi.fn(),
+  };
+  const { stdin, stdout } = createStreams();
   const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
-  })
-
-  try {
-    root.render(node)
-    await waitFor(() => output.length > 0)
-    await run(() => stripAnsi(output))
-    await new Promise(resolve => setTimeout(resolve, 20))
-    return stripAnsi(output)
-  } finally {
-    root.unmount()
-    stdin.end()
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  });
+  function Harness(): null {
+    const [isSearching, setIsSearching] = useState(false);
+    latestIsSearching = isSearching;
+    latest = useHistorySearch(
+      callbacks.onAcceptHistory,
+      initial.currentInput ?? "original input",
+      callbacks.onInputChange,
+      callbacks.onCursorChange,
+      initial.currentCursorOffset ?? 9,
+      callbacks.onModeChange,
+      initial.currentMode ?? "prompt",
+      isSearching,
+      setIsSearching,
+      callbacks.setPastedContents,
+      initial.currentPastedContents ?? { original: true },
+    );
+    return null;
   }
+  root.render(<Harness />);
+  await sleep();
+  return {
+    callbacks,
+    dispose: async () => {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    },
+    isSearching: () => latestIsSearching,
+    result: () => {
+      if (!latest) throw new Error("hook did not render");
+      return latest;
+    },
+  };
 }
 
-beforeEach(() => {
-  historyFixture.entries = []
-  historyFixture.featureFlags.clear()
-  historyFixture.inputSubscriptions = []
-  historyFixture.keybindingCalls = []
-  historyFixture.keybindingsCalls = []
-  historyFixture.readerReturns = 0
-})
+describe("useHistorySearch", () => {
+  beforeEach(() => {
+    harness.reset();
+  });
 
-describe('useHistorySearch', () => {
-  test('starts search, finds matches, resumes to the next unique match, and accepts stripped history values', async () => {
-    historyFixture.entries = [
-      { display: 'first npm test', pastedContents: { 1: { content: 'a' } } },
-      { display: 'first npm test', pastedContents: { 1: { content: 'duplicate' } } },
-      { display: '!npm test --watch', pastedContents: { 2: { content: 'b' } } },
-    ]
-    const capture = { current: null as CapturedHistory | null }
+  test("starts search through the global history keybinding unless the picker owns it", async () => {
+    const rendered = await renderHistoryHarness();
 
-    await renderHarness(
-      <HistoryHarness capture={capture} />,
-      async () => {
-        latestStartSearchHandler()?.()
-        await waitFor(() => capture.current?.isSearching === true)
-
-        capture.current?.setHistoryQuery('test')
-        await waitFor(() => capture.current?.input === 'first npm test')
-        expect(capture.current?.cursor).toBe('first npm '.length)
-        expect(capture.current?.mode).toBe('prompt')
-        expect(capture.current?.pastedContents).toEqual({
-          1: { content: 'a' },
-        })
-
-        latestHistoryHandlers()['historySearch:next']?.()
-        await waitFor(() => capture.current?.input === '!npm test --watch')
-        expect(capture.current?.mode).toBe('bash')
-        expect(capture.current?.cursor).toBe('npm '.length)
-
-        latestHistoryHandlers()['historySearch:accept']?.()
-        await waitFor(() => capture.current?.isSearching === false)
-      },
-    )
-
-    expect(capture.current?.input).toBe('npm test --watch')
-    expect(capture.current?.mode).toBe('bash')
-    expect(capture.current?.pastedContents).toEqual({
-      2: { content: 'b' },
-    })
-    expect(historyFixture.readerReturns).toBeGreaterThan(0)
-  })
-
-  test('marks failed searches and restores original pasted contents on accept without a match', async () => {
-    historyFixture.entries = [
-      { display: 'not this one', pastedContents: {} },
-    ]
-    const originalPastes = { 9: { content: 'original' } }
-    const capture = { current: null as CapturedHistory | null }
-
-    await renderHarness(
-      <HistoryHarness
-        capture={capture}
-        initialInput="original prompt"
-        initialPastedContents={originalPastes}
-      />,
-      async () => {
-        latestStartSearchHandler()?.()
-        await waitFor(() => capture.current?.isSearching === true)
-
-        capture.current?.setHistoryQuery('missing')
-        await waitFor(() => capture.current?.historyFailedMatch === true)
-        expect(capture.current?.input).toBe('original prompt')
-
-        latestHistoryHandlers()['historySearch:accept']?.()
-        await waitFor(() => capture.current?.isSearching === false)
-      },
-    )
-
-    expect(capture.current?.pastedContents).toBe(originalPastes)
-    expect(capture.current?.input).toBe('original prompt')
-  })
-
-  test('executes the original prompt when query is empty and matched history when query is present', async () => {
-    const capture = { current: null as CapturedHistory | null }
-
-    await renderHarness(
-      <HistoryHarness capture={capture} initialInput="submit original" />,
-      async () => {
-        latestStartSearchHandler()?.()
-        await waitFor(() => capture.current?.isSearching === true)
-
-        latestHistoryHandlers()['historySearch:execute']?.()
-        await waitFor(() => capture.current?.accepted.length === 1)
-      },
-    )
-
-    expect(capture.current?.accepted).toEqual([
-      {
-        display: 'submit original',
-        pastedContents: {},
-      },
-    ])
-
-    historyFixture.entries = [
-      { display: '!npm run check', pastedContents: { 3: { content: 'c' } } },
-    ]
-    const matchedCapture = { current: null as CapturedHistory | null }
-    await renderHarness(
-      <HistoryHarness capture={matchedCapture} />,
-      async () => {
-        latestStartSearchHandler()?.()
-        await waitFor(() => matchedCapture.current?.isSearching === true)
-        matchedCapture.current?.setHistoryQuery('check')
-        await waitFor(() => matchedCapture.current?.historyMatch?.display === '!npm run check')
-        latestHistoryHandlers()['historySearch:execute']?.()
-        await waitFor(() => matchedCapture.current?.accepted.length === 1)
-      },
-    )
-
-    expect(matchedCapture.current?.mode).toBe('bash')
-    expect(matchedCapture.current?.accepted).toEqual([
-      {
-        display: 'npm run check',
-        pastedContents: { 3: { content: 'c' } },
-      },
-    ])
-  })
-
-  test('cancels with backspace on an empty query and through keybindings', async () => {
-    const capture = { current: null as CapturedHistory | null }
-    const event = {
-      key: 'backspace',
-      preventDefault: vi.fn(),
+    try {
+      expect(harness.keybinding.get("history:search")).toMatchObject({
+        context: "Global",
+        isActive: true,
+      });
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      expect(harness.inputSubscription?.isActive).toBe(true);
+      expect(harness.keybindings.get("historySearch:accept")).toMatchObject({
+        context: "HistorySearch",
+        isActive: true,
+      });
+      expect(harness.readers).toHaveLength(1);
+    } finally {
+      await rendered.dispose();
     }
 
-    await renderHarness(
-      <HistoryHarness capture={capture} initialCursor={7} initialInput="restore" />,
-      async () => {
-        latestStartSearchHandler()?.()
-        await waitFor(() => capture.current?.isSearching === true)
+    harness.reset();
+    harness.features.add("HISTORY_PICKER");
+    const gated = await renderHistoryHarness();
+    try {
+      expect(harness.keybinding.get("history:search")).toMatchObject({
+        isActive: false,
+      });
+    } finally {
+      await gated.dispose();
+    }
+  });
 
-        capture.current?.handleKeyDown(event as never)
-        await waitFor(() => capture.current?.isSearching === false)
-        expect(event.preventDefault).toHaveBeenCalledTimes(1)
+  test("searches history, deduplicates matches, and resumes to the next result", async () => {
+    harness.entries = [
+      { display: "first miss" },
+      { display: "!echo hello", pastedContents: { one: true } },
+      { display: "!echo hello", pastedContents: { duplicate: true } },
+      { display: "say hello again", pastedContents: { two: true } },
+    ];
+    const rendered = await renderHistoryHarness();
 
-        latestStartSearchHandler()?.()
-        await waitFor(() => capture.current?.isSearching === true)
-        latestHistoryHandlers()['historySearch:cancel']?.()
-        await waitFor(() => capture.current?.isSearching === false)
-      },
-    )
+    try {
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      rendered.result().setHistoryQuery("hello");
+      await waitFor(() =>
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("!echo hello"),
+      );
 
-    expect(capture.current?.input).toBe('restore')
-    expect(capture.current?.cursor).toBe(7)
-  })
+      expect(rendered.result().historyFailedMatch).toBe(false);
+      expect(rendered.result().historyMatch).toMatchObject({
+        display: "!echo hello",
+      });
+      expect(rendered.callbacks.onModeChange).toHaveBeenLastCalledWith("bash");
+      expect(rendered.callbacks.setPastedContents).toHaveBeenLastCalledWith({
+        one: true,
+      });
+      expect(rendered.callbacks.onCursorChange).toHaveBeenLastCalledWith(5);
 
-  test('gates keybindings and legacy useInput bridge by active search state and feature flags', async () => {
-    historyFixture.featureFlags.add('HISTORY_PICKER')
-    const capture = { current: null as CapturedHistory | null }
+      harness.keybindings.get("historySearch:next")?.handler();
+      await waitFor(() =>
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("say hello again"),
+      );
+      expect(rendered.result().historyMatch).toMatchObject({
+        display: "say hello again",
+      });
+      expect(rendered.callbacks.setPastedContents).toHaveBeenLastCalledWith({
+        two: true,
+      });
+    } finally {
+      await rendered.dispose();
+    }
+  });
 
-    await renderHarness(
-      <HistoryHarness capture={capture} />,
-      async () => {
-        await waitFor(() => historyFixture.keybindingCalls.length > 0)
-        expect(
-          historyFixture.keybindingCalls.at(-1)?.options,
-        ).toMatchObject({
-          context: 'Global',
-          isActive: false,
-        })
-        expect(
-          historyFixture.keybindingsCalls.at(-1)?.options,
-        ).toMatchObject({
-          context: 'HistorySearch',
-          isActive: false,
-        })
-        expect(historyFixture.inputSubscriptions.at(-1)?.options).toEqual({
-          isActive: false,
-        })
-      },
-    )
-  })
-})
+  test("marks failed matches and restores the original input when the query is cleared", async () => {
+    harness.entries = [{ display: "nothing relevant" }];
+    const rendered = await renderHistoryHarness({
+      currentCursorOffset: 4,
+      currentInput: "keep me",
+      currentMode: "bash",
+      currentPastedContents: { keep: true },
+    });
+
+    try {
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      rendered.result().setHistoryQuery("missing");
+      await waitFor(() => expect(rendered.result().historyFailedMatch).toBe(true));
+
+      rendered.result().setHistoryQuery("");
+      await waitFor(() =>
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("keep me"),
+      );
+      expect(rendered.result().historyMatch).toBeUndefined();
+      expect(rendered.result().historyFailedMatch).toBe(false);
+      expect(rendered.callbacks.onCursorChange).toHaveBeenLastCalledWith(4);
+      expect(rendered.callbacks.onModeChange).toHaveBeenLastCalledWith("bash");
+      expect(rendered.callbacks.setPastedContents).toHaveBeenLastCalledWith({
+        keep: true,
+      });
+      expect(harness.readers.at(-1)?.return).toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("accepts, executes, and cancels history search state", async () => {
+    harness.entries = [{ display: "!run accepted", pastedContents: { ok: true } }];
+    const rendered = await renderHistoryHarness({
+      currentInput: "original command",
+      currentPastedContents: { original: true },
+    });
+
+    try {
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      rendered.result().setHistoryQuery("accepted");
+      await waitFor(() =>
+        expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("!run accepted"),
+      );
+
+      harness.keybindings.get("historySearch:accept")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(false));
+      expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("run accepted");
+      expect(rendered.callbacks.onModeChange).toHaveBeenLastCalledWith("bash");
+      expect(rendered.callbacks.setPastedContents).toHaveBeenLastCalledWith({
+        ok: true,
+      });
+
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      harness.keybindings.get("historySearch:execute")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(false));
+      expect(rendered.callbacks.onAcceptHistory).toHaveBeenLastCalledWith({
+        display: "original command",
+        pastedContents: { original: true },
+      });
+
+      harness.keybinding.get("history:search")?.handler();
+      await waitFor(() => expect(rendered.isSearching()).toBe(true));
+      rendered.result().setHistoryQuery("");
+      const event = { key: "backspace", preventDefault: vi.fn() };
+      rendered.result().handleKeyDown(event as never);
+      await waitFor(() => expect(rendered.isSearching()).toBe(false));
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(rendered.callbacks.onInputChange).toHaveBeenLastCalledWith("original command");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("ignores keydown and input bridge events while inactive", async () => {
+    const rendered = await renderHistoryHarness();
+
+    try {
+      const event = { key: "backspace", preventDefault: vi.fn() };
+      rendered.result().handleKeyDown(event as never);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(harness.inputSubscription?.isActive).toBe(false);
+      harness.inputSubscription?.handler("", {}, { keypress: "backspace" });
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+});

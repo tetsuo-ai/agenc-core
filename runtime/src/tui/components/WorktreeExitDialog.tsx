@@ -11,7 +11,7 @@ import { Select } from './CustomSelect/select';
 import { Dialog } from './design-system/Dialog';
 import { Spinner } from './spinner/Spinner.js';
 
-// Dynamic import breaks the cycle this file would otherwise close:
+// Lazy import breaks the cycle this file would otherwise close:
 // sessionStorage → commands → exit → ExitFlow → here. All call sites
 // are inside callbacks, so the lazy import never sees an undefined import.
 async function recordWorktreeExit(): Promise<void> {

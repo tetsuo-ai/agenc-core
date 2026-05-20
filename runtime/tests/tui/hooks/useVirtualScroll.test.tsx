@@ -1,368 +1,307 @@
-import { PassThrough } from 'node:stream'
+import { PassThrough } from "node:stream";
 
-import React from 'react'
-import { afterEach, describe, expect, test } from 'vitest'
+import React, { useLayoutEffect } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
-import type { DOMElement } from '../ink/dom.js'
-import { Box, Text } from '../ink.js'
-import { createRoot } from '../ink/root.js'
-import { useVirtualScroll, type VirtualScrollResult } from './useVirtualScroll.js'
+import { createRoot } from "../ink/root.js";
+import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
+import type { DOMElement } from "../ink/dom.js";
+import {
+  type VirtualScrollResult,
+  useVirtualScroll,
+} from "./useVirtualScroll.js";
 
-type ClampCall = readonly [number | undefined, number | undefined]
+type FakeScrollHandle = ScrollBoxHandle & {
+  emit: () => void;
+  lastClamp: [number | undefined, number | undefined] | undefined;
+  scrollToCalls: number[];
+  setPendingDelta: (value: number) => void;
+  setScrollTop: (value: number) => void;
+  setSticky: (value: boolean) => void;
+  setViewportHeight: (value: number) => void;
+};
 
-class FakeScrollBox implements ScrollBoxHandle {
-  readonly listeners = new Set<() => void>()
-  readonly clampCalls: ClampCall[] = []
-  readonly scrollToCalls: number[] = []
-  pendingDelta = 0
-  scrollTop = 0
-  sticky = true
-  viewportHeight = 0
-
-  scrollTo(y: number): void {
-    this.scrollToCalls.push(y)
-    this.scrollTop = Math.max(0, Math.floor(y))
-    this.pendingDelta = 0
-    this.sticky = false
-    this.emit()
-  }
-
-  scrollBy(dy: number): void {
-    this.pendingDelta += Math.floor(dy)
-    this.sticky = false
-    this.emit()
-  }
-
-  scrollToElement(): void {
-    this.sticky = false
-    this.emit()
-  }
-
-  scrollToBottom(): void {
-    this.pendingDelta = 0
-    this.sticky = true
-    this.emit()
-  }
-
-  getScrollTop(): number {
-    return this.scrollTop
-  }
-
-  getPendingDelta(): number {
-    return this.pendingDelta
-  }
-
-  getScrollHeight(): number {
-    return 0
-  }
-
-  getFreshScrollHeight(): number {
-    return 0
-  }
-
-  getViewportHeight(): number {
-    return this.viewportHeight
-  }
-
-  getViewportTop(): number {
-    return 0
-  }
-
-  isSticky(): boolean {
-    return this.sticky
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  setClampBounds(min: number | undefined, max: number | undefined): void {
-    this.clampCalls.push([min, max])
-  }
-
-  emit(): void {
-    for (const listener of this.listeners) listener()
-  }
-}
-
-type Snapshot = {
-  bottomSpacer: number
-  heights: Array<number | undefined>
-  range: readonly [number, number]
-  topSpacer: number
-}
-
-function makeKeys(count: number): string[] {
-  return Array.from({ length: count }, (_, index) => `item-${index}`)
-}
-
-function VirtualHarness({
-  columns = 80,
-  itemHeights = {},
-  keys,
-  resultRef,
-  scroll,
-  snapshots,
-}: {
-  columns?: number
-  itemHeights?: Record<string, number>
-  keys: readonly string[]
-  resultRef: { current: VirtualScrollResult | null }
-  scroll: FakeScrollBox | null
-  snapshots: Snapshot[]
-}): React.ReactNode {
-  const result = useVirtualScroll(
-    { current: scroll },
-    keys,
-    columns,
-  )
-  resultRef.current = result
-
-  React.useLayoutEffect(() => {
-    snapshots.push({
-      bottomSpacer: result.bottomSpacer,
-      heights: keys.map((_, index) => result.getItemHeight(index)),
-      range: result.range,
-      topSpacer: result.topSpacer,
-    })
-  })
-
-  const [start, end] = result.range
-
-  return (
-    <Box flexDirection="column">
-      <Box height={result.topSpacer} ref={result.spacerRef} />
-      {keys.slice(start, end).map(key => (
-        <Box
-          height={itemHeights[key] ?? 1}
-          key={key}
-          ref={result.measureRef(key)}
-        >
-          <Text>{key}</Text>
-        </Box>
-      ))}
-      <Box height={result.bottomSpacer} />
-    </Box>
-  )
+function createScrollHandle(
+  overrides: {
+    pendingDelta?: number;
+    scrollTop?: number;
+    sticky?: boolean;
+    viewportHeight?: number;
+  } = {},
+): FakeScrollHandle {
+  let scrollTop = overrides.scrollTop ?? 0;
+  let pendingDelta = overrides.pendingDelta ?? 0;
+  let sticky = overrides.sticky ?? false;
+  let viewportHeight = overrides.viewportHeight ?? 20;
+  const listeners = new Set<() => void>();
+  const handle = {
+    emit: () => {
+      for (const listener of listeners) listener();
+    },
+    getPendingDelta: () => pendingDelta,
+    getScrollTop: () => scrollTop,
+    getViewportHeight: () => viewportHeight,
+    isSticky: () => sticky,
+    lastClamp: undefined as [number | undefined, number | undefined] | undefined,
+    scrollTo: vi.fn((value: number) => {
+      handle.scrollToCalls.push(value);
+      scrollTop = value;
+    }),
+    scrollToCalls: [] as number[],
+    setClampBounds: vi.fn((min?: number, max?: number) => {
+      handle.lastClamp = [min, max];
+    }),
+    setPendingDelta: (value: number) => {
+      pendingDelta = value;
+    },
+    setScrollTop: (value: number) => {
+      scrollTop = value;
+    },
+    setSticky: (value: boolean) => {
+      sticky = value;
+    },
+    setViewportHeight: (value: number) => {
+      viewportHeight = value;
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  } as FakeScrollHandle;
+  return handle;
 }
 
 function createStreams(): {
+  stdout: PassThrough;
   stdin: PassThrough & {
-    isTTY: boolean
-    ref: () => void
-    setRawMode: (mode: boolean) => void
-    unref: () => void
-  }
-  stdout: PassThrough
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
 } {
-  const stdout = new PassThrough()
-  const stdin = new PassThrough() as ReturnType<typeof createStreams>['stdin']
-  stdin.isTTY = true
-  stdin.setRawMode = () => {}
-  stdin.ref = () => {}
-  stdin.unref = () => {}
-  ;(stdout as unknown as { columns: number }).columns = 120
-  return { stdin, stdout }
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  stdout.resume();
+  return { stdin, stdout };
 }
 
-async function waitForLayout(): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, 30))
+function fakeElement(
+  height: number,
+  top: number,
+  width = 10,
+): DOMElement {
+  return {
+    yogaNode: {
+      getComputedHeight: () => height,
+      getComputedTop: () => top,
+      getComputedWidth: () => width,
+    },
+  } as DOMElement;
 }
 
-async function withRoot(
-  run: (root: Awaited<ReturnType<typeof createRoot>>) => Promise<void>,
-): Promise<void> {
-  const { stdin, stdout } = createStreams()
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function renderHookHarness(
+  initial: {
+    columns?: number;
+    itemKeys: readonly string[];
+    scrollRef: React.RefObject<ScrollBoxHandle | null>;
+  },
+): Promise<{
+  dispose: () => Promise<void>;
+  latest: () => VirtualScrollResult;
+  render: (next?: Partial<typeof initial>) => Promise<void>;
+}> {
+  let props = {
+    columns: 80,
+    ...initial,
+  };
+  let latest: VirtualScrollResult | undefined;
+  const { stdin, stdout } = createStreams();
   const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
-  })
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  });
 
-  try {
-    await run(root)
-  } finally {
-    root.unmount()
-    stdin.end()
+  function Harness(): null {
+    latest = useVirtualScroll(props.scrollRef, props.itemKeys, props.columns);
+    useLayoutEffect(() => {
+      latest = latest;
+    });
+    return null;
   }
+
+  async function render(next: Partial<typeof initial> = {}): Promise<void> {
+    props = {
+      ...props,
+      ...next,
+    };
+    root.render(<Harness />);
+    await sleep();
+  }
+
+  await render();
+  return {
+    dispose: async () => {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    },
+    latest: () => {
+      if (!latest) throw new Error("hook did not render");
+      return latest;
+    },
+    render,
+  };
 }
 
-afterEach(() => {
-  // The hook stores subscriptions through useSyncExternalStore; unmounting
-  // each root handles cleanup, this just keeps test intent explicit.
-})
+describe("useVirtualScroll", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
 
-describe('useVirtualScroll', () => {
-  test('renders a cold-start tail range before the scroll ref attaches', async () => {
-    const resultRef = { current: null as VirtualScrollResult | null }
-    const snapshots: Snapshot[] = []
-    const keys = makeKeys(40)
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
-    await withRoot(async root => {
-      root.render(
-        <VirtualHarness
-          keys={keys}
-          resultRef={resultRef}
-          scroll={null}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
-    })
+  test("renders a tail range before the scrollbox is attached", async () => {
+    const harness = await renderHookHarness({
+      itemKeys: Array.from({ length: 40 }, (_, index) => `item-${index}`),
+      scrollRef: { current: null },
+    });
 
-    expect(resultRef.current?.range).toEqual([10, 40])
-    expect(resultRef.current?.topSpacer).toBe(30)
-    expect(resultRef.current?.bottomSpacer).toBe(0)
-    expect(snapshots.at(-1)?.range).toEqual([10, 40])
-  })
+    try {
+      expect(harness.latest().range).toEqual([10, 40]);
+      expect(harness.latest().topSpacer).toBe(30);
+      expect(harness.latest().bottomSpacer).toBe(0);
+    } finally {
+      await harness.dispose();
+    }
+  });
 
-  test('mounts the sticky tail and clears clamp bounds', async () => {
-    const scroll = new FakeScrollBox()
-    scroll.viewportHeight = 20
-    scroll.scrollTop = 900
-    scroll.sticky = true
-    const resultRef = { current: null as VirtualScrollResult | null }
-    const snapshots: Snapshot[] = []
+  test("uses sticky mode to mount the tail and clears clamp bounds", async () => {
+    const scroll = createScrollHandle({ sticky: true, viewportHeight: 20 });
+    const harness = await renderHookHarness({
+      itemKeys: Array.from({ length: 400 }, (_, index) => `item-${index}`),
+      scrollRef: { current: scroll },
+    });
 
-    await withRoot(async root => {
-      root.render(
-        <VirtualHarness
-          keys={makeKeys(300)}
-          resultRef={resultRef}
-          scroll={scroll}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
-    })
+    try {
+      const result = harness.latest();
+      expect(result.range[1]).toBe(400);
+      expect(result.range[1] - result.range[0]).toBeLessThanOrEqual(300);
+      expect(result.topSpacer).toBeGreaterThan(0);
+      expect(scroll.setClampBounds).toHaveBeenLastCalledWith(undefined, undefined);
+    } finally {
+      await harness.dispose();
+    }
+  });
 
-    const range = resultRef.current?.range
-    expect(range?.[1]).toBe(300)
-    expect(range?.[0]).toBeGreaterThan(0)
-    expect(range?.[0]).toBeLessThan(300)
-    expect(resultRef.current?.bottomSpacer).toBe(0)
-    expect(scroll.clampCalls).toContainEqual([undefined, undefined])
-  })
+  test("computes a non-sticky range from committed and pending scroll", async () => {
+    const scroll = createScrollHandle({
+      pendingDelta: 240,
+      scrollTop: 600,
+      sticky: false,
+      viewportHeight: 20,
+    });
+    const harness = await renderHookHarness({
+      itemKeys: Array.from({ length: 500 }, (_, index) => `item-${index}`),
+      scrollRef: { current: scroll },
+    });
 
-  test('computes a non-sticky scroll window, clamps to mounted content, and scrolls by index', async () => {
-    const scroll = new FakeScrollBox()
-    scroll.viewportHeight = 20
-    scroll.scrollTop = 300
-    scroll.pendingDelta = -120
-    scroll.sticky = false
-    const resultRef = { current: null as VirtualScrollResult | null }
-    const snapshots: Snapshot[] = []
+    try {
+      const result = harness.latest();
+      expect(result.range[0]).toBeGreaterThan(0);
+      expect(result.range[1]).toBeGreaterThan(result.range[0]);
+      expect(result.range[1] - result.range[0]).toBeLessThanOrEqual(300);
+      expect(result.topSpacer).toBe(result.offsets[result.range[0]]);
+      expect(scroll.lastClamp?.[0]).toBe(result.topSpacer);
+      expect(scroll.lastClamp?.[1]).toBeGreaterThan(result.topSpacer);
+    } finally {
+      await harness.dispose();
+    }
+  });
 
-    await withRoot(async root => {
-      root.render(
-        <VirtualHarness
-          keys={makeKeys(300)}
-          resultRef={resultRef}
-          scroll={scroll}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
+  test("stores measured heights and scrolls to cached item offsets", async () => {
+    const scroll = createScrollHandle({
+      scrollTop: 0,
+      sticky: false,
+      viewportHeight: 20,
+    });
+    const harness = await renderHookHarness({
+      itemKeys: ["a", "b", "c"],
+      scrollRef: { current: scroll },
+    });
 
-      resultRef.current?.scrollToIndex(10)
-      resultRef.current?.scrollToIndex(-1)
-      resultRef.current?.scrollToIndex(301)
-    })
+    try {
+      harness.latest().measureRef("a")(fakeElement(5, 11));
+      harness.latest().measureRef("b")(fakeElement(7, 16));
+      harness.latest().spacerRef.current = fakeElement(0, 4);
+      await harness.render();
+      await harness.render();
 
-    const range = resultRef.current?.range
-    expect(range?.[0]).toBeGreaterThan(0)
-    expect(range?.[1]).toBeGreaterThan(range?.[0] ?? 0)
-    expect((range?.[1] ?? 0) - (range?.[0] ?? 0)).toBeLessThanOrEqual(300)
-    expect(scroll.clampCalls.some(([min, max]) => min !== undefined && max !== undefined)).toBe(true)
-    expect(scroll.scrollToCalls).toEqual([30])
-  })
+      const result = harness.latest();
+      expect(result.getItemTop(0)).toBe(11);
+      expect(result.getItemElement(1)).not.toBeNull();
+      expect(result.getItemHeight(0)).toBe(5);
+      expect(result.getItemHeight(1)).toBe(7);
+      expect(Array.from(result.offsets).slice(0, 4)).toEqual([0, 5, 12, 15]);
 
-  test('measures mounted items and exposes stable refs, DOM elements, tops, and heights', async () => {
-    const scroll = new FakeScrollBox()
-    scroll.viewportHeight = 12
-    scroll.sticky = true
-    const keys = makeKeys(8)
-    const resultRef = { current: null as VirtualScrollResult | null }
-    const snapshots: Snapshot[] = []
-    const itemHeights = Object.fromEntries(keys.map((key, index) => [key, index + 1]))
+      result.scrollToIndex(2);
+      expect(scroll.scrollToCalls).toEqual([16]);
 
-    await withRoot(async root => {
-      root.render(
-        <VirtualHarness
-          itemHeights={itemHeights}
-          keys={keys}
-          resultRef={resultRef}
-          scroll={scroll}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
+      result.measureRef("b")(null);
+      expect(result.getItemElement(1)).toBeNull();
+      expect(result.getItemHeight(1)).toBe(7);
+    } finally {
+      await harness.dispose();
+    }
+  });
 
-      const firstRef = resultRef.current?.measureRef('item-0')
-      expect(resultRef.current?.measureRef('item-0')).toBe(firstRef)
-      expect(resultRef.current?.getItemElement(0)).not.toBeNull()
-      expect(resultRef.current?.getItemTop(0)).toBeGreaterThanOrEqual(0)
-      expect(resultRef.current?.getItemHeight(0)).toBe(1)
+  test("scales cached heights and freezes range across column changes", async () => {
+    const scroll = createScrollHandle({
+      scrollTop: 0,
+      sticky: false,
+      viewportHeight: 20,
+    });
+    const harness = await renderHookHarness({
+      columns: 100,
+      itemKeys: ["a", "b", "c", "d"],
+      scrollRef: { current: scroll },
+    });
 
-      firstRef?.(null)
-      expect(resultRef.current?.getItemElement(0)).toBeNull()
-    })
+    try {
+      harness.latest().measureRef("a")(fakeElement(10, 0));
+      harness.latest().measureRef("b")(fakeElement(20, 10));
+      await harness.render();
+      await harness.render();
+      const beforeResize = harness.latest().range;
+      harness.latest().measureRef("a")(fakeElement(3, 0));
 
-    expect(snapshots.some(snapshot => snapshot.heights.some(height => height !== undefined))).toBe(true)
-  })
+      await harness.render({ columns: 50 });
+      const firstResize = harness.latest();
+      expect(firstResize.range).toEqual(beforeResize);
+      expect(firstResize.getItemHeight(0)).toBe(20);
+      expect(firstResize.getItemHeight(1)).toBe(40);
 
-  test('drops stale keys and scales cached heights across column changes', async () => {
-    const scroll = new FakeScrollBox()
-    scroll.viewportHeight = 10
-    scroll.sticky = true
-    const resultRef = { current: null as VirtualScrollResult | null }
-    const snapshots: Snapshot[] = []
-
-    await withRoot(async root => {
-      root.render(
-        <VirtualHarness
-          itemHeights={{ a: 4, b: 5 }}
-          keys={['a', 'b']}
-          resultRef={resultRef}
-          scroll={scroll}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
-
-      expect(resultRef.current?.getItemHeight(0)).toBe(4)
-      expect(resultRef.current?.getItemHeight(1)).toBe(5)
-
-      root.render(
-        <VirtualHarness
-          columns={40}
-          itemHeights={{ b: 5, c: 6 }}
-          keys={['b', 'c']}
-          resultRef={resultRef}
-          scroll={scroll}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
-
-      expect(resultRef.current?.getItemHeight(0)).toBe(10)
-      expect(resultRef.current?.getItemHeight(1)).toBeUndefined()
-
-      root.render(
-        <VirtualHarness
-          columns={40}
-          itemHeights={{ b: 5, c: 6 }}
-          keys={['b', 'c']}
-          resultRef={resultRef}
-          scroll={scroll}
-          snapshots={snapshots}
-        />,
-      )
-      await waitForLayout()
-
-      expect(resultRef.current?.getItemHeight(1)).toBe(6)
-    })
-  })
-})
+      await harness.render();
+      expect(harness.latest().getItemHeight(0)).toBe(3);
+    } finally {
+      await harness.dispose();
+    }
+  });
+});

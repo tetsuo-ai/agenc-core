@@ -3,28 +3,26 @@ import React from "react";
 import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { Text } from "../../ink.js";
-import { createRoot } from "../../ink/root.js";
-import { PromptInputFooterLeftSide } from "./PromptInputFooterLeftSide.js";
-
-const footerMock = vi.hoisted(() => ({
+const harness = vi.hoisted(() => ({
   appState: {
     expandedView: "none" as "none" | "tasks" | "teammates",
     notifications: { current: null as null | { key: string } },
     remoteSessionUrl: undefined as string | undefined,
-    tasks: {} as Record<string, any>,
-    teamContext: undefined as undefined | { teammates: Record<string, { name: string }> },
+    tasks: {} as Record<string, unknown>,
+    teamContext: undefined as
+      | undefined
+      | { teammates: Record<string, { name: string }> },
     viewingAgentTaskId: undefined as string | undefined,
-    viewSelectionMode: "normal",
+    viewSelectionMode: "none",
   },
-  copyOnSelect: true,
-  featureFlags: new Set<string>(),
-  fullscreen: false,
-  globalConfig: {
+  columns: 100,
+  config: {
+    copyOnSelect: true as boolean | undefined,
     editorMode: "normal",
-    prStatusFooterEnabled: true,
-    tui: { vimMode: false },
-  } as Record<string, any>,
+    prStatusFooterEnabled: true as boolean | undefined,
+  },
+  features: new Set<string>(),
+  fullscreen: false,
   hasSelection: false,
   inProcessEnabled: false,
   isCoordinator: false,
@@ -38,399 +36,447 @@ const footerMock = vi.hoisted(() => ({
   },
   proactiveActive: false,
   proactiveNextTickAt: null as number | null,
-  selectionState: { lastPressHadAlt: false } as { lastPressHadAlt?: boolean },
+  selectionState: { lastPressHadAlt: false },
   swarmsEnabled: false,
-  tasksV2: undefined as undefined | Array<Record<string, unknown>>,
-  terminalColumns: 100,
-}));
-
-vi.mock("bun:bundle", () => ({
-  feature: (name: string) => footerMock.featureFlags.has(name),
-}));
-
-vi.mock("../../../coordinator/coordinatorMode.js", () => ({
-  isCoordinatorMode: () => footerMock.isCoordinator,
-}));
-
-vi.mock("../../keybindings/useShortcutDisplay.js", () => ({
-  useShortcutDisplay: (_id: string, _scope: string, fallback: string) => fallback,
-}));
-
-vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => footerMock.globalConfig,
-}));
-
-vi.mock("../../../utils/permissions/PermissionMode.js", () => ({
-  getModeColor: () => "mode",
-  isDefaultMode: (mode: string | undefined) => mode === undefined || mode === "default",
-}));
-
-vi.mock("../tasks/BackgroundTaskStatus.js", () => ({
-  BackgroundTaskStatus: (props: {
-    isLeaderIdle?: boolean;
-    isViewingTeammate?: boolean;
-    tasksSelected?: boolean;
-    teammateFooterIndex?: number;
-  }) => (
-    <Text>
-      TASKS selected:{String(props.tasksSelected)} viewing:{String(props.isViewingTeammate)} idle:{String(props.isLeaderIdle)} index:{String(props.teammateFooterIndex)}
-    </Text>
-  ),
-}));
-
-vi.mock("../../../tasks/types.js", () => ({
-  isBackgroundTask: (task: any) =>
-    task?.type === "background_task" || task?.type === "in_process_teammate",
-}));
-
-vi.mock("../tasks/taskStatusUtils.js", () => ({
-  shouldHideTasksFooter: (tasks: Record<string, any>, showSpinnerTree: boolean) =>
-    showSpinnerTree && Object.values(tasks).some(task => task.type === "in_process_teammate"),
-}));
-
-vi.mock("../../../utils/agentSwarmsEnabled.js", () => ({
-  isAgentSwarmsEnabled: () => footerMock.swarmsEnabled,
-}));
-
-vi.mock("../teams/TeamStatus.js", () => ({
-  TeamStatus: (props: { showHint?: boolean; teamsSelected?: boolean }) => (
-    <Text>TEAM selected:{String(props.teamsSelected)} hint:{String(props.showHint)}</Text>
-  ),
-}));
-
-vi.mock("../../../utils/swarm/backends/registry.js", () => ({
-  isInProcessEnabled: () => footerMock.inProcessEnabled,
-}));
-
-vi.mock("../../state/AppState.js", () => ({
-  useAppState: (selector: (state: typeof footerMock.appState) => unknown) =>
-    selector(footerMock.appState),
-  useAppStateStore: () => ({
-    getState: () => ({ remoteSessionUrl: footerMock.appState.remoteSessionUrl }),
-  }),
-}));
-
-vi.mock("../../../bootstrap/state.js", () => ({
-  flushInteractionTime: () => {},
-  getIsRemoteMode: () => footerMock.isRemoteMode,
-}));
-
-vi.mock("./HistorySearchInput.js", () => ({
-  default: (props: { historyFailedMatch?: boolean; value: string }) => (
-    <Text>SEARCH {props.value} failed:{String(props.historyFailedMatch)}</Text>
-  ),
-}));
-
-vi.mock("../../hooks/usePrStatus.js", () => ({
-  usePrStatus: () => footerMock.prStatus,
-}));
-
-vi.mock("../design-system/KeyboardShortcutHint.js", () => ({
-  KeyboardShortcutHint: ({ action, shortcut }: { action: string; shortcut: string }) => (
-    <Text>{shortcut} to {action}</Text>
-  ),
-}));
-
-vi.mock("../design-system/Byline.js", () => ({
-  Byline: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
-
-vi.mock("../../hooks/useTerminalSize.js", () => ({
-  useTerminalSize: () => ({ columns: footerMock.terminalColumns, rows: 24 }),
-}));
-
-vi.mock("../../hooks/useTasksV2.js", () => ({
-  useTasksV2: () => footerMock.tasksV2,
-}));
-
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => footerMock.fullscreen,
-}));
-
-vi.mock("../../ink/terminal.js", () => ({
-  SYNC_OUTPUT_SUPPORTED: false,
-  isXtermJs: () => footerMock.isXterm,
-  shouldSkipMainScreenSyncMarkers: () => true,
-  shouldUseMainScreenRewrite: () => false,
-  supportsExtendedKeys: () => false,
-  writeDiffToTerminal: (
-    terminal: { stdout: { write: (chunk: string) => void } },
-    diff: Array<{ content?: string; str?: string; type: string }>,
-  ) => {
-    terminal.stdout.write(
-      diff
-        .map(patch => (patch.type === "stdout" ? patch.content ?? "" : patch.type === "styleStr" ? patch.str ?? "" : ""))
-        .join(""),
-    );
+  tasksV2: undefined as undefined | Array<{ id: string; subject: string }>,
+  reset() {
+    harness.appState = {
+      expandedView: "none",
+      notifications: { current: null },
+      remoteSessionUrl: undefined,
+      tasks: {},
+      teamContext: undefined,
+      viewingAgentTaskId: undefined,
+      viewSelectionMode: "none",
+    };
+    harness.columns = 100;
+    harness.config = {
+      copyOnSelect: true,
+      editorMode: "normal",
+      prStatusFooterEnabled: true,
+    };
+    harness.features = new Set();
+    harness.fullscreen = false;
+    harness.hasSelection = false;
+    harness.inProcessEnabled = false;
+    harness.isCoordinator = false;
+    harness.isRemoteMode = false;
+    harness.isXterm = false;
+    harness.platform = "linux";
+    harness.prStatus = {
+      number: null,
+      reviewState: null,
+      url: null,
+    };
+    harness.proactiveActive = false;
+    harness.proactiveNextTickAt = null;
+    harness.selectionState = { lastPressHadAlt: false };
+    harness.swarmsEnabled = false;
+    harness.tasksV2 = undefined;
   },
 }));
 
+vi.mock("bun:bundle", () => ({
+  feature: (name: string) => harness.features.has(name),
+}));
+
+vi.mock("../../../coordinator/coordinatorMode.js", () => ({
+  isCoordinatorMode: () => harness.isCoordinator,
+}));
+
+vi.mock("../../keybindings/useShortcutDisplay.js", () => ({
+  useShortcutDisplay: (command: string) => {
+    if (command === "chat:cycleMode") return "shift+tab";
+    if (command === "chat:cancel") return "esc";
+    if (command === "app:toggleTodos") return "ctrl+t";
+    if (command === "chat:killAgents") return "ctrl+x ctrl+k";
+    return command;
+  },
+}));
+
+vi.mock("../tasks/BackgroundTaskStatus.js", async () => {
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
+  return {
+    BackgroundTaskStatus: (props: Record<string, unknown>) =>
+      ReactModule.createElement(
+        Text,
+        null,
+        `Tasks:${String(props.tasksSelected)}:${String(props.isViewingTeammate)}:${String(props.isLeaderIdle)}:${String(props.teammateFooterIndex ?? "none")}`,
+      ),
+  };
+});
+
+vi.mock("../CoordinatorAgentStatus.js", () => ({
+  getVisibleAgentTasks: () => [],
+}));
+
+vi.mock("../teams/TeamStatus.js", async () => {
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
+  return {
+    TeamStatus: (props: Record<string, unknown>) =>
+      ReactModule.createElement(
+        Text,
+        null,
+        `Teams:${String(props.teamsSelected)}:${String(props.showHint)}`,
+      ),
+  };
+});
+
+vi.mock("../../../tasks/types.js", () => ({
+  isBackgroundTask: (task: { readonly type?: string; readonly status?: string }) =>
+    task.type === "background" && task.status !== "completed",
+}));
+
+vi.mock("../tasks/taskStatusUtils.js", () => ({
+  shouldHideTasksFooter: () => false,
+}));
+
+vi.mock("../../../utils/agentSwarmsEnabled.js", () => ({
+  isAgentSwarmsEnabled: () => harness.swarmsEnabled,
+}));
+
+vi.mock("../../../utils/swarm/backends/registry.js", () => ({
+  isInProcessEnabled: () => harness.inProcessEnabled,
+}));
+
+vi.mock("../../state/AppState.js", () => ({
+  useAppState: (selector: (state: typeof harness.appState) => unknown) =>
+    selector(harness.appState),
+  useAppStateStore: () => ({ getState: () => harness.appState }),
+}));
+
+vi.mock("../../../bootstrap/state.js", () => ({
+  flushInteractionTime: vi.fn(),
+  getIsRemoteMode: () => harness.isRemoteMode,
+}));
+
+vi.mock("./HistorySearchInput.js", async () => {
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
+  return {
+    default: (props: Record<string, unknown>) =>
+      ReactModule.createElement(
+        Text,
+        null,
+        `History:${String(props.value)}:${String(props.historyFailedMatch)}`,
+      ),
+  };
+});
+
+vi.mock("../../hooks/usePrStatus.js", () => ({
+  usePrStatus: () => harness.prStatus,
+}));
+
+vi.mock("../design-system/KeyboardShortcutHint.js", async () => {
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
+  return {
+    KeyboardShortcutHint: ({
+      action,
+      shortcut,
+    }: {
+      readonly action: string;
+      readonly shortcut: string;
+    }) => ReactModule.createElement(Text, null, `${shortcut} ${action}`),
+  };
+});
+
+vi.mock("../design-system/Byline.js", async () => {
+  const ReactModule = await import("react");
+  return {
+    Byline: ({ children }: { readonly children?: React.ReactNode }) =>
+      ReactModule.createElement(ReactModule.Fragment, null, children),
+  };
+});
+
+vi.mock("../../hooks/useTerminalSize.js", () => ({
+  useTerminalSize: () => ({ columns: harness.columns, rows: 24 }),
+}));
+
+vi.mock("../../hooks/useTasksV2.js", () => ({
+  useTasksV2: () => harness.tasksV2,
+}));
+
+vi.mock("../../../utils/fullscreen.js", () => ({
+  isFullscreenEnvEnabled: () => harness.fullscreen,
+}));
+
+vi.mock("../../ink/terminal.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../ink/terminal.js")>();
+  return {
+    ...actual,
+    isXtermJs: () => harness.isXterm,
+  };
+});
+
 vi.mock("../../ink/hooks/use-selection.js", () => ({
-  useHasSelection: () => footerMock.hasSelection,
-  useSelection: () => ({
-    getState: () => footerMock.selectionState,
-  }),
+  useHasSelection: () => harness.hasSelection,
+  useSelection: () => ({ getState: () => harness.selectionState }),
+}));
+
+vi.mock("../../../utils/config.js", () => ({
+  getGlobalConfig: () => harness.config,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({
-  getPlatform: () => footerMock.platform,
+  getPlatform: () => harness.platform,
 }));
 
-vi.mock("../PrBadge.js", () => ({
-  PrBadge: ({ number, reviewState }: { number: number; reviewState?: string }) => (
-    <Text>PR#{number}:{reviewState}</Text>
-  ),
-}));
+vi.mock("../PrBadge.js", async () => {
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
+  return {
+    PrBadge: (props: Record<string, unknown>) =>
+      ReactModule.createElement(
+        Text,
+        null,
+        `PR:${String(props.number)}:${String(props.reviewState)}`,
+      ),
+  };
+});
 
 vi.mock("./proactiveAdapter.js", () => ({
-  getPromptInputProactiveNextTickAt: () => footerMock.proactiveNextTickAt,
-  isPromptInputProactiveActive: () => footerMock.proactiveActive,
+  getPromptInputProactiveNextTickAt: () => harness.proactiveNextTickAt,
+  isPromptInputProactiveActive: () => harness.proactiveActive,
   subscribeToPromptInputProactiveChanges: () => () => {},
 }));
 
-function defaultProps(
-  overrides: Partial<React.ComponentProps<typeof PromptInputFooterLeftSide>> = {},
-): React.ComponentProps<typeof PromptInputFooterLeftSide> {
-  return {
-    exitMessage: { show: false },
-    historyFailedMatch: false,
-    historyQuery: "",
-    isLoading: false,
-    isSearching: false,
-    mode: "prompt",
-    setHistoryQuery: () => {},
-    suppressHint: false,
-    tasksSelected: false,
-    teamsSelected: false,
-    toolPermissionContext: { mode: "default" } as any,
-    vimMode: undefined,
-    ...overrides,
+import { createRoot } from "../../ink.js";
+import { PromptInputFooterLeftSide } from "./PromptInputFooterLeftSide.js";
+
+function createStreams(): {
+  stdout: PassThrough;
+  stdin: PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
   };
-}
-
-async function renderToText(node: React.ReactNode): Promise<string> {
-  let output = "";
+} {
   const stdout = new PassThrough();
-  stdout.on("data", chunk => {
-    output += chunk.toString();
-  });
-
   const stdin = new PassThrough() as PassThrough & {
     isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
     ref: () => void;
+    setRawMode: (mode: boolean) => void;
     unref: () => void;
   };
   stdin.isTTY = true;
-  stdin.setRawMode = () => {};
   stdin.ref = () => {};
+  stdin.setRawMode = () => {};
   stdin.unref = () => {};
-  (stdout as unknown as { columns: number }).columns = footerMock.terminalColumns;
-
-  const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
-  });
-
-  try {
-    root.render(node);
-    await new Promise(resolve => setTimeout(resolve, 30));
-    return stripAnsi(output);
-  } finally {
-    root.unmount();
-    stdin.end();
-  }
+  stdout.resume();
+  return { stdin, stdout };
 }
 
-beforeEach(() => {
-  footerMock.appState.expandedView = "none";
-  footerMock.appState.notifications = { current: null };
-  footerMock.appState.remoteSessionUrl = undefined;
-  footerMock.appState.tasks = {};
-  footerMock.appState.teamContext = undefined;
-  footerMock.appState.viewingAgentTaskId = undefined;
-  footerMock.appState.viewSelectionMode = "normal";
-  footerMock.copyOnSelect = true;
-  footerMock.featureFlags.clear();
-  footerMock.fullscreen = false;
-  footerMock.globalConfig = {
-    editorMode: "normal",
-    prStatusFooterEnabled: true,
-    tui: { vimMode: false },
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function renderFooter(
+  overrides: Partial<React.ComponentProps<typeof PromptInputFooterLeftSide>> = {},
+): Promise<{
+  dispose: () => Promise<void>;
+  output: () => string;
+}> {
+  let output = "";
+  const { stdin, stdout } = createStreams();
+  stdout.on("data", chunk => {
+    output += chunk.toString();
+  });
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  });
+  root.render(
+    <PromptInputFooterLeftSide
+      exitMessage={{ show: false }}
+      historyFailedMatch={false}
+      historyQuery=""
+      isLoading={false}
+      isSearching={false}
+      mode="prompt"
+      setHistoryQuery={vi.fn()}
+      suppressHint={false}
+      tasksSelected={false}
+      teamsSelected={false}
+      toolPermissionContext={{ mode: "default" } as never}
+      vimMode={undefined}
+      {...overrides}
+    />,
+  );
+  await sleep();
+  return {
+    dispose: async () => {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    },
+    output: () => stripAnsi(output),
   };
-  footerMock.hasSelection = false;
-  footerMock.inProcessEnabled = false;
-  footerMock.isCoordinator = false;
-  footerMock.isRemoteMode = false;
-  footerMock.isXterm = false;
-  footerMock.platform = "linux";
-  footerMock.prStatus = { number: null, reviewState: null, url: null };
-  footerMock.proactiveActive = false;
-  footerMock.proactiveNextTickAt = null;
-  footerMock.selectionState = { lastPressHadAlt: false };
-  footerMock.swarmsEnabled = false;
-  footerMock.tasksV2 = undefined;
-  footerMock.terminalColumns = 100;
-});
+}
 
-describe("PromptInputFooterLeftSide rendering", () => {
-  test("prioritizes exit, paste, search, and vim states", async () => {
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ exitMessage: { show: true, key: "ctrl-c" } })} />),
-    ).resolves.toContain("Press the same key again to exit");
-
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ isPasting: true })} />),
-    ).resolves.toContain("Pasting text");
-
-    await expect(
-      renderToText(
-        <PromptInputFooterLeftSide
-          {...defaultProps({
-            historyFailedMatch: true,
-            historyQuery: "needle",
-            isSearching: true,
-          })}
-        />,
-      ),
-    ).resolves.toContain("SEARCH needle failed:true");
-
-    footerMock.globalConfig = { editorMode: "vim", tui: { vimMode: true } };
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ vimMode: "NORMAL" })} />),
-    ).resolves.toContain("-- NORMAL --");
+describe("PromptInputFooterLeftSide render paths", () => {
+  beforeEach(() => {
+    harness.reset();
   });
 
-  test("renders bash mode, permission mode, remote, and PR status branches", async () => {
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ mode: "bash" })} />),
-    ).resolves.toContain("! for bash mode");
+  test("renders exit and paste priority messages before mode hints", async () => {
+    const exit = await renderFooter({ exitMessage: { key: "ctrl+c", show: true } });
+    try {
+      expect(exit.output()).toContain("Press the same key again to exit");
+    } finally {
+      await exit.dispose();
+    }
 
-    await expect(
-      renderToText(
-        <PromptInputFooterLeftSide
-          {...defaultProps({
-            toolPermissionContext: { mode: "bypassPermissions" } as any,
-          })}
-        />,
-      ),
-    ).resolves.toContain("YOLO");
+    const paste = await renderFooter({ isPasting: true });
+    try {
+      expect(paste.output()).toContain("Pasting text");
+    } finally {
+      await paste.dispose();
+    }
+  });
 
-    footerMock.isRemoteMode = true;
-    footerMock.appState.remoteSessionUrl = "https://example.invalid/session";
-    footerMock.prStatus = {
-      number: 12,
-      reviewState: "approved",
-      url: "https://example.invalid/pr/12",
+  test("renders history search, vim mode, and bash mode states", async () => {
+    const search = await renderFooter({
+      historyFailedMatch: true,
+      historyQuery: "needle",
+      isSearching: true,
+      vimMode: "INSERT",
+    });
+    try {
+      expect(search.output()).toContain("History:needle:true");
+      expect(search.output()).not.toContain("-- INSERT --");
+    } finally {
+      await search.dispose();
+    }
+
+    harness.config.editorMode = "vim";
+    const vim = await renderFooter({ vimMode: "NORMAL" });
+    try {
+      expect(vim.output()).toContain("-- NORMAL --");
+    } finally {
+      await vim.dispose();
+    }
+
+    const bash = await renderFooter({ mode: "bash" });
+    try {
+      expect(bash.output()).toContain("! for bash mode");
+    } finally {
+      await bash.dispose();
+    }
+  });
+
+  test("renders permission, task, team, pr, and shortcut hints", async () => {
+    harness.appState.tasks = {
+      background: { status: "running", type: "background" },
     };
-    const remoteOutput = await renderToText(
-      <PromptInputFooterLeftSide
-        {...defaultProps({
-          toolPermissionContext: { mode: "bypassPermissions" } as any,
-        })}
-      />,
-    );
-    expect(remoteOutput).toContain("remote");
-    expect(remoteOutput).toContain("PR#12:approved");
-    expect(remoteOutput).not.toContain("YOLO");
-  });
-
-  test("renders task, team, teammate, and loading hints", async () => {
-    footerMock.swarmsEnabled = true;
-    footerMock.appState.teamContext = {
+    harness.appState.teamContext = {
       teammates: {
+        fixer: { name: "Fixer" },
         lead: { name: "team-lead" },
-        reviewer: { name: "Reviewer" },
       },
     };
-    footerMock.tasksV2 = [{ id: "task-1" }];
-    let output = await renderToText(
-      <PromptInputFooterLeftSide
-        {...defaultProps({
-          isLoading: true,
-          teamsSelected: true,
-        })}
-      />,
-    );
-    expect(output).toContain("TEAM selected:true");
-    expect(output).toContain("esc to interrupt");
-    expect(output).toContain("ctrl+t to show tasks");
-
-    footerMock.appState.tasks = {
-      teammate: { status: "running", type: "in_process_teammate" },
+    harness.prStatus = {
+      number: 42,
+      reviewState: "changes_requested",
+      url: "https://example.test/pr/42",
     };
-    output = await renderToText(
-      <PromptInputFooterLeftSide
-        {...defaultProps({
-          isLoading: false,
-          tasksSelected: true,
-          teammateFooterIndex: 1,
-        })}
-      />,
-    );
-    expect(output).toContain("TASKS selected:true viewing:false idle:true index:1");
-    expect(output).toContain("ctrl+t to show tasks");
+    harness.swarmsEnabled = true;
+    harness.tasksV2 = [{ id: "task-1", subject: "do work" }];
 
-    footerMock.appState.viewSelectionMode = "viewing-agent";
-    footerMock.appState.viewingAgentTaskId = "teammate";
-    footerMock.appState.tasks.teammate.status = "completed";
-    output = await renderToText(<PromptInputFooterLeftSide {...defaultProps()} />);
-    expect(output).toContain("viewing:true");
-    expect(output).toContain("esc to return to team lead");
+    const rendered = await renderFooter({
+      isLoading: true,
+      tasksSelected: true,
+      teamsSelected: true,
+      toolPermissionContext: { mode: "bypassPermissions" } as never,
+    });
+
+    try {
+      const output = rendered.output();
+      expect(output).toContain("YOLO");
+      expect(output).toContain("Tasks:true:false:false:none");
+      expect(output).toContain("Teams:true:false");
+      expect(output).not.toContain("PR:42");
+      expect(output).toContain("esc interrupt");
+    } finally {
+      await rendered.dispose();
+    }
   });
 
-  test("renders proactive, kill-agent, task-management, and selection hints", async () => {
-    footerMock.featureFlags.add("PROACTIVE");
-    footerMock.proactiveActive = true;
-    footerMock.proactiveNextTickAt = Date.now() + 2_000;
-    await expect(renderToText(<PromptInputFooterLeftSide {...defaultProps()} />)).resolves.toContain("waiting");
-
-    footerMock.featureFlags.clear();
-    footerMock.proactiveActive = false;
-    footerMock.proactiveNextTickAt = null;
-    footerMock.appState.tasks = {
-      local: { status: "running", type: "local_agent" },
+  test("renders teammate pill rows and completed-teammate return hint", async () => {
+    harness.appState.tasks = {
+      teammate: {
+        status: "completed",
+        type: "in_process_teammate",
+      },
     };
-    footerMock.appState.notifications = { current: null };
-    await expect(renderToText(<PromptInputFooterLeftSide {...defaultProps()} />)).resolves.toContain(
-      "ctrl+x ctrl+k to stop agents",
-    );
+    harness.appState.viewingAgentTaskId = "teammate";
+    harness.appState.viewSelectionMode = "viewing-agent";
 
-    footerMock.appState.notifications = { current: { key: "kill-agents-confirm" } };
-    await expect(renderToText(<PromptInputFooterLeftSide {...defaultProps()} />)).resolves.not.toContain(
-      "stop agents",
-    );
+    const rendered = await renderFooter({
+      teammateFooterIndex: 2,
+      toolPermissionContext: { mode: "acceptEdits" } as never,
+    });
 
-    footerMock.appState.tasks = { bg: { status: "running", type: "background_task" } };
-    footerMock.appState.notifications = { current: null };
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ tasksSelected: true })} />),
-    ).resolves.toContain("Enter to view tasks");
-
-    footerMock.fullscreen = true;
-    footerMock.hasSelection = true;
-    footerMock.copyOnSelect = false;
-    footerMock.globalConfig.copyOnSelect = false;
-    await expect(renderToText(<PromptInputFooterLeftSide {...defaultProps({ suppressHint: true })} />)).resolves.toContain(
-      "ctrl+c to copy",
-    );
-
-    footerMock.copyOnSelect = true;
-    footerMock.globalConfig.copyOnSelect = true;
-    footerMock.isXterm = true;
-    footerMock.platform = "macos";
-    footerMock.selectionState = { lastPressHadAlt: true };
-    await expect(renderToText(<PromptInputFooterLeftSide {...defaultProps({ suppressHint: true })} />)).resolves.toContain(
-      "macOptionClickForcesSelection",
-    );
+    try {
+      const output = rendered.output();
+      expect(output).toContain("Tasks:false:true:true:2");
+      expect(output).toContain("esc return to team lead");
+      expect(output).toContain("accept edits on");
+    } finally {
+      await rendered.dispose();
+    }
   });
 
-  test("keeps fullscreen footer height stable when no parts are visible", async () => {
-    expect((await renderToText(<PromptInputFooterLeftSide {...defaultProps({ suppressHint: true })} />)).trim()).toBe("");
+  test("renders proactive countdown and fullscreen selection guidance", async () => {
+    harness.features.add("PROACTIVE");
+    harness.proactiveActive = true;
+    harness.proactiveNextTickAt = Date.now() + 3000;
 
-    footerMock.fullscreen = true;
-    const output = await renderToText(<PromptInputFooterLeftSide {...defaultProps({ suppressHint: true })} />);
-    expect(output.trim()).toBe("");
+    const proactive = await renderFooter();
+    try {
+      expect(proactive.output()).toContain("waiting");
+    } finally {
+      await proactive.dispose();
+    }
+
+    harness.features = new Set();
+    harness.fullscreen = true;
+    harness.hasSelection = true;
+    harness.isXterm = true;
+    harness.platform = "macos";
+    harness.selectionState = { lastPressHadAlt: true };
+    const selection = await renderFooter({ suppressHint: true });
+    try {
+      expect(selection.output()).toContain(
+        "set macOptionClickForcesSelection in VS Code settings",
+      );
+    } finally {
+      await selection.dispose();
+    }
+
+    harness.config.copyOnSelect = false;
+    harness.isXterm = false;
+    harness.platform = "linux";
+    const copy = await renderFooter({ suppressHint: true });
+    try {
+      expect(copy.output()).toContain("ctrl+c copy");
+    } finally {
+      await copy.dispose();
+    }
+  });
+
+  test("reserves a fullscreen row when all footer parts are suppressed", async () => {
+    harness.fullscreen = true;
+    const rendered = await renderFooter({ suppressHint: true });
+    try {
+      expect(rendered.output().trim()).toBe("");
+    } finally {
+      await rendered.dispose();
+    }
   });
 });

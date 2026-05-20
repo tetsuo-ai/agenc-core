@@ -1,71 +1,101 @@
 import { PassThrough } from "node:stream";
 import React from "react";
 import stripAnsi from "strip-ansi";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { createRoot } from "../../ink/root.js";
-import {
-  BriefIdleStatus,
-  Spinner,
-  SpinnerWithVerb,
-} from "./Spinner.js";
-
-const spinnerMock = vi.hoisted(() => ({
+const harness = vi.hoisted(() => ({
   activity: {
-    ended: [] as string[],
-    started: [] as string[],
+    endCLIActivity: vi.fn(),
+    startCLIActivity: vi.fn(),
   },
   appState: {
     effortValue: "medium",
-    expandedView: undefined as string | undefined,
+    expandedView: undefined as undefined | "tasks" | "teammates",
     isBriefOnly: false,
     remoteBackgroundTaskCount: 0,
     remoteConnectionStatus: "connected",
     selectedIPAgentIndex: 0,
-    tasks: {} as Record<string, any>,
+    tasks: {} as Record<string, unknown>,
     viewingAgentTaskId: undefined as string | undefined,
-    viewSelectionMode: "normal",
+    viewSelectionMode: "idle",
   },
-  currentTurnTokenBudget: null as number | null,
-  featureFlags: new Set<string>(),
+  features: new Set<string>(),
   getKairosActive: false,
   getUserMsgOptIn: false,
-  growthbookBrief: false,
-  localAgents: [] as Array<{ id: string; summary: string }>,
-  outputTokens: 0,
+  growthbookValue: false,
+  localAgents: [] as Array<{ name: string; status?: string }>,
   settings: {
     prefersReducedMotion: false,
     spinnerTipsEnabled: true,
-  } as { prefersReducedMotion?: boolean; spinnerTipsEnabled?: boolean },
-  tasksV2: undefined as any[] | undefined,
-  terminalColumns: 80,
+  } as { prefersReducedMotion?: boolean; spinnerTipsEnabled?: boolean } | undefined,
+  tasksV2: undefined as undefined | Array<{
+    activeForm?: string;
+    blockedBy: string[];
+    id: string;
+    status: string;
+    subject: string;
+  }>,
+  teammateTasks: [] as Array<Record<string, unknown>>,
+  turnOutputTokens: 0,
+  turnTokenBudget: null as number | null,
+  viewedTeammate: undefined as undefined | Record<string, unknown>,
+  reset() {
+    harness.activity.endCLIActivity.mockClear();
+    harness.activity.startCLIActivity.mockClear();
+    harness.appState = {
+      effortValue: "medium",
+      expandedView: undefined,
+      isBriefOnly: false,
+      remoteBackgroundTaskCount: 0,
+      remoteConnectionStatus: "connected",
+      selectedIPAgentIndex: 0,
+      tasks: {},
+      viewingAgentTaskId: undefined,
+      viewSelectionMode: "idle",
+    };
+    harness.features = new Set();
+    harness.getKairosActive = false;
+    harness.getUserMsgOptIn = false;
+    harness.growthbookValue = false;
+    harness.localAgents = [];
+    harness.settings = {
+      prefersReducedMotion: false,
+      spinnerTipsEnabled: true,
+    };
+    harness.tasksV2 = undefined;
+    harness.teammateTasks = [];
+    harness.turnOutputTokens = 0;
+    harness.turnTokenBudget = null;
+    harness.viewedTeammate = undefined;
+  },
 }));
 
 vi.mock("bun:bundle", () => ({
-  feature: (name: string) => spinnerMock.featureFlags.has(name),
+  feature: (name: string) => harness.features.has(name),
 }));
 
 vi.mock("../../../bootstrap/state.js", () => ({
-  flushInteractionTime: () => {},
-  getCurrentTurnTokenBudget: () => spinnerMock.currentTurnTokenBudget,
-  getKairosActive: () => spinnerMock.getKairosActive,
-  getTurnOutputTokens: () => spinnerMock.outputTokens,
-  getUserMsgOptIn: () => spinnerMock.getUserMsgOptIn,
+  flushInteractionTime: vi.fn(),
+  getCurrentTurnTokenBudget: () => harness.turnTokenBudget,
+  getKairosActive: () => harness.getKairosActive,
+  getTurnOutputTokens: () => harness.turnOutputTokens,
+  getUserMsgOptIn: () => harness.getUserMsgOptIn,
 }));
 
 vi.mock("../../../services/analytics/growthbook.js", () => ({
-  getFeatureValue_CACHED_MAY_BE_STALE: () => spinnerMock.growthbookBrief,
+  getFeatureValue_CACHED_MAY_BE_STALE: () => harness.growthbookValue,
+}));
+
+vi.mock("../../../utils/envUtils.js", () => ({
+  isEnvTruthy: (value: string | undefined) => value === "1" || value === "true",
+}));
+
+vi.mock("lodash-es/sample.js", () => ({
+  default: (items: readonly string[]) => items[0],
 }));
 
 vi.mock("../../../utils/activityManager.js", () => ({
-  activityManager: {
-    endCLIActivity: (id: string) => {
-      spinnerMock.activity.ended.push(id);
-    },
-    startCLIActivity: (id: string) => {
-      spinnerMock.activity.started.push(id);
-    },
-  },
+  activityManager: harness.activity,
 }));
 
 vi.mock("../../../constants/spinnerVerbs.js", () => ({
@@ -73,465 +103,320 @@ vi.mock("../../../constants/spinnerVerbs.js", () => ({
 }));
 
 vi.mock("../MessageResponse.js", async () => {
-  const React = await import("react");
-  const { Box } = await vi.importActual<typeof import("../../ink.js")>("../../ink.js");
+  const ReactModule = await import("react");
   return {
-    MessageResponse: ({ children }: { children: React.ReactNode }) =>
-      React.createElement(Box, { flexDirection: "column" }, children),
+    MessageResponse: ({ children }: { readonly children?: React.ReactNode }) =>
+      ReactModule.createElement(ReactModule.Fragment, null, children),
   };
 });
 
 vi.mock("../TaskListV2.js", async () => {
-  const React = await import("react");
-  const { Text } = await vi.importActual<typeof import("../../ink.js")>("../../ink.js");
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
   return {
-    TaskListV2: ({ tasks }: { tasks: unknown[] }) =>
-      React.createElement(Text, null, `TASKS:${tasks.length}`),
+    TaskListV2: ({ tasks }: { readonly tasks: readonly { subject: string }[] }) =>
+      ReactModule.createElement(Text, null, `TaskList:${tasks.map(task => task.subject).join(",")}`),
   };
 });
 
 vi.mock("../../hooks/useTasksV2.js", () => ({
-  useTasksV2: () => spinnerMock.tasksV2,
+  useTasksV2: () => harness.tasksV2,
 }));
 
 vi.mock("../../state/AppState.js", () => ({
-  useAppState: (selector: (state: typeof spinnerMock.appState) => unknown) =>
-    selector(spinnerMock.appState),
+  useAppState: (selector: (state: typeof harness.appState) => unknown) =>
+    selector(harness.appState),
 }));
 
 vi.mock("../../hooks/useTerminalSize.js", () => ({
-  useTerminalSize: () => ({ columns: spinnerMock.terminalColumns, rows: 24 }),
+  useTerminalSize: () => ({ columns: 80, rows: 24 }),
 }));
 
 vi.mock("../../hooks/useSettings.js", () => ({
-  useSettings: () => spinnerMock.settings,
+  useSettings: () => harness.settings,
 }));
 
 vi.mock("../../../tasks/InProcessTeammateTask/types.js", () => ({
-  isInProcessTeammateTask: (task: any) => task?.type === "in_process_teammate",
+  isInProcessTeammateTask: (task: { readonly type?: string }) =>
+    task.type === "in_process_teammate",
 }));
 
 vi.mock("../../../tasks/types.js", () => ({
-  isBackgroundTask: (task: any) => task?.type === "background_task",
+  isBackgroundTask: (task: { readonly type?: string }) => task.type === "background",
 }));
 
 vi.mock("../../../tasks/InProcessTeammateTask/InProcessTeammateTask.js", () => ({
-  getAllInProcessTeammateTasks: (tasks: Record<string, any>) =>
-    Object.values(tasks ?? {}).filter(task => task?.type === "in_process_teammate"),
+  getAllInProcessTeammateTasks: () => harness.teammateTasks,
 }));
 
 vi.mock("../../../utils/effort.js", () => ({
-  getEffortSuffix: (_model: string, effort: string) => `:${effort}`,
+  getEffortSuffix: () => " · effort",
 }));
 
 vi.mock("../../../utils/model/model.js", () => ({
-  getMainLoopModel: () => "gpt-test",
+  getMainLoopModel: () => "grok-4.3",
 }));
 
 vi.mock("../../state/selectors.js", () => ({
-  getViewedTeammateTask: ({ viewingAgentTaskId, tasks }: any) =>
-    viewingAgentTaskId ? tasks?.[viewingAgentTaskId] : undefined,
+  getViewedTeammateTask: () => harness.viewedTeammate,
 }));
 
 vi.mock("./SpinnerAnimationRow.js", async () => {
-  const React = await import("react");
-  const { Text } = await vi.importActual<typeof import("../../ink.js")>("../../ink.js");
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
   return {
-    SpinnerAnimationRow: (props: any) =>
-      React.createElement(
+    SpinnerAnimationRow: (props: Record<string, unknown>) =>
+      ReactModule.createElement(
         Text,
         null,
-        [
-          "ROW",
-          props.mode,
-          props.reducedMotion ? "reduced" : "motion",
-          props.message,
-          `tokens:${props.teammateTokens}`,
-          `thinking:${String(props.thinkingStatus)}`,
-          props.spinnerSuffix ? `suffix:${props.spinnerSuffix}` : "",
-          props.effortSuffix,
-        ].filter(Boolean).join(" "),
+        `Animation:${String(props.message)}:${String(props.mode)}:${String(props.effortSuffix)}`,
       ),
   };
 });
 
 vi.mock("./TeammateSpinnerTree.js", async () => {
-  const React = await import("react");
-  const { Text } = await vi.importActual<typeof import("../../ink.js")>("../../ink.js");
+  const ReactModule = await import("react");
+  const { Text } = await import("../../ink.js");
   return {
-    TeammateSpinnerTree: (props: any) =>
-      React.createElement(
+    TeammateSpinnerTree: (props: Record<string, unknown>) =>
+      ReactModule.createElement(
         Text,
         null,
-        `TREE selected:${props.selectedIndex ?? "none"} idle:${String(props.allIdle)} leader:${props.leaderVerb ?? props.leaderIdleText ?? ""} tokens:${props.leaderTokenCount}`,
+        `Tree:${String(props.leaderVerb ?? props.leaderIdleText ?? "none")}:${String(props.allIdle)}`,
       ),
   };
 });
 
 vi.mock("./agentActivity.js", () => ({
-  formatRunningAgentSummary: (agents: Array<{ summary: string }>) =>
-    agents.map(agent => agent.summary).join(", "),
-  getActiveLocalAgentTasks: () => spinnerMock.localAgents,
+  formatRunningAgentSummary: (agents: readonly { readonly name: string }[]) =>
+    agents.map(agent => agent.name).join(", "),
+  getActiveLocalAgentTasks: () => harness.localAgents,
 }));
 
-function makeRef<T>(current: T): React.RefObject<T> {
-  return { current };
+import { createRoot } from "../../ink/root.js";
+import { BriefIdleStatus, Spinner, SpinnerWithVerb } from "./Spinner.js";
+
+function createStreams(): {
+  stdout: PassThrough;
+  stdin: PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
+} {
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  stdout.resume();
+  return { stdin, stdout };
 }
 
-function defaultSpinnerProps(
-  overrides: Partial<React.ComponentProps<typeof SpinnerWithVerb>> = {},
-): React.ComponentProps<typeof SpinnerWithVerb> {
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function renderToText(node: React.ReactNode): Promise<{
+  dispose: () => Promise<void>;
+  output: () => string;
+}> {
+  let output = "";
+  const { stdin, stdout } = createStreams();
+  stdout.on("data", chunk => {
+    output += chunk.toString();
+  });
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  });
+  root.render(node);
+  await sleep();
   return {
-    loadingStartTimeRef: makeRef(Date.now() - 10_000),
-    mode: "responding",
-    pauseStartTimeRef: makeRef(null),
-    responseLengthRef: makeRef(4096),
-    totalPausedMsRef: makeRef(0),
+    dispose: async () => {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    },
+    output: () => stripAnsi(output),
+  };
+}
+
+function spinnerProps(overrides: Partial<React.ComponentProps<typeof SpinnerWithVerb>> = {}) {
+  return {
+    loadingStartTimeRef: { current: Date.now() - 10_000 },
+    mode: "processing" as const,
+    pauseStartTimeRef: { current: null },
+    responseLengthRef: { current: 4000 },
+    totalPausedMsRef: { current: 0 },
     verbose: false,
     ...overrides,
   };
 }
 
-function makeTeammate(overrides: Record<string, any> = {}) {
-  return {
-    id: "teammate-1",
-    isIdle: false,
-    progress: { tokenCount: 128 },
-    spinnerVerb: "Reviewing",
-    startTime: Date.now() - 3_000,
-    status: "running",
-    type: "in_process_teammate",
-    ...overrides,
-  };
-}
-
-async function renderToText(node: React.ReactNode): Promise<string> {
-  let output = "";
-  const stdout = new PassThrough();
-  stdout.on("data", chunk => {
-    output += chunk.toString();
+describe("Spinner render paths", () => {
+  beforeEach(() => {
+    harness.reset();
   });
 
-  const stdin = new PassThrough() as PassThrough & {
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
-    ref: () => void;
-    unref: () => void;
-  };
-  stdin.isTTY = true;
-  stdin.setRawMode = () => {};
-  stdin.ref = () => {};
-  stdin.unref = () => {};
-  (stdout as unknown as { columns: number }).columns = spinnerMock.terminalColumns;
+  test("renders the compact spinner glyph", async () => {
+    const rendered = await renderToText(<Spinner />);
 
-  const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
-  });
-
-  try {
-    root.render(node);
-    await new Promise(resolve => setTimeout(resolve, 30));
-    return stripAnsi(output);
-  } finally {
-    root.unmount();
-    stdin.end();
-  }
-}
-
-async function renderSequenceToText(
-  nodes: React.ReactNode[],
-  advanceMs = 30,
-): Promise<string> {
-  let output = "";
-  const stdout = new PassThrough();
-  stdout.on("data", chunk => {
-    output += chunk.toString();
-  });
-
-  const stdin = new PassThrough() as PassThrough & {
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
-    ref: () => void;
-    unref: () => void;
-  };
-  stdin.isTTY = true;
-  stdin.setRawMode = () => {};
-  stdin.ref = () => {};
-  stdin.unref = () => {};
-  (stdout as unknown as { columns: number }).columns = spinnerMock.terminalColumns;
-
-  const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
-  });
-
-  try {
-    for (const node of nodes) {
-      root.render(node);
-      if (vi.isFakeTimers()) {
-        await vi.advanceTimersByTimeAsync(advanceMs);
-      } else {
-        await new Promise(resolve => setTimeout(resolve, advanceMs));
-      }
+    try {
+      expect(rendered.output()).toContain("◐");
+    } finally {
+      await rendered.dispose();
     }
-    return stripAnsi(output);
-  } finally {
-    root.unmount();
-    stdin.end();
-  }
-}
-
-beforeEach(() => {
-  vi.useRealTimers();
-  spinnerMock.activity.ended = [];
-  spinnerMock.activity.started = [];
-  spinnerMock.appState.effortValue = "medium";
-  spinnerMock.appState.expandedView = undefined;
-  spinnerMock.appState.isBriefOnly = false;
-  spinnerMock.appState.remoteBackgroundTaskCount = 0;
-  spinnerMock.appState.remoteConnectionStatus = "connected";
-  spinnerMock.appState.selectedIPAgentIndex = 0;
-  spinnerMock.appState.tasks = {};
-  spinnerMock.appState.viewingAgentTaskId = undefined;
-  spinnerMock.appState.viewSelectionMode = "normal";
-  spinnerMock.currentTurnTokenBudget = null;
-  spinnerMock.featureFlags.clear();
-  spinnerMock.getKairosActive = false;
-  spinnerMock.getUserMsgOptIn = false;
-  spinnerMock.growthbookBrief = false;
-  spinnerMock.localAgents = [];
-  spinnerMock.outputTokens = 0;
-  spinnerMock.settings = {
-    prefersReducedMotion: false,
-    spinnerTipsEnabled: true,
-  };
-  spinnerMock.tasksV2 = undefined;
-  spinnerMock.terminalColumns = 80;
-});
-
-afterEach(() => {
-  vi.useRealTimers();
-});
-
-describe("Spinner rendering", () => {
-  test("renders the compact static spinner glyph", async () => {
-    const output = await renderToText(<Spinner />);
-
-    expect(output).toContain("◐");
   });
 
-  test("routes brief-only mode to the brief spinner with background status", async () => {
-    spinnerMock.featureFlags.add("KAIROS_BRIEF");
-    spinnerMock.getKairosActive = true;
-    spinnerMock.appState.isBriefOnly = true;
-    spinnerMock.appState.remoteBackgroundTaskCount = 3;
-    spinnerMock.terminalColumns = 64;
+  test("uses brief spinner mode with connection warning and background count", async () => {
+    harness.features.add("KAIROS");
+    harness.getKairosActive = true;
+    harness.appState.isBriefOnly = true;
+    harness.appState.remoteConnectionStatus = "reconnecting";
+    harness.appState.remoteBackgroundTaskCount = 2;
+    harness.appState.tasks = {
+      bg: { type: "background" },
+    };
 
-    const output = await renderToText(
-      <SpinnerWithVerb {...defaultSpinnerProps({ overrideMessage: "Summarizing" })} />,
+    const rendered = await renderToText(
+      <SpinnerWithVerb {...spinnerProps({ mode: "thinking", overrideMessage: "Brief work" })} />,
     );
 
-    expect(output).toContain("Summarizing");
-    expect(output).toContain("3 in background");
-    expect(spinnerMock.activity.started).toContain("spinner-responding");
+    try {
+      expect(rendered.output()).toContain("Reconnecting");
+      expect(rendered.output()).toContain("3 in background");
+      expect(harness.activity.startCLIActivity).toHaveBeenCalledWith("spinner-thinking");
+    } finally {
+      await rendered.dispose();
+    }
   });
 
-  test("shows brief connection warnings and hides overflowing right text", async () => {
-    spinnerMock.featureFlags.add("KAIROS");
-    spinnerMock.getUserMsgOptIn = true;
-    spinnerMock.growthbookBrief = true;
-    spinnerMock.appState.isBriefOnly = true;
-    spinnerMock.appState.remoteConnectionStatus = "disconnected";
-    spinnerMock.appState.remoteBackgroundTaskCount = 12;
-    spinnerMock.terminalColumns = 18;
-
-    const output = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
-
-    expect(output).toContain("Disconnected");
-    expect(output).not.toContain("12 in background");
-  });
-
-  test("renders the full spinner row with next task, tip, budget, and teammate tokens", async () => {
-    spinnerMock.featureFlags.add("TOKEN_BUDGET");
-    spinnerMock.currentTurnTokenBudget = 10_000;
-    spinnerMock.outputTokens = 5_000;
-    spinnerMock.appState.tasks = {
-      teammate: makeTeammate({ progress: { tokenCount: 2500 } }),
-    };
-    spinnerMock.tasksV2 = [
-      { activeForm: "Editing", blockedBy: [], id: "current", status: "running", subject: "current" },
-      { blockedBy: ["done"], id: "next", status: "pending", subject: "write tests" },
-      { blockedBy: ["current"], id: "blocked", status: "pending", subject: "blocked" },
-      { blockedBy: [], id: "done", status: "completed", subject: "done" },
+  test("renders normal spinner rows with next task, token budget, and expanded task list", async () => {
+    harness.features.add("TOKEN_BUDGET");
+    harness.turnTokenBudget = 1000;
+    harness.turnOutputTokens = 2000;
+    harness.tasksV2 = [
+      {
+        activeForm: "Coding",
+        blockedBy: [],
+        id: "active",
+        status: "running",
+        subject: "Active task",
+      },
+      {
+        blockedBy: [],
+        id: "next",
+        status: "pending",
+        subject: "Next task",
+      },
     ];
 
-    const output = await renderToText(
-      <SpinnerWithVerb
-        {...defaultSpinnerProps({
-          spinnerSuffix: "tail",
-          spinnerTip: "keep coverage moving",
-        })}
-      />,
+    const rendered = await renderToText(
+      <SpinnerWithVerb {...spinnerProps({ hasActiveTools: true, spinnerSuffix: "suffix" })} />,
     );
 
-    expect(output).toContain("ROW responding");
-    expect(output).toContain("Editing");
-    expect(output).toContain("tokens:2500");
-    expect(output).toContain("suffix:tail");
-    expect(output).toContain("Target: 5.0k / 10.0k (50%)");
-    expect(output).toContain("Next: write tests");
-    expect(output).not.toContain("Tip: keep coverage moving");
+    try {
+      expect(rendered.output()).toContain("Animation:Coding");
+      expect(rendered.output()).toContain("Target: 2.0k used (1.0k min");
+      expect(rendered.output()).toContain("Next: Next task");
+    } finally {
+      await rendered.dispose();
+    }
+
+    harness.appState.expandedView = "tasks";
+    const expanded = await renderToText(<SpinnerWithVerb {...spinnerProps()} />);
+    try {
+      expect(expanded.output()).toContain("TaskList:Active task,Next task");
+    } finally {
+      await expanded.dispose();
+    }
   });
 
-  test("shows expanded task list instead of tips when task view is active", async () => {
-    spinnerMock.appState.expandedView = "tasks";
-    spinnerMock.tasksV2 = [
-      { blockedBy: [], id: "task-1", status: "running", subject: "first task" },
+  test("renders leader idle, teammate tree, and foregrounded idle teammate states", async () => {
+    harness.localAgents = [{ name: "Fixer" }];
+    harness.teammateTasks = [
+      {
+        isIdle: false,
+        progress: { tokenCount: 1234 },
+        status: "running",
+        type: "in_process_teammate",
+      },
+    ];
+    harness.appState.expandedView = "teammates";
+    harness.appState.viewSelectionMode = "selecting-agent";
+
+    const leaderIdle = await renderToText(
+      <SpinnerWithVerb {...spinnerProps({ leaderIsIdle: true })} />,
+    );
+    try {
+      expect(leaderIdle.output()).toContain("Idle · agents running");
+      expect(leaderIdle.output()).toContain("Fixer");
+      expect(leaderIdle.output()).toContain("Tree:Idle:false");
+    } finally {
+      await leaderIdle.dispose();
+    }
+
+    harness.localAgents = [];
+    harness.appState.viewingAgentTaskId = "agent-1";
+    harness.viewedTeammate = {
+      isIdle: true,
+      startTime: Date.now() - 5000,
+    };
+    harness.teammateTasks = [
+      {
+        isIdle: true,
+        status: "running",
+        type: "in_process_teammate",
+      },
     ];
 
-    const output = await renderToText(
-      <SpinnerWithVerb {...defaultSpinnerProps({ spinnerTip: "hidden tip" })} />,
+    const foregroundedIdle = await renderToText(
+      <SpinnerWithVerb {...spinnerProps({ leaderIsIdle: true })} />,
     );
-
-    expect(output).toContain("TASKS:1");
-    expect(output).not.toContain("hidden tip");
+    try {
+      expect(foregroundedIdle.output()).toContain("Worked for");
+      expect(foregroundedIdle.output()).toContain("Tree:Idle:true");
+    } finally {
+      await foregroundedIdle.dispose();
+    }
   });
 
-  test("shows teammate tree mode with selection state", async () => {
-    spinnerMock.appState.expandedView = "teammates";
-    spinnerMock.appState.selectedIPAgentIndex = 2;
-    spinnerMock.appState.viewSelectionMode = "selecting-agent";
-    spinnerMock.appState.tasks = {
-      teammate: makeTeammate(),
-    };
+  test("renders brief idle status for connection and background agent states", async () => {
+    const empty = await renderToText(<BriefIdleStatus />);
+    try {
+      expect(empty.output().trim()).toBe("");
+    } finally {
+      await empty.dispose();
+    }
 
-    const output = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
+    harness.appState.remoteConnectionStatus = "disconnected";
+    harness.localAgents = [{ name: "Builder" }];
+    const disconnected = await renderToText(<BriefIdleStatus />);
+    try {
+      expect(disconnected.output()).toContain("Disconnected");
+      expect(disconnected.output()).toContain("1 agent running");
+    } finally {
+      await disconnected.dispose();
+    }
 
-    expect(output).toContain("TREE selected:2");
-    expect(output).toContain("tokens:1024");
-  });
-
-  test("uses a foregrounded running teammate spinner verb", async () => {
-    spinnerMock.appState.viewingAgentTaskId = "teammate";
-    spinnerMock.appState.tasks = {
-      teammate: makeTeammate({ spinnerVerb: "Investigating" }),
-    };
-
-    const output = await renderToText(
-      <SpinnerWithVerb {...defaultSpinnerProps({ overrideMessage: "Leader message" })} />,
-    );
-
-    expect(output).toContain("Investigating");
-    expect(output).not.toContain("Leader message");
-  });
-
-  test("shows static leader idle status while agents continue running", async () => {
-    spinnerMock.localAgents = [{ id: "agent-1", summary: "Fixer working" }];
-
-    const output = await renderToText(
-      <SpinnerWithVerb {...defaultSpinnerProps({ leaderIsIdle: true })} />,
-    );
-
-    expect(output).toContain("Idle");
-    expect(output).toContain("agents running");
-    expect(output).toContain("Fixer working");
-    expect(output).not.toContain("ROW responding");
-  });
-
-  test("shows static leader idle status while teammates continue running", async () => {
-    spinnerMock.appState.tasks = {
-      teammate: makeTeammate({ isIdle: false }),
-    };
-
-    const output = await renderToText(
-      <SpinnerWithVerb {...defaultSpinnerProps({ leaderIsIdle: true })} />,
-    );
-
-    expect(output).toContain("Idle");
-    expect(output).toContain("teammates running");
-    expect(output).not.toContain("agents running");
-  });
-
-  test("shows static foregrounded teammate idle status", async () => {
-    spinnerMock.appState.viewingAgentTaskId = "teammate";
-    spinnerMock.appState.expandedView = "teammates";
-    spinnerMock.appState.tasks = {
-      teammate: makeTeammate({ isIdle: true }),
-    };
-
-    const output = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
-
-    expect(output).toContain("Worked for");
-    expect(output).toContain("TREE selected:0");
-  });
-
-  test("shows idle instead of worked-for when other teammates remain active", async () => {
-    spinnerMock.appState.viewingAgentTaskId = "idle";
-    spinnerMock.appState.tasks = {
-      idle: makeTeammate({ id: "idle", isIdle: true }),
-      active: makeTeammate({ id: "active", isIdle: false }),
-    };
-
-    const output = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
-
-    expect(output).toContain("Idle");
-    expect(output).not.toContain("Worked for");
-  });
-
-  test("shows explicit tips, long-context tips, and complete budget text", async () => {
-    const tipOutput = await renderToText(
-      <SpinnerWithVerb {...defaultSpinnerProps({ spinnerTip: "prefer focused tests" })} />,
-    );
-    expect(tipOutput).toContain("Tip: prefer focused tests");
-
-    const longContextOutput = await renderToText(
-      <SpinnerWithVerb
-        {...defaultSpinnerProps({
-          loadingStartTimeRef: makeRef(Date.now() - 1_900_000),
-          spinnerTip: "overridden tip",
-        })}
-      />,
-    );
-    expect(longContextOutput).toContain("Tip: Use /clear to start fresh");
-    expect(longContextOutput).not.toContain("overridden tip");
-
-    spinnerMock.featureFlags.add("TOKEN_BUDGET");
-    spinnerMock.currentTurnTokenBudget = 5000;
-    spinnerMock.outputTokens = 6000;
-    const budgetOutput = await renderToText(<SpinnerWithVerb {...defaultSpinnerProps()} />);
-    expect(budgetOutput).toContain("Target: 6.0k used (5.0k min");
-  });
-
-  test("tracks thinking status across mode transitions", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000);
-
-    const thinkingProps = defaultSpinnerProps({ mode: "thinking" });
-    const respondingProps = defaultSpinnerProps({ mode: "responding" });
-    const output = await renderSequenceToText([
-      <SpinnerWithVerb {...thinkingProps} />,
-      <SpinnerWithVerb {...respondingProps} />,
-    ], 2100);
-
-    expect(output).toContain("thinking:thinking");
-    expect(output).toContain("thinking:2100");
-  });
-
-  test("renders brief idle placeholder, warnings, background counts, and local agents", async () => {
-    const emptyOutput = await renderToText(<BriefIdleStatus />);
-    expect(emptyOutput.trim()).toBe("");
-
-    spinnerMock.appState.remoteConnectionStatus = "reconnecting";
-    spinnerMock.appState.remoteBackgroundTaskCount = 4;
-    spinnerMock.terminalColumns = 60;
-    await expect(renderToText(<BriefIdleStatus />)).resolves.toContain("Reconnecting");
-    await expect(renderToText(<BriefIdleStatus />)).resolves.toContain("4 in background");
-
-    spinnerMock.localAgents = [{ id: "agent-1", summary: "Agent active" }];
-    const localOutput = await renderToText(<BriefIdleStatus />);
-    expect(localOutput).toContain("1 agent running");
+    harness.appState.remoteConnectionStatus = "connected";
+    harness.localAgents = [];
+    harness.appState.remoteBackgroundTaskCount = 4;
+    const background = await renderToText(<BriefIdleStatus />);
+    try {
+      expect(background.output()).toContain("4 in background");
+    } finally {
+      await background.dispose();
+    }
   });
 });

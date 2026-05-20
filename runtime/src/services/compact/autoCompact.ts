@@ -24,6 +24,10 @@ export type AutoCompactTrackingState = {
   readonly consecutiveFailures?: number;
 };
 
+export type AutoCompactOptions = {
+  readonly force?: boolean;
+};
+
 export const AUTOCOMPACT_BUFFER_TOKENS = 13_000;
 const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000;
 const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000;
@@ -38,6 +42,7 @@ export async function autoCompactIfNeeded(
   querySource?: string,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed = 0,
+  options: AutoCompactOptions = {},
 ): Promise<{
   readonly wasCompacted: boolean;
   readonly compactionResult?: CompactionResult;
@@ -59,7 +64,7 @@ export async function autoCompactIfNeeded(
     0,
     estimateMessagesTokens(messages, context) - snipTokensFreed,
   );
-  if (tokenCount < autoCompactThreshold(context)) {
+  if (options.force !== true && tokenCount < autoCompactThreshold(context)) {
     return { wasCompacted: false, consecutiveFailures: 0 };
   }
   try {

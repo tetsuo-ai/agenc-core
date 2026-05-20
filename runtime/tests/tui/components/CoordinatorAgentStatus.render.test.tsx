@@ -1,208 +1,300 @@
 import { PassThrough } from "node:stream";
+
 import React from "react";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+const harness = vi.hoisted(() => ({
+  columns: 100,
+  entered: [] as string[],
+  evicted: [] as string[],
+  exited: 0,
+  setAppState: vi.fn(),
+  state: {
+    agentNameRegistry: new Map<string, string>(),
+    coordinatorTaskIndex: 0,
+    footerSelection: "none" as "none" | "tasks",
+    tasks: {} as Record<string, unknown>,
+    viewingAgentTaskId: undefined as string | undefined,
+  },
+  reset() {
+    harness.columns = 100;
+    harness.entered = [];
+    harness.evicted = [];
+    harness.exited = 0;
+    harness.setAppState.mockClear();
+    harness.state = {
+      agentNameRegistry: new Map(),
+      coordinatorTaskIndex: 0,
+      footerSelection: "none",
+      tasks: {},
+      viewingAgentTaskId: undefined,
+    };
+  },
+}));
+
+vi.mock("../hooks/useTerminalSize.js", () => ({
+  useTerminalSize: () => ({ columns: harness.columns, rows: 24 }),
+}));
+
+vi.mock("../state/AppState.js", () => ({
+  useAppState: (selector: (state: typeof harness.state) => unknown) =>
+    selector(harness.state),
+  useSetAppState: () => harness.setAppState,
+}));
+
+vi.mock("../state/teammateViewHelpers.js", () => ({
+  enterTeammateView: (taskId: string) => {
+    harness.entered.push(taskId);
+  },
+  exitTeammateView: () => {
+    harness.exited++;
+  },
+}));
+
+vi.mock("../../utils/task/framework.js", () => ({
+  evictTerminalTask: (taskId: string) => {
+    harness.evicted.push(taskId);
+  },
+}));
+
 import { createRoot } from "../ink/root.js";
-import { Text } from "../ink.js";
+import { Box, Text } from "../ink.js";
 import {
   CoordinatorTaskPanel,
   useCoordinatorTaskCount,
 } from "./CoordinatorAgentStatus.js";
 
-const coordinatorMock = vi.hoisted(() => ({
-  appState: {
-    agentNameRegistry: new Map<string, string>(),
-    coordinatorTaskIndex: 0,
-    footerSelection: "chat",
-    tasks: {} as Record<string, any>,
-    viewingAgentTaskId: undefined as string | undefined,
-  },
-  evicted: [] as string[],
-  setAppStateCalls: [] as unknown[],
-  terminalColumns: 96,
-}));
+type AgentTask = {
+  agentId: string;
+  agentType: string;
+  description: string;
+  diskLoaded: boolean;
+  endTime?: number;
+  evictAfter?: number;
+  id: string;
+  isBackgrounded: boolean;
+  lastReportedTokenCount: number;
+  lastReportedToolCount: number;
+  pendingMessages: string[];
+  progress?: {
+    lastActivity?: Record<string, unknown>;
+    summary?: string;
+    tokenCount?: number;
+  };
+  prompt: string;
+  retain: boolean;
+  retrieved: boolean;
+  startTime: number;
+  status: "completed" | "failed" | "killed" | "running";
+  totalPausedMs?: number;
+  type: "local_agent";
+};
 
-vi.mock("../state/AppState.js", () => ({
-  useAppState: (selector: (state: typeof coordinatorMock.appState) => unknown) =>
-    selector(coordinatorMock.appState),
-  useSetAppState: () => (update: unknown) => {
-    coordinatorMock.setAppStateCalls.push(update);
-  },
-}));
+function createStreams(): {
+  stdout: PassThrough;
+  stdin: PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
+} {
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as PassThrough & {
+    isTTY: boolean;
+    ref: () => void;
+    setRawMode: (mode: boolean) => void;
+    unref: () => void;
+  };
+  stdin.isTTY = true;
+  stdin.ref = () => {};
+  stdin.setRawMode = () => {};
+  stdin.unref = () => {};
+  stdout.resume();
+  return { stdin, stdout };
+}
 
-vi.mock("../hooks/useTerminalSize", () => ({
-  useTerminalSize: () => ({
-    columns: coordinatorMock.terminalColumns,
-    rows: 24,
-  }),
-}));
+async function sleep(ms = 25): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms));
+}
 
-vi.mock("../state/teammateViewHelpers", () => ({
-  enterTeammateView: (taskId: string, setAppState: (update: unknown) => void) =>
-    setAppState({ enter: taskId }),
-  exitTeammateView: (setAppState: (update: unknown) => void) =>
-    setAppState({ exit: true }),
-}));
-
-vi.mock("../../utils/task/framework", () => ({
-  evictTerminalTask: (taskId: string, setAppState: (update: unknown) => void) => {
-    coordinatorMock.evicted.push(taskId);
-    setAppState({ evict: taskId });
-  },
-}));
-
-function makeTask(id: string, overrides: Record<string, unknown> = {}) {
+function task(id: string, overrides: Partial<AgentTask> = {}): AgentTask {
   return {
+    agentId: id,
     agentType: "worker",
-    description: `Work for ${id}`,
+    description: `${id} description`,
     diskLoaded: false,
     id,
     isBackgrounded: true,
     lastReportedTokenCount: 0,
-    messages: [],
+    lastReportedToolCount: 0,
     pendingMessages: [],
-    progress: undefined,
-    prompt: "do work",
+    prompt: `${id} prompt`,
     retain: false,
-    startTime: 1_000,
+    retrieved: false,
+    startTime: Date.now() - 8_000,
     status: "running",
-    totalPausedMs: 0,
     type: "local_agent",
     ...overrides,
   };
 }
 
-async function renderToText(node: React.ReactNode, waitMs = 30): Promise<string> {
+async function renderPanel(
+  element: React.ReactNode = <CoordinatorTaskPanel />,
+): Promise<{
+  dispose: () => Promise<void>;
+  output: () => string;
+}> {
   let output = "";
-  const stdout = new PassThrough();
+  const { stdin, stdout } = createStreams();
   stdout.on("data", chunk => {
     output += chunk.toString();
   });
-
-  const stdin = new PassThrough() as PassThrough & {
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
-    ref: () => void;
-    unref: () => void;
-  };
-  stdin.isTTY = true;
-  stdin.setRawMode = () => {};
-  stdin.ref = () => {};
-  stdin.unref = () => {};
-  (stdout as unknown as { columns: number }).columns = coordinatorMock.terminalColumns;
-
   const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
   });
-
-  try {
-    root.render(node);
-    if (vi.isFakeTimers()) {
-      await vi.advanceTimersByTimeAsync(waitMs);
-    } else {
-      await new Promise(resolve => setTimeout(resolve, waitMs));
-    }
-    return stripAnsi(output);
-  } finally {
-    root.unmount();
-    stdin.end();
-  }
+  root.render(<Box flexDirection="column">{element}</Box>);
+  await sleep();
+  return {
+    dispose: async () => {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      await sleep();
+    },
+    output: () => stripAnsi(output),
+  };
 }
-
-function CountProbe() {
-  return <Text>{useCoordinatorTaskCount()}</Text>;
-}
-
-beforeEach(() => {
-  vi.useRealTimers();
-  coordinatorMock.appState.agentNameRegistry = new Map();
-  coordinatorMock.appState.coordinatorTaskIndex = 0;
-  coordinatorMock.appState.footerSelection = "chat";
-  coordinatorMock.appState.tasks = {};
-  coordinatorMock.appState.viewingAgentTaskId = undefined;
-  coordinatorMock.evicted = [];
-  coordinatorMock.setAppStateCalls = [];
-  coordinatorMock.terminalColumns = 96;
-});
-
-afterEach(() => {
-  vi.useRealTimers();
-});
 
 describe("CoordinatorTaskPanel rendering", () => {
-  test("renders nothing when no visible panel agent tasks exist", async () => {
-    coordinatorMock.appState.tasks = {
-      hidden: makeTask("hidden", { evictAfter: 0 }),
-      main: makeTask("main", { agentType: "main-session" }),
-    };
-
-    expect((await renderToText(<CoordinatorTaskPanel />)).trim()).toBe("");
-    expect((await renderToText(<CountProbe />)).trim()).toBe("0");
+  beforeEach(() => {
+    harness.reset();
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
   });
 
-  test("renders sorted running and terminal agents with names, status, tokens, queues, and selection hints", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(11_000);
-    coordinatorMock.appState.footerSelection = "tasks";
-    coordinatorMock.appState.coordinatorTaskIndex = 2;
-    coordinatorMock.appState.viewingAgentTaskId = "agent-b";
-    coordinatorMock.appState.agentNameRegistry = new Map([
-      ["Fixer", "agent-b"],
-      ["Reviewer", "agent-a"],
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("renders nothing when no panel-managed agents are visible", async () => {
+    harness.state.tasks = {
+      dismissed: task("dismissed", { evictAfter: 0 }),
+      main: task("main", { agentType: "main-session" }),
+    };
+    const rendered = await renderPanel();
+
+    try {
+      expect(rendered.output().trim()).toBe("");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("renders visible agents with names, progress, queued counts, and selection hints", async () => {
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 1;
+    harness.state.agentNameRegistry = new Map([
+      ["Fixer", "agent-a"],
+      ["Reviewer", "agent-b"],
     ]);
-    coordinatorMock.appState.tasks = {
-      agentB: makeTask("agent-b", {
-        description: "long running branch fixer",
-        pendingMessages: ["one", "two"],
-        progress: {
-          lastActivity: { activityDescription: "editing" },
-          summary: "Applying patch",
-          tokenCount: 12_500,
-        },
-        startTime: 1_000,
-      }),
-      agentA: makeTask("agent-a", {
-        description: "finished review",
-        endTime: 9_000,
-        pendingMessages: ["queued"],
-        startTime: 2_000,
+    harness.state.tasks = {
+      "agent-b": task("agent-b", {
+        description: "Review final patch",
+        endTime: 997_000,
+        evictAfter: 1_100_000,
+        startTime: 992_000,
         status: "completed",
         totalPausedMs: 1_000,
       }),
+      "agent-a": task("agent-a", {
+        pendingMessages: ["please continue"],
+        progress: {
+          lastActivity: { toolName: "Read" },
+          summary: "Investigating agent lifecycle",
+          tokenCount: 1_200,
+        },
+        startTime: 990_000,
+      }),
     };
 
-    const output = await renderToText(<CoordinatorTaskPanel />);
+    const rendered = await renderPanel();
 
-    expect(output).toContain("AGENTS");
-    expect(output).toContain("2 active");
-    expect(output).toContain("orchestrator");
-    expect(output.indexOf("Fixer:")).toBeLessThan(output.indexOf("Reviewer:"));
-    expect(output).toContain("Fixer:");
-    expect(output).toContain("Applying patch");
-    expect(output).toContain("12.5k tokens");
-    expect(output).toContain("2 queued");
-    expect(output).toContain("Reviewer:");
-    expect(output).toContain("finished review");
-    expect(output).toContain("1 queued");
-    expect(output).toContain("x to clear");
-    await expect(renderToText(<CountProbe />)).resolves.toContain("3");
+    try {
+      const output = rendered.output();
+      expect(output).toContain("AGENTS");
+      expect(output).toContain("2 active");
+      expect(output).toContain("orchestrator");
+      expect(output).toContain("Fixer: Investigating agent lifecycle");
+      expect(output).toContain("1 queued");
+      expect(output).toContain("x to stop");
+      expect(output).toContain("Reviewer: Review final patch");
+      expect(output.indexOf("Fixer")).toBeLessThan(output.indexOf("Reviewer"));
+    } finally {
+      await rendered.dispose();
+    }
   });
 
-  test("evicts expired panel tasks on the interval tick", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(20_000);
-    coordinatorMock.appState.tasks = {
-      expired: makeTask("expired", { evictAfter: 19_000 }),
-      retained: makeTask("retained", { evictAfter: undefined }),
+  test("uses viewed-agent styling without action hints and truncates narrow descriptions", async () => {
+    harness.columns = 46;
+    harness.state.footerSelection = "tasks";
+    harness.state.coordinatorTaskIndex = 1;
+    harness.state.viewingAgentTaskId = "agent-a";
+    harness.state.agentNameRegistry = new Map([["ChromeLotus", "agent-a"]]);
+    harness.state.tasks = {
+      "agent-a": task("agent-a", {
+        description: "This description is long enough to require truncation in a narrow panel",
+        progress: { tokenCount: 5 },
+      }),
     };
 
-    await renderToText(<CoordinatorTaskPanel />, 1_050);
+    const rendered = await renderPanel();
 
-    expect(coordinatorMock.evicted).toContain("expired");
-    expect(coordinatorMock.evicted).not.toContain("retained");
-    expect(coordinatorMock.setAppStateCalls).toContainEqual({ evict: "expired" });
+    try {
+      const output = rendered.output();
+      expect(output).toContain("ChromeLotus:");
+      expect(output).toContain("tokens");
+      expect(output).not.toContain("x to stop");
+      expect(output).not.toContain("require truncation in a narrow panel");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("exposes coordinator count through the hook", async () => {
+    harness.state.tasks = {
+      "agent-a": task("agent-a"),
+      hidden: task("hidden", { evictAfter: 0 }),
+    };
+    function CountProbe(): React.ReactNode {
+      return <Text>Count:{useCoordinatorTaskCount()}</Text>;
+    }
+    const rendered = await renderPanel(<CountProbe />);
+
+    try {
+      expect(rendered.output()).toContain("Count:2");
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("evicts expired retained terminal agents on the panel tick", async () => {
+    harness.state.tasks = {
+      expired: task("expired", {
+        endTime: 999_000,
+        evictAfter: 999_999,
+        status: "completed",
+      }),
+    };
+    const rendered = await renderPanel();
+
+    try {
+      await sleep(1_075);
+      expect(harness.evicted).toEqual(["expired"]);
+    } finally {
+      await rendered.dispose();
+    }
   });
 });

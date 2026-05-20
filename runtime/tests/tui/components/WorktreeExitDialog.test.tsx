@@ -1,554 +1,737 @@
-import { PassThrough } from "node:stream";
+import { PassThrough } from 'node:stream'
 
-import React from "react";
-import stripAnsi from "strip-ansi";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import React from 'react'
+import stripAnsi from 'strip-ansi'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest'
 
-import { createRoot } from "../ink/root.js";
-import type { WorktreeSession } from "../../utils/worktree.js";
-
-const worktreeMock = vi.hoisted(() => ({
-  session: null as WorktreeSession | null,
-  cleanupWorktree: vi.fn(async () => {}),
-  getCurrentWorktreeSession: vi.fn(() => worktreeMock.session),
-  keepWorktree: vi.fn(async () => {}),
-  killTmuxSession: vi.fn(async () => {}),
-}));
-
-const execMock = vi.hoisted(() => ({
-  statusStdout: "",
-  revListStdout: "0\n",
-  execFileNoThrow: vi.fn(async (_cmd: string, args: string[]) => {
-    if (args[0] === "status") return { stdout: execMock.statusStdout };
-    if (args[0] === "rev-list") return { stdout: execMock.revListStdout };
-    return { stdout: "" };
-  }),
-}));
-
-const analyticsMock = vi.hoisted(() => ({
-  logEvent: vi.fn(),
-}));
-
-const debugMock = vi.hoisted(() => ({
-  logForDebugging: vi.fn(),
-}));
-
-const shellMock = vi.hoisted(() => ({
-  setCwd: vi.fn(),
-}));
-
-const plansMock = vi.hoisted(() => ({
-  clear: vi.fn(),
-}));
-
-const sessionStorageMock = vi.hoisted(() => ({
-  saveWorktreeState: vi.fn(),
-}));
-
-const dialogMock = vi.hoisted(() => ({
-  props: undefined as
-    | undefined
-    | {
-      title: React.ReactNode;
-      subtitle?: React.ReactNode;
-      onCancel: () => void;
-      children: React.ReactNode;
-    },
-}));
-
-const selectMock = vi.hoisted(() => ({
-  props: undefined as
-    | undefined
-    | {
-      defaultFocusValue?: string;
-      options: Array<{ label: string; value: string; description?: string }>;
-      onChange: (value: string) => void | Promise<void>;
-    },
-}));
-
-vi.mock("bun:bundle", () => ({
-  feature: () => false,
-}));
-
-vi.mock("../../services/analytics/index.js", () => ({
-  logEvent: analyticsMock.logEvent,
-}));
-
-vi.mock("src/utils/debug.js", () => ({
-  logForDebugging: debugMock.logForDebugging,
-}));
-
-vi.mock("../../utils/execFileNoThrow.js", () => ({
-  execFileNoThrow: execMock.execFileNoThrow,
-}));
-
-vi.mock("../../utils/plans.js", () => ({
-  getPlansDirectory: {
-    cache: {
-      clear: plansMock.clear,
-    },
-  },
-}));
-
-vi.mock("../../utils/Shell.js", () => ({
-  setCwd: shellMock.setCwd,
-}));
-
-vi.mock("../../utils/worktree.js", () => ({
-  cleanupWorktree: worktreeMock.cleanupWorktree,
-  getCurrentWorktreeSession: worktreeMock.getCurrentWorktreeSession,
-  keepWorktree: worktreeMock.keepWorktree,
-  killTmuxSession: worktreeMock.killTmuxSession,
-}));
-
-vi.mock("../../utils/sessionStorage.js", () => ({
-  saveWorktreeState: sessionStorageMock.saveWorktreeState,
-}));
-
-vi.mock("./spinner/Spinner.js", () => ({
-  Spinner: () => null,
-}));
-
-vi.mock("./CustomSelect/select", () => ({
-  Select: (props: NonNullable<typeof selectMock.props>) => {
-    selectMock.props = props;
-    return null;
-  },
-}));
-
-vi.mock("./design-system/Dialog", () => ({
-  Dialog: (props: NonNullable<typeof dialogMock.props>) => {
-    dialogMock.props = props;
-    return props.children;
-  },
-}));
-
-function session(overrides: Partial<WorktreeSession> = {}): WorktreeSession {
-  return {
-    originalCwd: "/repo",
-    originalHeadCommit: "abc123",
-    sessionId: "session-1",
-    worktreeBranch: "feature/test",
-    worktreeName: "test",
-    worktreePath: "/repo-worktree",
-    ...overrides,
-  };
+type CapturedDialogProps = {
+  children: React.ReactNode
+  onCancel: () => void
+  subtitle?: React.ReactNode
+  title: React.ReactNode
 }
 
-function stdio() {
-  let output = "";
-  const stdout = new PassThrough();
-  stdout.on("data", chunk => {
-    output += chunk.toString();
-  });
-  (stdout as unknown as { columns: number }).columns = 120;
+type CapturedSelectProps = {
+  defaultFocusValue?: string
+  onChange?: (value: string) => void | Promise<void>
+  options: Array<{
+    description?: string
+    label: React.ReactNode
+    value: string
+  }>
+}
+
+type WorktreeSession = {
+  originalCwd: string
+  originalHeadCommit?: string
+  sessionId: string
+  tmuxSessionName?: string
+  worktreeBranch?: string
+  worktreeName: string
+  worktreePath: string
+}
+
+const harness = vi.hoisted(() => ({
+  chdir: vi.fn(),
+  cleanupWorktree: vi.fn(),
+  clearPlansCache: vi.fn(),
+  dialogProps: undefined as CapturedDialogProps | undefined,
+  execFileNoThrow: vi.fn(),
+  keepWorktree: vi.fn(),
+  killTmuxSession: vi.fn(),
+  logEvent: vi.fn(),
+  logForDebugging: vi.fn(),
+  saveWorktreeState: vi.fn(),
+  selectProps: undefined as CapturedSelectProps | undefined,
+  session: null as WorktreeSession | null,
+  setCwd: vi.fn(),
+}))
+
+vi.mock('bun:bundle', () => ({
+  feature: () => false,
+}))
+
+vi.mock('../../services/analytics/index.js', () => ({
+  logEvent: harness.logEvent,
+}))
+
+vi.mock('src/utils/debug.js', () => ({
+  logForDebugging: harness.logForDebugging,
+}))
+
+vi.mock('../../utils/debug.js', () => ({
+  logForDebugging: harness.logForDebugging,
+}))
+
+vi.mock('../../utils/execFileNoThrow.js', () => ({
+  execFileNoThrow: harness.execFileNoThrow,
+}))
+
+vi.mock('../../utils/plans.js', () => {
+  const getPlansDirectory = () => '/tmp/agenc-plans'
+  ;(
+    getPlansDirectory as typeof getPlansDirectory & {
+      cache: { clear: () => void }
+    }
+  ).cache = { clear: harness.clearPlansCache }
+
+  return { getPlansDirectory }
+})
+
+vi.mock('../../utils/Shell.js', () => ({
+  setCwd: harness.setCwd,
+}))
+
+vi.mock('../../utils/sessionStorage', () => ({
+  saveWorktreeState: harness.saveWorktreeState,
+}))
+
+vi.mock('../../utils/sessionStorage.js', () => ({
+  saveWorktreeState: harness.saveWorktreeState,
+}))
+
+vi.mock('../../utils/worktree.js', () => ({
+  cleanupWorktree: harness.cleanupWorktree,
+  getCurrentWorktreeSession: () => harness.session,
+  keepWorktree: harness.keepWorktree,
+  killTmuxSession: harness.killTmuxSession,
+}))
+
+vi.mock('./spinner/Spinner.js', () => ({
+  Spinner: () => null,
+}))
+
+vi.mock('./design-system/Dialog', async () => {
+  const ReactModule = await vi.importActual<typeof import('react')>('react')
+  const { Box, Text } =
+    await vi.importActual<typeof import('../ink.js')>('../ink.js')
+
+  return {
+    Dialog: (props: CapturedDialogProps) => {
+      harness.dialogProps = props
+      return ReactModule.createElement(
+        Box,
+        { flexDirection: 'column' },
+        ReactModule.createElement(Text, null, props.title),
+        props.subtitle
+          ? ReactModule.createElement(Text, null, props.subtitle)
+          : null,
+        props.children,
+      )
+    },
+  }
+})
+
+vi.mock('./CustomSelect/select', async () => {
+  const ReactModule = await vi.importActual<typeof import('react')>('react')
+  const { Box, Text } =
+    await vi.importActual<typeof import('../ink.js')>('../ink.js')
+
+  return {
+    Select: (props: CapturedSelectProps) => {
+      harness.selectProps = props
+      return ReactModule.createElement(
+        Box,
+        { flexDirection: 'column' },
+        ReactModule.createElement(
+          Text,
+          { key: 'focus' },
+          `focus:${props.defaultFocusValue ?? ''}`,
+        ),
+        ...props.options.map(option =>
+          ReactModule.createElement(
+            Text,
+            { key: option.value },
+            `${option.label} ${option.description ?? ''}`,
+          ),
+        ),
+      )
+    },
+  }
+})
+
+import { createRoot } from '../ink/root.js'
+import { renderToString } from '../../utils/staticRender.js'
+import { WorktreeExitDialog } from './WorktreeExitDialog.js'
+
+function baseSession(
+  overrides: Partial<WorktreeSession> = {},
+): WorktreeSession {
+  return {
+    originalCwd: '/workspace/main',
+    originalHeadCommit: 'abc123',
+    sessionId: 'session-1',
+    worktreeBranch: 'agenc/worktree-test',
+    worktreeName: 'worktree-test',
+    worktreePath: '/workspace/.agenc/worktrees/worktree-test',
+    ...overrides,
+  }
+}
+
+function mockGitState({
+  commitCount,
+  statusLines,
+}: {
+  commitCount: number
+  statusLines: string[]
+}) {
+  harness.execFileNoThrow.mockImplementation(
+    async (file: string, args: string[]) => {
+      expect(file).toBe('git')
+
+      if (args[0] === 'status') {
+        expect(args).toEqual(['status', '--porcelain'])
+        return {
+          code: 0,
+          stderr: '',
+          stdout:
+            statusLines.length > 0 ? `${statusLines.join('\n')}\n` : '',
+        }
+      }
+
+      if (args[0] === 'rev-list') {
+        expect(args).toEqual([
+          'rev-list',
+          '--count',
+          `${harness.session?.originalHeadCommit}..HEAD`,
+        ])
+        return { code: 0, stderr: '', stdout: `${commitCount}\n` }
+      }
+
+      throw new Error(`Unexpected execFileNoThrow call: ${file} ${args.join(' ')}`)
+    },
+  )
+}
+
+function createStreams(): {
+  stdin: PassThrough & {
+    isTTY: boolean
+    ref: () => void
+    setRawMode: (mode: boolean) => void
+    unref: () => void
+  }
+  stdout: PassThrough
+  output: () => string
+} {
+  let rendered = ''
+  const stdout = new PassThrough()
+  stdout.on('data', chunk => {
+    rendered += chunk.toString()
+  })
+  ;(stdout as unknown as { columns: number; rows: number }).columns = 120
+  ;(stdout as unknown as { columns: number; rows: number }).rows = 30
+  stdout.resume()
+
   const stdin = new PassThrough() as PassThrough & {
-    isTTY: boolean;
-    setRawMode: (mode: boolean) => void;
-    ref: () => void;
-    unref: () => void;
-  };
-  stdin.isTTY = true;
-  stdin.setRawMode = () => {};
-  stdin.ref = () => {};
-  stdin.unref = () => {};
+    isTTY: boolean
+    ref: () => void
+    setRawMode: (mode: boolean) => void
+    unref: () => void
+  }
+  stdin.isTTY = true
+  stdin.ref = () => {}
+  stdin.setRawMode = () => {}
+  stdin.unref = () => {}
+
   return {
     stdin,
     stdout,
-    output: () => stripAnsi(output),
-  };
-}
-
-function deferred() {
-  let resolve!: () => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, reject, resolve };
-}
-
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (check()) return;
-    await new Promise(resolve => setTimeout(resolve, 10));
+    output: () => stripAnsi(rendered),
   }
-  throw new Error("Timed out waiting for worktree dialog");
 }
 
-async function renderDialog({
-  onCancel,
-  onDone = vi.fn(),
-}: {
-  onCancel?: () => void;
-  onDone?: (result?: string, options?: { display?: string }) => void;
-} = {}) {
-  const { WorktreeExitDialog } = await import("./WorktreeExitDialog.js");
-  const io = stdio();
-  const root = await createRoot({
-    stdout: io.stdout as unknown as NodeJS.WriteStream,
-    stdin: io.stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
-  });
+async function sleep(ms = 0): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, ms))
+}
 
-  root.render(<WorktreeExitDialog onDone={onDone} onCancel={onCancel} />);
+async function waitFor(
+  predicate: () => boolean,
+  message: string,
+  timeoutMs = 1000,
+): Promise<void> {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return
+    await sleep(10)
+  }
+
+  throw new Error(message)
+}
+
+function deferred<T = void>(): {
+  promise: Promise<T>
+  reject: (reason?: unknown) => void
+  resolve: (value: T | PromiseLike<T>) => void
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve
+    reject = promiseReject
+  })
+
+  return { promise, reject, resolve }
+}
+
+async function mountDialog(props: {
+  onCancel?: () => void
+  onDone?: (result?: string, options?: { display?: string }) => void
+} = {}) {
+  const onDone = props.onDone ?? vi.fn()
+  const { stdin, stdout, output } = createStreams()
+  const root = await createRoot({
+    patchConsole: false,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: stdout as unknown as NodeJS.WriteStream,
+  })
+
+  root.render(
+    <WorktreeExitDialog onCancel={props.onCancel} onDone={onDone} />,
+  )
 
   return {
-    onDone,
-    output: io.output,
-    unmount: () => {
-      root.unmount();
-      io.stdin.end();
-      io.stdout.end();
+    dispose: async () => {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep(25)
     },
-  };
+    onDone,
+    output,
+  }
 }
 
-describe("WorktreeExitDialog", () => {
-  let chdirSpy: ReturnType<typeof vi.spyOn>;
+async function mountAskingDialog({
+  commitCount,
+  onCancel,
+  statusLines,
+}: {
+  commitCount: number
+  onCancel?: () => void
+  statusLines: string[]
+}) {
+  harness.session = baseSession()
+  mockGitState({ commitCount, statusLines })
+
+  const mounted = await mountDialog({ onCancel })
+  await waitFor(
+    () => harness.selectProps !== undefined,
+    'WorktreeExitDialog did not render choices',
+  )
+
+  return mounted
+}
+
+function selectProps(): CapturedSelectProps {
+  if (!harness.selectProps) {
+    throw new Error('Select props were not captured')
+  }
+
+  return harness.selectProps
+}
+
+function dialogProps(): CapturedDialogProps {
+  if (!harness.dialogProps) {
+    throw new Error('Dialog props were not captured')
+  }
+
+  return harness.dialogProps
+}
+
+describe('WorktreeExitDialog', () => {
+  let chdirSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
-    worktreeMock.session = session();
-    worktreeMock.cleanupWorktree.mockReset().mockResolvedValue(undefined);
-    worktreeMock.keepWorktree.mockReset().mockResolvedValue(undefined);
-    worktreeMock.killTmuxSession.mockReset().mockResolvedValue(undefined);
-    worktreeMock.getCurrentWorktreeSession.mockClear();
-    execMock.statusStdout = "";
-    execMock.revListStdout = "0\n";
-    execMock.execFileNoThrow.mockClear();
-    analyticsMock.logEvent.mockClear();
-    debugMock.logForDebugging.mockClear();
-    shellMock.setCwd.mockClear();
-    plansMock.clear.mockClear();
-    sessionStorageMock.saveWorktreeState.mockClear();
-    dialogMock.props = undefined;
-    selectMock.props = undefined;
-    chdirSpy = vi.spyOn(process, "chdir").mockImplementation(() => undefined);
-  });
+    harness.chdir.mockClear()
+    harness.cleanupWorktree.mockReset()
+    harness.cleanupWorktree.mockResolvedValue(undefined)
+    harness.clearPlansCache.mockClear()
+    harness.dialogProps = undefined
+    harness.execFileNoThrow.mockReset()
+    harness.keepWorktree.mockReset()
+    harness.keepWorktree.mockResolvedValue(undefined)
+    harness.killTmuxSession.mockReset()
+    harness.killTmuxSession.mockResolvedValue(true)
+    harness.logEvent.mockClear()
+    harness.logForDebugging.mockClear()
+    harness.saveWorktreeState.mockClear()
+    harness.selectProps = undefined
+    harness.session = null
+    harness.setCwd.mockClear()
+
+    chdirSpy = vi.spyOn(process, 'chdir').mockImplementation(directory => {
+      harness.chdir(directory)
+    })
+  })
 
   afterEach(() => {
-    chdirSpy.mockRestore();
-  });
+    chdirSpy.mockRestore()
+  })
 
-  test("finishes immediately when there is no active worktree session", async () => {
-    worktreeMock.session = null;
-    const onDone = vi.fn();
-    const rendered = await renderDialog({ onDone });
+  it('finishes with a system result when no worktree session is active', async () => {
+    const onDone = vi.fn()
+    harness.execFileNoThrow.mockResolvedValue({
+      code: 0,
+      stderr: '',
+      stdout: '',
+    })
 
-    try {
-      expect(onDone).toHaveBeenCalledWith("No active worktree session found", {
-        display: "system",
-      });
-      expect(dialogMock.props).toBeUndefined();
-    } finally {
-      rendered.unmount();
-    }
-  });
+    await renderToString(<WorktreeExitDialog onDone={onDone} />, 100)
 
-  test("asks with change and commit summaries and respects explicit cancel", async () => {
-    execMock.statusStdout = " M src/a.ts\n?? src/b.ts\n";
-    execMock.revListStdout = "2\n";
-    const onCancel = vi.fn();
-    const rendered = await renderDialog({ onCancel });
+    expect(onDone).toHaveBeenCalledWith('No active worktree session found', {
+      display: 'system',
+    })
+  })
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
+  it('auto-removes a clean worktree before finishing', async () => {
+    const cleanup = deferred()
+    harness.session = baseSession()
+    harness.cleanupWorktree.mockReturnValue(cleanup.promise)
+    mockGitState({ commitCount: 0, statusLines: [] })
 
-      expect(dialogMock.props?.subtitle).toContain(
-        "2 uncommitted files and 2 commits",
-      );
-      expect(selectMock.props).toMatchObject({
-        defaultFocusValue: "keep",
-        options: [
-          { label: "Keep worktree", value: "keep" },
-          { label: "Remove worktree", value: "remove" },
-        ],
-      });
+    const mounted = await mountDialog()
 
-      dialogMock.props?.onCancel();
-      expect(onCancel).toHaveBeenCalledOnce();
-      expect(worktreeMock.keepWorktree).not.toHaveBeenCalled();
-    } finally {
-      rendered.unmount();
-    }
-  });
+    await waitFor(
+      () => mounted.output().includes('Removing worktree...'),
+      'clean worktree did not render removing state',
+    )
 
-  test("falls back to keep on cancel when no cancel handler is provided", async () => {
-    execMock.statusStdout = " M src/a.ts\n";
-    const rendered = await renderDialog();
+    cleanup.resolve(undefined)
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'clean worktree did not finish',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
+    expect(harness.cleanupWorktree).toHaveBeenCalledOnce()
+    expect(harness.chdir).toHaveBeenCalledWith('/workspace/main')
+    expect(harness.setCwd).toHaveBeenCalledWith('/workspace/main')
+    expect(harness.saveWorktreeState).toHaveBeenCalledWith(null)
+    expect(harness.clearPlansCache).toHaveBeenCalledOnce()
+    expect(mounted.onDone).toHaveBeenCalledWith('Worktree removed (no changes)')
+    expect(harness.selectProps).toBeUndefined()
 
-      expect(dialogMock.props?.subtitle).toContain("1 uncommitted file");
-      dialogMock.props?.onCancel();
-      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+    await mounted.dispose()
+  })
 
-      expect(worktreeMock.keepWorktree).toHaveBeenCalledOnce();
-      expect(analyticsMock.logEvent).toHaveBeenCalledWith(
-        "agenc_worktree_kept",
-        { changed_files: 1, commits: 0 },
-      );
-      expect(chdirSpy).toHaveBeenCalledWith("/repo");
-      expect(shellMock.setCwd).toHaveBeenCalledWith("/repo");
-      expect(sessionStorageMock.saveWorktreeState).toHaveBeenCalledWith(null);
-      expect(plansMock.clear).toHaveBeenCalledOnce();
-      expect(rendered.onDone).toHaveBeenCalledWith(
-        "Worktree kept. Your work is saved at /repo-worktree on branch feature/test",
-      );
-    } finally {
-      rendered.unmount();
-    }
-  });
+  it('reports a clean-worktree cleanup failure and exits anyway', async () => {
+    harness.session = baseSession()
+    harness.cleanupWorktree.mockRejectedValue(new Error('remove failed'))
+    mockGitState({ commitCount: 0, statusLines: [] })
 
-  test("renders tmux choices and keeps worktree while terminating tmux", async () => {
-    worktreeMock.session = session({ tmuxSessionName: "agent-tmux" });
-    execMock.revListStdout = "1\n";
-    const rendered = await renderDialog();
+    const mounted = await mountDialog()
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'cleanup failure did not finish',
+    )
 
-      expect(selectMock.props).toMatchObject({
-        defaultFocusValue: "keep-with-tmux",
-        options: [
-          { label: "Keep worktree and tmux session", value: "keep-with-tmux" },
-          { label: "Keep worktree, kill tmux session", value: "keep-kill-tmux" },
-          { label: "Remove worktree and tmux session", value: "remove-with-tmux" },
-        ],
-      });
+    expect(harness.logForDebugging).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to clean up worktree: Error: remove failed'),
+      { level: 'error' },
+    )
+    expect(mounted.onDone).toHaveBeenCalledWith(
+      'Worktree cleanup failed, exiting anyway',
+    )
 
-      await selectMock.props?.onChange("keep-kill-tmux");
-      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+    await mounted.dispose()
+  })
 
-      expect(worktreeMock.killTmuxSession).toHaveBeenCalledWith("agent-tmux");
-      expect(worktreeMock.keepWorktree).toHaveBeenCalledOnce();
-      expect(rendered.onDone).toHaveBeenCalledWith(
-        "Worktree kept at /repo-worktree on branch feature/test. Tmux session terminated.",
-      );
-    } finally {
-      rendered.unmount();
-    }
-  });
+  it.each([
+    {
+      commitCount: 0,
+      expectedSubtitle:
+        'You have 1 uncommitted file. These will be lost if you remove the worktree.',
+      statusLines: [' M runtime/src/tui/index.ts'],
+    },
+    {
+      commitCount: 2,
+      expectedSubtitle:
+        'You have 2 commits on agenc/worktree-test. The branch will be deleted if you remove the worktree.',
+      statusLines: [],
+    },
+    {
+      commitCount: 1,
+      expectedSubtitle:
+        'You have 2 uncommitted files and 1 commit on agenc/worktree-test. All will be lost if you remove.',
+      statusLines: [
+        ' M runtime/src/tui/index.ts',
+        '?? runtime/tests/tui/new.test.ts',
+      ],
+    },
+  ])(
+    'renders the prompt subtitle for $expectedSubtitle',
+    async ({ commitCount, expectedSubtitle, statusLines }) => {
+      const mounted = await mountAskingDialog({ commitCount, statusLines })
 
-  test("keeps tmux sessions when requested", async () => {
-    worktreeMock.session = session({ tmuxSessionName: "agent-tmux" });
-    execMock.revListStdout = "1\n";
-    const rendered = await renderDialog();
+      expect(dialogProps().title).toBe('Exiting worktree session')
+      expect(dialogProps().subtitle).toBe(expectedSubtitle)
+      expect(selectProps().defaultFocusValue).toBe('keep')
+      expect(selectProps().options).toEqual([
+        {
+          description: 'Stays at /workspace/.agenc/worktrees/worktree-test',
+          label: 'Keep worktree',
+          value: 'keep',
+        },
+        {
+          description:
+            commitCount > 0 || statusLines.length > 0
+              ? 'All changes and commits will be lost.'
+              : 'Clean up the worktree directory.',
+          label: 'Remove worktree',
+          value: 'remove',
+        },
+      ])
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("keep-with-tmux");
-      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+      await mounted.dispose()
+    },
+  )
 
-      expect(worktreeMock.killTmuxSession).not.toHaveBeenCalled();
-      expect(worktreeMock.keepWorktree).toHaveBeenCalledOnce();
-      expect(rendered.onDone).toHaveBeenCalledWith(
-        "Worktree kept. Your work is saved at /repo-worktree on branch feature/test. Reattach to tmux session with: tmux attach -t agent-tmux",
-      );
-    } finally {
-      rendered.unmount();
-    }
-  });
+  it('renders tmux-specific choices with keep-and-reattach focused', async () => {
+    harness.session = baseSession({ tmuxSessionName: 'agenc-worktree-tmux' })
+    mockGitState({ commitCount: 1, statusLines: [' M package.json'] })
 
-  test("removes tmux sessions and reports discarded branch commits", async () => {
-    worktreeMock.session = session({ tmuxSessionName: "agent-tmux" });
-    execMock.revListStdout = "2\n";
-    const rendered = await renderDialog();
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'tmux choices did not render',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("remove-with-tmux");
-      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+    expect(selectProps().defaultFocusValue).toBe('keep-with-tmux')
+    expect(selectProps().options).toEqual([
+      {
+        description:
+          'Stays at /workspace/.agenc/worktrees/worktree-test. Reattach with: tmux attach -t agenc-worktree-tmux',
+        label: 'Keep worktree and tmux session',
+        value: 'keep-with-tmux',
+      },
+      {
+        description:
+          'Keeps worktree at /workspace/.agenc/worktrees/worktree-test, terminates tmux session.',
+        label: 'Keep worktree, kill tmux session',
+        value: 'keep-kill-tmux',
+      },
+      {
+        description: 'All changes and commits will be lost.',
+        label: 'Remove worktree and tmux session',
+        value: 'remove-with-tmux',
+      },
+    ])
 
-      expect(worktreeMock.killTmuxSession).toHaveBeenCalledWith("agent-tmux");
-      expect(worktreeMock.cleanupWorktree).toHaveBeenCalledOnce();
-      expect(rendered.onDone).toHaveBeenCalledWith(
-        "Worktree removed. 2 commits on feature/test were discarded. Tmux session terminated.",
-      );
-    } finally {
-      rendered.unmount();
-    }
-  });
+    await mounted.dispose()
+  })
 
-  test("removes worktree and reports discarded work", async () => {
-    execMock.statusStdout = " M src/a.ts\n";
-    execMock.revListStdout = "1\n";
-    const rendered = await renderDialog();
+  it('uses the explicit cancel callback when one is provided', async () => {
+    const onCancel = vi.fn()
+    const mounted = await mountAskingDialog({
+      commitCount: 0,
+      onCancel,
+      statusLines: [' M runtime/src/tui/index.ts'],
+    })
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("remove");
-      await waitFor(() => rendered.onDone.mock.calls.length > 0);
+    dialogProps().onCancel()
 
-      expect(worktreeMock.cleanupWorktree).toHaveBeenCalledOnce();
-      expect(analyticsMock.logEvent).toHaveBeenCalledWith(
-        "agenc_worktree_removed",
-        { changed_files: 1, commits: 1 },
-      );
-      expect(rendered.onDone).toHaveBeenCalledWith(
-        "Worktree removed. 1 commit and uncommitted changes were discarded.",
-      );
-    } finally {
-      rendered.unmount();
-    }
-  });
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(harness.keepWorktree).not.toHaveBeenCalled()
 
-  test("reports uncommitted-only removal and explicit cleanup failures", async () => {
-    execMock.statusStdout = " M src/a.ts\n";
-    execMock.revListStdout = "0\n";
-    const removed = await renderDialog();
+    await mounted.dispose()
+  })
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("remove");
-      await waitFor(() => removed.onDone.mock.calls.length > 0);
+  it('keeps the worktree when cancel is pressed without a cancel callback', async () => {
+    const mounted = await mountAskingDialog({
+      commitCount: 1,
+      statusLines: [],
+    })
 
-      expect(removed.onDone).toHaveBeenCalledWith(
-        "Worktree removed. Uncommitted changes were discarded.",
-      );
-    } finally {
-      removed.unmount();
-    }
+    dialogProps().onCancel()
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'fallback keep did not finish',
+    )
 
-    worktreeMock.cleanupWorktree.mockReset().mockRejectedValue(new Error("boom"));
-    execMock.statusStdout = " M src/a.ts\n";
-    selectMock.props = undefined;
-    const failed = await renderDialog();
+    expect(harness.keepWorktree).toHaveBeenCalledOnce()
+    expect(mounted.onDone).toHaveBeenCalledWith(
+      'Worktree kept. Your work is saved at /workspace/.agenc/worktrees/worktree-test on branch agenc/worktree-test',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("remove");
-      await waitFor(() => failed.onDone.mock.calls.length > 0);
+    await mounted.dispose()
+  })
 
-      expect(debugMock.logForDebugging).toHaveBeenCalledWith(
-        "Failed to clean up worktree: Error: boom",
-        { level: "error" },
-      );
-      expect(failed.onDone).toHaveBeenCalledWith(
-        "Worktree cleanup failed, exiting anyway",
-      );
-    } finally {
-      failed.unmount();
-    }
-  });
+  it('keeps a tmux-backed worktree and preserves the reattach instruction', async () => {
+    const keep = deferred()
+    harness.session = baseSession({ tmuxSessionName: 'agenc-worktree-tmux' })
+    harness.keepWorktree.mockReturnValue(keep.promise)
+    mockGitState({ commitCount: 3, statusLines: [' M README.md'] })
 
-  test("covers removal pluralization variants", async () => {
-    execMock.statusStdout = " M src/a.ts\n?? src/b.ts\n";
-    execMock.revListStdout = "0\n";
-    const uncommitted = await renderDialog();
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'keep choices did not render',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      expect(dialogMock.props?.subtitle).toContain("2 uncommitted files");
-      await selectMock.props?.onChange("remove");
-      await waitFor(() => uncommitted.onDone.mock.calls.length > 0);
+    const change = selectProps().onChange?.('keep-with-tmux')
+    await waitFor(
+      () => mounted.output().includes('Keeping worktree...'),
+      'keep action did not render keeping state',
+    )
 
-      expect(uncommitted.onDone).toHaveBeenCalledWith(
-        "Worktree removed. Uncommitted changes were discarded.",
-      );
-    } finally {
-      uncommitted.unmount();
-    }
+    keep.resolve(undefined)
+    await change
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'keep action did not finish',
+    )
 
-    selectMock.props = undefined;
-    execMock.statusStdout = "";
-    execMock.revListStdout = "1\n";
-    const oneCommit = await renderDialog();
+    expect(harness.logEvent).toHaveBeenCalledWith('agenc_worktree_kept', {
+      changed_files: 1,
+      commits: 3,
+    })
+    expect(harness.killTmuxSession).not.toHaveBeenCalled()
+    expect(harness.keepWorktree).toHaveBeenCalledOnce()
+    expect(harness.chdir).toHaveBeenCalledWith('/workspace/main')
+    expect(harness.setCwd).toHaveBeenCalledWith('/workspace/main')
+    expect(harness.saveWorktreeState).toHaveBeenCalledWith(null)
+    expect(harness.clearPlansCache).toHaveBeenCalledOnce()
+    expect(mounted.onDone).toHaveBeenCalledWith(
+      'Worktree kept. Your work is saved at /workspace/.agenc/worktrees/worktree-test on branch agenc/worktree-test. Reattach to tmux session with: tmux attach -t agenc-worktree-tmux',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("remove");
-      await waitFor(() => oneCommit.onDone.mock.calls.length > 0);
+    await mounted.dispose()
+  })
 
-      expect(oneCommit.onDone).toHaveBeenCalledWith(
-        "Worktree removed. 1 commit on feature/test was discarded.",
-      );
-    } finally {
-      oneCommit.unmount();
-    }
+  it('kills tmux before keeping when requested', async () => {
+    harness.session = baseSession({ tmuxSessionName: 'agenc-worktree-tmux' })
+    mockGitState({ commitCount: 0, statusLines: [' M README.md'] })
 
-    selectMock.props = undefined;
-    execMock.statusStdout = " M src/a.ts\n";
-    execMock.revListStdout = "2\n";
-    const commitsAndChanges = await renderDialog();
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'keep-kill choices did not render',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      await selectMock.props?.onChange("remove");
-      await waitFor(() => commitsAndChanges.onDone.mock.calls.length > 0);
+    await selectProps().onChange?.('keep-kill-tmux')
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'keep-kill action did not finish',
+    )
 
-      expect(commitsAndChanges.onDone).toHaveBeenCalledWith(
-        "Worktree removed. 2 commits and uncommitted changes were discarded.",
-      );
-    } finally {
-      commitsAndChanges.unmount();
-    }
-  });
+    expect(harness.killTmuxSession).toHaveBeenCalledWith('agenc-worktree-tmux')
+    expect(harness.keepWorktree).toHaveBeenCalledOnce()
+    expect(mounted.onDone).toHaveBeenCalledWith(
+      'Worktree kept at /workspace/.agenc/worktrees/worktree-test on branch agenc/worktree-test. Tmux session terminated.',
+    )
 
-  test("renders keeping and removing progress while actions are pending", async () => {
-    execMock.statusStdout = " M src/a.ts\n";
-    const keep = deferred();
-    worktreeMock.keepWorktree.mockImplementationOnce(() => keep.promise);
-    const keeping = await renderDialog();
+    await mounted.dispose()
+  })
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      const keepAction = selectMock.props!.onChange("keep");
-      await waitFor(() => keeping.output().includes("Keeping worktree..."));
-      keep.resolve();
-      await keepAction;
-      await waitFor(() => keeping.onDone.mock.calls.length > 0);
-    } finally {
-      keeping.unmount();
-    }
+  it('removes a tmux-backed worktree and reports discarded commits plus changes', async () => {
+    const cleanup = deferred()
+    harness.session = baseSession({ tmuxSessionName: 'agenc-worktree-tmux' })
+    harness.cleanupWorktree.mockReturnValue(cleanup.promise)
+    mockGitState({ commitCount: 2, statusLines: [' M package.json'] })
 
-    execMock.statusStdout = " M src/a.ts\n";
-    const cleanup = deferred();
-    worktreeMock.cleanupWorktree.mockImplementationOnce(() => cleanup.promise);
-    selectMock.props = undefined;
-    const removing = await renderDialog();
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'remove choices did not render',
+    )
 
-    try {
-      await waitFor(() => selectMock.props !== undefined);
-      const removeAction = selectMock.props!.onChange("remove");
-      await waitFor(() => removing.output().includes("Removing worktree..."));
-      cleanup.resolve();
-      await removeAction;
-      await waitFor(() => removing.onDone.mock.calls.length > 0);
-    } finally {
-      removing.unmount();
-    }
-  });
+    const change = selectProps().onChange?.('remove-with-tmux')
+    await waitFor(
+      () => mounted.output().includes('Removing worktree...'),
+      'remove action did not render removing state',
+    )
 
-  test("auto-removes clean worktrees and reports cleanup failures", async () => {
-    const success = await renderDialog();
+    cleanup.resolve(undefined)
+    await change
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'remove action did not finish',
+    )
 
-    try {
-      await waitFor(() => success.onDone.mock.calls.length > 0);
-      expect(worktreeMock.cleanupWorktree).toHaveBeenCalledOnce();
-      expect(success.onDone).toHaveBeenCalledWith(
-        "Worktree removed (no changes)",
-      );
-    } finally {
-      success.unmount();
-    }
+    expect(harness.logEvent).toHaveBeenCalledWith('agenc_worktree_removed', {
+      changed_files: 1,
+      commits: 2,
+    })
+    expect(harness.killTmuxSession).toHaveBeenCalledWith('agenc-worktree-tmux')
+    expect(harness.cleanupWorktree).toHaveBeenCalledOnce()
+    expect(harness.chdir).toHaveBeenCalledWith('/workspace/main')
+    expect(harness.setCwd).toHaveBeenCalledWith('/workspace/main')
+    expect(harness.saveWorktreeState).toHaveBeenCalledWith(null)
+    expect(harness.clearPlansCache).toHaveBeenCalledOnce()
+    expect(mounted.onDone).toHaveBeenCalledWith(
+      'Worktree removed. 2 commits and uncommitted changes were discarded. Tmux session terminated.',
+    )
 
-    worktreeMock.cleanupWorktree.mockReset().mockRejectedValue(new Error("nope"));
-    const failure = await renderDialog();
+    await mounted.dispose()
+  })
 
-    try {
-      await waitFor(() => failure.onDone.mock.calls.length > 0);
-      expect(debugMock.logForDebugging).toHaveBeenCalledWith(
-        "Failed to clean up worktree: Error: nope",
-        { level: "error" },
-      );
-      expect(failure.onDone).toHaveBeenCalledWith(
-        "Worktree cleanup failed, exiting anyway",
-      );
-    } finally {
-      failure.unmount();
-    }
-  });
-});
+  it.each([
+    {
+      commitCount: 1,
+      expected:
+        'Worktree removed. 1 commit on agenc/worktree-test was discarded.',
+      statusLines: [],
+    },
+    {
+      commitCount: 0,
+      expected: 'Worktree removed. Uncommitted changes were discarded.',
+      statusLines: [' M README.md'],
+    },
+  ])(
+    'reports the remove result for $expected',
+    async ({ commitCount, expected, statusLines }) => {
+      const mounted = await mountAskingDialog({ commitCount, statusLines })
+
+      await selectProps().onChange?.('remove')
+      await waitFor(
+        () => mounted.onDone.mock.calls.length > 0,
+        'remove action did not finish',
+      )
+
+      expect(mounted.onDone).toHaveBeenCalledWith(expected)
+
+      await mounted.dispose()
+    },
+  )
+
+  it('reports remove cleanup failures without clearing the session locally', async () => {
+    harness.session = baseSession()
+    harness.cleanupWorktree.mockRejectedValue(new Error('cleanup exploded'))
+    mockGitState({ commitCount: 0, statusLines: [' M README.md'] })
+
+    const mounted = await mountDialog()
+    await waitFor(
+      () => harness.selectProps !== undefined,
+      'remove failure choices did not render',
+    )
+
+    await selectProps().onChange?.('remove')
+    await waitFor(
+      () => mounted.onDone.mock.calls.length > 0,
+      'remove failure did not finish',
+    )
+
+    expect(harness.logForDebugging).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Failed to clean up worktree: Error: cleanup exploded',
+      ),
+      { level: 'error' },
+    )
+    expect(harness.chdir).not.toHaveBeenCalled()
+    expect(harness.setCwd).not.toHaveBeenCalled()
+    expect(harness.saveWorktreeState).not.toHaveBeenCalled()
+    expect(mounted.onDone).toHaveBeenCalledWith(
+      'Worktree cleanup failed, exiting anyway',
+    )
+
+    await mounted.dispose()
+  })
+})

@@ -1,62 +1,58 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({
-  bindings: [
-    {
-      action: 'app:toggleTranscript',
-      context: 'Global',
-      chord: [{ key: 'o', ctrl: true }],
-    },
-  ],
-  calls: [] as Array<{
-    action: string
-    context: string
-    bindings: unknown[]
-  }>,
-  displayText: undefined as string | undefined,
-}))
+const mocks = vi.hoisted(() => {
+  const state = {
+    bindings: [{ bindings: [], context: 'Global' }],
+    getBindingDisplayText: vi.fn(),
+    loadKeybindingsSync: vi.fn(),
+  }
+
+  state.loadKeybindingsSync.mockImplementation(() => state.bindings)
+
+  return state
+})
 
 vi.mock('./loadUserBindings.js', () => ({
-  loadKeybindingsSync: () => mocks.bindings,
+  loadKeybindingsSync: mocks.loadKeybindingsSync,
 }))
 
 vi.mock('./resolver.js', () => ({
-  getBindingDisplayText: (
-    action: string,
-    context: string,
-    bindings: unknown[],
-  ) => {
-    mocks.calls.push({ action, context, bindings })
-    return mocks.displayText
-  },
+  getBindingDisplayText: mocks.getBindingDisplayText,
 }))
 
 import { getShortcutDisplay } from './shortcutFormat.js'
 
 describe('getShortcutDisplay', () => {
   beforeEach(() => {
-    mocks.calls = []
-    mocks.displayText = undefined
+    mocks.getBindingDisplayText.mockReset()
+    mocks.loadKeybindingsSync.mockClear()
   })
 
-  test('returns the configured shortcut display text', () => {
-    mocks.displayText = 'ctrl+o'
+  test('returns the configured shortcut display text when available', () => {
+    mocks.getBindingDisplayText.mockReturnValue('shift+tab')
 
-    expect(
-      getShortcutDisplay('app:toggleTranscript', 'Global', 'fallback'),
-    ).toBe('ctrl+o')
-    expect(mocks.calls).toEqual([
-      {
-        action: 'app:toggleTranscript',
-        context: 'Global',
-        bindings: mocks.bindings,
-      },
-    ])
+    expect(getShortcutDisplay('chat:cycleMode', 'Chat', 'tab')).toBe(
+      'shift+tab',
+    )
+    expect(mocks.loadKeybindingsSync).toHaveBeenCalledOnce()
+    expect(mocks.getBindingDisplayText).toHaveBeenCalledWith(
+      'chat:cycleMode',
+      'Chat',
+      mocks.bindings,
+    )
   })
 
-  test('returns the fallback when the action has no binding', () => {
-    expect(getShortcutDisplay('missing:action', 'Global', 'ctrl+x')).toBe(
-      'ctrl+x',
+  test('returns the fallback display text when no binding resolves', () => {
+    mocks.getBindingDisplayText.mockReturnValue(undefined)
+
+    expect(getShortcutDisplay('app:toggleTranscript', 'Global', 'ctrl+o')).toBe(
+      'ctrl+o',
+    )
+    expect(mocks.loadKeybindingsSync).toHaveBeenCalledOnce()
+    expect(mocks.getBindingDisplayText).toHaveBeenCalledWith(
+      'app:toggleTranscript',
+      'Global',
+      mocks.bindings,
     )
   })
 })
