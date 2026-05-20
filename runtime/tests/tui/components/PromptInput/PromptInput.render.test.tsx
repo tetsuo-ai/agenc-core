@@ -64,6 +64,8 @@ const harness = vi.hoisted(() => {
     backgroundTasksPanelProps: undefined as undefined | Record<string, unknown>,
     commandQueue: [] as unknown[],
     coordinatorTaskCount: 0,
+    directMessage: null as null | { message: string; recipientName: string },
+    directMessageResult: { success: false } as Record<string, unknown>,
     features: {} as Record<string, boolean>,
     getGlobalConfigResult: {} as Record<string, unknown>,
     globalSearchProps: undefined as undefined | Record<string, unknown>,
@@ -172,6 +174,8 @@ const harness = vi.hoisted(() => {
       harness.backgroundTasksPanelProps = undefined
       harness.commandQueue = []
       harness.coordinatorTaskCount = 0
+      harness.directMessage = null
+      harness.directMessageResult = { success: false }
       harness.features = {}
       harness.getGlobalConfigResult = {}
       harness.globalSearchProps = undefined
@@ -450,8 +454,8 @@ vi.mock('../../../utils/debug.js', () => ({
 }))
 
 vi.mock('../../../utils/directMemberMessage.js', () => ({
-  parseDirectMemberMessage: () => null,
-  sendDirectMemberMessage: vi.fn(),
+  parseDirectMemberMessage: () => harness.directMessage,
+  sendDirectMemberMessage: vi.fn(() => harness.directMessageResult),
 }))
 
 vi.mock('../../../utils/dragDropPaths.js', () => ({
@@ -507,7 +511,12 @@ vi.mock('../../../utils/imageStore.js', () => ({
 }))
 
 vi.mock('../../../utils/keyboardShortcuts.js', () => ({
-  MACOS_OPTION_SPECIAL_CHARS: harness.specialChars,
+  MACOS_OPTION_SPECIAL_CHARS: new Proxy(
+    {},
+    {
+      get: (_target, prop) => harness.specialChars[String(prop)],
+    },
+  ),
   isMacosOptionChar: () => harness.isMacosOptionChar,
 }))
 
@@ -1731,6 +1740,186 @@ describe('PromptInput render surface', () => {
         undefined,
         expect.objectContaining({ mode: 'prompt' }),
       )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('allocates pasted image IDs after prior transcript references', async () => {
+    vi.mocked(getImageFromClipboard).mockResolvedValue({
+      base64: 'png-data',
+      mediaType: 'image/png',
+    })
+    const onInputChange = vi.fn()
+    const pastedContents = createPastedContentsState()
+    const rendered = await renderPromptInput({
+      input: '',
+      messages: [
+        {
+          imagePasteIds: [3],
+          message: {
+            content: [
+              {
+                text: 'old ref [Image #7]',
+                type: 'text',
+              },
+            ],
+          },
+          type: 'user',
+        },
+      ],
+      onInputChange,
+      pastedContents: pastedContents.current,
+      setPastedContents: pastedContents.setPastedContents,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      await harness.keybindings['chat:imagePaste']?.()
+      await sleep(25)
+
+      expect(onInputChange).toHaveBeenCalledWith('[Image #8]')
+      expect(pastedContents.current[8]).toEqual(
+        expect.objectContaining({
+          content: 'png-data',
+          id: 8,
+          type: 'image',
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('sends direct member messages without falling through to leader submit', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.directMessage = {
+      message: 'take this',
+      recipientName: 'teammate',
+    }
+    harness.directMessageResult = {
+      recipientName: 'teammate',
+      success: true,
+    }
+    const onInputChange = vi.fn()
+    const onSubmit = vi.fn(async () => {})
+    const rendered = await renderPromptInput({
+      input: '@teammate take this',
+      onInputChange,
+      onSubmit,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)(
+        '@teammate take this',
+      )
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'direct-message-sent',
+          text: 'Sent to @teammate',
+        }),
+      )
+      expect(onInputChange).toHaveBeenCalledWith('')
+      expect(harness.clearBuffer).toHaveBeenCalled()
+      expect(harness.history.resetHistory).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('warns for macOS option-key characters with native CSIu terminal guidance', async () => {
+    harness.platform = 'macos'
+    harness.isMacosOptionChar = true
+    harness.specialChars = { å: 'option+a' }
+    harness.terminal = 'ghostty'
+    const rendered = await renderPromptInput()
+
+    try {
+      await waitForPromptInputProps()
+
+      latestInputHandler()('å', {
+        ctrl: false,
+        escape: false,
+        meta: false,
+        return: false,
+      })
+
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'option-meta-hint',
+          priority: 'immediate',
+        }),
+      )
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('previews first-time auto mode before applying transition side effects', async () => {
+    vi.useFakeTimers()
+    harness.features.TRANSCRIPT_CLASSIFIER = true
+    harness.hasAutoModeOptIn = false
+    harness.nextPermissionMode = 'auto'
+    const setHelpOpen = vi.fn()
+    const setToolPermissionContext = vi.fn()
+    const rendered = await renderPromptInput({
+      helpOpen: true,
+      setHelpOpen,
+      setToolPermissionContext,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:cycleMode']?.()
+
+      expect(harness.appState.toolPermissionContext.mode).toBe('auto')
+      expect(setToolPermissionContext).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'auto' }),
+      )
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+
+      vi.advanceTimersByTime(400)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+      await rendered.dispose()
+    }
+  })
+
+  test('routes footer close through viewed-agent typing and task dismissal paths', async () => {
+    harness.isBackgroundTask.mockImplementation(
+      task => (task as { background?: boolean }).background === true,
+    )
+    harness.appState.tasks = {
+      task1: { background: true },
+    }
+    harness.appState.footerSelection = 'tasks'
+    harness.appState.coordinatorTaskIndex = 1
+    harness.appState.viewSelectionMode = 'viewing-agent'
+    harness.appState.viewingAgentTaskId = 'agent-1'
+    harness.coordinatorTaskCount = 2
+    harness.visibleAgentTasks = [{ id: 'agent-1', status: 'running' }]
+    const onInputChange = vi.fn()
+    const rendered = await renderPromptInput({
+      input: 'route',
+      onInputChange,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['footer:close']?.()
+      expect(onInputChange).toHaveBeenCalledWith('routex')
+
+      harness.appState.viewSelectionMode = null
+      harness.visibleAgentTasks = [{ id: 'agent-2', status: 'completed' }]
+      harness.keybindings['footer:close']?.()
+      expect(harness.appState.coordinatorTaskIndex).toBe(0)
     } finally {
       await rendered.dispose()
     }
