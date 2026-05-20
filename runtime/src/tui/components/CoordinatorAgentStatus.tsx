@@ -37,12 +37,31 @@ export function getCoordinatorTaskCount(tasks: AppState['tasks']): number {
   return visibleTasks.length === 0 ? 0 : visibleTasks.length + 1;
 }
 
+export function shouldShowCoordinatorTaskPanel({
+  visibleTasks,
+  footerSelection,
+  viewingAgentTaskId,
+}: {
+  visibleTasks: readonly LocalAgentTaskState[];
+  footerSelection: AppState['footerSelection'];
+  viewingAgentTaskId?: string;
+}): boolean {
+  if (visibleTasks.length === 0) {
+    return false;
+  }
+  if (footerSelection === 'tasks') {
+    return true;
+  }
+  return viewingAgentTaskId !== undefined && visibleTasks.some(task => task.id === viewingAgentTaskId);
+}
+
 export function CoordinatorTaskPanel(): React.ReactNode {
   const tasks = useAppState(s => s.tasks);
   const viewingAgentTaskId = useAppState(s_0 => s_0.viewingAgentTaskId);
   const agentNameRegistry = useAppState(s_1 => s_1.agentNameRegistry);
   const coordinatorTaskIndex = useAppState(s_2 => s_2.coordinatorTaskIndex);
-  const tasksSelected = useAppState(s_3 => s_3.footerSelection === 'tasks');
+  const footerSelection = useAppState(s_3 => s_3.footerSelection);
+  const tasksSelected = footerSelection === 'tasks';
   const selectedIndex = tasksSelected ? coordinatorTaskIndex : undefined;
   const setAppState = useSetAppState();
   const visibleTasks = getVisibleAgentTasks(tasks);
@@ -72,7 +91,11 @@ export function CoordinatorTaskPanel(): React.ReactNode {
     for (const [n, id] of agentNameRegistry) inv.set(id, n);
     return inv;
   }, [agentNameRegistry]);
-  if (visibleTasks.length === 0) {
+  if (!shouldShowCoordinatorTaskPanel({
+    visibleTasks,
+    footerSelection,
+    viewingAgentTaskId,
+  })) {
     return null;
   }
   return <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="promptBorder" paddingX={1} backgroundColor="clawd_background">

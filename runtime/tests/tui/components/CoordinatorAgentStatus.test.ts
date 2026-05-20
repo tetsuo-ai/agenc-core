@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   getCoordinatorTaskCount,
   getVisibleAgentTasks,
+  shouldShowCoordinatorTaskPanel,
 } from "./CoordinatorAgentStatus.js";
 
 const task = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -32,5 +33,42 @@ describe("CoordinatorAgentStatus", () => {
 
     expect(getVisibleAgentTasks(tasks)).toEqual([]);
     expect(getCoordinatorTaskCount(tasks)).toBe(0);
+  });
+
+  test("keeps the panel collapsed while agent tasks run in the background", () => {
+    const visibleTasks = getVisibleAgentTasks({
+      a: task("a"),
+      b: task("b"),
+    });
+
+    expect(shouldShowCoordinatorTaskPanel({
+      visibleTasks,
+      footerSelection: null,
+      viewingAgentTaskId: undefined,
+    })).toBe(false);
+  });
+
+  test("shows the panel when the tasks footer is selected", () => {
+    const visibleTasks = getVisibleAgentTasks({
+      a: task("a"),
+    });
+
+    expect(shouldShowCoordinatorTaskPanel({
+      visibleTasks,
+      footerSelection: "tasks",
+      viewingAgentTaskId: undefined,
+    })).toBe(true);
+  });
+
+  test("shows the panel while viewing one of its agents", () => {
+    const visibleTasks = getVisibleAgentTasks({
+      a: task("a"),
+    });
+
+    expect(shouldShowCoordinatorTaskPanel({
+      visibleTasks,
+      footerSelection: null,
+      viewingAgentTaskId: "a",
+    })).toBe(true);
   });
 });
