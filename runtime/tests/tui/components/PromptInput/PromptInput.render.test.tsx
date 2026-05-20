@@ -52,6 +52,7 @@ const harness = vi.hoisted(() => {
     }>,
     logEvent: vi.fn(),
     promptSuggestionLogEvent: vi.fn(),
+    promptInputFooterProps: undefined as undefined | Record<string, unknown>,
     processBashCommand: vi.fn(async () => ({
       messages: [],
     })),
@@ -82,6 +83,12 @@ const harness = vi.hoisted(() => {
       setHistoryQuery: vi.fn(),
     },
     historySearchProps: undefined as undefined | Record<string, unknown>,
+    historySearchSelect: undefined as
+      | undefined
+      | ((entry: {
+          display: string
+          pastedContents: Record<number, PastedContent>
+        }) => void),
     ideAtMentionedHandler: undefined as
       | undefined
       | ((atMentioned: {
@@ -137,6 +144,7 @@ const harness = vi.hoisted(() => {
       harness.clearBuffer.mockClear()
       harness.logEvent.mockClear()
       harness.promptSuggestionLogEvent.mockClear()
+      harness.promptInputFooterProps = undefined
       harness.processBashCommand.mockReset()
       harness.processBashCommand.mockResolvedValue({
         messages: [],
@@ -191,6 +199,7 @@ const harness = vi.hoisted(() => {
       harness.history.resetHistory.mockClear()
       harness.history.setHistoryQuery.mockClear()
       harness.historySearchProps = undefined
+      harness.historySearchSelect = undefined
       harness.ideAtMentionedHandler = undefined
       harness.isAgentSwarmsEnabled = false
       harness.isBackgroundTask.mockReset()
@@ -318,12 +327,20 @@ vi.mock('../../hooks/useDoublePress.js', () => ({
 }))
 
 vi.mock('../../hooks/useHistorySearch.js', () => ({
-  useHistorySearch: () => ({
+  useHistorySearch: (
+    onSelect: (entry: {
+      display: string
+      pastedContents: Record<number, PastedContent>
+    }) => void,
+  ) => {
+    harness.historySearchSelect = onSelect
+    return {
     historyFailedMatch: harness.history.historyFailedMatch,
     historyMatch: harness.history.historyMatch,
     historyQuery: harness.history.historyQuery,
     setHistoryQuery: harness.history.setHistoryQuery,
-  }),
+    }
+  },
 }))
 
 vi.mock('../../hooks/useInputBuffer.js', () => ({
@@ -708,7 +725,10 @@ vi.mock('./Notifications.js', () => ({
 }))
 
 vi.mock('./PromptInputFooter.js', () => ({
-  default: () => null,
+  default: (props: Record<string, unknown>) => {
+    harness.promptInputFooterProps = props
+    return null
+  },
 }))
 
 vi.mock('./PromptInputModeIndicator.js', () => ({
@@ -1920,6 +1940,143 @@ describe('PromptInput render surface', () => {
       harness.visibleAgentTasks = [{ id: 'agent-2', status: 'completed' }]
       harness.keybindings['footer:close']?.()
       expect(harness.appState.coordinatorTaskIndex).toBe(0)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('covers history search callback and history arrow guard branches', async () => {
+    const onSubmit = vi.fn(async () => {})
+    const setPastedContents = vi.fn()
+    const rendered = await renderPromptInput({
+      input: 'history',
+      onSubmit,
+      setPastedContents,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+
+      harness.historySearchSelect?.({
+        display: 'submit from history',
+        pastedContents: { 4: { id: 4, type: 'text', content: 'history paste' } },
+      })
+      await sleep(25)
+      expect(setPastedContents).toHaveBeenCalledWith({
+        4: { id: 4, type: 'text', content: 'history paste' },
+      })
+      expect(onSubmit).toHaveBeenCalledWith(
+        'submit from history',
+        expect.anything(),
+        undefined,
+        expect.objectContaining({ mode: 'prompt' }),
+      )
+
+      ;(baseProps.onHistoryUp as () => void)()
+      expect(harness.history.onHistoryUp).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+
+    harness.typeahead.suggestions = [
+      { label: 'one' },
+      { label: 'two' },
+    ]
+    const guarded = await renderPromptInput({ input: 'guarded' })
+    try {
+      const baseProps = await waitForPromptInputProps()
+      harness.history.onHistoryUp.mockClear()
+      harness.history.onHistoryDown.mockClear()
+
+      ;(baseProps.onHistoryUp as () => void)()
+      ;(baseProps.onHistoryDown as () => void)()
+
+      expect(harness.history.onHistoryUp).not.toHaveBeenCalled()
+      expect(harness.history.onHistoryDown).not.toHaveBeenCalled()
+    } finally {
+      await guarded.dispose()
+    }
+  })
+
+  test('opens team footer dialog and global search dialog callbacks', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.features.QUICK_SEARCH = true
+    harness.appState.teamContext = {
+      teamName: 'runtime',
+      teammates: {
+        alice: { color: 'cyan', name: 'alice' },
+        'team-lead': { color: 'purple', name: 'team-lead' },
+      },
+    }
+    harness.appState.footerSelection = 'teams'
+    const onInputChange = vi.fn()
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      input: 'abc',
+      onInputChange,
+      setHelpOpen,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['footer:openSelected']?.()
+      await sleep(25)
+      expect(harness.teamsDialogProps).toEqual(
+        expect.objectContaining({
+          initialTeams: [
+            expect.objectContaining({
+              memberCount: 1,
+              name: 'runtime',
+            }),
+          ],
+        }),
+      )
+
+      ;(harness.teamsDialogProps?.onDone as () => void)()
+      await sleep(25)
+
+      harness.keybindings['app:globalSearch']?.()
+      await sleep(25)
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+      expect(harness.globalSearchProps).toBeDefined()
+
+      ;(harness.globalSearchProps?.onInsert as (text: string) => void)(
+        '@global-result',
+      )
+      expect(onInputChange).toHaveBeenCalledWith('abc @global-result')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('exercises picker cancel callbacks and help/message action keybindings', async () => {
+    const onMessageActionsEnter = vi.fn()
+    const setHelpOpen = vi.fn()
+    const rendered = await renderPromptInput({
+      helpOpen: true,
+      onMessageActionsEnter,
+      setHelpOpen,
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['help:dismiss']?.()
+      expect(setHelpOpen).toHaveBeenCalledWith(false)
+
+      harness.keybindings['chat:messageActions']?.()
+      expect(onMessageActionsEnter).toHaveBeenCalled()
+
+      harness.keybindings['chat:modelPicker']?.()
+      await sleep(25)
+      expect(harness.modelPickerProps).toBeDefined()
+      ;(harness.modelPickerProps?.onCancel as () => void)()
+
+      harness.keybindings['chat:thinkingToggle']?.()
+      await sleep(25)
+      expect(harness.thinkingToggleProps).toBeDefined()
+      ;(harness.thinkingToggleProps?.onCancel as () => void)()
     } finally {
       await rendered.dispose()
     }
