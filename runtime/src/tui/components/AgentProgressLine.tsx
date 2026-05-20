@@ -114,12 +114,14 @@ export function AgentProgressLine(t0: Props) {
   } else {
     t9 = $[24];
   }
+  const statusText = getStatusText();
+  const shouldShowStatus = !isBackgrounded || taskDescription !== undefined;
   let t10;
-  if ($[25] !== getStatusText || $[26] !== isBackgrounded || $[27] !== isLast) {
-    t10 = !isBackgrounded && <Box paddingLeft={3} flexDirection="row"><Text dimColor={true}>{isLast ? `   ${glyphs.responseGutter}  ` : `${glyphs.treeContinuation}  ${glyphs.responseGutter}  `}</Text><Text dimColor={true}>{getStatusText()}</Text></Box>;
-    $[25] = getStatusText;
-    $[26] = isBackgrounded;
-    $[27] = isLast;
+  if ($[25] !== shouldShowStatus || $[26] !== isLast || $[27] !== statusText) {
+    t10 = shouldShowStatus && <Box paddingLeft={3} flexDirection="row"><Text dimColor={true}>{isLast ? `   ${glyphs.responseGutter}  ` : `${glyphs.treeContinuation}  ${glyphs.responseGutter}  `}</Text><Text dimColor={true}>{statusText}</Text></Box>;
+    $[25] = shouldShowStatus;
+    $[26] = isLast;
+    $[27] = statusText;
     $[28] = t10;
   } else {
     t10 = $[28];

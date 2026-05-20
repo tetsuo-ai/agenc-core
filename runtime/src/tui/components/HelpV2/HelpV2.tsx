@@ -31,6 +31,7 @@ export function HelpV2(t0: Props): React.ReactNode {
     columns
   } = useModalOrTerminalSize(useTerminalSize());
   const maxHeight = calculateHelpBodyHeight(rows);
+  const paneHeight = Math.min(rows, maxHeight + 5);
   const insideModal = useIsInsideModal();
   let t1;
   if ($[0] !== onClose) {
@@ -115,7 +116,7 @@ export function HelpV2(t0: Props): React.ReactNode {
   } else {
     tabs = $[15];
   }
-  const t5 = insideModal ? undefined : maxHeight;
+  const t5 = insideModal ? undefined : paneHeight;
   let t6;
   if ($[31] !== tabs) {
     t6 = <Tabs title="AgenC Help" color="professionalBlue" defaultTab="general">{tabs}</Tabs>;
