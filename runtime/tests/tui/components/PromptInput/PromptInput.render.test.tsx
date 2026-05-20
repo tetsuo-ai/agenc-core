@@ -51,6 +51,9 @@ const harness = vi.hoisted(() => {
     }>,
     logEvent: vi.fn(),
     promptSuggestionLogEvent: vi.fn(),
+    processBashCommand: vi.fn(async () => ({
+      messages: [],
+    })),
     onRender: vi.fn(),
     pushToBuffer: vi.fn(),
     removeNotification: vi.fn(),
@@ -68,6 +71,10 @@ const harness = vi.hoisted(() => {
       harness.clearBuffer.mockClear()
       harness.logEvent.mockClear()
       harness.promptSuggestionLogEvent.mockClear()
+      harness.processBashCommand.mockReset()
+      harness.processBashCommand.mockResolvedValue({
+        messages: [],
+      })
       harness.onRender.mockClear()
       harness.pushToBuffer.mockClear()
       harness.removeNotification.mockClear()
@@ -396,6 +403,10 @@ vi.mock('../../../utils/platform.js', () => ({
 
 vi.mock('../../../utils/promptEditor.js', () => ({
   editPromptInEditor: vi.fn(async () => harness.editPromptResult),
+}))
+
+vi.mock('../../input/processBashCommand.js', () => ({
+  processBashCommand: harness.processBashCommand,
 }))
 
 vi.mock('../../../utils/settings/settings.js', () => ({
@@ -1034,6 +1045,151 @@ describe('PromptInput render surface', () => {
       )
       expect(harness.appState.promptSuggestion.text).toBe('finish via speculation')
       expect(harness.appState.promptSuggestion.acceptedAt).toBeGreaterThan(0)
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('executes bash-mode input locally and emits transcript events', async () => {
+    const emitted: unknown[] = []
+    const setToolJSX = vi.fn()
+    const getToolUseContext = vi.fn(() => ({
+      session: {
+        emit: (event: unknown) => emitted.push(event),
+        nextInternalSubId: vi.fn()
+          .mockReturnValueOnce('bash-input-id')
+          .mockReturnValueOnce('bash-stdout-id')
+          .mockReturnValueOnce('bash-stderr-id'),
+      },
+      setToolJSX,
+    }))
+    harness.processBashCommand.mockResolvedValue({
+      messages: [
+        {
+          message: {
+            content: [
+              { text: '<bash-stdout>ok</bash-stdout>', type: 'text' },
+            ],
+          },
+          type: 'user',
+        },
+        {
+          message: {
+            content: [
+              { text: '<ignored>nope</ignored>', type: 'text' },
+            ],
+          },
+          type: 'user',
+        },
+        {
+          message: {
+            content: [
+              { text: '<bash-stderr>warn</bash-stderr>', type: 'text' },
+            ],
+          },
+          type: 'user',
+        },
+      ],
+    })
+    const onSubmit = vi.fn(async () => {})
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const rendered = await renderPromptInput({
+      getToolUseContext,
+      input: '  pwd  ',
+      mode: 'bash',
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('  pwd  ')
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getToolUseContext).toHaveBeenCalled()
+      expect(harness.processBashCommand).toHaveBeenCalledWith(
+        'pwd',
+        [],
+        [],
+        expect.objectContaining({ setToolJSX }),
+        setToolJSX,
+      )
+      expect(emitted).toEqual([
+        expect.objectContaining({
+          id: 'bash-input-id',
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-input>pwd</bash-input>',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          id: 'bash-stdout-id',
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-stdout>ok</bash-stdout>',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          id: 'bash-stderr-id',
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-stderr>warn</bash-stderr>',
+            }),
+          }),
+        }),
+      ])
+      expect(onInputChange).toHaveBeenCalledWith('')
+      expect(onModeChange).toHaveBeenCalledWith('prompt')
+      expect(harness.clearBuffer).toHaveBeenCalled()
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('emits bash stderr when local bash execution throws', async () => {
+    const emitted: unknown[] = []
+    const getToolUseContext = vi.fn(() => ({
+      session: {
+        emit: (event: unknown) => emitted.push(event),
+      },
+    }))
+    harness.processBashCommand.mockRejectedValue(new Error('shell failed'))
+    const onInputChange = vi.fn()
+    const onModeChange = vi.fn()
+    const rendered = await renderPromptInput({
+      getToolUseContext,
+      input: 'explode',
+      mode: 'bash',
+      onInputChange,
+      onModeChange,
+    })
+
+    try {
+      const baseProps = await waitForPromptInputProps()
+      await (baseProps.onSubmit as (value: string) => Promise<void>)('explode')
+
+      expect(emitted).toEqual([
+        expect.objectContaining({
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-input>explode</bash-input>',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          msg: expect.objectContaining({
+            payload: expect.objectContaining({
+              message: '<bash-stderr>shell failed</bash-stderr>',
+            }),
+          }),
+        }),
+      ])
+      expect(onInputChange).toHaveBeenCalledWith('')
+      expect(onModeChange).toHaveBeenCalledWith('prompt')
     } finally {
       await rendered.dispose()
     }
