@@ -40,10 +40,16 @@ describe("RealtimePanel", () => {
 
     const output = await renderToString(<RealtimePanel state={state} />, 100);
 
-    expect(output).toContain("voice | active | webrtc | rt_1 | mic muted");
+    expect(output).toContain("transport webrtc");
+    expect(output).toContain("voice default");
+    expect(output).toContain("model realtime");
+    expect(output).toContain("mic muted");
     expect(output).toContain("[############]");
-    expect(output).toContain("assistant: ready");
+    expect(output).toContain("agenc");
+    expect(output).toContain("ready");
     expect(output).toContain("item: message item_1");
+    expect(output).toContain("[space]");
+    expect(output).toContain("PTT");
   });
 
   test("keeps the status row within narrow terminal width", async () => {
@@ -70,11 +76,8 @@ describe("RealtimePanel", () => {
     expect(parts.statusText).not.toContain(longSessionId);
 
     const output = await renderToString(<RealtimePanel state={state} />, 32);
-    const statusLine = output
-      .split("\n")
-      .find((line) => line.includes("voice"))!
-      .trimEnd();
-    expect(stringWidth(statusLine)).toBeLessThanOrEqual(32);
+    const widestLine = Math.max(...output.split("\n").map(line => stringWidth(line.trimEnd())));
+    expect(widestLine).toBeLessThanOrEqual(32);
   });
 
   test("renders error and closed terminal banners", async () => {
