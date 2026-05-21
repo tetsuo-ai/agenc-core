@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
+import { execFileSync } from 'node:child_process';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext';
@@ -14,6 +15,8 @@ import { openBrowser, openPath } from '../../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { plural } from '../../utils/stringUtils.js';
 import { modelDisplayString } from '../../utils/model/model.js';
+import { getTotalCost } from '../../cost/tracker.js';
+import { formatUsdCost } from '../../session/cost.js';
 import { isNullRenderingAttachment } from '../message-visibility.js';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
 import { permissionModeFooterChrome } from './PromptInput/permissionModeChrome.js';
@@ -21,6 +24,7 @@ import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { BrandCells, PlanModeBanner, TuiHeader, StatusBar as V2StatusBar, StatusSegment } from './v2/primitives.js';
+import ThemedText from './design-system/ThemedText.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
 const MODAL_TRANSCRIPT_PEEK = 2;
@@ -506,6 +510,55 @@ function trimMiddle(value: string, maxWidth: number): string {
   return `${value.slice(0, left)}…${value.slice(value.length - right)}`;
 }
 
+let cachedGitChromeLabel: string | null = null;
+
+function getGitChromeLabel(): string {
+  if (cachedGitChromeLabel !== null) return cachedGitChromeLabel;
+  try {
+    const branch = execFileSync('git', ['branch', '--show-current'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    }).trim() || 'detached';
+    const shortSha = execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    }).trim();
+    cachedGitChromeLabel = `${branch} · ${shortSha}`;
+  } catch {
+    cachedGitChromeLabel = 'no git';
+  }
+  return cachedGitChromeLabel;
+}
+
+function DesignBottomLeftLabel({
+  gitLabel,
+  mode,
+  modelLabel,
+}: {
+  readonly gitLabel: string;
+  readonly mode: PermissionMode;
+  readonly modelLabel: string;
+}): React.ReactNode {
+  const modeLabel = permissionModeFooterChrome(mode).label;
+  return <ThemedText color="text2" wrap="truncate-end">● {modeLabel} · {modelLabel} · {gitLabel}</ThemedText>;
+}
+
+function DesignBottomRightLabel({
+  contextPct,
+  spend,
+  stake,
+}: {
+  readonly contextPct: string;
+  readonly spend: string;
+  readonly stake: string;
+}): React.ReactNode {
+  return <><ThemedText color="text2" wrap="truncate-end">ctx {contextPct}</ThemedText><ThemedText color="muted3"> · </ThemedText><ThemedText color="text2" wrap="truncate-end">spend {spend}</ThemedText><ThemedText color="muted3"> · ◆ {stake}</ThemedText></>;
+}
+
 function DesignPlanModeBanner(): React.ReactNode {
   const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
   return mode === 'plan' ? <PlanModeBanner /> : null;
@@ -536,29 +589,32 @@ export function formatDesignBottomChromeLabels(
   columns: number,
   modelLabel: string,
   mode: PermissionMode,
+  gitLabel = getGitChromeLabel(),
+  contextPct = '0%',
+  spend = formatUsdCost(getTotalCost()),
+  stake = '12.4K',
 ): { readonly left: string; readonly right: string } {
   const modeLabel = permissionModeFooterChrome(mode).label;
+  const trimmedGitLabel = trimMiddle(gitLabel, columns >= 100 ? 32 : 18);
   return {
-    left: columns >= 70 ? `MODEL ${modelLabel}` : modelLabel,
-    right: columns >= 70 ? `MODE ${modeLabel}  CONTEXT live` : modeLabel,
+    left: `● ${modeLabel} · ${modelLabel} · ${trimmedGitLabel}`,
+    right: `ctx ${contextPct} · spend ${spend} · ◆ ${stake}`,
   };
 }
 
 function DesignBottomChrome({ columns }: { columns: number }): React.ReactNode {
   const model = useAppStateMaybeOutsideOfProvider(state => state.mainLoopModel) ?? 'agenc';
   const mode = useAppStateMaybeOutsideOfProvider(state => state.toolPermissionContext.mode) ?? 'default';
-  const tasks = useAppStateMaybeOutsideOfProvider(state => state.tasks) ?? {};
   const modelLabel = modelDisplayString(model);
-  const { left, right } = formatDesignBottomChromeLabels(columns, modelLabel, mode);
-  const activeTaskCount = Object.values(tasks ?? {}).filter(task => task?.status === 'running' || task?.status === 'queued').length;
-  const showExpanded = columns >= 70;
+  const contextPct = '0%';
+  const spend = formatUsdCost(getTotalCost());
+  const stake = '12.4K';
+  const { right } = formatDesignBottomChromeLabels(columns, modelLabel, mode, getGitChromeLabel(), contextPct, spend, stake);
+  const gitLabel = trimMiddle(getGitChromeLabel(), columns >= 100 ? 32 : 18);
   return <V2StatusBar variant={mode === 'plan' ? 'plan' : mode === 'bypassPermissions' ? 'error' : mode === 'auto' ? 'success' : mode === 'acceptEdits' ? 'accent' : 'neutral'} left={[
-      <StatusSegment key="model" label="MODEL" value={showExpanded ? modelLabel : left} color="agenc" />,
-      ...(showExpanded ? [<StatusSegment key="mode" label="MODE" value={permissionModeFooterChrome(mode).label} color={mode === 'plan' ? 'planMode' : mode === 'bypassPermissions' ? 'error' : 'text2'} />] : []),
-      ...(showExpanded && activeTaskCount > 0 ? [<StatusSegment key="tasks" label="TASKS" value={String(activeTaskCount)} color="worker" />] : []),
+      <DesignBottomLeftLabel key="left" gitLabel={gitLabel} mode={mode} modelLabel={modelLabel} />,
     ]} right={[
-      <StatusSegment key="ctx" label="CTX" value="live" />,
-      ...(showExpanded ? [<StatusSegment key="context" label="CONTEXT" value="session" />] : [<StatusSegment key="right" label="" value={right} />]),
+      columns >= 54 ? <DesignBottomRightLabel key="right" contextPct={contextPct} spend={spend} stake={stake} /> : <StatusSegment key="right-compact" label="" value={right} color="muted3" />,
     ]} />;
 }
 

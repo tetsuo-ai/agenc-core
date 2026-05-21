@@ -134,17 +134,17 @@ describe("FullscreenLayout modal viewport", () => {
 
   test("formats bottom chrome with user-facing mode labels", () => {
     expect(
-      formatDesignBottomChromeLabels(100, "grok-4-fast", "bypassPermissions"),
+      formatDesignBottomChromeLabels(100, "grok-4-fast", "bypassPermissions", "main · abc1234", "42%", "$0.04", "12.4K"),
     ).toEqual({
-      left: "MODEL grok-4-fast",
-      right: "MODE YOLO  CONTEXT live",
+      left: "● YOLO · grok-4-fast · main · abc1234",
+      right: "ctx 42% · spend $0.04 · ◆ 12.4K",
     });
 
     expect(
-      formatDesignBottomChromeLabels(60, "grok-4-fast", "acceptEdits"),
+      formatDesignBottomChromeLabels(60, "grok-4-fast", "acceptEdits", "main · abc1234", "0%", "$0.00", "12.4K"),
     ).toEqual({
-      left: "grok-4-fast",
-      right: "accept edits on",
+      left: "● accept edits on · grok-4-fast · main · abc1234",
+      right: "ctx 0% · spend $0.00 · ◆ 12.4K",
     });
   });
 
@@ -173,8 +173,10 @@ describe("FullscreenLayout modal viewport", () => {
     expect(output).toContain("agenc");
     expect(output).toContain("agenc · orchestrator");
     expect(output).toContain("mode · default");
-    expect(output).toContain("MODEL");
-    expect(output).toContain("CTX");
+    expect(output).toContain("● default on");
+    expect(output).toContain("ctx 0%");
+    expect(output).toContain("spend $0.00");
+    expect(output).toContain("◆ 12.4K");
     expect(output).toMatch(/[░▒▓]/u);
     expect(output).not.toContain("undefined");
     expect(output).not.toContain("NaN");
