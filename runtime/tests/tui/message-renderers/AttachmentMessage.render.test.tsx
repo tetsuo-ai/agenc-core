@@ -21,6 +21,21 @@ vi.mock("../../utils/agentSwarmsEnabled.js", () => ({
 }));
 
 vi.mock("../../utils/teammateMailbox.js", () => ({
+  isTaskAssignment: (text: string) => {
+    try {
+      const parsed = JSON.parse(text);
+      if (
+        parsed?.type === "task_assignment" &&
+        typeof parsed.taskId === "string" &&
+        typeof parsed.subject === "string"
+      ) {
+        return { assignedBy: "", description: "", timestamp: "", ...parsed };
+      }
+    } catch {
+      // Not JSON.
+    }
+    return null;
+  },
   isShutdownApproved: (text: string) => text === "shutdown-approved",
 }));
 

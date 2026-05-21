@@ -88,14 +88,16 @@ export function renderToScreen(
   // Yoga layout. Root might not have a yogaNode if the tree is empty.
   root.yogaNode?.setWidth(width)
   root.yogaNode?.calculateLayout(width)
-  const height = Math.ceil(root.yogaNode?.getComputedHeight() ?? 0)
+  const naturalHeight = Math.ceil(root.yogaNode?.getComputedHeight() ?? 0)
+  const height = Math.max(1, naturalHeight)
   const t2 = performance.now()
 
-  // Paint to a fresh Screen. Width = given, height = yoga's natural.
+  // Paint to a fresh Screen. Width = given, height = yoga's natural height,
+  // with an empty-render floor so Output and Screen agree on dimensions.
   // No alt-screen, no prevScreen (every call is fresh).
   const screen = createScreen(
     width,
-    Math.max(1, height), // avoid 0-height Screen (createScreen may choke)
+    height,
     stylePool!,
     charPool!,
     hyperlinkPool!,

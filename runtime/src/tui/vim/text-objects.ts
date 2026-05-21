@@ -276,7 +276,6 @@ function findTagObject(
     if (openIndex === -1) continue
 
     const [open] = stack.splice(openIndex, 1)
-    if (!open) continue
     pairs.push({
       name,
       start: open.start,

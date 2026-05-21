@@ -23,7 +23,7 @@ import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { tryRenderPlanApprovalMessage, formatTeammateMessageContent } from './PlanApprovalMessage';
 import { BLACK_CIRCLE } from '../../constants/figures.js';
 import { TeammateMessageContent } from './UserTeammateMessage';
-import { isShutdownApproved } from '../../utils/teammateMailbox.js';
+import { isShutdownApproved, isTaskAssignment } from '../../utils/teammateMailbox.js';
 import { CtrlOToExpand } from '../components/CtrlOToExpand';
 import FullWidthRow from '../components/design-system/FullWidthRow';
 import { FilePathLink } from '../components/FilePathLink';
@@ -69,19 +69,8 @@ export function AttachmentMessage({
     }
     return <Box flexDirection="column">
         {visibleMessages.map((msg_0, idx) => {
-        // Try to parse as JSON for task_assignment messages
-        let parsedMsg: {
-          type?: string;
-          taskId?: string;
-          subject?: string;
-          assignedBy?: string;
-        } | null = null;
-        try {
-          parsedMsg = jsonParse(msg_0.text);
-        } catch {
-          // Not JSON, treat as plain text
-        }
-        if (parsedMsg?.type === 'task_assignment') {
+        const parsedMsg = isTaskAssignment(msg_0.text);
+        if (parsedMsg) {
           return <Box key={idx} paddingLeft={2}>
                 <Text>{BLACK_CIRCLE} </Text>
                 <Text>Task assigned: </Text>
