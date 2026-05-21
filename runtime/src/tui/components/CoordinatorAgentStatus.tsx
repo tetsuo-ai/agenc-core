@@ -16,11 +16,20 @@ import { Box, Text, wrapText } from '../ink.js';
 import { type AppState, useAppState, useSetAppState } from '../state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../state/teammateViewHelpers';
 import { isPanelAgentTask, type LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask';
+import { agentRolePresentation } from '../../agents/role-presentation.js';
 import { formatDuration, formatNumber } from '../../utils/format';
 import { evictTerminalTask } from '../../utils/task/framework';
 import { isTerminalStatus } from './tasks/taskStatusUtils';
 
 export const AGENT_PANEL_TRANSIENT_MS = 5_000;
+
+function formatAgentPanelRole(roleName: string | undefined): string {
+  return agentRolePresentation(roleName)?.label ?? "Agent";
+}
+
+function formatAgentPanelIdentity(task: LocalAgentTaskState, name: string | undefined): string {
+  return `${name ?? task.agentId} · ${formatAgentPanelRole(task.agentType)}`;
+}
 
 /**
  * Which panel-managed tasks currently have a visible row.
@@ -248,7 +257,8 @@ function AgentLine(t0) {
   const bullet = isViewed ? BLACK_CIRCLE : figures.circle;
   const dim = !highlighted && !isViewed;
   const sep = isRunning ? PLAY_ICON : PAUSE_ICON;
-  const namePart = name ? `${name}: ` : "";
+  const agentIdentity = formatAgentPanelIdentity(task, name);
+  const namePart = `${agentIdentity} · `;
   const hintPart = isSelected && !isViewed ? ` · x to ${isRunning ? "stop" : "clear"}` : "";
   const suffixPart = ` ${sep} ${elapsed}${tokenText}${queuedText}${hintPart}`;
   const availableForDesc = columns - stringWidth(prefix) - stringWidth(`${bullet} `) - stringWidth(namePart) - stringWidth(suffixPart);
@@ -264,9 +274,9 @@ function AgentLine(t0) {
   }
   const truncated = t4;
   let t5;
-  if ($[8] !== name) {
-    t5 = name && <><Text dimColor={false} bold={true}>{name}</Text>{": "}</>;
-    $[8] = name;
+  if ($[8] !== agentIdentity) {
+    t5 = <><Text dimColor={false} bold={true}>{agentIdentity}</Text>{" · "}</>;
+    $[8] = agentIdentity;
     $[9] = t5;
   } else {
     t5 = $[9];

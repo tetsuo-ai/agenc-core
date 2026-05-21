@@ -1,6 +1,7 @@
 import { c as _c } from "react-compiler-runtime";
 import { Box, Text } from '../ink.js';
 import { selectAgenCTuiGlyphs } from '../glyphs.js';
+import { agentRolePresentation } from '../../agents/role-presentation.js';
 import { formatNumber } from '../../utils/format.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { Theme } from '../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSpinnerEllipsis } from './spinner/utils.js';
@@ -21,6 +22,15 @@ type Props = {
   lastToolInfo?: string | null;
   hideType?: boolean;
 };
+function formatPublicRole(roleName: string | undefined): string {
+  return agentRolePresentation(roleName)?.label ?? "Agent";
+}
+function formatAgentIdentityLabel(agentType: string, name: string | undefined, description: string | undefined, hideType: boolean): string {
+  const isNamedHandle = agentType.startsWith("@");
+  const displayName = name ?? (isNamedHandle ? agentType.slice(1) : hideType && description ? description : agentType);
+  const roleSource = isNamedHandle ? description : agentType;
+  return `${displayName} · ${formatPublicRole(roleSource)}`;
+}
 export function AgentProgressLine(t0: Props) {
   const $ = _c(32);
   const {
@@ -40,6 +50,7 @@ export function AgentProgressLine(t0: Props) {
   } = t0;
   const isAsync = t1 === undefined ? false : t1;
   const hideType = t2 === undefined ? false : t2;
+  const agentIdentityLabel = formatAgentIdentityLabel(agentType, name, description, hideType);
   const glyphs = selectAgenCTuiGlyphs();
   const treeChar = isLast ? glyphs.treeLast : glyphs.treeBranch;
   const isBackgrounded = isAsync && isResolved;
@@ -73,9 +84,9 @@ export function AgentProgressLine(t0: Props) {
   }
   const t5 = !isResolved;
   let t6;
-  if ($[7] !== agentType || $[8] !== color || $[9] !== description || $[10] !== descriptionColor || $[11] !== hideType || $[12] !== name) {
-    t6 = hideType ? <><Text bold={true}>{name ?? description ?? agentType}</Text>{name && description && <Text dimColor={true}>: {description}</Text>}</> : <><Text bold={true} backgroundColor={color} color={color ? "inverseText" : undefined}>{agentType}</Text>{description && <>{" ("}<Text backgroundColor={descriptionColor} color={descriptionColor ? "inverseText" : undefined}>{description}</Text>{")"}</>}</>;
-    $[7] = agentType;
+  if ($[7] !== agentIdentityLabel || $[8] !== color || $[9] !== description || $[10] !== descriptionColor || $[11] !== hideType || $[12] !== name) {
+    t6 = hideType ? <><Text bold={true}>{agentIdentityLabel}</Text>{name && description && <Text dimColor={true}>: {description}</Text>}</> : <><Text bold={true} backgroundColor={color} color={color ? "inverseText" : undefined}>{agentIdentityLabel}</Text>{description && <>{" ("}<Text backgroundColor={descriptionColor} color={descriptionColor ? "inverseText" : undefined}>{description}</Text>{")"}</>}</>;
+    $[7] = agentIdentityLabel;
     $[8] = color;
     $[9] = description;
     $[10] = descriptionColor;

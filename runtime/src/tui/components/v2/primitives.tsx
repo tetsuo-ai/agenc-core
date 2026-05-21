@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import React from 'react'
 import type { PermissionMode } from '../../../permissions/types.js'
-import type { Theme } from '../../../utils/theme.js'
+import { AURA_LIFECYCLE_GLYPHS, AURA_PLAN_GLYPHS, type Theme } from '../../../utils/theme.js'
 import { useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import Box from '../../ink/components/Box.js'
@@ -82,12 +82,7 @@ const toolColor: Record<ToolKind, ThemeColor> = {
   stake: 'worker',
 }
 
-const toolGlyph: Record<ToolState, string> = {
-  queued: '○',
-  running: '◐',
-  done: '●',
-  failed: '✕',
-}
+const toolGlyph: Readonly<Record<ToolState, string>> = AURA_LIFECYCLE_GLYPHS
 
 function capitalize(value: string): string {
   return value.length > 0 ? value.slice(0, 1).toUpperCase() + value.slice(1) : value
@@ -953,12 +948,7 @@ export function PlanList({
       </ThemedBox>
       <Box flexDirection="column" paddingX={1} paddingY={dense ? 0 : 1}>
         {items.map((item, index) => {
-          const glyph = {
-            done: '✓',
-            active: '▮',
-            pending: '·',
-            failed: '✕',
-          }[item.state]
+          const glyph = AURA_PLAN_GLYPHS[item.state]
           const color: ThemeColor = {
             done: 'success',
             active: 'agenc',

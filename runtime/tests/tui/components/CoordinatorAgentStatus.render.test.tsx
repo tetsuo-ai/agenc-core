@@ -227,10 +227,10 @@ describe("CoordinatorTaskPanel rendering", () => {
       expect(output).toContain("AGENTS");
       expect(output).toContain("2 active");
       expect(output).toContain("orchestrator");
-      expect(output).toContain("Fixer: Investigating agent lifecycle");
+      expect(output).toContain("Fixer · Runner · Investigating agent lifecycle");
       expect(output).toContain("1 queued");
       expect(output).toContain("x to stop");
-      expect(output).toContain("Reviewer: Review final patch");
+      expect(output).toContain("Reviewer · Runner · Review final patch");
       expect(output.indexOf("Fixer")).toBeLessThan(output.indexOf("Reviewer"));
     } finally {
       await rendered.dispose();
@@ -254,7 +254,7 @@ describe("CoordinatorTaskPanel rendering", () => {
 
     try {
       const output = rendered.output();
-      expect(output).toContain("ChromeLotus:");
+      expect(output).toContain("ChromeLotus · Runner");
       expect(output).toContain("tokens");
       expect(output).not.toContain("x to stop");
       expect(output).not.toContain("require truncation in a narrow panel");

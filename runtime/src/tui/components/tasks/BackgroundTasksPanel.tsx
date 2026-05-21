@@ -13,6 +13,7 @@ import { tailFile } from "../../../utils/fsOperations.js";
 import { formatFileSize, formatNumber, truncateToWidth } from "../../../utils/format.js";
 import { getTaskOutputPath } from "../../../utils/task/diskOutput.js";
 import type { Theme } from "../../../utils/theme.js";
+import { agentRolePresentation } from "../../../agents/role-presentation.js";
 import { Box, useInput } from "../../ink.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useAppState, useSetAppState, type AppState } from "../../state/AppState.js";
@@ -41,6 +42,31 @@ type ShellOutputTail = {
 };
 
 const SHELL_DETAIL_TAIL_BYTES = 8192;
+
+function agentRoleFromDefinition(selectedAgent: unknown): string | undefined {
+  if (typeof selectedAgent !== "object" || selectedAgent === null) {
+    return undefined;
+  }
+  const candidate = selectedAgent as { readonly agentType?: unknown };
+  return typeof candidate.agentType === "string" ? candidate.agentType : undefined;
+}
+
+function formatBackgroundAgentRole(roleName: string | undefined): string {
+  return agentRolePresentation(roleName)?.label ?? "Agent";
+}
+
+function formatBackgroundAgentIdentity(
+  task: TaskState,
+  nameByAgentId: ReadonlyMap<string, string>,
+): string | null {
+  if (task.type === "local_agent") {
+    return `${nameByAgentId.get(task.id) ?? nameByAgentId.get(task.agentId) ?? task.agentId} · ${formatBackgroundAgentRole(task.agentType)}`;
+  }
+  if (task.type === "in_process_teammate") {
+    return `${task.identity.agentName} · ${formatBackgroundAgentRole(agentRoleFromDefinition(task.selectedAgent))}`;
+  }
+  return null;
+}
 
 function taskTitle(task: TaskState): string {
   if ("title" in task && typeof task.title === "string" && task.title.trim()) {
@@ -263,8 +289,10 @@ function addMessageRows(
 function buildTaskDetailRows(
   task: TaskState,
   shellOutputTail: ShellOutputTail | undefined,
+  nameByAgentId: ReadonlyMap<string, string> = new Map(),
 ): readonly TaskDetailRow[] {
   const rows: TaskDetailRow[] = [];
+  const agentIdentity = formatBackgroundAgentIdentity(task, nameByAgentId);
   addDetailRows(rows, "task", "status", taskDetailStatusLabel(task), taskStatusColor(task.status));
   addDetailRows(rows, "task", "type", `${taskKindLabel(task)} · ${task.type}`, taskKindColor(task));
   addDetailRows(rows, "task", "title", taskTitle(task), "text2");
@@ -291,7 +319,7 @@ function buildTaskDetailRows(
       }
       break;
     case "local_agent":
-      addDetailRows(rows, "agent", "agent", `${task.agentId} · ${task.agentType}`, "worker");
+      addDetailRows(rows, "agent", "agent", agentIdentity ?? `${task.agentId} · Agent`, "worker");
       addDetailRows(rows, "agent", "model", task.model, "inactive");
       addDetailRows(rows, "agent", "prompt", task.prompt, "text2");
       addMessageRows(rows, "agent", "pending", task.pendingMessages);
@@ -300,7 +328,8 @@ function buildTaskDetailRows(
       addDetailRows(rows, "agent", "result", task.result, "subtle");
       break;
     case "in_process_teammate":
-      addDetailRows(rows, "teammate", "identity", `${task.identity.agentName} · ${task.identity.agentId}`, "worker");
+      addDetailRows(rows, "teammate", "identity", agentIdentity ?? `${task.identity.agentName} · Agent`, "worker");
+      addDetailRows(rows, "teammate", "id", task.identity.agentId, "inactive");
       addDetailRows(rows, "teammate", "team", task.identity.teamName, "inactive");
       addDetailRows(rows, "teammate", "mode", task.permissionMode, "subtle");
       addDetailRows(rows, "teammate", "state", [
@@ -419,6 +448,7 @@ export function BackgroundTasksPanel({
   const tasks = useAppState((state: AppState) =>
     Object.values(state.tasks ?? {}).filter(isBackgroundDialogTask),
   );
+  const agentNameRegistry = useAppState((state: AppState) => state.agentNameRegistry);
   const appStateSetter = useSetAppState();
   const setAppState = setAppStateFromContext(toolUseContext) ?? appStateSetter;
   const sorted = React.useMemo(() => {
@@ -460,9 +490,16 @@ export function BackgroundTasksPanel({
   const selectedTask = sorted[selectedIndex] ?? null;
   const selectedShellOutputTail =
     selectedTask?.type === "local_bash" ? shellOutputTails[selectedTask.id] : undefined;
+  const nameByAgentId = React.useMemo(() => {
+    const inverted = new Map<string, string>();
+    for (const [name, id] of agentNameRegistry ?? []) {
+      inverted.set(String(id), name);
+    }
+    return inverted;
+  }, [agentNameRegistry]);
   const detailRows = React.useMemo(
-    () => selectedTask ? buildTaskDetailRows(selectedTask, selectedShellOutputTail) : [],
-    [selectedShellOutputTail, selectedTask],
+    () => selectedTask ? buildTaskDetailRows(selectedTask, selectedShellOutputTail, nameByAgentId) : [],
+    [nameByAgentId, selectedShellOutputTail, selectedTask],
   );
   const selectedTaskDetail = selectedTask ? taskDetail(selectedTask) : null;
   React.useEffect(() => {
@@ -672,7 +709,7 @@ export function BackgroundTasksPanel({
             Task details
           </ThemedText>
           <ThemedText color="text2" wrap="truncate-end">
-            {truncateToWidth(`${selectedTask.status} · ${selectedTask.type} · ${taskTitle(selectedTask)}`, taskTextWidth)}
+            {truncateToWidth(`${selectedTask.status} · ${selectedTask.type} · ${formatBackgroundAgentIdentity(selectedTask, nameByAgentId) ?? taskTitle(selectedTask)}`, taskTextWidth)}
           </ThemedText>
           <ThemedText color="inactive">{truncateToWidth(`id: ${selectedTask.id}`, taskTextWidth)}</ThemedText>
           {selectedTaskDetail ? (
@@ -697,7 +734,7 @@ export function BackgroundTasksPanel({
           {`${task.id} · ${taskStatusLabel(task.status)}`}
         </ThemedText>,
         <ThemedText key="label" color={active ? "agenc" : "text2"} wrap="truncate-end">
-          {taskTitle(task)}
+          {formatBackgroundAgentIdentity(task, nameByAgentId) ?? taskTitle(task)}
         </ThemedText>,
         <ThemedText key="target" color="subtle" wrap="truncate-end">{taskTarget(task)}</ThemedText>,
         <ThemedText key="progress" color={taskStatusColor(task.status)} wrap="truncate-end">

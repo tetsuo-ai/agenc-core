@@ -6,6 +6,7 @@ import { Text } from '../../ink.js'
 import {
   MenuModal,
   ModeSwitcher,
+  PlanList,
   SlashPalette,
   StatusSegment,
   TerminalFrame,
@@ -96,6 +97,27 @@ describe('v2 primitives', () => {
     expect(output).toContain('type /help for commands ·  /claim to pick a task off the marketplace')
     expect(output).not.toContain('/helpfor')
     expect(output).not.toContain('/claimto')
+  })
+
+  it('uses AURA lifecycle glyphs for plan rows', async () => {
+    const output = await renderToString(
+      <PlanList
+        items={[
+          { state: 'done', text: 'read repo state' },
+          { state: 'active', text: 'apply focused patch' },
+          { state: 'pending', text: 'run verification' },
+          { state: 'failed', text: 'surface blocker' },
+        ]}
+      />,
+      96,
+    )
+
+    expect(output).toContain('01 ● read repo state')
+    expect(output).toContain('02 ▮ apply focused patch')
+    expect(output).toContain('03 ○ run verification')
+    expect(output).toContain('04 ✕ surface blocker')
+    expect(output).not.toContain('✓ read repo state')
+    expect(output).not.toContain('· run verification')
   })
 
   it('windows long menus to the active row and exposes scroll position', async () => {

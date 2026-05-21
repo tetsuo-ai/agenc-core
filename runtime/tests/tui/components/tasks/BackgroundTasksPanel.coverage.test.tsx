@@ -138,7 +138,8 @@ describe('BackgroundTasksPanel coverage', () => {
 
     expect(output).toContain('TASK DETAIL')
     expect(output).toContain('identity')
-    expect(output).toContain('Reviewer · agent-reviewer')
+    expect(output).toContain('Reviewer · Agent')
+    expect(output).toContain('agent-reviewer')
     expect(output).toContain('awaiting plan approval')
     expect(output).toContain('shutdown requested')
     expect(output).toContain('reading related tests')

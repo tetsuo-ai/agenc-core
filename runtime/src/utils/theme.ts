@@ -114,6 +114,20 @@ export type ThemeName = (typeof THEME_NAMES)[number]
 
 export const THEME_SETTINGS = ['auto', ...THEME_NAMES] as const
 
+export const AURA_LIFECYCLE_GLYPHS = {
+  queued: '○',
+  running: '◐',
+  done: '●',
+  failed: '✕',
+} as const
+
+export const AURA_PLAN_GLYPHS = {
+  done: AURA_LIFECYCLE_GLYPHS.done,
+  active: '▮',
+  pending: AURA_LIFECYCLE_GLYPHS.queued,
+  failed: AURA_LIFECYCLE_GLYPHS.failed,
+} as const
+
 /**
  * A theme preference as stored in user config. `'auto'` follows the system
  * dark/light mode and is resolved to a ThemeName at runtime.

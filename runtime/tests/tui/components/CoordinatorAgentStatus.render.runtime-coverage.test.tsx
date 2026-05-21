@@ -179,12 +179,12 @@ describe("CoordinatorTaskPanel rendering", () => {
     expect(output).toContain("AGENTS");
     expect(output).toContain("2 active");
     expect(output).toContain("orchestrator");
-    expect(output.indexOf("Fixer:")).toBeLessThan(output.indexOf("Reviewer:"));
-    expect(output).toContain("Fixer:");
+    expect(output.indexOf("Fixer · Runner")).toBeLessThan(output.indexOf("Reviewer · Runner"));
+    expect(output).toContain("Fixer · Runner");
     expect(output).toContain("Applying patch");
     expect(output).toContain("12.5k tokens");
     expect(output).toContain("2 queued");
-    expect(output).toContain("Reviewer:");
+    expect(output).toContain("Reviewer · Runner");
     expect(output).toContain("finished review");
     expect(output).toContain("1 queued");
     expect(output).toContain("x to clear");
