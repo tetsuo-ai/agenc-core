@@ -104,7 +104,7 @@ const SOURCE_CONTRACTS: readonly {
   readonly sourceComponents?: readonly string[]
   readonly markers: readonly string[]
 }[] = [
-  { stateId: '01a', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'WelcomeCold', markers: ['orchestrator', '18.40', '/claim', '0.4.2', '7nB4…q2Pe', 'ready.', 'build a7c1f4e', 'SLASHED', '/help'] },
+  { stateId: '01a', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'WelcomeCold', markers: ['agenc.', 'a netrunner with hands on every file', 'workspace', 'model', 'last session', 'recent', 'swap-program', 'runtime coverage', 'agent catalog'] },
   { stateId: '01b', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'WelcomeResumed', markers: ['checkpointed plan', '#47', 'task', 'read programs/swap/src/lib.rs', 'cargo test-bpf · settle', 'resume from step 3', 'session 0x9c4f', 'escrow ◎ 2.40', 'forfeit ◎ 0.40'] },
   { stateId: '02a', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'SlashFull', sourceComponents: ['SlashFull', 'SlashPalette', 'slashItems'], markers: ['/claim', '/delegate', '/model', '/proof', '/settle', '/stake', 'slash commands · 30', '/bashes', '+ 18 more'] },
   { stateId: '02b', sourceFile: 'tui-v2-states.jsx', sourceComponent: 'SlashFiltered', sourceComponents: ['SlashFiltered', 'SlashPalette', 'slashItems'], markers: ['/delegate', '/diff', 'matches · 2', 'show the current working diff', 'swap-program/issues/47', 'shall I draft a plan?'] },
@@ -1642,7 +1642,7 @@ const DESIGN_STATES: readonly DesignState[] = [
   {
     id: '01a',
     title: 'welcome cold',
-    expected: ['orchestrator', '18.40', '/claim', 'mode · default'],
+    expected: ['agenc.', 'a netrunner with hands on every file', 'recent', 'mode · default'],
     render: viewport => (
       <Frame
         viewport={viewport}

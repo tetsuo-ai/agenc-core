@@ -96,7 +96,7 @@ describe("StatusNotices coverage", () => {
 
     expect(mocks.buildMemoryDiagnostics).toHaveBeenCalledTimes(1);
     expect(memoryOutput).toContain("Large AGENC.md will impact startup");
-    expect(memoryOutput).toContain("/memory to edit");
+    expect(memoryOutput).toContain("/memory · open");
     expect(memoryOutput).not.toContain("AgenC daemon autostart is disabled");
   });
 });

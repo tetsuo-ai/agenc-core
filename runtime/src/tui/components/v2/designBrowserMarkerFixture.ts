@@ -7,10 +7,10 @@ export type BrowserMarkerFixtureEntry = {
 
 export const BROWSER_MARKER_FIXTURE = {
   '01a': [
-    { marker: 'orchestrator', row: 0, column: 30 },
-    { marker: '18.40', row: 12, column: 62 },
-    { marker: '/claim', row: 16, column: 43, family: 'accent' },
-    { marker: '0.4.2', row: 7, column: 24 },
+    { marker: 'agenc.', row: 3, column: 20 },
+    { marker: 'a netrunner with hands on every file', row: 4, column: 20 },
+    { marker: 'default model', row: 9, column: 35 },
+    { marker: 'runtime coverage', row: 18, column: 26 },
   ],
   '01b': [
     { marker: 'checkpointed plan', row: 12, column: 26 },

@@ -1474,141 +1474,112 @@ export const BROWSER_TEXT_FIXTURE = {
     {
       marker: "mode",
       row: 0,
-      column: 118
+      column: 121
     },
     {
       marker: "default",
       row: 0,
-      column: 124
+      column: 128
     },
     {
       marker: "task",
       row: 0,
-      column: 134
+      column: 139
     },
     {
-      marker: "0.4.2",
-      row: 7,
-      column: 24
-    },
-    {
-      marker: "· build",
-      row: 7,
-      column: 29
-    },
-    {
-      marker: "a7c1f4e",
-      row: 7,
-      column: 38
-    },
-    {
-      marker: "· solana",
-      row: 7,
-      column: 44
-    },
-    {
-      marker: "mainnet-beta",
-      row: 7,
-      column: 54
-    },
-    {
-      marker: "cwd",
-      row: 8,
-      column: 19
-    },
-    {
-      marker: "~/work/tetsuo/swap-program",
-      row: 8,
-      column: 23
-    },
-    {
-      marker: "· git",
-      row: 8,
-      column: 47
-    },
-    {
-      marker: "main",
-      row: 8,
-      column: 54
-    },
-    {
-      marker: "· clean",
-      row: 8,
-      column: 57
-    },
-    {
-      marker: "IDENTITY",
-      row: 11,
-      column: 21
-    },
-    {
-      marker: "WALLET",
-      row: 11,
-      column: 42
-    },
-    {
-      marker: "STAKE",
-      row: 11,
-      column: 62
-    },
-    {
-      marker: "REP",
-      row: 11,
-      column: 83
-    },
-    {
-      marker: "SLASHED",
-      row: 11,
-      column: 103
-    },
-    {
-      marker: "orchestrator",
-      row: 12,
-      column: 21,
+      marker: "agenc.",
+      row: 3,
+      column: 20,
       family: "accent"
     },
     {
-      marker: "7nB4…q2Pe",
-      row: 12,
-      column: 42
+      marker: "a netrunner with hands on every file",
+      row: 4,
+      column: 20
     },
     {
-      marker: "18.40 ◎",
-      row: 12,
-      column: 62
+      marker: "workspace",
+      row: 8,
+      column: 22
     },
     {
-      marker: "412",
-      row: 12,
-      column: 83
+      marker: "~/git/AgenC/agenc-core/runtime",
+      row: 8,
+      column: 35
     },
     {
-      marker: "ready.",
-      row: 15,
-      column: 19
+      marker: "model",
+      row: 9,
+      column: 22
     },
     {
-      marker: "type",
-      row: 16,
-      column: 19
+      marker: "default model",
+      row: 9,
+      column: 35
     },
     {
-      marker: "/help",
-      row: 16,
-      column: 24,
+      marker: "last session",
+      row: 10,
+      column: 22
+    },
+    {
+      marker: "12m ago · clean handoff",
+      row: 10,
+      column: 35
+    },
+    {
+      marker: "recent",
+      row: 14,
+      column: 20
+    },
+    {
+      marker: "[1]",
+      row: 17,
+      column: 22,
       family: "accent"
     },
     {
-      marker: "/claim",
-      row: 16,
-      column: 43,
+      marker: "swap-program · 12m ago",
+      row: 17,
+      column: 26
+    },
+    {
+      marker: "[2]",
+      row: 18,
+      column: 22,
       family: "accent"
+    },
+    {
+      marker: "runtime coverage · yesterday",
+      row: 18,
+      column: 26
+    },
+    {
+      marker: "[3]",
+      row: 19,
+      column: 22,
+      family: "accent"
+    },
+    {
+      marker: "agent catalog · 3d ago",
+      row: 19,
+      column: 26
     },
     {
       marker: "haiku-4.5",
-      row: 37,
+      row: 39,
       column: 7,
       family: "accent"
+    },
+    {
+      marker: "18.40 ◎",
+      row: 39,
+      column: 40
+    },
+    {
+      marker: "CTX",
+      row: 39,
+      column: 123
     }
   ],
   "01b": [

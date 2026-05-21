@@ -1,9 +1,7 @@
 // @ts-nocheck
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
-import { Box, Text } from '../ink.js';
-import * as React from 'react';
-import figures from 'figures';
+import type * as React from 'react';
 import { formatNumber } from '../../utils/format.js';
 import type { getGlobalConfig } from '../../utils/config.js';
 import { getproviderApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isAgenCAISubscriber } from '../../utils/auth.js';
@@ -13,7 +11,7 @@ import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } fr
 import { isJetBrainsPluginInstalledCachedSync } from '../../utils/jetbrains.js';
 
 // Types
-export type StatusNoticeType = 'warning' | 'info';
+export type StatusNoticeType = 'warning' | 'error' | 'success' | 'info';
 export type StatusNoticeContext = {
   config: ReturnType<typeof getGlobalConfig>;
   agentDefinitions?: AgentDefinitionsResult;
@@ -69,17 +67,7 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
   type: 'warning',
   isActive: ctx => ctx.memoryDiagnostics.length > 0,
   render: ctx => {
-    return <>
-        {ctx.memoryDiagnostics.map(diagnostic => {
-        return <Box key={diagnostic} flexDirection="row">
-              <Text color="warning">{figures.warning}</Text>
-              <Text color="warning">
-                {diagnostic}
-                <Text dimColor> · /memory to edit</Text>
-              </Text>
-            </Box>;
-      })}
-      </>;
+    return `${ctx.memoryDiagnostics.join(' · ')} · /memory · open`;
   }
 };
 const agencAccountExternalTokenNotice: StatusNoticeDefinition = {
@@ -91,14 +79,7 @@ const agencAccountExternalTokenNotice: StatusNoticeDefinition = {
   },
   render: () => {
     const authTokenInfo = getAuthTokenSource();
-    return <Box flexDirection="row" marginTop={1}>
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          Auth conflict: Using {authTokenInfo.source} instead of AgenC account
-          subscription token. Either unset {authTokenInfo.source}, or run
-          `agenc /logout`.
-        </Text>
-      </Box>;
+    return `Auth conflict: Using ${authTokenInfo.source} instead of AgenC account subscription token. Either unset ${authTokenInfo.source}, or run agenc /logout.`;
   }
 };
 const apiKeyConflictNotice: StatusNoticeDefinition = {
@@ -118,13 +99,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
     } = getproviderApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
-    return <Box flexDirection="row" marginTop={1}>
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          Auth conflict: Using {apiKeySource} instead of provider Console key.
-          Either unset {apiKeySource}, or run `agenc /logout`.
-        </Text>
-      </Box>;
+    return `Auth conflict: Using ${apiKeySource} instead of provider Console key. Either unset ${apiKeySource}, or run agenc /logout.`;
   }
 };
 const bothAuthMethodsNotice: StatusNoticeDefinition = {
@@ -147,25 +122,8 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
     });
     const authTokenInfo = getAuthTokenSource();
     const authTokenDisplayName = getAuthTokenDisplayName(authTokenInfo.source);
-    return <Box flexDirection="column" marginTop={1}>
-        <Box flexDirection="row">
-          <Text color="warning">{figures.warning}</Text>
-          <Text color="warning">
-            Auth conflict: Both a token ({authTokenDisplayName}) and an API key
-            ({apiKeySource}) are set. This may lead to unexpected behavior.
-          </Text>
-        </Box>
-        <Box flexDirection="column" marginLeft={3}>
-          <Text color="warning">
-            · Trying to use {authTokenDisplayName}?{' '}
-            {apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or run agenc /logout then decline API key approval before login.' : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : 'Run agenc /logout.'}
-          </Text>
-          <Text color="warning">
-            · Trying to use {apiKeySource}?{' '}
-            {getAuthTokenCleanupHint(authTokenInfo.source)}
-          </Text>
-        </Box>
-      </Box>;
+    const apiKeyCleanup = apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or run agenc /logout then decline API key approval before login.' : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : 'Run agenc /logout.';
+    return `Auth conflict: Both a token (${authTokenDisplayName}) and an API key (${apiKeySource}) are set. This may lead to unexpected behavior. Trying to use ${authTokenDisplayName}? ${apiKeyCleanup} Trying to use ${apiKeySource}? ${getAuthTokenCleanupHint(authTokenInfo.source)}`;
   }
 };
 const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
@@ -177,15 +135,7 @@ const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
   },
   render: context => {
     const totalTokens = getAgentDescriptionsTotalTokens(context.agentDefinitions);
-    return <Box flexDirection="row">
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          Large cumulative agent descriptions will impact performance (~
-          {formatNumber(totalTokens)} tokens &gt;{' '}
-          {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)})
-          <Text dimColor> · /agents to manage</Text>
-        </Text>
-      </Box>;
+    return `Large cumulative agent descriptions will impact performance (~${formatNumber(totalTokens)} tokens > ${formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)}) · /agents · manage`;
   }
 };
 const daemonAutostartNotice: StatusNoticeDefinition = {
@@ -193,14 +143,7 @@ const daemonAutostartNotice: StatusNoticeDefinition = {
   type: 'info',
   isActive: context => context.daemonStatus.autostartDisabled,
   render: () => {
-    return <Box flexDirection="row">
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          AgenC daemon autostart is disabled. Background agents and reconnectable
-          sessions require a running daemon.
-          <Text dimColor> · agenc daemon start</Text>
-        </Text>
-      </Box>;
+    return 'AgenC daemon autostart is disabled. Background agents and reconnectable sessions require a running daemon. · agenc daemon start';
   }
 };
 const jetbrainsPluginNotice: StatusNoticeDefinition = {
@@ -223,13 +166,7 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
   render: () => {
     const ideType = getTerminalIdeType();
     const ideName = toIDEDisplayName(ideType);
-    return <Box flexDirection="row" gap={1} marginLeft={1}>
-        <Text color="ide">{figures.arrowUp}</Text>
-        <Text>
-          Install the <Text color="ide">{ideName}</Text> plugin from the
-          JetBrains Marketplace.
-        </Text>
-      </Box>;
+    return `Install the ${ideName} plugin from the JetBrains Marketplace.`;
   }
 };
 

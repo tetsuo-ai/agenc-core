@@ -665,113 +665,97 @@ export function ChatBody({
   )
 }
 
-const wordmarkLines = [
-  '  ▄▄▄▄    ▄▄▄▄▄  ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄  ',
-  ' ▐█▌▐█▌  ▐█ ▄ █ ▐█ ▄▄  ██▐█▌ ▐█ ▄ █ ',
-  ' ▐█▌▐█▌  ▐█▀▀▄█ ▐█▀▀▀  ██▐█▌ ▐█ █▀█ ',
-  ' ▐██▄██▌ ▐█▄▄▄█ ▐█▄▄▄  ██▐█▌ ▐█▄▄▄█ ',
-] as const
+type WelcomeRecentSession = {
+  readonly keyName: string
+  readonly title: string
+  readonly detail: string
+}
 
-const defaultWelcomeStats = [
-  { label: 'IDENTITY', value: 'orchestrator', color: 'agenc' },
-  { label: 'WALLET', value: '7nB4…q2Pe', color: 'text2' },
-  { label: 'STAKE', value: '18.40 ◎', color: 'text2' },
-  { label: 'REP', value: '412', color: 'text2' },
-  { label: 'SLASHED', value: '0', color: 'subtle' },
-] as const satisfies readonly {
+const defaultRecentSessions = [
+  { keyName: '1', title: 'swap-program', detail: '12m ago · main · clean' },
+  { keyName: '2', title: 'runtime coverage', detail: 'yesterday · tests' },
+  { keyName: '3', title: 'agent catalog', detail: '3d ago · review' },
+] as const satisfies readonly WelcomeRecentSession[]
+
+function defaultWorkspaceLabel(): string {
+  const cwd = process.cwd()
+  const home = process.env.HOME
+  return home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+}
+
+function WelcomeMetaRow({
+  label,
+  value,
+}: {
   readonly label: string
   readonly value: string
-  readonly color: ThemeColor
-}[]
-
-export function WelcomeColdPanel({
-  version = '0.4.2',
-  build = 'a7c1f4e',
-  network = 'mainnet-beta',
-  cwd = '~/work/tetsuo/swap-program',
-  gitBranch = 'main',
-  gitState = 'clean',
-  stats = defaultWelcomeStats,
-}: {
-  readonly version?: string
-  readonly build?: string
-  readonly network?: string
-  readonly cwd?: string
-  readonly gitBranch?: string
-  readonly gitState?: string
-  readonly stats?: readonly {
-    readonly label: string
-    readonly value: string
-    readonly color?: ThemeColor
-  }[]
 }): React.ReactNode {
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="column">
-        {wordmarkLines.map(line => (
-          <ThemedText key={line} color="agenc">
-            {line}
-          </ThemedText>
-        ))}
-      </Box>
+    <Box flexDirection="row" flexWrap="wrap">
+      <ThemedText color="muted3">{label.padEnd(13)}</ThemedText>
+      <ThemedText color="text2" wrap="truncate-middle">
+        {value}
+      </ThemedText>
+    </Box>
+  )
+}
 
+export function WelcomeColdPanel({
+  workspace = defaultWorkspaceLabel(),
+  model = 'default model',
+  lastSession = '12m ago · clean handoff',
+  recentSessions = defaultRecentSessions,
+}: {
+  readonly workspace?: string
+  readonly model?: string
+  readonly lastSession?: string
+  readonly recentSessions?: readonly WelcomeRecentSession[]
+}): React.ReactNode {
+  const visibleSessions = recentSessions.slice(0, 3)
+  return (
+    <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        <Box flexDirection="row" flexWrap="wrap">
-          <ThemedText color="subtle">agenc </ThemedText>
-          <ThemedText color="text">{version}</ThemedText>
-          <ThemedText color="muted3">· build  </ThemedText>
-          <ThemedText color="text">{build}</ThemedText>
-          <ThemedText color="muted3">· solana  </ThemedText>
-          <ThemedText color="text">{network}</ThemedText>
-        </Box>
-        <Box minHeight={1} />
-        <Box flexDirection="row" flexWrap="wrap">
-          <ThemedText color="inactive">cwd </ThemedText>
-          <ThemedText color="subtle" wrap="truncate-middle">
-            {cwd}
-          </ThemedText>
-          <ThemedText color="inactive">· git </ThemedText>
-          <ThemedText color="subtle">{gitBranch}</ThemedText>
-          <ThemedText color="inactive">· {gitState}</ThemedText>
-        </Box>
+        <ThemedText color="agenc" bold>
+          agenc.
+        </ThemedText>
+        <ThemedText color="text2">
+          a netrunner with hands on every file
+        </ThemedText>
       </Box>
 
       <ThemedBox
-        flexDirection="row"
+        flexDirection="column"
         borderStyle="single"
         borderColor="lineSoft"
-        backgroundColor="surfaceBackground"
-        flexWrap="wrap"
+        paddingX={1}
+        paddingY={1}
       >
-        {stats.map((stat, index) => (
-          <ThemedBox
-            key={stat.label}
-            flexDirection="column"
-            minWidth={13}
-            flexGrow={1}
-            paddingLeft={index === stats.length - 1 ? 3 : 1}
-            paddingRight={1}
-            paddingY={1}
-          >
-            <ThemedText color="inactive" wrap="truncate-end">
-              {stat.label}
-            </ThemedText>
-            <ThemedText color={stat.color ?? 'text2'} wrap="truncate-end">
-              {stat.value}
-            </ThemedText>
-          </ThemedBox>
-        ))}
+        <WelcomeMetaRow label="workspace" value={workspace} />
+        <WelcomeMetaRow label="model" value={model} />
+        <WelcomeMetaRow label="last session" value={lastSession} />
       </ThemedBox>
 
       <Box flexDirection="column">
-        <ThemedText color="subtle">ready.</ThemedText>
-        <Box flexDirection="row" flexWrap="wrap">
-          <ThemedText color="inactive">type </ThemedText>
-          <ThemedText color="agenc">/help</ThemedText>
-          <ThemedText color="inactive"> for commands ·  </ThemedText>
-          <ThemedText color="agenc">/claim</ThemedText>
-          <ThemedText color="inactive"> to pick a task off the marketplace</ThemedText>
-        </Box>
+        <ThemedText color="muted3">recent</ThemedText>
+        <ThemedBox
+          flexDirection="column"
+          borderStyle="single"
+          borderColor="lineSoft"
+          paddingX={1}
+          paddingY={1}
+        >
+          {visibleSessions.length > 0 ? visibleSessions.map(session => (
+            <Box key={session.keyName} flexDirection="row" flexWrap="wrap">
+              <ThemedText color="muted3">[</ThemedText>
+              <ThemedText color="agenc">{session.keyName}</ThemedText>
+              <ThemedText color="muted3">] </ThemedText>
+              <ThemedText color="text2">{session.title}</ThemedText>
+              <ThemedText color="muted3"> · {session.detail}</ThemedText>
+            </Box>
+          )) : (
+            <ThemedText color="muted3">no resumable sessions</ThemedText>
+          )}
+        </ThemedBox>
       </Box>
     </Box>
   )

@@ -69,7 +69,7 @@ const LogoHeader = React.memo(function LogoHeader(t0: {
     agentDefinitions,
     showWelcome = false,
   } = t0;
-  return <OffscreenFreeze><Box flexDirection="column" gap={1}>{showWelcome ? <WelcomeColdPanel /> : null}<React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense></Box></OffscreenFreeze>;
+  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomeColdPanel /> : null}</Box></OffscreenFreeze>;
 });
 
 // Dead code elimination: conditional import for brief mode
