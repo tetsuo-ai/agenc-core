@@ -522,6 +522,9 @@ function AgentsDefinitionsEditor({
       ]}
     >
       <Box flexDirection="column">
+        <ThemedText color="muted3" wrap="truncate-end">
+          {activeCount} active · {registeredCount} registered
+        </ThemedText>
         <Box flexDirection="row">
           <Box width={2} />
           <Box width={nameWidth}>

@@ -1155,18 +1155,24 @@ export function Popup({
   readonly maxHeight?: number
   readonly minHeight?: number
 }): React.ReactNode {
+  const resolvedMinHeight = minHeight ?? 18
+  const shouldConstrainHeight = maxHeight !== undefined
   return (
-    <ThemedBox flexDirection="column" backgroundColor="lineSoft" overflow="hidden">
+    <ThemedBox
+      flexDirection="column"
+      backgroundColor="lineSoft"
+      overflow={shouldConstrainHeight ? 'hidden' : undefined}
+    >
       <ThemedBox
         flexDirection="column"
         borderStyle="single"
         borderColor="line"
         backgroundColor="clawd_background"
-        overflow="hidden"
+        overflow={shouldConstrainHeight ? 'hidden' : undefined}
         maxHeight={maxHeight}
-        minHeight={minHeight}
+        minHeight={resolvedMinHeight}
       >
-        <ThemedBox flexDirection="row" borderBottom borderBottomColor="lineSoft" paddingX={1} gap={1}>
+        <ThemedBox flexDirection="row" borderBottom borderBottomColor="lineSoft" paddingX={1} gap={1} flexShrink={0}>
           <ThemedText color={accentColor}>✳</ThemedText>
           <ThemedText color="text2" wrap="truncate-end">{title.toUpperCase()}</ThemedText>
           <Box flexGrow={1} />
@@ -1177,12 +1183,12 @@ export function Popup({
           backgroundColor={bodyBackgroundColor}
           paddingX={bodyPaddingX}
           paddingY={bodyPaddingY}
-          flexGrow={1}
-          overflow="hidden"
+          flexShrink={shouldConstrainHeight ? 1 : undefined}
+          overflow={shouldConstrainHeight ? 'hidden' : undefined}
         >
           {children}
         </ThemedBox>
-        <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2}>
+        <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2} flexShrink={0}>
           {footer.map(item => (
             <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
           ))}

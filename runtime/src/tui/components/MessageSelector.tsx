@@ -460,7 +460,7 @@ function RestoreOptionDescription(t0) {
   }
   let t2;
   if ($[2] !== t1) {
-    t2 = <Text dimColor={true}>{t1}</Text>;
+    t2 = <Box height={1} flexShrink={0}><Text dimColor={true}>{t1}</Text></Box>;
     $[2] = t1;
     $[3] = t2;
   } else {
@@ -468,7 +468,7 @@ function RestoreOptionDescription(t0) {
   }
   let t3;
   if ($[4] !== diffStatsForRestore || $[5] !== selectedRestoreOption || $[6] !== showCodeRestore) {
-    t3 = !isSummarizeOption(selectedRestoreOption) && (showCodeRestore ? <RestoreCodeConfirmation diffStatsForRestore={diffStatsForRestore} /> : <Text dimColor={true}>The code will be unchanged.</Text>);
+    t3 = !isSummarizeOption(selectedRestoreOption) && (showCodeRestore ? <RestoreCodeConfirmation diffStatsForRestore={diffStatsForRestore} /> : <Box height={1} flexShrink={0}><Text dimColor={true}>The code will be unchanged.</Text></Box>);
     $[4] = diffStatsForRestore;
     $[5] = selectedRestoreOption;
     $[6] = showCodeRestore;
@@ -478,7 +478,7 @@ function RestoreOptionDescription(t0) {
   }
   let t4;
   if ($[8] !== t2 || $[9] !== t3) {
-    t4 = <Box flexDirection="column">{t2}{t3}</Box>;
+    t4 = <Box flexDirection="column" flexShrink={0}>{t2}{t3}</Box>;
     $[8] = t2;
     $[9] = t3;
     $[10] = t4;
@@ -561,7 +561,7 @@ function RestoreCodeConfirmation(t0) {
   }
   let t2;
   if ($[11] !== fileLabel || $[12] !== t1) {
-    t2 = <><Text dimColor={true}>The code will be restored{" "}{t1} in {fileLabel}.</Text></>;
+    t2 = <Box height={1} flexShrink={0}><Text dimColor={true}>The code will be restored{" "}{t1} in {fileLabel}.</Text></Box>;
     $[11] = fileLabel;
     $[12] = t1;
     $[13] = t2;

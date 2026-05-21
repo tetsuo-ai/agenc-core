@@ -266,7 +266,7 @@ export function ModelPicker(t0) {
   const handleSelect = t14;
   let t15;
   if ($[41] === Symbol.for("react.memo_cache_sentinel")) {
-    t15 = <Text color="remember" bold={true}>Select model</Text>;
+    t15 = <Box height={1} flexShrink={0}><Text bold={true}>Select model</Text></Box>;
     $[41] = t15;
   } else {
     t15 = $[41];
@@ -274,7 +274,7 @@ export function ModelPicker(t0) {
   const t16 = headerText ?? "Switch between AgenC models. Applies to this session and future AgenC sessions. For other/previous model names, specify with --model.";
   let t17;
   if ($[42] !== t16) {
-    t17 = <Text dimColor={true}>{t16}</Text>;
+    t17 = <Box height={1} flexShrink={0}><Text dimColor={true}>{t16}</Text></Box>;
     $[42] = t16;
     $[43] = t17;
   } else {
@@ -282,7 +282,7 @@ export function ModelPicker(t0) {
   }
   let t18;
   if ($[44] !== sessionModel) {
-    t18 = sessionModel && <Text dimColor={true}>Currently using {modelDisplayString(sessionModel)} for this session (set by plan mode). Selecting a model will undo this.</Text>;
+    t18 = sessionModel && <Box height={1} flexShrink={0}><Text dimColor={true}>Currently using {modelDisplayString(sessionModel)} for this session (set by plan mode). Selecting a model will undo this.</Text></Box>;
     $[44] = sessionModel;
     $[45] = t18;
   } else {
@@ -290,7 +290,7 @@ export function ModelPicker(t0) {
   }
   let t19;
   if ($[46] !== t17 || $[47] !== t18) {
-    t19 = <Box marginBottom={1} flexDirection="column">{t15}{t17}{t18}</Box>;
+    t19 = <Box marginBottom={1} flexDirection="column" flexShrink={0}>{t15}{t17}{t18}</Box>;
     $[46] = t17;
     $[47] = t18;
     $[48] = t19;

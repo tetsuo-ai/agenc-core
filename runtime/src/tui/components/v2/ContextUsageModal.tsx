@@ -191,6 +191,7 @@ function StructuredContextUsage({
     <Popup
       title="context"
       status={`${summary.percent}% used · headroom ${Math.round(Math.max(0, summary.hardLimit - summary.used) / 1000)}k`}
+      minHeight={24}
       footer={[
         { keyName: 'c', label: '/compact' },
         { keyName: 'd', label: 'drop file' },
@@ -274,7 +275,7 @@ export function ContextUsageModal({
   if (summary !== null) return <StructuredContextUsage summary={summary} />
 
   return (
-    <Popup title="context" footer={[{ keyName: 'q', label: 'close' }]}>
+    <Popup title="context" minHeight={24} footer={[{ keyName: 'q', label: 'close' }]}>
       <ThemedText color="agenc">CONTEXT</ThemedText>
       {rows.map((row, index) => (
         <Box key={index} flexDirection="row" gap={1}>
