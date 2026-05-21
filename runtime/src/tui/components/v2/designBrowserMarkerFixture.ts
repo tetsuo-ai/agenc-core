@@ -147,8 +147,8 @@ export const BROWSER_MARKER_FIXTURE = {
   '16': [
     { marker: '/agents', row: 4, column: 21 },
     { marker: 'agents', row: 4, column: 21 },
-    { marker: 'orchestrator', row: 0, column: 30 },
-    { marker: 'worker/zk-prover', row: 12, column: 13 },
+    { marker: 'name · Role', row: 7, column: 13 },
+    { marker: 'system prompt', row: 18, column: 82 },
   ],
   '17': [
     { marker: '/permissions', row: 4, column: 21 },

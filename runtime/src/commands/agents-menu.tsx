@@ -13,10 +13,12 @@ import {
 } from "../tools/AgentTool/loadAgentsDir.js";
 import type { Tools } from "../tools/Tool.js";
 import { Box, useInput } from "../tui/ink.js";
+import { agentRolePresentation } from "../agents/role-presentation.js";
+import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import {
-  KeyHint,
   MenuModal,
+  Popup,
 } from "../tui/components/v2/primitives.js";
 import {
   deleteAgentFromFile,
@@ -27,6 +29,7 @@ import {
 } from "../tui/components/agents/agentFileUtils.js";
 import { useAppState, useSetAppState } from "../tui/state/AppState.js";
 import type { AppState } from "../tui/state/AppStateStore.js";
+import { useTerminalSize } from "../tui/hooks/useTerminalSize.js";
 import { getSourceDisplayName } from "../utils/settings/constants.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
@@ -122,6 +125,35 @@ function providerSummary(agent: AgentDefinition): string {
   return typeof provider === "string" && provider.length > 0 ? provider : "inherit";
 }
 
+function agentRoleLabel(agent: AgentDefinition): string {
+  return agentRolePresentation(agent.agentType)?.label ?? "Agent";
+}
+
+function agentIdentityLabel(agent: AgentDefinition): string {
+  return `${agent.agentType} · ${agentRoleLabel(agent)}`;
+}
+
+function agentScopeLabel(agent: AgentDefinition): string {
+  if (agent.memory) return agent.memory;
+  if (agent.source === "built-in") return "runtime";
+  if (agent.source === "plugin") return "plugin";
+  if (agent.source === "projectSettings") return "project";
+  if (agent.source === "userSettings") return "user";
+  return sourceLabel(agent.source).toLowerCase();
+}
+
+function agentBudgetLabel(agent: AgentDefinition): string {
+  if (agent.maxTurns !== undefined) return `${agent.maxTurns} turns`;
+  if (agent.effort) return `effort ${agent.effort}`;
+  return "inherit";
+}
+
+function agentWorktreeLabel(agent: AgentDefinition): string {
+  if (agent.isolation === "worktree") return "isolated worktree";
+  if (agent.isolation === "remote") return "remote";
+  return "current checkout";
+}
+
 function editableAgent(agent: AgentDefinition): boolean {
   return (
     agent.source !== "built-in" &&
@@ -133,17 +165,17 @@ function editableAgent(agent: AgentDefinition): boolean {
 function statusFor(agent: ResolvedAgent, activeAgents: readonly AgentDefinition[]): {
   readonly glyph: string;
   readonly label: string;
-  readonly color: "success" | "worker" | "inactive" | "agenc";
+  readonly color: "agenc" | "worker" | "muted3";
 } {
   if (agent.overriddenBy) {
-    return { glyph: "◇", label: `overridden by ${agent.overriddenBy}`, color: "inactive" };
+    return { glyph: "◇", label: `overridden by ${agent.overriddenBy}`, color: "muted3" };
   }
   const active = activeAgents.some(
     candidate =>
       candidate.agentType === agent.agentType &&
       candidate.source === agent.source,
   );
-  if (active) return { glyph: "◆", label: "active", color: "success" };
+  if (active) return { glyph: "◆", label: "active", color: "agenc" };
   if (agent.source === "plugin") return { glyph: "●", label: "plugin", color: "worker" };
   return { glyph: "·", label: "available", color: "agenc" };
 }
@@ -392,6 +424,158 @@ function FieldValue({
   );
 }
 
+function DetailMeta({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.ReactNode {
+  return (
+    <Box flexDirection="row">
+      <Box width={14}>
+        <ThemedText color="muted3" wrap="truncate-end">{label}</ThemedText>
+      </Box>
+      <Box flexGrow={1} overflow="hidden">
+        <ThemedText color="text2" wrap="wrap">{value}</ThemedText>
+      </Box>
+    </Box>
+  );
+}
+
+function AgentDefinitionDetailBlock({
+  agent,
+  notice,
+}: {
+  readonly agent: AgentDefinition;
+  readonly notice?: string;
+}): React.ReactNode {
+  return (
+    <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft" paddingX={1} marginTop={1}>
+      <Box justifyContent="space-between">
+        <ThemedText color="agenc" wrap="truncate-end">{agentIdentityLabel(agent)}</ThemedText>
+        <ThemedText color="muted3" wrap="truncate-end">
+          {editableAgent(agent) ? "editable" : "read-only"}
+        </ThemedText>
+      </Box>
+      <DetailMeta label="when-to-use" value={compactText(agent.whenToUse, "No description.", 360)} />
+      <DetailMeta label="tools" value={`${toolSummary(agent)} · skills ${skillSummary(agent)}`} />
+      <DetailMeta label="model" value={`${resolveAgentModelDisplay(agent) ?? "inherit"} · provider ${providerSummary(agent)}`} />
+      <DetailMeta label="budget" value={agentBudgetLabel(agent)} />
+      <DetailMeta label="worktree" value={agentWorktreeLabel(agent)} />
+      <ThemedText color="muted3">system prompt</ThemedText>
+      <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+        <ThemedText color="text2" wrap="wrap">
+          {compactText(promptText(agent), "No system prompt.", 720)}
+        </ThemedText>
+      </ThemedBox>
+      {notice ? (
+        <ThemedText color="agenc" wrap="wrap">{notice}</ThemedText>
+      ) : null}
+    </ThemedBox>
+  );
+}
+
+function AgentsDefinitionsEditor({
+  activeAgents,
+  activeIndex,
+  activeCount,
+  displayRows,
+  notice,
+  registeredCount,
+}: {
+  readonly activeAgents: readonly AgentDefinition[];
+  readonly activeIndex: number;
+  readonly activeCount: number;
+  readonly displayRows: readonly AgentRow[];
+  readonly notice?: string;
+  readonly registeredCount: number;
+}): React.ReactNode {
+  const { columns, rows } = useTerminalSize();
+  const selected = displayRows[activeIndex] ?? displayRows[0];
+  const viewportRows = Number.isFinite(rows) ? Math.max(12, Math.trunc(rows)) : 24;
+  const maxVisibleRows = Math.max(1, Math.min(displayRows.length, viewportRows - 13));
+  const windowStart = Math.min(
+    Math.max(0, activeIndex - Math.floor(maxVisibleRows / 2)),
+    Math.max(0, displayRows.length - maxVisibleRows),
+  );
+  const visibleRows = displayRows.slice(windowStart, windowStart + maxVisibleRows);
+  const windowEnd = windowStart + visibleRows.length;
+  const scrollStatus = displayRows.length > visibleRows.length
+    ? ` · scroll ${windowStart + 1}-${windowEnd}/${displayRows.length}`
+    : "";
+  const nameWidth = columns >= 110 ? 30 : 24;
+  const scopeWidth = columns >= 110 ? 16 : 12;
+  const sourceWidth = columns >= 110 ? 20 : 16;
+
+  return (
+    <Popup
+      title="agents · definitions editor"
+      status={`${activeCount} active · ${registeredCount} registered${scrollStatus}`}
+      footer={[
+        { keyName: "up/down", label: "select" },
+        { keyName: "enter", label: "detail" },
+        { keyName: "n", label: "new" },
+        { keyName: "e", label: "edit" },
+        { keyName: "d", label: "delete" },
+        { keyName: "q", label: "close" },
+      ]}
+    >
+      <Box flexDirection="column">
+        <Box flexDirection="row">
+          <Box width={2} />
+          <Box width={nameWidth}>
+            <ThemedText color="muted3" wrap="truncate-end">name · Role</ThemedText>
+          </Box>
+          <Box width={scopeWidth}>
+            <ThemedText color="muted3" wrap="truncate-end">scope</ThemedText>
+          </Box>
+          <Box width={sourceWidth}>
+            <ThemedText color="muted3" wrap="truncate-end">source</ThemedText>
+          </Box>
+        </Box>
+        {visibleRows.map((agent, visibleIndex) => {
+          const index = windowStart + visibleIndex;
+          const active = index === activeIndex;
+          const status = statusFor(agent as ResolvedAgent, activeAgents);
+          return (
+            <ThemedBox
+              key={`${agent.source}-${agent.agentType}-${index}`}
+              flexDirection="row"
+              backgroundColor={active ? "agencWash" : undefined}
+            >
+              <Box width={1}>
+                <ThemedText color={active ? "agenc" : "lineSoft"}>{active ? "▌" : " "}</ThemedText>
+              </Box>
+              <Box width={1}>
+                <ThemedText color={status.color}>{status.glyph}</ThemedText>
+              </Box>
+              <Box width={nameWidth}>
+                <ThemedText color={active ? "agenc" : "text2"} wrap="truncate-end">
+                  {agentIdentityLabel(agent)}
+                </ThemedText>
+              </Box>
+              <Box width={scopeWidth}>
+                <ThemedText color="text2" wrap="truncate-end">{agentScopeLabel(agent)}</ThemedText>
+              </Box>
+              <Box width={sourceWidth}>
+                <ThemedText color="muted3" wrap="truncate-end">{sourceLabel(agent.source)}</ThemedText>
+              </Box>
+            </ThemedBox>
+          );
+        })}
+        {selected && !selected.empty ? (
+          <AgentDefinitionDetailBlock agent={selected} notice={notice} />
+        ) : (
+          <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft" paddingX={1} marginTop={1}>
+            <ThemedText color="muted3">No agent definitions are registered.</ThemedText>
+          </ThemedBox>
+        )}
+      </Box>
+    </Popup>
+  );
+}
+
 function AgentDetailModal({
   agent,
   notice,
@@ -399,58 +583,18 @@ function AgentDetailModal({
   readonly agent: AgentDefinition;
   readonly notice?: string;
 }): React.ReactNode {
-  const detailRows = [
-    ["name", agent.agentType],
-    ["source", sourceLabel(agent.source)],
-    ["status", editableAgent(agent) ? "editable" : "read-only"],
-    ["model", resolveAgentModelDisplay(agent) ?? "inherit"],
-    ["provider", providerSummary(agent)],
-    ["tools", toolSummary(agent)],
-    ["skills", skillSummary(agent)],
-    ["file", getActualRelativeAgentFilePath(agent)],
-    ["description", compactText(agent.whenToUse, "No description.", 260)],
-    ["prompt", compactText(promptText(agent), "No system prompt.", 260)],
-  ] as const;
-
   return (
-    <MenuModal
-      title="agent detail"
-      count={agent.agentType}
-      summary={editableAgent(agent) ? "editable" : "read-only"}
-      headerRight="e edit · d delete · esc back"
-      columns={[15, 86]}
-      headers={["field", "value"]}
-      items={detailRows}
-      activeIndex={0}
-      renderRow={row => [
-        <ThemedText key="field" color="inactive" wrap="truncate-end">
-          {row[0]}
-        </ThemedText>,
-        <ThemedText key="value" color="text2" wrap="truncate-middle">
-          {row[1]}
-        </ThemedText>,
-      ]}
-      preview={
-        <Box flexDirection="column" gap={1}>
-          <ThemedText color="agenc" wrap="truncate-end">{agent.agentType}</ThemedText>
-          <ThemedText color="subtle" wrap="wrap">
-            {compactText(agent.whenToUse, "No description.", 320)}
-          </ThemedText>
-          <ThemedText color="inactive" wrap="wrap">
-            prompt · {compactText(promptText(agent), "No prompt.", 520)}
-          </ThemedText>
-          {notice ? (
-            <ThemedText color="success" wrap="wrap">{notice}</ThemedText>
-          ) : null}
-        </Box>
-      }
+    <Popup
+      title={`agent detail · ${agentIdentityLabel(agent)}`}
+      status="e edit · d delete · esc back"
       footer={[
         { keyName: "e", label: "edit" },
         { keyName: "d", label: "delete" },
         { keyName: "esc", label: "back" },
       ]}
-      hint="read-only sources cannot be edited or deleted"
-    />
+    >
+      <AgentDefinitionDetailBlock agent={agent} notice={notice} />
+    </Popup>
   );
 }
 
@@ -957,84 +1101,13 @@ function AgentsMenuModal({
   }
 
   return (
-    <MenuModal
-      title="agents"
-      count={`${activeCount} active · ${rows.length} registered`}
-      summary="delegate-capable role definitions"
-      headerRight="↑↓ select · enter detail"
-      columns={[3, 18, 18, 12, 10, 10, 48]}
-      headers={["", "name", "source", "status", "model", "tools", "when to use"]}
-      items={displayRows}
+    <AgentsDefinitionsEditor
+      activeAgents={activeAgents}
+      activeCount={activeCount}
       activeIndex={activeIndex}
-      renderRow={(agent, _index, active) => {
-        const status = statusFor(agent as ResolvedAgent, activeAgents);
-        return [
-          <ThemedText key="mark" color={status.color}>{status.glyph}</ThemedText>,
-          <ThemedText key="name" color={active ? "agenc" : "text2"} wrap="truncate-end">
-            {agent.agentType}
-          </ThemedText>,
-          <ThemedText key="source" color="subtle" wrap="truncate-end">
-            {sourceLabel(agent.source)}
-          </ThemedText>,
-          <ThemedText key="status" color={status.color} wrap="truncate-end">
-            {status.label}
-          </ThemedText>,
-          <ThemedText key="model" color="subtle" wrap="truncate-end">
-            {resolveAgentModelDisplay(agent) ?? "inherit"}
-          </ThemedText>,
-          <ThemedText key="tools" color="subtle" wrap="truncate-end">
-            {toolSummary(agent)}
-          </ThemedText>,
-          <ThemedText key="use" color="subtle" wrap="truncate-end">
-            {compactText(agent.whenToUse)}
-          </ThemedText>,
-        ];
-      }}
-      preview={
-        selected ? (
-          <Box flexDirection="column" gap={1}>
-            <ThemedText color="agenc">{selected.agentType}</ThemedText>
-            <ThemedText color="subtle" wrap="wrap">
-              {compactText(selected.whenToUse, "No description.", 320)}
-            </ThemedText>
-            <ThemedText color="inactive">
-              source · {sourceLabel(selected.source)}
-            </ThemedText>
-            <ThemedText color="inactive">
-              provider · {providerSummary(selected)}
-            </ThemedText>
-            <ThemedText color="inactive">
-              model · {resolveAgentModelDisplay(selected) ?? "inherit"}
-            </ThemedText>
-            <ThemedText color="inactive">
-              tools · {toolSummary(selected)} · skills · {skillSummary(selected)}
-            </ThemedText>
-            {"filename" in selected && selected.filename ? (
-              <ThemedText color="inactive" wrap="truncate-middle">
-                file · {selected.filename}
-              </ThemedText>
-            ) : null}
-            {notice ? (
-              <ThemedText color="success" wrap="wrap">{notice}</ThemedText>
-            ) : null}
-            <Box flexDirection="row" gap={2} flexWrap="wrap">
-              <KeyHint k="enter" label="detail" />
-              <KeyHint k="n" label="new" />
-              <KeyHint k="e" label="edit" />
-              <KeyHint k="d" label="delete" />
-            </Box>
-          </Box>
-        ) : undefined
-      }
-      footer={[
-        { keyName: "up/down", label: "select" },
-        { keyName: "enter", label: "detail" },
-        { keyName: "n", label: "new" },
-        { keyName: "e", label: "edit" },
-        { keyName: "d", label: "delete" },
-        { keyName: "q", label: "close" },
-      ]}
-      hint="create/edit/delete use AgenC agent markdown files"
+      displayRows={displayRows}
+      notice={notice}
+      registeredCount={rows.length}
     />
   );
 }

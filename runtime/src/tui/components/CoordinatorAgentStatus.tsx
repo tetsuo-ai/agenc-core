@@ -1,4 +1,3 @@
-import { c as _c } from "react-compiler-runtime";
 /**
  * CoordinatorTaskPanel — Steerable list of background agents.
  *
@@ -7,12 +6,9 @@ import { c as _c } from "react-compiler-runtime";
  * view/steer, x to dismiss.
  */
 
-import figures from 'figures';
 import * as React from 'react';
-import { BLACK_CIRCLE, PAUSE_ICON, PLAY_ICON } from '../../constants/figures.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
-import { stringWidth } from '../ink/stringWidth.js';
-import { Box, Text, wrapText } from '../ink.js';
+import { Box } from '../ink.js';
 import { type AppState, useAppState, useSetAppState } from '../state/AppState.js';
 import { enterTeammateView, exitTeammateView } from '../state/teammateViewHelpers';
 import { isPanelAgentTask, type LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask';
@@ -20,6 +16,9 @@ import { agentRolePresentation } from '../../agents/role-presentation.js';
 import { formatDuration, formatNumber } from '../../utils/format';
 import { evictTerminalTask } from '../../utils/task/framework';
 import { isTerminalStatus } from './tasks/taskStatusUtils';
+import { AURA_LIFECYCLE_GLYPHS } from '../../utils/theme.js';
+import ThemedBox from './design-system/ThemedBox.js';
+import ThemedText from './design-system/ThemedText.js';
 
 export const AGENT_PANEL_TRANSIENT_MS = 5_000;
 
@@ -138,14 +137,21 @@ export function CoordinatorTaskPanel(): React.ReactNode {
   })) {
     return null;
   }
-  return <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="promptBorder" paddingX={1} backgroundColor="clawd_background">
+  const focusedTask = selectedIndex !== undefined && selectedIndex > 0
+    ? visibleTasks[selectedIndex - 1]
+    : viewingAgentTaskId
+      ? visibleTasks.find(task => task.id === viewingAgentTaskId)
+      : visibleTasks[0];
+  return <ThemedBox flexDirection="column" marginTop={1} borderStyle="single" borderColor="lineSoft" paddingX={1}>
       <Box justifyContent="space-between">
-        <Text color="inactive" bold={true}>AGENTS</Text>
-        <Text color="promptBorder">{visibleTasks.length} active</Text>
+        <ThemedText color="muted3" bold={true}>AGENT FLEET</ThemedText>
+        <ThemedText color="text2">{visibleTasks.length} active</ThemedText>
       </Box>
+      <FleetHeader />
       <MainLine isSelected={selectedIndex === 0} isViewed={viewingAgentTaskId === undefined} onClick={() => exitTeammateView(setAppState)} />
       {visibleTasks.map((task, i) => <AgentLine key={task.id} task={task} name={nameByAgentId.get(task.id)} isSelected={selectedIndex === i + 1} isViewed={viewingAgentTaskId === task.id} onClick={() => enterTeammateView(task.id, setAppState)} />)}
-    </Box>;
+      {focusedTask ? <FocusedAgentBlock task={focusedTask} name={nameByAgentId.get(focusedTask.id)} /> : null}
+    </ThemedBox>;
 }
 
 /**
@@ -160,49 +166,161 @@ export function useCoordinatorTaskCount() {
 function _temp(s) {
   return s.tasks;
 }
+
+function taskElapsed(task: LocalAgentTaskState, now = Date.now()): string {
+  const running = !isTerminalStatus(task.status);
+  const pausedMs = task.totalPausedMs ?? 0;
+  const elapsedMs = Math.max(0, running ? now - task.startTime - pausedMs : (task.endTime ?? task.startTime) - task.startTime - pausedMs);
+  return formatDuration(elapsedMs);
+}
+
+function taskStatusGlyph(task: LocalAgentTaskState): string {
+  if (task.status === 'running') return AURA_LIFECYCLE_GLYPHS.running;
+  if (task.status === 'completed') return AURA_LIFECYCLE_GLYPHS.done;
+  if (task.status === 'failed' || task.status === 'killed') return AURA_LIFECYCLE_GLYPHS.failed;
+  return AURA_LIFECYCLE_GLYPHS.queued;
+}
+
+function taskStatusColor(task: LocalAgentTaskState): 'agenc' | 'worker' | 'muted3' {
+  if (task.status === 'running') return 'worker';
+  if (task.status === 'completed') return 'agenc';
+  if (task.status === 'failed' || task.status === 'killed') return 'agenc';
+  return 'muted3';
+}
+
+function taskLastAction(task: LocalAgentTaskState): string {
+  return task.progress?.summary
+    ?? task.progress?.lastActivity?.activityDescription
+    ?? task.progress?.lastActivity?.toolName
+    ?? task.description
+    ?? 'idle';
+}
+
+function taskTokenLabel(task: LocalAgentTaskState): string {
+  const tokenCount = task.progress?.tokenCount;
+  return tokenCount !== undefined && tokenCount > 0 ? `${formatNumber(tokenCount)} tokens` : '—';
+}
+
+function taskScopeLabel(task: LocalAgentTaskState): string {
+  return task.selectedAgent?.memory ?? task.selectedAgent?.source ?? 'session';
+}
+
+function taskWorktreeLabel(task: LocalAgentTaskState): string {
+  const worktreePath = (task as { readonly worktreePath?: unknown }).worktreePath;
+  return typeof worktreePath === 'string' && worktreePath.length > 0 ? worktreePath : 'current checkout';
+}
+
+function FleetHeader(): React.ReactNode {
+  const { columns } = useTerminalSize();
+  const nameWidth = columns >= 90 ? 26 : 20;
+  const statusWidth = columns >= 90 ? 16 : 13;
+  const tokenWidth = columns >= 90 ? 14 : 10;
+  const ageWidth = columns >= 90 ? 10 : 8;
+  const lastActionWidth = Math.max(
+    14,
+    columns - nameWidth - statusWidth - tokenWidth - ageWidth - 8,
+  );
+  return (
+    <Box flexDirection="row">
+      <Box width={1} />
+      <Box width={nameWidth}><ThemedText color="muted3" wrap="truncate-end">name · Role</ThemedText></Box>
+      <Box width={statusWidth}><ThemedText color="muted3" wrap="truncate-end">status</ThemedText></Box>
+      <Box width={lastActionWidth}><ThemedText color="muted3" wrap="truncate-end">last action</ThemedText></Box>
+      <Box width={tokenWidth}><ThemedText color="muted3" wrap="truncate-end">tokens</ThemedText></Box>
+      <Box width={ageWidth}><ThemedText color="muted3" wrap="truncate-end">age</ThemedText></Box>
+    </Box>
+  );
+}
+
+function FleetRow({
+  age,
+  lastAction,
+  nameRole,
+  onClick,
+  selected,
+  status,
+  statusColor,
+  tokens,
+}: {
+  readonly age: string;
+  readonly lastAction: string;
+  readonly nameRole: string;
+  readonly onClick?: () => void;
+  readonly selected?: boolean;
+  readonly status: string;
+  readonly statusColor: 'agenc' | 'worker' | 'muted3';
+  readonly tokens: string;
+}): React.ReactNode {
+  const { columns } = useTerminalSize();
+  const [hover, setHover] = React.useState(false);
+  const highlighted = selected || hover;
+  const nameWidth = columns >= 90 ? 26 : 20;
+  const statusWidth = columns >= 90 ? 16 : 13;
+  const tokenWidth = columns >= 90 ? 14 : 10;
+  const ageWidth = columns >= 90 ? 10 : 8;
+  const lastActionWidth = Math.max(
+    14,
+    columns - nameWidth - statusWidth - tokenWidth - ageWidth - 8,
+  );
+  const row = (
+    <ThemedBox flexDirection="row" backgroundColor={highlighted ? "agencWash" : undefined}>
+      <Box width={1}><ThemedText color={highlighted ? "agenc" : "lineSoft"}>{highlighted ? "▌" : " "}</ThemedText></Box>
+      <Box width={nameWidth}><ThemedText color={highlighted ? "agenc" : "text2"} wrap="truncate-end">{nameRole}</ThemedText></Box>
+      <Box width={statusWidth}><ThemedText color={statusColor} wrap="truncate-end">{status}</ThemedText></Box>
+      <Box width={lastActionWidth}><ThemedText color="text2" wrap="truncate-end">{lastAction}</ThemedText></Box>
+      <Box width={tokenWidth}><ThemedText color="muted3" wrap="truncate-end">{tokens}</ThemedText></Box>
+      <Box width={ageWidth}><ThemedText color="muted3" wrap="truncate-end">{age}</ThemedText></Box>
+    </ThemedBox>
+  );
+  if (!onClick) return row;
+  return <Box onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>{row}</Box>;
+}
+
+function FocusedAgentBlock({
+  task,
+  name,
+}: {
+  readonly task: LocalAgentTaskState;
+  readonly name?: string;
+}): React.ReactNode {
+  const progressGlyph = task.progress?.toolUseCount && task.progress.toolUseCount > 0 ? AURA_LIFECYCLE_GLYPHS.running : AURA_LIFECYCLE_GLYPHS.queued;
+  const lastAction = taskLastAction(task);
+  const queuedCount = task.pendingMessages.length;
+  const actionHint = isTerminalStatus(task.status) ? "x to clear" : "x to stop";
+  return (
+    <ThemedBox flexDirection="column" borderStyle="single" borderColor="lineSoft" marginTop={1} paddingX={1}>
+      <ThemedText color="agenc" wrap="truncate-end">{formatAgentPanelIdentity(task, name)}</ThemedText>
+      <Box flexDirection="row">
+        <ThemedText color="muted3">scope </ThemedText><ThemedText color="text2">{taskScopeLabel(task)}</ThemedText>
+        <ThemedText color="muted3"> · worktree </ThemedText><ThemedText color="text2" wrap="truncate-middle">{taskWorktreeLabel(task)}</ThemedText>
+      </Box>
+      <Box flexDirection="row">
+        <ThemedText color="muted3">progress </ThemedText><ThemedText color="worker">{progressGlyph} {task.progress?.toolUseCount ?? 0} tools</ThemedText>
+        <ThemedText color="muted3"> · spend —</ThemedText>
+      </Box>
+      {queuedCount > 0 ? (
+        <Box flexDirection="row">
+          <ThemedText color="muted3">queued </ThemedText>
+          <ThemedText color="text2">{queuedCount} queued · {actionHint}</ThemedText>
+        </Box>
+      ) : null}
+      <Box flexDirection="column">
+        <ThemedText color="muted3">last output</ThemedText>
+        <Box flexGrow={1} overflow="hidden">
+          <ThemedText color="text2" wrap="truncate-end">{lastAction}</ThemedText>
+        </Box>
+      </Box>
+    </ThemedBox>
+  );
+}
+
 function MainLine(t0) {
-  const $ = _c(10);
   const {
     isSelected,
     isViewed,
     onClick
   } = t0;
-  const [hover, setHover] = React.useState(false);
-  const prefix = isSelected || hover ? figures.pointer + " " : "  ";
-  const bullet = isViewed ? BLACK_CIRCLE : figures.circle;
-  let t1;
-  let t2;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = () => setHover(true);
-    t2 = () => setHover(false);
-    $[0] = t1;
-    $[1] = t2;
-  } else {
-    t1 = $[0];
-    t2 = $[1];
-  }
-  const t3 = !isSelected && !isViewed && !hover;
-  let t4;
-  if ($[2] !== bullet || $[3] !== isViewed || $[4] !== prefix || $[5] !== t3) {
-    t4 = <Text color={isViewed ? "agenc" : undefined} dimColor={t3} bold={isViewed}>{prefix}{bullet} orchestrator</Text>;
-    $[2] = bullet;
-    $[3] = isViewed;
-    $[4] = prefix;
-    $[5] = t3;
-    $[6] = t4;
-  } else {
-    t4 = $[6];
-  }
-  let t5;
-  if ($[7] !== onClick || $[8] !== t4) {
-    t5 = <Box onClick={onClick} onMouseEnter={t1} onMouseLeave={t2}>{t4}</Box>;
-    $[7] = onClick;
-    $[8] = t4;
-    $[9] = t5;
-  } else {
-    t5 = $[9];
-  }
-  return t5;
+  return <FleetRow nameRole="orchestrator · Orchestrator" status={`${AURA_LIFECYCLE_GLYPHS.done} active`} statusColor="agenc" lastAction="main session" tokens="—" age="now" selected={isSelected || isViewed} onClick={onClick} />;
 }
 type AgentLineProps = {
   task: LocalAgentTaskState;
@@ -212,7 +330,6 @@ type AgentLineProps = {
   onClick?: () => void;
 };
 function AgentLine(t0) {
-  const $ = _c(32);
   const {
     task,
     name,
@@ -220,125 +337,9 @@ function AgentLine(t0) {
     isViewed,
     onClick
   } = t0;
-  const {
-    columns
-  } = useTerminalSize();
-  const [hover, setHover] = React.useState(false);
-  const isRunning = !isTerminalStatus(task.status);
-  const pausedMs = task.totalPausedMs ?? 0;
-  const elapsedMs = Math.max(0, isRunning ? Date.now() - task.startTime - pausedMs : (task.endTime ?? task.startTime) - task.startTime - pausedMs);
-  let t1;
-  if ($[0] !== elapsedMs) {
-    t1 = formatDuration(elapsedMs);
-    $[0] = elapsedMs;
-    $[1] = t1;
-  } else {
-    t1 = $[1];
-  }
-  const elapsed = t1;
-  const tokenCount = task.progress?.tokenCount;
-  const lastActivity = task.progress?.lastActivity;
-  const arrow = lastActivity ? figures.arrowDown : figures.arrowUp;
-  let t2;
-  if ($[2] !== arrow || $[3] !== tokenCount) {
-    t2 = tokenCount !== undefined && tokenCount > 0 ? ` · ${arrow} ${formatNumber(tokenCount)} tokens` : "";
-    $[2] = arrow;
-    $[3] = tokenCount;
-    $[4] = t2;
-  } else {
-    t2 = $[4];
-  }
-  const tokenText = t2;
   const queuedCount = task.pendingMessages.length;
   const queuedText = queuedCount > 0 ? ` · ${queuedCount} queued` : "";
-  const displayDescription = task.progress?.summary || task.description;
-  const highlighted = isSelected || hover;
-  const prefix = highlighted ? figures.pointer + " " : "  ";
-  const bullet = isViewed ? BLACK_CIRCLE : figures.circle;
-  const dim = !highlighted && !isViewed;
-  const sep = isRunning ? PLAY_ICON : PAUSE_ICON;
   const agentIdentity = formatAgentPanelIdentity(task, name);
-  const namePart = `${agentIdentity} · `;
-  const hintPart = isSelected && !isViewed ? ` · x to ${isRunning ? "stop" : "clear"}` : "";
-  const suffixPart = ` ${sep} ${elapsed}${tokenText}${queuedText}${hintPart}`;
-  const availableForDesc = columns - stringWidth(prefix) - stringWidth(`${bullet} `) - stringWidth(namePart) - stringWidth(suffixPart);
-  const t3 = Math.max(0, availableForDesc);
-  let t4;
-  if ($[5] !== displayDescription || $[6] !== t3) {
-    t4 = wrapText(displayDescription, t3, "truncate-end");
-    $[5] = displayDescription;
-    $[6] = t3;
-    $[7] = t4;
-  } else {
-    t4 = $[7];
-  }
-  const truncated = t4;
-  let t5;
-  if ($[8] !== agentIdentity) {
-    t5 = <><Text dimColor={false} bold={true}>{agentIdentity}</Text>{" · "}</>;
-    $[8] = agentIdentity;
-    $[9] = t5;
-  } else {
-    t5 = $[9];
-  }
-  let t6;
-  if ($[10] !== queuedCount || $[11] !== queuedText) {
-    t6 = queuedCount > 0 && <Text color="warning">{queuedText}</Text>;
-    $[10] = queuedCount;
-    $[11] = queuedText;
-    $[12] = t6;
-  } else {
-    t6 = $[12];
-  }
-  let t7;
-  if ($[13] !== hintPart) {
-    t7 = hintPart && <Text dimColor={true}>{hintPart}</Text>;
-    $[13] = hintPart;
-    $[14] = t7;
-  } else {
-    t7 = $[14];
-  }
-  let t8;
-  if ($[15] !== bullet || $[16] !== dim || $[17] !== elapsed || $[18] !== isViewed || $[19] !== prefix || $[20] !== sep || $[21] !== t5 || $[22] !== t6 || $[23] !== t7 || $[24] !== tokenText || $[25] !== truncated) {
-    t8 = <Text color={isViewed ? "success" : undefined} dimColor={dim} bold={isViewed}>{prefix}{bullet}{" "}{t5}{truncated} {sep} {elapsed}{tokenText}{t6}{t7}</Text>;
-    $[15] = bullet;
-    $[16] = dim;
-    $[17] = elapsed;
-    $[18] = isViewed;
-    $[19] = prefix;
-    $[20] = sep;
-    $[21] = t5;
-    $[22] = t6;
-    $[23] = t7;
-    $[24] = tokenText;
-    $[25] = truncated;
-    $[26] = t8;
-  } else {
-    t8 = $[26];
-  }
-  const line = t8;
-  if (!onClick) {
-    return line;
-  }
-  let t10;
-  let t9;
-  if ($[27] === Symbol.for("react.memo_cache_sentinel")) {
-    t9 = () => setHover(true);
-    t10 = () => setHover(false);
-    $[27] = t10;
-    $[28] = t9;
-  } else {
-    t10 = $[27];
-    t9 = $[28];
-  }
-  let t11;
-  if ($[29] !== line || $[30] !== onClick) {
-    t11 = <Box onClick={onClick} onMouseEnter={t9} onMouseLeave={t10}>{line}</Box>;
-    $[29] = line;
-    $[30] = onClick;
-    $[31] = t11;
-  } else {
-    t11 = $[31];
-  }
-  return t11;
+  const actionHint = isSelected && !isViewed ? ` · x to ${isTerminalStatus(task.status) ? "clear" : "stop"}` : "";
+  return <FleetRow nameRole={agentIdentity} status={`${taskStatusGlyph(task)} ${task.status}`} statusColor={taskStatusColor(task)} lastAction={`${taskLastAction(task)}${queuedText}${actionHint}`} tokens={taskTokenLabel(task)} age={taskElapsed(task)} selected={isSelected || isViewed} onClick={onClick} />;
 }

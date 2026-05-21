@@ -111,6 +111,7 @@ function createStreams(): {
   stdin.ref = () => {};
   stdin.setRawMode = () => {};
   stdin.unref = () => {};
+  (stdout as unknown as { columns: number }).columns = harness.columns;
   stdout.resume();
   return { stdin, stdout };
 }
@@ -224,13 +225,24 @@ describe("CoordinatorTaskPanel rendering", () => {
 
     try {
       const output = rendered.output();
-      expect(output).toContain("AGENTS");
+      expect(output).toContain("AGENT FLEET");
       expect(output).toContain("2 active");
+      expect(output).toContain("name · Role");
+      expect(output).toContain("last action");
       expect(output).toContain("orchestrator");
-      expect(output).toContain("Fixer · Runner · Investigating agent lifecycle");
+      expect(output).toContain("Fixer · Runner");
+      expect(output).toContain("◐ running");
+      expect(output).toContain("Investigating agent lifecycle");
+      expect(output).toContain("1.2k tokens");
       expect(output).toContain("1 queued");
       expect(output).toContain("x to stop");
-      expect(output).toContain("Reviewer · Runner · Review final patch");
+      expect(output).toContain("Reviewer · Runner");
+      expect(output).toContain("● completed");
+      expect(output).toContain("Review final patch");
+      expect(output).toContain("scope session");
+      expect(output).toContain("worktree current checkout");
+      expect(output).toContain("last output");
+      expect(output).toContain("spend —");
       expect(output.indexOf("Fixer")).toBeLessThan(output.indexOf("Reviewer"));
     } finally {
       await rendered.dispose();
@@ -256,6 +268,7 @@ describe("CoordinatorTaskPanel rendering", () => {
       const output = rendered.output();
       expect(output).toContain("ChromeLotus · Runner");
       expect(output).toContain("tokens");
+      expect(output).toContain("last output");
       expect(output).not.toContain("x to stop");
       expect(output).not.toContain("require truncation in a narrow panel");
     } finally {

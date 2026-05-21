@@ -1014,93 +1014,146 @@ export const BROWSER_TEXT_FIXTURE = {
       column: 22
     },
     {
-      marker: "agents · marketplace + self",
+      marker: "agents · definitions editor",
       row: 5,
       column: 10,
       family: "accent"
     },
     {
-      marker: "7 known · 1 self",
+      marker: "4 active · 6 registered",
       row: 5,
       column: 40
     },
     {
-      marker: "discoverable on-chain by reputation",
+      marker: "local definitions · role routing",
       row: 5,
       column: 58
     },
     {
-      marker: "↑↓ select · d delegate · ⏎ inspect",
+      marker: "↑↓ select · enter detail",
       row: 5,
       column: 102
     },
     {
-      marker: "identity",
+      marker: "name · Role",
       row: 7,
       column: 14
     },
     {
-      marker: "model",
+      marker: "scope",
       row: 7,
-      column: 25
+      column: 44
     },
     {
-      marker: "pubkey",
+      marker: "source",
       row: 7,
-      column: 39
+      column: 60
     },
     {
-      marker: "stake",
-      row: 7,
-      column: 47
-    },
-    {
-      marker: "orchestrator",
+      marker: "worker · Runner",
       row: 8,
       column: 14,
       family: "accent"
     },
     {
-      marker: "active",
+      marker: "project",
       row: 8,
-      column: 79,
-      family: "success"
+      column: 44
     },
     {
-      marker: "worker/zk-prover",
+      marker: "Project",
+      row: 8,
+      column: 60
+    },
+    {
+      marker: "explorer · Scanner",
+      row: 10,
+      column: 14,
+      family: "worker"
+    },
+    {
+      marker: "project",
+      row: 10,
+      column: 44
+    },
+    {
+      marker: "docs · Scribe",
       row: 12,
       column: 14,
       family: "worker"
     },
     {
-      marker: "recovering",
+      marker: "user",
       row: 12,
-      column: 79,
-      family: "error"
+      column: 44
     },
     {
-      marker: "worker/fast-prover",
+      marker: "operator · Fixer",
+      row: 14,
+      column: 14,
+      family: "worker"
+    },
+    {
+      marker: "local",
+      row: 14,
+      column: 44
+    },
+    {
+      marker: "browser · Ghost",
       row: 16,
       column: 14,
       family: "worker"
     },
     {
-      marker: "worker/test-runner",
-      row: 19,
+      marker: "plugin",
+      row: 16,
+      column: 44
+    },
+    {
+      marker: "remote · Trace",
+      row: 18,
       column: 14,
       family: "worker"
     },
     {
-      marker: "worker/code-search",
-      row: 23,
-      column: 14,
-      family: "worker"
+      marker: "runtime",
+      row: 18,
+      column: 44
     },
     {
-      marker: "worker/auditor",
-      row: 28,
-      column: 14,
-      family: "worker"
+      marker: "when-to-use",
+      row: 8,
+      column: 82
+    },
+    {
+      marker: "tools",
+      row: 10,
+      column: 82
+    },
+    {
+      marker: "model",
+      row: 11,
+      column: 82
+    },
+    {
+      marker: "budget",
+      row: 12,
+      column: 82
+    },
+    {
+      marker: "worktree",
+      row: 13,
+      column: 82
+    },
+    {
+      marker: "system prompt",
+      row: 14,
+      column: 82
+    },
+    {
+      marker: "current checkout",
+      row: 13,
+      column: 94
     },
     {
       marker: "menu open · keyboard-driven",
@@ -1113,18 +1166,6 @@ export const BROWSER_TEXT_FIXTURE = {
       row: 33,
       column: 119,
       family: "accent"
-    },
-    {
-      marker: "worker/explainer",
-      row: 34,
-      column: 14,
-      family: "worker"
-    },
-    {
-      marker: "#47 swap-program",
-      row: 37,
-      column: 37,
-      family: "worker"
     }
   ],
   "17": [
