@@ -18,9 +18,9 @@ import { makeToolUseMessage } from "./session-transcript.js";
 import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
-import { Box, Text, useInput } from "./ink.js";
+import { Box, useInput } from "./ink.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
-import { ApprovalCard, KeyHint } from "./components/v2/primitives.js";
+import { ApprovalCard } from "./components/v2/primitives.js";
 
 export { createSessionAppStateBridge };
 
@@ -378,8 +378,6 @@ function AgenCApprovalOverlay({
 
   const name = toolLabel(toolUseConfirm);
   const command = inputValue(toolUseConfirm.input);
-  const typedReady = typed === requiredWord;
-
   return (
     <Box flexDirection="column" gap={1}>
       <ApprovalCard
@@ -399,17 +397,9 @@ function AgenCApprovalOverlay({
         note={toolUseConfirm.description}
         confirmLabel={highRisk ? `type '${requiredWord}' to approve` : "⏎ approve"}
         requireTypedConfirmation={highRisk}
+        typedConfirmationValue={typed}
+        typedConfirmationTarget={requiredWord}
       />
-      {highRisk ? (
-        <Box flexDirection="row" gap={1}>
-          <Text color={typedReady ? "success" : "error"}>
-            {typed.length > 0 ? typed : " "}
-          </Text>
-          <Text dimColor={true}>/ {requiredWord}</Text>
-          <Box flexGrow={1} />
-          <KeyHint k="esc" label="cancel" />
-        </Box>
-      ) : null}
     </Box>
   );
 }

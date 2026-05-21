@@ -156,6 +156,11 @@ function maybeOpenPlanDashboard(
       planPath: getPlanFilePath(fileCtx),
       planText: params.planText,
     }),
+    {
+      onPlanTextChange: async nextPlanText => {
+        await writePlan(fileCtx, nextPlanText);
+      },
+    },
   );
 }
 

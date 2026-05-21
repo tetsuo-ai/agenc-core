@@ -1038,6 +1038,8 @@ export function ApprovalCard({
   note,
   confirmLabel,
   requireTypedConfirmation = false,
+  typedConfirmationValue = '',
+  typedConfirmationTarget = 'yes',
 }: {
   readonly risk: 'low' | 'high'
   readonly title: string
@@ -1046,14 +1048,24 @@ export function ApprovalCard({
   readonly note?: string
   readonly confirmLabel: string
   readonly requireTypedConfirmation?: boolean
+  readonly typedConfirmationValue?: string
+  readonly typedConfirmationTarget?: string
 }): React.ReactNode {
-  const variant: BadgeVariant = risk === 'high' ? 'error' : 'worker'
+  const variant: BadgeVariant = risk === 'high' ? 'error' : 'accent'
+  const primaryFact = facts[0]?.value ?? title
+  const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact} · ${command} · ${confirmLabel}`
   return (
     <Popup
       title={`tool · bash · ${title}`}
+      headerRight={
+        requireTypedConfirmation
+          ? `${typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '} / ${typedConfirmationTarget}`
+          : 'esc to close'
+      }
       status={`req ${risk === 'high' ? '0x9c14' : '0x47a3'}`}
       accentColor={variantColor[variant]}
-      bodyBackgroundColor={variantWash[variant]}
+      bodyBackgroundColor={risk === 'high' ? 'errorWash' : 'successWash'}
+      minHeight={10}
       footer={[
         {
           keyName: requireTypedConfirmation ? 'type' : 'e',
@@ -1062,8 +1074,14 @@ export function ApprovalCard({
       ]}
     >
       <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
+        <ThemedText color="text2" wrap="truncate-end">
+          {approvalSummary}
+        </ThemedText>
+        <ThemedBox width="100%" minHeight={1} backgroundColor={variantColor[variant]}>
+          <ThemedText color={variantColor[variant]}> </ThemedText>
+        </ThemedBox>
         <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
-          <ThemedText color="text" wrap="wrap">
+          <ThemedText color="text2" wrap="wrap">
             $ {command}
           </ThemedText>
         </ThemedBox>
@@ -1074,19 +1092,31 @@ export function ApprovalCard({
               flexDirection="column"
               width={fact.label === 'network' || fact.label === 'net' ? 30 : 22}
             >
-              <ThemedText color="inactive">{fact.label.toUpperCase()}</ThemedText>
+              <ThemedText color="muted3">{fact.label.toUpperCase()}</ThemedText>
               <ThemedText color={fact.color ?? 'text2'}>{fact.value}</ThemedText>
             </Box>
           ))}
         </Box>
         {note ? (
-          <ThemedText color="subtle" wrap="wrap">
+          <ThemedText color="muted3" wrap="wrap">
             note · {note}
           </ThemedText>
         ) : null}
+        {requireTypedConfirmation ? (
+          <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
+            <Box flexDirection="row" gap={1}>
+              <ThemedText color={typedConfirmationValue === typedConfirmationTarget ? 'agenc' : 'text2'}>
+                {typedConfirmationValue.length > 0 ? typedConfirmationValue : ' '}
+              </ThemedText>
+              <ThemedText color="muted3">/ {typedConfirmationTarget}</ThemedText>
+            </Box>
+          </ThemedBox>
+        ) : (
+          <ThemedText color="muted3">scope remember option · this session</ThemedText>
+        )}
         <Box flexDirection="row" gap={2}>
           <ThemedBox borderStyle="single" borderColor={variantColor[variant]} paddingX={1}>
-            <ThemedText color={risk === 'high' ? 'text' : 'agenc'}>{confirmLabel}</ThemedText>
+            <ThemedText color="agenc">{confirmLabel}</ThemedText>
           </ThemedBox>
           <KeyHint k="esc" label="cancel" />
         </Box>

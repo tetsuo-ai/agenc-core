@@ -5,6 +5,7 @@ import { useModalOrTerminalSize } from "../tui/context/modalContext.js";
 import { useTerminalSize } from "../tui/hooks/useTerminalSize.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { EditDiffView } from "../tui/tool-rendering.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import type { SlashCommandContext } from "./types.js";
 
@@ -226,6 +227,32 @@ function previewColor(line: string): "success" | "error" | "worker" | "inactive"
   return "text2";
 }
 
+function hunkDiffsForFile(file: DiffFileRow): readonly string[] {
+  const lines = file.previewLines;
+  if (lines.length === 0) return ["No preview available."];
+  const header = lines.filter(line =>
+    line.startsWith("diff --git") ||
+    line.startsWith("---") ||
+    line.startsWith("+++"),
+  );
+  const hunks: string[] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      if (current.length > 0) {
+        hunks.push([...header, ...current].join("\n"));
+      }
+      current = [line];
+      continue;
+    }
+    if (current.length > 0 && !line.startsWith("diff --git") && !line.startsWith("---") && !line.startsWith("+++")) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) hunks.push([...header, ...current].join("\n"));
+  return hunks.length > 0 ? hunks : [lines.join("\n")];
+}
+
 function emptyRows(snapshot: DiffMenuSnapshot): readonly DiffFileRow[] {
   if (snapshot.state === "not-repo") {
     return [{
@@ -250,6 +277,8 @@ function DiffMenuView({
 }): React.ReactNode {
   const rows = snapshot.files.length > 0 ? snapshot.files : emptyRows(snapshot);
   const [activeIndex, setActiveIndex] = React.useState(0);
+  const [activeHunkIndex, setActiveHunkIndex] = React.useState(0);
+  const [hunkDecisions, setHunkDecisions] = React.useState<Record<string, "accept" | "skip">>({});
   const viewport = useModalOrTerminalSize(useTerminalSize());
 
   useInput((input, key) => {
@@ -257,12 +286,30 @@ function DiffMenuView({
       onDone();
       return;
     }
-    if (key.upArrow || input === "k") {
+    if (key.upArrow) {
       setActiveIndex(index => previousMenuIndex(index, rows.length));
+      setActiveHunkIndex(0);
       return;
     }
-    if (key.downArrow || input === "j") {
+    if (key.downArrow) {
       setActiveIndex(index => nextMenuIndex(index, rows.length));
+      setActiveHunkIndex(0);
+      return;
+    }
+    if (input === "k") {
+      setActiveHunkIndex(index => Math.max(0, index - 1));
+      return;
+    }
+    if (input === "j") {
+      setActiveHunkIndex(index => Math.min(hunkDiffsForFile(selected ?? rows[0]!).length - 1, index + 1));
+      return;
+    }
+    if (input === "y" || input === "n") {
+      if (!selected) return;
+      setHunkDecisions(prev => ({
+        ...prev,
+        [`${selected.path}:${activeHunkIndex}`]: input === "y" ? "accept" : "skip",
+      }));
     }
   });
 
@@ -275,6 +322,12 @@ function DiffMenuView({
   const previewLineBudget = Math.max(3, Math.min(28, viewportRows - 12));
   const previewLines =
     selected?.previewLines.length ? selected.previewLines : ["No preview available."];
+  const hunkDiffs = selected ? hunkDiffsForFile(selected) : ["No preview available."];
+  const clampedHunkIndex = Math.max(0, Math.min(activeHunkIndex, hunkDiffs.length - 1));
+  const selectedHunk = hunkDiffs[clampedHunkIndex] ?? "No preview available.";
+  const hunkDecision = selected
+    ? hunkDecisions[`${selected.path}:${clampedHunkIndex}`]
+    : undefined;
   const visiblePreviewLines = previewLines.slice(0, previewLineBudget);
   const previewClipped = previewLines.length > visiblePreviewLines.length;
 
@@ -283,7 +336,7 @@ function DiffMenuView({
       title="diff"
       count={`${snapshot.files.length}`}
       summary={snapshot.state === "changed" ? `+${totalAdditions} -${totalDeletions}` : snapshot.state}
-      headerRight={`${snapshot.untrackedFiles.length} untracked`}
+      headerRight={`${snapshot.untrackedFiles.length} untracked · ↑↓ files · j/k hunks`}
       columns={[3, 12, 10, 64]}
       headers={["", "status", "delta", "file"]}
       items={rows}
@@ -313,6 +366,14 @@ function DiffMenuView({
           <ThemedText color="subtle" wrap="truncate-end">
             {selected ? `${selected.status} · ${formatDelta(selected)}` : "no selection"}
           </ThemedText>
+          <ThemedText color="muted3" wrap="truncate-end">
+            hunk {clampedHunkIndex + 1}/{hunkDiffs.length} · {hunkDecision ?? "unmarked"} · y accept · n skip
+          </ThemedText>
+          {selected ? (
+            <EditDiffView
+              content={`<edit-file>${selected.path}</edit-file>\n<edit-diff>${selectedHunk}</edit-diff>`}
+            />
+          ) : null}
           <Box flexDirection="column">
             {visiblePreviewLines.map((line, index) => (
               <ThemedText key={`${index}-${line}`} color={previewColor(line)} wrap="truncate-end">
@@ -328,7 +389,10 @@ function DiffMenuView({
         </Box>
       }
       footer={[
-        { keyName: "up/down", label: "navigate" },
+        { keyName: "up/down", label: "file" },
+        { keyName: "j/k", label: "hunk" },
+        { keyName: "y", label: "accept hunk" },
+        { keyName: "n", label: "skip hunk" },
         { keyName: "q", label: "close" },
       ]}
       hint="git diff HEAD"
