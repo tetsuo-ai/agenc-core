@@ -123,10 +123,7 @@ import {
   hasMcpDiscoveryButNoToken,
   wrapFetchWithStepUpDetection,
 } from './auth.js'
-// Donor remote-MCP connection tracking removed in the upstream-backend
-// purge. Stub keeps the call sites compiling without reaching a service
-// that doesn't exist.
-const markAgenCAiMcpConnected = (_name: string): void => {}
+import { markAgenCAiMcpConnected } from './agencai.js'
 import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'

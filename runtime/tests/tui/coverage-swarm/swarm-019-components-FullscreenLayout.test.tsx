@@ -1,0 +1,404 @@
+import { PassThrough } from 'node:stream'
+
+import React from 'react'
+import stripAnsi from 'strip-ansi'
+import { describe, expect, test, vi } from 'vitest'
+
+const browser = vi.hoisted(() => ({
+  openBrowser: vi.fn(),
+  openPath: vi.fn(),
+}))
+
+vi.mock('../../../src/utils/browser.js', () => browser)
+
+import { createRoot, Text } from '../../../src/tui/ink.js'
+import {
+  AppStateProvider,
+  getDefaultAppState,
+} from '../../../src/tui/state/AppState.js'
+import {
+  DesignTopChrome,
+  FullscreenLayout,
+  useUnseenDivider,
+} from '../../../src/tui/components/FullscreenLayout.js'
+import {
+  useSetPromptOverlay,
+  useSetPromptOverlayDialog,
+} from '../../../src/tui/context/promptOverlayContext.js'
+import {
+  deleteInkInstance,
+  setInkInstance,
+} from '../../../src/tui/ink/instances.js'
+import { renderToString } from '../../../src/utils/staticRender.js'
+import type { ScrollBoxHandle } from '../../../src/tui/ink/components/ScrollBox.js'
+
+const SYNC_START = '\x1B[?2026h'
+const SYNC_END = '\x1B[?2026l'
+
+type TestStdin = PassThrough & {
+  isTTY: boolean
+  ref: () => void
+  setRawMode: (mode: boolean) => void
+  unref: () => void
+}
+
+type TestStdout = PassThrough & {
+  columns: number
+  rows: number
+  isTTY: boolean
+}
+
+type Viewport = {
+  readonly columns: number
+  readonly rows: number
+}
+
+type TestScrollHandle = ScrollBoxHandle & {
+  setPendingDelta: (value: number) => void
+  setScrollHeight: (value: number) => void
+  setScrollTop: (value: number) => void
+  setViewportHeight: (value: number) => void
+}
+
+function restoreEnv(name: string, previous: string | undefined): void {
+  if (previous === undefined) {
+    delete process.env[name]
+  } else {
+    process.env[name] = previous
+  }
+}
+
+async function withFullscreenEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.AGENC_NO_FLICKER
+  process.env.AGENC_NO_FLICKER = '1'
+  try {
+    return await fn()
+  } finally {
+    restoreEnv('AGENC_NO_FLICKER', previous)
+  }
+}
+
+function extractLastFrame(output: string): string {
+  let lastFrame: string | null = null
+  let cursor = 0
+
+  while (cursor < output.length) {
+    const start = output.indexOf(SYNC_START, cursor)
+    if (start === -1) break
+
+    const contentStart = start + SYNC_START.length
+    const end = output.indexOf(SYNC_END, contentStart)
+    if (end === -1) break
+
+    const frame = output.slice(contentStart, end)
+    if (frame.trim().length > 0) {
+      lastFrame = frame
+    }
+    cursor = end + SYNC_END.length
+  }
+
+  return lastFrame ?? output
+}
+
+function createStreams(viewport: Viewport): {
+  readonly stdin: TestStdin
+  readonly stdout: TestStdout
+  readonly getOutput: () => string
+} {
+  let output = ''
+  const stdin = new PassThrough() as TestStdin
+  const stdout = new PassThrough() as TestStdout
+
+  stdin.isTTY = true
+  stdin.ref = () => {}
+  stdin.setRawMode = () => {}
+  stdin.unref = () => {}
+
+  stdout.columns = viewport.columns
+  stdout.rows = viewport.rows
+  stdout.isTTY = true
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  return {
+    stdin,
+    stdout,
+    getOutput: () => output,
+  }
+}
+
+function sleep(ms = 25): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function renderLatestFrame(
+  node: React.ReactNode,
+  viewport: Viewport = { columns: 100, rows: 14 },
+): Promise<string> {
+  return withFullscreenEnv(async () => {
+    const { stdin, stdout, getOutput } = createStreams(viewport)
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      root.render(node)
+      await sleep()
+      return stripAnsi(extractLastFrame(getOutput()))
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep()
+    }
+  })
+}
+
+function createScrollHandle(): TestScrollHandle {
+  let pendingDelta = -1
+  let scrollHeight = 30
+  let scrollTop = 20
+  let viewportHeight = 10
+
+  return {
+    getPendingDelta: vi.fn(() => pendingDelta),
+    getScrollHeight: vi.fn(() => scrollHeight),
+    getScrollTop: vi.fn(() => scrollTop),
+    getViewportHeight: vi.fn(() => viewportHeight),
+    scrollToBottom: vi.fn(),
+    setPendingDelta: (value: number) => {
+      pendingDelta = value
+    },
+    setScrollHeight: (value: number) => {
+      scrollHeight = value
+    },
+    setScrollTop: (value: number) => {
+      scrollTop = value
+    },
+    setViewportHeight: (value: number) => {
+      viewportHeight = value
+    },
+  } as unknown as TestScrollHandle
+}
+
+function task(id: string, status: string): never {
+  return {
+    id,
+    type: 'local_bash',
+    status,
+    description: id,
+    command: id,
+    startTime: 0,
+    outputFile: `urn:agenc:task:${id}:output`,
+    outputOffset: 0,
+    notified: false,
+  } as never
+}
+
+function SuggestionsWriter(): React.ReactNode {
+  useSetPromptOverlay({
+    suggestions: [
+      {
+        id: 'command-help',
+        displayText: '/help',
+        description: 'show commands',
+      },
+      {
+        id: 'command-status',
+        displayText: '/status',
+        description: 'show status',
+      },
+    ],
+    selectedSuggestion: 1,
+    maxColumnWidth: 16,
+    suggestionType: 'command',
+  })
+
+  return <Text>prompt suggestions writer</Text>
+}
+
+function DialogWriter(): React.ReactNode {
+  useSetPromptOverlayDialog(<Text>floating dialog marker</Text>)
+  return <Text>prompt dialog writer</Text>
+}
+
+describe('FullscreenLayout coverage swarm 019', () => {
+  test('repins the unseen divider after a pending-delta scroll-away snapshot', async () => {
+    let messageCount = 4
+    let latest: ReturnType<typeof useUnseenDivider> | undefined
+    const { stdin, stdout } = createStreams({ columns: 80, rows: 12 })
+    stdout.resume()
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    function Harness(): null {
+      latest = useUnseenDivider(messageCount)
+      return null
+    }
+
+    async function render(
+      nextCount = messageCount,
+    ): Promise<ReturnType<typeof useUnseenDivider>> {
+      messageCount = nextCount
+      root.render(<Harness />)
+      await sleep()
+      if (latest === undefined) throw new Error('hook did not render')
+      return latest
+    }
+
+    try {
+      const handle = createScrollHandle()
+      let state = await render()
+
+      state.onScrollAway(handle)
+      await sleep()
+      state = await render()
+      expect(state.dividerIndex).toBe(4)
+      expect(state.dividerYRef.current).toBe(30)
+
+      state.onRepin()
+      expect(state.dividerYRef.current).toBe(30)
+
+      await sleep()
+      state = await render()
+      expect(state.dividerIndex).toBeNull()
+      expect(state.dividerYRef.current).toBeNull()
+    } finally {
+      root.unmount()
+      stdin.end()
+      stdout.end()
+      await sleep()
+    }
+  })
+
+  test('selects active tasks for top chrome and truncates long task ids', async () => {
+    const state = getDefaultAppState()
+    const output = await renderToString(
+      <AppStateProvider
+        initialState={{
+          ...state,
+          tasks: {
+            done: task('done-task', 'completed'),
+            active: task('run-task-1234567890abcdefghij', 'running'),
+          },
+        }}
+      >
+        <DesignTopChrome columns={120} noColor={true} />
+      </AppStateProvider>,
+      120,
+    )
+
+    expect(output).toContain('run-task')
+    expect(output).not.toContain('run-task-1234567890abcdefghij')
+    expect(output).not.toContain('done-task')
+  })
+
+  test('renders expanded bottom chrome task counts for active tasks', async () => {
+    const state = getDefaultAppState()
+    const output = await withFullscreenEnv(() =>
+      renderToString(
+        <AppStateProvider
+          initialState={{
+            ...state,
+            tasks: {
+              running: task('running-task', 'running'),
+              queued: task('queued-task', 'queued'),
+              completed: task('completed-task', 'completed'),
+            },
+            toolPermissionContext: {
+              ...state.toolPermissionContext,
+              mode: 'auto',
+            },
+          }}
+        >
+          <FullscreenLayout
+            scrollable={<Text>scroll body</Text>}
+            bottom={<Text>prompt body</Text>}
+          />
+        </AppStateProvider>,
+        { columns: 100, rows: 12 },
+      ),
+    )
+
+    expect(output).toContain('TASKS')
+    expect(output).toContain('2')
+    expect(output).toContain('MODE')
+  })
+
+  test('portals prompt suggestions above the clipped bottom slot', async () => {
+    const output = await renderLatestFrame(
+      <FullscreenLayout
+        scrollable={<Text>scroll body</Text>}
+        bottom={<SuggestionsWriter />}
+      />,
+    )
+    const compactOutput = output.replace(/\s+/gu, '')
+
+    expect(compactOutput).toContain('SLASHCOMMANDS')
+    expect(compactOutput).toContain('/statusshowstatus')
+  })
+
+  test('portals prompt dialogs over the fullscreen scroll region', async () => {
+    const output = await renderLatestFrame(
+      <FullscreenLayout
+        scrollable={<Text>scroll body</Text>}
+        bottom={<DialogWriter />}
+      />,
+    )
+
+    expect(output.replace(/\s+/gu, '')).toContain('dialogmarker')
+  })
+
+  test('routes fullscreen hyperlink clicks to file and browser openers', async () => {
+    browser.openBrowser.mockClear()
+    browser.openPath.mockClear()
+    const fakeInk = {} as { onHyperlinkClick?: (url: string) => void }
+    setInkInstance(process.stdout, fakeInk as never)
+
+    const { stdin, stdout } = createStreams({ columns: 90, rows: 12 })
+    stdout.resume()
+    const root = await createRoot({
+      patchConsole: false,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    })
+
+    try {
+      await withFullscreenEnv(async () => {
+        root.render(
+          <FullscreenLayout
+            scrollable={<Text>link body</Text>}
+            bottom={<Text>prompt body</Text>}
+          />,
+        )
+        await sleep()
+
+        expect(fakeInk.onHyperlinkClick).toEqual(expect.any(Function))
+
+        fakeInk.onHyperlinkClick?.('file:///tmp/agenc-layout-marker.txt')
+        fakeInk.onHyperlinkClick?.('https://example.test/docs')
+        fakeInk.onHyperlinkClick?.('file://%zz')
+
+        expect(browser.openPath).toHaveBeenCalledTimes(1)
+        expect(browser.openPath).toHaveBeenCalledWith(
+          '/tmp/agenc-layout-marker.txt',
+        )
+        expect(browser.openBrowser).toHaveBeenCalledWith(
+          'https://example.test/docs',
+        )
+      })
+    } finally {
+      root.unmount()
+      deleteInkInstance(process.stdout)
+      stdin.end()
+      stdout.end()
+      await sleep()
+    }
+  })
+})

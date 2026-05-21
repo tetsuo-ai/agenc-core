@@ -43,7 +43,7 @@ vi.mock("../../../bootstrap/state", () => ({
   getIsRemoteMode: () => probes.remoteMode,
 }));
 
-vi.mock("../../../services/mcp/agencai", () => ({
+vi.mock("../../../services/mcp/agencai.js", () => ({
   hasAgenCAiMcpEverConnected: () => probes.agencAiConnected,
 }));
 

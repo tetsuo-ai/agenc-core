@@ -7,14 +7,7 @@ import { useNotifications } from '../../context/notifications.js';
 import { getIsRemoteMode } from '../../../bootstrap/state';
 import { Text } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types';
-
-// ---- donor-purge stubs ----
-// These symbols used to come from modules deleted in the api.anthropic.com
-// purge. They are stubbed here as no-ops so the surrounding moved-source
-// code paths degrade silently. Real implementations land when AgenC ships
-// the equivalent backend.
-const hasAgenCAiMcpEverConnected = (): boolean => false;
-// ---- end donor-purge stubs ----
+import { hasAgenCAiMcpEverConnected } from '../../../services/mcp/agencai.js';
 type Props = {
   mcpClients?: MCPServerConnection[];
 };
@@ -52,7 +45,7 @@ export function useMcpConnectivityStatus(t0) {
         }
         if (failedAgenCAiClients.length > 0) {
           addNotification({
-            key: "mcp-claudeai-failed",
+            key: "mcp-agencai-failed",
             jsx: <><Text color="error">{failedAgenCAiClients.length} agenc.tech{" "}{failedAgenCAiClients.length === 1 ? "connector" : "connectors"}{" "}unavailable</Text><Text dimColor={true}> · /mcp</Text></>,
             priority: "medium"
           });
@@ -66,7 +59,7 @@ export function useMcpConnectivityStatus(t0) {
         }
         if (needsAuthAgenCAiServers.length > 0) {
           addNotification({
-            key: "mcp-claudeai-needs-auth",
+            key: "mcp-agencai-needs-auth",
             jsx: <><Text color="warning">{needsAuthAgenCAiServers.length} agenc.tech{" "}{needsAuthAgenCAiServers.length === 1 ? "connector needs" : "connectors need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
             priority: "medium"
           });
@@ -87,14 +80,14 @@ export function useMcpConnectivityStatus(t0) {
   useEffect(t2, t3);
 }
 function _temp4(client_2) {
-  return client_2.type === "needs-auth" && client_2.config.type === "claudeai-proxy" && hasAgenCAiMcpEverConnected(client_2.name);
+  return client_2.type === "needs-auth" && client_2.config.type === "agencai-proxy" && hasAgenCAiMcpEverConnected(client_2.name);
 }
 function _temp3(client_1) {
-  return client_1.type === "needs-auth" && client_1.config.type !== "claudeai-proxy";
+  return client_1.type === "needs-auth" && client_1.config.type !== "agencai-proxy";
 }
 function _temp2(client_0) {
-  return client_0.type === "failed" && client_0.config.type === "claudeai-proxy" && hasAgenCAiMcpEverConnected(client_0.name);
+  return client_0.type === "failed" && client_0.config.type === "agencai-proxy" && hasAgenCAiMcpEverConnected(client_0.name);
 }
 function _temp(client) {
-  return client.type === "failed" && client.config.type !== "sse-ide" && client.config.type !== "ws-ide" && client.config.type !== "claudeai-proxy";
+  return client.type === "failed" && client.config.type !== "sse-ide" && client.config.type !== "ws-ide" && client.config.type !== "agencai-proxy";
 }

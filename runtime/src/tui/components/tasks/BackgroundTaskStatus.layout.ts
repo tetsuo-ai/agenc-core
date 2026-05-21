@@ -40,7 +40,7 @@ export function getTeammateFooterLayout(
 
   const clampedSelected = Math.max(0, Math.min(selectedIndex, totalItems - 1));
   const window = calculateHorizontalScrollWindow(
-    pillWidths.map(width => Math.max(1, width)),
+    pillWidths.map((width, index) => Math.max(1, width) + (index > 0 ? 1 : 0)),
     pillColumns,
     TEAMMATE_FOOTER_SCROLL_ARROW_COLUMNS,
     clampedSelected,
