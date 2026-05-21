@@ -1,9 +1,8 @@
 import React from 'react'
 
 import { Box, useInput } from '../../ink.js'
-import ThemedBox from '../design-system/ThemedBox.js'
 import ThemedText from '../design-system/ThemedText.js'
-import { KeyHint } from './primitives.js'
+import { Popup } from './primitives.js'
 
 function rowsFromText(text: string): readonly string[] {
   const rows = text.split(/\r?\n/u).map(line => line.trimEnd())
@@ -189,30 +188,29 @@ function StructuredContextUsage({
     ? Number(((summary.compactionThreshold / summary.hardLimit) * 100).toFixed(1))
     : 92
   return (
-    <ThemedBox
-      flexDirection="column"
-      borderStyle="single"
-      borderColor="agenc"
-      backgroundColor="clawd_background"
+    <Popup
+      title="context"
+      status={`${summary.percent}% used · headroom ${Math.round(Math.max(0, summary.hardLimit - summary.used) / 1000)}k`}
+      footer={[
+        { keyName: 'c', label: '/compact' },
+        { keyName: 'd', label: 'drop file' },
+        { keyName: 'r', label: 'rewind' },
+        { keyName: 'b', label: '/btw side-question' },
+      ]}
     >
-      <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={3} gap={2}>
-        <ThemedText color="agenc">CONTEXT</ThemedText>
-        <ThemedText color="text">
+      <Box flexDirection="column" gap={1}>
+        <Box flexDirection="row" gap={2}>
+          <ThemedText color="agenc">CONTEXT</ThemedText>
+          <ThemedText color="text2">
           {formatTokens(summary.used)} / {formatTokens(summary.hardLimit)} tokens
-        </ThemedText>
-        <ThemedText color="subtle">
-          {summary.percent}% used · headroom {Math.round(Math.max(0, summary.hardLimit - summary.used) / 1000)}k
-        </ThemedText>
-        <Box flexGrow={1} />
-        <ThemedText color="inactive">session 0x9c4f</ThemedText>
-      </ThemedBox>
-      <ThemedBox flexDirection="column" borderBottom borderBottomColor="lineSoft" paddingX={4}>
+          </ThemedText>
+        </Box>
         <ProgressBar percent={summary.percent} width={54} />
-        <ThemedText color="inactive">
+        <ThemedText color="muted3">
           soft warning at 80% · auto-compact at {compactionPercent}%
         </ThemedText>
-      </ThemedBox>
-      <Box flexDirection="column" paddingX={4}>
+      </Box>
+      <Box flexDirection="column">
         <ThemedText color="agenc">BREAKDOWN BY SOURCE</ThemedText>
         <Box minHeight={1} />
         <UsageRow label="system" tokens={summary.systemTokens ?? summary.toolsTokens} total={summary.used} color="subtle" />
@@ -232,16 +230,16 @@ function StructuredContextUsage({
       {summary.compactionThreshold !== undefined ? (
         <Box flexDirection="row" gap={2} paddingX={4}>
           <Box width={19}>
-            <ThemedText color="subtle">COMPACT AT</ThemedText>
+            <ThemedText color="muted3">COMPACT AT</ThemedText>
           </Box>
           <ThemedText color="text2">{formatTokens(summary.compactionThreshold)}</ThemedText>
-          {summary.compactionDetail ? <ThemedText color="inactive" wrap="truncate-end">{summary.compactionDetail}</ThemedText> : null}
+          {summary.compactionDetail ? <ThemedText color="muted3" wrap="truncate-end">{summary.compactionDetail}</ThemedText> : null}
         </Box>
       ) : null}
       {summary.autoCompactDetail !== undefined ? (
         <Box flexDirection="row" gap={2} paddingX={4}>
           <Box width={19}>
-            <ThemedText color="subtle">AUTO COMPACT</ThemedText>
+            <ThemedText color="muted3">AUTO COMPACT</ThemedText>
           </Box>
           <ThemedText color="text2" wrap="wrap">{summary.autoCompactDetail}</ThemedText>
         </Box>
@@ -249,20 +247,12 @@ function StructuredContextUsage({
       {summary.cacheDetail !== undefined ? (
         <Box flexDirection="row" gap={2} paddingX={4}>
           <Box width={19}>
-            <ThemedText color="subtle">PROMPT CACHE</ThemedText>
+            <ThemedText color="muted3">PROMPT CACHE</ThemedText>
           </Box>
           <ThemedText color="text2" wrap="wrap">{summary.cacheDetail}</ThemedText>
         </Box>
       ) : null}
-      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2}>
-        <KeyHint k="c" label="/compact" />
-        <KeyHint k="d" label="drop file" />
-        <KeyHint k="r" label="rewind" />
-        <KeyHint k="b" label="/btw side-question" />
-        <Box flexGrow={1} />
-        <KeyHint k="esc" label="dismiss" />
-      </ThemedBox>
-    </ThemedBox>
+    </Popup>
   )
 }
 
@@ -284,15 +274,7 @@ export function ContextUsageModal({
   if (summary !== null) return <StructuredContextUsage summary={summary} />
 
   return (
-    <ThemedBox
-      flexDirection="column"
-      borderStyle="single"
-      borderColor="agenc"
-      backgroundColor="clawd_background"
-      paddingX={2}
-      paddingY={1}
-      gap={1}
-    >
+    <Popup title="context" footer={[{ keyName: 'q', label: 'close' }]}>
       <ThemedText color="agenc">CONTEXT</ThemedText>
       {rows.map((row, index) => (
         <Box key={index} flexDirection="row" gap={1}>
@@ -300,12 +282,7 @@ export function ContextUsageModal({
           <ThemedText color="text2" wrap="truncate-end">{row.length > 0 ? row : ' '}</ThemedText>
         </Box>
       ))}
-      <Box flexDirection="row" gap={2}>
-        <KeyHint k="q" label="close" />
-        <Box flexGrow={1} />
-        <KeyHint k="esc" label="dismiss" />
-      </Box>
-    </ThemedBox>
+    </Popup>
   )
 }
 

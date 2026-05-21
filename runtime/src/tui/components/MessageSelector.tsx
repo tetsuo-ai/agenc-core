@@ -37,7 +37,7 @@ import { COMMAND_MESSAGE_TAG } from '../../constants/xml';
 import { count } from '../../utils/array';
 import { formatRelativeTimeAgo, truncate } from '../../utils/format';
 import type { Theme } from '../../utils/theme';
-import { Divider } from './design-system/Divider';
+import { Popup } from './v2/primitives.js';
 type RestoreOption = 'both' | 'conversation' | 'code' | 'summarize' | 'summarize_up_to' | 'nevermind';
 function isSummarizeOption(option: RestoreOption | null): option is 'summarize' | 'summarize_up_to' {
   return option === 'summarize' || option === 'summarize_up_to';
@@ -84,6 +84,10 @@ type Props = {
   preselectedMessage?: UserMessage;
 };
 const MAX_VISIBLE_MESSAGES = 7;
+const MESSAGE_SELECTOR_FOOTER = [
+  { keyName: '↵', label: 'continue' },
+  { keyName: 'esc', label: 'back' },
+] as const;
 export function computeMessageOptionTextWidth(columns: number, paddingRight?: number): number {
   const safeColumns = Math.max(1, Math.floor(columns || 0));
   const safePadding = Math.max(0, Math.floor(paddingRight || 0));
@@ -338,9 +342,8 @@ export function MessageSelector({
   }, [messageOptions, messages, currentUUID, fileHistory, isFileHistoryEnabled]);
   const canRestoreCode_0 = isFileHistoryEnabled && diffStatsForRestore?.filesChanged && diffStatsForRestore.filesChanged.length > 0;
   const showPickList = !error && !messageToRestore && !preselectedMessage && hasMessagesToSelect;
-  return <Box flexDirection="column" width="100%">
-      <Divider color="suggestion" />
-      <Box flexDirection="column" marginX={1} gap={1}>
+  return <Popup title="rewind" footer={MESSAGE_SELECTOR_FOOTER} status={hasMessagesToSelect ? `${Math.max(0, messageOptions.length - 1)} messages` : 'empty'}>
+      <Box flexDirection="column" gap={1}>
         <Text bold color="suggestion">
           Rewind
         </Text>
@@ -423,7 +426,7 @@ export function MessageSelector({
               </>}
           </Text>}
       </Box>
-    </Box>;
+    </Popup>;
 }
 function getRestoreOptionConversationText(option: RestoreOption): string {
   switch (option) {

@@ -18,8 +18,8 @@ import { ConfigurableShortcutHint } from './ConfigurableShortcutHint';
 import { Select } from './CustomSelect/select';
 import { Byline } from './design-system/Byline';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint';
-import { Pane } from './design-system/Pane';
 import { effortLevelToSymbol } from './EffortIndicator';
+import { Popup } from './v2/primitives.js';
 export type Props = {
   initial: string | null;
   sessionModel?: ModelSetting;
@@ -38,6 +38,10 @@ export type Props = {
   skipSettingsWrite?: boolean;
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
+const MODEL_PICKER_FOOTER = [
+  { keyName: '↵', label: 'confirm' },
+  { keyName: '←→', label: 'effort' },
+] as const;
 export function ModelPicker(t0) {
   const $ = _c(82);
   const {
@@ -374,18 +378,7 @@ export function ModelPicker(t0) {
     t28 = $[79];
   }
   const content = t28;
-  if (!isStandaloneCommand) {
-    return content;
-  }
-  let t29;
-  if ($[80] !== content) {
-    t29 = <Pane color="permission">{content}</Pane>;
-    $[80] = content;
-    $[81] = t29;
-  } else {
-    t29 = $[81];
-  }
-  return t29;
+  return <Popup title="model" footer={MODEL_PICKER_FOOTER} status={hiddenCount > 0 ? `${hiddenCount} more` : focusedModelName ?? 'select model'}>{content}</Popup>;
 }
 function _temp4() {}
 function _temp3(opt_0) {

@@ -1065,22 +1065,18 @@ export function ApprovalCard({
 }): React.ReactNode {
   const variant: BadgeVariant = risk === 'high' ? 'error' : 'worker'
   return (
-    <ThemedBox
-      flexDirection="column"
-      borderStyle="single"
-      borderColor={variantColor[variant]}
-      backgroundColor={variantWash[variant]}
+    <Popup
+      title={`tool · bash · ${title}`}
+      status={`req ${risk === 'high' ? '0x9c14' : '0x47a3'}`}
+      accentColor={variantColor[variant]}
+      bodyBackgroundColor={variantWash[variant]}
+      footer={[
+        {
+          keyName: requireTypedConfirmation ? 'type' : 'e',
+          label: requireTypedConfirmation ? 'confirmation required' : 'edit command',
+        },
+      ]}
     >
-      <ThemedBox
-        flexDirection="row"
-        borderBottom
-        borderBottomColor={variantColor[variant]}
-        paddingX={1}
-      >
-        <ThemedText color={variantColor[variant]}>▸ tool · bash · {title}</ThemedText>
-        <Box flexGrow={1} />
-        <ThemedText color="subtle">req {risk === 'high' ? '0x9c14' : '0x47a3'}</ThemedText>
-      </ThemedBox>
       <Box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
         <ThemedBox borderStyle="single" borderColor="lineSoft" paddingX={1}>
           <ThemedText color="text" wrap="wrap">
@@ -1108,10 +1104,78 @@ export function ApprovalCard({
           <ThemedBox borderStyle="single" borderColor={variantColor[variant]} paddingX={1}>
             <ThemedText color={risk === 'high' ? 'text' : 'agenc'}>{confirmLabel}</ThemedText>
           </ThemedBox>
-          <KeyHint k={requireTypedConfirmation ? 'type' : 'e'} label={requireTypedConfirmation ? 'confirmation required' : 'edit command'} />
           <KeyHint k="esc" label="cancel" />
         </Box>
       </Box>
+    </Popup>
+  )
+}
+
+export type PopupFooterItem = {
+  readonly keyName: string
+  readonly label: string
+}
+
+export function Popup({
+  title,
+  headerRight = 'esc to close',
+  status,
+  footer = [],
+  children,
+  accentColor = 'agenc',
+  bodyBackgroundColor,
+  bodyPaddingX = 2,
+  bodyPaddingY = 1,
+  maxHeight,
+  minHeight,
+}: {
+  readonly title: string
+  readonly headerRight?: string
+  readonly status?: string
+  readonly footer?: readonly PopupFooterItem[]
+  readonly children: ReactNode
+  readonly accentColor?: ThemeColor
+  readonly bodyBackgroundColor?: ThemeColor
+  readonly bodyPaddingX?: number
+  readonly bodyPaddingY?: number
+  readonly maxHeight?: number
+  readonly minHeight?: number
+}): React.ReactNode {
+  return (
+    <ThemedBox flexDirection="column" backgroundColor="lineSoft" overflow="hidden">
+      <ThemedBox
+        flexDirection="column"
+        borderStyle="single"
+        borderColor="line"
+        backgroundColor="clawd_background"
+        overflow="hidden"
+        maxHeight={maxHeight}
+        minHeight={minHeight}
+      >
+        <ThemedBox flexDirection="row" borderBottom borderBottomColor="lineSoft" paddingX={1} gap={1}>
+          <ThemedText color={accentColor}>✳</ThemedText>
+          <ThemedText color="text2" wrap="truncate-end">{title.toUpperCase()}</ThemedText>
+          <Box flexGrow={1} />
+          <ThemedText color="muted3" wrap="truncate-end">{headerRight}</ThemedText>
+        </ThemedBox>
+        <ThemedBox
+          flexDirection="column"
+          backgroundColor={bodyBackgroundColor}
+          paddingX={bodyPaddingX}
+          paddingY={bodyPaddingY}
+          flexGrow={1}
+          overflow="hidden"
+        >
+          {children}
+        </ThemedBox>
+        <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={1} gap={2}>
+          {footer.map(item => (
+            <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
+          ))}
+          <Box flexGrow={1} />
+          {status ? <ThemedText color="muted3" wrap="truncate-end">{status}</ThemedText> : null}
+        </ThemedBox>
+      </ThemedBox>
     </ThemedBox>
   )
 }
@@ -1183,36 +1247,19 @@ export function MenuModal<T>({
       : undefined
   const constrainedMinHeight =
     modalMinHeight === undefined ? undefined : Math.min(modalMinHeight, viewportRows)
+  const popupStatus = [headerRight, scrollStatus, hint].filter(Boolean).join(' · ')
+  const popupTitle = [title, count, summary].filter(Boolean).join(' · ')
 
   return (
-    <ThemedBox
-      flexDirection="column"
-      borderStyle={omitTopBorder ? undefined : 'single'}
-      borderLeft={omitTopBorder}
-      borderRight={omitTopBorder}
-      borderBottom={omitTopBorder}
-      borderColor="agenc"
-      borderLeftColor="agenc"
-      borderRightColor="agenc"
-      borderBottomColor="agenc"
-      backgroundColor="clawd_background"
-      overflow="hidden"
+    <Popup
+      title={popupTitle}
+      status={popupStatus || undefined}
+      footer={footer}
+      bodyPaddingX={paddingX}
+      bodyPaddingY={0}
       maxHeight={viewportRows}
       minHeight={constrainedMinHeight}
     >
-      <ThemedBox flexDirection="row" borderBottom borderBottomColor="agenc" paddingX={paddingX} gap={columnGap}>
-        <Box flexShrink={0}>
-          <ThemedText color="agenc" wrap="truncate-end">{title.toUpperCase()}</ThemedText>
-        </Box>
-        {count ? (
-          <Box flexShrink={0}>
-            <ThemedText color="text" wrap="truncate-end">{count}</ThemedText>
-          </Box>
-        ) : null}
-        {summary ? <ThemedText color="subtle" wrap="truncate-end">{summary}</ThemedText> : null}
-        <Box flexGrow={1} />
-        {headerRight ? <ThemedText color="inactive" wrap="truncate-end">{headerRight}</ThemedText> : null}
-      </ThemedBox>
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
         <Box
           flexDirection="column"
@@ -1262,16 +1309,7 @@ export function MenuModal<T>({
           </ThemedBox>
         ) : null}
       </Box>
-      <ThemedBox flexDirection="row" borderTop borderTopColor="lineSoft" paddingX={paddingX} gap={2}>
-        {footer.map(item => (
-          <KeyHint key={item.keyName} k={item.keyName} label={item.label} />
-        ))}
-        {scrollStatus ? <ThemedText color="inactive">{scrollStatus}</ThemedText> : null}
-        <Box flexGrow={1} />
-        {hint ? <ThemedText color="inactive" wrap="truncate-end">{hint}</ThemedText> : null}
-        <KeyHint k="esc" label="dismiss" />
-      </ThemedBox>
-    </ThemedBox>
+    </Popup>
   )
 }
 
