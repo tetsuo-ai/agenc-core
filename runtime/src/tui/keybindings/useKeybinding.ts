@@ -11,6 +11,8 @@ type Options = {
   isActive?: boolean
 }
 
+type InputCaptureHandler = (input: string, key: Key) => boolean
+
 /**
  * Ink-native hook for handling a keybinding.
  *
@@ -193,4 +195,22 @@ export function useKeybindings(
   )
 
   useInput(handleInput, { isActive })
+}
+
+/**
+ * Register a raw input handler that runs from KeybindingSetup's top-level
+ * interceptor before child useInput handlers. Use this for focused editor
+ * surfaces that must consume text before the composer can see it.
+ */
+export function useInputCapture(
+  handler: InputCaptureHandler,
+  options: Options = {},
+): void {
+  const { context = 'Global', isActive = true } = options
+  const keybindingContext = useOptionalKeybindingContext()
+
+  useEffect(() => {
+    if (!keybindingContext || !isActive) return
+    return keybindingContext.registerInputCapture({ context, handler })
+  }, [context, handler, keybindingContext, isActive])
 }

@@ -120,6 +120,7 @@ describe("KeybindingProviderSetup coverage swarm 049", () => {
       },
       activeContexts: new Set(["Chat"]),
       handlerRegistryRef: { current: new Map() },
+      inputCaptureRegistryRef: { current: new Set() },
     });
 
     const missEvent = inputEvent();
@@ -166,6 +167,7 @@ describe("KeybindingProviderSetup coverage swarm 049", () => {
       setPendingChord,
       activeContexts: new Set(),
       handlerRegistryRef: { current: registry },
+      inputCaptureRegistryRef: { current: new Set() },
     });
 
     const prefixEvent = inputEvent();
@@ -202,6 +204,7 @@ describe("KeybindingProviderSetup coverage swarm 049", () => {
           ["chat:other", new Set()],
         ]),
       },
+      inputCaptureRegistryRef: { current: new Set() },
     });
 
     handler("x", key({ ctrl: true }), inputEvent());
@@ -230,6 +233,7 @@ describe("KeybindingProviderSetup coverage swarm 049", () => {
       },
       activeContexts: new Set(["Chat"]),
       handlerRegistryRef: { current: new Map() },
+      inputCaptureRegistryRef: { current: new Set() },
     });
 
     handler("x", key({ ctrl: true }), inputEvent());

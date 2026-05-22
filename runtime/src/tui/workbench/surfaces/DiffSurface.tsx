@@ -10,7 +10,7 @@ import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
 import type { PendingRequest } from "../../permission-requests.js";
-import { attachDiffHunkCommand, openPreviewCommand } from "../commands.js";
+import { attachDiffHunkCommand, openBufferCommand } from "../commands.js";
 import { useWorkbenchDispatch } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
 
@@ -55,7 +55,7 @@ export function DiffSurface({
       "surface:bottom": () => setSelected(Math.max(0, files.length - 1)),
       "surface:open": () => {
         const file = files[selected] ?? files[0];
-        if (file) dispatch(openPreviewCommand(file.path, undefined, true));
+        if (file) dispatch(openBufferCommand(file.path, undefined, true));
       },
       "surface:attach": () => {
         const file = files[selected] ?? files[0];

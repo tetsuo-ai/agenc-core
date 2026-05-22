@@ -1,18 +1,25 @@
 // @ts-nocheck
-import React, { useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import { peekLSPDiagnosticsForFile } from "../../../services/lsp/LSPDiagnosticRegistry.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
-import { Box, Text, useInput } from "../../ink.js";
+import { Box, Text } from "../../ink.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
-import { useKeybindings } from "../../keybindings/useKeybinding.js";
+import { useInputCapture, useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useAppState } from "../../state/AppState.js";
 import { taskMayReferencePath } from "../agents/activity.js";
-import { getWorkbenchBufferStore } from "../buffer/BufferStore.js";
+import {
+  getWorkbenchBufferStore,
+  type BufferVimCommand,
+  type BufferVisibleLine,
+} from "../buffer/BufferStore.js";
+import { highlightBufferVisibleLines } from "../buffer/highlight.js";
 import { BufferLine } from "../buffer/render.js";
 import { useBufferStore } from "../buffer/useBufferStore.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import { EmptySurface, SurfaceHeader } from "./PreviewSurface.js";
+
+const EMPTY_HIGHLIGHTS: ReadonlyMap<number, string> = new Map();
 
 export function BufferSurface({ focused }: { readonly focused: boolean }): React.ReactElement {
   const workbench = useWorkbenchState();
@@ -33,6 +40,8 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
   const diagnostics = snapshot.absolutePath
     ? peekLSPDiagnosticsForFile(snapshot.absolutePath)
     : [];
+  const visibleLines = store.getVisibleLines();
+  const highlightedLines = useBufferHighlightedLines(snapshot.filePath ?? activePath, visibleLines);
   const currentLineDiagnostic = diagnostics.find(
     (diagnostic) => (diagnostic.range?.start.line ?? -1) + 1 === snapshot.position.line,
   );
@@ -82,45 +91,45 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
     { context: "Buffer", isActive: focused },
   );
 
-  useInput((input, key, event) => {
-    if (key.ctrl || key.meta || key.super || key.escape) return;
-    if (key.return) {
-      store.newline();
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (key.tab) {
-      store.insert("\t");
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (key.backspace) {
-      store.backspace();
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (key.delete) {
-      store.deleteForward();
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (input.length > 0) {
-      store.insert(input);
-      event.stopImmediatePropagation();
-    }
-  }, { isActive: focused });
+  const executeVimCommand = useCallback(
+    (command: BufferVimCommand): void => {
+      switch (command.type) {
+        case "save":
+          void store.save({ hasInFlightAgent: Boolean(inFlightAgent) });
+          break;
+        case "quit":
+          if (store.close({ discard: command.discard })) dispatch({ type: "closeSurface" });
+          break;
+        case "saveQuit":
+          void (async () => {
+            const saved = await store.save({ hasInFlightAgent: Boolean(inFlightAgent) });
+            if (saved && store.close()) dispatch({ type: "closeSurface" });
+          })();
+          break;
+      }
+    },
+    [dispatch, inFlightAgent, store],
+  );
+
+  useInputCapture(
+    useCallback(
+      (input, key) => store.handleVimInput(input, key, Math.max(20, columns - 8), executeVimCommand),
+      [columns, executeVimCommand, store],
+    ),
+    { context: "Buffer", isActive: focused },
+  );
 
   if (!activePath && snapshot.status === "idle") {
     return <EmptySurface title="BUFFER" message="No file selected" />;
   }
 
   const status = bufferStatusLabel(snapshot, Boolean(inFlightAgent));
-  const visibleLines = store.getVisibleLines();
+  const modeLabel = snapshot.vimCommandLine !== null ? "command" : snapshot.vimMode.toLowerCase();
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
       <SurfaceHeader
         title="BUFFER"
-        detail={`${snapshot.filePath ?? activePath ?? "loading"} [${status}] ${snapshot.position.line}:${snapshot.position.column}`}
+        detail={`${snapshot.filePath ?? activePath ?? "loading"} [${modeLabel}, ${status}] ${snapshot.position.line}:${snapshot.position.column}`}
         focused={focused}
       />
       {snapshot.error ? <Text color={snapshot.status === "conflict" ? "warning" : "error"} wrap="truncate-end">{snapshot.error}</Text> : null}
@@ -140,12 +149,17 @@ export function BufferSurface({ focused }: { readonly focused: boolean }): React
             snapshot={snapshot}
             width={Math.max(16, columns - 4)}
             focused={focused}
+            highlightedText={highlightedLines.get(line.number)}
           />
         ))}
       </Box>
       <Box height={1}>
         <Text dimColor wrap="truncate-end">
-          ctrl+s save  ctrl+z undo  ctrl+y redo  ctrl+w q close  ctrl+w x discard
+          {snapshot.vimCommandLine !== null
+            ? `:${snapshot.vimCommandLine}`
+            : snapshot.vimMode === "NORMAL"
+              ? "NORMAL  : command  i/a/o insert  h/j/k/l move  dd delete  u undo"
+              : "INSERT  esc normal"}
         </Text>
       </Box>
     </Box>
@@ -163,4 +177,32 @@ function bufferStatusLabel(snapshot: ReturnType<typeof useBufferStore>, hasInFli
 
 function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
+}
+
+function useBufferHighlightedLines(
+  filePath: string | null,
+  visibleLines: readonly BufferVisibleLine[],
+): ReadonlyMap<number, string> {
+  const [highlightedLines, setHighlightedLines] = useState<ReadonlyMap<number, string>>(EMPTY_HIGHLIGHTS);
+  const highlightKey = useMemo(
+    () => `${filePath ?? ""}\u0000${visibleLines.map((line) => `${line.number}:${line.text}`).join("\u0000")}`,
+    [filePath, visibleLines],
+  );
+  const linesForHighlight = useMemo(
+    () => visibleLines.map((line) => ({ ...line })),
+    [highlightKey],
+  );
+
+  useEffect(() => {
+    let active = true;
+    setHighlightedLines(EMPTY_HIGHLIGHTS);
+    void highlightBufferVisibleLines(filePath, linesForHighlight).then((result) => {
+      if (active) setHighlightedLines(result);
+    });
+    return () => {
+      active = false;
+    };
+  }, [filePath, highlightKey, linesForHighlight]);
+
+  return highlightedLines;
 }

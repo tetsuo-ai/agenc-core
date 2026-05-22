@@ -55,7 +55,7 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
   const jumpToSelectedFailure = () => {
     if (selectedFailure?.location) {
       dispatch({
-        type: "openPreview",
+        type: "openBuffer",
         path: selectedFailure.location.file,
         line: selectedFailure.location.line,
         focus: true,
@@ -87,7 +87,7 @@ export function TestSurface({ focused }: { readonly focused: boolean }): React.R
 
   return (
     <Box flexDirection="column" width="100%" height="100%" overflow="hidden">
-      <SurfaceHeader title="TEST" detail={`${failures.length} failure${failures.length === 1 ? "" : "s"} - g/enter preview - @ attach`} focused={focused} />
+      <SurfaceHeader title="TEST" detail={`${failures.length} failure${failures.length === 1 ? "" : "s"} - g/enter edit - @ attach`} focused={focused} />
       {failures.length === 0 ? (
         <Text dimColor wrap="truncate-end">No parsed test failures in the selected task output.</Text>
       ) : null}

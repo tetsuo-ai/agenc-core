@@ -8,7 +8,8 @@ import stripAnsi from "strip-ansi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { runWithCwdOverride } from "../../../src/utils/cwd.js";
-import { createRoot } from "../../../src/tui/ink.js";
+import { createRoot, useInput } from "../../../src/tui/ink.js";
+import { KeybindingSetup } from "../../../src/tui/keybindings/KeybindingProviderSetup.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import {
   getWorkbenchBufferStore,
@@ -54,6 +55,13 @@ function sleep(ms = 100): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function LeakyInput({ leaked }: { readonly leaked: string[] }): null {
+  useInput((input) => {
+    leaked.push(input);
+  });
+  return null;
+}
+
 let dir: string;
 
 beforeEach(async () => {
@@ -89,7 +97,9 @@ describe("BufferSurface", () => {
               },
             }}
           >
-            <BufferSurface focused={false} />
+            <KeybindingSetup>
+              <BufferSurface focused={false} />
+            </KeybindingSetup>
           </AppStateProvider>,
         );
         await sleep();
@@ -109,7 +119,7 @@ describe("BufferSurface", () => {
     }
   });
 
-  it("treats printable q as text input when focused", async () => {
+  it("captures focused vim insert text before later input handlers", async () => {
     await writeFile(join(dir, "target.ts"), "const value = 1;\n", "utf8");
     const { stdin, stdout } = createStreams();
     const root = await createRoot({
@@ -117,6 +127,7 @@ describe("BufferSurface", () => {
       stdin: stdin as unknown as NodeJS.ReadStream,
       stdout: stdout as unknown as NodeJS.WriteStream,
     });
+    const leaked: string[] = [];
 
     try {
       await runWithCwdOverride(dir, async () => {
@@ -132,7 +143,10 @@ describe("BufferSurface", () => {
               },
             }}
           >
-            <BufferSurface focused={true} />
+            <KeybindingSetup>
+              <BufferSurface focused={true} />
+              <LeakyInput leaked={leaked} />
+            </KeybindingSetup>
           </AppStateProvider>,
         );
         await sleep();
@@ -141,7 +155,15 @@ describe("BufferSurface", () => {
       stdin.write("q");
       await sleep();
 
+      expect(getWorkbenchBufferStore().getText()).toBe("const value = 1;\n");
+      stdin.write("i");
+      await sleep();
+      stdin.write("q");
+      await sleep();
+
       expect(getWorkbenchBufferStore().getText()).toBe("qconst value = 1;\n");
+      expect(getWorkbenchBufferStore().getSnapshot().vimMode).toBe("INSERT");
+      expect(leaked).toEqual([]);
     } finally {
       root.unmount();
       stdin.end();

@@ -6,7 +6,7 @@ import { ripGrepStream } from "../../../utils/ripgrep.js";
 import { Box, Text } from "../../ink.js";
 import { useKeybindings } from "../../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../../keybindings/KeybindingContext.js";
-import { attachSearchMatchCommand, openPreviewCommand } from "../commands.js";
+import { attachSearchMatchCommand, openBufferCommand } from "../commands.js";
 import { groupSearchMatches, parseWorkbenchRipgrepLine, visibleSearchRows } from "../search/model.js";
 import { useWorkbenchDispatch, useWorkbenchState } from "../state.js";
 import type { SearchMatch } from "../types.js";
@@ -79,10 +79,10 @@ export function SearchSurface({ focused }: { readonly focused: boolean }): React
       "surface:top": () => setSelected(0),
       "surface:bottom": () => setSelected(Math.max(0, matches.length - 1)),
       "surface:open": () => {
-        if (selectedMatch) dispatch(openPreviewCommand(selectedMatch.file, selectedMatch.line, true));
+        if (selectedMatch) dispatch(openBufferCommand(selectedMatch.file, selectedMatch.line, true));
       },
       "surface:openKeepFocus": () => {
-        if (selectedMatch) dispatch(openPreviewCommand(selectedMatch.file, selectedMatch.line, false));
+        if (selectedMatch) dispatch(openBufferCommand(selectedMatch.file, selectedMatch.line, false));
       },
       "surface:attach": () => {
         if (selectedMatch) dispatch(attachSearchMatchCommand(query, selectedMatch));
@@ -147,7 +147,7 @@ export function SearchSurfaceView({
           ),
         )}
       </Box>
-      {selectedMatch ? <Text dimColor wrap="truncate-end">enter preview  @ attach  A attach visible: {selectedMatch.file}:{selectedMatch.line}</Text> : null}
+      {selectedMatch ? <Text dimColor wrap="truncate-end">enter edit  @ attach  A attach visible: {selectedMatch.file}:{selectedMatch.line}</Text> : null}
     </Box>
   );
 }
