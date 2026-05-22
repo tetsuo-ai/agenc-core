@@ -267,7 +267,7 @@ describe("FullscreenLayout render branches", () => {
     },
   );
 
-  test("renders the file-tree gutter only for wide fullscreen base scenes", async () => {
+  test("does not render the deprecated file-tree gutter in fullscreen base scenes", async () => {
     const wide = await renderFullscreenLayout(
       <FullscreenLayout
         scrollable={<Text>wide scrollable</Text>}
@@ -291,9 +291,9 @@ describe("FullscreenLayout render branches", () => {
       { columns: 148, rows: 40 },
     );
 
-    expect(wide).toContain("FILES");
     expect(wide).toContain("runtime");
     expect(wide).toContain("wide scrollable");
+    expect(wide).not.toContain("FILES");
     expect(compact).not.toContain("FILES");
     expect(modal).not.toContain("FILES");
     expect(modal).toContain("modal branch marker");

@@ -326,9 +326,9 @@ describe('FullscreenLayout coverage swarm 019', () => {
       ),
     )
 
-    expect(output).toContain('TASKS')
+    expect(output).toContain('task')
     expect(output).toContain('2')
-    expect(output).toContain('MODE')
+    expect(output).toContain('mode')
   })
 
   test('portals prompt suggestions above the clipped bottom slot', async () => {

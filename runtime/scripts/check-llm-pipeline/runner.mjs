@@ -153,7 +153,7 @@ scenarios.push({
 scenarios.push({
   name: "02-turn-context-before-user-message",
   description:
-    "turn_context (sandbox/approvalPolicy/cwd/etc) is recorded before the first user_message.",
+    "turn_context (sandbox/approvalPolicy/cwd/etc) is recorded before the first user input.",
   async run() {
     await runOneShot("reply with the single word HELLO and nothing else", {
       yolo: true,
@@ -164,18 +164,20 @@ scenarios.push({
     const turnIdx = items.findIndex((i) => i.type === "turn_context");
     const userIdx = items.findIndex(
       (i) =>
-        i.type === "event_msg" &&
-        i.payload?.msg?.type === "user_message",
+        (i.type === "event_msg" &&
+          i.payload?.msg?.type === "user_message") ||
+        (i.type === "response_item" &&
+          i.payload?.role === "user"),
     );
     if (turnIdx === -1) {
       throw new Error("rollout has no turn_context entry");
     }
     if (userIdx === -1) {
-      throw new Error("rollout has no user_message event");
+      throw new Error("rollout has no durable user input entry");
     }
     if (turnIdx > userIdx) {
       throw new Error(
-        `turn_context (idx ${turnIdx}) must come before user_message (idx ${userIdx})`,
+        `turn_context (idx ${turnIdx}) must come before user input (idx ${userIdx})`,
       );
     }
     // turn_context payload should include cwd, approval, sandbox config

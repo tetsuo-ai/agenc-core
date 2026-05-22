@@ -1,15 +1,48 @@
 import React from "react";
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+vi.mock("../../../src/tui/keybindings/useKeybinding.js", () => ({
+  useKeybinding: () => {},
+  useKeybindings: () => {},
+}));
+
+import { PromptOverlayProvider, useSetPromptOverlay, useSetPromptOverlayDialog } from "../../../src/tui/context/promptOverlayContext.js";
 import { Text } from "../../../src/tui/ink.js";
 import { AppStateProvider, getDefaultAppState } from "../../../src/tui/state/AppState.js";
 import { ProjectExplorerRow } from "../../../src/tui/workbench/project-tree/ProjectExplorer.js";
 import { WORKBENCH_SURFACES } from "../../../src/tui/workbench/surfaces/ActiveWorkSurface.js";
 import { TranscriptSurface } from "../../../src/tui/workbench/surfaces/TranscriptSurface.js";
 import { WorkbenchFooter } from "../../../src/tui/workbench/WorkbenchFooter.js";
-import { layoutSizeForColumns } from "../../../src/tui/workbench/WorkbenchLayout.js";
+import { layoutSizeForColumns, WorkbenchLayout } from "../../../src/tui/workbench/WorkbenchLayout.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+
+function SuggestionsWriter(): React.ReactNode {
+  useSetPromptOverlay({
+    suggestions: [
+      {
+        id: "command-help",
+        displayText: "/help",
+        description: "show commands",
+      },
+      {
+        id: "command-status",
+        displayText: "/status",
+        description: "show status",
+      },
+    ],
+    selectedSuggestion: 1,
+    maxColumnWidth: 16,
+    suggestionType: "command",
+  });
+
+  return <Text>composer body</Text>;
+}
+
+function DialogWriter(): React.ReactNode {
+  useSetPromptOverlayDialog(<Text>floating dialog marker</Text>);
+  return <Text>composer body</Text>;
+}
 
 describe("workbench render contract", () => {
   it.each([28, 30, 44])("renders explorer rows within %i columns", async (width) => {
@@ -88,6 +121,40 @@ describe("workbench render contract", () => {
 
     expect(output).toContain("TRANSCRIPT");
     expect(output).toContain("hello transcript");
+  });
+
+  it("renders fullscreen slash-command suggestions from the composer overlay portal", async () => {
+    const output = await renderToString(
+      <PromptOverlayProvider>
+        <AppStateProvider initialState={getDefaultAppState()}>
+          <WorkbenchLayout
+            transcript={<Text>scroll body</Text>}
+            composer={<SuggestionsWriter />}
+          />
+        </AppStateProvider>
+      </PromptOverlayProvider>,
+      { columns: 120, rows: 30 },
+    );
+    const compactOutput = output.replace(/\s+/gu, "");
+
+    expect(compactOutput).toContain("SLASHCOMMANDS");
+    expect(compactOutput).toContain("/statusshowstatus");
+  });
+
+  it("renders prompt dialogs over the workbench surface", async () => {
+    const output = await renderToString(
+      <PromptOverlayProvider>
+        <AppStateProvider initialState={getDefaultAppState()}>
+          <WorkbenchLayout
+            transcript={<Text>scroll body</Text>}
+            composer={<DialogWriter />}
+          />
+        </AppStateProvider>
+      </PromptOverlayProvider>,
+      { columns: 120, rows: 30 },
+    );
+
+    expect(output.replace(/\s+/gu, "")).toContain("dialogmarker");
   });
 
   it("defines the surface descriptor contract for every live workbench surface", () => {

@@ -580,28 +580,23 @@ export class TuiSession {
 
   /**
    * Wait for the permission overlay to appear in the captured output. The
-   * overlay shows when the model invokes a side-effecting tool in default
-   * mode and the policy requires user approval. The signature is the
-   * "Do you want to proceed?" line, but the TUI renders it with per-word
-   * cursor-position codes (`[1C` to advance one column) that stripAnsi
-   * strips, leaving "Doyouwanttoproceed?" with no spaces. The matcher
-   * accepts either form.
+   * workbench approval card renders the current prompt as "needs approval"
+   * / "enter approve" rather than the old numbered prompt copy.
    */
   async waitForPermissionOverlay({ timeout = 60_000 } = {}) {
-    return this.waitFor(/Do\s*you\s*want\s*to\s*proceed\?/, {
+    return this.waitFor(/NEEDS APPROVAL|needs approval[\s\S]*enter approve|enter approve/i, {
       timeout,
       label: "permission overlay",
     });
   }
 
   /**
-   * Accept the permission overlay (Yes). Sends "1" then Enter, the
-   * documented one-shot accept path.
+   * Accept the permission overlay. "y" is handled by both the approval
+   * overlay and the workbench diff surface when the diff pane has focus.
    */
   async acceptPermissionOverlay() {
-    this.term.write("1");
-    await sleep(80);
-    this.term.write("\r");
+    await sleep(120);
+    this.term.write("y");
   }
 
   /**

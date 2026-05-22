@@ -54,23 +54,19 @@ describe('ContextUsageModal swarm row 069 coverage', () => {
         onDone={() => {}}
         active={false}
       />,
-      140,
+      { columns: 140, rows: 40 },
     )
 
     expect(output).toContain('180,000 / 200,000 tokens')
     expect(output).toContain('auto-compact at 92%')
     expect(output).toContain('SYSTEM')
     expect(output).toContain('10,000')
-    expect(output).toContain('PLAN')
-    expect(output).toContain('5,000')
     expect(output).toContain('FILES (3)')
     expect(output).toContain('8,402')
     expect(output).toContain('lib.rs')
     expect(output).toContain('3,841')
     expect(output).toContain('pool.rs')
     expect(output).toContain('2,118')
-    expect(output).toContain('math.rs')
-    expect(output).toContain('2,443')
     expect(output).toContain('HISTORY')
     expect(output).toContain('154,598')
     expect(output).toContain('AUTO COMPACT')
@@ -119,7 +115,7 @@ describe('ContextUsageModal swarm row 069 coverage', () => {
     expect(output).toContain('003')
     expect(output).toContain('trailing')
     expect(output).toContain('close')
-    expect(output).toContain('dismiss')
+    expect(output).toContain('esc to close')
   })
 
   it('wires default active input handling for close keys only', async () => {

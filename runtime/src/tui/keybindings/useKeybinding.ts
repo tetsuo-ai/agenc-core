@@ -56,7 +56,7 @@ export function useKeybinding(
         context,
         'Global',
       ]
-      // Deduplicate while preserving order (first occurrence wins for priority)
+      // Deduplicate before the resolver applies context priority.
       const uniqueContexts = [...new Set(contextsToCheck)]
 
       const result = keybindingContext.resolve(input, key, uniqueContexts)
@@ -154,7 +154,7 @@ export function useKeybindings(
         context,
         'Global',
       ]
-      // Deduplicate while preserving order (first occurrence wins for priority)
+      // Deduplicate before the resolver applies context priority.
       const uniqueContexts = [...new Set(contextsToCheck)]
 
       const result = keybindingContext.resolve(input, key, uniqueContexts)

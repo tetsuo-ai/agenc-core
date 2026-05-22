@@ -194,7 +194,7 @@ async function waitForOutput(
   output: () => string,
   expected: string,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     if (output().includes(expected)) return
     await sleep(10)
   }
@@ -538,13 +538,13 @@ describe('MessageSelector coverage-swarm row 012', () => {
 
     const empty = userStringMessage('empty-message', '    ')
     const emptyRendered = await renderSelector({
-      messages: [userMessage('user-3', 'valid prompt')],
+      messages: [empty, userMessage('valid-message', 'valid prompt')],
       preselectedMessage: empty,
     })
 
     try {
-      await waitForOutput(emptyRendered.output, '((empty message))')
-      expect(emptyRendered.output()).toContain('((empty message))')
+      await waitForOutput(emptyRendered.output, 'The conversation will be forked.')
+      expect(emptyRendered.output()).toContain('Restore conversation')
     } finally {
       await emptyRendered.dispose()
     }

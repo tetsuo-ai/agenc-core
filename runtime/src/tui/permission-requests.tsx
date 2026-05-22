@@ -19,6 +19,7 @@ import type { AgenCBridgeSession } from "./session-types.js";
 import { createSessionAppStateBridge } from "./session-app-state.js";
 import type { AppState } from "./state/AppState.js";
 import { Box, useInput } from "./ink.js";
+import { useRegisterKeybindingContext } from "./keybindings/KeybindingContext.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
 import { ApprovalCard } from "./components/v2/primitives.js";
 import {
@@ -324,6 +325,7 @@ function AgenCApprovalOverlay({
     description: toolUseConfirm.description,
   });
   const [typed, setTyped] = useState("");
+  useRegisterKeybindingContext("Confirmation");
   const approve = useCallback(() => {
     toolUseConfirm.onAllow(toolUseConfirm.input, []);
   }, [toolUseConfirm]);

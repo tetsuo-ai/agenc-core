@@ -5,6 +5,7 @@ import { Box, Text } from "../ink.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useKeybindings } from "../keybindings/useKeybinding.js";
 import { useRegisterKeybindingContext } from "../keybindings/KeybindingContext.js";
+import { PromptDialogOverlay, PromptSuggestionsOverlay } from "../components/PromptOverlaySurfaces.js";
 import type { PendingRequest } from "../permission-requests.js";
 import { AgentsRail } from "./agents/AgentsRail.js";
 import { ProjectExplorer } from "./project-tree/ProjectExplorer.js";
@@ -73,8 +74,10 @@ export function WorkbenchLayout({
         </Box>
       ) : null}
       <Box flexDirection="column" flexShrink={0} borderTop borderColor={workbench.focusedPane === "composer" ? "suggestion" : "gray"}>
+        <PromptSuggestionsOverlay />
         {composer}
       </Box>
+      <PromptDialogOverlay />
       {rows >= 5 ? <WorkbenchFooter /> : null}
       {layoutSize !== "wide" && workbench.focusedPane === "agents" ? (
         <Box position="absolute" right={0} top={1} bottom={2} width={Math.min(34, columns)} opaque>

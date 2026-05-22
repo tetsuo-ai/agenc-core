@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext';
-import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../context/promptOverlayContext.js';
+import { PromptOverlayProvider } from '../context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
@@ -18,7 +18,7 @@ import { modelDisplayString } from '../../utils/model/model.js';
 import { getTotalCost } from '../../cost/tracker.js';
 import { formatUsdCost } from '../../session/cost.js';
 import { isNullRenderingAttachment } from '../message-visibility.js';
-import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
+import { PromptDialogOverlay, PromptSuggestionsOverlay } from './PromptOverlaySurfaces.js';
 import { permissionModeFooterChrome } from './PromptInput/permissionModeChrome.js';
 import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
@@ -487,8 +487,8 @@ export function FullscreenLayout(t0) {
     let t15;
     let t16;
     if ($[29] === Symbol.for("react.memo_cache_sentinel")) {
-      t15 = <SuggestionsOverlay />;
-      t16 = <DialogOverlay />;
+      t15 = <PromptSuggestionsOverlay />;
+      t16 = <PromptDialogOverlay />;
       $[29] = t15;
       $[30] = t16;
     } else {
@@ -783,52 +783,4 @@ function StickyPromptHeader(t0) {
     t5 = $[7];
   }
   return t5;
-}
-
-// Slash-command suggestion overlay — see promptOverlayContext.tsx for why
-// it's portaled. Scroll-smear from floating over the DECSTBM region is
-// repaired at the Ink layer (absoluteRectsPrev in render-node-to-output.ts).
-// The renderer clamps negative y to 0 for absolute elements (see
-// render-node-to-output.ts), so the top rows (best matches) stay visible
-// even when the overlay extends above the viewport. We omit minHeight and
-// flex-end here: they would create empty padding rows that shift visible
-// items down into the prompt area when the list has fewer items than max.
-function SuggestionsOverlay() {
-  const $ = _c(5);
-  const data = usePromptOverlay();
-  if (!data || data.suggestions.length === 0) {
-    return null;
-  }
-  let t0;
-  if ($[0] !== data.maxColumnWidth || $[1] !== data.selectedSuggestion || $[2] !== data.suggestionType || $[3] !== data.suggestions) {
-    t0 = <Box position="absolute" bottom="100%" left={0} right={0} paddingX={0} paddingTop={1} flexDirection="column" opaque={true} backgroundColor="surfaceBackground"><PromptInputFooterSuggestions suggestions={data.suggestions} selectedSuggestion={data.selectedSuggestion} maxColumnWidth={data.maxColumnWidth} suggestionType={data.suggestionType} overlay={true} /></Box>;
-    $[0] = data.maxColumnWidth;
-    $[1] = data.selectedSuggestion;
-    $[2] = data.suggestionType;
-    $[3] = data.suggestions;
-    $[4] = t0;
-  } else {
-    t0 = $[4];
-  }
-  return t0;
-}
-
-// Dialog portaled from PromptInput (AutoModeOptInDialog) — same clip-escape
-// pattern as SuggestionsOverlay. Renders later in tree order so it paints
-// over suggestions if both are ever up (they shouldn't be).
-function DialogOverlay() {
-  const $ = _c(2);
-  const node = usePromptOverlayDialog();
-  if (!node) {
-    return null;
-  }
-  let t0;
-  if ($[0] !== node) {
-    t0 = <Box position="absolute" top={2} bottom={1} left={4} right={4} flexDirection="column" justifyContent="center" opaque={true}>{node}</Box>;
-    $[0] = node;
-    $[1] = t0;
-  } else {
-    t0 = $[1];
-  }
-  return t0;
 }
