@@ -33,6 +33,8 @@ import type { SessionHooksState } from '../../utils/hooks/sessionHooks.js'
 import type { ModelSetting } from '../../utils/model/model.js'
 import type { DenialTrackingState } from '../../utils/permissions/denialTracking.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
+import type { WorkbenchState } from '../workbench/types.js'
+import { getDefaultWorkbenchState } from '../workbench/reducer.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -108,6 +110,8 @@ export type AppState = DeepImmutable<{
   // Which footer pill is focused (arrow-key navigation below the prompt).
   // Lives in AppState so prompt-adjacent panels can read their focused state.
   footerSelection: FooterItem | null
+  // Workbench navigation, active surface, and lightweight attachment state.
+  workbench: WorkbenchState
   toolPermissionContext: ToolPermissionContext
   spinnerTip?: string
   // Agent name from --agent CLI flag or settings (for logo display)
@@ -448,6 +452,7 @@ export function getDefaultAppState(): AppState {
     coordinatorTaskIndex: -1,
     viewSelectionMode: 'none',
     footerSelection: null,
+    workbench: getDefaultWorkbenchState(),
     kairosEnabled: false,
     remoteSessionUrl: undefined,
     remoteConnectionStatus: 'connecting',

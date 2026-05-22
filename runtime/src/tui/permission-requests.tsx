@@ -21,6 +21,10 @@ import type { AppState } from "./state/AppState.js";
 import { Box, useInput } from "./ink.js";
 import { useKeybindings } from "./keybindings/useKeybinding.js";
 import { ApprovalCard } from "./components/v2/primitives.js";
+import {
+  classifyApprovalRisk,
+  typedConfirmationWordForRisk,
+} from "../permissions/risk.js";
 
 export { createSessionAppStateBridge };
 
@@ -299,28 +303,6 @@ function toolLabel(toolUseConfirm: ProjectedToolUseConfirm): string {
   return toolUseConfirm.tool.name;
 }
 
-function isHighRisk(request: PendingRequest, toolUseConfirm: ProjectedToolUseConfirm): boolean {
-  const haystack = [
-    request.ctx.toolName,
-    toolUseConfirm.tool.name,
-    toolUseConfirm.description,
-    inputValue(toolUseConfirm.input),
-  ].join(" ").toLowerCase();
-  return /\b(mainnet|settle|stake|transfer|slash|escrow|solana\s+transfer)\b/u.test(haystack);
-}
-
-function typedConfirmationWord(toolUseConfirm: ProjectedToolUseConfirm): string {
-  const haystack = [
-    toolUseConfirm.tool.name,
-    toolUseConfirm.description,
-    inputValue(toolUseConfirm.input),
-  ].join(" ").toLowerCase();
-  if (/\bsettle\b/u.test(haystack)) return "settle";
-  if (/\bstake\b/u.test(haystack)) return "stake";
-  if (/\btransfer\b/u.test(haystack)) return "transfer";
-  return "yes";
-}
-
 function AgenCApprovalOverlay({
   request,
   toolUseConfirm,
@@ -328,8 +310,19 @@ function AgenCApprovalOverlay({
   readonly request: PendingRequest;
   readonly toolUseConfirm: ProjectedToolUseConfirm;
 }) {
-  const highRisk = isHighRisk(request, toolUseConfirm);
-  const requiredWord = typedConfirmationWord(toolUseConfirm);
+  const command = inputValue(toolUseConfirm.input);
+  const risk = classifyApprovalRisk({
+    request,
+    toolName: toolUseConfirm.tool.name,
+    description: toolUseConfirm.description,
+    command,
+  });
+  const destructive = risk === "destructive";
+  const requiredWord = typedConfirmationWordForRisk({
+    risk,
+    command,
+    description: toolUseConfirm.description,
+  });
   const [typed, setTyped] = useState("");
   const approve = useCallback(() => {
     toolUseConfirm.onAllow(toolUseConfirm.input, []);
@@ -344,7 +337,7 @@ function AgenCApprovalOverlay({
   useKeybindings(
     {
       "confirm:yes": () => {
-        if (highRisk) return false;
+        if (destructive) return false;
         approve();
       },
       "confirm:no": reject,
@@ -355,7 +348,7 @@ function AgenCApprovalOverlay({
 
   useInput(
     (input, key, event) => {
-      if (!highRisk) return;
+      if (!destructive) return;
       event.stopImmediatePropagation();
       if (key.return) {
         if (typed === requiredWord) approve();
@@ -373,30 +366,34 @@ function AgenCApprovalOverlay({
         setTyped(value => (value + input).slice(0, requiredWord.length));
       }
     },
-    { isActive: highRisk },
+    { isActive: destructive },
   );
 
   const name = toolLabel(toolUseConfirm);
-  const command = inputValue(toolUseConfirm.input);
+  const title = risk === "destructive"
+    ? "destructive high-risk approval"
+    : risk === "medium"
+      ? "medium-risk approval"
+      : "needs approval";
   return (
     <Box flexDirection="column" gap={1}>
       <ApprovalCard
-        risk={highRisk ? "high" : "low"}
-        title={`tool · ${name} · ${highRisk ? "high-risk approval" : "needs approval"}`}
+        risk={destructive ? "high" : "low"}
+        title={`tool · ${name} · ${title}`}
         command={command.length > 0 ? command : toolUseConfirm.description}
         facts={[
           { label: "tool", value: name },
           {
             label: "scope",
-            value: highRisk ? "mainnet / protocol" : "session",
-            color: highRisk ? "error" : "text2",
+            value: risk === "low" ? "session" : risk,
+            color: destructive ? "error" : risk === "medium" ? "warning" : "text2",
           },
           { label: "request", value: request.id },
-          { label: "confirmation", value: highRisk ? `type ${requiredWord}` : "enter" },
+          { label: "confirmation", value: destructive ? `type ${requiredWord}` : "enter" },
         ]}
         note={toolUseConfirm.description}
-        confirmLabel={highRisk ? `type '${requiredWord}' to approve` : "⏎ approve"}
-        requireTypedConfirmation={highRisk}
+        confirmLabel={destructive ? `type '${requiredWord}' to approve` : "enter approve"}
+        requireTypedConfirmation={destructive}
         typedConfirmationValue={typed}
         typedConfirmationTarget={requiredWord}
       />

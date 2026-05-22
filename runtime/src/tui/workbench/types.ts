@@ -1,0 +1,123 @@
+export const WORKBENCH_ENV_VAR = "AGENC_TUI_WORKBENCH";
+
+export type WorkbenchPane = "explorer" | "surface" | "agents" | "composer";
+
+export type ActiveSurfaceMode =
+  | "transcript"
+  | "preview"
+  | "diff"
+  | "test"
+  | "shell"
+  | "search"
+  | "agent";
+
+export type WorkbenchAttachmentKind =
+  | "file"
+  | "file-range"
+  | "search-result"
+  | "diff-hunk"
+  | "task-error";
+
+export type WorkbenchAttachment = {
+  readonly id: string;
+  readonly kind: WorkbenchAttachmentKind;
+  readonly label: string;
+  readonly path?: string;
+  readonly line?: number;
+  readonly endLine?: number;
+  readonly query?: string;
+  readonly taskId?: string;
+};
+
+export type WorkbenchBlockedOverlay =
+  | null
+  | { readonly kind: "approval"; readonly requestId: string; readonly attemptedAction: string };
+
+export type WorkbenchState = {
+  readonly focusedPane: WorkbenchPane;
+  readonly explorerVisible: boolean;
+  readonly agentsVisible: boolean;
+  readonly activeSurfaceMode: ActiveSurfaceMode;
+  readonly activeFilePath: string | null;
+  readonly activeFileLine: number | null;
+  readonly selectedAgentTaskId: string | null;
+  readonly selectedShellTaskId: string | null;
+  readonly openDiffId: string | null;
+  readonly searchQuery: string;
+  readonly selectedSearchMatchId: string | null;
+  readonly composerAttachmentIds: readonly string[];
+  readonly attachments: readonly WorkbenchAttachment[];
+  readonly pendingBlockedOverlay: WorkbenchBlockedOverlay;
+};
+
+export type WorkbenchCommand =
+  | { readonly type: "focus"; readonly pane: WorkbenchPane }
+  | { readonly type: "focusNext"; readonly visiblePanes: readonly WorkbenchPane[] }
+  | { readonly type: "openSurface"; readonly mode: ActiveSurfaceMode }
+  | { readonly type: "openPreview"; readonly path: string; readonly line?: number; readonly focus?: boolean }
+  | { readonly type: "openSearch"; readonly query?: string; readonly selectedMatchId?: string | null }
+  | { readonly type: "openDiff"; readonly diffId?: string | null; readonly focus?: boolean }
+  | { readonly type: "openShell"; readonly taskId: string; readonly focus?: boolean }
+  | { readonly type: "openAgent"; readonly taskId: string; readonly focus?: boolean }
+  | { readonly type: "selectAgent"; readonly taskId: string | null }
+  | { readonly type: "closeSurface" }
+  | { readonly type: "toggleExplorer"; readonly visible?: boolean }
+  | { readonly type: "toggleAgents"; readonly visible?: boolean }
+  | { readonly type: "attach"; readonly attachment: WorkbenchAttachment }
+  | { readonly type: "removeAttachment"; readonly id: string }
+  | { readonly type: "clearAttachments" }
+  | { readonly type: "blockForApproval"; readonly requestId: string; readonly attemptedAction: string }
+  | { readonly type: "clearBlockedOverlay" };
+
+export type WorkbenchLayoutSize = "wide" | "medium" | "narrow";
+
+export type ProjectTreeGitState =
+  | "clean"
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "unmerged"
+  | "untracked"
+  | "ignored";
+
+export type ProjectTreeRowKind = "root" | "directory" | "file" | "loading" | "error";
+
+export type ProjectTreeRow = {
+  readonly id: string;
+  readonly path: string;
+  readonly label: string;
+  readonly kind: ProjectTreeRowKind;
+  readonly depth: number;
+  readonly expanded: boolean;
+  readonly selected: boolean;
+  readonly focused: boolean;
+  readonly active: boolean;
+  readonly attached: boolean;
+  readonly searchHit: boolean;
+  readonly inFlight: boolean;
+  readonly gitState?: ProjectTreeGitState;
+  readonly error?: string;
+};
+
+export type ProjectTreeSnapshot = {
+  readonly cwd: string;
+  readonly rows: readonly ProjectTreeRow[];
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly cursorPath: string | null;
+  readonly activePath: string | null;
+  readonly expandedPaths: readonly string[];
+};
+
+export type SearchMatch = {
+  readonly id: string;
+  readonly file: string;
+  readonly line: number;
+  readonly text: string;
+};
+
+export type SearchGroup = {
+  readonly file: string;
+  readonly matches: readonly SearchMatch[];
+};

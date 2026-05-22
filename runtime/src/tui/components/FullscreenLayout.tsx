@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { c as _c } from "react-compiler-runtime";
 import { execFileSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext';
@@ -10,7 +9,7 @@ import { useTerminalSize } from '../hooks/useTerminalSize';
 import { selectAgenCTuiGlyphs } from "../glyphs.js";
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
-import { Box, NoSelect, Text } from '../ink.js';
+import { Box, Text } from '../ink.js';
 import type { Message } from '../../types/message';
 import { openBrowser, openPath } from '../../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
@@ -25,7 +24,6 @@ import type { PermissionMode } from '../../permissions/types.js';
 import type { StickyPrompt } from './VirtualMessageList';
 import { useAppStateMaybeOutsideOfProvider } from '../state/AppState.js';
 import { BrandCells, PlanModeBanner, TuiHeader, StatusBar as V2StatusBar, StatusSegment } from './v2/primitives.js';
-import ThemedBox from './design-system/ThemedBox.js';
 import ThemedText from './design-system/ThemedText.js';
 
 /** Rows of transcript context kept visible above the modal pane's ▔ divider. */
@@ -39,7 +37,6 @@ const FILE_TREE_GUTTER_MIN_COLUMNS = 112;
 const FILE_TREE_GUTTER_MIN_ROWS = 16;
 const FILE_TREE_GUTTER_MIN_WIDTH = 22;
 const FILE_TREE_GUTTER_MAX_WIDTH = 28;
-const FILE_TREE_GUTTER_ROW_LIMIT = 18;
 
 export type FullscreenLayoutBudget = {
   readonly showTopChrome: boolean;
@@ -352,211 +349,6 @@ export function computeUnseenDivider(messages: readonly Message[], dividerIndex:
   };
 }
 
-type FileTreeRowKind = 'root' | 'dir' | 'file' | 'more';
-type FileTreeRow = {
-  readonly id: string;
-  readonly label: string;
-  readonly depth: number;
-  readonly kind: FileTreeRowKind;
-  readonly count?: number;
-};
-
-let cachedWorkspaceFileTree:
-  | { readonly cwd: string; readonly rows: readonly FileTreeRow[] }
-  | null = null;
-
-function pathBaseName(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/u, '');
-  return trimmed.split(/[\\/]/u).filter(Boolean).at(-1) ?? trimmed;
-}
-
-function getGitTrackedFiles(cwd: string): readonly string[] {
-  try {
-    return execFileSync('git', ['ls-files'], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1000,
-    })
-      .split(/\r?\n/u)
-      .map(entry => entry.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function rowsFromTrackedFiles(cwd: string, files: readonly string[]): readonly FileTreeRow[] {
-  const buckets = new Map<string, { kind: 'dir' | 'file'; count: number }>();
-  for (const file of files) {
-    const [segment, ...rest] = file.split('/');
-    if (!segment) continue;
-    const existing = buckets.get(segment);
-    const kind = rest.length > 0 ? 'dir' : 'file';
-    if (existing) {
-      buckets.set(segment, {
-        kind: existing.kind === 'dir' || kind === 'dir' ? 'dir' : 'file',
-        count: existing.count + 1,
-      });
-    } else {
-      buckets.set(segment, { kind, count: 1 });
-    }
-  }
-
-  const entries = [...buckets.entries()].sort(([a, aMeta], [b, bMeta]) => {
-    if (aMeta.kind !== bMeta.kind) return aMeta.kind === 'dir' ? -1 : 1;
-    return a.localeCompare(b);
-  });
-
-  return [
-    {
-      id: 'root',
-      label: pathBaseName(cwd) || 'workspace',
-      depth: 0,
-      kind: 'root',
-      count: files.length,
-    },
-    ...entries.map(([label, meta]) => ({
-      id: `top:${label}`,
-      label,
-      depth: 1,
-      kind: meta.kind,
-      count: meta.count,
-    })),
-  ];
-}
-
-function rowsFromDirectory(cwd: string): readonly FileTreeRow[] {
-  try {
-    const entries = readdirSync(cwd, { withFileTypes: true })
-      .filter(entry => !entry.name.startsWith('.git'))
-      .map(entry => ({
-        id: `top:${entry.name}`,
-        label: entry.name,
-        depth: 1,
-        kind: entry.isDirectory() ? 'dir' : 'file',
-        count: undefined,
-      }))
-      .sort((a, b) => {
-        if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
-        return a.label.localeCompare(b.label);
-      });
-
-    return [
-      {
-        id: 'root',
-        label: pathBaseName(cwd) || 'workspace',
-        depth: 0,
-        kind: 'root',
-        count: entries.length,
-      },
-      ...entries,
-    ];
-  } catch {
-    return [
-      {
-        id: 'root',
-        label: pathBaseName(cwd) || 'workspace',
-        depth: 0,
-        kind: 'root',
-      },
-    ];
-  }
-}
-
-function getWorkspaceFileTreeRows(cwd = process.cwd()): readonly FileTreeRow[] {
-  if (cachedWorkspaceFileTree?.cwd === cwd) return cachedWorkspaceFileTree.rows;
-  const trackedFiles = getGitTrackedFiles(cwd);
-  const rows = trackedFiles.length > 0
-    ? rowsFromTrackedFiles(cwd, trackedFiles)
-    : rowsFromDirectory(cwd);
-  cachedWorkspaceFileTree = { cwd, rows };
-  return rows;
-}
-
-function WorkspaceFileTreeGutter({
-  columns,
-  terminalRows,
-}: {
-  readonly columns: number;
-  readonly terminalRows: number;
-}): React.ReactNode {
-  const width = calculateFileTreeGutterWidth(columns);
-  const safeRows = Number.isFinite(terminalRows)
-    ? Math.max(0, Math.trunc(terminalRows))
-    : 0;
-  const visibleRowLimit = Math.max(
-    2,
-    Math.min(FILE_TREE_GUTTER_ROW_LIMIT, safeRows - TOP_CHROME_ROWS - BOTTOM_CHROME_ROWS - 2),
-  );
-  const rows = React.useMemo(() => getWorkspaceFileTreeRows(), []);
-  const visibleRows = rows.slice(0, visibleRowLimit);
-  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
-
-  return (
-    <NoSelect fromLeftEdge={true} flexShrink={0}>
-      <ThemedBox
-        flexDirection="column"
-        width={width}
-        height="100%"
-        overflow="hidden"
-        paddingX={1}
-        borderRight={true}
-        borderRightColor="lineSoft"
-      >
-        <Box height={1} flexShrink={0}>
-          <ThemedText color="muted3" wrap="truncate-end">FILES</ThemedText>
-        </Box>
-        <Box flexDirection="column" flexGrow={1} overflow="hidden">
-          {visibleRows.map(row => (
-            <WorkspaceFileTreeRow key={row.id} row={row} width={width} />
-          ))}
-          {hiddenCount > 0 ? (
-            <WorkspaceFileTreeRow
-              row={{
-                id: 'more',
-                label: `${hiddenCount} more`,
-                depth: 1,
-                kind: 'more',
-              }}
-              width={width}
-            />
-          ) : null}
-        </Box>
-      </ThemedBox>
-    </NoSelect>
-  );
-}
-
-function WorkspaceFileTreeRow({
-  row,
-  width,
-}: {
-  readonly row: FileTreeRow;
-  readonly width: number;
-}): React.ReactNode {
-  const marker = row.kind === 'root'
-    ? '▾'
-    : row.kind === 'dir'
-      ? '▸'
-      : row.kind === 'more'
-        ? '+'
-        : '·';
-  const prefix = row.depth > 0 ? '  '.repeat(row.depth) : '';
-  const suffix = row.count && row.kind !== 'root' && row.kind !== 'file'
-    ? ` ${row.count}`
-    : '';
-  const labelWidth = Math.max(4, width - prefix.length - marker.length - suffix.length - 5);
-  const color = row.kind === 'root' ? 'text2' : row.kind === 'file' ? 'muted3' : 'text2';
-  return (
-    <Box height={1} flexShrink={0}>
-      <ThemedText color={color} wrap="truncate-end">
-        {prefix}{marker} {trimMiddle(row.label, labelWidth)}{suffix}
-      </ThemedText>
-    </Box>
-  );
-}
-
 /**
  * Layout wrapper for the REPL. In fullscreen mode, puts scrollable
  * content in a sticky-scroll box and pins bottom content via flexbox.
@@ -704,8 +496,8 @@ export function FullscreenLayout(t0) {
       t16 = $[30];
     }
     const t14Content = <Box flexGrow={1} flexDirection="column" overflow="hidden"><DesignBrandBleed columns={columns} />{t8}<DesignPlanModeBanner />{t11}{t12}{t13}{t16}</Box>;
-    const showFileTreeGutter = shouldShowFileTreeGutter(columns, terminalRows, modal != null) && fileTreeGutter !== null && fileTreeGutter !== false;
-    const t14 = showFileTreeGutter ? <Box flexGrow={1} flexDirection="row" overflow="hidden">{fileTreeGutter === undefined ? <WorkspaceFileTreeGutter columns={columns} terminalRows={terminalRows} /> : fileTreeGutter}{t14Content}</Box> : t14Content;
+    const showFileTreeGutter = shouldShowFileTreeGutter(columns, terminalRows, modal != null) && fileTreeGutter !== undefined && fileTreeGutter !== null && fileTreeGutter !== false;
+    const t14 = showFileTreeGutter ? <Box flexGrow={1} flexDirection="row" overflow="hidden">{fileTreeGutter}{t14Content}</Box> : t14Content;
     let t17;
     if ($[31] !== bottom || $[38] !== layoutBudget.bottomMaxHeight) {
       t17 = <Box flexDirection="column" flexShrink={0} width="100%" maxHeight={layoutBudget.bottomMaxHeight}>{t15}<Box flexDirection="column" width="100%" flexGrow={1} overflowY="hidden">{bottom}</Box></Box>;

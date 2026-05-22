@@ -104,6 +104,8 @@ import { GlobalSearchDialog } from '../GlobalSearchDialog.js';
 import { HistorySearchDialog } from '../../history/HistorySearchDialog.js';
 import { ModelPicker } from '../ModelPicker.js';
 import { QuickOpenDialog } from '../QuickOpenDialog.js';
+import { materializeAttachmentMentions } from '../../workbench/commands.js';
+import { applyWorkbenchCommand, isWorkbenchEnabled } from '../../workbench/state.js';
 import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksPanel } from '../tasks/BackgroundTasksPanel.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
@@ -1276,6 +1278,8 @@ function PromptInput({
     // same "still visible?" derivation as footerItemSelected so a stale
     // selection (pill disappeared) doesn't swallow Enter.
     const state = store.getState();
+    const workbenchAttachments = isWorkbenchEnabled() ? state.workbench.attachments : [];
+    const hasWorkbenchAttachments = workbenchAttachments.length > 0;
     if (state.footerSelection && footerItems.includes(state.footerSelection)) {
       return;
     }
@@ -1356,7 +1360,7 @@ function PromptInput({
     }
 
     // Allow submission if there are images attached, even without text
-    if (inputParam.trim() === '' && !hasImages) {
+    if (inputParam.trim() === '' && !hasImages && !hasWorkbenchAttachments) {
       return;
     }
 
@@ -1375,16 +1379,22 @@ function PromptInput({
 
     // Clear stash hint notification on submit
     removeNotification('stash-hint');
+    const submitInput = hasWorkbenchAttachments
+      ? materializeAttachmentMentions(inputParam, workbenchAttachments)
+      : inputParam;
 
     // Route input to viewed agent (in-process teammate or named local_agent).
     const activeAgent = getActiveAgentForInput(store.getState());
     if (activeAgent.type !== 'leader' && onAgentSubmit) {
       logEvent('agenc_transcript_input_to_teammate', {});
-      await onAgentSubmit(inputParam, activeAgent.task, {
+      await onAgentSubmit(submitInput, activeAgent.task, {
         setCursorOffset,
         clearBuffer,
         resetHistory
       });
+      if (hasWorkbenchAttachments) {
+        setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
+      }
       return;
     }
 
@@ -1471,7 +1481,7 @@ function PromptInput({
     // downstream consumers can branch on composer state (e.g. future
     // routing of memory mode without round-tripping through input
     // prefix). Bash mode is intercepted above and never reaches here.
-    await onSubmitProp(inputParam, {
+    await onSubmitProp(submitInput, {
       setCursorOffset,
       clearBuffer,
       resetHistory
@@ -1483,6 +1493,9 @@ function PromptInput({
         keys: []
       }
     });
+    if (hasWorkbenchAttachments) {
+      setAppState(prev => applyWorkbenchCommand(prev, { type: 'clearAttachments' }));
+    }
   }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, vimMode, mode, getToolUseContext, messages, mainLoopModel, trackAndSetInput, onModeChange, isLoading, addNotification]);
   const {
     suggestions,
@@ -2144,6 +2157,14 @@ function PromptInput({
   });
   useKeybinding('app:globalSearch', () => {
     if (feature('QUICK_SEARCH')) {
+      if (isWorkbenchEnabled()) {
+        setAppState(prev => applyWorkbenchCommand(prev, {
+          type: 'openSearch',
+          query: input.trim(),
+        }));
+        setHelpOpen(false);
+        return;
+      }
       setShowGlobalSearch(true);
       setHelpOpen(false);
     }

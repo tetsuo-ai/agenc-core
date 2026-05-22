@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  createDiffMenuSnapshot,
+  type DiffFileStatus,
+} from "./diff-menu.js";
+import {
   collectDiffSnapshot,
   computeDiff,
   diffCommand,
@@ -173,6 +177,45 @@ describe("collectDiffSnapshot", () => {
     const snapshot = await collectDiffSnapshot("/repo", deps);
     expect(snapshot.state).toBe("clean");
     expect(snapshot.files).toHaveLength(0);
+  });
+});
+
+describe("createDiffMenuSnapshot", () => {
+  it("models modified, added, deleted, renamed, unmerged, and untracked files", () => {
+    const snapshot = createDiffMenuSnapshot({
+      rawDiff: [
+        "diff --git a/src/changed.ts b/src/changed.ts",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+      ].join("\n"),
+      nameStatus: [
+        "M\tsrc/changed.ts",
+        "A\tsrc/added.ts",
+        "D\tsrc/deleted.ts",
+        "R100\tsrc/old.ts\tsrc/new.ts",
+        "U\tsrc/conflict.ts",
+      ].join("\n"),
+      numstat: [
+        "1\t1\tsrc/changed.ts",
+        "3\t0\tsrc/added.ts",
+        "0\t2\tsrc/deleted.ts",
+        "0\t0\tsrc/new.ts",
+        "1\t1\tsrc/conflict.ts",
+      ].join("\n"),
+      untrackedFiles: ["src/untracked.ts"],
+    });
+
+    const statusByPath = new Map(snapshot.files.map((file) => [file.path, file.status]));
+    expect(statusByPath).toEqual(new Map<string, DiffFileStatus>([
+      ["src/added.ts", "added"],
+      ["src/changed.ts", "modified"],
+      ["src/conflict.ts", "unmerged"],
+      ["src/deleted.ts", "deleted"],
+      ["src/new.ts", "renamed"],
+      ["src/untracked.ts", "untracked"],
+    ]));
+    expect(snapshot.files.find((file) => file.path === "src/changed.ts")?.previewLines).toContain("+new");
   });
 });
 
